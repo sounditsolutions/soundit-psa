@@ -9,8 +9,10 @@ use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
+use App\Services\Chet\ChetDataSurfaceTextSanitizer;
 use App\Services\Cipp\CippClientException;
 use App\Services\Cipp\CippRestWriteClient;
+use App\Services\Cipp\CippToolContract;
 use App\Services\Cipp\CippWriteScopeException;
 use App\Services\Cipp\CippWriteScopeResolver;
 use App\Services\Cipp\ResolvedCippLicense;
@@ -212,6 +214,14 @@ class StaffCippWriteToolExecutor
      * exists to keep a hostile name from bloating the held payload or audit row.
      */
     private const RULE_NAME_MAX = 256;
+
+    /**
+     * The per-field character bound CippToolContract::fence() sanitizes projected
+     * text with. Mirrored here so the approve-time match can rebuild the exact
+     * fenced form of a rule name the per-mailbox read handed the agent (see
+     * mailboxRuleNameMatches).
+     */
+    private const FENCED_FIELD_MAX = 1000;
 
     /** @var array<int, string> */
     private const ALLOW_LIST_TYPES = ['Sender', 'Url'];
@@ -454,6 +464,7 @@ class StaffCippWriteToolExecutor
         private readonly CippRestWriteClient $client,
         private readonly CippWriteScopeResolver $resolver,
         private readonly ActionRedactor $redactor,
+        private readonly ChetDataSurfaceTextSanitizer $textSanitizer,
     ) {}
 
     /** @return array<int, array<string, mixed>> */
@@ -3398,13 +3409,23 @@ class StaffCippWriteToolExecutor
      * the typed rule_name (a safe local scalar) — no upstream rule Identity
      * exists at stage time, and none is ever accepted from a caller — so the
      * rule is resolved FRESH here against the mailbox's LIVE inbox-rule
-     * listing: protected system rules (the Exchange junk rule and the OOF
-     * internals CIPP itself never deletes) are excluded, then the stored name
-     * must match exactly ONE remaining rule case-insensitively. Zero matches
-     * or an ambiguous name declines the approval; only a unique match sends
-     * the single-rule removal with the matched rule's own upstream Identity
-     * and name. Every guard fails closed as a CippClientException: the
-     * approval is declined and audited, and nothing upstream is changed.
+     * listing: rows another mailbox provably owns are dropped, the stored name
+     * must match exactly ONE remaining rule (case-insensitively, against the
+     * raw upstream name OR the fenced form the reads actually show the agent),
+     * and the match must be provably on the approved mailbox before its
+     * Identity is sent. Zero matches or an ambiguous name declines the
+     * approval. Every guard fails closed as a CippClientException: the approval
+     * is declined and audited, and nothing upstream is changed.
+     *
+     * NO NAME IS UN-REMOVABLE. This deliberately does not filter "protected"
+     * rule names: the endpoint we call is Remove-CIPPMailboxRule's single-rule
+     * arm, which protects nothing (the 'Junk E-Mail Rule'/OOF filter lives only
+     * in its -RemoveAllRules arm, where the operator named no rule at all). A
+     * name filter here would be keyed on a string the ATTACKER chooses — plant
+     * a forwarding rule called "Junk E-Mail Rule" and it becomes both
+     * un-removable through this verb and reported to the approver as not
+     * existing, a false all-clear on the one path that exists to clean up after
+     * a takeover.
      */
     private function executeMailboxRuleRemoval(string $tenant, ResolvedCippPerson $person, array $params): void
     {
@@ -3413,16 +3434,29 @@ class StaffCippWriteToolExecutor
             throw new CippClientException('Mailbox rule removal payload is incomplete; nothing was removed.');
         }
 
+        $needles = $this->mailboxOwnerNeedles($person);
+        $owners = [];
         $matches = [];
         foreach ($this->client->listUserMailboxRules($tenant, $person->userPrincipalName) as $rule) {
             if (! is_array($rule)) {
                 continue;
             }
-            $name = trim((string) ($rule['Name'] ?? $rule['name'] ?? ''));
-            if ($name === '' || $this->isProtectedMailboxRule($name)) {
+            $owner = CippToolContract::mailboxRuleOwner($rule);
+            if ($owner !== null) {
+                $owners[$owner] = true;
+            }
+            // A row whose own mailbox marker proves it belongs to somebody else is
+            // never a removal target on this mailbox — the read path drops these
+            // because upstream really has answered a mailbox-scoped query with
+            // out-of-scope rows (psa-7lgo.1).
+            if ($owner !== null && $this->mailboxRuleOwnerIsForeign($owner, $needles)) {
                 continue;
             }
-            if (strcasecmp($name, $ruleName) === 0) {
+            $name = trim((string) ($rule['Name'] ?? $rule['name'] ?? ''));
+            if ($name === '') {
+                continue;
+            }
+            if ($this->mailboxRuleNameMatches($name, $ruleName)) {
                 $matches[] = $rule;
             }
         }
@@ -3441,19 +3475,83 @@ class StaffCippWriteToolExecutor
             throw new CippClientException('The matched inbox rule carries no upstream identity; nothing was removed.');
         }
 
+        // Upstream derives MailboxObjectId from this identity's own prefix and
+        // retries the delete anchored to it — so the PREFIX, not the
+        // userPrincipalName we pass, can decide which mailbox is touched. Unless
+        // the row itself proves it is ours (a comparable owner matching the
+        // approved UPN/object id), refuse when the listing carried rules from
+        // more than one mailbox: an approved removal must never land on a
+        // mailbox the approver never saw.
+        $owner = CippToolContract::mailboxRuleOwner($match);
+        if ($owner === null) {
+            throw new CippClientException('The matched inbox rule does not name the mailbox it belongs to, so it cannot be proven to be on this mailbox; nothing was removed.');
+        }
+        if (! in_array($owner, $needles, true) && count($owners) > 1) {
+            throw new CippClientException('The live inbox-rule listing carried rules from more than one mailbox, so the matched rule cannot be proven to be on the approved mailbox; nothing was removed.');
+        }
+
         $this->client->removeMailboxRule($tenant, $person->userPrincipalName, $identity, trim((string) ($match['Name'] ?? $match['name'] ?? $ruleName)));
     }
 
     /**
-     * The rules CIPP's own bulk deleter refuses to touch (Remove-CIPPMailboxRule
-     * -RemoveAllRules arm: Name -ne 'Junk E-Mail Rule' and Name -notlike
-     * 'Microsoft.Exchange.OOF.*'). PowerShell -like is case-insensitive, so the
-     * comparisons here are too.
+     * Whether an upstream rule name is the one the approver signed off on.
+     *
+     * The per-mailbox read this tool's schema points callers at projects the
+     * rule NAME as untrusted free text (CippToolContract::isFreeTextField), so
+     * what an agent can copy back is the FENCED form — NFKC-folded, role
+     * markers defanged, "ignore previous instructions" rewritten. Matching the
+     * raw upstream name alone would break that read->write round trip on
+     * precisely the attacker-authored names this verb exists to remove, and
+     * decline with a false "no such rule" (the psa-4k6m.8 failure class, which
+     * already broke quarantine release once). Both forms are accepted; if two
+     * different rules collide on one of them the unique-match gate declines as
+     * ambiguous rather than picking one.
      */
-    private function isProtectedMailboxRule(string $name): bool
+    private function mailboxRuleNameMatches(string $upstreamName, string $approvedName): bool
     {
-        return strcasecmp($name, 'Junk E-Mail Rule') === 0
-            || stripos($name, 'Microsoft.Exchange.OOF') === 0;
+        if (strcasecmp($upstreamName, $approvedName) === 0) {
+            return true;
+        }
+
+        return strcasecmp(trim($this->textSanitizer->sanitizedText($upstreamName, self::FENCED_FIELD_MAX)), $approvedName) === 0;
+    }
+
+    /**
+     * The approved mailbox's own identifiers, lowercased, for adjudicating whose
+     * mailbox a rule is on.
+     *
+     * @return array<int, string>
+     */
+    private function mailboxOwnerNeedles(ResolvedCippPerson $person): array
+    {
+        $needles = array_map(
+            fn (string $value): string => mb_strtolower(trim($value)),
+            [$person->userPrincipalName, $person->userId],
+        );
+
+        return array_values(array_unique(array_filter($needles, fn (string $needle): bool => $needle !== '')));
+    }
+
+    /**
+     * Whether a rule's mailbox marker PROVES it is another mailbox's. Compare
+     * like with like (CippToolContract::mailboxRuleIsForeign): an address is
+     * adjudicated only by an address and a GUID only by a GUID — an alias or
+     * display name proves nothing either way, and guessing would drop the
+     * target user's own rules. Those unprovable rows are left to the
+     * more-than-one-mailbox refusal on the resolved match instead.
+     *
+     * @param  array<int, string>  $needles
+     */
+    private function mailboxRuleOwnerIsForeign(string $owner, array $needles): bool
+    {
+        $comparable = array_values(array_filter(
+            $needles,
+            fn (string $needle): bool => str_contains($owner, '@')
+                ? str_contains($needle, '@')
+                : CippToolContract::looksLikeObjectId($owner) && CippToolContract::looksLikeObjectId($needle),
+        ));
+
+        return $comparable !== [] && ! in_array($owner, $comparable, true);
     }
 
     private function executeMailboxForwarding(string $tenant, ResolvedCippPerson $person, array $mailbox): void
@@ -4555,7 +4653,7 @@ class StaffCippWriteToolExecutor
         // audit summary stay id-only.
         return 'Remove the inbox rule named "'.($params['rule_name'] ?? 'unknown').'"'
             .' from the mailbox of '.$person->userPrincipalName.' (PSA person #'.$person->person->id.').'
-            .' Held-only: approval re-reads the mailbox\'s live inbox rules, excludes protected system rules, and requires the name to match exactly one rule before the single-rule removal is sent; a missing or ambiguous name declines with nothing removed.';
+            .' Held-only: approval re-reads the mailbox\'s live inbox rules, drops any row another mailbox owns, and requires the name to match exactly one rule — on this mailbox — before the single-rule removal is sent; a missing or ambiguous name declines with nothing removed.';
     }
 
     private function mailboxDelegateDisplay(ResolvedCippPerson $person, array $mailbox): string
@@ -4827,7 +4925,7 @@ class StaffCippWriteToolExecutor
         return [
             'rule_name' => [
                 'type' => 'string',
-                'description' => 'Exact name of the inbox rule to remove, as shown by the per-mailbox rule reads (e.g. cipp_list_mailbox_rules). Matched case-insensitively against the mailbox\'s LIVE inbox-rule listing at approval time; the server derives the rule\'s upstream identity from the unique match, and a missing or ambiguous name declines without removing anything. Protected system rules (the Junk E-Mail Rule and Exchange OOF internals) are never removable.',
+                'description' => 'Exact name of the inbox rule to remove, as shown by the per-mailbox rule reads (e.g. cipp_list_mailbox_rules). Matched case-insensitively against the mailbox\'s LIVE inbox-rule listing at approval time — against both the rule\'s raw upstream name and the fenced form those reads display, so a name that was neutralized for display still resolves. The server derives the rule\'s upstream identity from the unique match, and a missing or ambiguous name declines without removing anything.',
             ],
         ];
     }
@@ -4837,7 +4935,7 @@ class StaffCippWriteToolExecutor
     {
         return self::tool(
             'cipp_remove_mailbox_rule',
-            'Remove ONE inbox rule from ONE server-derived user\'s mailbox through CIPP — compromise remediation and mailbox hygiene (e.g. strip a malicious forwarding or delete-mail rule after an account takeover). HELD-ONLY: this capability never executes immediately, whatever mode was granted — every call must use staged=true with a ticket_id and is held for cockpit approval; staged=false calls are refused. Identify the rule by rule_name only (from the per-mailbox rule reads); at approval the server re-reads the mailbox\'s LIVE inbox rules, excludes protected system rules, and requires the name to match exactly ONE rule before the single-rule removal is sent — a missing or ambiguous name declines without removing anything. confirm_upn is the mailbox owner\'s UPN. Requires an explicit token grant, reason, kill-switch, cooldown, and TechnicianActionLog audit.',
+            'Remove ONE inbox rule from ONE server-derived user\'s mailbox through CIPP — compromise remediation and mailbox hygiene (e.g. strip a malicious forwarding or delete-mail rule after an account takeover). HELD-ONLY: this capability never executes immediately, whatever mode was granted — every call must use staged=true with a ticket_id and is held for cockpit approval; staged=false calls are refused. Identify the rule by rule_name only (from the per-mailbox rule reads); at approval the server re-reads the mailbox\'s LIVE inbox rules, drops any row another mailbox owns, and requires the name to match exactly ONE rule before the single-rule removal is sent — a missing or ambiguous name declines without removing anything. confirm_upn is the mailbox owner\'s UPN. Requires an explicit token grant, reason, kill-switch, cooldown, and TechnicianActionLog audit.',
             array_merge(self::personProperties(), self::mailboxRuleProperties()),
             ['person_id', 'rule_name', 'confirm_upn', 'reason'],
         );
@@ -4848,7 +4946,7 @@ class StaffCippWriteToolExecutor
     {
         return self::tool(
             'cipp_stage_remove_mailbox_rule',
-            'Stage removal of one inbox rule from one server-derived user\'s mailbox for cockpit approval (compromise remediation / mailbox hygiene). The MCP call makes no CIPP upstream call; the held payload stores only local identifiers plus the typed rule_name, and approval re-reads the mailbox\'s LIVE inbox rules, excludes protected system rules, and executes the single-rule removal only when the name matches exactly ONE rule — a missing or ambiguous name declines with nothing removed. This capability is held-only — there is no immediate execution path. confirm_upn is the mailbox owner\'s UPN (person_id).',
+            'Stage removal of one inbox rule from one server-derived user\'s mailbox for cockpit approval (compromise remediation / mailbox hygiene). The MCP call makes no CIPP upstream call; the held payload stores only local identifiers plus the typed rule_name, and approval re-reads the mailbox\'s LIVE inbox rules, drops any row another mailbox owns, and executes the single-rule removal only when the name matches exactly ONE rule — a missing or ambiguous name declines with nothing removed. This capability is held-only — there is no immediate execution path. confirm_upn is the mailbox owner\'s UPN (person_id).',
             array_merge(self::personProperties(ticket: true), self::mailboxRuleProperties()),
             ['person_id', 'rule_name', 'ticket_id', 'confirm_upn', 'reason'],
         );

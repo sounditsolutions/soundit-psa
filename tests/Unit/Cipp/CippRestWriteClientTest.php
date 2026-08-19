@@ -405,6 +405,33 @@ class CippRestWriteClientTest extends TestCase
         $client->listUserMailboxRules('acme.onmicrosoft.com', 'alex@acme.example');
     }
 
+    public function test_list_user_mailbox_rules_throws_on_an_unrecognized_payload_rather_than_reporting_no_rules(): void
+    {
+        // The removal gate reports "no rules" to the approver as 'No inbox rule
+        // named "X" exists on this mailbox', so an HTTP-200 error envelope, a
+        // non-array body, or any shape drift must hard-error here rather than
+        // collapse to []: a degraded read must never read as a clean mailbox
+        // (psa-7lgo rule 3), or a technician closes a live BEC ticket.
+        foreach ([
+            '{"Results":"Failed to connect to Exchange"}',
+            '{"error":{"code":"Forbidden"}}',
+            '"unexpected-scalar"',
+            'null',
+        ] as $payload) {
+            Http::fake([
+                'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+                'cipp.example.test/api/ListUserMailboxRules*' => Http::response($payload, 200, ['Content-Type' => 'application/json']),
+            ]);
+
+            try {
+                $this->emailSecurityClient()->listUserMailboxRules('acme.onmicrosoft.com', 'alex@acme.example');
+                $this->fail("Expected CippClientException for upstream body {$payload}");
+            } catch (CippClientException $e) {
+                $this->assertMatchesRegularExpression('/unrecognized payload|unreadable payload/', $e->getMessage(), $payload);
+            }
+        }
+    }
+
     public function test_list_mail_quarantine_throws_on_a_queue_backed_payload_rather_than_reporting_no_rows(): void
     {
         // The write client unwraps {"Results": ...} like the two read clients do, so it owns

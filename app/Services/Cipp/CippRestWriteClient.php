@@ -398,6 +398,13 @@ class CippRestWriteClient
      * decline for the wrong reason on the removal gate, but the day this read
      * backs an answer it would be a false all-clear.
      *
+     * Same rule for the payload SHAPE. Only a list, or a {"Results": [...]}
+     * envelope, is a rule listing: an HTTP-200 error envelope ({"Results":
+     * "Failed to connect to Exchange"}), a non-array body, or any other drift
+     * THROWS. Collapsing those to [] would surface to the approver as "no inbox
+     * rule named X exists on this mailbox" — a degraded read reading as a clean
+     * mailbox, the exact polarity psa-7lgo rule 3 forbids.
+     *
      * @return array<int, array<string, mixed>>
      */
     public function listUserMailboxRules(string $tenantFilter, string $userPrincipalName): array
@@ -409,7 +416,7 @@ class CippRestWriteClient
         $body = $this->sendGet('api/ListUserMailboxRules', [
             'TenantFilter' => $tenantFilter,
             'UserID' => $userPrincipalName,
-        ]);
+        ], requireArrayBody: true);
 
         CippQueueGuard::assertNotQueueBacked($body);
 
@@ -420,9 +427,14 @@ class CippRestWriteClient
         // Defensive: some CIPP endpoints wrap list payloads as {"Results": [...]}.
         $results = $body['Results'] ?? null;
 
-        return is_array($results) && array_is_list($results)
-            ? array_values(array_filter($results, 'is_array'))
-            : [];
+        if (is_array($results) && array_is_list($results)) {
+            return array_values(array_filter($results, 'is_array'));
+        }
+
+        // Not a listing — a DEGRADED read, never an empty mailbox. See the
+        // docblock: the removal gate reports emptiness as "no such rule exists",
+        // so this must scream rather than fail open.
+        throw new CippClientException('CIPP read api/ListUserMailboxRules returned an unrecognized payload; the mailbox rule listing could not be read.');
     }
 
     /**
@@ -943,7 +955,13 @@ class CippRestWriteClient
     /**
      * Curated GET with the same URL-safety, DNS-pinning, and token handling as
      * send(). Returns the decoded body, or [] when upstream answers with a
-     * non-array payload. Private and endpoint-specific by design: it backs only
+     * non-array payload — UNLESS the caller passes requireArrayBody, in which
+     * case an uninterpretable body throws instead of collapsing to "no rows".
+     * That opt-in exists because emptiness does not mean the same thing to
+     * every caller: listUserMailboxRules' emptiness is reported to an approver
+     * as "no such rule exists" (a false all-clear), while listMailQuarantine's
+     * caller refuses the release when the identity is missing and so fails
+     * closed on []. Private and endpoint-specific by design: it backs only
      * the curated verification reads that gate a write (listDirectoryRoles,
      * listGroups, listMailQuarantine, listUserMailboxRules) and is never
      * exposed as a generic getter.
@@ -951,7 +969,7 @@ class CippRestWriteClient
      * @param  array<string, string>  $query
      * @return array<int|string, mixed>
      */
-    private function sendGet(string $endpoint, array $query): array
+    private function sendGet(string $endpoint, array $query, bool $requireArrayBody = false): array
     {
         $url = $this->endpointUrl($endpoint);
         $options = $this->safeRequestOptions($url);
@@ -969,7 +987,15 @@ class CippRestWriteClient
 
         $body = $response->json();
 
-        return is_array($body) ? $body : [];
+        if (! is_array($body)) {
+            if ($requireArrayBody) {
+                throw new CippClientException("CIPP read {$endpoint} returned an unreadable payload; the response could not be interpreted as rows.");
+            }
+
+            return [];
+        }
+
+        return $body;
     }
 
     private function getToken(): string

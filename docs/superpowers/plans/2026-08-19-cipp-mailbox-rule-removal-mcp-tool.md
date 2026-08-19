@@ -30,8 +30,13 @@ Verified against `KelvinTegelaar/CIPP-API` @ master (fetched 2026-08-19):
   @{Identity = $RuleId}` with a fallback retry anchored to `$MailboxObjectId`.
   The `-RemoveAllRules` arm (not reachable through this endpoint) is where the
   protected-rule filter lives upstream: `Name -ne 'Junk E-Mail Rule'` and
-  `Name -notlike 'Microsoft.Exchange.OOF.*'` — our approve-time filter mirrors
-  it so the curated tool can never delete what CIPP's own bulk path protects.
+  `Name -notlike 'Microsoft.Exchange.OOF.*'`. We deliberately do **not** mirror
+  it: that filter guards a bulk delete where the operator named no rule, while
+  here the approver names exactly one — and a name filter would be keyed on a
+  string the ATTACKER picks, making a rule called "Junk E-Mail Rule"
+  un-removable through this verb *and* reported to the approver as not
+  existing (a false all-clear on the remediation path). The single-rule arm
+  imposes no such restriction, and neither do we.
 
 - **Read — `GET api/ListUserMailboxRules` with `TenantFilter` + `UserID`**:
   a LIVE Exchange call (`Get-InboxRule -Mailbox $UserID`), scoped to one
@@ -56,14 +61,21 @@ At approval, `executeMailboxRuleRemoval()`:
 
 1. `listUserMailboxRules(tenant, upn)` — fresh LIVE listing, server-derived
    tenant and mailbox owner.
-2. Filters out protected rules (`Junk E-Mail Rule`, names starting
-   `Microsoft.Exchange.OOF` — case-insensitive, matching PowerShell `-like`).
-3. Matches the stored `rule_name` case-insensitively after trim. Zero matches
-   → declined ("no inbox rule named … exists on this mailbox; nothing was
-   removed"). Two or more → declined naming the ambiguity; nothing removed.
-4. On the unique match, sends `removeMailboxRule()` with the matched rule's
-   own upstream `Identity` as `ruleId` and its actual upstream name as
-   `ruleName`.
+2. Drops rows whose own mailbox marker (`MailboxOwnerId`, else the
+   `<mailbox>\<ruleId>` Identity prefix) PROVES another mailbox — the read
+   path's guard (psa-7lgo.1), applied here because upstream anchors the delete
+   to that prefix, not to the `userPrincipalName` we pass.
+3. Matches the stored `rule_name` case-insensitively after trim, against the
+   raw upstream `Name` **or** the fenced form the per-mailbox read shows the
+   agent (the projection fences rule names as untrusted free text, so the
+   read→write round trip breaks on attacker-authored names otherwise —
+   psa-4k6m.8). Zero matches → declined ("no inbox rule named … exists on this
+   mailbox; nothing was removed"). Two or more → declined naming the
+   ambiguity; nothing removed. No name is un-removable.
+4. On the unique match, refuses unless the row is provably on the approved
+   mailbox or the listing carried exactly one mailbox, then sends
+   `removeMailboxRule()` with the matched rule's own upstream `Identity` as
+   `ruleId` and its actual upstream name as `ruleName`.
 
 Every guard throws `CippClientException` ending "nothing was removed." → audit
 `error` row, claim released, approval declined, nothing changed upstream.
@@ -103,7 +115,8 @@ Every guard throws `CippClientException` ending "nothing was removed." → audit
 - `app/Services/Mcp/StaffCippWriteToolExecutor.php` — staged map + cooldowns,
   `RULE_NAME_MAX`, identifier-blocklist additions, `mailboxRuleParams()`
   (held-only gate + bounded name), `executeMailboxRuleRemoval()` (approve-time
-  live resolution + protected-rule filter + unique-match gate),
+  live resolution + foreign-mailbox guard + fenced-name match + unique-match
+  gate),
   `mailboxRuleDisplay()`, `safeMailboxParams()` allowlist, definitions.
 - `app/Support/StagedActionLabels.php` — `'cipp_stage_remove_mailbox_rule' =>
   'CIPP mailbox rule removal'`.
@@ -115,7 +128,8 @@ Every guard throws `CippClientException` ending "nothing was removed." → audit
   allowlist, source-pinned bodies, empty-args-before-HTTP, queue-guard),
   `tests/Feature/Mcp/CippWriteMailboxRuleTest.php` (schema safety, grant
   gating, structural held-only refusal, staged→approve→execute with live
-  resolution, zero/ambiguous/protected-name declines, input/identifier
+  resolution, zero/ambiguous/foreign-mailbox declines, protected-name and
+  fenced-name removals, input/identifier
   rejection, idempotency).
 
 Ships DORMANT: the verb arrives in nobody's `allowed_tools` — it appears only
