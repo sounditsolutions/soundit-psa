@@ -67,8 +67,12 @@ class HuntressService
         // `incident_reports/{id}` the current one — same pair HuntressIncidentReconcileService
         // ::extractIncidentId accepts. Matching only the legacy form left current-form incident
         // reports without a dedup key, without an alert source id, and without a type signal.
+        // Host is matched the same way as the record-path guard below: huntress.io or a
+        // subdomain of it, never a host that merely ends in that string (`phish-huntress.io`).
+        // This capture drives the incident signal, the dedup key and the Alert source_alert_id,
+        // so a lookalike host here would let a bulletin control classification and alert identity.
         $incidentReportUrl = null;
-        if (preg_match('#(https://\S+huntress\.io/org/\d+/(?:infection|incident)_reports/\d+)#', $description, $m)) {
+        if (preg_match('#(https://(?:[\w-]+\.)*huntress\.io/org/\d+/(?:infection|incident)_reports/\d+)#', $description, $m)) {
             $incidentReportUrl = $m[1];
         }
 
