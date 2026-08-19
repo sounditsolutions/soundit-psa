@@ -6,6 +6,7 @@ use App\Enums\AlertSeverity;
 use App\Enums\AlertSource;
 use App\Enums\AlertStatus;
 use App\Enums\NoteType;
+use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
 use App\Enums\TicketType;
@@ -76,6 +77,27 @@ class HuntressService
             $escalationId = (int) $m[1];
         }
 
+        // Vendor marketing bulletins ride this same endpoint. A real incident or escalation
+        // carries at least one signal: a word-bounded severity token or the "Incident on
+        // agent (org)" shape in the title, or an incident-report/escalation URL in the body.
+        // Zero signals → vendor comms: service_request/p4, no monitoring alert. Payloads with
+        // any signal keep the fail-open incident default so a malformed real incident is
+        // never buried.
+        $isVendorComms = $incidentReportUrl === null
+            && $escalationId === null
+            && ! preg_match('/\b(CRITICAL|HIGH|LOW)\b/i', $rawSubject)
+            && ! preg_match('/Incident\s+on\s+.+\(/i', $rawSubject);
+
+        $type = TicketType::Incident;
+        if ($isVendorComms) {
+            $type = TicketType::ServiceRequest;
+            $priority = TicketPriority::P4;
+
+            Log::info('[Huntress CW] No incident signals — classifying as vendor communication', [
+                'subject' => $subject,
+            ]);
+        }
+
         $duplicate = null;
         if ($incidentReportUrl) {
             $duplicate = Ticket::where('source', TicketSource::Huntress->value)
@@ -133,11 +155,11 @@ class HuntressService
             'description' => $description,
             'client_id' => $client?->id,
             'priority' => $priority->value,
-            'type' => TicketType::Incident->value,
+            'type' => $type->value,
             'source' => TicketSource::Huntress->value,
         ];
 
-        $ticket = DB::transaction(function () use ($ticketData, $assetId, $systemUserId) {
+        $ticket = DB::transaction(function () use ($ticketData, $assetId, $systemUserId, $isVendorComms) {
             $ticket = $this->ticketService->createTicket($ticketData, $systemUserId);
 
             // Attach asset if found
@@ -148,7 +170,9 @@ class HuntressService
             // Audit note
             $this->ticketService->addNote(
                 $ticket,
-                'Submitted via Huntress incident report.',
+                $isVendorComms
+                    ? 'Submitted via Huntress integration; classified as vendor communication (no incident signals in payload).'
+                    : 'Submitted via Huntress incident report.',
                 NoteType::StatusChange,
                 true,
                 $systemUserId,
@@ -158,6 +182,18 @@ class HuntressService
         });
 
         $ticket->load(['client', 'contact']);
+
+        // Vendor comms are not monitoring events — no Alert row, the ticket is the whole record.
+        if ($isVendorComms) {
+            Log::info('[Huntress CW] Created vendor-communication ticket', [
+                'ticket_id' => $ticket->id,
+                'client_id' => $client?->id,
+                'priority' => $priority->value,
+                'source' => 'huntress',
+            ]);
+
+            return T2TFieldMapper::ticketToCwFormat($ticket);
+        }
 
         // Create unified Alert in Ticketed status — CW compat requires ticket, alert provides monitoring visibility
         $assetForAlert = $assetId ? Asset::find($assetId) : null;
