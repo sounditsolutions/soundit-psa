@@ -21,7 +21,9 @@ use Tests\TestCase;
  * type and priority as a real identity incident (five instances, 2026-07-29 →
  * 2026-08-18). Vendor comms is an AFFIRMATIVE classification: ZERO incident
  * signals (no word-bounded severity token, no "Incident on agent (org)" title
- * shape, no org-scoped dashboard URL in the body) AND vendor announcement
+ * shape, no org-scoped per-tenant RECORD URL in the body — an org-scoped link
+ * to a landing page or a preferences path is a bulletin CTA, not a record) AND
+ * vendor announcement
  * language in the title → service_request/p4, no Alert. Any incident signal —
  * or a title with no announcement language at all — keeps the fail-open
  * incident default, so an unrecognised real event is never buried at P4.
@@ -97,6 +99,49 @@ class HuntressVendorCommsClassifierTest extends TestCase
         // "workflow" contains "low"; the old bare-substring fallback would have
         // read it as a LOW severity token. Word boundaries govern the classifier.
         $this->ingest('New workflow automation coming tomorrow');
+
+        $ticket = $this->latestTicket();
+        $this->assertSame(TicketType::ServiceRequest, $ticket->type);
+        $this->assertSame(TicketPriority::P4, $ticket->priority);
+    }
+
+    public function test_bulletin_linking_the_tenant_dashboard_is_still_vendor_comms(): void
+    {
+        // The observed ITDR-dashboard bulletin's call to action IS an org-scoped link. Only a
+        // per-tenant RECORD path (numeric record id) is an incident signal; a dashboard landing
+        // page is marketing whatever org it is scoped to.
+        $this->ingest(
+            'Now available: Early Access to the new Huntress ITDR dashboard',
+            'See it in your account: https://dashboard.huntress.io/org/42/identity/dashboard'
+        );
+
+        $ticket = $this->latestTicket();
+        $this->assertSame(TicketType::ServiceRequest, $ticket->type);
+        $this->assertSame(TicketPriority::P4, $ticket->priority);
+        $this->assertSame(0, Alert::where('source', AlertSource::Huntress->value)->count());
+    }
+
+    public function test_bulletin_with_per_org_preferences_link_is_still_vendor_comms(): void
+    {
+        // Per-org preferences/unsubscribe footers are routine in vendor bulk mail.
+        $this->ingest(
+            'Per-Identity ITDR Notifications Begin Tomorrow',
+            'Manage your email preferences: https://links.huntress.io/org/42/preferences/12345'
+        );
+
+        $ticket = $this->latestTicket();
+        $this->assertSame(TicketType::ServiceRequest, $ticket->type);
+        $this->assertSame(TicketPriority::P4, $ticket->priority);
+        $this->assertSame(0, Alert::where('source', AlertSource::Huntress->value)->count());
+    }
+
+    public function test_lookalike_host_with_org_record_path_is_not_an_incident_signal(): void
+    {
+        // huntress.io must be the link's own domain, not a substring of some other host.
+        $this->ingest(
+            'Introducing our new partner portal',
+            'Details: https://evil-huntress.io.example.com/org/1/identity_incidents/7788'
+        );
 
         $ticket = $this->latestTicket();
         $this->assertSame(TicketType::ServiceRequest, $ticket->type);
