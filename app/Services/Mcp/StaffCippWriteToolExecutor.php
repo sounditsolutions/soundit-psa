@@ -3412,10 +3412,12 @@ class StaffCippWriteToolExecutor
      * listing: rows another mailbox provably owns are dropped, the stored name
      * must match exactly ONE remaining rule (case-insensitively, against the
      * raw upstream name OR the fenced form the reads actually show the agent),
-     * and the match must be provably on the approved mailbox before its
-     * Identity is sent. Zero matches or an ambiguous name declines the
-     * approval. Every guard fails closed as a CippClientException: the approval
-     * is declined and audited, and nothing upstream is changed.
+     * the match's Identity prefix must not comparably name another mailbox,
+     * and a SECOND live read of the same mailbox must re-show the matched
+     * Identity under the approved name before it is sent. Zero matches or an
+     * ambiguous name declines the approval. Every guard fails closed as a
+     * CippClientException: the approval is declined and audited, and nothing
+     * upstream is changed.
      *
      * NO NAME IS UN-REMOVABLE. This deliberately does not filter "protected"
      * rule names: the endpoint we call is Remove-CIPPMailboxRule's single-rule
@@ -3473,20 +3475,55 @@ class StaffCippWriteToolExecutor
 
         // Upstream derives MailboxObjectId from this identity's own prefix and
         // retries the delete anchored to it — so the PREFIX, not the
-        // userPrincipalName we pass, can decide which mailbox is touched. The row
-        // must therefore NAME the approved mailbox as its own: its marker has to be
-        // one of that mailbox's identifiers (UPN, object id, primary SMTP). A marker
-        // we cannot compare — a display name, an opaque mailbox key — proves
-        // nothing, and neither does "the listing named only one mailbox": a wholly
-        // mis-scoped listing (psa-7lgo.1 in its whole-listing form) names exactly
-        // one mailbox too, somebody else's. Refuse rather than send an approved,
+        // userPrincipalName we pass, can decide which mailbox is touched. But the
+        // prefix and the row's own mailbox marker are tenant-chosen text on this
+        // endpoint (display names, legacy DNs, opaque mailbox keys — the very
+        // shapes CippToolContract's tool-scoped fencing exists for), so equality
+        // against the approved mailbox's identifiers cannot be REQUIRED: real
+        // rows would never satisfy it and every approval would decline, leaving
+        // the compromise-remediation path inoperable. What CAN be required is
+        // that no comparable form disagrees: an address- or object-id-shaped
+        // prefix must match a needle of the same shape when one exists, and the
+        // prefix must not contradict the row's own marker when the two share a
+        // shape. A comparable disagreement is a row upstream mis-scoped into
+        // this listing (psa-7lgo.1) — refuse rather than send an approved,
         // audited delete at a mailbox the approver never saw.
-        $owner = CippToolContract::mailboxRuleOwner($match);
-        if ($owner === null) {
-            throw new CippClientException('The matched inbox rule does not name the mailbox it belongs to, so it cannot be proven to be on this mailbox; nothing was removed.');
+        $prefix = mb_strtolower(trim(explode('\\', $identity)[0]));
+        if ($this->mailboxRuleOwnerIsForeign($prefix, $needles)) {
+            throw new CippClientException('The matched inbox rule\'s upstream identity names another mailbox, so the removal would not land on the approved mailbox; nothing was removed.');
         }
-        if (! in_array($owner, $needles, true)) {
-            throw new CippClientException('The matched inbox rule does not name the approved mailbox as its own, so it cannot be proven to be on that mailbox; nothing was removed.');
+
+        $owner = CippToolContract::mailboxRuleOwner($match);
+        if ($owner !== null && $this->mailboxRuleMarkersDisagree($owner, $prefix)) {
+            throw new CippClientException('The matched inbox rule\'s upstream identity contradicts the mailbox the rule reports as its own; nothing was removed.');
+        }
+
+        // Comparable agreement proves nothing for the display-name/legacy-DN/
+        // opaque shapes above, and the listing that produced the match is
+        // already stale by delete time. The load-bearing proof is MEMBERSHIP: a
+        // second live read of the approved mailbox's rules, scoped by the same
+        // userPrincipalName, must re-show this exact Identity under the
+        // approved name. A rule that vanished, was renamed, or no longer
+        // appears under this mailbox's scope cannot be proven to still exist on
+        // the approved mailbox at the moment of the delete — refuse instead of
+        // firing at a stale or foreign target.
+        $confirmed = false;
+        foreach ($this->client->listUserMailboxRules($tenant, $person->userPrincipalName) as $rule) {
+            if (! is_array($rule)) {
+                continue;
+            }
+            if (trim((string) ($rule['Identity'] ?? $rule['identity'] ?? '')) !== $identity) {
+                continue;
+            }
+            $name = trim((string) ($rule['Name'] ?? $rule['name'] ?? ''));
+            if ($name !== '' && $this->mailboxRuleNameMatches($name, $ruleName)) {
+                $confirmed = true;
+                break;
+            }
+        }
+
+        if (! $confirmed) {
+            throw new CippClientException('A second live read of the mailbox no longer shows the matched inbox rule under the approved name, so it cannot be proven to still exist on the approved mailbox; nothing was removed.');
         }
 
         $this->client->removeMailboxRule($tenant, $person->userPrincipalName, $identity, trim((string) ($match['Name'] ?? $match['name'] ?? $ruleName)));
@@ -3545,9 +3582,10 @@ class StaffCippWriteToolExecutor
      * like with like (CippToolContract::mailboxRuleIsForeign): an address is
      * adjudicated only by an address and a GUID only by a GUID — an alias or
      * display name proves nothing either way, and guessing would drop the
-     * target user's own rules. Those unprovable rows survive this filter, but they
-     * cannot pass the positive-proof gate on the resolved match: the row that is
-     * actually removed must NAME the approved mailbox as its own.
+     * target user's own rules. Those unprovable rows survive this filter; the
+     * one row actually removed is then held to the membership proof (a second
+     * live read of the approved mailbox must re-show its exact Identity under
+     * the approved name) plus the comparable Identity-prefix cross-checks.
      *
      * @param  array<int, string>  $needles
      */
@@ -3561,6 +3599,30 @@ class StaffCippWriteToolExecutor
         ));
 
         return $comparable !== [] && ! in_array($owner, $comparable, true);
+    }
+
+    /**
+     * Whether a matched rule's own mailbox marker and its Identity prefix are
+     * MUTUALLY comparable shapes that disagree. Upstream anchors the delete to
+     * the prefix while the marker is what the row claims as its mailbox — when
+     * both are addresses, or both are object ids, they describe the same thing
+     * in the same vocabulary and must agree. Mixed or opaque shapes (a display
+     * name against a mailbox key, a legacy DN against anything) prove nothing
+     * either way and must not refuse: for those the membership proof — not this
+     * cross-check — is the load-bearing gate. Both inputs arrive lowercased
+     * (mailboxRuleOwner / the prefix derivation), so comparison is direct.
+     */
+    private function mailboxRuleMarkersDisagree(string $owner, string $prefix): bool
+    {
+        if (str_contains($owner, '@') && str_contains($prefix, '@')) {
+            return $owner !== $prefix;
+        }
+
+        if (CippToolContract::looksLikeObjectId($owner) && CippToolContract::looksLikeObjectId($prefix)) {
+            return $owner !== $prefix;
+        }
+
+        return false;
     }
 
     private function executeMailboxForwarding(string $tenant, ResolvedCippPerson $person, array $mailbox): void
