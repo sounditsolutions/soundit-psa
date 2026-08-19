@@ -72,8 +72,11 @@ At approval, `executeMailboxRuleRemoval()`:
    psa-4k6m.8). Zero matches → declined ("no inbox rule named … exists on this
    mailbox; nothing was removed"). Two or more → declined naming the
    ambiguity; nothing removed. No name is un-removable.
-4. On the unique match, refuses unless the row is provably on the approved
-   mailbox or the listing carried exactly one mailbox, then sends
+4. On the unique match, refuses unless the row's own mailbox marker IS one of
+   the approved mailbox's identifiers (UPN, object id, primary SMTP — the same
+   forms `userIdentityNeedles` carries, because CIPP hands the marker back as
+   any of them). A listing that names only one mailbox is NOT proof: a wholly
+   mis-scoped listing names exactly one mailbox too, somebody else's. Then sends
    `removeMailboxRule()` with the matched rule's own upstream `Identity` as
    `ruleId` and its actual upstream name as `ruleName`.
 
