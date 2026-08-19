@@ -19,10 +19,12 @@ use Tests\TestCase;
  * The CW-compat ingest hard-coded type=incident and failed open to HIGH/P2 for
  * every payload, so vendor marketing bulletins entered the queue at the same
  * type and priority as a real identity incident (five instances, 2026-07-29 →
- * 2026-08-18). A payload with ZERO incident signals — no word-bounded severity
- * token, no "Incident on agent (org)" title shape, no incident-report or
- * escalation URL in the body — is vendor comms: service_request/p4, no Alert.
- * Any payload with at least one signal keeps the fail-open incident default.
+ * 2026-08-18). Vendor comms is an AFFIRMATIVE classification: ZERO incident
+ * signals (no word-bounded severity token, no "Incident on agent (org)" title
+ * shape, no org-scoped dashboard URL in the body) AND vendor announcement
+ * language in the title → service_request/p4, no Alert. Any incident signal —
+ * or a title with no announcement language at all — keeps the fail-open
+ * incident default, so an unrecognised real event is never buried at P4.
  */
 class HuntressVendorCommsClassifierTest extends TestCase
 {
@@ -148,5 +150,51 @@ class HuntressVendorCommsClassifierTest extends TestCase
         $ticket = $this->latestTicket();
         $this->assertSame(TicketType::Incident, $ticket->type);
         $this->assertSame(TicketPriority::P2, $ticket->priority);
+    }
+
+    public function test_current_form_incident_report_url_in_body_keeps_incident_default(): void
+    {
+        // `incident_reports/{id}` is the CURRENT link form; `infection_reports/{id}` the legacy
+        // one. Both must be a signal, and both must key the dedup/alert source id.
+        $this->ingest(
+            'New report posted to the dashboard',
+            'Details: https://dashboard.huntress.io/org/42/incident_reports/2002'
+        );
+
+        $ticket = $this->latestTicket();
+        $this->assertSame(TicketType::Incident, $ticket->type);
+        $this->assertSame(TicketPriority::P2, $ticket->priority);
+
+        $alert = Alert::where('source', AlertSource::Huntress->value)->sole();
+        $this->assertSame('https://dashboard.huntress.io/org/42/incident_reports/2002', $alert->source_alert_id);
+    }
+
+    public function test_unrecognized_itdr_incident_url_keeps_incident_default(): void
+    {
+        // Per-identity ITDR escalations carry none of the legacy EDR signals: no severity token,
+        // no "Incident on agent (org)" shape, and a record path the incident-report/escalation
+        // parsers do not know. The org-scoped dashboard link is still a per-tenant record.
+        $this->ingest(
+            'Unexpected Login Activity for j.doe@acme.com',
+            'Details: https://dashboard.huntress.io/org/42/identity_incidents/7788'
+        );
+
+        $ticket = $this->latestTicket();
+        $this->assertSame(TicketType::Incident, $ticket->type);
+        $this->assertSame(TicketPriority::P2, $ticket->priority);
+        $this->assertSame(1, Alert::where('source', AlertSource::Huntress->value)->count());
+    }
+
+    public function test_signal_less_payload_without_announcement_language_is_not_vendor_comms(): void
+    {
+        // Absence of signal is not evidence of marketing: with no announcement language the
+        // payload keeps the fail-open incident default and still gets a monitoring Alert.
+        $this->ingest('Unexpected Login Activity for j.doe@acme.com');
+
+        $ticket = $this->latestTicket();
+        $this->assertSame(TicketType::Incident, $ticket->type);
+        $this->assertSame(TicketPriority::P2, $ticket->priority);
+        $this->assertSame(1, Alert::where('source', AlertSource::Huntress->value)->count());
+        $this->assertStringNotContainsString('vendor communication', $ticket->notes()->first()->body);
     }
 }
