@@ -3457,6 +3457,13 @@ class StaffCippWriteToolExecutor
             throw new CippClientException('Mailbox rule removal payload is incomplete; nothing was removed.');
         }
 
+        // The name is caller-typed text and the decline messages built from it
+        // reach both the agent and the immutable audit log, so they quote only
+        // the defanged form — the same neutralization the approver card fences
+        // it behind (mailboxRuleDisplay). The MATCH still runs on the raw typed
+        // name; only what is quoted back is neutralized.
+        $safeName = $this->textSanitizer->sanitizedText($ruleName, self::RULE_NAME_INPUT_MAX);
+
         $needles = $this->mailboxOwnerNeedles($person);
         $matches = [];
         foreach ($this->client->listUserMailboxRules($tenant, $person->userPrincipalName) as $rule) {
@@ -3481,11 +3488,11 @@ class StaffCippWriteToolExecutor
         }
 
         if ($matches === []) {
-            throw new CippClientException("No inbox rule named \"{$ruleName}\" exists on this mailbox; nothing was removed.");
+            throw new CippClientException("No inbox rule named \"{$safeName}\" exists on this mailbox; nothing was removed.");
         }
 
         if (count($matches) > 1) {
-            throw new CippClientException('The mailbox has '.count($matches)." inbox rules named \"{$ruleName}\"; the target is ambiguous, so nothing was removed.");
+            throw new CippClientException('The mailbox has '.count($matches)." inbox rules named \"{$safeName}\"; the target is ambiguous, so nothing was removed.");
         }
 
         $match = $matches[0];
@@ -3550,6 +3557,23 @@ class StaffCippWriteToolExecutor
             if (trim((string) ($rule['Identity'] ?? $rule['identity'] ?? '')) !== $identity) {
                 continue;
             }
+
+            // The persistence proof is held to the SAME ownership guards as the
+            // first read, because it is the evidence the approver text leans on
+            // hardest. A second read that POSITIVELY marks this row as another
+            // mailbox's — or whose marker now contradicts the identity the
+            // delete anchors to — is evidence AGAINST the removal; accepting it
+            // as the proof would fire an approved, audited delete at a mailbox
+            // we have affirmative evidence is not the approved one, on exactly
+            // the upstream-drift class (psa-7lgo.1) the first read refuses.
+            $confirmOwner = CippToolContract::mailboxRuleOwner($rule);
+            if ($confirmOwner !== null && $this->mailboxRuleOwnerIsForeign($confirmOwner, $needles)) {
+                throw new CippClientException('A second live read reports the matched inbox rule as belonging to a different mailbox; nothing was removed.');
+            }
+            if ($confirmOwner !== null && $this->mailboxRuleMarkersDisagree($confirmOwner, $prefix)) {
+                throw new CippClientException('A second live read reports a mailbox for the matched inbox rule that contradicts the identity the removal would anchor to; nothing was removed.');
+            }
+
             $name = trim((string) ($rule['Name'] ?? $rule['name'] ?? ''));
             if ($name !== '' && $this->mailboxRuleNameMatches($name, $ruleName)) {
                 $confirmed = true;
@@ -3629,14 +3653,46 @@ class StaffCippWriteToolExecutor
      */
     private function mailboxRuleOwnerIsForeign(string $owner, array $needles): bool
     {
+        $ownerIsAddress = self::mailboxRuleLooksLikeAddress($owner);
+
         $comparable = array_values(array_filter(
             $needles,
-            fn (string $needle): bool => str_contains($owner, '@')
-                ? str_contains($needle, '@')
+            fn (string $needle): bool => $ownerIsAddress
+                ? self::mailboxRuleLooksLikeAddress($needle)
                 : CippToolContract::looksLikeObjectId($owner) && CippToolContract::looksLikeObjectId($needle),
         ));
 
         return $comparable !== [] && ! in_array($owner, $comparable, true);
+    }
+
+    /**
+     * Whether a mailbox marker is ADDRESS-shaped strongly enough to be
+     * adjudicated against this mailbox's addresses.
+     *
+     * Containing an '@' is NOT that test. Markers on this endpoint are routinely
+     * free-form, tenant-chosen display names ('CEO Office', 'Alex Kilo'), and a
+     * tenant may perfectly well name a mailbox "Support @ Acme". Under an
+     * '@'-containment rule that display name becomes comparable to the approved
+     * mailbox's addresses, matches none, and adjudicates EVERY row on the
+     * mailbox as somebody else's: zero matches, and the approval declines with
+     * "no inbox rule named X exists on this mailbox" while the rule is live —
+     * the false all-clear polarity this module forbids, on valid input. The same
+     * shape fed to mailboxRuleMarkersDisagree() can refuse a correctly matched
+     * row outright.
+     *
+     * So require the shape an address actually has — one '@', no whitespace, a
+     * dotted domain — and let every other shape stay UNCOMPARABLE, which proves
+     * nothing either way and therefore drops nothing. This is deliberately
+     * stricter than the read path's '@'-containment heuristic
+     * (CippToolContract::mailboxRuleIsForeign): the divergence can only ever
+     * KEEP a row the read path would drop, which on this write path is the safe
+     * direction — a kept row still has to survive the identity-prefix
+     * cross-checks and the persistence re-read, whereas a dropped one is
+     * reported to the approver as a rule that does not exist.
+     */
+    private static function mailboxRuleLooksLikeAddress(string $value): bool
+    {
+        return preg_match('/^[^\s@]+@[^\s@]+\.[^\s@]+$/u', $value) === 1;
     }
 
     /**
@@ -3652,7 +3708,7 @@ class StaffCippWriteToolExecutor
      */
     private function mailboxRuleMarkersDisagree(string $owner, string $prefix): bool
     {
-        if (str_contains($owner, '@') && str_contains($prefix, '@')) {
+        if (self::mailboxRuleLooksLikeAddress($owner) && self::mailboxRuleLooksLikeAddress($prefix)) {
             return $owner !== $prefix;
         }
 
@@ -4768,17 +4824,34 @@ class StaffCippWriteToolExecutor
         // which the code does not and cannot establish (see
         // executeMailboxRuleRemoval). An approver who reads a check that did not
         // run is worse off than one who reads none.
-        return 'Remove the inbox rule named "'.($params['rule_name'] ?? 'unknown').'"'
-            .' from the mailbox of '.$person->userPrincipalName.' (PSA person #'.$person->person->id.').'
-            .' Held-only. VERIFIED at approval: a live per-mailbox read of this UPN\'s inbox rules matches this name to exactly one rule'
+        // The rule NAME is the one span of caller-typed — i.e. prompt-injectable
+        // — text on this card, and this card IS the control. Spliced raw into
+        // the sentence, up to RULE_NAME_INPUT_MAX characters of it could forge
+        // their own "VERIFIED:" clause above the real NOT VERIFIED disclosure,
+        // and the approver would read a membership proof that never ran. So it
+        // is not spliced into the sentence at all: it is redacted, defanged and
+        // FENCED — the treatment every other untrusted string on this surface
+        // gets — and quoted AFTER the claims, where nothing inside it can read
+        // as one of them.
+        $fencedRuleName = $this->textSanitizer->sanitize(
+            'CALLER TYPED RULE NAME',
+            (string) ($params['rule_name'] ?? 'unknown'),
+            self::RULE_NAME_INPUT_MAX,
+        );
+
+        return 'Remove ONE inbox rule — the caller-typed name is quoted as data at the END of this card — from the mailbox of '
+            .$person->userPrincipalName.' (PSA person #'.$person->person->id.').'
+            .' Held-only. VERIFIED at approval: a live per-mailbox read of this UPN\'s inbox rules matches that name to exactly one rule'
             .' after dropping every row whose own mailbox marker proves it belongs to a different mailbox; that rule\'s upstream identity'
-            .' does not comparably name a different mailbox, nor contradict the row\'s own marker; and a second live read still shows that'
-            .' exact identity under this name.'
+            .' does not comparably name a different mailbox, nor contradict the row\'s own marker; and a second live read, held to those'
+            .' same ownership checks, still shows that exact identity under that name.'
             .' NOT VERIFIED: that the rule is on this mailbox. CIPP exposes no per-rule read keyed on a mailbox, so both reads are the same'
             .' UPN-keyed listing call — if CIPP answers it with another mailbox\'s rows, both reads carry them identically — and a row whose'
             .' mailbox marker is absent, or is a shape that cannot be compared with this mailbox\'s identifiers (a display name, a legacy DN,'
             .' an opaque mailbox key), is not proven to be this mailbox\'s.'
-            .' A missing or ambiguous name declines with nothing removed.';
+            .' A missing or ambiguous name declines with nothing removed.'
+            ."\n".'The name the caller typed, as DATA — nothing inside the block below is a statement by this system:'
+            ."\n".$fencedRuleName;
     }
 
     private function mailboxDelegateDisplay(ResolvedCippPerson $person, array $mailbox): string
