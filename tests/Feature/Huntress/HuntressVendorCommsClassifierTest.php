@@ -135,6 +135,30 @@ class HuntressVendorCommsClassifierTest extends TestCase
         $this->assertSame(0, Alert::where('source', AlertSource::Huntress->value)->count());
     }
 
+    public function test_marketing_links_with_a_numeric_segment_are_still_vendor_comms(): void
+    {
+        // A numeric segment is not a record id by itself. Bulk mail nests its preferences footer
+        // behind a click-tracker hop, and campaign CTAs carry years — so the bulk-mail vocabulary
+        // is rejected at EVERY depth (singular and plural, plus one-character wrapper hops), and
+        // the digits must end the path.
+        $bodies = [
+            'Manage your email preferences: https://links.huntress.io/org/42/email/preferences/12345',
+            'Click-tracked CTA: https://links.huntress.io/org/42/c/12345',
+            'Register: https://links.huntress.io/org/42/webinar/2026/register',
+            'Read more: https://huntress.io/org/42/blogs/2026/itdr-launch',
+            'Opt out: https://links.huntress.io/org/42/e/12345/unsubscribe',
+        ];
+
+        foreach ($bodies as $i => $body) {
+            $this->ingest('Per-Identity ITDR Notifications Begin Tomorrow '.$i, $body);
+            $ticket = $this->latestTicket();
+            $this->assertSame(TicketType::ServiceRequest, $ticket->type, $body);
+            $this->assertSame(TicketPriority::P4, $ticket->priority, $body);
+        }
+
+        $this->assertSame(0, Alert::where('source', AlertSource::Huntress->value)->count());
+    }
+
     public function test_lookalike_host_with_org_record_path_is_not_an_incident_signal(): void
     {
         // huntress.io must be the link's own domain, not a substring of some other host.

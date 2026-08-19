@@ -88,13 +88,18 @@ class HuntressService
         // in the title, or an org-scoped per-tenant RECORD link in the body — the incident-report
         // URL (legacy and current spelling alike), the escalation URL, or any other per-tenant
         // record path these parsers do not know yet (e.g. the per-identity ITDR paths going live
-        // 2026-08-19), recognised by a numeric record id ending the path.
+        // 2026-08-19), recognised by a record-type path whose numeric id is the LAST segment.
         //
         // "Org-scoped" ALONE is not that signal. A bulletin's call to action is routinely an
         // org-scoped link — the observed "new ITDR dashboard" announcement links the tenant
         // dashboard, and bulk mail carries per-org preferences/unsubscribe footers — so a
-        // landing page or a preferences path stays marketing. The link host must also be
-        // huntress.io or a subdomain of it, not merely a host containing that string.
+        // landing page or a preferences path stays marketing. Two things keep bulk mail out,
+        // and both are needed: EVERY segment of the path — not just the first — must be outside
+        // the bulk-mail vocabulary (singular and plural alike, and a one-character segment is a
+        // link-wrapper hop, never a record type), and the digits must END the path, so a year or
+        // a click-tracker id sitting mid-path (/webinar/2026/register, /c/12345/unsubscribe) is
+        // not a record id. The link host must also be huntress.io or a subdomain of it, not
+        // merely a host containing that string.
         //
         // Vendor comms requires zero incident signals AND announcement language in the title.
         // Absence of signal alone is NOT vendor comms: the signals are derived from the observed
@@ -104,9 +109,11 @@ class HuntressService
         $hasIncidentSignal = $incidentReportUrl !== null
             || $escalationId !== null
             || preg_match(
-                '#https://(?:[\w-]+\.)*huntress\.io/org/\d+/'
-                .'(?!(?:unsubscribe|preferences|email_preferences|campaigns|webinars|blog)(?:[/?]|$))'
-                .'[\w-]+(?:/[\w-]+)*/\d+(?![\w-])#i',
+                '#https://(?:[\w-]+\.)*huntress\.io/org/\d+'
+                .'(?:/(?!(?:unsubscribe|opt[_-]?out|subscribe|preferences|email[_-]?preferences'
+                .'|emails?|mail|campaigns?|webinars?|blogs?|newsletters?|events?|news'
+                .'|resources?|pricing|[a-z])(?![\w-]))[\w-]+)+'
+                .'/\d+(?![\w-]|/[\w-])#i',
                 $description
             ) === 1
             || preg_match('/\b(CRITICAL|HIGH|LOW)\b/i', $rawSubject) === 1
