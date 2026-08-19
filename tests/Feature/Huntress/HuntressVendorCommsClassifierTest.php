@@ -139,8 +139,8 @@ class HuntressVendorCommsClassifierTest extends TestCase
     {
         // A numeric segment is not a record id by itself. Bulk mail nests its preferences footer
         // behind a click-tracker hop, and campaign CTAs carry years — so the bulk-mail vocabulary
-        // is rejected at EVERY depth (singular and plural, plus one-character wrapper hops), and
-        // the digits must end the path.
+        // is rejected at EVERY depth (singular and plural, plus one-character wrapper hops).
+        // Every fixture here is carried by that vocabulary guard alone.
         $bodies = [
             'Manage your email preferences: https://links.huntress.io/org/42/email/preferences/12345',
             'Click-tracked CTA: https://links.huntress.io/org/42/c/12345',
@@ -246,6 +246,22 @@ class HuntressVendorCommsClassifierTest extends TestCase
         $this->ingest(
             'Unexpected Login Activity for j.doe@acme.com',
             'Details: https://dashboard.huntress.io/org/42/identity_incidents/7788'
+        );
+
+        $ticket = $this->latestTicket();
+        $this->assertSame(TicketType::Incident, $ticket->type);
+        $this->assertSame(TicketPriority::P2, $ticket->priority);
+        $this->assertSame(1, Alert::where('source', AlertSource::Huntress->value)->count());
+    }
+
+    public function test_record_link_with_subresource_after_the_id_keeps_incident_default(): void
+    {
+        // A per-tenant record id may sit mid-path with a sub-resource after it (the nested ITDR
+        // shape). Requiring the digits to END the path would bury this at P4 with no Alert —
+        // announcement wording in the title must not outweigh a real record link.
+        $this->ingest(
+            'Unexpected Login Activity — new detections now live for your identities',
+            'Details: https://dashboard.huntress.io/org/42/identities/7788/logins'
         );
 
         $ticket = $this->latestTicket();
