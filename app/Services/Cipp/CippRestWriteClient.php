@@ -381,6 +381,92 @@ class CippRestWriteClient
     }
 
     /**
+     * List one user's LIVE Exchange inbox rules via CIPP's ListUserMailboxRules
+     * endpoint. Read support for the mailbox-rule removal write: the
+     * caller-facing tool accepts only a rule NAME, and this read is how
+     * execution resolves it to the rule's upstream Identity (and refuses
+     * missing or ambiguous names) at approval time.
+     *
+     * Source shape (CIPP-API): GET api/ListUserMailboxRules with TenantFilter
+     * and UserID runs Get-InboxRule -Mailbox $UserID — a LIVE Exchange call
+     * scoped to one mailbox server-side (see CippMcpToolRelay's TOOL_MAP notes
+     * distinguishing it from the cache-backed tenant-wide ListMailboxRules).
+     * Because it is live it should never answer with a queue marker, but the
+     * queue guard runs anyway (listMailQuarantine precedent, psa-lmex):
+     * guarding at the source keeps a "still loading" reply from ever reading
+     * as "this mailbox has no such rule" — today that polarity is merely a
+     * decline for the wrong reason on the removal gate, but the day this read
+     * backs an answer it would be a false all-clear.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function listUserMailboxRules(string $tenantFilter, string $userPrincipalName): array
+    {
+        if (trim($userPrincipalName) === '') {
+            throw new CippClientException('Mailbox owner UPN is required');
+        }
+
+        $body = $this->sendGet('api/ListUserMailboxRules', [
+            'TenantFilter' => $tenantFilter,
+            'UserID' => $userPrincipalName,
+        ]);
+
+        CippQueueGuard::assertNotQueueBacked($body);
+
+        if (array_is_list($body)) {
+            return array_values(array_filter($body, 'is_array'));
+        }
+
+        // Defensive: some CIPP endpoints wrap list payloads as {"Results": [...]}.
+        $results = $body['Results'] ?? null;
+
+        return is_array($results) && array_is_list($results)
+            ? array_values(array_filter($results, 'is_array'))
+            : [];
+    }
+
+    /**
+     * Remove ONE inbox rule from ONE user's mailbox via CIPP's
+     * ExecRemoveMailboxRule endpoint. ruleId must be the rule's upstream
+     * Identity resolved from listUserMailboxRules — never a caller-supplied
+     * value — and ruleName the matched rule's actual upstream name (used only
+     * in CIPP's own log/result line).
+     *
+     * Source shape (CIPP-API master, verified 2026-08-19 —
+     * Invoke-ExecRemoveMailboxRule.ps1 + Remove-CIPPMailboxRule.ps1 single-rule
+     * arm): POST api/ExecRemoveMailboxRule with TenantFilter, userPrincipalName,
+     * ruleId, ruleName. Upstream computes MailboxObjectId = ruleId.Split('\')[0]
+     * and calls Remove-CIPPMailboxRule WITHOUT -RemoveAllRules, so this path
+     * deletes exactly one rule (New-ExoRequest 'Remove-InboxRule' with
+     * Identity = ruleId, anchored to the username with a MailboxObjectId
+     * fallback retry). Failure returns HTTP 500 with the error text in
+     * {Results}, so send() throws on the status and no 200-with-error-in-body
+     * guard is needed here — unlike the spam-filter endpoints, whose failures
+     * ride HTTP 200 and need guardReportedFailure().
+     *
+     * @return array<int|string, mixed>
+     */
+    public function removeMailboxRule(string $tenantFilter, string $userPrincipalName, string $ruleId, string $ruleName): array
+    {
+        if (trim($userPrincipalName) === '') {
+            throw new CippClientException('Mailbox owner UPN is required');
+        }
+        if (trim($ruleId) === '') {
+            throw new CippClientException('Mailbox rule id is required');
+        }
+        if (trim($ruleName) === '') {
+            throw new CippClientException('Mailbox rule name is required');
+        }
+
+        return $this->send('api/ExecRemoveMailboxRule', [
+            'TenantFilter' => $tenantFilter,
+            'userPrincipalName' => $userPrincipalName,
+            'ruleId' => $ruleId,
+            'ruleName' => $ruleName,
+        ]);
+    }
+
+    /**
      * Release one quarantined message to all its recipients via CIPP's
      * ExecQuarantineManagement endpoint (Release-QuarantineMessage with
      * ReleaseToAll). Only the Release action is supported — Deny/delete is not
@@ -859,7 +945,8 @@ class CippRestWriteClient
      * send(). Returns the decoded body, or [] when upstream answers with a
      * non-array payload. Private and endpoint-specific by design: it backs only
      * the curated verification reads that gate a write (listDirectoryRoles,
-     * listGroups, listMailQuarantine) and is never exposed as a generic getter.
+     * listGroups, listMailQuarantine, listUserMailboxRules) and is never
+     * exposed as a generic getter.
      *
      * @param  array<string, string>  $query
      * @return array<int|string, mixed>
