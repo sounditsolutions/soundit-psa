@@ -4017,9 +4017,21 @@ class StaffCippWriteToolExecutor
      * its dedup and cooldown rails, and every audit row it writes after that
      * call, on the object id it returns rather than on the address the
      * caller typed. A refusal that fires BEFORE that call has no object id to
-     * key on, and is audited under licenseTargetClaimKey() instead — a
+     * key on, so it carries EITHER the claim key OR no key at all, and what
+     * decides that is whether validated $params exist yet. Once
+     * licenseTargetParams() has produced them, a refusal may be audited under
+     * licenseTargetClaimKey() — approveLicenseTargetStagedRun() does exactly
+     * that for its kill-switch and its re-verification refusal — and that is a
      * different prefix, so such a row can never be matched by a dedup or
-     * cooldown LIKE built from licenseTargetKey().
+     * cooldown LIKE built from licenseTargetKey(). Anything that refuses
+     * EARLIER has nothing to build a claim key from and writes an UNKEYED row:
+     * that is EVERY refusal in this method — the blocklist, the mixed-shape
+     * guard, the missing reason, the kill-switch, client-not-found, and the
+     * catch around the resolutions, since licenseTargetParams() runs inside it
+     * — and the earliest refusals on the approval side too. Unkeyed is the
+     * honest shape there, not an omission; so do not search this log for a
+     * target's refusals by claim-key prefix alone and read a clean result as
+     * "never attempted".
      *
      * DO NOT READ A RAIL INVENTORY OUT OF THIS DOCBLOCK, and do not write a
      * new one into it. WHICH cooldown, content-hash and awaiting-run rails
@@ -4082,9 +4094,12 @@ class StaffCippWriteToolExecutor
      * typed claim, checked here only for length and email shape by
      * licenseTargetParams(). Audit rows written after that call follow the
      * same rule; a refusal that fires before it still has to leave a row, so
-     * key that one on licenseTargetClaimKey($params) — not on the raw claim,
-     * and not on licenseTargetKey() with a stand-in identity. Then choose
-     * your mapped-inactive posture explicitly.
+     * what that row can carry depends on how far the call got: WITH validated
+     * $params in hand, key it on licenseTargetClaimKey($params); with no
+     * $params yet — which is the case for every refusal this method itself
+     * writes — leave it unkeyed, as those do. Never the raw claim, and never
+     * licenseTargetKey() with a stand-in identity. Then choose your
+     * mapped-inactive posture explicitly.
      *
      * (Measured the hard way: the first cut of this family allowed only
      * sku_id, on a reading of the key list that had been truncated before
