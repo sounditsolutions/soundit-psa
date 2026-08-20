@@ -4008,28 +4008,48 @@ class StaffCippWriteToolExecutor
      * resolveCippLicenseBySku() matches the SKU claim against synced licence
      * rows and answers with local objects, with the client-entitlement gate
      * untouched — a SKU this client has no active local licence row for is
-     * still refused. verifiedTenantUser() matches the address claim against the
-     * resolved tenant's live listing and answers with the object id the SERVER
-     * read.
+     * still refused. That half runs HERE. THE ADDRESS HALF DOES NOT:
+     * verifiedTenantUser() matches the address claim against the resolved
+     * tenant's live listing and answers with the object id the SERVER read,
+     * and this method never calls it. Each verb calls it itself —
+     * executeLicenseTargetDirect(), stageLicenseTargetAction(), and again in
+     * approveLicenseTargetStagedRun()'s re-verify block — because each keys
+     * its own audit, dedup and cooldown rows on the object id it returns.
      *
-     * WHAT THAT VALIDATION DOES NOT ESTABLISH: the live-listing check proves
-     * the address EXISTS and is unambiguous in this tenant — it closes absent,
-     * ambiguous, cross-tenant, disabled and ACTIVELY-PSA-mapped targets. Only
-     * ACTIVE mappings: a mapped but DEACTIVATED person is deliberately NOT
-     * closed here — verifiedTenantUser() hands that person id back as
+     * WHAT THAT VALIDATION DOES NOT ESTABLISH — read as a description of the
+     * VERB's rail, since none of it runs in this method: the live-listing
+     * check proves the address EXISTS and is unambiguous in this tenant, so
+     * for the verb that calls it, it closes absent, ambiguous, cross-tenant
+     * and disabled targets. It closes ACTIVELY-PSA-MAPPED targets ONLY WHERE
+     * THE MAPPING IS COMPLETE: assertNoPsaPersonMapping() weighs only Person
+     * rows carrying BOTH cipp_upn and cipp_user_id, so an ACTIVE but HALF-
+     * mapped person — a shape the contact sync itself produces — passes as
+     * though unmapped, with mapped_inactive_person_id null, no held-only
+     * rail, no confirm_upn and a null person linkage on the audit row. (That
+     * mapping check is a local PSA Person query, not part of the CIPP listing
+     * read.) And the DEACTIVATED half is deliberately not closed:
+     * verifiedTenantUser() hands that person id back as
      * mapped_inactive_person_id, and what happens next is each caller's own
      * posture, not a shared rail: executeLicenseTargetDirect() refuses it
      * held-only, stageLicenseTargetAction() serves it onto the approval card
      * (verified_mapped_person_id), and approveLicenseTargetStagedRun()
-     * declines on mapping drift against that card. A further verb on this
-     * front door must choose its mapped-inactive posture explicitly. Nor does
-     * the check
+     * declines on mapping drift against that card. Nor does the check
      * establish that the address is the one the operator MEANT: two real,
      * enabled, unmapped addresses in the same tenant pass every gate here, and
      * unlike the person-path front door there is no opaque-id/confirm_upn
      * cross-check to catch the substitution. Wrong-but-real is closed by
-     * nothing in this method. That gap is why the direct tenant verbs stay
-     * ungranted absent a need the staged twin cannot meet (#525).
+     * nothing in this method and by nothing in the verification either. That
+     * gap is why the direct tenant verbs stay ungranted absent a need the
+     * staged twin cannot meet (#525).
+     *
+     * SO, FOR A FURTHER VERB ON THIS FRONT DOOR: what this method hands back
+     * is a client, a tenant, a ticket, validated params and a resolved
+     * licence — and nothing about the human. Call verifiedTenantUser()
+     * yourself before anything reaches upstream, and key the write, the audit
+     * and the dedup/cooldown rows on the object id it returns, never on
+     * params['target_upn'] — that is still the caller's typed claim, checked
+     * here only for length and email shape by licenseTargetParams(). Then
+     * choose your mapped-inactive posture explicitly.
      *
      * (Measured the hard way: the first cut of this family allowed only
      * sku_id, on a reading of the key list that had been truncated before
