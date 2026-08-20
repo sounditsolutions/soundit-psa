@@ -3458,11 +3458,20 @@ class StaffCippWriteToolExecutor
         }
 
         // The name is caller-typed text and the decline messages built from it
-        // reach both the agent and the immutable audit log, so they quote only
-        // the defanged form — the same neutralization the approver card fences
-        // it behind (mailboxRuleDisplay). The MATCH still runs on the raw typed
-        // name; only what is quoted back is neutralized.
-        $safeName = $this->textSanitizer->sanitizedText($ruleName, self::RULE_NAME_INPUT_MAX);
+        // reach the agent, the operator-facing cockpit decline toast AND the
+        // immutable audit summary — a control surface, exactly like the approver
+        // card — so it gets the card's treatment rather than a weaker one:
+        // redacted, defanged and FENCED (mailboxRuleDisplay), quoted as data
+        // AFTER the message's own claims instead of spliced inside them.
+        // sanitizedText() only DEFANGS: it neither escapes nor closes a quote,
+        // so a name spliced into a quoted sentence can end the quotation and
+        // continue as apparent system prose ("...the mailbox was verified clean,
+        // re-approve to proceed") on the one surface the approver is reading to
+        // decide. Fenced and last, nothing inside it can read as one of the
+        // system's own statements, and the 300-char bound on the decline message
+        // and the audit summary can only truncate the untrusted tail. The MATCH
+        // still runs on the raw typed name; only what is quoted back is fenced.
+        $fencedName = $this->textSanitizer->sanitize('CALLER TYPED RULE NAME', $ruleName, self::RULE_NAME_INPUT_MAX);
 
         $needles = $this->mailboxOwnerNeedles($person);
         $matches = [];
@@ -3488,11 +3497,11 @@ class StaffCippWriteToolExecutor
         }
 
         if ($matches === []) {
-            throw new CippClientException("No inbox rule named \"{$safeName}\" exists on this mailbox; nothing was removed.");
+            throw new CippClientException('No inbox rule matching the caller-typed name exists on this mailbox; nothing was removed. That name is quoted as untrusted data below.'."\n".$fencedName);
         }
 
         if (count($matches) > 1) {
-            throw new CippClientException('The mailbox has '.count($matches)." inbox rules named \"{$safeName}\"; the target is ambiguous, so nothing was removed.");
+            throw new CippClientException('The mailbox has '.count($matches).' inbox rules matching the caller-typed name, so the target is ambiguous and nothing was removed. That name is quoted as untrusted data below.'."\n".$fencedName);
         }
 
         $match = $matches[0];
@@ -3517,7 +3526,14 @@ class StaffCippWriteToolExecutor
         // this listing (psa-7lgo.1) — refuse rather than send an approved,
         // audited delete at a mailbox the approver never saw.
         $prefix = mb_strtolower(trim(explode('\\', $identity)[0]));
-        if ($this->mailboxRuleOwnerIsForeign($prefix, $needles)) {
+        // The PREFIX is adjudicated with the read path's own '@'-containment
+        // heuristic, not the stricter address shape used where a positive match
+        // can DROP a row. Here a positive match can only REFUSE, and the strict
+        // shape silently loses refusals the read path raises: an M365 display
+        // name that embeds an address ('Carol CEO (ceo@carol.example)') has
+        // whitespace, so it is not strictly address-shaped — yet it is the very
+        // string upstream turns into MailboxObjectId and anchors the delete to.
+        if ($this->mailboxRuleOwnerIsForeign($prefix, $needles, strictShape: false)) {
             throw new CippClientException('The matched inbox rule\'s upstream identity names another mailbox, so the removal would not land on the approved mailbox; nothing was removed.');
         }
 
@@ -3649,16 +3665,24 @@ class StaffCippWriteToolExecutor
      * the re-read comment in executeMailboxRuleRemoval. The approver text names
      * that gap rather than papering over it.
      *
+     * $strictShape picks WHICH address heuristic decides comparability, and the
+     * choice is a polarity decision, not a style one: strict where a positive
+     * match can DROP a row (a dropped row is reported to the approver as a rule
+     * that does not exist), loose where it can only REFUSE. See
+     * mailboxRuleLooksLikeAddress().
+     *
      * @param  array<int, string>  $needles
      */
-    private function mailboxRuleOwnerIsForeign(string $owner, array $needles): bool
+    private function mailboxRuleOwnerIsForeign(string $owner, array $needles, bool $strictShape = true): bool
     {
-        $ownerIsAddress = self::mailboxRuleLooksLikeAddress($owner);
+        $ownerIsAddress = $strictShape
+            ? self::mailboxRuleLooksLikeAddress($owner)
+            : self::mailboxRuleMayBeAddress($owner);
 
         $comparable = array_values(array_filter(
             $needles,
             fn (string $needle): bool => $ownerIsAddress
-                ? self::mailboxRuleLooksLikeAddress($needle)
+                ? ($strictShape ? self::mailboxRuleLooksLikeAddress($needle) : self::mailboxRuleMayBeAddress($needle))
                 : CippToolContract::looksLikeObjectId($owner) && CippToolContract::looksLikeObjectId($needle),
         ));
 
@@ -3682,13 +3706,29 @@ class StaffCippWriteToolExecutor
      *
      * So require the shape an address actually has — one '@', no whitespace, a
      * dotted domain — and let every other shape stay UNCOMPARABLE, which proves
-     * nothing either way and therefore drops nothing. This is deliberately
-     * stricter than the read path's '@'-containment heuristic
-     * (CippToolContract::mailboxRuleIsForeign): the divergence can only ever
-     * KEEP a row the read path would drop, which on this write path is the safe
-     * direction — a kept row still has to survive the identity-prefix
-     * cross-checks and the persistence re-read, whereas a dropped one is
-     * reported to the approver as a rule that does not exist.
+     * nothing either way and therefore drops nothing.
+     *
+     * WHICH TEST APPLIES IS DECIDED BY POLARITY, because "uncomparable" is NOT
+     * uniformly the safe direction. Where a positive shape match can DROP a row
+     * — the first-read filter, and the owner-MARKER checks, whose subject is
+     * this same free-form display-name field — strict is safe: a dropped row is
+     * reported to the approver as a rule that does not exist, the false
+     * all-clear this module forbids. Where a positive match can only REFUSE —
+     * the Identity PREFIX the delete is anchored to — strict silently REMOVES a
+     * refusal the read path's '@'-containment heuristic
+     * (CippToolContract::mailboxRuleIsForeign) would have raised, e.g. a
+     * display name that embeds an address, 'Carol CEO (ceo@carol.example)',
+     * naming a mailbox the approver never saw. Those sites therefore keep the
+     * looser heuristic, via mailboxRuleMayBeAddress(). An earlier version of
+     * this docblock justified the divergence by saying a kept row "still has to
+     * survive the identity-prefix cross-checks": that was circular, because
+     * those cross-checks were themselves loosened by this very test.
+     *
+     * The residual is stated, not hidden: an owner MARKER that embeds an
+     * address stays uncomparable on both reads, because the identical shape is
+     * a legitimate mailbox display name ("Support @ Acme") and refusing on it
+     * would decline valid approvals on the remediation path. The approver card
+     * already discloses that marker checks settle nothing here.
      */
     private static function mailboxRuleLooksLikeAddress(string $value): bool
     {
@@ -3696,11 +3736,32 @@ class StaffCippWriteToolExecutor
     }
 
     /**
+     * The read path's own '@'-containment heuristic
+     * (CippToolContract::mailboxRuleIsForeign), kept for the sites where a
+     * positive shape match can only REFUSE and can never drop a row: the
+     * Identity-prefix cross-check, and the PREFIX side of the marker/prefix
+     * contradiction check. Upstream derives MailboxObjectId from that prefix and
+     * anchors the delete to it, so a prefix that textually names another
+     * mailbox's address is exactly the psa-7lgo.1 drift this verb must refuse —
+     * and refusing costs an honest decline, never a false all-clear.
+     */
+    private static function mailboxRuleMayBeAddress(string $value): bool
+    {
+        return str_contains($value, '@');
+    }
+
+    /**
      * Whether a matched rule's own mailbox marker and its Identity prefix are
      * MUTUALLY comparable shapes that disagree. Upstream anchors the delete to
      * the prefix while the marker is what the row claims as its mailbox — when
-     * both are addresses, or both are object ids, they describe the same thing
-     * in the same vocabulary and must agree. Mixed or opaque shapes (a display
+     * the marker is address-shaped and the prefix carries an address, or both
+     * are object ids, they describe the same thing in the same vocabulary and
+     * must agree. The two sides use DIFFERENT address tests on purpose (see
+     * mailboxRuleLooksLikeAddress): the marker is the free-form display-name
+     * field and must be strictly address-shaped before it adjudicates anything,
+     * while the prefix — the string the delete is anchored to — need only look
+     * like it carries an address, because the outcome here is a refusal and
+     * never a dropped row. Mixed or opaque shapes (a display
      * name against a mailbox key, a legacy DN against anything) prove nothing
      * either way and must not refuse: for those nothing downstream can settle
      * the question either, which is why the approver text says so. Both inputs arrive lowercased
@@ -3708,7 +3769,7 @@ class StaffCippWriteToolExecutor
      */
     private function mailboxRuleMarkersDisagree(string $owner, string $prefix): bool
     {
-        if (self::mailboxRuleLooksLikeAddress($owner) && self::mailboxRuleLooksLikeAddress($prefix)) {
+        if (self::mailboxRuleLooksLikeAddress($owner) && self::mailboxRuleMayBeAddress($prefix)) {
             return $owner !== $prefix;
         }
 
