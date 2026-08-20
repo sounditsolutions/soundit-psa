@@ -225,7 +225,25 @@ class CippWriteScopeResolver
         // outright, so refusing here too would leave the seat unassignable by
         // every shape — and not waved through unnamed either. The caller holds
         // the write for a human and records this id (see the docblock).
-        $inactive = $matches->first();
+        //
+        // AND THE OBJECT-ID MATCH WINS, for exactly the reason the ACTIVE
+        // priority above exists: the two columns can match DIFFERENT rows (a
+        // leaver keeps the freed address on a dead row while the object id is
+        // synced onto the new occupant, who is themselves inactive whenever they
+        // sit outside the client's cipp_sync_group_id). cipp_user_id is the id
+        // the SERVER read out of the live tenant listing; cipp_upn is matched
+        // against the address the CALLER typed, so the object id is strictly
+        // stronger identity evidence and the two are not interchangeable once
+        // neither row is active. A bare first() over an unordered get() named
+        // whichever row the DB emitted first — normally the leaver, the lower id
+        // — and that id is the ONLY person named on the approval card and in the
+        // audit summary, so it pointed the sole human gate on this billing write
+        // at the wrong record and misattributed the executed row.
+        $inactive = $userId === ''
+            ? null
+            : $matches->first(static fn (Person $candidate): bool => mb_strtolower(trim((string) $candidate->cipp_user_id)) === $userId);
+
+        $inactive ??= $matches->first();
 
         return $inactive === null ? null : (int) $inactive->id;
     }

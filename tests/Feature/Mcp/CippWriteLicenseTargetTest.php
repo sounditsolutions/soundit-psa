@@ -1932,6 +1932,141 @@ class CippWriteLicenseTargetTest extends TestCase
     }
 
     /**
+     * AMONG SEVERAL MAPPED-BUT-INACTIVE ROWS, THE OBJECT-ID MATCH IS THE PERSON.
+     *
+     * The two mapping columns can name DIFFERENT rows: a leaver keeps the freed
+     * address on a dead row while the object id the tenant listing returns is
+     * synced onto the current occupant — who reads as inactive only because the
+     * group-filtered stale sweep deactivates everyone outside
+     * cipp_sync_group_id. cipp_user_id is the id the SERVER read; cipp_upn is
+     * matched against the address the CALLER typed. An unordered first() named
+     * whichever row the DB emitted first — the leaver — on the only human gate
+     * this billing write has, and in the audit summary, which is precisely the
+     * distinction the card exists to let the approver make.
+     */
+    public function test_the_object_id_match_names_the_person_when_two_inactive_rows_match(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_stage_assign_tenant_user_license']);
+
+        // Created FIRST, so a bare first() over an unordered get() picks it.
+        $leaver = Person::create([
+            'client_id' => $f['client']->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Lee',
+            'last_name' => 'Aver',
+            'email' => 'lee@acme.example',
+            'cipp_user_id' => 'leaver-object-id',
+            'cipp_upn' => self::TARGET_UPN,
+            'is_active' => false,
+        ]);
+
+        // The current employee at that address: outside the sync group, so also
+        // is_active=false — but the object id the listing returns is THEIRS.
+        $occupant = Person::create([
+            'client_id' => $f['client']->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Sam',
+            'last_name' => 'Contractor',
+            'email' => 'sam@acme.example',
+            'cipp_user_id' => self::TARGET_OBJECT_ID,
+            'cipp_upn' => 'sam.old@acme.example',
+            'is_active' => false,
+        ]);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $client->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_tenant_user_license', [
+            'client_id' => $f['client']->id,
+            'ticket_id' => $f['ticket']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'New starter at the freed address needs a seat.',
+        ]));
+        $this->assertTrue($staged['success'] ?? false, (string) json_encode($staged));
+
+        $run = TechnicianRun::findOrFail($staged['run_id']);
+        $this->assertStringContainsString(
+            'PSA PERSON #'.$occupant->id,
+            (string) $run->proposed_content,
+            'The approval card named the leaver instead of the person the server-read object id maps to.',
+        );
+        $this->assertStringNotContainsString('PSA PERSON #'.$leaver->id, (string) $run->proposed_content);
+        $this->assertStringContainsString(
+            'PSA person #'.$occupant->id,
+            (string) TechnicianActionLog::where('result_status', 'awaiting_approval')->latest('id')->value('summary'),
+        );
+    }
+
+    /**
+     * THE CARD'S MAPPING CLAIM GETS THE SAME DRIFT RAIL AS THE OTHER TWO FACTS.
+     *
+     * 'The PSA holds no person record mapped to this address or object id' is a
+     * positive assertion, frozen into proposed_content at staging. cipp:sync-
+     * contacts runs overnight and the group-filtered stale sweep deactivates
+     * anyone outside cipp_sync_group_id, so a mapped-but-inactive row can appear
+     * between the operator reading the card and approving it. Without a rail the
+     * seat is granted against a card that denies the record exists — no human is
+     * ever shown the person, which is the entire point of naming them.
+     */
+    public function test_a_psa_mapping_created_between_staging_and_approval_declines_the_approval(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_stage_assign_tenant_user_license']);
+        $approver = User::factory()->create(['name' => 'Approver']);
+
+        // Staged while the PSA holds no record for this address or object id, so
+        // the card says exactly that.
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_tenant_user_license', [
+            'client_id' => $f['client']->id,
+            'ticket_id' => $f['ticket']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]));
+        $this->assertTrue($staged['success'] ?? false, (string) json_encode($staged));
+
+        $run = TechnicianRun::findOrFail($staged['run_id']);
+        $this->assertStringContainsString('holds no person record', (string) $run->proposed_content);
+
+        // Overnight: the sync creates the row and the group-filtered sweep
+        // deactivates it, because this person sits outside the sync group.
+        $appeared = Person::create([
+            'client_id' => $f['client']->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Sam',
+            'last_name' => 'Contractor',
+            'email' => 'sam@acme.example',
+            'cipp_user_id' => self::TARGET_OBJECT_ID,
+            'cipp_upn' => self::TARGET_UPN,
+            'is_active' => false,
+        ]);
+
+        $drifted = Mockery::mock(CippRestWriteClient::class);
+        $drifted->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $drifted->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $drifted);
+
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun($run, $approver->id);
+
+        $this->assertSame('gate_declined', $result->status, 'A card denying any PSA record granted a seat to a mapped person.');
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+
+        $summary = (string) TechnicianActionLog::where('result_status', 'rejected')->latest('id')->value('summary');
+        $this->assertStringContainsString('PSA mapping drift at approval', $summary);
+        $this->assertStringContainsString('PSA person #'.$appeared->id, $summary);
+    }
+
+    /**
      * THE DEDUP HAD NO REVOCATION AWARENESS.
      *
      * assign -> remove -> re-assign is an ordinary sequence, and no key this

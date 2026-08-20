@@ -3635,13 +3635,14 @@ class StaffCippWriteToolExecutor
             return ['error' => "{$tool} cooldown active for this target; no proposal was staged."];
         }
 
-        // The stored params carry the verified SNAPSHOT of BOTH material facts
-        // — the user AND the licence — so approval can detect either kind of
-        // drift against a fresh resolution: the UPN reassigned to a different
-        // object, or the licence row re-synced (or a second active row won an
-        // unordered first()) to a different SKU between staging and approval.
-        // The approver signs off on one seat for one person; both halves have to
-        // still be the ones on the card.
+        // The stored params carry the verified SNAPSHOT of ALL THREE material
+        // facts — the user, the licence AND the PSA mapping — so approval can
+        // detect any of them drifting against a fresh resolution: the UPN
+        // reassigned to a different object, the licence row re-synced (or a
+        // second active row won an unordered first()) to a different SKU, or the
+        // nightly contact sync creating (or clearing) the person record the card
+        // names. The approver signs off on one seat for one person; every half
+        // has to still be the one on the card.
         $storedParams = array_merge($params, [
             'verified_user_id' => $user['user_id'],
             'verified_display_name' => $user['display_name'],
@@ -3649,6 +3650,14 @@ class StaffCippWriteToolExecutor
             // ever selected a local licence type, and the resolved value is what
             // the card names and what reaches upstream.
             'verified_sku_id' => (string) $license->skuId,
+            // The PSA MAPPING the card asserts, in both directions: the id of
+            // the mapped-but-deactivated person the approver is told to open, or
+            // null for the card's positive claim that no person record exists.
+            // Frozen here because there is nothing to compare against at
+            // approval otherwise, and a card that DENIES a mapping would then
+            // execute after one appeared — granting the seat with no human ever
+            // shown the record, which is the whole reason the id is named.
+            'verified_mapped_person_id' => $user['mapped_inactive_person_id'],
         ]);
 
         $meta = [
@@ -3880,6 +3889,39 @@ class StaffCippWriteToolExecutor
                 $run->releaseClaim();
 
                 return $this->declined('The licence this SKU maps to changed after this action was staged, so approving it would assign a different licence than the one named on the proposal; deny this proposal and re-stage it.');
+            }
+
+            // AND THE SAME RAIL FOR THE PSA MAPPING, which needs its own too:
+            // neither rail above can see this drift, because the user object and
+            // the SKU are both unchanged. The card makes a POSITIVE claim about
+            // the mapping in both directions — it either names the deactivated
+            // person the approver is told to open before approving, or states
+            // that the PSA holds no person record for this address or object id
+            // — and that sentence is what the whole held-only treatment of a
+            // mapped target rests on. cipp:sync-contacts creates the row and the
+            // group-filtered stale sweep deactivates it, so a mapping can appear
+            // (or be cleared) between the operator reading the card and
+            // approving it: without this rail, a card reading 'no person record'
+            // grants the seat with no human ever shown the record that now
+            // exists, and the executed row names a person the approver was told
+            // in writing did not exist.
+            //
+            // A payload staged before this snapshot existed reads as null and so
+            // declines against any live mapping, which is the loud direction: the
+            // operator re-stages and reads the current card.
+            $stagedMapped = $stored['verified_mapped_person_id'] ?? null;
+            $stagedMappedPersonId = is_numeric($stagedMapped) ? (int) $stagedMapped : null;
+            $freshMappedPersonId = $user['mapped_inactive_person_id'];
+            if ($stagedMappedPersonId !== $freshMappedPersonId) {
+                $stagedMappedLabel = $stagedMappedPersonId === null ? 'no PSA person record' : 'PSA person #'.$stagedMappedPersonId;
+                $freshMappedLabel = $freshMappedPersonId === null ? 'no PSA person record' : 'PSA person #'.$freshMappedPersonId;
+                // Audited like the other two rails: the person named on the card
+                // is the fact the approver acted on, so a silent decline would
+                // leave no record that it had moved under them.
+                $this->auditAttempt($run->action_type, 'rejected', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: PSA mapping drift at approval — the approved card named {$stagedMappedLabel} for this address, the PSA now holds {$freshMappedLabel}; approval declined before any upstream call.", $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined('The PSA person record mapped to that address changed after this action was staged, so the proposal you approved describes a different mapping than the one that exists now; deny this proposal and re-stage it.');
             }
 
             // AND NO DEDUP AT ALL HERE, for the reason the direct path states:
