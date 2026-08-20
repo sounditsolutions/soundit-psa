@@ -1407,7 +1407,7 @@ class CippToolContract
      */
     private function mailboxRuleIsForeign(array $rule, array $needles): bool
     {
-        $owner = $this->mailboxRuleOwner($rule);
+        $owner = self::mailboxRuleOwner($rule);
         if ($owner === null) {
             return false;
         }
@@ -1439,7 +1439,17 @@ class CippToolContract
         return ! in_array($owner, $comparable, true);
     }
 
-    private function mailboxRuleOwner(array $rule): ?string
+    /**
+     * The mailbox an inbox rule belongs to, lowercased: MailboxOwnerId when
+     * upstream sends one, else the "<mailbox>\<ruleId>" Identity prefix. Public
+     * so the mailbox-rule REMOVAL write can prove its resolved rule is on the
+     * approved mailbox using the SAME derivation this read filters on — upstream
+     * anchors the delete to that very prefix (MailboxObjectId), so the two must
+     * not drift.
+     *
+     * @param  array<string, mixed>  $rule
+     */
+    public static function mailboxRuleOwner(array $rule): ?string
     {
         foreach (['MailboxOwnerId', 'mailboxOwnerId'] as $key) {
             if (! empty($rule[$key]) && is_string($rule[$key])) {

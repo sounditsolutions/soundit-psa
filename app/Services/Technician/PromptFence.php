@@ -84,6 +84,19 @@ class PromptFence
         return $this->normalizeUnicode($s);
     }
 
+    /**
+     * The defanged text fence() wraps, WITHOUT the delimiter lines. Only for
+     * callers that must reproduce what an agent was SHOWN in order to compare it
+     * with the raw source (a fenced read -> write round trip, e.g. resolving an
+     * inbox rule the agent could only ever have read fenced). Untrusted text on
+     * its way into a prompt still goes through fence(); a thin wrapper over the
+     * same private neutralize() so the two can never drift.
+     */
+    public function neutralizeUntrusted(string $text): string
+    {
+        return $this->neutralize($text);
+    }
+
     private function neutralize(string $text): string
     {
         // psa-uohr: fold unicode homoglyphs + strip zero-width chars FIRST, so an

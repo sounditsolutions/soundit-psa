@@ -54,6 +54,7 @@
             'cipp_stage_set_mailbox_out_of_office' => ['bg-danger text-white', 'CIPP out of office', 'bi-calendar2-week'],
             'cipp_stage_set_mailbox_delegate' => ['bg-danger text-white', 'CIPP mailbox delegate', 'bi-people'],
             'cipp_stage_remove_directory_role' => ['bg-danger text-white', 'CIPP directory role removal', 'bi-person-x'],
+            'cipp_stage_remove_mailbox_rule' => ['bg-danger text-white', 'CIPP mailbox rule removal', 'bi-envelope-x'],
             'cipp_stage_release_quarantine_message' => ['bg-danger text-white', 'CIPP quarantine release', 'bi-envelope-check'],
             'cipp_stage_add_tenant_allow_entry' => ['bg-danger text-white', 'CIPP tenant allow-list', 'bi-shield-plus'],
             'cipp_stage_wipe_device' => ['bg-danger text-white', 'CIPP device wipe', 'bi-device-hdd'],

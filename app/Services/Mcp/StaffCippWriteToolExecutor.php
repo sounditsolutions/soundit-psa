@@ -9,8 +9,10 @@ use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
+use App\Services\Chet\ChetDataSurfaceTextSanitizer;
 use App\Services\Cipp\CippClientException;
 use App\Services\Cipp\CippRestWriteClient;
+use App\Services\Cipp\CippToolContract;
 use App\Services\Cipp\CippWriteScopeException;
 use App\Services\Cipp\CippWriteScopeResolver;
 use App\Services\Cipp\ResolvedCippLicense;
@@ -43,6 +45,7 @@ class StaffCippWriteToolExecutor
         'cipp_stage_set_mailbox_out_of_office' => 'cipp_set_mailbox_out_of_office',
         'cipp_stage_set_mailbox_delegate' => 'cipp_set_mailbox_delegate',
         'cipp_stage_remove_directory_role' => 'cipp_remove_directory_role',
+        'cipp_stage_remove_mailbox_rule' => 'cipp_remove_mailbox_rule',
         'cipp_stage_release_quarantine_message' => 'cipp_release_quarantine_message',
         'cipp_stage_add_tenant_allow_entry' => 'cipp_add_tenant_allow_entry',
         'cipp_stage_wipe_device' => 'cipp_wipe_device',
@@ -99,6 +102,33 @@ class StaffCippWriteToolExecutor
         'cipp_set_group_membership',
     ];
 
+    /**
+     * Staged writes whose TARGET can legitimately come back, so the 24h
+     * executed-content dedup must NOT answer a re-stage with "already executed".
+     *
+     * That dedup hashes only the safe local scalars — for the inbox-rule removal
+     * that is {tool, client, person, ticket, rule_name}, because the rule's
+     * upstream Identity does not exist at stage time by design — and nothing in
+     * it can tell the rule that WAS removed apart from a NEW rule an attacker
+     * re-planted under the same name minutes later. Re-planting a same-named
+     * forwarding rule is ordinary BEC behaviour, so short-circuiting there would
+     * report a live rule as already handled WITHOUT a live read and WITHOUT a
+     * removal, on the one verb that exists to clean up after a takeover — the
+     * false all-clear this module forbids.
+     *
+     * Only the executed-content rail is skipped, exactly as
+     * stageResetPasswordAction() skips it for a credential mint that must stay
+     * repeatable: the liveAwaitingRun() dedupe still collapses an identical
+     * proposal that is still pending approval, and the per-target proposal
+     * cooldown still stops runaway staging. Both of those refuse honestly rather
+     * than claiming the work is already done.
+     *
+     * @var array<int, string>
+     */
+    private const RECREATABLE_TARGET_STAGED_TOOLS = [
+        'cipp_stage_remove_mailbox_rule',
+    ];
+
     /** @var array<string, int> */
     private const COOLDOWNS = [
         'cipp_disable_user_sign_in' => 300,
@@ -127,6 +157,8 @@ class StaffCippWriteToolExecutor
         'cipp_stage_set_mailbox_delegate' => 300,
         'cipp_remove_directory_role' => 300,
         'cipp_stage_remove_directory_role' => 300,
+        'cipp_remove_mailbox_rule' => 300,
+        'cipp_stage_remove_mailbox_rule' => 300,
         'cipp_release_quarantine_message' => 300,
         'cipp_stage_release_quarantine_message' => 300,
         'cipp_add_tenant_allow_entry' => 300,
@@ -202,6 +234,51 @@ class StaffCippWriteToolExecutor
     private const ROLE_TEMPLATE_ID_PATTERN = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i';
 
     private const ROLE_NAME_MAX = 200;
+
+    /**
+     * The RAW upstream bound on an Exchange inbox rule name (New-InboxRule caps
+     * Name at 256 characters). Documentation of the upstream shape only — it is
+     * deliberately NOT the bound on what a caller may type; see
+     * RULE_NAME_INPUT_MAX.
+     */
+    private const RULE_NAME_MAX = 256;
+
+    /**
+     * The per-field character bound CippToolContract::fence() sanitizes projected
+     * text with. Mirrored here so the approve-time match can rebuild the exact
+     * fenced form of a rule name the per-mailbox read handed the agent (see
+     * mailboxRuleNameMatches).
+     */
+    private const FENCED_FIELD_MAX = 1000;
+
+    /**
+     * The bound on the caller-typed rule_name, and it is NOT RULE_NAME_MAX.
+     *
+     * What a caller can type is what the reads SHOWED them, and the per-mailbox
+     * projection shows the FENCED form — which is produced by bounding the raw
+     * name to FENCED_FIELD_MAX and only THEN defanging it, so the defanging can
+     * push it back over any raw-length bound. PromptFence's role-marker rewrite
+     * is the expanding one ("user:" -> "[user]:", 5 chars to 7): a hostile
+     * 256-character name of packed role markers fences to ~358. Bounding the
+     * input at 256 would have refused that string before it ever reached the
+     * match, so the ONE class of rule this verb exists to remove — the long
+     * attacker-authored name — would be un-typeable, and the operator would be
+     * told the rule does not exist (the psa-4k6m.8 false-all-clear polarity,
+     * one level up). FENCED_FIELD_MAX is the width the projection itself is
+     * bounded to and leaves ~2.8x headroom over the worst-case expansion of a
+     * raw-capped name, so every name these reads can display is typeable.
+     * Payload/audit bloat is bounded by this constant, not by the raw cap.
+     */
+    private const RULE_NAME_INPUT_MAX = self::FENCED_FIELD_MAX;
+
+    /**
+     * The bound BOTH decline surfaces cut at: declined() truncates the cockpit
+     * toast to it and safeFailureSummary() truncates the immutable audit summary
+     * to it. Named because a message that QUOTES untrusted text has to be BUILT
+     * to fit it — a blind cut at this width lands inside the quotation and takes
+     * its closing delimiter with it (see fencedDeclineMessage).
+     */
+    private const DECLINE_MESSAGE_MAX = 300;
 
     /** @var array<int, string> */
     private const ALLOW_LIST_TYPES = ['Sender', 'Url'];
@@ -336,6 +413,11 @@ class StaffCippWriteToolExecutor
         'role_id',
         'RoleName',
         'roleName',
+        'ruleId',
+        'RuleId',
+        'ruleName',
+        'RuleName',
+        'InboxRuleId',
         'Users',
         'users',
         'GUID',
@@ -439,6 +521,7 @@ class StaffCippWriteToolExecutor
         private readonly CippRestWriteClient $client,
         private readonly CippWriteScopeResolver $resolver,
         private readonly ActionRedactor $redactor,
+        private readonly ChetDataSurfaceTextSanitizer $textSanitizer,
     ) {}
 
     /** @return array<int, array<string, mixed>> */
@@ -471,6 +554,8 @@ class StaffCippWriteToolExecutor
             self::stageSetMailboxDelegateTool(),
             self::removeDirectoryRoleTool(),
             self::stageRemoveDirectoryRoleTool(),
+            self::removeMailboxRuleTool(),
+            self::stageRemoveMailboxRuleTool(),
             self::releaseQuarantineMessageTool(),
             self::stageReleaseQuarantineMessageTool(),
             self::addTenantAllowEntryTool(),
@@ -1094,10 +1179,34 @@ class StaffCippWriteToolExecutor
         $params = $this->hashParams($directTool, $license, $state, $mailbox);
         $contentHash = $this->contentHash($tool, $client->id, $person->person->id, $ticket->id, $params);
 
+        // RECREATABLE_TARGET_STAGED_TOOLS skip the executed-content rail below, so
+        // nothing else stops a same-content re-stage from landing on the run that
+        // ALREADY removed a rule under this name: firstOrCreate would return that
+        // terminal Done row and the revive branch would flip it back to
+        // AwaitingApproval and overwrite its proposed_content/proposed_meta,
+        // destroying the run-level record of the removal that ran — exactly the
+        // history an approver needs to judge that the rule was RE-PLANTED. A
+        // re-stage whose key is already spent therefore gets its OWN row.
+        if (in_array($tool, self::RECREATABLE_TARGET_STAGED_TOOLS, true)) {
+            $unspent = $this->unspentContentHash($tool, $ticket->id, $contentHash);
+
+            if ($unspent === null) {
+                $this->auditAttempt($tool, 'blocked', $client->id, $ticket, $person, $license, $contentHash, "{$tool} re-stage refused; this ticket already holds the maximum number of runs for this exact content.", $actorLabel);
+
+                return ['error' => "{$tool} could not be staged: this ticket already holds the maximum number of runs for this exact content; stage the removal on a new ticket."];
+            }
+
+            $contentHash = $unspent;
+        }
+
         // The audit log is IMMUTABLE and stays authoritative ONLY for "was this exact
         // content already executed" — an 'executed' row can never go stale the way an
-        // 'awaiting_approval' row can (bd psa-k4s0 Root B).
-        if ($this->alreadyExecuted($tool, $client->id, $contentHash)) {
+        // 'awaiting_approval' row can (bd psa-k4s0 Root B). Skipped for the verbs whose
+        // target can legitimately be re-created under identical safe scalars
+        // (RECREATABLE_TARGET_STAGED_TOOLS): there "identical content" no longer means
+        // "the same upstream object", and answering already-executed would report a
+        // re-planted inbox rule as removed without reading the mailbox at all.
+        if (! in_array($tool, self::RECREATABLE_TARGET_STAGED_TOOLS, true) && $this->alreadyExecuted($tool, $client->id, $contentHash)) {
             return [
                 'success' => true,
                 'idempotent' => true,
@@ -3262,6 +3371,7 @@ class StaffCippWriteToolExecutor
                 (bool) ($mailbox['auto_map'] ?? true),
             ),
             'cipp_remove_directory_role' => $this->executeDirectoryRoleRemoval($tenant, $person, $mailbox ?? []),
+            'cipp_remove_mailbox_rule' => $this->executeMailboxRuleRemoval($tenant, $person, $mailbox ?? []),
             'cipp_wipe_device' => $this->executeDeviceWipe($tenant, $person, $mailbox ?? []),
             'cipp_reassign_onedrive' => $this->client->reassignOneDriveOwnership(
                 $tenant,
@@ -3375,6 +3485,538 @@ class StaffCippWriteToolExecutor
         $this->client->removeDirectoryRoleMember($tenant, $roleId, trim((string) $match['DisplayName']), $person->userId, $person->userPrincipalName);
     }
 
+    /**
+     * Execute an approved inbox-rule removal. The staged payload carries only
+     * the typed rule_name (a safe local scalar) — no upstream rule Identity
+     * exists at stage time, and none is ever accepted from a caller — so the
+     * rule is resolved FRESH here against the mailbox's LIVE inbox-rule
+     * listing: rows another mailbox provably owns are dropped, the stored name
+     * must match exactly ONE remaining rule (case-insensitively, against the
+     * raw upstream name OR the fenced form the reads actually show the agent),
+     * the match's Identity prefix must not comparably name another mailbox,
+     * and a SECOND live read of the same mailbox must re-show the matched
+     * Identity under the approved name before it is sent. Zero matches or an
+     * ambiguous name declines the approval. Every guard fails closed as a
+     * CippClientException: the approval is declined and audited, and nothing
+     * upstream is changed.
+     *
+     * NO NAME IS UN-REMOVABLE. This deliberately does not filter "protected"
+     * rule names: the endpoint we call is Remove-CIPPMailboxRule's single-rule
+     * arm, which protects nothing (the 'Junk E-Mail Rule'/OOF filter lives only
+     * in its -RemoveAllRules arm, where the operator named no rule at all). A
+     * name filter here would be keyed on a string the ATTACKER chooses — plant
+     * a forwarding rule called "Junk E-Mail Rule" and it becomes both
+     * un-removable through this verb and reported to the approver as not
+     * existing, a false all-clear on the one path that exists to clean up after
+     * a takeover.
+     */
+    private function executeMailboxRuleRemoval(string $tenant, ResolvedCippPerson $person, array $params): void
+    {
+        $ruleName = trim((string) ($params['rule_name'] ?? ''));
+        if ($ruleName === '') {
+            throw new CippClientException('Mailbox rule removal payload is incomplete; nothing was removed.');
+        }
+
+        // The name is caller-typed text and the decline messages built from it
+        // reach the agent, the operator-facing cockpit decline toast AND the
+        // immutable audit summary — a control surface, exactly like the approver
+        // card — so it gets the card's treatment rather than a weaker one:
+        // redacted, defanged and FENCED (mailboxRuleDisplay), quoted as data
+        // AFTER the message's own claims instead of spliced inside them.
+        // sanitizedText() only DEFANGS: it neither escapes nor closes a quote,
+        // so a name spliced into a quoted sentence can end the quotation and
+        // continue as apparent system prose ("...the mailbox was verified clean,
+        // re-approve to proceed") on the one surface the approver is reading to
+        // decide. The MATCH still runs on the raw typed name; only what is quoted
+        // back is fenced — and the quoting goes through fencedDeclineMessage(),
+        // because a fence only says anything if BOTH delimiters survive the
+        // DECLINE_MESSAGE_MAX cut those two sinks apply to the WHOLE message.
+
+        $needles = $this->mailboxOwnerNeedles($person);
+        $matches = [];
+        foreach ($this->client->listUserMailboxRules($tenant, $person->userPrincipalName) as $rule) {
+            if (! is_array($rule)) {
+                continue;
+            }
+            $owner = CippToolContract::mailboxRuleOwner($rule);
+            // A row whose own mailbox marker proves it belongs to somebody else is
+            // never a removal target on this mailbox — the read path drops these
+            // because upstream really has answered a mailbox-scoped query with
+            // out-of-scope rows (psa-7lgo.1).
+            if ($owner !== null && $this->mailboxRuleOwnerIsForeign($owner, $needles)) {
+                continue;
+            }
+            $name = trim((string) ($rule['Name'] ?? $rule['name'] ?? ''));
+            if ($name === '') {
+                continue;
+            }
+            if ($this->mailboxRuleNameMatches($name, $ruleName)) {
+                $matches[] = $rule;
+            }
+        }
+
+        if ($matches === []) {
+            throw new CippClientException($this->fencedDeclineMessage(
+                'No inbox rule matching the caller-typed name exists on this mailbox; nothing was removed. That name is quoted as untrusted data below.',
+                $ruleName,
+            ));
+        }
+
+        if (count($matches) > 1) {
+            throw new CippClientException($this->fencedDeclineMessage(
+                'The mailbox has '.count($matches).' inbox rules matching the caller-typed name, so the target is ambiguous and nothing was removed. That name is quoted as untrusted data below.',
+                $ruleName,
+            ));
+        }
+
+        $match = $matches[0];
+        $identity = trim((string) ($match['Identity'] ?? $match['identity'] ?? ''));
+        if ($identity === '') {
+            throw new CippClientException('The matched inbox rule carries no upstream identity; nothing was removed.');
+        }
+
+        // Upstream derives MailboxObjectId from this identity's own prefix and
+        // retries the delete anchored to it — so the PREFIX, not the
+        // userPrincipalName we pass, can decide which mailbox is touched. But the
+        // prefix and the row's own mailbox marker are tenant-chosen text on this
+        // endpoint (display names, legacy DNs, opaque mailbox keys — the very
+        // shapes CippToolContract's tool-scoped fencing exists for), so equality
+        // against the approved mailbox's identifiers cannot be REQUIRED: real
+        // rows would never satisfy it and every approval would decline, leaving
+        // the compromise-remediation path inoperable. What CAN be required is
+        // that no comparable form disagrees: an address- or object-id-shaped
+        // prefix must match a needle of the same shape when one exists, and the
+        // prefix must not contradict the row's own marker when the two share a
+        // shape. A comparable disagreement is a row upstream mis-scoped into
+        // this listing (psa-7lgo.1) — refuse rather than send an approved,
+        // audited delete at a mailbox the approver never saw.
+        $prefix = mb_strtolower(trim(explode('\\', $identity)[0]));
+        // The PREFIX is adjudicated with the read path's own '@'-containment
+        // heuristic, not the stricter address shape used where a positive match
+        // can DROP a row. Here a positive match can only REFUSE, and the strict
+        // shape silently loses refusals the read path raises: an M365 display
+        // name that embeds an address ('Carol CEO (ceo@carol.example)') has
+        // whitespace, so it is not strictly address-shaped — yet it is the very
+        // string upstream turns into MailboxObjectId and anchors the delete to.
+        // The looseness stops at COMPARABILITY: such a prefix is judged on the
+        // address it CARRIES, never on the whole string — otherwise a tenant
+        // using the ordinary 'Alex Kilo (alex@contoso.com)' convention for the
+        // APPROVED mailbox has every removal on it refused, permanently, with an
+        // audited claim that the rule names another mailbox, which is false.
+        if ($this->mailboxRuleOwnerIsForeign($prefix, $needles, strictShape: false)) {
+            throw new CippClientException('The matched inbox rule\'s upstream identity names another mailbox, so the removal would not land on the approved mailbox; nothing was removed.');
+        }
+
+        $owner = CippToolContract::mailboxRuleOwner($match);
+        if ($owner !== null && $this->mailboxRuleMarkersDisagree($owner, $prefix)) {
+            throw new CippClientException('The matched inbox rule\'s upstream identity contradicts the mailbox the rule reports as its own; nothing was removed.');
+        }
+
+        // Comparable agreement proves nothing for the display-name/legacy-DN/
+        // opaque shapes above, and the listing that produced the match is
+        // already stale by delete time. So re-read: this exact Identity must
+        // still appear under the approved name in a fresh live read before the
+        // delete is sent. A rule that vanished, was renamed, or dropped out of
+        // this mailbox's scope in the window is refused rather than fired at.
+        //
+        // BE PRECISE ABOUT WHAT THIS BUYS, because the approver text is built
+        // from it: this proves PERSISTENCE, not MEMBERSHIP. It is the same
+        // UPN-keyed ListUserMailboxRules call as the first read, so an upstream
+        // listing mis-scoped to another mailbox (psa-7lgo.1) is re-served
+        // identically and confirms itself. Membership would need a read that
+        // cannot be mis-scoped the same way — a per-rule fetch keyed on the
+        // approved mailbox — and CIPP exposes NO such endpoint: measured
+        // 2026-08-19 against CIPP-API, the only mailbox-rule reads are this
+        // UserID-keyed live listing and the cache-backed tenant-wide
+        // ListMailboxRules, which takes no user and answers a cold cache with a
+        // queue marker (psa-4k6m). Requiring the cache-backed read would make
+        // approvals decline whenever the cache is cold, i.e. exactly when a
+        // takeover is being cleaned up. The honest resolution is therefore
+        // route (b): the checks stay as strong as the endpoints allow, and
+        // mailboxRuleDisplay()/both tool descriptions say what was NOT verified
+        // instead of implying it was.
+        $confirmed = false;
+        foreach ($this->client->listUserMailboxRules($tenant, $person->userPrincipalName) as $rule) {
+            if (! is_array($rule)) {
+                continue;
+            }
+            if (trim((string) ($rule['Identity'] ?? $rule['identity'] ?? '')) !== $identity) {
+                continue;
+            }
+
+            // The persistence proof is held to the SAME ownership guards as the
+            // first read, because it is the evidence the approver text leans on
+            // hardest. A second read that POSITIVELY marks this row as another
+            // mailbox's — or whose marker now contradicts the identity the
+            // delete anchors to — is evidence AGAINST the removal; accepting it
+            // as the proof would fire an approved, audited delete at a mailbox
+            // we have affirmative evidence is not the approved one, on exactly
+            // the upstream-drift class (psa-7lgo.1) the first read refuses.
+            $confirmOwner = CippToolContract::mailboxRuleOwner($rule);
+            if ($confirmOwner !== null && $this->mailboxRuleOwnerIsForeign($confirmOwner, $needles)) {
+                throw new CippClientException('A second live read reports the matched inbox rule as belonging to a different mailbox; nothing was removed.');
+            }
+            if ($confirmOwner !== null && $this->mailboxRuleMarkersDisagree($confirmOwner, $prefix)) {
+                throw new CippClientException('A second live read reports a mailbox for the matched inbox rule that contradicts the identity the removal would anchor to; nothing was removed.');
+            }
+
+            $name = trim((string) ($rule['Name'] ?? $rule['name'] ?? ''));
+            if ($name !== '' && $this->mailboxRuleNameMatches($name, $ruleName)) {
+                $confirmed = true;
+                break;
+            }
+        }
+
+        if (! $confirmed) {
+            throw new CippClientException('A second live read of the mailbox no longer shows the matched inbox rule under the approved name, so it cannot be proven to still exist on the approved mailbox; nothing was removed.');
+        }
+
+        $this->client->removeMailboxRule($tenant, $person->userPrincipalName, $identity, trim((string) ($match['Name'] ?? $match['name'] ?? $ruleName)));
+    }
+
+    /**
+     * Whether an upstream rule name is the one the approver signed off on.
+     *
+     * The per-mailbox read this tool's schema points callers at projects the
+     * rule NAME as untrusted free text (CippToolContract::isFreeTextField), so
+     * what an agent can copy back is the FENCED form — NFKC-folded, role
+     * markers defanged, "ignore previous instructions" rewritten. Matching the
+     * raw upstream name alone would break that read->write round trip on
+     * precisely the attacker-authored names this verb exists to remove, and
+     * decline with a false "no such rule" (the psa-4k6m.8 failure class, which
+     * already broke quarantine release once). Both forms are accepted; if two
+     * different rules collide on one of them the unique-match gate declines as
+     * ambiguous rather than picking one.
+     */
+    private function mailboxRuleNameMatches(string $upstreamName, string $approvedName): bool
+    {
+        // The fold is mb_strtolower, NOT strcasecmp: strcasecmp folds ASCII A-Z
+        // only, so a rule named 'Überwachung Weiterleitung' typed back as
+        // 'überwachung weiterleitung' misses on BOTH branches (the fenced form is
+        // NFKC-folded but not case-folded), and the approval declines with "no inbox
+        // rule matching the caller-typed name exists on this mailbox" while the rule
+        // is live — the false all-clear polarity this module forbids, on input the
+        // schema's "matched case-insensitively" contract explicitly admits. Every
+        // other comparison on this path already folds with mb_strtolower; this one
+        // must not be the exception.
+        $approved = mb_strtolower($approvedName);
+
+        if (mb_strtolower($upstreamName) === $approved) {
+            return true;
+        }
+
+        return mb_strtolower(trim($this->textSanitizer->sanitizedText($upstreamName, self::FENCED_FIELD_MAX))) === $approved;
+    }
+
+    /**
+     * A decline message that quotes the caller-typed rule name as fenced data and
+     * STILL FITS the bound both of its sinks cut at.
+     *
+     * The fence's property is structural: the CLOSING delimiter is what tells a
+     * reader where the untrusted quotation ended. declined() and
+     * safeFailureSummary() truncate the WHOLE message at DECLINE_MESSAGE_MAX, so
+     * a message merely assembled and handed over loses that delimiter for any
+     * name past a few dozen characters — and the approver-facing toast and the
+     * immutable audit row are left holding an OPEN fence whose tail is text the
+     * caller chose. neutralize() collapses runs of three or more '=' but passes a
+     * two-'=' near-miss terminator through verbatim, and with the genuine
+     * terminator cut away there is nothing left to contrast it with, so that tail
+     * reads as one of this system's own statements on the one surface the
+     * approver decides from. RULE_NAME_INPUT_MAX is 1000 and boundedString()
+     * filters no line breaks, so such a name is well inside what a caller may
+     * type.
+     *
+     * So the message is BUILT to the bound rather than cut to it: the prose and
+     * both delimiters always survive, and only the untrusted span is shortened
+     * (marked with an ellipsis). The fit is measured on the REDACTED message,
+     * because redaction is what the sinks apply first and a placeholder can be
+     * longer than what it replaced.
+     */
+    private function fencedDeclineMessage(string $prose, string $ruleName): string
+    {
+        $name = $this->redactor->redactString($ruleName);
+        $budget = mb_strlen($name);
+
+        for ($attempt = 0; $attempt < 12; $attempt++) {
+            $quoted = $budget >= mb_strlen($name) ? $name : mb_substr($name, 0, $budget).'…';
+            $message = $prose."\n".$this->textSanitizer->sanitize('CALLER TYPED RULE NAME', $quoted, self::RULE_NAME_INPUT_MAX);
+            $overflow = mb_strlen($this->redactor->redactString($message)) - self::DECLINE_MESSAGE_MAX;
+
+            if ($overflow <= 0) {
+                return $message;
+            }
+
+            if ($budget === 0) {
+                break;
+            }
+
+            // $overflow is measured in OUTPUT space while $budget counts INPUT
+            // characters, and neutralize() collapses '='-runs — so trimming inside
+            // a collapsed run can remove zero output characters and the loop would
+            // stall. Halving the budget as a floor makes every pass shrink it
+            // geometrically: 2^12 > RULE_NAME_INPUT_MAX, so 12 attempts always
+            // reach a fitting quotation and the bare-prose fallback below is
+            // unreachable for in-contract input.
+            $budget = max(0, min($budget - $overflow, intdiv($budget, 2)));
+        }
+
+        // Even an empty quotation does not fit: quote nothing rather than emit a
+        // fence the bound would cut in half.
+        return $prose;
+    }
+
+    /**
+     * The approved mailbox's own identifiers, lowercased, for adjudicating whose
+     * mailbox a rule is on.
+     *
+     * ADDRESSES ONLY, and both of them: CIPP hands the mailbox back as a UPN or as
+     * the mailbox's primary SMTP address, and those need not be the same string (an
+     * onmicrosoft UPN, or a rename that left the UPN behind). Holding only the UPN
+     * would adjudicate the user's OWN rows as another mailbox's and decline with
+     * "no inbox rule named X exists on this mailbox" while the rule is still live —
+     * a false all-clear on the one path that cleans up after a takeover.
+     *
+     * The person's AAD object id is deliberately NOT a needle, and that omission is
+     * a correctness constraint rather than an oversight. A rule's mailbox marker
+     * and its Identity prefix are EXCHANGE identifiers: where either is a GUID it
+     * is the mailbox's ExchangeGuid, a DIFFERENT namespace from the Entra user
+     * objectId, and the same mailbox legitimately carries one of each. Two unequal
+     * GUIDs drawn from those two namespaces prove nothing, so admitting the object
+     * id would adjudicate every row on the approved mailbox as foreign on any
+     * tenant whose Identity prefix is a GUID (the ordinary Exchange shape): rows
+     * dropped on the first read and reported to the approver as a rule that does
+     * not exist, or the approval refused with an immutable audit row claiming the
+     * rule names another mailbox — tenant-wide, on the remediation path. Hence
+     * mailboxRuleOwnerIsForeign() treats no GUID marker as comparable to a needle
+     * at all, and this list is what keeps that true.
+     *
+     * @return array<int, string>
+     */
+    private function mailboxOwnerNeedles(ResolvedCippPerson $person): array
+    {
+        $needles = array_map(
+            fn (string $value): string => mb_strtolower(trim($value)),
+            [$person->userPrincipalName, (string) $person->person->email],
+        );
+
+        return array_values(array_unique(array_filter($needles, fn (string $needle): bool => $needle !== '')));
+    }
+
+    /**
+     * Whether a rule's mailbox marker PROVES it is another mailbox's. Compare
+     * like with like (CippToolContract::mailboxRuleIsForeign): an address is
+     * adjudicated only by an address, and NOTHING ELSE adjudicates against this
+     * mailbox at all — an alias, a display name, or a GUID proves nothing either
+     * way, because the GUID a marker or Identity prefix carries is Exchange's
+     * mailbox key and not the Entra objectId (see mailboxOwnerNeedles, which
+     * therefore carries no object-id needle), and guessing would drop the
+     * target user's own rules. Those unprovable rows survive this filter; the
+     * one row actually removed is then held to a persistence re-read (a second
+     * live read of the approved mailbox must re-show its exact Identity under
+     * the approved name) plus the comparable Identity-prefix cross-checks.
+     * Neither is a MEMBERSHIP proof and no CIPP endpoint can supply one — see
+     * the re-read comment in executeMailboxRuleRemoval. The approver text names
+     * that gap rather than papering over it.
+     *
+     * $strictShape picks WHICH address heuristic decides comparability, and the
+     * choice is a polarity decision, not a style one: strict where a positive
+     * match can DROP a row (a dropped row is reported to the approver as a rule
+     * that does not exist), loose where it can only REFUSE. See
+     * mailboxRuleLooksLikeAddress().
+     *
+     * @param  array<int, string>  $needles
+     */
+    private function mailboxRuleOwnerIsForeign(string $owner, array $needles, bool $strictShape = true): bool
+    {
+        $ownerIsAddress = $strictShape
+            ? self::mailboxRuleLooksLikeAddress($owner)
+            : self::mailboxRuleMayBeAddress($owner);
+
+        // A marker that is not address-shaped is comparable to NOTHING here. It may
+        // well be a GUID, but the GUID Exchange stamps into a mailbox marker or an
+        // Identity prefix is the mailbox's ExchangeGuid, while the only GUID this
+        // mailbox could offer as a needle would be the Entra user objectId — two
+        // namespaces, two different GUIDs for the very same mailbox, so inequality
+        // between them proves nothing. Adjudicating across them would make every row
+        // on the approved mailbox foreign wherever the prefix is a GUID: dropped on
+        // the first read (surfacing to the approver as "no such rule exists" while
+        // the rule forwards mail) or refused with a false audited claim, tenant-wide,
+        // on the compromise-remediation path. A GUID pair drawn from the SAME
+        // upstream row is still adjudicated — by mailboxRuleMarkersDisagree(), where
+        // both sides are Exchange's own and the vocabulary genuinely matches.
+        if (! $ownerIsAddress) {
+            return false;
+        }
+
+        $comparable = array_values(array_filter(
+            $needles,
+            fn (string $needle): bool => $strictShape
+                ? self::mailboxRuleLooksLikeAddress($needle)
+                : self::mailboxRuleMayBeAddress($needle),
+        ));
+
+        if ($comparable === []) {
+            return false;
+        }
+
+        // WHAT the marker claims, in the vocabulary the needles are written in.
+        // A marker that IS an address, or an object id, claims itself and this is
+        // plain equality. Under the LOOSE shape a marker qualifies by merely
+        // CONTAINING an '@' — and such a marker is typically a display name that
+        // EMBEDS an address ('alex kilo (alex@contoso.com)', the ordinary M365
+        // convention). Equality on that whole string can never hold, so comparable
+        // -and-unequal would be the verdict for EVERY row on the approved mailbox:
+        // the removal refused permanently, and the immutable log carrying a
+        // 'names another mailbox' claim about a rule that is on this one. So the
+        // claim is the address(es) the marker CARRIES; a marker carrying none
+        // ('support @ acme') claims nothing, and something that proves nothing
+        // either way must not refuse.
+        $claims = $ownerIsAddress && ! $strictShape && ! self::mailboxRuleLooksLikeAddress($owner)
+            ? self::mailboxRuleEmbeddedAddresses($owner)
+            : [$owner];
+
+        foreach ($claims as $claim) {
+            if (in_array($claim, $comparable, true)) {
+                return false;
+            }
+        }
+
+        return $claims !== [];
+    }
+
+    /**
+     * Whether a mailbox marker is ADDRESS-shaped strongly enough to be
+     * adjudicated against this mailbox's addresses.
+     *
+     * Containing an '@' is NOT that test. Markers on this endpoint are routinely
+     * free-form, tenant-chosen display names ('CEO Office', 'Alex Kilo'), and a
+     * tenant may perfectly well name a mailbox "Support @ Acme". Under an
+     * '@'-containment rule that display name becomes comparable to the approved
+     * mailbox's addresses, matches none, and adjudicates EVERY row on the
+     * mailbox as somebody else's: zero matches, and the approval declines with
+     * "no inbox rule named X exists on this mailbox" while the rule is live —
+     * the false all-clear polarity this module forbids, on valid input. The same
+     * shape fed to mailboxRuleMarkersDisagree() can refuse a correctly matched
+     * row outright.
+     *
+     * So require the shape an address actually has — one '@', no whitespace, a
+     * dotted domain — and let every other shape stay UNCOMPARABLE, which proves
+     * nothing either way and therefore drops nothing.
+     *
+     * WHICH TEST APPLIES IS DECIDED BY POLARITY, because "uncomparable" is NOT
+     * uniformly the safe direction. Where a positive shape match can DROP a row
+     * — the first-read filter, and the owner-MARKER checks, whose subject is
+     * this same free-form display-name field — strict is safe: a dropped row is
+     * reported to the approver as a rule that does not exist, the false
+     * all-clear this module forbids. Where a positive match can only REFUSE —
+     * the Identity PREFIX the delete is anchored to — strict silently REMOVES a
+     * refusal the read path's '@'-containment heuristic
+     * (CippToolContract::mailboxRuleIsForeign) would have raised, e.g. a
+     * display name that embeds an address, 'Carol CEO (ceo@carol.example)',
+     * naming a mailbox the approver never saw. Those sites therefore keep the
+     * looser heuristic, via mailboxRuleMayBeAddress(). An earlier version of
+     * this docblock justified the divergence by saying a kept row "still has to
+     * survive the identity-prefix cross-checks": that was circular, because
+     * those cross-checks were themselves loosened by this very test.
+     *
+     * The residual is stated, not hidden: an owner MARKER that embeds an
+     * address stays uncomparable on both reads, because the identical shape is
+     * a legitimate mailbox display name ("Support @ Acme") and refusing on it
+     * would decline valid approvals on the remediation path. The approver card
+     * already discloses that marker checks settle nothing here.
+     */
+    private static function mailboxRuleLooksLikeAddress(string $value): bool
+    {
+        return preg_match('/^[^\s@]+@[^\s@]+\.[^\s@]+$/u', $value) === 1;
+    }
+
+    /**
+     * The read path's own '@'-containment heuristic
+     * (CippToolContract::mailboxRuleIsForeign), kept for the sites where a
+     * positive shape match can only REFUSE and can never drop a row: the
+     * Identity-prefix cross-check, and the PREFIX side of the marker/prefix
+     * contradiction check. Upstream derives MailboxObjectId from that prefix and
+     * anchors the delete to it, so a prefix that textually names another
+     * mailbox's address is exactly the psa-7lgo.1 drift this verb must refuse —
+     * and refusing costs an honest decline, never a false all-clear.
+     */
+    private static function mailboxRuleMayBeAddress(string $value): bool
+    {
+        return str_contains($value, '@');
+    }
+
+    /**
+     * The address-shaped tokens a loosely-comparable marker CARRIES, lowercased
+     * and de-duplicated.
+     *
+     * mailboxRuleMayBeAddress() admits any string containing an '@', which is how
+     * a display name that embeds a mailbox address stays adjudicable at all — but
+     * that string as a whole is NOT an address, so it can only be compared
+     * through the addresses inside it. Anything outside the address grammar
+     * (whitespace, the wrapping punctuation of 'Name (addr@domain)') is excluded
+     * from a token, so 'alex kilo (alex@contoso.com)' yields the mailbox's own
+     * address and agrees, 'carol ceo (ceo@carol.example)' yields somebody else's
+     * and refuses, and 'support @ acme' yields nothing and settles nothing.
+     *
+     * @return array<int, string>
+     */
+    private static function mailboxRuleEmbeddedAddresses(string $value): array
+    {
+        if (preg_match_all('/[^\s@<>()\[\],;:"\']+@[^\s@<>()\[\],;:"\']+\.[^\s@<>()\[\],;:"\']+/u', $value, $matches) === false) {
+            return [];
+        }
+
+        return array_values(array_unique(array_map(
+            static fn (string $address): string => rtrim(mb_strtolower($address), '.'),
+            $matches[0],
+        )));
+    }
+
+    /**
+     * Whether a matched rule's own mailbox marker and its Identity prefix are
+     * MUTUALLY comparable shapes that disagree. Upstream anchors the delete to
+     * the prefix while the marker is what the row claims as its mailbox — when
+     * the marker is address-shaped and the prefix carries an address, or both
+     * are object ids, they describe the same thing in the same vocabulary and
+     * must agree. The object-id pair is comparable HERE and deliberately not
+     * against the approved mailbox's needles: both sides come from the SAME
+     * upstream row, so both are Exchange identifiers for whatever mailbox that
+     * row names, whereas a needle GUID would be the Entra user objectId — a
+     * different namespace from the mailbox's ExchangeGuid, where inequality
+     * proves nothing and refusing on it would brick the verb (see
+     * mailboxOwnerNeedles). The two sides use DIFFERENT address tests on purpose (see
+     * mailboxRuleLooksLikeAddress): the marker is the free-form display-name
+     * field and must be strictly address-shaped before it adjudicates anything,
+     * while the prefix — the string the delete is anchored to — need only look
+     * like it carries an address, because the outcome here is a refusal and
+     * never a dropped row. Mixed or opaque shapes (a display
+     * name against a mailbox key, a legacy DN against anything) prove nothing
+     * either way and must not refuse: for those nothing downstream can settle
+     * the question either, which is why the approver text says so. Both inputs arrive lowercased
+     * (mailboxRuleOwner / the prefix derivation), so comparison is direct.
+     */
+    private function mailboxRuleMarkersDisagree(string $owner, string $prefix): bool
+    {
+        if (self::mailboxRuleLooksLikeAddress($owner) && self::mailboxRuleMayBeAddress($prefix)) {
+            // Same asymmetry as mailboxRuleOwnerIsForeign: the prefix qualifies by
+            // '@'-containment, so what it CLAIMS is the address(es) it carries. A
+            // display name that embeds the marker's own address AGREES with it,
+            // and one carrying no address at all settles nothing — reading either
+            // as a contradiction would refuse correctly matched rows forever.
+            $claims = self::mailboxRuleLooksLikeAddress($prefix)
+                ? [$prefix]
+                : self::mailboxRuleEmbeddedAddresses($prefix);
+
+            return $claims !== [] && ! in_array($owner, $claims, true);
+        }
+
+        if (CippToolContract::looksLikeObjectId($owner) && CippToolContract::looksLikeObjectId($prefix)) {
+            return $owner !== $prefix;
+        }
+
+        return false;
+    }
+
     private function executeMailboxForwarding(string $tenant, ResolvedCippPerson $person, array $mailbox): void
     {
         match ((string) ($mailbox['mode'] ?? '')) {
@@ -3408,6 +4050,7 @@ class StaffCippWriteToolExecutor
             'cipp_set_mailbox_out_of_office' => $this->mailboxOutOfOfficeParams($arguments, $approvalInputs, $isHeld, $heldApproval),
             'cipp_set_mailbox_delegate' => $this->mailboxDelegateParams($clientId, $arguments),
             'cipp_remove_directory_role' => $this->directoryRoleParams($arguments, $isHeld),
+            'cipp_remove_mailbox_rule' => $this->mailboxRuleParams($arguments, $isHeld),
             'cipp_wipe_device' => $this->deviceWipeParams($clientId, $arguments, $approvalInputs, $isHeld, $heldApproval, $person),
             'cipp_reassign_onedrive' => $this->oneDriveReassignParams($clientId, $arguments, $isHeld),
             'cipp_edit_user' => $this->editUserParams($clientId, $arguments, $person),
@@ -3658,6 +4301,35 @@ class StaffCippWriteToolExecutor
         return [
             'role_template_id' => mb_strtolower($templateId),
             'role_name' => $this->boundedString($arguments, 'role_name', self::ROLE_NAME_MAX, required: true),
+        ];
+    }
+
+    /**
+     * Resolve inbox-rule removal params on the initial call and the held
+     * approval replay. STRUCTURALLY HELD-ONLY (directory-role precedent):
+     * deleting a mailbox rule is never directly executable, whatever mode the
+     * token was granted — the non-held path throws before any state is touched,
+     * so the upstream call can only ever be reached through a cockpit approval.
+     * The rule is identified by its NAME alone: the per-mailbox listing
+     * projection (CippToolContract::DEFAULT_FIELDS['cipp_list_mailbox_rules'])
+     * exposes only names, and caller-supplied upstream identifiers
+     * (ruleId/Identity) are banned — so execution resolves the rule's upstream
+     * Identity from a LIVE listing at approval and refuses zero or multiple
+     * matches. The name is a safe local scalar and is deliberately NOT run
+     * through a safeReason-style redaction: unlike an external SMTP address or
+     * an OOO body it is stored in redacted_params by design, because the
+     * approver must review the exact rule that will be deleted.
+     *
+     * @return array<string, mixed>
+     */
+    private function mailboxRuleParams(array $arguments, bool $isHeld): array
+    {
+        if (! $isHeld) {
+            throw new CippWriteScopeException('Mailbox rule removal is held-only; call cipp_remove_mailbox_rule with staged=true and a ticket_id for cockpit approval.');
+        }
+
+        return [
+            'rule_name' => $this->boundedString($arguments, 'rule_name', self::RULE_NAME_INPUT_MAX, required: true),
         ];
     }
 
@@ -4038,6 +4710,58 @@ class StaffCippWriteToolExecutor
     }
 
     /**
+     * A content hash for a re-stage that cannot land on a run this ticket has
+     * already SPENT. Used ONLY by RECREATABLE_TARGET_STAGED_TOOLS — the verbs whose
+     * executed-content rail stageAction() skips.
+     *
+     * Every other staged verb is protected by that rail: identical content that
+     * already executed short-circuits before firstOrCreate is ever reached, so the
+     * only non-live run its key can return is one that never executed (superseded,
+     * denied, withdrawn) and reviving THAT row in place is correct. With the rail
+     * skipped the protection is gone, and firstOrCreate on the UNIQUE (ticket_id,
+     * action_type, content_hash) key hands back the very run that removed a rule
+     * under this name — a terminal Done row the revive branch would flip back to
+     * AwaitingApproval and overwrite. TechnicianRun::update() carries no transition
+     * guard, so the cockpit record of a completed destructive removal would simply
+     * be gone, on exactly the re-planted-rule re-stage this verb exists to support.
+     *
+     * A spent key is therefore walked forward DETERMINISTICALLY instead: the same
+     * re-stage always derives the same hash, so liveAwaitingRun()'s idempotency
+     * still collapses a repeat of a pending proposal, while every spent run keeps
+     * its row. The walk is bounded and refuses honestly when exhausted rather than
+     * recycling a spent run.
+     */
+    private function unspentContentHash(string $tool, int $ticketId, string $contentHash): ?string
+    {
+        // Live (the idempotent re-send) or retired without ever executing — the two
+        // cases the firstOrCreate branches are written for. Anything else has spent
+        // the run: it executed, is executing, or is parked to execute.
+        $revivable = [
+            TechnicianRunState::AwaitingApproval->value,
+            TechnicianRunState::Superseded->value,
+            TechnicianRunState::Denied->value,
+            TechnicianRunState::Withdrawn->value,
+        ];
+
+        for ($attempt = 0; $attempt < 50; $attempt++) {
+            $spent = TechnicianRun::query()
+                ->where('ticket_id', $ticketId)
+                ->where('action_type', $tool)
+                ->where('content_hash', $contentHash)
+                ->whereNotIn('state', $revivable)
+                ->exists();
+
+            if (! $spent) {
+                return $contentHash;
+            }
+
+            $contentHash = hash('sha256', $contentHash.'|re-stage');
+        }
+
+        return null;
+    }
+
+    /**
      * The single source of truth for "is there a live staged run awaiting approval right
      * now" — the runs table, NEVER the (immutable) audit log (bd psa-k4s0 Root B).
      */
@@ -4200,6 +4924,7 @@ class StaffCippWriteToolExecutor
             'delegate_person_id',
             'role_template_id',
             'role_name',
+            'rule_name',
             'asset_id',
             'wipe_action',
             'staged_device_id',
@@ -4338,6 +5063,7 @@ class StaffCippWriteToolExecutor
             'cipp_set_mailbox_out_of_office' => $this->mailboxOutOfOfficeDisplay($person, $mailbox ?? []),
             'cipp_set_mailbox_delegate' => $this->mailboxDelegateDisplay($person, $mailbox ?? []),
             'cipp_remove_directory_role' => $this->directoryRoleDisplay($person, $mailbox ?? []),
+            'cipp_remove_mailbox_rule' => $this->mailboxRuleDisplay($person, $mailbox ?? []),
             'cipp_wipe_device' => $this->deviceWipeDisplay($person, $mailbox ?? []),
             'cipp_reassign_onedrive' => $this->oneDriveReassignDisplay($person, $mailbox ?? []),
             'cipp_edit_user' => $this->editUserDisplay($person, $mailbox ?? []),
@@ -4433,6 +5159,51 @@ class StaffCippWriteToolExecutor
             .' Held-only: approval re-resolves the tenant role and re-verifies the user\'s membership before execution. License assignments are not touched.';
     }
 
+    private function mailboxRuleDisplay(ResolvedCippPerson $person, array $params): string
+    {
+        // A rule removal is only reviewable if the approver can see WHOSE
+        // mailbox loses WHICH rule: name the target by UPN (a same-client
+        // internal address, not a secret) plus the PSA id, and the rule by its
+        // typed name. Only the display carries the UPN — the stored payload and
+        // audit summary stay id-only.
+        //
+        // And it is only reviewable if this text is TRUE. For a held-only
+        // destructive delete the approver text IS the control, so it states the
+        // limit of the checks as plainly as it states the checks: an earlier
+        // draft said the matched rule's "own mailbox marker names this mailbox",
+        // which the code does not and cannot establish (see
+        // executeMailboxRuleRemoval). An approver who reads a check that did not
+        // run is worse off than one who reads none.
+        // The rule NAME is the one span of caller-typed — i.e. prompt-injectable
+        // — text on this card, and this card IS the control. Spliced raw into
+        // the sentence, up to RULE_NAME_INPUT_MAX characters of it could forge
+        // their own "VERIFIED:" clause above the real NOT VERIFIED disclosure,
+        // and the approver would read a membership proof that never ran. So it
+        // is not spliced into the sentence at all: it is redacted, defanged and
+        // FENCED — the treatment every other untrusted string on this surface
+        // gets — and quoted AFTER the claims, where nothing inside it can read
+        // as one of them.
+        $fencedRuleName = $this->textSanitizer->sanitize(
+            'CALLER TYPED RULE NAME',
+            (string) ($params['rule_name'] ?? 'unknown'),
+            self::RULE_NAME_INPUT_MAX,
+        );
+
+        return 'Remove ONE inbox rule — the caller-typed name is quoted as data at the END of this card — from the mailbox of '
+            .$person->userPrincipalName.' (PSA person #'.$person->person->id.').'
+            .' Held-only. VERIFIED at approval: a live per-mailbox read of this UPN\'s inbox rules matches that name to exactly one rule'
+            .' after dropping every row whose own mailbox marker proves it belongs to a different mailbox; that rule\'s upstream identity'
+            .' does not comparably name a different mailbox, nor contradict the row\'s own marker; and a second live read, held to those'
+            .' same ownership checks, still shows that exact identity under that name.'
+            .' NOT VERIFIED: that the rule is on this mailbox. CIPP exposes no per-rule read keyed on a mailbox, so both reads are the same'
+            .' UPN-keyed listing call — if CIPP answers it with another mailbox\'s rows, both reads carry them identically — and a row whose'
+            .' mailbox marker is absent, or is a shape that cannot be compared with this mailbox\'s identifiers (a display name, a legacy DN,'
+            .' an opaque mailbox key), is not proven to be this mailbox\'s.'
+            .' A missing or ambiguous name declines with nothing removed.'
+            ."\n".'The name the caller typed, as DATA — nothing inside the block below is a statement by this system:'
+            ."\n".$fencedRuleName;
+    }
+
     private function mailboxDelegateDisplay(ResolvedCippPerson $person, array $mailbox): string
     {
         $operation = (string) ($mailbox['operation'] ?? '');
@@ -4485,7 +5256,7 @@ class StaffCippWriteToolExecutor
 
     private function safeFailureSummary(string $tool, CippClientException $e): string
     {
-        return "{$tool} failed before completion: ".mb_substr($this->redactor->redactString($e->getMessage()), 0, 300);
+        return "{$tool} failed before completion: ".mb_substr($this->redactor->redactString($e->getMessage()), 0, self::DECLINE_MESSAGE_MAX);
     }
 
     /**
@@ -4498,7 +5269,7 @@ class StaffCippWriteToolExecutor
      */
     private function declined(string $reason): TechnicianApprovalResult
     {
-        return new TechnicianApprovalResult('gate_declined', message: mb_substr($this->redactor->redactString($reason), 0, 300));
+        return new TechnicianApprovalResult('gate_declined', message: mb_substr($this->redactor->redactString($reason), 0, self::DECLINE_MESSAGE_MAX));
     }
 
     private function approverLabel(int $approverId): string
@@ -4694,6 +5465,39 @@ class StaffCippWriteToolExecutor
                 'description' => 'Typed role display name confirmation (e.g. "Exchange Administrator"). Verified case-insensitively against the resolved role\'s display name at execution; a mismatch refuses the removal.',
             ],
         ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function mailboxRuleProperties(): array
+    {
+        return [
+            'rule_name' => [
+                'type' => 'string',
+                'description' => 'Exact name of the inbox rule to remove, as shown by the per-mailbox rule reads (e.g. cipp_list_mailbox_rules). Matched case-insensitively against the mailbox\'s LIVE inbox-rule listing at approval time — against both the rule\'s raw upstream name and the fenced form those reads display, so a name that was neutralized for display still resolves. The server derives the rule\'s upstream identity from the unique match, and a missing or ambiguous name declines without removing anything.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function removeMailboxRuleTool(): array
+    {
+        return self::tool(
+            'cipp_remove_mailbox_rule',
+            'Remove ONE inbox rule from ONE server-derived user\'s mailbox through CIPP — compromise remediation and mailbox hygiene (e.g. strip a malicious forwarding or delete-mail rule after an account takeover). HELD-ONLY: this capability never executes immediately, whatever mode was granted — every call must use staged=true with a ticket_id and is held for cockpit approval; staged=false calls are refused. Identify the rule by rule_name only (from the per-mailbox rule reads); at approval the server re-reads the mailbox\'s LIVE inbox rules, drops every row whose own mailbox marker proves it belongs to a different mailbox, and requires the name to match exactly ONE remaining rule — whose upstream identity must not comparably name a different mailbox and must still be shown by a second live read — before the single-rule removal is sent. A missing or ambiguous name declines without removing anything. LIMIT, state it when you report this action: CIPP exposes no per-rule read keyed on a mailbox, so both reads are the same UPN-keyed listing call and neither can prove a row is on THIS mailbox when the row carries no comparable mailbox marker. confirm_upn is the mailbox owner\'s UPN. Requires an explicit token grant, reason, kill-switch, cooldown, and TechnicianActionLog audit.',
+            array_merge(self::personProperties(), self::mailboxRuleProperties()),
+            ['person_id', 'rule_name', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageRemoveMailboxRuleTool(): array
+    {
+        return self::tool(
+            'cipp_stage_remove_mailbox_rule',
+            'Stage removal of one inbox rule from one server-derived user\'s mailbox for cockpit approval (compromise remediation / mailbox hygiene). The MCP call makes no CIPP upstream call; the held payload stores only local identifiers plus the typed rule_name, and approval re-reads the mailbox\'s LIVE inbox rules, drops every row whose own mailbox marker proves it belongs to a different mailbox, and executes the single-rule removal only when the name matches exactly ONE remaining rule whose upstream identity does not comparably name a different mailbox and is still shown by a second live read — a missing or ambiguous name declines with nothing removed. LIMIT, state it when you report this action: CIPP exposes no per-rule read keyed on a mailbox, so both reads are the same UPN-keyed listing call and neither can prove a row is on THIS mailbox when the row carries no comparable mailbox marker. This capability is held-only — there is no immediate execution path. confirm_upn is the mailbox owner\'s UPN (person_id).',
+            array_merge(self::personProperties(ticket: true), self::mailboxRuleProperties()),
+            ['person_id', 'rule_name', 'ticket_id', 'confirm_upn', 'reason'],
+        );
     }
 
     /** @return array<string, mixed> */

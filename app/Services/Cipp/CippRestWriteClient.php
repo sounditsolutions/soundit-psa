@@ -381,6 +381,140 @@ class CippRestWriteClient
     }
 
     /**
+     * List one user's LIVE Exchange inbox rules via CIPP's ListUserMailboxRules
+     * endpoint. Read support for the mailbox-rule removal write: the
+     * caller-facing tool accepts only a rule NAME, and this read is how
+     * execution resolves it to the rule's upstream Identity (and refuses
+     * missing or ambiguous names) at approval time.
+     *
+     * Source shape (CIPP-API): GET api/ListUserMailboxRules with TenantFilter
+     * and UserID runs Get-InboxRule -Mailbox $UserID — a LIVE Exchange call
+     * scoped to one mailbox server-side (see CippMcpToolRelay's TOOL_MAP notes
+     * distinguishing it from the cache-backed tenant-wide ListMailboxRules).
+     * Because it is live it should never answer with a queue marker, but the
+     * queue guard runs anyway (listMailQuarantine precedent, psa-lmex):
+     * guarding at the source keeps a "still loading" reply from ever reading
+     * as "this mailbox has no such rule" — today that polarity is merely a
+     * decline for the wrong reason on the removal gate, but the day this read
+     * backs an answer it would be a false all-clear.
+     *
+     * Same rule for the payload SHAPE, and it reaches ALL THE WAY DOWN TO THE
+     * ELEMENTS. Only a list of rule OBJECTS, or a {"Results": [...]} envelope
+     * of them, is a rule listing: an HTTP-200 error envelope ({"Results":
+     * "Failed to connect to Exchange"}), a non-array body, a list carrying any
+     * non-array element (CIPP answers a failed Exchange call 200 with the error
+     * as a bare STRING in a list — `["Failed to connect to Exchange"]`), or any
+     * other drift THROWS. Collapsing those to [] would surface to the approver
+     * as "no inbox rule named X exists on this mailbox" — a degraded read
+     * reading as a clean mailbox, the exact polarity psa-7lgo rule 3 forbids.
+     * Filtering the bad elements out instead of throwing is the same fault one
+     * level down: it turns a listing that could not be read into a SHORTER
+     * listing that reads as authoritative.
+     *
+     * KNOWN RESIDUAL, stated rather than hidden: a bare `200 {}` is NOT
+     * distinguishable here from a genuinely empty mailbox. sendGet() hands back
+     * an already-decoded body and PHP's associative json_decode maps both `{}`
+     * and `[]` to the same empty array, so this method cannot tell them apart;
+     * `[]` is a real answer (a mailbox with no rules) and must not refuse, so
+     * the pair resolves to "empty". Closing it needs the RAW body at the
+     * sendGet() layer, which every CIPP read shares — a change with a blast
+     * radius well beyond this verb, and not one to slip in alongside it.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function listUserMailboxRules(string $tenantFilter, string $userPrincipalName): array
+    {
+        if (trim($userPrincipalName) === '') {
+            throw new CippClientException('Mailbox owner UPN is required');
+        }
+
+        $body = $this->sendGet('api/ListUserMailboxRules', [
+            'TenantFilter' => $tenantFilter,
+            'UserID' => $userPrincipalName,
+        ], requireArrayBody: true);
+
+        CippQueueGuard::assertNotQueueBacked($body);
+
+        if (array_is_list($body)) {
+            return self::assertMailboxRuleRows($body);
+        }
+
+        // Defensive: some CIPP endpoints wrap list payloads as {"Results": [...]}.
+        $results = $body['Results'] ?? null;
+
+        if (is_array($results) && array_is_list($results)) {
+            return self::assertMailboxRuleRows($results);
+        }
+
+        // Not a listing — a DEGRADED read, never an empty mailbox. See the
+        // docblock: the removal gate reports emptiness as "no such rule exists",
+        // so this must scream rather than fail open.
+        throw new CippClientException('CIPP read api/ListUserMailboxRules returned an unrecognized payload; the mailbox rule listing could not be read.');
+    }
+
+    /**
+     * Every element of a rule listing must itself be a rule object. A scalar in
+     * the list is upstream reporting a failure in the shape of data — dropping
+     * it would hand the removal gate a listing it can only read as "this rule
+     * is not here". Refuse the whole listing instead; see listUserMailboxRules'
+     * docblock.
+     *
+     * @param  array<int, mixed>  $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private static function assertMailboxRuleRows(array $rows): array
+    {
+        foreach ($rows as $row) {
+            if (! is_array($row)) {
+                throw new CippClientException('CIPP read api/ListUserMailboxRules returned a non-object entry in the mailbox rule listing; the listing could not be read.');
+            }
+        }
+
+        return array_values($rows);
+    }
+
+    /**
+     * Remove ONE inbox rule from ONE user's mailbox via CIPP's
+     * ExecRemoveMailboxRule endpoint. ruleId must be the rule's upstream
+     * Identity resolved from listUserMailboxRules — never a caller-supplied
+     * value — and ruleName the matched rule's actual upstream name (used only
+     * in CIPP's own log/result line).
+     *
+     * Source shape (CIPP-API master, verified 2026-08-19 —
+     * Invoke-ExecRemoveMailboxRule.ps1 + Remove-CIPPMailboxRule.ps1 single-rule
+     * arm): POST api/ExecRemoveMailboxRule with TenantFilter, userPrincipalName,
+     * ruleId, ruleName. Upstream computes MailboxObjectId = ruleId.Split('\')[0]
+     * and calls Remove-CIPPMailboxRule WITHOUT -RemoveAllRules, so this path
+     * deletes exactly one rule (New-ExoRequest 'Remove-InboxRule' with
+     * Identity = ruleId, anchored to the username with a MailboxObjectId
+     * fallback retry). Failure returns HTTP 500 with the error text in
+     * {Results}, so send() throws on the status and no 200-with-error-in-body
+     * guard is needed here — unlike the spam-filter endpoints, whose failures
+     * ride HTTP 200 and need guardReportedFailure().
+     *
+     * @return array<int|string, mixed>
+     */
+    public function removeMailboxRule(string $tenantFilter, string $userPrincipalName, string $ruleId, string $ruleName): array
+    {
+        if (trim($userPrincipalName) === '') {
+            throw new CippClientException('Mailbox owner UPN is required');
+        }
+        if (trim($ruleId) === '') {
+            throw new CippClientException('Mailbox rule id is required');
+        }
+        if (trim($ruleName) === '') {
+            throw new CippClientException('Mailbox rule name is required');
+        }
+
+        return $this->send('api/ExecRemoveMailboxRule', [
+            'TenantFilter' => $tenantFilter,
+            'userPrincipalName' => $userPrincipalName,
+            'ruleId' => $ruleId,
+            'ruleName' => $ruleName,
+        ]);
+    }
+
+    /**
      * Release one quarantined message to all its recipients via CIPP's
      * ExecQuarantineManagement endpoint (Release-QuarantineMessage with
      * ReleaseToAll). Only the Release action is supported — Deny/delete is not
@@ -857,14 +991,21 @@ class CippRestWriteClient
     /**
      * Curated GET with the same URL-safety, DNS-pinning, and token handling as
      * send(). Returns the decoded body, or [] when upstream answers with a
-     * non-array payload. Private and endpoint-specific by design: it backs only
+     * non-array payload — UNLESS the caller passes requireArrayBody, in which
+     * case an uninterpretable body throws instead of collapsing to "no rows".
+     * That opt-in exists because emptiness does not mean the same thing to
+     * every caller: listUserMailboxRules' emptiness is reported to an approver
+     * as "no such rule exists" (a false all-clear), while listMailQuarantine's
+     * caller refuses the release when the identity is missing and so fails
+     * closed on []. Private and endpoint-specific by design: it backs only
      * the curated verification reads that gate a write (listDirectoryRoles,
-     * listGroups, listMailQuarantine) and is never exposed as a generic getter.
+     * listGroups, listMailQuarantine, listUserMailboxRules) and is never
+     * exposed as a generic getter.
      *
      * @param  array<string, string>  $query
      * @return array<int|string, mixed>
      */
-    private function sendGet(string $endpoint, array $query): array
+    private function sendGet(string $endpoint, array $query, bool $requireArrayBody = false): array
     {
         $url = $this->endpointUrl($endpoint);
         $options = $this->safeRequestOptions($url);
@@ -882,7 +1023,15 @@ class CippRestWriteClient
 
         $body = $response->json();
 
-        return is_array($body) ? $body : [];
+        if (! is_array($body)) {
+            if ($requireArrayBody) {
+                throw new CippClientException("CIPP read {$endpoint} returned an unreadable payload; the response could not be interpreted as rows.");
+            }
+
+            return [];
+        }
+
+        return $body;
     }
 
     private function getToken(): string
