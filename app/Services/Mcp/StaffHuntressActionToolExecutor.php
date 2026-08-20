@@ -789,21 +789,30 @@ class StaffHuntressActionToolExecutor
     }
 
     /**
-     * Land a run left wedged in Executing by an approval that died AFTER its
-     * upstream resolve COMMITTED — the one strand the re-stage revive cannot
-     * reach, because the live already-resolved read short-circuits above it
-     * (correctly: the write landed, so the run must never be re-presented for a
-     * second POST). Without this the run never reaches a terminal state at all:
+     * Land a run left wedged in Executing by a dead approval when the
+     * escalation now reads RESOLVED upstream — the one strand the re-stage
+     * revive cannot reach, because the live already-resolved read
+     * short-circuits above it (correctly: whatever resolved it, the record must
+     * never be re-presented for a second POST). Without this the run never
+     * reaches a terminal state at all:
      * excluded from TechnicianRun::RECOVERY_SAFE_ACTION_TYPES so no reaper
      * touches it, not in PENDING_STATES so the cockpit cannot show it, no
      * executed audit row, and manual DB surgery the only exit — while the
      * stale-claim reaper logs the same error every five minutes forever.
      *
-     * The audit row is `error`, not `executed`: the upstream state DID change,
-     * but the 201's resolution_method post-condition was never evaluated, so a
-     * server-created attribute rule cannot be ruled out — and a clean
-     * `executed` row is exactly how such a fault gets laundered into a green
-     * success (the same reason the hard-fault branch audits `error`).
+     * The audit row is `error`, not `executed`, and it asserts NOTHING about
+     * whether THIS approval's POST landed — it cannot. The Executing claim is
+     * taken at the top of approveStagedRun, and the payload decrypt, the
+     * config/kill-switch/executedCooldown gates and the clamped live re-read
+     * all run while it is held, while a committed resolve advances the run to
+     * Done immediately; so a run found stranded here most likely died BEFORE
+     * the POST, and a third-party console resolve then leaves the escalation
+     * reading resolved with nothing ever sent by us. The row therefore records
+     * only what was observed (the run was stranded; the escalation now reads
+     * resolved) and asks the operator to establish which — rather than
+     * directing a human security investigation into writes that may never have
+     * happened, and rather than a clean `executed` row, which is exactly how a
+     * real resolution_method fault would get laundered into a green success.
      *
      * Only a claim past STALE_CLAIM_SECONDS is touched, and only through the
      * same claim-CAS-under-row-lock the re-stage revive uses: an approval that
@@ -856,12 +865,12 @@ class StaffHuntressActionToolExecutor
 
         // Never silent: a run landed terminal by reconstruction rather than by
         // its own approval is an operational fault, and the record must say so.
-        Log::warning('[StaffHuntressActionToolExecutor] Landing a run stranded in Executing by a dead approval whose resolve had already committed', [
+        Log::warning('[StaffHuntressActionToolExecutor] Landing a run stranded in Executing by a dead approval; the escalation now reads resolved upstream, by means this run cannot determine', [
             'run_id' => $run->id,
             'escalation_id' => $escalationId,
             'claimed_at' => $claimedAt?->toIso8601String(),
         ]);
-        $this->auditAttempt($tool, 'error', $clientId, $ticket, $contentHash, "{$targetKey}: Run left Executing by a dead approval; the escalation now reads RESOLVED upstream, so that approved resolve DID commit — the run is landed terminal here rather than wedged forever. Its resolution_method post-condition was never evaluated: inspect the Huntress console for attribute rules the server may have created during this resolution, and escalate to a human.", $actorLabel, $run->id);
+        $this->auditAttempt($tool, 'error', $clientId, $ticket, $contentHash, "{$targetKey}: Run left Executing by a dead approval; the escalation now reads RESOLVED upstream. Whether this approval's resolve POST ever landed could NOT be determined — the claim is taken well before the POST and a committed resolve lands the run Done immediately, so an external console resolve is at least as likely. The run is landed terminal here rather than wedged forever. Establish in the Huntress console how this escalation was resolved: if it was resolved through this tool, its resolution_method post-condition was never evaluated, so inspect it for attribute rules the server may have created and escalate to a human.", $actorLabel, $run->id);
     }
 
     /**
