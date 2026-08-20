@@ -3424,12 +3424,47 @@ class StaffCippWriteToolExecutor
     /**
      * Direct path for the tenant-scoped licence assignment.
      *
-     * Shaped on executeGroupMembershipDirect(): the VERIFICATION READ FIRST,
-     * then both dedup rails (exact-content AND identity-keyed, because the same
-     * user + SKU assigned from a different reason is still the same entitlement
-     * change), then the targetKey cooldown, then upstream. The read leads
-     * because BOTH rails are keyed on the object id it returns and never on the
-     * caller's typed address — see licenseTargetKey().
+     * Shaped on executeGroupMembershipDirect() and then divergent from it in
+     * the two places that decide this method's behaviour, both deliberately.
+     *
+     * FIRST, THE READ LEADS. That verb resolves its target locally (a PSA
+     * person), so its rails can run before it reads anything; this one's target
+     * is a tenant object, so the VERIFICATION READ RUNS FIRST and the keys are
+     * built from the object id it returns rather than the caller's typed
+     * address — see licenseTargetKey(). Refusals that fire before the read have
+     * no object id to key on, and they do not all key alike. The one this
+     * method audits itself — the scope refusal raised by its own
+     * verifiedTenantUser() call — carries the CLAIM key, because validated
+     * $params provably exist by then; the two key prefixes differ, so no LIKE
+     * built from one can match a row carrying the other
+     * (licenseTargetClaimKey()). The refusals inside licenseTargetContext() are
+     * UNKEYED, all six of them: the upstream-identifier blocklist, the
+     * person-shape guard, the missing reason, the kill switch, client-not-found
+     * and the resolution catch — and FIVE of those six run before
+     * licenseTargetParams() has produced what licenseTargetClaimKey() needs.
+     * Only the resolution catch can be entered after it, and that one stays
+     * unkeyed regardless: a single catch serves four throw sites and cannot see
+     * which of them refused, so validated $params are not provably in hand
+     * there either. Do not read the enumeration as licensing the later
+     * refusals to claim-key themselves — $params is undefined at the kill
+     * switch and at client-not-found.
+     * That is the family rule as licenseTargetContext() states it (claim key OR
+     * no key at all), so do not search this log for a target's pre-read
+     * refusals by claim-key prefix and read a clean result as "never
+     * attempted".
+     *
+     * SECOND, THERE IS NO DEDUP RAIL HERE OF EITHER KIND — not the exact-content
+     * one, not an identity-keyed one. A licence seat is a recreatable target
+     * (RECREATABLE_TARGET_STAGED_TOOLS): both keys this path could build come
+     * from the same (verified user, resolved SKU) pair and neither can observe a
+     * removal made in between, so suppressing a repeat answers success on a
+     * billing write that never happened. What actually runs, in order: the
+     * verification read, the held-only refusal for a target the PSA maps to a
+     * person record, the targetKey cooldown, then upstream. The cooldown is the
+     * ONLY runaway guard on this write, which is why it spans both of the
+     * family's action_type names (licenseTargetCooldownActive()) and why it
+     * refuses honestly instead of reporting an unmade write as done. The
+     * reasoning for each is at its own call site.
      *
      * The verified user is resolved INSIDE the try so a scope refusal is audited
      * as 'rejected' with the operator-readable reason rather than escaping as a
@@ -3730,8 +3765,42 @@ class StaffCippWriteToolExecutor
      * initial call, and the user is re-verified against the LIVE tenant
      * listing: a UPN that now resolves to a different object id declines
      * rather than assigning a paid seat to somebody the operator never
-     * reviewed. A re-fired approval of an identical already-executed
-     * assignment is a LOGGED NO-OP, never a second upstream call.
+     * reviewed.
+     *
+     * NO ALREADY-EXECUTED RAIL RUNS HERE, and the absence is the design. Such a
+     * rail did not merely mis-answer on this path — it advanced the approved run
+     * to Done, so the grant it had declined to perform could not even be
+     * re-approved. ONCE THIS RUN IS Done, re-firing it needs no such rail:
+     * claimForExecution() does its CAS only from AwaitingApproval. Read that as
+     * a property of the Done STATE and not as an invariant of this method,
+     * because there is a window in which it does not hold: the upstream write
+     * commits BEFORE the executed row is written and before advanceTo(Done)
+     * runs, so a throw from either of those two — a DB error on the audit
+     * insert is the realistic one — reaches the catch (\Throwable) at the
+     * bottom, which calls releaseClaim() and returns the run to
+     * AwaitingApproval with the paid seat already assigned. What the cooldown
+     * can do about that depends on WHICH of the two throws, because the
+     * executed row is written first: if advanceTo(Done) is what fails, the row
+     * is already committed and a re-approval inside the 300s window is refused
+     * at the cooldown — past the window it is not. If the audit insert is what
+     * fails there is no 'executed' row at all, so the cooldown is blind to a
+     * write that did reach upstream and a re-approval sends a second
+     * ExecBulkLicense 'Add' for the same seat. That is the unguarded case, and
+     * it is also the realistic one. The sibling family closes
+     * this window with an explicit $writeCommitted flag
+     * (StaffCalendarToolExecutor::approveStagedRun(), "no failure path below
+     * may return the run to AwaitingApproval"); THIS path carries no such flag,
+     * so what bounds the damage is the same fact that makes a post-cooldown
+     * duplicate tolerable below, not a rail. What a SECOND run staged for the
+     * same target meets is the shared cooldown, which spans both of the family's
+     * action_type names and DECLINES the approval — a refusal the operator can
+     * see and retry, not a silent no-op — and only inside its window. Past that
+     * window a duplicate proposal does reach upstream a second time, which is
+     * the honest outcome: assigning a SKU the user already holds is an upstream
+     * no-op, while suppressing it would report a write that never happened as
+     * done. The rails that DO close an approval short of upstream each refuse
+     * on something they can point at: the kill switch, the payload and
+     * re-resolution refusals, the three drift rails, and that cooldown.
      */
     private function approveLicenseTargetStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
     {
@@ -3933,9 +4002,15 @@ class StaffCippWriteToolExecutor
             // an identical user/SKU had already executed. A human approved this
             // seat after reading a card naming the user and the SKU; the only
             // rails allowed to stop it are the ones that can PROVE something
-            // changed (the two drift rails above) or that refuse honestly (the
-            // cooldown below). A re-fired approval of THIS run is already
-            // impossible without them: claimForExecution() fails on a Done run.
+            // changed (the three drift rails above) or that refuse honestly (the
+            // cooldown below). Once this run reaches Done, re-firing it needs
+            // no rail here: claimForExecution() does its CAS only from
+            // AwaitingApproval. Read that as a property of the Done STATE and
+            // not as an invariant of this method — the upstream write commits
+            // before the executed row and before advanceTo(Done), so a throw
+            // from either returns the run to AwaitingApproval with the seat
+            // already assigned. The docblock carries that window in full,
+            // including which of the two throws the cooldown can still see.
             //
             // Which is exactly why this cooldown has to span BOTH action_type
             // names: the row an approval writes carries the STAGED one, so the
