@@ -9,6 +9,19 @@ use Illuminate\Support\Facades\Log;
 
 class HuntressClient
 {
+    /**
+     * Hard ceiling on any single 429 back-off sleep, mirroring
+     * HuntressWriteClient::RETRY_AFTER_CEILING_SECONDS. Retry-After is an
+     * UPSTREAM-CONTROLLED value, and this is not only a background sync
+     * client: the staged escalation-resolve path re-reads the escalation LIVE
+     * inside the synchronous cockpit approve request, holding that run's
+     * execution claim while it sleeps. An unclamped `Retry-After: 3600` would
+     * park the PHP worker — and the claim — for an hour, which is exactly the
+     * bound StaffHuntressActionToolExecutor::STALE_CLAIM_SECONDS is measured
+     * against. Two retries at the ceiling bound the added wall time at 20 s.
+     */
+    public const RETRY_AFTER_CEILING_SECONDS = 10;
+
     private Client $http;
 
     /**
@@ -187,8 +200,9 @@ class HuntressClient
         ]);
 
         // The Huntress account is rate-limited (60 req/min). A 429 is transient —
-        // honor Retry-After (falling back to exponential backoff) and retry a bounded
-        // number of times rather than surfacing the first bump as an error.
+        // honor Retry-After up to RETRY_AFTER_CEILING_SECONDS (falling back to
+        // exponential backoff) and retry a bounded number of times rather than
+        // surfacing the first bump as an error.
         $maxAttempts = 3;
         $attempt = 0;
 
@@ -204,16 +218,10 @@ class HuntressClient
                     : 0;
 
                 if ($status === 429 && $attempt < $maxAttempts) {
-                    $retryAfter = 2 ** $attempt;
-                    // Distinguish an absent Retry-After from a present "0" — PHP's ?:
-                    // treats the string "0" as falsy, which would wrongly ignore a
-                    // server asking us to retry immediately.
-                    if ($e instanceof RequestException && $e->getResponse() !== null) {
-                        $header = $e->getResponse()->getHeaderLine('Retry-After');
-                        if (is_numeric($header)) {
-                            $retryAfter = (int) $header;
-                        }
-                    }
+                    $header = $e instanceof RequestException && $e->getResponse() !== null
+                        ? $e->getResponse()->getHeaderLine('Retry-After')
+                        : '';
+                    $retryAfter = self::retryDelaySeconds($header, $attempt);
                     Log::info("[HuntressClient] Rate limited on {$endpoint}, retrying in {$retryAfter}s");
                     if ($retryAfter > 0) {
                         sleep($retryAfter);
@@ -232,5 +240,27 @@ class HuntressClient
         $body = (string) $response->getBody();
 
         return json_decode($body, true) ?? [];
+    }
+
+    /**
+     * The 429 back-off for one attempt: the upstream Retry-After when it is a
+     * numeric value, else exponential (2s, 4s) — ALWAYS clamped to
+     * RETRY_AFTER_CEILING_SECONDS, because the header is upstream-controlled
+     * and this sleep can run inside a synchronous approval that is holding a
+     * run's execution claim. Mirrors HuntressWriteClient::retryDelaySeconds().
+     *
+     * A present "0" stays distinguished from an absent header — PHP's ?: treats
+     * the string "0" as falsy, which would wrongly ignore a server asking us to
+     * retry immediately; a negative value likewise means no wait (the caller
+     * sleeps only on a positive delay).
+     */
+    public static function retryDelaySeconds(string $retryAfterHeader, int $attempt): int
+    {
+        $delay = 2 ** max(1, $attempt);
+        if (is_numeric($retryAfterHeader)) {
+            $delay = (int) $retryAfterHeader;
+        }
+
+        return min($delay, self::RETRY_AFTER_CEILING_SECONDS);
     }
 }

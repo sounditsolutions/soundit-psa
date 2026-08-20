@@ -22,6 +22,7 @@ use App\Support\HuntressConfig;
 use App\Support\TechnicianConfig;
 use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -68,10 +69,16 @@ class StaffHuntressActionToolExecutor
 
     /**
      * How long an Executing claim may stand before a re-stage treats it as
-     * DEAD and revives the run. The approve path is bounded far below this
-     * (two 30 s live reads plus a POST whose 429 back-offs are clamped by
-     * HuntressWriteClient::RETRY_AFTER_CEILING_SECONDS), so no live approval
-     * is ever this old; a claim that outlives it means the worker died
+     * DEAD and revives the run. BOTH legs of the approve path are bounded far
+     * below this: the LIVE re-read (HuntressClient) and the resolution POST
+     * (HuntressWriteClient) each cap at 3 attempts x a 30 s transport timeout
+     * plus two 429 back-offs clamped to their own client's
+     * RETRY_AFTER_CEILING_SECONDS — ~220 s worst case. The READ client's clamp
+     * is load-bearing here, not incidental: while its Retry-After was
+     * unclamped an upstream `Retry-After: 1200` could park a LIVE approval well
+     * past this bound, and the recovery below would then reopen a run whose
+     * approval was still in flight. So no live approval is ever this old; a
+     * claim that outlives it means the worker died
      * between claimForExecution() and any catch block — and this family is
      * deliberately excluded from the stale-claim reaper's
      * TechnicianRun::RECOVERY_SAFE_ACTION_TYPES, so nothing else will ever
@@ -393,25 +400,75 @@ class StaffHuntressActionToolExecutor
         }
 
         if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
-            // The recovery is never silent: a run left claimed by a dead
-            // approval is an operational fault, so releasing it leaves a log
-            // line and an audit row rather than quietly re-presenting the card.
-            if ($strandedClaim) {
-                Log::warning('[StaffHuntressActionToolExecutor] Recovering a stranded execution claim on re-stage', [
-                    'run_id' => $run->id,
-                    'escalation_id' => $escalationId,
-                    'claimed_at' => $run->claimed_at?->toIso8601String(),
-                ]);
-                $this->auditAttempt($tool, 'error', $clientId, $ticket, $contentHash, "{$targetKey}: Stranded execution claim (run left Executing by a dead approval) recovered on re-stage; the run returns to awaiting approval and re-verifies the escalation LIVE before any upstream call.", $actorLabel, $run->id);
-            }
-
-            $run->update([
+            $revival = [
                 'state' => TechnicianRunState::AwaitingApproval->value,
                 'proposed_content' => $proposedContent,
                 'proposed_meta' => $meta,
                 'confidence' => null,
                 'tokens_used' => 0,
-            ]);
+            ];
+
+            if ($strandedClaim) {
+                // claimIsStale() is a TIME-VARYING read, so the revive must be a
+                // compare-and-swap on the exact claim it measured — still
+                // Executing, still the same claimed_at — taken under a row lock.
+                // A blind update could rewrite a claim a concurrent approval took
+                // (or renewed) in between: that re-presents a card whose approval
+                // is still running, admits a second approval and a second
+                // resolution POST, and leaves the first approval's releaseClaim()
+                // free to reopen a resolve that already committed. Every other
+                // transition on this model (claimForExecution, releaseClaimTo,
+                // markSuperseded) is CAS-guarded; this one is no different. The
+                // write goes through the MODEL so the AwaitingApproval
+                // notification (TechnicianRunObserver) still fires.
+                $claimedAt = $run->claimed_at;
+                $recovered = DB::transaction(function () use ($run, $claimedAt, $revival): bool {
+                    $fresh = TechnicianRun::query()->whereKey($run->getKey())->lockForUpdate()->first();
+                    if (! $fresh || $fresh->state !== TechnicianRunState::Executing) {
+                        return false;
+                    }
+
+                    $sameClaim = $claimedAt === null
+                        ? $fresh->claimed_at === null
+                        : ($fresh->claimed_at !== null && $fresh->claimed_at->equalTo($claimedAt));
+                    if (! $sameClaim) {
+                        return false;
+                    }
+
+                    $fresh->update($revival);
+
+                    return true;
+                });
+
+                if (! $recovered) {
+                    // The claim moved under us — treat it as live and touch
+                    // nothing, the same answer the not-yet-stale path gives.
+                    return [
+                        'success' => true,
+                        'idempotent' => true,
+                        'ticket_id' => $ticket->id,
+                        'ticket_display_id' => $ticket->display_id,
+                        'run_id' => $run->id,
+                        'message' => 'An approved resolve for this escalation is currently executing; nothing new was staged.',
+                    ];
+                }
+
+                $run->state = TechnicianRunState::AwaitingApproval;
+
+                // The recovery is never silent: a run left claimed by a dead
+                // approval is an operational fault, so releasing it leaves a log
+                // line and an audit row rather than quietly re-presenting the
+                // card. Both are written only once the CAS has actually won, so
+                // the record can never claim a recovery that did not happen.
+                Log::warning('[StaffHuntressActionToolExecutor] Recovering a stranded execution claim on re-stage', [
+                    'run_id' => $run->id,
+                    'escalation_id' => $escalationId,
+                    'claimed_at' => $claimedAt?->toIso8601String(),
+                ]);
+                $this->auditAttempt($tool, 'error', $clientId, $ticket, $contentHash, "{$targetKey}: Stranded execution claim (run left Executing by a dead approval) recovered on re-stage; the run returns to awaiting approval and re-verifies the escalation LIVE before any upstream call.", $actorLabel, $run->id);
+            } else {
+                $run->update($revival);
+            }
         } elseif (! $run->wasRecentlyCreated) {
             return [
                 'success' => true,

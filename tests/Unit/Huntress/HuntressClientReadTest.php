@@ -112,4 +112,26 @@ class HuntressClientReadTest extends TestCase
         $this->assertSame(5, $result['id']);
         $this->assertCount(2, $this->history, 'the 429 should have been retried exactly once');
     }
+
+    /**
+     * Retry-After is UPSTREAM-CONTROLLED, and this read client is not only a
+     * background sync client: the staged escalation-resolve approval re-reads
+     * LIVE inside the synchronous cockpit request while holding that run's
+     * execution claim. No single back-off may exceed the ceiling — an unclamped
+     * `Retry-After: 1200` would park the worker, and the claim, past
+     * StaffHuntressActionToolExecutor::STALE_CLAIM_SECONDS, whose bound is
+     * measured against exactly this clamp.
+     */
+    public function test_retry_delay_clamps_the_upstream_retry_after_header(): void
+    {
+        $ceiling = HuntressClient::RETRY_AFTER_CEILING_SECONDS;
+
+        $this->assertSame($ceiling, HuntressClient::retryDelaySeconds('1200', 1), 'a twenty-minute upstream header must clamp to the ceiling');
+        $this->assertSame($ceiling, HuntressClient::retryDelaySeconds((string) ($ceiling + 1), 2));
+        $this->assertSame(3, HuntressClient::retryDelaySeconds('3', 1), 'a sane header value is honoured');
+        $this->assertSame(0, HuntressClient::retryDelaySeconds('0', 1), 'zero means retry immediately');
+        $this->assertSame(2, HuntressClient::retryDelaySeconds('', 1), 'no header → exponential default');
+        $this->assertSame(4, HuntressClient::retryDelaySeconds('', 2));
+        $this->assertSame(4, HuntressClient::retryDelaySeconds('soon', 2), 'non-numeric header → exponential default');
+    }
 }
