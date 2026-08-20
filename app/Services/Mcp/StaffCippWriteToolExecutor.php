@@ -4014,24 +4014,24 @@ class StaffCippWriteToolExecutor
      * and this method never calls it. Each verb calls it itself —
      * executeLicenseTargetDirect(), stageLicenseTargetAction(), and again in
      * approveLicenseTargetStagedRun()'s re-verify block — because each keys
-     * its dedup and cooldown rails, and every audit row it writes after that
-     * call, on the object id it returns rather than on the address the
-     * caller typed. A refusal that fires BEFORE that call has no object id to
-     * key on, so it carries EITHER the claim key OR no key at all, and what
-     * decides that is whether validated $params exist yet. Once
-     * licenseTargetParams() has produced them, a refusal may be audited under
+     * every rail it carries, and every audit row it writes after that call,
+     * on the object id it returns rather than on the address the caller
+     * typed. A refusal that fires BEFORE that call has no object id to key
+     * on, so it carries EITHER the claim key OR no key at all. Where the
+     * refusing site can see for itself that licenseTargetParams() has already
+     * produced validated $params, the row may be audited under
      * licenseTargetClaimKey() — approveLicenseTargetStagedRun() does exactly
      * that for its kill-switch and its re-verification refusal — and that is a
      * different prefix, so such a row can never be matched by a dedup or
-     * cooldown LIKE built from licenseTargetKey(). Anything that refuses
-     * EARLIER has nothing to build a claim key from and writes an UNKEYED row:
-     * that is EVERY refusal in this method — the blocklist, the mixed-shape
-     * guard, the missing reason, the kill-switch, client-not-found, and the
-     * catch around the resolutions, since licenseTargetParams() runs inside it
-     * — and the earliest refusals on the approval side too. Unkeyed is the
-     * honest shape there, not an omission; so do not search this log for a
-     * target's refusals by claim-key prefix alone and read a clean result as
-     * "never attempted".
+     * cooldown LIKE built from licenseTargetKey(). Everywhere else the row is
+     * UNKEYED, which is every refusal this method itself writes. Note that
+     * "can see for itself" is the test and not "do $params exist": this
+     * method's single resolution catch is entered from four throw sites and
+     * cannot know which one fired, so it stays unkeyed even on the
+     * SKU-entitlement refusal, where $params provably does exist by then.
+     * Unkeyed is the honest shape there, not an omission; so do not search
+     * this log for a target's refusals by claim-key prefix alone and read a
+     * clean result as "never attempted".
      *
      * DO NOT READ A RAIL INVENTORY OUT OF THIS DOCBLOCK, and do not write a
      * new one into it. WHICH cooldown, content-hash and awaiting-run rails
@@ -4073,9 +4073,10 @@ class StaffCippWriteToolExecutor
      * take a different one, so read the one you are calling rather than any
      * summary of them here.
      *
-     * A HALF-mapped DEACTIVATED person gets none of that: it is dropped by
-     * the completeness filter exactly like the active half-mapped case, comes
-     * back null, and the seat is granted with no human ever shown the record.
+     * A HALF-mapped DEACTIVATED person gets none of those postures: it is
+     * dropped by the completeness filter exactly like the active half-mapped
+     * case, comes back null, and the seat is granted with no human ever shown
+     * the record.
      *
      * Nor does the check establish that the address is the one the operator
      * MEANT: two real, enabled, unmapped addresses in the same tenant pass
@@ -4094,10 +4095,11 @@ class StaffCippWriteToolExecutor
      * typed claim, checked here only for length and email shape by
      * licenseTargetParams(). Audit rows written after that call follow the
      * same rule; a refusal that fires before it still has to leave a row, so
-     * what that row can carry depends on how far the call got: WITH validated
-     * $params in hand, key it on licenseTargetClaimKey($params); with no
-     * $params yet — which is the case for every refusal this method itself
-     * writes — leave it unkeyed, as those do. Never the raw claim, and never
+     * what that row can carry depends on what the refusing site can see for
+     * itself: where validated $params are provably in hand there, key it on
+     * licenseTargetClaimKey($params); where the site cannot know that — a
+     * catch shared by several throw sites, as this method's is — leave it
+     * unkeyed, as every refusal here does. Never the raw claim, and never
      * licenseTargetKey() with a stand-in identity. Then choose your
      * mapped-inactive posture explicitly.
      *
