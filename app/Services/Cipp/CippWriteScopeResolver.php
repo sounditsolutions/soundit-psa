@@ -49,6 +49,206 @@ class CippWriteScopeResolver
     }
 
     /**
+     * REFUSE a tenant-scoped write target that IS mapped to a PSA person.
+     *
+     * The tenant-scoped licence shape exists for a user with NO PSA person
+     * record — its tool text and its approval card both state that as fact —
+     * and it reaches upstream without confirm_upn, without any of the
+     * person-scoped gates, and with a null person linkage in the audit.
+     * Documented but unenforced, that made "type the address instead of the
+     * person_id" a caller-selectable bypass of the person path's rails on a
+     * billing write. The premise has to be ENFORCED, not merely described —
+     * the same rule the shape mutual-exclusion guard already follows.
+     *
+     * EITHER mapping column MATCHES — the object id the SERVER read out of the
+     * tenant against cipp_user_id, and the address against cipp_upn — so a
+     * renamed UPN cannot walk around the check. But only a COMPLETE mapping
+     * refuses, and that qualifier is load-bearing: this gate defers to the
+     * person path, and resolveCippPerson() (above) requires BOTH columns,
+     * throwing 'Person has no CIPP user mapping' when either is blank.
+     * Half-mapped rows are system-produced, not hypothetical —
+     * CippContactSyncService::syncUser() sets cipp_user_id unconditionally
+     * while an array_filter drops cipp_upn when the tenant row carries no
+     * userPrincipalName, and rows predating the enrichment migration carry a
+     * null cipp_upn too. Refusing on one of those would close the tenant shape
+     * while the person shape cannot express the target at all: NO path assigns
+     * the seat, and the refusal sends the operator to the shape that is
+     * guaranteed to refuse. A half-mapped person therefore stays on the tenant
+     * shape, which served them before this gate existed; the fix for them is
+     * repairing the person's mapping, not blocking a licence.
+     *
+     * INACTIVE PEOPLE DO NOT REFUSE, and that qualifier is load-bearing for the
+     * same reason completeness is. The premise that used to justify refusing
+     * them — "the licence person path uses the loose resolveCippPerson(), so it
+     * can still name them" — is FALSE: that path resolves through
+     * resolveActiveCippPerson() and refuses a deactivated person outright. The
+     * stale sweep deactivates a leaver's row without ever clearing cipp_upn or
+     * cipp_user_id, so a new starter created at the freed address matches a dead
+     * mapping. Refusing here would close the tenant shape while the person shape
+     * refuses too: NO path assigns the seat, and the refusal sends the operator
+     * to the shape that is guaranteed to refuse — the exact deadlock the
+     * completeness qualifier above exists to prevent, reintroduced through the
+     * other door.
+     *
+     * BUT AN INACTIVE MATCH IS REPORTED RATHER THAN IGNORED, and that is the
+     * whole of the change here. The premise this used to rest on — "the
+     * enabled-account gate can tell a leaver from their replacement" — is FALSE
+     * in the one direction that matters. CippContactSyncService's stale sweep
+     * deactivates any person with a cipp_user_id who is absent from
+     * $seenPersonIds, and that set is narrowed by the per-client
+     * cipp_sync_group_id filter, so a CURRENT, ENABLED employee who is merely
+     * outside the sync group is is_active=false in the PSA while being present
+     * and accountEnabled=true in the tenant's live listing (the same holds
+     * transiently for anyone re-enabled in M365 between nightly syncs). For
+     * those people the enabled-account gate agrees with the caller, and the seat
+     * was granted immediately, human-free, with none of the person-scoped rails
+     * and a null person linkage in the audit — the exact bypass this gate exists
+     * to close, reached through the inactive door.
+     *
+     * So an inactive mapping still does not REFUSE (that is the deadlock the
+     * paragraph above describes), and it is no longer SILENT either: the matched
+     * person's id is RETURNED. The licence family turns that into the two things
+     * the immediate path lacked — a human (a mapped target is held-only,
+     * whatever mode was granted) and a name (the id is written onto the approval
+     * card and into the audit summary). On top of that the tenant shape's own
+     * gates still apply in full: the address must be present in the resolved
+     * tenant's LIVE user listing, and the account must be enabled.
+     *
+     * @return int|null the matched but DEACTIVATED person's id, or null when the
+     *                  target has no complete PSA person mapping at all
+     */
+    public function assertNoPsaPersonMapping(int $clientId, string $upn, string $userId): ?int
+    {
+        $upn = mb_strtolower(trim($upn));
+        $userId = mb_strtolower(trim($userId));
+        if ($upn === '' && $userId === '') {
+            return null;
+        }
+
+        // COMPLETE mappings only — a person missing either column is one
+        // resolveCippPerson() refuses, so refusing here too would leave the
+        // target unassignable by every shape (see the docblock).
+        //
+        // THE MATCH AND THE COMPLETENESS TEST ARE BOTH DECIDED IN PHP, AND THAT
+        // IS THE POINT. Both are questions resolveCippPerson() already answers,
+        // and it answers them with PHP trim(), which strips tabs, newlines, CR,
+        // NUL and vertical tab — while SQL TRIM/btrim strips the SPACE character
+        // only, on sqlite (what phpunit.xml runs), MySQL and Postgres alike.
+        // Asking either half in SQL forks one question into two answers, and it
+        // fails in opposite — both wrong — directions:
+        //
+        //  - COMPLETENESS in SQL (whereRaw("TRIM(COALESCE(col,'')) <> ''"), the
+        //    first cut): a cipp_user_id holding just a tab reads COMPLETE here
+        //    and BLANK in the resolver, so this gate refuses the tenant shape,
+        //    the person path refuses for want of a mapping, and the seat is
+        //    unassignable by every route — the deadlock the completeness
+        //    qualifier exists to prevent.
+        //  - The MATCH in SQL (whereRaw('LOWER(cipp_upn) = ?'), the second cut):
+        //    the sync stores these columns raw, so a cipp_upn of
+        //    "alex@acme.example\n" is a COMPLETE, USABLE mapping as far as the
+        //    resolver is concerned, yet it never equals the caller's trimmed
+        //    value. The gate finds nothing and a fully PSA-mapped person walks
+        //    onto the tenant shape — no confirm_upn, no person-scoped gates, a
+        //    null person linkage in the audit — which is the exact bypass this
+        //    gate exists to close, on a billing write.
+        //
+        // So SQL only NARROWS to candidates and never decides: the column
+        // filters below are a strict superset of what PHP accepts (anything PHP
+        // reads as non-blank is necessarily non-null and non-'' in SQL), and
+        // every comparison that can admit or refuse is made in PHP, through the
+        // SAME trim() the person resolver uses. One question, one dialect.
+        // AND IT NARROWS TO CANDIDATES RATHER THAN HYDRATING THE CLIENT. Three
+        // verify seats flagged that the previous cut filtered only on client_id
+        // + non-blank columns and then ->get(), so every completely-mapped
+        // Person of the client came back on every tenant-shape licence call.
+        // LIKE '%needle%' is a NECESSARY condition for the PHP comparison to
+        // succeed — a stored value that trims to the needle necessarily contains it — so
+        // this cannot exclude a true match, and the exact decision still happens
+        // in PHP. The needle is escaped because '%' and '_' are both ordinary in
+        // a UPN local part; unescaped, a perfectly valid address becomes a
+        // wildcard, which is the same hazard that put licenseTargetKey() on a
+        // hash.
+        // AND THE CASE FOLD IS PHP'S TOO — the LIKE narrowing that used to sit
+        // here is GONE, deliberately, because it reintroduced this same defect
+        // a third time in the same method. It read LOWER(cipp_upn) LIKE ?
+        // against an mb_strtolower()'d needle: SQL LOWER() is ASCII-only on
+        // sqlite and collation-dependent on MariaDB, while mb_strtolower folds
+        // Unicode. A UPN whose case differs outside ASCII would be folded by
+        // PHP and not by SQL, the LIKE would exclude the row, and a fully
+        // PSA-mapped person would walk onto the tenant shape — the exact bypass
+        // this gate exists to close. A narrowing predicate that can EXCLUDE a
+        // true match is not an optimisation, it is the defect wearing an
+        // index's clothes.
+        //
+        // So SQL narrows on client_id and non-blank columns only — conditions
+        // that cannot disagree with PHP in the excluding direction — and PHP
+        // decides everything, with the same trim() and the same mb_strtolower()
+        // the person resolver uses. THE HYDRATION COST THREE SEATS FLAGGED IS
+        // PAID FOR WITH A PROJECTION rather than with a predicate that can be
+        // wrong: three columns, not whole models. Correctness first, and the
+        // cost bounded by the client's own mapped-person count.
+        $matches = Person::query()
+            ->select(['id', 'is_active', 'cipp_upn', 'cipp_user_id'])
+            ->where('client_id', $clientId)
+            ->where('cipp_upn', '<>', '')
+            ->where('cipp_user_id', '<>', '')
+            ->get()
+            ->filter(static function (Person $candidate) use ($upn, $userId): bool {
+                $candidateUpn = mb_strtolower(trim((string) $candidate->cipp_upn));
+                $candidateUserId = mb_strtolower(trim((string) $candidate->cipp_user_id));
+
+                // COMPLETE mappings only — a person the resolver would refuse
+                // for want of a mapping is one this gate must not refuse either.
+                if ($candidateUpn === '' || $candidateUserId === '') {
+                    return false;
+                }
+
+                return ($upn !== '' && $candidateUpn === $upn)
+                    || ($userId !== '' && $candidateUserId === $userId);
+            });
+
+        // ACTIVE FIRST, decided in PHP through the model's boolean cast rather
+        // than narrowed in SQL, so this test cannot disagree with the person
+        // path's — the one-question-one-dialect rule the rest of this method
+        // follows. It is a PRIORITY now rather than a filter, because the two
+        // columns can match DIFFERENT rows (a leaver keeps the address on a dead
+        // row while the object id is synced onto the new occupant) and an active
+        // match is a refusal that must not lose a race to an inactive row that
+        // merely sorts earlier.
+        $active = $matches->first(static fn (Person $candidate): bool => (bool) $candidate->is_active);
+
+        if ($active) {
+            throw new CippWriteScopeException('That target_upn is mapped to PSA person #'.$active->id.', so the tenant-scoped shape does not apply to it: that shape is for a tenant user with no PSA person record. Assign this licence with person_id + license_type_id + confirm_upn instead, so the person-scoped rails apply. Nothing was written.');
+        }
+
+        // Mapped but DEACTIVATED: not refused — the person path refuses them
+        // outright, so refusing here too would leave the seat unassignable by
+        // every shape — and not waved through unnamed either. The caller holds
+        // the write for a human and records this id (see the docblock).
+        //
+        // AND THE OBJECT-ID MATCH WINS, for exactly the reason the ACTIVE
+        // priority above exists: the two columns can match DIFFERENT rows (a
+        // leaver keeps the freed address on a dead row while the object id is
+        // synced onto the new occupant, who is themselves inactive whenever they
+        // sit outside the client's cipp_sync_group_id). cipp_user_id is the id
+        // the SERVER read out of the live tenant listing; cipp_upn is matched
+        // against the address the CALLER typed, so the object id is strictly
+        // stronger identity evidence and the two are not interchangeable once
+        // neither row is active. A bare first() over an unordered get() named
+        // whichever row the DB emitted first — normally the leaver, the lower id
+        // — and that id is the ONLY person named on the approval card and in the
+        // audit summary, so it pointed the sole human gate on this billing write
+        // at the wrong record and misattributed the executed row.
+        $inactive = $userId === ''
+            ? null
+            : $matches->first(static fn (Person $candidate): bool => mb_strtolower(trim((string) $candidate->cipp_user_id)) === $userId);
+
+        $inactive ??= $matches->first();
+
+        return $inactive === null ? null : (int) $inactive->id;
+    }
+
+    /**
      * Resolve a person who RECEIVES access through a CIPP write (e.g. the
      * OneDrive handover successor). Everything resolveCippPerson() enforces,
      * plus the person must be active in the PSA: deactivated people routinely
@@ -102,6 +302,120 @@ class CippWriteScopeResolver
         }
 
         return new ResolvedCippLicense($licenseType, $license, $skuId);
+    }
+
+    /**
+     * Resolve a licence from the UPSTREAM SKU id (the M365 GUID an operator can
+     * actually read off cipp_list_licenses) rather than the local
+     * license_types.id, which no read tool on the MCP surface emits.
+     *
+     * Same server-derives-the-identity property as resolveCippLicense(): the
+     * caller supplies a claim, the server matches it against synced licence
+     * rows and answers with the local objects. The client-entitlement gate is
+     * deliberately unchanged — a SKU this client has no active local licence
+     * row for is still refused, because that row is the PSA's assertion that
+     * the client is billed for the seat.
+     *
+     * The three failures are reported distinctly on purpose: "SKU not
+     * recognised" tells the caller to fix the argument, "no active local
+     * licence row" tells them to go and look at the client's licences, and
+     * "not mapped locally" is a data gap in the licence type itself. Collapsing
+     * them is how a fixable argument reads as an entitlement problem.
+     */
+    public function resolveCippLicenseBySku(int $clientId, mixed $skuIdValue): ResolvedCippLicense
+    {
+        // Normalised ONCE, here, in the form every comparison below uses. The
+        // previous cut lowered only inside the SQL predicate, so moving the
+        // decision into PHP would have silently made the match case-SENSITIVE
+        // for a caller typing a mixed-case SKU — a regression introduced by the
+        // fix, which is exactly how this branch has produced most of its
+        // defects. Caught by reading the assignment rather than by a test,
+        // because no existing case types a mixed-case sku_id.
+        $sku = is_scalar($skuIdValue) ? mb_strtolower(trim((string) $skuIdValue)) : '';
+        if ($sku === '') {
+            throw new CippWriteScopeException('sku_id is required');
+        }
+
+        // vendor_sku_id ONLY — it is the synced UPSTREAM M365 SKU id this
+        // method's contract names. license_types.sku_id is an integer FK to the
+        // internal billing `skus` table (the M365 string lives in
+        // skus.sku_code), so matching a caller's upstream claim against it
+        // compares two unrelated namespaces: a garbled or truncated numeric
+        // sku_id would resolve a licence type the caller never named — possibly
+        // a costlier one — and assign it on the direct path with no approver in
+        // the loop. An unrecognised claim must refuse, not resolve sideways.
+        // SAME DIALECT RULE AS assertNoPsaPersonMapping(), and I found this one
+        // by sweeping for it rather than waiting for a panel to name it — the
+        // point of that rule being that naming a pattern is not the same as
+        // having swept it. The caller's claim is trimmed by licenseTargetParams()
+        // and again above; vendor_sku_id is stored RAW by the licence sync, so a
+        // value carrying trailing whitespace never equals the trimmed claim and
+        // an operator holding the correct SKU is told no licence type matches
+        // it. The failure direction is a false REFUSAL rather than a false
+        // accept, which is why it is a usability defect and not a bypass — but
+        // it is the same root, so it gets the same shape of fix: SQL narrows to
+        // candidates (LIKE is a necessary condition for the PHP comparison, and
+        // the needle is escaped because '%' and '_' occur in real SKU strings),
+        // PHP decides with the same trim() everything else here uses.
+        $licenseTypes = LicenseType::query()
+            ->where('vendor', 'cipp_m365')
+            ->where('is_active', true)
+            // Narrowed on the ACTIVE/vendor columns only, for the same reason
+            // the person gate above dropped its LIKE: LOWER() in SQL and
+            // mb_strtolower() in PHP are different functions outside ASCII, so
+            // a case-folding narrow can EXCLUDE a row PHP would accept. Here
+            // that direction is a false refusal rather than a bypass, but it is
+            // the same defect and it gets the same answer — SQL narrows on what
+            // it cannot get wrong, PHP decides. The set is active cipp_m365
+            // licence types, which is small by construction.
+            ->get()
+            ->filter(static fn (LicenseType $type): bool => mb_strtolower(trim((string) $type->vendor_sku_id)) === $sku)
+            ->values();
+
+        if ($licenseTypes->isEmpty()) {
+            throw new CippWriteScopeException('No active CIPP M365 license type matches that sku_id');
+        }
+        if ($licenseTypes->count() > 1) {
+            throw new CippWriteScopeException('That sku_id matches more than one active CIPP M365 license type; resolve the ambiguity locally before assigning');
+        }
+
+        /** @var LicenseType $licenseType */
+        $licenseType = $licenseTypes->first();
+
+        // AMBIGUITY REFUSES — the same rule the licence-type match above
+        // applies one level up, and this level needs it just as much. The CIPP
+        // sync upserts on (license_type_id, client_id, vendor_ref), so a
+        // re-sync that changes vendor_ref leaves a SECOND active row for the
+        // same client and licence type, and an unordered first() over those
+        // rows picks a storage-engine-ordered winner: two identical direct
+        // calls for two different contractors can send DIFFERENT — possibly
+        // costlier — SKUs upstream, both reported as success, with no approver
+        // in the loop. The identity dedup key hashes the RESOLVED SKU rather
+        // than the caller's claim, so it can at least tell two such writes
+        // apart — but nothing downstream can choose between two equally active
+        // rows. There is no safe way to pick one, so refuse and name the fix.
+        $licenses = License::query()
+            ->where('client_id', $clientId)
+            ->where('license_type_id', $licenseType->id)
+            ->where('status', 'active')
+            ->get();
+
+        if ($licenses->isEmpty()) {
+            throw new CippWriteScopeException('That SKU is known, but this client has no active local license row for it; the PSA has no record that the client is entitled to a seat');
+        }
+        if ($licenses->count() > 1) {
+            throw new CippWriteScopeException('That sku_id matches more than one active local license row for this client, and those rows can map to different upstream SKUs; resolve the duplicate license rows locally before assigning');
+        }
+
+        /** @var License $license */
+        $license = $licenses->first();
+
+        $resolvedSkuId = trim((string) ($license->vendor_ref ?: $licenseType->vendor_sku_id));
+        if ($resolvedSkuId === '') {
+            throw new CippWriteScopeException('CIPP M365 license SKU is not mapped locally');
+        }
+
+        return new ResolvedCippLicense($licenseType, $license, $resolvedSkuId);
     }
 
     /**

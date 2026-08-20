@@ -69,6 +69,7 @@ class StagedActionLabels
         'cipp_stage_remove_user_mfa_methods' => 'CIPP remove MFA',
         'cipp_stage_set_legacy_per_user_mfa' => 'CIPP legacy MFA',
         'cipp_stage_assign_user_license' => 'CIPP assign license',
+        'cipp_stage_assign_tenant_user_license' => 'CIPP assign license (tenant user)',
         'cipp_stage_remove_user_license' => 'CIPP remove license',
         'cipp_stage_convert_mailbox' => 'CIPP mailbox convert',
         'cipp_stage_set_mailbox_forwarding' => 'CIPP mailbox forwarding',

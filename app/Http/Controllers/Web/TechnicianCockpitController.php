@@ -95,6 +95,7 @@ class TechnicianCockpitController extends Controller
             'cipp_stage_remove_user_mfa_methods',
             'cipp_stage_set_legacy_per_user_mfa',
             'cipp_stage_assign_user_license',
+            'cipp_stage_assign_tenant_user_license',
             'cipp_stage_remove_user_license',
             'cipp_stage_convert_mailbox',
             'cipp_stage_set_mailbox_forwarding',

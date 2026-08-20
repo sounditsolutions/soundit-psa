@@ -619,6 +619,36 @@ class CippRestWriteClient
     }
 
     /**
+     * Verification read for the tenant-targeted licence write: the tenant's
+     * live user listing exactly as CIPP projects it. Uses the same credential
+     * set as the write it gates, so a UPN the caller typed can only ever be
+     * turned into an object id the SERVER read out of the resolved tenant.
+     *
+     * Queue-guarded at the source for the same reason listMailQuarantine() is
+     * (psa-lmex): an unguarded queue reply is an empty list, and an empty list
+     * here must be a refusal rather than "no such user" — but that polarity is
+     * a property of the caller, and this method must not depend on it.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function listUsers(string $tenantFilter): array
+    {
+        $body = $this->sendGet('api/ListUsers', ['tenantFilter' => $tenantFilter]);
+
+        CippQueueGuard::assertNotQueueBacked($body);
+
+        if (array_is_list($body)) {
+            return array_values(array_filter($body, 'is_array'));
+        }
+
+        $results = $body['Results'] ?? null;
+
+        return is_array($results) && array_is_list($results)
+            ? array_values(array_filter($results, 'is_array'))
+            : [];
+    }
+
+    /**
      * Verification read for the group-membership write gate: the tenant's
      * live group listing exactly as CIPP projects it. Uses the same
      * credential set as the write it gates, so the membership tool cannot
