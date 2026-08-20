@@ -129,6 +129,8 @@ class HuntressClientReadTest extends TestCase
         $this->assertSame(2, HuntressClient::retryDelaySeconds('', 1), 'no header → exponential default');
         $this->assertSame(4, HuntressClient::retryDelaySeconds('', 2));
         $this->assertSame(4, HuntressClient::retryDelaySeconds('soon', 2), 'non-numeric header → exponential default');
+        $this->assertSame(2, HuntressClient::retryDelaySeconds('-1', 1), 'negative header → exponential default, matching the write client');
+        $this->assertSame(4, HuntressClient::retryDelaySeconds('-5', 2, true), 'negative header falls back before the clamp is considered');
     }
 
     /**

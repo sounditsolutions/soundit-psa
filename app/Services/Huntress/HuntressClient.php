@@ -284,21 +284,22 @@ class HuntressClient
 
     /**
      * The 429 back-off for one attempt: the upstream Retry-After when it is a
-     * numeric value, else exponential (2s, 4s) — clamped to
+     * sane numeric value, else exponential (2s, 4s) — clamped to
      * RETRY_AFTER_CEILING_SECONDS only when $clamped is set, i.e. only for a
      * withClampedBackoff() clone on the claim-holding approve path. The
      * unclamped shape mirrors what HuntressWriteClient::retryDelaySeconds()
-     * feeds its own (always-on) clamp.
+     * feeds its own (always-on) clamp, and negative headers fall back to the
+     * exponential default exactly as they do there — without the guard a
+     * Retry-After of -1 would burn every attempt with zero delay.
      *
      * A present "0" stays distinguished from an absent header — PHP's ?: treats
      * the string "0" as falsy, which would wrongly ignore a server asking us to
-     * retry immediately; a negative value likewise means no wait (the caller
-     * sleeps only on a positive delay).
+     * retry immediately.
      */
     public static function retryDelaySeconds(string $retryAfterHeader, int $attempt, bool $clamped = false): int
     {
         $delay = 2 ** max(1, $attempt);
-        if (is_numeric($retryAfterHeader)) {
+        if (is_numeric($retryAfterHeader) && (int) $retryAfterHeader >= 0) {
             $delay = (int) $retryAfterHeader;
         }
 
