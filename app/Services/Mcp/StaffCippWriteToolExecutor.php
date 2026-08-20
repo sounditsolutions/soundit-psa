@@ -3431,10 +3431,21 @@ class StaffCippWriteToolExecutor
      * person), so its rails can run before it reads anything; this one's target
      * is a tenant object, so the VERIFICATION READ RUNS FIRST and the keys are
      * built from the object id it returns rather than the caller's typed
-     * address — see licenseTargetKey(). The single refusal that precedes the
-     * read is audited under a CLAIM key instead, because a claim is all that
-     * exists at that point; the two key prefixes differ, so no LIKE built from
-     * one can match a row carrying the other (licenseTargetClaimKey()).
+     * address — see licenseTargetKey(). Refusals that fire before the read have
+     * no object id to key on, and they do not all key alike. The one this
+     * method audits itself — the scope refusal raised by its own
+     * verifiedTenantUser() call — carries the CLAIM key, because validated
+     * $params provably exist by then; the two key prefixes differ, so no LIKE
+     * built from one can match a row carrying the other
+     * (licenseTargetClaimKey()). The refusals inside licenseTargetContext() are
+     * UNKEYED, all six of them: the upstream-identifier blocklist, the
+     * person-shape guard, the missing reason, the kill switch, client-not-found
+     * and the resolution catch — and the first three run before
+     * licenseTargetParams() has produced what licenseTargetClaimKey() needs.
+     * That is the family rule as licenseTargetContext() states it (claim key OR
+     * no key at all), so do not search this log for a target's pre-read
+     * refusals by claim-key prefix and read a clean result as "never
+     * attempted".
      *
      * SECOND, THERE IS NO DEDUP RAIL HERE OF EITHER KIND — not the exact-content
      * one, not an identity-keyed one. A licence seat is a recreatable target
@@ -3753,8 +3764,23 @@ class StaffCippWriteToolExecutor
      * NO ALREADY-EXECUTED RAIL RUNS HERE, and the absence is the design. Such a
      * rail did not merely mis-answer on this path — it advanced the approved run
      * to Done, so the grant it had declined to perform could not even be
-     * re-approved. Re-firing THIS run is already impossible without it:
-     * claimForExecution() fails on a Done run. What a SECOND run staged for the
+     * re-approved. ONCE THIS RUN IS Done, re-firing it needs no such rail:
+     * claimForExecution() does its CAS only from AwaitingApproval. Read that as
+     * a property of the Done STATE and not as an invariant of this method,
+     * because there is a window in which it does not hold: the upstream write
+     * commits BEFORE the executed row is written and before advanceTo(Done)
+     * runs, so a throw from either of those two — a DB error on the audit
+     * insert is the realistic one — reaches the catch (\Throwable) at the
+     * bottom, which calls releaseClaim() and returns the run to
+     * AwaitingApproval with the paid seat already assigned. The cooldown does
+     * not cover that window either: it matches 'executed' rows, and there the
+     * executed row is precisely what failed to write, so a re-approval sends a
+     * second ExecBulkLicense 'Add' for the same seat. The sibling family closes
+     * this window with an explicit $writeCommitted flag
+     * (StaffCalendarToolExecutor::approveStagedRun(), "no failure path below
+     * may return the run to AwaitingApproval"); THIS path carries no such flag,
+     * so what bounds the damage is the same fact that makes a post-cooldown
+     * duplicate tolerable below, not a rail. What a SECOND run staged for the
      * same target meets is the shared cooldown, which spans both of the family's
      * action_type names and DECLINES the approval — a refusal the operator can
      * see and retry, not a silent no-op — and only inside its window. Past that
