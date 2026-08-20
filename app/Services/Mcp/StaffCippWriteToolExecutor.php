@@ -4014,13 +4014,46 @@ class StaffCippWriteToolExecutor
      * and this method never calls it. Each verb calls it itself —
      * executeLicenseTargetDirect(), stageLicenseTargetAction(), and again in
      * approveLicenseTargetStagedRun()'s re-verify block — because each keys
-     * its own audit rows on the object id it returns, as does every keyed
-     * rail any of them does carry: the direct verb's cooldown and the staged
-     * verb's content hash. A DEDUP rail is NOT among them — a licence seat is
-     * a RECREATABLE target, so the direct and approve verbs carry no
-     * already-executed check at all (RECREATABLE_TARGET_STAGED_TOOLS; see
-     * licenseTargetKey()), and adding one back to match this paragraph would
-     * restore the false success their own comments record.
+     * every rail it carries on the object id it returns rather than on the
+     * address the caller typed, and so does every audit row written by a site
+     * that can see that id for itself. A refusal that fires BEFORE that call
+     * has no object id to key on, so it carries EITHER the claim key OR no key
+     * at all. Where the refusing site can see for itself that
+     * licenseTargetParams() has already produced validated $params, the row may
+     * be audited under licenseTargetClaimKey(), and ALL THREE verbs do that:
+     * executeLicenseTargetDirect() and stageLicenseTargetAction() for the
+     * refusal their own verifiedTenantUser() call raises, and
+     * approveLicenseTargetStagedRun() for its kill-switch and its
+     * re-verification refusal — a different prefix, so such a row can never be
+     * matched by a dedup or cooldown LIKE built from licenseTargetKey().
+     * Everywhere else the row is UNKEYED: every refusal this method itself
+     * writes, and in approveLicenseTargetStagedRun() the three earliest
+     * payload/client refusals, its resolution catch, and its sweep-up catch —
+     * which is also the one row this family writes AFTER a successful
+     * verification without a key, because that catch is shared by throw sites
+     * on both sides of it and cannot know which identity was in hand. Note that
+     * "can see for itself" is the test and not "do $params exist": this
+     * method's single resolution catch is entered from four throw sites and
+     * cannot know which one fired, so it stays unkeyed even on the
+     * SKU-entitlement refusal, where $params provably does exist by then.
+     * Unkeyed is the honest shape there, not an omission; so do not search
+     * this log for a target's refusals by claim-key prefix alone and read a
+     * clean result as "never attempted".
+     *
+     * DO NOT READ A RAIL INVENTORY OUT OF THIS DOCBLOCK, and do not write a
+     * new one into it. WHICH cooldown, content-hash and awaiting-run rails
+     * are in force is each verb's own decision, the three do not agree with
+     * one another, and the set has already had to be corrected here more
+     * than once. The three functions named above are the enforcement and the
+     * only current answer; read the one you are calling.
+     *
+     * One NEGATIVE belongs here, because it is a design decision rather than
+     * an inventory: a licence seat is a RECREATABLE target — the staged verb
+     * is listed in RECREATABLE_TARGET_STAGED_TOOLS — so the already-executed
+     * dedup rail that gates the person-path tools is deliberately not in
+     * force anywhere in this family. Adding one back would answer a re-grant
+     * as already done without reading the tenant at all, which is the false
+     * success the comments at that constant's guards record.
      *
      * WHAT THAT VALIDATION DOES NOT ESTABLISH — read as a description of the
      * VERB's rail, since none of it runs in this method: the live-listing
@@ -4028,39 +4061,54 @@ class StaffCippWriteToolExecutor
      * for the verb that calls it, it closes absent, ambiguous, cross-tenant
      * and disabled targets. It closes ACTIVELY-PSA-MAPPED targets ONLY WHERE
      * THE MAPPING IS COMPLETE: assertNoPsaPersonMapping() weighs only Person
-     * rows carrying BOTH cipp_upn and cipp_user_id, so an ACTIVE but HALF-
-     * mapped person — a shape the contact sync itself produces — passes as
-     * though unmapped, with mapped_inactive_person_id null, no held-only
-     * rail, no confirm_upn and a null person linkage on the audit row. (That
-     * mapping check is a local PSA Person query, not part of the CIPP listing
-     * read.) The DEACTIVATED half is deliberately not closed — but again ONLY
-     * WHERE THE MAPPING IS COMPLETE, because that same completeness filter
-     * runs before any is_active branching: for a COMPLETELY mapped
-     * deactivated person, verifiedTenantUser() hands that person id back as
+     * rows carrying BOTH cipp_upn and cipp_user_id, so an ACTIVE but
+     * HALF-mapped person — a shape the contact sync itself produces — passes
+     * as though unmapped, with mapped_inactive_person_id null — so every
+     * consequence keyed on that value reads the target as person-less:
+     * executeLicenseTargetDirect()'s held-only refusal does not fire, the
+     * staged card asserts positively that the PSA holds no person record for
+     * this address, and the audit summary carries no mapped-person
+     * annotation. (That mapping check is a local PSA Person
+     * query, not part of the CIPP listing read.) The DEACTIVATED half is
+     * deliberately not closed — but again ONLY WHERE THE MAPPING IS COMPLETE,
+     * because that same completeness filter runs before any is_active
+     * branching: for a COMPLETELY mapped deactivated person,
+     * verifiedTenantUser() hands that person id back as
      * mapped_inactive_person_id, and what happens next is each caller's own
-     * posture, not a shared rail: executeLicenseTargetDirect() refuses it
-     * held-only, stageLicenseTargetAction() serves it onto the approval card
-     * (verified_mapped_person_id), and approveLicenseTargetStagedRun()
-     * declines on mapping drift against that card. A HALF-mapped DEACTIVATED
-     * person gets NONE of that: it is dropped by the completeness filter
-     * exactly like the active half-mapped case, comes back null, and the seat
-     * is granted with no human ever shown the record. Nor does the check
-     * establish that the address is the one the operator MEANT: two real,
-     * enabled, unmapped addresses in the same tenant pass every gate here, and
-     * unlike the person-path front door there is no opaque-id/confirm_upn
-     * cross-check to catch the substitution. Wrong-but-real is closed by
-     * nothing in this method and by nothing in the verification either. That
-     * gap is why the direct tenant verbs stay ungranted absent a need the
-     * staged twin cannot meet (#525).
+     * posture and not a shared rail — executeLicenseTargetDirect(),
+     * stageLicenseTargetAction() and approveLicenseTargetStagedRun() each
+     * take a different one, so read the one you are calling rather than any
+     * summary of them here.
+     *
+     * A HALF-mapped DEACTIVATED person gets none of those postures: it is
+     * dropped by the completeness filter exactly like the active half-mapped
+     * case, comes back null, and the seat is granted with no human ever shown
+     * the record.
+     *
+     * Nor does the check establish that the address is the one the operator
+     * MEANT: two real, enabled, unmapped addresses in the same tenant pass
+     * every gate here, and unlike the person-path front door there is no
+     * opaque-id/confirm_upn cross-check to catch the substitution.
+     * Wrong-but-real is closed by nothing in this method and by nothing in
+     * the verification either. That gap is why the direct tenant verbs stay
+     * ungranted absent a need the staged twin cannot meet (#525).
      *
      * SO, FOR A FURTHER VERB ON THIS FRONT DOOR: what this method hands back
      * is a client, a tenant, a ticket, validated params and a resolved
      * licence — and nothing about the human. Call verifiedTenantUser()
-     * yourself before anything reaches upstream, and key the write, the audit
-     * and the dedup/cooldown rows on the object id it returns, never on
-     * params['target_upn'] — that is still the caller's typed claim, checked
-     * here only for length and email shape by licenseTargetParams(). Then
-     * choose your mapped-inactive posture explicitly.
+     * yourself before anything reaches upstream, and key the write and
+     * whatever dedup/cooldown rows you decide to carry on the object id it
+     * returns, never on params['target_upn'] — that is still the caller's
+     * typed claim, checked here only for length and email shape by
+     * licenseTargetParams(). Audit rows written after that call follow the
+     * same rule; a refusal that fires before it still has to leave a row, so
+     * what that row can carry depends on what the refusing site can see for
+     * itself: where validated $params are provably in hand there, key it on
+     * licenseTargetClaimKey($params); where the site cannot know that — a
+     * catch shared by several throw sites, as this method's is — leave it
+     * unkeyed, as every refusal here does. Never the raw claim, and never
+     * licenseTargetKey() with a stand-in identity. Then choose your
+     * mapped-inactive posture explicitly.
      *
      * (Measured the hard way: the first cut of this family allowed only
      * sku_id, on a reading of the key list that had been truncated before
