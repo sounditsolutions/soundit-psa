@@ -41,6 +41,8 @@ class CippRestWriteClientTest extends TestCase
         $this->assertContains('resetUserPassword', $methods);
         $this->assertContains('listDirectoryRoles', $methods);
         $this->assertContains('removeDirectoryRoleMember', $methods);
+        $this->assertContains('listUserMailboxRules', $methods);
+        $this->assertContains('removeMailboxRule', $methods);
         $this->assertContains('releaseQuarantineMessage', $methods);
         $this->assertContains('addTenantAllowListEntry', $methods);
         $this->assertContains('listMailQuarantine', $methods);
@@ -229,6 +231,250 @@ class CippRestWriteClientTest extends TestCase
         Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ListRoles?tenantFilter=acme.onmicrosoft.com'
             && $request->method() === 'GET'
             && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN'));
+    }
+
+    public function test_remove_mailbox_rule_posts_exec_remove_mailbox_rule_shape(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response([
+                'access_token' => 'WRITE-TOKEN',
+                'expires_in' => 3600,
+            ]),
+            'cipp.example.test/api/*' => Http::response(['Results' => 'Successfully deleted mailbox rule', 'raw' => 'not returned']),
+        ]);
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $result = $client->removeMailboxRule(
+            'acme.onmicrosoft.com',
+            'alex@acme.example',
+            'mbx-guid-1\\rule-id-1',
+            'Move invoices to RSS Feeds',
+        );
+
+        // Discard-body path: the caller only learns success/status, never the upstream body.
+        $this->assertSame(['success' => true, 'status' => 200], $result);
+        $this->assertStringNotContainsString('not returned', json_encode($result));
+
+        // Source-pinned body (CIPP-API master, verified 2026-08-19,
+        // Invoke-ExecRemoveMailboxRule.ps1): TenantFilter, userPrincipalName,
+        // ruleId (the rule's upstream Identity, from which upstream derives
+        // MailboxObjectId), and ruleName (used for CIPP's own log line). The
+        // endpoint calls Remove-CIPPMailboxRule WITHOUT -RemoveAllRules, so
+        // exactly one rule is deleted; failure is HTTP 500, which send() throws on.
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecRemoveMailboxRule'
+            && $request->method() === 'POST'
+            && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN')
+            && $request->data() === [
+                'TenantFilter' => 'acme.onmicrosoft.com',
+                'userPrincipalName' => 'alex@acme.example',
+                'ruleId' => 'mbx-guid-1\\rule-id-1',
+                'ruleName' => 'Move invoices to RSS Feeds',
+            ]);
+    }
+
+    public function test_remove_mailbox_rule_rejects_empty_inputs_before_any_request(): void
+    {
+        Http::fake();
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        try {
+            $client->removeMailboxRule('acme.onmicrosoft.com', '  ', 'mbx-guid-1\\rule-id-1', 'Move invoices to RSS Feeds');
+            $this->fail('Expected CippClientException for empty UPN');
+        } catch (CippClientException $e) {
+            $this->assertStringContainsString('owner UPN is required', $e->getMessage());
+        }
+
+        try {
+            $client->removeMailboxRule('acme.onmicrosoft.com', 'alex@acme.example', '  ', 'Move invoices to RSS Feeds');
+            $this->fail('Expected CippClientException for empty rule id');
+        } catch (CippClientException $e) {
+            $this->assertStringContainsString('rule id is required', $e->getMessage());
+        }
+
+        try {
+            $client->removeMailboxRule('acme.onmicrosoft.com', 'alex@acme.example', 'mbx-guid-1\\rule-id-1', '  ');
+            $this->fail('Expected CippClientException for empty rule name');
+        } catch (CippClientException $e) {
+            $this->assertStringContainsString('rule name is required', $e->getMessage());
+        }
+
+        Http::assertNothingSent();
+    }
+
+    public function test_list_user_mailbox_rules_gets_live_listing_with_tenant_filter_and_user_id(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response([
+                'access_token' => 'WRITE-TOKEN',
+                'expires_in' => 3600,
+            ]),
+            'cipp.example.test/api/ListUserMailboxRules*' => Http::response([
+                [
+                    'Identity' => 'mbx-guid-1\\rule-id-1',
+                    'Name' => 'Move invoices to RSS Feeds',
+                    'Enabled' => true,
+                ],
+            ]),
+        ]);
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $rules = $client->listUserMailboxRules('acme.onmicrosoft.com', 'alex@acme.example');
+
+        $this->assertCount(1, $rules);
+        $this->assertSame('mbx-guid-1\\rule-id-1', $rules[0]['Identity']);
+        $this->assertSame('Move invoices to RSS Feeds', $rules[0]['Name']);
+
+        // Source-pinned read: ListUserMailboxRules runs Get-InboxRule -Mailbox $UserID
+        // (a LIVE per-mailbox Exchange call — see CippMcpToolRelay's TOOL_MAP notes),
+        // and its user parameter is UserID, not the camelCase userId its siblings take.
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ListUserMailboxRules?TenantFilter=acme.onmicrosoft.com&UserID=alex%40acme.example'
+            && $request->method() === 'GET'
+            && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN'));
+    }
+
+    public function test_list_user_mailbox_rules_unwraps_results_envelope_and_rejects_empty_upn(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/ListUserMailboxRules*' => Http::response([
+                'Results' => [['Identity' => 'mbx-guid-1\\rule-id-2', 'Name' => 'Sort newsletters']],
+            ]),
+        ]);
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $rules = $client->listUserMailboxRules('acme.onmicrosoft.com', 'alex@acme.example');
+
+        $this->assertCount(1, $rules);
+        $this->assertSame('Sort newsletters', $rules[0]['Name']);
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('owner UPN is required');
+        $client->listUserMailboxRules('acme.onmicrosoft.com', '  ');
+    }
+
+    public function test_list_user_mailbox_rules_throws_on_a_queue_backed_payload_rather_than_reporting_no_rules(): void
+    {
+        // ListUserMailboxRules is a LIVE Exchange call and should never answer
+        // with a queue marker — but the guard runs at the source anyway
+        // (listMailQuarantine precedent, psa-lmex): on the removal gate an
+        // unguarded "still loading" would decline as "no such rule" — the wrong
+        // reason — and the day this read backs an answer it would be a false
+        // all-clear.
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/ListUserMailboxRules*' => Http::response([
+                'Results' => [],
+                'Metadata' => ['QueueMessage' => 'Still loading data for acme.onmicrosoft.com. Please check back in 1 minute'],
+            ]),
+        ]);
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('Still loading data');
+
+        $client->listUserMailboxRules('acme.onmicrosoft.com', 'alex@acme.example');
+    }
+
+    public function test_list_user_mailbox_rules_throws_on_an_unrecognized_payload_rather_than_reporting_no_rules(): void
+    {
+        // The removal gate reports "no rules" to the approver as 'No inbox rule
+        // named "X" exists on this mailbox', so an HTTP-200 error envelope, a
+        // non-array body, or any shape drift must hard-error here rather than
+        // collapse to []: a degraded read must never read as a clean mailbox
+        // (psa-7lgo rule 3), or a technician closes a live BEC ticket.
+        foreach ([
+            '{"Results":"Failed to connect to Exchange"}',
+            '{"error":{"code":"Forbidden"}}',
+            '"unexpected-scalar"',
+            'null',
+        ] as $payload) {
+            Http::fake([
+                'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+                'cipp.example.test/api/ListUserMailboxRules*' => Http::response($payload, 200, ['Content-Type' => 'application/json']),
+            ]);
+
+            try {
+                $this->emailSecurityClient()->listUserMailboxRules('acme.onmicrosoft.com', 'alex@acme.example');
+                $this->fail("Expected CippClientException for upstream body {$payload}");
+            } catch (CippClientException $e) {
+                $this->assertMatchesRegularExpression('/unrecognized payload|unreadable payload/', $e->getMessage(), $payload);
+            }
+        }
+    }
+
+    public function test_list_user_mailbox_rules_throws_on_a_non_object_entry_rather_than_filtering_it_away(): void
+    {
+        // The shape guard has to reach the ELEMENTS. CIPP answers a failed
+        // Exchange call HTTP 200 with the error as a bare string inside a list,
+        // and an empty object is the other degraded shape. Filtering non-objects
+        // out is the same fault as collapsing the body to []: the removal gate
+        // reports whatever survives as authoritative, so a listing that could
+        // not be read becomes 'No inbox rule named "X" exists on this mailbox'
+        // — a live BEC forwarding rule closed as clean (psa-7lgo rule 3, one
+        // level down).
+        foreach ([
+            '["Failed to connect to Exchange"]',
+            '{"Results":["Failed to connect to Exchange"]}',
+            '[{"Identity":"mbx-guid-1\\\\rule-id-1","Name":"Move invoices to RSS Feeds"},"Failed to connect to Exchange"]',
+            '[null]',
+            '[123]',
+        ] as $payload) {
+            Http::fake([
+                'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+                'cipp.example.test/api/ListUserMailboxRules*' => Http::response($payload, 200, ['Content-Type' => 'application/json']),
+            ]);
+
+            try {
+                $this->emailSecurityClient()->listUserMailboxRules('acme.onmicrosoft.com', 'alex@acme.example');
+                $this->fail("Expected CippClientException for upstream body {$payload}");
+            } catch (CippClientException $e) {
+                $this->assertStringContainsString('non-object entry', $e->getMessage(), $payload);
+            }
+        }
+    }
+
+    public function test_list_user_mailbox_rules_still_reads_a_genuinely_empty_mailbox_as_empty(): void
+    {
+        // The element guard must not turn "this mailbox has no rules" into a
+        // refusal — that would decline every clean-mailbox approval and take the
+        // remediation path with it. An empty LIST is a real answer; only a
+        // non-object ELEMENT is drift.
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/ListUserMailboxRules*' => Http::response('[]', 200, ['Content-Type' => 'application/json']),
+        ]);
+
+        $this->assertSame([], $this->emailSecurityClient()->listUserMailboxRules('acme.onmicrosoft.com', 'alex@acme.example'));
     }
 
     public function test_list_mail_quarantine_throws_on_a_queue_backed_payload_rather_than_reporting_no_rows(): void

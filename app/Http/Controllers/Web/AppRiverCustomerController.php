@@ -20,7 +20,9 @@ class AppRiverCustomerController extends Controller
         }
 
         try {
-            $client = new AppRiverClient;
+            // Resolved from the container (not `new`) so tests can bind a transport
+            // mock — same pattern as the UniFi site-mapping page.
+            $client = app(AppRiverClient::class);
 
             $customers = $client->getCustomers();
         } catch (AppRiverClientException $e) {
@@ -85,7 +87,7 @@ class AppRiverCustomerController extends Controller
         }
 
         try {
-            $client = new AppRiverClient;
+            $client = app(AppRiverClient::class);
 
             $customers = $client->getCustomers();
         } catch (AppRiverClientException $e) {
@@ -106,6 +108,17 @@ class AppRiverCustomerController extends Controller
             $customerName = $customer['Name'] ?? null;
 
             if (! $customerId || ! $customerName) {
+                continue;
+            }
+
+            // Only Resold customers are auto-mapped. A Referred customer buys from
+            // AppRiver directly and the partner API refuses its subscriptions by
+            // design, so auto-matching one creates a mapping the sync can never
+            // serve; 'Partner' is our own record. Strict allowlist rather than a
+            // Referred blocklist because this path CREATES state on a name
+            // coincidence alone — a customer with no readable type stays unmapped
+            // here and can still be mapped by hand, where an operator decides.
+            if (($customer['CustomerType'] ?? null) !== 'Resold') {
                 continue;
             }
 

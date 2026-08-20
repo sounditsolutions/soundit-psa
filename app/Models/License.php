@@ -115,6 +115,9 @@ class License extends Model
     /**
      * Deactivate (suspend + zero) all licenses for the given clients and vendor(s).
      * Used when integration mappings are removed from clients.
+     *
+     * A queued seat change does not survive suspension — see the note on
+     * scheduled_quantity in deactivateOrphaned().
      */
     public static function deactivateForClients($clientIds, string|array $vendors): int
     {
@@ -133,6 +136,7 @@ class License extends Model
             ->where(fn ($q) => $q->where('quantity', '>', 0)->orWhere('status', 'active'))
             ->update([
                 'quantity' => 0,
+                'scheduled_quantity' => null,
                 'status' => 'suspended',
                 'synced_at' => now(),
             ]);
@@ -141,6 +145,36 @@ class License extends Model
     /**
      * Deactivate licenses where the client no longer has the vendor mapping.
      * Called at the end of each sync service to clean up orphans from removed mappings.
+     *
+     * scheduled_quantity is cleared with the rest. It holds a seat reduction the
+     * vendor refused inside its refundable window, to be retried on a later sync, and
+     * removing the mapping is an operator saying this PSA no longer manages the
+     * licence at all — there is no subscription left to retry the reduction against.
+     *
+     * The invariant is module-wide and these two methods are not the interesting case:
+     * a licence that has been zeroed and suspended carries no pending seat change,
+     * because a queued value standing above quantity 0 is an outbound seat INCREASE
+     * waiting for a retry pass to pick it up. AppRiverLicenseSyncService's own stale
+     * cleanup holds to it too, and logs each discarded instruction as it goes, since
+     * its trigger is a vendor response rather than an operator. Only AppRiver writes
+     * the column today; the invariant belongs wherever a licence is zeroed, not only
+     * where the hazard has already been demonstrated.
+     *
+     * Read the direction carefully, because only one of the two survives. ZEROED AND
+     * SUSPENDED IMPLIES NO QUEUED CHANGE still holds — every writer of that state
+     * clears the column in the same update. The converse does NOT: a suspended
+     * SUBSCRIPTION no longer means a zeroed, suspended licence ROW. AppRiver's sync
+     * holds a licence out of cleanup while the vendor reports its subscription
+     * Suspended or Pending, so the row stays active and at its seat count. Code that
+     * wants "this subscription is interrupted" cannot read that off the row's status,
+     * and this docblock is not evidence that it can.
+     *
+     * What does still hold everywhere is the rule underneath: a queued seat change
+     * does not survive a change of state in the subscription it was written against.
+     * The two bulk methods here enforce it by zeroing; AppRiver's status filter
+     * enforces it by clearing the column where it observes the vendor saying so, on a
+     * row it otherwise leaves alone. A new consumer needs to say which of the two it
+     * is relying on.
      */
     public static function deactivateOrphaned(string|array $vendors, string $mappingColumn): int
     {
@@ -154,6 +188,7 @@ class License extends Model
             ->where(fn ($q) => $q->where('quantity', '>', 0)->orWhere('status', 'active'))
             ->update([
                 'quantity' => 0,
+                'scheduled_quantity' => null,
                 'status' => 'suspended',
                 'synced_at' => now(),
             ]);

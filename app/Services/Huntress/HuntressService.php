@@ -6,6 +6,7 @@ use App\Enums\AlertSeverity;
 use App\Enums\AlertSource;
 use App\Enums\AlertStatus;
 use App\Enums\NoteType;
+use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
 use App\Enums\TicketType;
@@ -61,9 +62,17 @@ class HuntressService
             ];
         }
 
-        // Dedup: extract incident report ID from body URL, fall back to subject hash
+        // Dedup: extract incident report ID from body URL, fall back to subject hash.
+        // BOTH URL forms count: `infection_reports/{id}` is the legacy spelling and
+        // `incident_reports/{id}` the current one — same pair HuntressIncidentReconcileService
+        // ::extractIncidentId accepts. Matching only the legacy form left current-form incident
+        // reports without a dedup key, without an alert source id, and without a type signal.
+        // Host is matched the same way as the record-path guard below: huntress.io or a
+        // subdomain of it, never a host that merely ends in that string (`phish-huntress.io`).
+        // This capture drives the incident signal, the dedup key and the Alert source_alert_id,
+        // so a lookalike host here would let a bulletin control classification and alert identity.
         $incidentReportUrl = null;
-        if (preg_match('#(https://\S+huntress\.io/org/\d+/infection_reports/\d+)#', $description, $m)) {
+        if (preg_match('#(https://(?:[\w-]+\.)*huntress\.io/org/\d+/(?:infection|incident)_reports/\d+)#', $description, $m)) {
             $incidentReportUrl = $m[1];
         }
 
@@ -74,6 +83,63 @@ class HuntressService
         $escalationId = null;
         if (preg_match('#escalations/(\d+)#', $description, $m)) {
             $escalationId = (int) $m[1];
+        }
+
+        // Vendor marketing bulletins ride this same endpoint. Classification is AFFIRMATIVE in
+        // both directions, and the incident default is what survives anything ambiguous.
+        //
+        // Incident signal: a word-bounded severity token or the "Incident on agent (org)" shape
+        // in the title, or an org-scoped per-tenant RECORD link in the body — the incident-report
+        // URL (legacy and current spelling alike), the escalation URL, or any other per-tenant
+        // record path these parsers do not know yet (e.g. the per-identity ITDR paths going live
+        // 2026-08-19), recognised by record-type path segments ending in a numeric id. The id may
+        // be followed by a sub-resource (/identities/7788/logins is still a per-tenant record).
+        //
+        // "Org-scoped" ALONE is not that signal. A bulletin's call to action is routinely an
+        // org-scoped link — the observed "new ITDR dashboard" announcement links the tenant
+        // dashboard, and bulk mail carries per-org preferences/unsubscribe footers — so a
+        // landing page or a preferences path stays marketing. What keeps bulk mail out is the
+        // segment vocabulary: EVERY segment of the path — not just the first — must be outside
+        // the bulk-mail vocabulary (singular and plural alike, and a one-character segment is a
+        // link-wrapper hop, never a record type). That guard, not the id's position, is what
+        // rejects a year or a click-tracker id (/webinar/2026/register, /c/12345/unsubscribe) —
+        // requiring the digits to end the path would bury a nested real record. The link host
+        // must also be huntress.io or a subdomain of it, not merely a host containing that
+        // string.
+        //
+        // Vendor comms requires zero incident signals AND announcement language in the title.
+        // Absence of signal alone is NOT vendor comms: the signals are derived from the observed
+        // legacy EDR shapes, so an unrecognised real event — an ITDR "Unexpected Login Activity"
+        // notice carrying none of them — keeps the fail-open incident/Alert default rather than
+        // being buried at service_request/p4 with no monitoring visibility.
+        $hasIncidentSignal = $incidentReportUrl !== null
+            || $escalationId !== null
+            || preg_match(
+                '#https://(?:[\w-]+\.)*huntress\.io/org/\d+'
+                .'(?:/(?!(?:unsubscribe|opt[_-]?out|subscribe|preferences|email[_-]?preferences'
+                .'|emails?|mail|campaigns?|webinars?|blogs?|newsletters?|events?|news'
+                .'|resources?|pricing|[a-z])(?![\w-]))[\w-]+)+'
+                .'/\d+(?![\w-])#i',
+                $description
+            ) === 1
+            || preg_match('/\b(CRITICAL|HIGH|LOW)\b/i', $rawSubject) === 1
+            || preg_match('/Incident\s+on\s+.+\(/i', $rawSubject) === 1;
+
+        $hasAnnouncementLanguage = preg_match(
+            '/\b(?:tomorrow|coming\s+(?:soon|on\s|\w+\s+\d+)|now\s+available|early\s+access|introducing|announcing|announcement|webinar|sign\s+up|register\s+now|new\s+feature|release\s+notes|generally\s+available|goes?\s+live|now\s+live)\b/i',
+            $rawSubject
+        ) === 1;
+
+        $isVendorComms = ! $hasIncidentSignal && $hasAnnouncementLanguage;
+
+        $type = TicketType::Incident;
+        if ($isVendorComms) {
+            $type = TicketType::ServiceRequest;
+            $priority = TicketPriority::P4;
+
+            Log::info('[Huntress CW] Announcement language with no incident signals — classifying as vendor communication', [
+                'subject' => $subject,
+            ]);
         }
 
         $duplicate = null;
@@ -133,11 +199,11 @@ class HuntressService
             'description' => $description,
             'client_id' => $client?->id,
             'priority' => $priority->value,
-            'type' => TicketType::Incident->value,
+            'type' => $type->value,
             'source' => TicketSource::Huntress->value,
         ];
 
-        $ticket = DB::transaction(function () use ($ticketData, $assetId, $systemUserId) {
+        $ticket = DB::transaction(function () use ($ticketData, $assetId, $systemUserId, $isVendorComms) {
             $ticket = $this->ticketService->createTicket($ticketData, $systemUserId);
 
             // Attach asset if found
@@ -148,7 +214,9 @@ class HuntressService
             // Audit note
             $this->ticketService->addNote(
                 $ticket,
-                'Submitted via Huntress incident report.',
+                $isVendorComms
+                    ? 'Submitted via Huntress integration; classified as vendor communication (vendor announcement language, no incident signals in payload).'
+                    : 'Submitted via Huntress incident report.',
                 NoteType::StatusChange,
                 true,
                 $systemUserId,
@@ -158,6 +226,18 @@ class HuntressService
         });
 
         $ticket->load(['client', 'contact']);
+
+        // Vendor comms are not monitoring events — no Alert row, the ticket is the whole record.
+        if ($isVendorComms) {
+            Log::info('[Huntress CW] Created vendor-communication ticket', [
+                'ticket_id' => $ticket->id,
+                'client_id' => $client?->id,
+                'priority' => $priority->value,
+                'source' => 'huntress',
+            ]);
+
+            return T2TFieldMapper::ticketToCwFormat($ticket);
+        }
 
         // Create unified Alert in Ticketed status — CW compat requires ticket, alert provides monitoring visibility
         $assetForAlert = $assetId ? Asset::find($assetId) : null;

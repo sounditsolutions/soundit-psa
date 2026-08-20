@@ -102,6 +102,7 @@ class TechnicianCockpitController extends Controller
             'cipp_stage_set_mailbox_out_of_office',
             'cipp_stage_set_mailbox_delegate',
             'cipp_stage_remove_directory_role',
+            'cipp_stage_remove_mailbox_rule',
             'cipp_stage_release_quarantine_message',
             'cipp_stage_add_tenant_allow_entry',
             'cipp_stage_wipe_device',

@@ -31,13 +31,18 @@ class AssistantService
      *
      * @return array{message: AssistantMessage, tools_used: string[]}
      *
-     * @throws \RuntimeException
+     * @throws AssistantUserFacingException on a guard failure (provider not
+     *                                      configured, assistant disabled, conversation or daily limit reached).
+     *                                      The controller maps these to a 422 with the message shown to the user.
+     *                                      Anything else — a QueryException from the reads below included — must
+     *                                      NOT reach that arm; it belongs to the controller's \Throwable arm,
+     *                                      which logs it and returns a fixed string.
      */
     public function sendMessage(AssistantConversation $conversation, string $userMessage): array
     {
         // Validate AI is configured with Anthropic
         if (! AiConfig::isConfigured() || AiConfig::provider() !== 'anthropic') {
-            throw new \RuntimeException('AI assistant requires Anthropic provider to be configured.');
+            throw new AssistantUserFacingException('AI assistant requires Anthropic provider to be configured.');
         }
 
         // psa-uw2o: defence in depth behind the `assistant.enabled` route gate.
@@ -45,14 +50,14 @@ class AssistantService
         // caller, so a future entry point cannot reach the tool loop — and its
         // two write tools — around the operator's off switch.
         if (! AssistantConfig::isEnabled()) {
-            throw new \RuntimeException('The AI assistant is disabled.');
+            throw new AssistantUserFacingException('The AI assistant is disabled.');
         }
 
         // Check conversation length
         $messageCount = $conversation->messages()->count();
         $maxMessages = AssistantConfig::maxMessagesPerConversation();
         if ($messageCount >= $maxMessages) {
-            throw new \RuntimeException("Conversation has reached the {$maxMessages} message limit. Please start a new conversation.");
+            throw new AssistantUserFacingException("Conversation has reached the {$maxMessages} message limit. Please start a new conversation.");
         }
 
         // Check daily token limit
@@ -62,7 +67,7 @@ class AssistantService
             ->sum(DB::raw('input_tokens + output_tokens'));
 
         if ($todayTokens >= $dailyLimit) {
-            throw new \RuntimeException('Daily AI assistant token limit reached. Try again tomorrow.');
+            throw new AssistantUserFacingException('Daily AI assistant token limit reached. Try again tomorrow.');
         }
 
         // Store user message
@@ -174,7 +179,7 @@ class AssistantService
         // a promise this method would have quietly falsified. Same class of
         // overclaim as the "read-only tools" docblock this change exists to fix.
         if (! AssistantConfig::isEnabled()) {
-            throw new \RuntimeException('The AI assistant is disabled.');
+            throw new AssistantUserFacingException('The AI assistant is disabled.');
         }
 
         $body = "**AI Assistant:**\n\n".$message->content;

@@ -466,6 +466,7 @@ class AssistantToolExecutor
         }
 
         $notes = TicketNote::where('ticket_id', $ticketId)
+            ->with('attachments')
             ->orderByDesc('noted_at')
             ->limit(10)
             ->get();
@@ -505,11 +506,15 @@ class AssistantToolExecutor
             'resolved_at' => $ticket->resolved_at?->toDateTimeString(),
             'resolution' => $ticket->resolution,
             'applicable_sop' => $this->applicableSopBlock($ticket),
+            // Ticket-level attachments only; note-level ones ride on their note
+            // below, preserving which message each file arrived with.
+            'attachments' => $this->attachmentRefs($ticket->attachments),
             'recent_notes' => $notes->map(fn (TicketNote $n) => [
                 'type' => $n->note_type?->value,
                 'author' => $n->author?->name ?? $n->author_name ?? 'System',
                 'body' => mb_substr(strip_tags($n->body ?? ''), 0, 2000),
                 'date' => $n->noted_at?->toDateTimeString(),
+                'attachments' => $this->attachmentRefs($n->attachments),
             ])->toArray(),
             // Compact call summary; full transcripts via get_ticket_calls.
             'calls' => $calls->map(fn (PhoneCall $c) => [
@@ -776,6 +781,7 @@ class AssistantToolExecutor
         // chronologically. The old ASC+limit dropped the tail on busy tickets,
         // so "what did the client say last" could be absent entirely (psa-m7re).
         $notes = TicketNote::where('ticket_id', $ticket->id)
+            ->with('attachments')
             ->orderByDesc('noted_at')
             ->limit(20)
             ->get()
@@ -790,7 +796,30 @@ class AssistantToolExecutor
             'body' => mb_substr(strip_tags($n->body ?? ''), 0, 4000),
             'date' => $n->noted_at?->toDateTimeString(),
             'is_private' => $n->is_private,
+            'attachments' => $this->attachmentRefs($n->attachments),
         ])->toArray();
+    }
+
+    /**
+     * Metadata-only refs for attachments on a served note/ticket, so an agent
+     * caller can discover attachment_ids to pass to get_ticket_attachment.
+     * strip_tags on served bodies removes the /attachments/{id}/... links the
+     * cockpit renders, and inline email images never had a body link at all —
+     * so without these refs, real attachments were undiscoverable over MCP
+     * (T-22774, T-22777). Refs only, never bytes: fetching stays behind
+     * get_ticket_attachment's ceilings and same-shaped refusals.
+     *
+     * @param  \Illuminate\Support\Collection<int, Attachment>  $attachments
+     */
+    private function attachmentRefs($attachments): array
+    {
+        return $attachments->map(fn (Attachment $a) => [
+            'attachment_id' => $a->id,
+            'filename' => $a->original_filename,
+            'mime_type' => $a->mime_type,
+            'size_bytes' => $a->size_bytes,
+            'is_inline' => (bool) $a->is_inline,
+        ])->values()->toArray();
     }
 
     /**

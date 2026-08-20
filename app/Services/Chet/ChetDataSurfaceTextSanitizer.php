@@ -14,12 +14,28 @@ class ChetDataSurfaceTextSanitizer
 
     public function sanitize(string $label, mixed $value, int $maxChars): string
     {
+        return $this->promptFence->fence($label, $this->redacted($value, $maxChars));
+    }
+
+    /**
+     * Exactly the text sanitize() puts INSIDE the fence — normalized, redacted,
+     * bounded and defanged the same way — but without the delimiter lines. For
+     * callers that must compare a value an agent read back THROUGH a fenced
+     * projection against its raw upstream source (a read->write round trip);
+     * never for emitting untrusted text into a prompt, which stays fenced.
+     * Shares redacted() with sanitize() so the two forms cannot drift.
+     */
+    public function sanitizedText(mixed $value, int $maxChars): string
+    {
+        return $this->promptFence->neutralizeUntrusted($this->redacted($value, $maxChars));
+    }
+
+    private function redacted(mixed $value, int $maxChars): string
+    {
         $text = is_scalar($value) ? (string) $value : '';
         $text = $this->promptFence->normalizeUntrusted($text);
-        $redacted = $this->redactor->redact($text);
-        $redacted = mb_substr($redacted, 0, $maxChars);
 
-        return $this->promptFence->fence($label, $redacted);
+        return mb_substr($this->redactor->redact($text), 0, $maxChars);
     }
 
     /**

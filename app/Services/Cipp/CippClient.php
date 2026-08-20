@@ -203,9 +203,67 @@ class CippClient
         return $this->get('api/ListCompliancePolicies', ['TenantFilter' => $tenantFilter]);
     }
 
-    public function listInactiveAccounts(string $tenantFilter): array
+    /**
+     * List the accounts CIPP considers inactive, or NULL when the tenant was not read.
+     *
+     * The caller clears cipp_inactive client-wide before re-flagging, so it has to be
+     * able to tell "CIPP says nobody is inactive" — which MUST clear stale flags —
+     * from "CIPP said nothing", which must not touch them. get() collapses both to []
+     * (json_decode(...) ?? []), so this endpoint reads through readList() instead.
+     */
+    public function listInactiveAccounts(string $tenantFilter): ?array
     {
-        return $this->get('api/ListInactiveAccounts', ['TenantFilter' => $tenantFilter]);
+        return $this->readList('api/ListInactiveAccounts', ['TenantFilter' => $tenantFilter]);
+    }
+
+    /**
+     * GET a list endpoint, returning null — not [] — when the response is not a
+     * readable list: an empty, null or unparseable body, or a JSON object that is not
+     * a {"Results": [...]} envelope (an {"error": ...} payload, say) — including a bare
+     * `{}`, and an envelope whose Results is a single row object rather than a list.
+     *
+     * A body that really parses to [] (or to {"Results": []}) returns [], and that IS
+     * a genuine "nothing here" the caller may act on. Queue-backed answers throw
+     * exactly as they do in get() — "still loading" is neither of the two.
+     */
+    private function readList(string $endpoint, array $params = []): ?array
+    {
+        $response = $this->sendRequest('GET', $endpoint, ['query' => $params], 'application/json');
+
+        $body = (string) $response->getBody();
+
+        // Decoded twice on purpose. The assoc view is what the queue guard and the
+        // caller read, but assoc mode collapses JSON container identity: `{}` arrives
+        // as `[]`, which array_is_list() then reports as a verified-empty list — and the
+        // inactive pass acts on that by clearing cipp_inactive across the whole client.
+        // The identity decode (objects → stdClass) is the only thing that can say "that
+        // was an object" — the same reason ServosityClient::getJson() preserves it.
+        $data = json_decode($body, true);
+        $identity = json_decode($body);
+
+        if (! is_array($data)) {
+            Log::warning("[CippClient] {$endpoint} returned an unreadable body — treating as unread, not as empty");
+
+            return null;
+        }
+
+        // "Still loading" is not "nothing found" — same guard, same reason, as get().
+        CippQueueGuard::assertNotQueueBacked($data);
+
+        if ($identity instanceof \stdClass) {
+            // An object body carries rows only as a {"Results": [...]} envelope, and
+            // Results must itself be a JSON array: PowerShell's ConvertTo-Json emits a
+            // bare object for a one-element result, and one row is not a list of rows.
+            if (! property_exists($identity, 'Results') || ! is_array($identity->Results)) {
+                Log::warning("[CippClient] {$endpoint} returned an object that is not a Results list — treating as unread, not as empty");
+
+                return null;
+            }
+
+            return $data['Results'];
+        }
+
+        return array_is_list($data) ? $data : null;
     }
 
     /**
