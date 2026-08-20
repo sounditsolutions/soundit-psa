@@ -54,12 +54,18 @@ is not even published as live (`unavailable_config`).
 
 The Huntress account can be shared across MSPs (the P1 reads' data-boundary
 rule). The staged twin is CLIENT-SCOPED and v1 resolves only escalations whose
-`organizations[]` include the calling client's `huntress_organization_id`:
+`organizations[]` is EXACTLY the calling client's `huntress_organization_id`:
 
 - Stage time: a LIVE `GET /escalations/{id}` (read client) must show the
-  escalation exists, is not already resolved, and touches the calling client's
-  mapped organization. Already-resolved short-circuits idempotently with
-  nothing staged.
+  escalation exists, is not already resolved, and is associated with the
+  calling client's mapped organization and no other. Already-resolved
+  short-circuits idempotently with nothing staged.
+- **Multi-organization escalations are refused in v1**: the POST resolves the
+  whole escalation record, not a per-org slice, so an any-of match would let
+  one PSA client's approver close a SOC record covering another MSP's tenant —
+  a tenant with no PSA client, no ticket and no approver in this system.
+  Requiring the sole-org match keeps the write inside the same data boundary
+  the reads enforce.
 - **Account-level escalations (no organization association — e.g.
   integration-health) are refused in v1**: no PSA client owns them, so there
   is no cockpit lane or ticket to hold them against; they are resolved in the

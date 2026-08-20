@@ -51,10 +51,14 @@ use Illuminate\Support\Str;
  * fault that executed must never be reported as declined.
  *
  * DATA-BOUNDARY RULE (the Huntress account can be shared across MSPs): the
- * tool is client-scoped and v1 resolves only escalations that touch the
- * calling client's mapped organization (clients.huntress_organization_id).
- * Account-level escalations (no organization association) are refused — no
- * PSA client owns them, so there is no cockpit lane to hold them against.
+ * tool is client-scoped and v1 resolves only escalations whose organization
+ * set is EXACTLY the calling client's mapped organization
+ * (clients.huntress_organization_id). The upstream POST closes the whole
+ * escalation record, not a per-org slice, so an any-of match would let this
+ * client's approver resolve a SOC record that also covers another MSP's
+ * tenant — MULTI-ORGANIZATION escalations are therefore refused, as are
+ * account-level ones (no organization association): no single PSA client owns
+ * either, so there is no cockpit lane to hold them against.
  */
 class StaffHuntressActionToolExecutor
 {
@@ -550,9 +554,12 @@ class StaffHuntressActionToolExecutor
 
     /**
      * Null when the escalation is in scope for this client; otherwise the
-     * operator-readable refusal. In scope = at least one of the escalation's
-     * organizations is THIS client's mapped organization. Account-level
-     * escalations (no organization association) are refused in v1 — no PSA
+     * operator-readable refusal. In scope = the escalation's organization set
+     * is EXACTLY THIS client's mapped organization — not merely one of its
+     * organizations: resolution closes the entire escalation record, so an
+     * any-of match would resolve a security record on behalf of every other
+     * tenant it covers. Multi-organization escalations and account-level ones
+     * (no organization association) are both refused in v1 — no single PSA
      * client owns them, so there is no cockpit lane to hold them against.
      *
      * @param  array<string, mixed>  $escalation
@@ -572,8 +579,20 @@ class StaffHuntressActionToolExecutor
             }
         }
 
+        $orgIds = array_values(array_unique($orgIds));
+
         if ($orgIds === []) {
             return "Escalation {$escalationId} is account-level (no organization association) — it has no PSA client scope and is resolved in the Huntress console, not through this tool.";
+        }
+
+        // POST /escalations/{id}/resolution closes the WHOLE record, not a
+        // per-org slice. An any-of match would let this client's approver
+        // resolve a SOC escalation that also covers another MSP's tenant on
+        // the shared account — a security-record write for a tenant with no
+        // PSA client, no ticket and no approver here. v1 requires the set to
+        // be exactly the mapped org; under-acting is the right direction.
+        if (count($orgIds) > 1) {
+            return "Escalation {$escalationId} covers ".count($orgIds)." Huntress organizations — resolving it would close the record for tenants outside this client. Multi-organization escalations are resolved in the Huntress console, not through this tool.";
         }
 
         if (! in_array($mappedOrgId, $orgIds, true)) {
@@ -859,7 +878,7 @@ class StaffHuntressActionToolExecutor
     {
         return [
             'name' => 'huntress_resolve_escalation',
-            'description' => 'Resolve ONE Huntress SOC escalation by id — the record-level "this has been handled" acknowledgement after a technician works an escalation. HELD-ONLY: this capability never executes immediately, whatever mode was granted — every call must use staged=true with a ticket_id and is held for cockpit approval; staged=false calls are refused. ID-ONLY BY CONSTRUCTION: the upstream resolution body is always the empty object {} — determination, scope, revoke_and_disable_identities, expiration_date, and every other resolution parameter are structurally refused (the parameterised form can revoke sessions, disable identities, and create account-wide access rules). After the call the server-reported resolution_method is verified: direct/dismiss pass; rule (attribute rules were created) is treated as a hard fault and escalated. Only escalations touching this client\'s mapped Huntress organization are accepted; account-level escalations are resolved in the Huntress console. Requires an explicit token grant, reason, kill-switch, cooldown, and TechnicianActionLog audit.',
+            'description' => 'Resolve ONE Huntress SOC escalation by id — the record-level "this has been handled" acknowledgement after a technician works an escalation. HELD-ONLY: this capability never executes immediately, whatever mode was granted — every call must use staged=true with a ticket_id and is held for cockpit approval; staged=false calls are refused. ID-ONLY BY CONSTRUCTION: the upstream resolution body is always the empty object {} — determination, scope, revoke_and_disable_identities, expiration_date, and every other resolution parameter are structurally refused (the parameterised form can revoke sessions, disable identities, and create account-wide access rules). After the call the server-reported resolution_method is verified: direct/dismiss pass; rule (attribute rules were created) is treated as a hard fault and escalated. Only escalations whose organization set is exactly this client\'s mapped Huntress organization are accepted; account-level and multi-organization escalations (resolution closes the whole record, including other tenants) are resolved in the Huntress console. Requires an explicit token grant, reason, kill-switch, cooldown, and TechnicianActionLog audit.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => self::escalationProperties(),
@@ -888,7 +907,7 @@ class StaffHuntressActionToolExecutor
         $properties = [
             'escalation_id' => [
                 'type' => 'integer',
-                'description' => 'Huntress escalation ID (from huntress_list_escalations / huntress_get_escalation). The server verifies it touches this client\'s mapped Huntress organization and is not already resolved, at staging AND again at approval.',
+                'description' => 'Huntress escalation ID (from huntress_list_escalations / huntress_get_escalation). The server verifies its organization set is exactly this client\'s mapped Huntress organization (multi-organization and account-level escalations are refused) and that it is not already resolved, at staging AND again at approval.',
             ],
             'reason' => [
                 'type' => 'string',

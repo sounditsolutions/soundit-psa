@@ -270,6 +270,13 @@ class HuntressResolveEscalationTest extends TestCase
         $text = (string) $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture))->json('result.content.0.text');
         $this->assertStringContainsString("does not touch this client's Huntress organization", $text);
 
+        // Multi-organization escalation that INCLUDES this client's org: the
+        // resolve closes the whole record, so an any-of match would resolve
+        // organization 99's SOC escalation on this client's approval. Refused.
+        $this->mockReadClient($this->escalation(['organizations' => [['id' => self::ORG_ID], ['id' => 99]]]));
+        $text = (string) $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture))->json('result.content.0.text');
+        $this->assertStringContainsString('covers 2 Huntress organizations', $text);
+
         // Client with no mapped organization at all.
         $unmapped = Client::factory()->create(['name' => 'Unmapped', 'huntress_organization_id' => null]);
         $unmappedTicket = Ticket::factory()->for($unmapped)->create();
