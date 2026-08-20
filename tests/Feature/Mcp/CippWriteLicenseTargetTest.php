@@ -1854,25 +1854,35 @@ class CippWriteLicenseTargetTest extends TestCase
     }
 
     /**
-     * NO SHAPE MAY LEAVE A SEAT UNASSIGNABLE BY EVERY ROUTE.
+     * NO SHAPE MAY LEAVE A SEAT UNASSIGNABLE BY EVERY ROUTE — AND "MAPPED BUT
+     * DEACTIVATED" IS NOT A LICENCE TO WRITE IMMEDIATELY AND ANONYMOUSLY.
      *
      * The stale sweep deactivates a leaver's Person row without clearing
      * cipp_upn/cipp_user_id, and the person path now requires an ACTIVE person
-     * (#405). Refusing the tenant shape on that dead mapping therefore sent the
-     * operator to the one tool guaranteed to refuse them, and the new starter at
-     * the freed address could not be licensed at all — the deadlock the
-     * COMPLETE-mappings qualifier exists to prevent, through the other door.
+     * (#405). Refusing the tenant shape outright on that dead mapping therefore
+     * sent the operator to the one tool guaranteed to refuse them, so the target
+     * stays assignable here — the deadlock the COMPLETE-mappings qualifier
+     * exists to prevent, through the other door.
+     *
+     * What it does NOT stay is IMMEDIATE. is_active=false does not prove the
+     * human is gone: CippContactSyncService's stale sweep deactivates every
+     * mapped person outside the client's cipp_sync_group_id filter, so a
+     * current, enabled employee reads as inactive in the PSA while the tenant
+     * listing shows them present and enabled — and for them the immediate path
+     * was a person-anonymous paid-seat grant with none of the person-scoped
+     * rails. A mapped target is held-only, and the rows it leaves NAME the
+     * person record the PSA holds for that address.
      */
-    public function test_a_deactivated_mapping_does_not_deadlock_the_new_starter_at_the_freed_address(): void
+    public function test_a_deactivated_mapping_is_held_only_and_still_licenses_the_freed_address(): void
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_tenant_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license', 'cipp_stage_assign_tenant_user_license']);
 
         // Lee left; the sweep deactivated the row and kept the mapping. The
         // address has since been handed to a new starter with no person record
         // of their own, who IS present and enabled in the tenant listing.
-        Person::create([
+        $leaver = Person::create([
             'client_id' => $f['client']->id,
             'person_type' => PersonType::User,
             'first_name' => 'Lee',
@@ -1884,20 +1894,41 @@ class CippWriteLicenseTargetTest extends TestCase
         ]);
 
         $client = Mockery::mock(CippRestWriteClient::class);
-        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
-        $client->shouldReceive('assignUserLicense')->once()
-            ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
+        $client->shouldReceive('listUsers')->twice()->with(self::TENANT)->andReturn([$this->userRow()]);
+        // NOTHING executes immediately for a target the PSA holds a record for,
+        // whatever mode was granted.
+        $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $result = $this->decodedResult($this->callTool($token, 'cipp_assign_tenant_user_license', [
+        $immediate = (string) $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
             'reason' => 'New starter at the freed address needs a seat.',
-        ]));
+        ])->json('result.content.0.text');
 
-        $this->assertTrue($result['success'] ?? false, (string) json_encode($result));
-        $this->assertSame(1, TechnicianActionLog::where('result_status', 'executed')->count());
+        $this->assertStringContainsString('held-only', $immediate);
+        $this->assertStringContainsString('PSA person #'.$leaver->id, $immediate);
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+
+        // ...and the held path serves them, so no seat is unassignable.
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_tenant_user_license', [
+            'client_id' => $f['client']->id,
+            'ticket_id' => $f['ticket']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'New starter at the freed address needs a seat.',
+        ]));
+        $this->assertTrue($staged['success'] ?? false, (string) json_encode($staged));
+
+        // The other half of the fix: neither the only human gate on this billing
+        // write nor the audit row is person-anonymous any more.
+        $run = TechnicianRun::findOrFail($staged['run_id']);
+        $this->assertStringContainsString('PSA PERSON #'.$leaver->id, (string) $run->proposed_content);
+        $this->assertStringContainsString(
+            'PSA person #'.$leaver->id,
+            (string) TechnicianActionLog::where('result_status', 'awaiting_approval')->latest('id')->value('summary'),
+        );
     }
 
     /**
@@ -1943,6 +1974,59 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertTrue($second['success'] ?? false, (string) json_encode($second));
         $this->assertArrayNotHasKey('idempotent', $second, 'The re-grant was reported as already done while the user held no licence.');
         $this->assertSame(2, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
+    /**
+     * THE COOLDOWN IS THIS FAMILY'S ONLY RUNAWAY GUARD, so it has to be able to
+     * see the approval path.
+     *
+     * There is no executed-content rail and no identity dedup on this verb (a
+     * seat is a recreatable target), and an approval audits under the STAGED
+     * action_type while the cooldown asked for the DIRECT one — so an
+     * operator-approved grant was invisible to the very next call, and a second
+     * upstream billing write went out with no rail having observed the first.
+     */
+    public function test_an_approved_grant_is_visible_to_the_cooldown_on_the_next_call(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_stage_assign_tenant_user_license', 'cipp_assign_tenant_user_license']);
+        $approver = User::factory()->create(['name' => 'Approver']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        // Staging, approval and the second call each re-read the listing.
+        $client->shouldReceive('listUsers')->times(3)->with(self::TENANT)->andReturn([$this->userRow()]);
+        // ONCE is the assertion: the approved grant is the only upstream write.
+        $client->shouldReceive('assignUserLicense')->once()
+            ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_tenant_user_license', [
+            'client_id' => $f['client']->id,
+            'ticket_id' => $f['ticket']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]));
+        $this->assertTrue($staged['success'] ?? false, (string) json_encode($staged));
+
+        $run = TechnicianRun::findOrFail($staged['run_id']);
+        $approved = app(StaffCippWriteToolExecutor::class)->approveStagedRun($run, $approver->id);
+        $this->assertSame('executed', $approved->status);
+
+        // The executed row that approval wrote carries the STAGED action_type. A
+        // cooldown filtered on the direct name alone cannot see it, and this call
+        // reached upstream for the same seat seconds later.
+        $second = $this->decodedResult($this->callTool($token, 'cipp_assign_tenant_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]));
+
+        $this->assertArrayNotHasKey('success', $second);
+        $this->assertStringContainsString('cooldown active', (string) ($second['error'] ?? ''));
+        $this->assertSame(1, TechnicianActionLog::where('result_status', 'executed')->count());
     }
 
     /** @return array<int, array<string, mixed>> */

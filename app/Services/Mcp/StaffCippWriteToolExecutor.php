@@ -2090,6 +2090,57 @@ class StaffCippWriteToolExecutor
             ->exists();
     }
 
+    /**
+     * Per-target cooldown for the tenant-scoped licence family, checked across
+     * BOTH execution paths for the same reason resetCooldownActive() is
+     * (security review psa-eerg4 R2).
+     *
+     * emailSecurityCooldownActive() filters action_type to ONE exact name. A
+     * direct call audits as cipp_assign_tenant_user_license, but an approval
+     * audits as cipp_stage_assign_tenant_user_license — auditAttempt() uses
+     * $run->action_type, which is the right provenance and the wrong thing to
+     * filter on. A single-name lookup is therefore asymmetric: it catches
+     * direct-then-approve, while the write an approval just made is invisible to
+     * the NEXT approval and to a later direct call.
+     *
+     * That asymmetry costs more here than anywhere else in this class. This
+     * family carries no executed-content rail and no identity dedup at all — a
+     * licence seat is a recreatable target (RECREATABLE_TARGET_STAGED_TOOLS) and
+     * no log-derived key can see a removal between two grants — so this cooldown
+     * is the ONLY runaway guard on a billing write. Blind on the staged path it
+     * is not a guard, it is a comment.
+     *
+     * EXECUTED rows only, deliberately, for resetCooldownActive()'s reason: the
+     * staging call leaves an awaiting_approval row under the STAGED name
+     * carrying this same target key, and counting it would make every proposal
+     * block its own approval. Nothing is lost on the direct name — staging never
+     * audits under it — and runaway STAGING is refused by the ticket-scoped
+     * proposal cooldown, which is a different question.
+     */
+    private function licenseTargetCooldownActive(string $tool, int $clientId, string $targetKey, int $cooldownSeconds): bool
+    {
+        if ($cooldownSeconds <= 0) {
+            return false;
+        }
+
+        // Both names come from the alias map rather than being written out, so a
+        // renamed verb cannot leave this guard filtering on a name that nothing
+        // audits under.
+        $directTool = self::STAGED_TO_DIRECT[$tool] ?? $tool;
+        $names = array_values(array_unique(array_merge(
+            [$directTool],
+            array_keys(self::STAGED_TO_DIRECT, $directTool, true),
+        )));
+
+        return TechnicianActionLog::query()
+            ->whereIn('action_type', $names)
+            ->where('client_id', $clientId)
+            ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
+            ->where('result_status', 'executed')
+            ->where('summary', 'like', '%'.$targetKey.'%')
+            ->exists();
+    }
+
     private function emailSecurityProposalCooldownActive(string $tool, Ticket $ticket, string $targetKey, int $cooldownSeconds): bool
     {
         if ($cooldownSeconds <= 0) {
@@ -3432,6 +3483,26 @@ class StaffCippWriteToolExecutor
         $targetKey = $this->licenseTargetKey($user['user_id'], $license);
         $contentHash = $this->contentHash($tool, $client->id, null, $ticket?->id, $this->licenseTargetHashParams($user['user_id'], $license));
 
+        // HELD-ONLY WHEN THE PSA HAS A PERSON RECORD FOR THIS TARGET, whatever
+        // mode was granted — the PRIVILEGED_GROUP_TYPES rule applied to this
+        // family. An ACTIVE mapping already refused inside the verification
+        // above; what can reach here is a DEACTIVATED one, and is_active=false is
+        // NOT proof that the human is gone: CippContactSyncService's stale sweep
+        // deactivates every mapped person outside the client's
+        // cipp_sync_group_id filter, so a current, enabled employee the PSA fully
+        // maps reads as inactive here while the tenant listing shows them present
+        // and enabled. The person-keyed tool refuses them
+        // (resolveActiveCippPerson), so this shape must still be able to grant
+        // the seat — but not immediately and not person-anonymously. A human
+        // approves a card that names the person instead.
+        $mappedPersonId = $user['mapped_inactive_person_id'] ?? null;
+        if ($mappedPersonId !== null) {
+            $message = 'That target_upn is mapped to PSA person #'.$mappedPersonId.', who is currently deactivated in the PSA. A licence for a target the PSA holds a person record for is held-only, whatever mode was granted — call cipp_assign_tenant_user_license with staged=true and a ticket_id for cockpit approval, where an approver sees which person record this address belongs to. If that person is a current employee (a deactivated row can simply mean they are outside the client\'s CIPP sync group), reactivate them and use cipp_assign_user_license instead. Nothing was written.';
+            $this->auditAttempt($tool, 'rejected', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: ".$message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
         // NO "already executed" rail on this verb either — see
         // RECREATABLE_TARGET_STAGED_TOOLS. Both keys this path can build (the
         // content hash and the identity key) come from the same (verified user,
@@ -3443,8 +3514,11 @@ class StaffCippWriteToolExecutor
         // billing write. The write is harmless to repeat (assigning a SKU the
         // user already holds is an upstream no-op), so it goes through, and the
         // cooldown below is the runaway guard: it refuses honestly rather than
-        // reporting work that never happened as done.
-        if ($this->emailSecurityCooldownActive($tool, $client->id, $targetKey, self::COOLDOWNS[$tool] ?? 300)) {
+        // reporting work that never happened as done. It is THIS family's
+        // cooldown, not the single-name one: an approval audits under the STAGED
+        // action_type, so a lookup filtered on the direct name alone is blind to
+        // the write an approval just made (see licenseTargetCooldownActive()).
+        if ($this->licenseTargetCooldownActive($tool, $client->id, $targetKey, self::COOLDOWNS[$tool] ?? 300)) {
             $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: {$tool} cooldown active; upstream call refused.", $actorLabel);
 
             return ['error' => "{$tool} cooldown active for this target; no upstream call was made."];
@@ -3820,8 +3894,14 @@ class StaffCippWriteToolExecutor
             // changed (the two drift rails above) or that refuse honestly (the
             // cooldown below). A re-fired approval of THIS run is already
             // impossible without them: claimForExecution() fails on a Done run.
-
-            if ($this->emailSecurityCooldownActive($directTool, $client->id, $targetKey, self::COOLDOWNS[$directTool] ?? 300)) {
+            //
+            // Which is exactly why this cooldown has to span BOTH action_type
+            // names: the row an approval writes carries the STAGED one, so the
+            // single-name lookup that used to sit here could not see the
+            // preceding approval's own executed write, and back-to-back approvals
+            // of duplicate proposals reached upstream with no rail observing the
+            // first (see licenseTargetCooldownActive()).
+            if ($this->licenseTargetCooldownActive($directTool, $client->id, $targetKey, self::COOLDOWNS[$directTool] ?? 300)) {
                 $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: CIPP staged action cooldown active; approval refused before upstream call.", $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
@@ -4127,15 +4207,23 @@ class StaffCippWriteToolExecutor
     }
 
     /**
-     * @param  array{user_id: string, upn: string, display_name: string}  $user
+     * @param  array{user_id: string, upn: string, display_name: string, mapped_inactive_person_id?: int|null}  $user
      */
     private function licenseTargetAuditDetail(array $user, ResolvedCippLicense $license): string
     {
-        return 'assigned license_type #'.$license->licenseType->id.' (SKU '.$license->skuId.') to tenant user '.$user['upn'];
+        // NAMED WHEN THE PSA HAS A RECORD. Every licenseTarget audit row passes
+        // person = null to auditAttempt() — this shape has no ResolvedCippPerson
+        // to link — so for a mapped-but-deactivated target the row said nothing
+        // about a person the PSA fully maps, on a billing write. The id goes in
+        // the summary, which is what this log is searchable by.
+        $mappedPersonId = $user['mapped_inactive_person_id'] ?? null;
+
+        return 'assigned license_type #'.$license->licenseType->id.' (SKU '.$license->skuId.') to tenant user '.$user['upn']
+            .($mappedPersonId !== null ? ' (mapped to DEACTIVATED PSA person #'.$mappedPersonId.')' : '');
     }
 
     /**
-     * @param  array{user_id: string, upn: string, display_name: string}  $user
+     * @param  array{user_id: string, upn: string, display_name: string, mapped_inactive_person_id?: int|null}  $user
      */
     private function licenseTargetStagedDisplay(array $user, ResolvedCippLicense $license): string
     {
@@ -4146,9 +4234,20 @@ class StaffCippWriteToolExecutor
         // matched, so "which seat am I paying for" is answerable on the card.
         $userLabel = $user['upn'].($user['display_name'] !== '' ? ' ('.$user['display_name'].')' : '');
 
+        // THE APPROVER IS TOLD WHICH PERSON RECORD THIS IS, when there is one.
+        // This card is the only human gate on the write, and "deactivated in the
+        // PSA" is not the same fact as "gone": the contact sync deactivates any
+        // mapped person outside the client's sync group, so the address can
+        // belong to a current employee the PSA fully maps. Naming the id is what
+        // lets the approver check that instead of assuming a leaver.
+        $mappedPersonId = $user['mapped_inactive_person_id'] ?? null;
+        $mappingNote = $mappedPersonId === null
+            ? ' The PSA holds no person record mapped to this address or object id.'
+            : ' THIS ADDRESS IS MAPPED TO PSA PERSON #'.$mappedPersonId.', WHO IS DEACTIVATED IN THE PSA — open that record before approving: a person reads as deactivated here merely for being outside the client\'s CIPP sync group, and this held path is the only shape that can grant them a seat.';
+
         return 'Assign licence "'.$license->licenseType->name.'" (SKU '.$license->skuId.') to tenant user '.$userLabel.'.'
             .' This consumes a paid seat and grants the Microsoft 365 apps and services that SKU carries.'
-            .' The target is NOT mapped to an ACTIVE PSA person: the PSA\'s person records were checked for this address AND for this object id, and a target mapped to an active person is refused rather than staged (it belongs on the person-keyed tool). A mapped but DEACTIVATED person is served here, because the person-keyed tool refuses them and no other shape could grant the seat. The user itself was verified against the tenant\'s live user listing.'
+            .' The target is NOT mapped to an ACTIVE PSA person: the PSA\'s person records were checked for this address AND for this object id, and a target mapped to an active person is refused rather than staged (it belongs on the person-keyed tool). A mapped but DEACTIVATED person is served here, because the person-keyed tool refuses them and no other shape could grant the seat.'.$mappingNote.' The user itself was verified against the tenant\'s live user listing.'
             .' Approval re-verifies the user and the licence mapping fresh, and declines if that address now points at a different user object, or if this SKU now maps to a different licence than the one named here.';
     }
 
@@ -4212,11 +4311,14 @@ class StaffCippWriteToolExecutor
      * confirmation and person-scoped gates, so $clientId is taken here purely to
      * prove that. A mapped but DEACTIVATED person is NOT diverted — that path
      * refuses them outright, so diverting would leave the seat unassignable by
-     * every shape, and the enabled-account gate below is what tells a leaver
-     * apart from their replacement (see
+     * every shape — but it is REPORTED on the returned row rather than read as
+     * "no PSA record": is_active=false does not prove the human is gone (the
+     * contact sync deactivates every mapped person outside the client's
+     * cipp_sync_group_id filter, current employees included), so that target is
+     * held-only and its person is named on the card and in the audit (see
      * CippWriteScopeResolver::assertNoPsaPersonMapping()).
      *
-     * @return array{user_id: string, upn: string, display_name: string}
+     * @return array{user_id: string, upn: string, display_name: string, mapped_inactive_person_id: int|null}
      */
     private function verifiedTenantUser(int $clientId, string $tenant, string $targetUpn): array
     {
@@ -4276,7 +4378,11 @@ class StaffCippWriteToolExecutor
         // becomes mapped between staging and approval declines. Matched on the
         // object id the SERVER read as well as the address, so a UPN rename
         // cannot walk around it.
-        $this->resolver->assertNoPsaPersonMapping($clientId, $targetUpn, $userId);
+        // The INACTIVE half of that answer comes BACK rather than being
+        // discarded: an active mapping throws in there, and a mapped-but-
+        // deactivated person rides on the returned row so the caller can hold the
+        // write for a human and name them.
+        $mappedInactivePersonId = $this->resolver->assertNoPsaPersonMapping($clientId, $targetUpn, $userId);
 
         // ACTIVE gate, psa-pgnj shape. A licence is a PAID SEAT: assigning one
         // to a disabled account spends money on somebody who has left. Because
@@ -4328,6 +4434,10 @@ class StaffCippWriteToolExecutor
 
         return [
             'user_id' => $userId,
+            // NEVER an active person (that threw above): this is the id of a
+            // mapped but DEACTIVATED person, or null when the PSA has no complete
+            // mapping for this target at all.
+            'mapped_inactive_person_id' => $mappedInactivePersonId,
             'upn' => trim((string) $rowUpn),
             // UNTRUSTED EXTERNAL CONTENT: the tenant controls displayName, and
             // it flows into the cockpit approval card, the audit summary and the
@@ -6810,7 +6920,7 @@ class StaffCippWriteToolExecutor
     {
         return self::tool(
             'cipp_assign_tenant_user_license',
-            'Assign one CIPP M365 license SKU to one tenant user with NO ACTIVE PSA person record, immediately. This can alter billing and app entitlements. The server verifies target_upn against the resolved client tenant\'s live user listing and derives the object id from it — an address that is absent, ambiguous, in another tenant, on a disabled account, or mapped to an ACTIVE PSA person is refused (that person belongs on cipp_assign_user_license with its typed confirmation; a mapped but deactivated person is served here, because that tool refuses them) — and matches sku_id against this client\'s synced licence rows. Requires an explicit token grant, reason, kill-switch, a per-target cooldown, and TechnicianActionLog audit. A licence can legitimately be removed and re-assigned, so a repeat grant is sent upstream rather than answered as an already-executed duplicate. Dial note: human-smoke-verify before first live grant; no replace-all or remove-all license body is supported.',
+            'Assign one CIPP M365 license SKU to one tenant user with NO ACTIVE PSA person record, immediately. This can alter billing and app entitlements. The server verifies target_upn against the resolved client tenant\'s live user listing and derives the object id from it — an address that is absent, ambiguous, in another tenant, on a disabled account, or mapped to an ACTIVE PSA person is refused (that person belongs on cipp_assign_user_license with its typed confirmation; a mapped but deactivated person is served here, but HELD-ONLY: a target the PSA holds a person record for never executes immediately, whatever mode was granted — re-call with staged=true and a ticket_id) — and matches sku_id against this client\'s synced licence rows. Requires an explicit token grant, reason, kill-switch, a per-target cooldown, and TechnicianActionLog audit. A licence can legitimately be removed and re-assigned, so a repeat grant is sent upstream rather than answered as an already-executed duplicate. Dial note: human-smoke-verify before first live grant; no replace-all or remove-all license body is supported.',
             array_merge(self::licenseTargetProperties(), self::licenseTargetCommonProperties(ticketRequired: false)),
             ['target_upn', 'sku_id', 'reason'],
         );

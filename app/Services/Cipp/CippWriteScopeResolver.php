@@ -90,21 +90,39 @@ class CippWriteScopeResolver
      * completeness qualifier above exists to prevent, reintroduced through the
      * other door.
      *
-     * There is also nothing left to bypass. The rails this gate protects (typed
-     * confirm_upn, the person-scoped gates) belong to the person path, and an
-     * inactive person has no person path to be diverted from. What still applies
-     * to them is the tenant shape's own gates, in full: the address must be
-     * present in the resolved tenant's LIVE user listing, and the account must be
-     * enabled — so a genuine leaver whose M365 account is disabled is still
-     * refused, by the gate that can actually tell the difference between a leaver
-     * and their replacement.
+     * BUT AN INACTIVE MATCH IS REPORTED RATHER THAN IGNORED, and that is the
+     * whole of the change here. The premise this used to rest on — "the
+     * enabled-account gate can tell a leaver from their replacement" — is FALSE
+     * in the one direction that matters. CippContactSyncService's stale sweep
+     * deactivates any person with a cipp_user_id who is absent from
+     * $seenPersonIds, and that set is narrowed by the per-client
+     * cipp_sync_group_id filter, so a CURRENT, ENABLED employee who is merely
+     * outside the sync group is is_active=false in the PSA while being present
+     * and accountEnabled=true in the tenant's live listing (the same holds
+     * transiently for anyone re-enabled in M365 between nightly syncs). For
+     * those people the enabled-account gate agrees with the caller, and the seat
+     * was granted immediately, human-free, with none of the person-scoped rails
+     * and a null person linkage in the audit — the exact bypass this gate exists
+     * to close, reached through the inactive door.
+     *
+     * So an inactive mapping still does not REFUSE (that is the deadlock the
+     * paragraph above describes), and it is no longer SILENT either: the matched
+     * person's id is RETURNED. The licence family turns that into the two things
+     * the immediate path lacked — a human (a mapped target is held-only,
+     * whatever mode was granted) and a name (the id is written onto the approval
+     * card and into the audit summary). On top of that the tenant shape's own
+     * gates still apply in full: the address must be present in the resolved
+     * tenant's LIVE user listing, and the account must be enabled.
+     *
+     * @return int|null the matched but DEACTIVATED person's id, or null when the
+     *                  target has no complete PSA person mapping at all
      */
-    public function assertNoPsaPersonMapping(int $clientId, string $upn, string $userId): void
+    public function assertNoPsaPersonMapping(int $clientId, string $upn, string $userId): ?int
     {
         $upn = mb_strtolower(trim($upn));
         $userId = mb_strtolower(trim($userId));
         if ($upn === '' && $userId === '') {
-            return;
+            return null;
         }
 
         // COMPLETE mappings only — a person missing either column is one
@@ -169,24 +187,13 @@ class CippWriteScopeResolver
         // PAID FOR WITH A PROJECTION rather than with a predicate that can be
         // wrong: three columns, not whole models. Correctness first, and the
         // cost bounded by the client's own mapped-person count.
-        $person = Person::query()
+        $matches = Person::query()
             ->select(['id', 'is_active', 'cipp_upn', 'cipp_user_id'])
             ->where('client_id', $clientId)
             ->where('cipp_upn', '<>', '')
             ->where('cipp_user_id', '<>', '')
             ->get()
-            ->first(static function (Person $candidate) use ($upn, $userId): bool {
-                // ACTIVE mappings only, for the same reason as COMPLETE ones and
-                // decided in the same place: a person resolveActiveCippPerson()
-                // would refuse is one this gate must not refuse either, or the
-                // seat is unassignable by every shape (see the docblock). Decided
-                // in PHP through the model's boolean cast rather than narrowed in
-                // SQL, so this test cannot disagree with the person path's — the
-                // one-question-one-dialect rule the rest of this method follows.
-                if (! $candidate->is_active) {
-                    return false;
-                }
-
+            ->filter(static function (Person $candidate) use ($upn, $userId): bool {
                 $candidateUpn = mb_strtolower(trim((string) $candidate->cipp_upn));
                 $candidateUserId = mb_strtolower(trim((string) $candidate->cipp_user_id));
 
@@ -200,9 +207,27 @@ class CippWriteScopeResolver
                     || ($userId !== '' && $candidateUserId === $userId);
             });
 
-        if ($person) {
-            throw new CippWriteScopeException('That target_upn is mapped to PSA person #'.$person->id.', so the tenant-scoped shape does not apply to it: that shape is for a tenant user with no PSA person record. Assign this licence with person_id + license_type_id + confirm_upn instead, so the person-scoped rails apply. Nothing was written.');
+        // ACTIVE FIRST, decided in PHP through the model's boolean cast rather
+        // than narrowed in SQL, so this test cannot disagree with the person
+        // path's — the one-question-one-dialect rule the rest of this method
+        // follows. It is a PRIORITY now rather than a filter, because the two
+        // columns can match DIFFERENT rows (a leaver keeps the address on a dead
+        // row while the object id is synced onto the new occupant) and an active
+        // match is a refusal that must not lose a race to an inactive row that
+        // merely sorts earlier.
+        $active = $matches->first(static fn (Person $candidate): bool => (bool) $candidate->is_active);
+
+        if ($active) {
+            throw new CippWriteScopeException('That target_upn is mapped to PSA person #'.$active->id.', so the tenant-scoped shape does not apply to it: that shape is for a tenant user with no PSA person record. Assign this licence with person_id + license_type_id + confirm_upn instead, so the person-scoped rails apply. Nothing was written.');
         }
+
+        // Mapped but DEACTIVATED: not refused — the person path refuses them
+        // outright, so refusing here too would leave the seat unassignable by
+        // every shape — and not waved through unnamed either. The caller holds
+        // the write for a human and records this id (see the docblock).
+        $inactive = $matches->first();
+
+        return $inactive === null ? null : (int) $inactive->id;
     }
 
     /**
