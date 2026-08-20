@@ -1179,6 +1179,26 @@ class StaffCippWriteToolExecutor
         $params = $this->hashParams($directTool, $license, $state, $mailbox);
         $contentHash = $this->contentHash($tool, $client->id, $person->person->id, $ticket->id, $params);
 
+        // RECREATABLE_TARGET_STAGED_TOOLS skip the executed-content rail below, so
+        // nothing else stops a same-content re-stage from landing on the run that
+        // ALREADY removed a rule under this name: firstOrCreate would return that
+        // terminal Done row and the revive branch would flip it back to
+        // AwaitingApproval and overwrite its proposed_content/proposed_meta,
+        // destroying the run-level record of the removal that ran — exactly the
+        // history an approver needs to judge that the rule was RE-PLANTED. A
+        // re-stage whose key is already spent therefore gets its OWN row.
+        if (in_array($tool, self::RECREATABLE_TARGET_STAGED_TOOLS, true)) {
+            $unspent = $this->unspentContentHash($tool, $ticket->id, $contentHash);
+
+            if ($unspent === null) {
+                $this->auditAttempt($tool, 'blocked', $client->id, $ticket, $person, $license, $contentHash, "{$tool} re-stage refused; this ticket already holds the maximum number of runs for this exact content.", $actorLabel);
+
+                return ['error' => "{$tool} could not be staged: this ticket already holds the maximum number of runs for this exact content; stage the removal on a new ticket."];
+            }
+
+            $contentHash = $unspent;
+        }
+
         // The audit log is IMMUTABLE and stays authoritative ONLY for "was this exact
         // content already executed" — an 'executed' row can never go stale the way an
         // 'awaiting_approval' row can (bd psa-k4s0 Root B). Skipped for the verbs whose
@@ -4687,6 +4707,58 @@ class StaffCippWriteToolExecutor
         }
 
         return '';
+    }
+
+    /**
+     * A content hash for a re-stage that cannot land on a run this ticket has
+     * already SPENT. Used ONLY by RECREATABLE_TARGET_STAGED_TOOLS — the verbs whose
+     * executed-content rail stageAction() skips.
+     *
+     * Every other staged verb is protected by that rail: identical content that
+     * already executed short-circuits before firstOrCreate is ever reached, so the
+     * only non-live run its key can return is one that never executed (superseded,
+     * denied, withdrawn) and reviving THAT row in place is correct. With the rail
+     * skipped the protection is gone, and firstOrCreate on the UNIQUE (ticket_id,
+     * action_type, content_hash) key hands back the very run that removed a rule
+     * under this name — a terminal Done row the revive branch would flip back to
+     * AwaitingApproval and overwrite. TechnicianRun::update() carries no transition
+     * guard, so the cockpit record of a completed destructive removal would simply
+     * be gone, on exactly the re-planted-rule re-stage this verb exists to support.
+     *
+     * A spent key is therefore walked forward DETERMINISTICALLY instead: the same
+     * re-stage always derives the same hash, so liveAwaitingRun()'s idempotency
+     * still collapses a repeat of a pending proposal, while every spent run keeps
+     * its row. The walk is bounded and refuses honestly when exhausted rather than
+     * recycling a spent run.
+     */
+    private function unspentContentHash(string $tool, int $ticketId, string $contentHash): ?string
+    {
+        // Live (the idempotent re-send) or retired without ever executing — the two
+        // cases the firstOrCreate branches are written for. Anything else has spent
+        // the run: it executed, is executing, or is parked to execute.
+        $revivable = [
+            TechnicianRunState::AwaitingApproval->value,
+            TechnicianRunState::Superseded->value,
+            TechnicianRunState::Denied->value,
+            TechnicianRunState::Withdrawn->value,
+        ];
+
+        for ($attempt = 0; $attempt < 50; $attempt++) {
+            $spent = TechnicianRun::query()
+                ->where('ticket_id', $ticketId)
+                ->where('action_type', $tool)
+                ->where('content_hash', $contentHash)
+                ->whereNotIn('state', $revivable)
+                ->exists();
+
+            if (! $spent) {
+                return $contentHash;
+            }
+
+            $contentHash = hash('sha256', $contentHash.'|re-stage');
+        }
+
+        return null;
     }
 
     /**

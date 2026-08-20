@@ -1171,6 +1171,79 @@ class CippWriteMailboxRuleTest extends TestCase
     }
 
     /**
+     * The re-planted rule the skipped executed-dedup exists for: the SAME rule name
+     * on the SAME ticket, staged again after a first removal already executed. The
+     * re-stage must get its OWN run — the Done run is the cockpit record that a
+     * first removal ran, and an approver judging a re-planted rule has to be able to
+     * see it. Recycling that row in place would flip a completed destructive action
+     * back to AwaitingApproval and overwrite what it proposed (c1:v2:1).
+     */
+    public function test_a_re_stage_after_execution_gets_its_own_run_and_leaves_the_executed_one_intact(): void
+    {
+        $this->configureCipp();
+        $actor = $this->configureAiActor();
+        $fixture = $this->cippFixture('sierra');
+        $token = $this->token(['cipp_stage_remove_mailbox_rule']);
+
+        $stageClient = Mockery::mock(CippRestWriteClient::class);
+        $stageClient->shouldNotReceive('removeMailboxRule');
+        $stageClient->shouldNotReceive('listUserMailboxRules');
+        $this->app->instance(CippRestWriteClient::class, $stageClient);
+
+        $first = $this->callTool($token, 'cipp_stage_remove_mailbox_rule', $this->ruleArguments($fixture));
+        $this->assertFalse((bool) $first->json('result.isError'), (string) $first->json('result.content.0.text'));
+        $firstRun = TechnicianRun::findOrFail($this->decodedResult($first)['run_id']);
+        $proposed = (string) $firstRun->proposed_content;
+
+        $approveClient = Mockery::mock(CippRestWriteClient::class);
+        $approveClient->shouldReceive('listUserMailboxRules')
+            ->twice()
+            ->with($fixture['client']->cipp_tenant_domain, $fixture['person']->cipp_upn)
+            ->andReturn($this->mailboxRules('sierra'));
+        $approveClient->shouldReceive('removeMailboxRule')
+            ->once()
+            ->andReturn(['success' => true, 'status' => 200]);
+        $this->app->instance(CippRestWriteClient::class, $approveClient);
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $firstRun));
+        $this->assertSame(TechnicianRunState::Done, $firstRun->fresh()->state);
+
+        // Two hours later the attacker re-plants the same-named rule (past the
+        // per-target proposal cooldown) and the technician stages the removal again.
+        $this->travel(2)->hours();
+
+        $reStageClient = Mockery::mock(CippRestWriteClient::class);
+        $reStageClient->shouldNotReceive('removeMailboxRule');
+        $reStageClient->shouldNotReceive('listUserMailboxRules');
+        $this->app->instance(CippRestWriteClient::class, $reStageClient);
+
+        $second = $this->callTool($token, 'cipp_stage_remove_mailbox_rule', $this->ruleArguments($fixture));
+        $this->assertFalse((bool) $second->json('result.isError'), (string) $second->json('result.content.0.text'));
+        $decoded = $this->decodedResult($second);
+
+        // Not answered as already-executed, and NOT the executed run recycled.
+        $this->assertArrayNotHasKey('idempotent', $decoded);
+        $this->assertNotSame($firstRun->id, $decoded['run_id']);
+
+        // The executed run is untouched: still Done, still carrying what it proposed.
+        $executed = $firstRun->fresh();
+        $this->assertSame(TechnicianRunState::Done, $executed->state);
+        $this->assertSame($proposed, (string) $executed->proposed_content);
+
+        $reStaged = TechnicianRun::findOrFail($decoded['run_id']);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $reStaged->state);
+        $this->assertSame('cipp_stage_remove_mailbox_rule', $reStaged->action_type);
+        $this->assertSame(2, TechnicianRun::count());
+
+        // The re-stage is idempotent against ITSELF: a repeat while it waits
+        // collapses onto the same run rather than minting a third.
+        $third = $this->callTool($token, 'cipp_stage_remove_mailbox_rule', $this->ruleArguments($fixture));
+        $this->assertTrue((bool) ($this->decodedResult($third)['idempotent'] ?? false));
+        $this->assertSame($reStaged->id, $this->decodedResult($third)['run_id']);
+        $this->assertSame(2, TechnicianRun::count());
+    }
+
+    /**
      * fencedDeclineMessage subtracts an OUTPUT-space overflow from an
      * INPUT-space budget, and neutralize() collapses '='-runs to '==' — so a
      * trim that lands inside a collapsed run removes no output characters. The
