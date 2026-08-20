@@ -4014,8 +4014,12 @@ class StaffCippWriteToolExecutor
      * and this method never calls it. Each verb calls it itself —
      * executeLicenseTargetDirect(), stageLicenseTargetAction(), and again in
      * approveLicenseTargetStagedRun()'s re-verify block — because each keys
-     * its own audit rows, and every rail it carries, on the object id it
-     * returns rather than on the address the caller typed.
+     * its dedup and cooldown rails, and every audit row it writes after that
+     * call, on the object id it returns rather than on the address the
+     * caller typed. A refusal that fires BEFORE that call has no object id to
+     * key on, and is audited under licenseTargetClaimKey() instead — a
+     * different prefix, so such a row can never be matched by a dedup or
+     * cooldown LIKE built from licenseTargetKey().
      *
      * DO NOT READ A RAIL INVENTORY OUT OF THIS DOCBLOCK, and do not write a
      * new one into it. WHICH cooldown, content-hash and awaiting-run rails
@@ -4040,9 +4044,12 @@ class StaffCippWriteToolExecutor
      * THE MAPPING IS COMPLETE: assertNoPsaPersonMapping() weighs only Person
      * rows carrying BOTH cipp_upn and cipp_user_id, so an ACTIVE but
      * HALF-mapped person — a shape the contact sync itself produces — passes
-     * as though unmapped, with mapped_inactive_person_id null, so nothing any
-     * verb keys on that value fires: no confirm_upn, and a null person
-     * linkage on the audit row. (That mapping check is a local PSA Person
+     * as though unmapped, with mapped_inactive_person_id null — so every
+     * consequence keyed on that value reads the target as person-less:
+     * executeLicenseTargetDirect()'s held-only refusal does not fire, the
+     * staged card asserts positively that the PSA holds no person record for
+     * this address, and the audit summary carries no mapped-person
+     * annotation. (That mapping check is a local PSA Person
      * query, not part of the CIPP listing read.) The DEACTIVATED half is
      * deliberately not closed — but again ONLY WHERE THE MAPPING IS COMPLETE,
      * because that same completeness filter runs before any is_active
@@ -4069,12 +4076,15 @@ class StaffCippWriteToolExecutor
      * SO, FOR A FURTHER VERB ON THIS FRONT DOOR: what this method hands back
      * is a client, a tenant, a ticket, validated params and a resolved
      * licence — and nothing about the human. Call verifiedTenantUser()
-     * yourself before anything reaches upstream, and key the write, the
-     * audit and whatever dedup/cooldown rows you decide to carry on the
-     * object id it returns, never on params['target_upn'] — that is still
-     * the caller's typed claim, checked here only for length and email shape
-     * by licenseTargetParams(). Then choose your mapped-inactive posture
-     * explicitly.
+     * yourself before anything reaches upstream, and key the write and
+     * whatever dedup/cooldown rows you decide to carry on the object id it
+     * returns, never on params['target_upn'] — that is still the caller's
+     * typed claim, checked here only for length and email shape by
+     * licenseTargetParams(). Audit rows written after that call follow the
+     * same rule; a refusal that fires before it still has to leave a row, so
+     * key that one on licenseTargetClaimKey($params) — not on the raw claim,
+     * and not on licenseTargetKey() with a stand-in identity. Then choose
+     * your mapped-inactive posture explicitly.
      *
      * (Measured the hard way: the first cut of this family allowed only
      * sku_id, on a reading of the key list that had been truncated before
