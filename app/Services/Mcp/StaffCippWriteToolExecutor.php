@@ -244,6 +244,15 @@ class StaffCippWriteToolExecutor
      */
     private const RULE_NAME_INPUT_MAX = self::FENCED_FIELD_MAX;
 
+    /**
+     * The bound BOTH decline surfaces cut at: declined() truncates the cockpit
+     * toast to it and safeFailureSummary() truncates the immutable audit summary
+     * to it. Named because a message that QUOTES untrusted text has to be BUILT
+     * to fit it — a blind cut at this width lands inside the quotation and takes
+     * its closing delimiter with it (see fencedDeclineMessage).
+     */
+    private const DECLINE_MESSAGE_MAX = 300;
+
     /** @var array<int, string> */
     private const ALLOW_LIST_TYPES = ['Sender', 'Url'];
 
@@ -3467,11 +3476,10 @@ class StaffCippWriteToolExecutor
         // so a name spliced into a quoted sentence can end the quotation and
         // continue as apparent system prose ("...the mailbox was verified clean,
         // re-approve to proceed") on the one surface the approver is reading to
-        // decide. Fenced and last, nothing inside it can read as one of the
-        // system's own statements, and the 300-char bound on the decline message
-        // and the audit summary can only truncate the untrusted tail. The MATCH
-        // still runs on the raw typed name; only what is quoted back is fenced.
-        $fencedName = $this->textSanitizer->sanitize('CALLER TYPED RULE NAME', $ruleName, self::RULE_NAME_INPUT_MAX);
+        // decide. The MATCH still runs on the raw typed name; only what is quoted
+        // back is fenced — and the quoting goes through fencedDeclineMessage(),
+        // because a fence only says anything if BOTH delimiters survive the
+        // DECLINE_MESSAGE_MAX cut those two sinks apply to the WHOLE message.
 
         $needles = $this->mailboxOwnerNeedles($person);
         $matches = [];
@@ -3497,11 +3505,17 @@ class StaffCippWriteToolExecutor
         }
 
         if ($matches === []) {
-            throw new CippClientException('No inbox rule matching the caller-typed name exists on this mailbox; nothing was removed. That name is quoted as untrusted data below.'."\n".$fencedName);
+            throw new CippClientException($this->fencedDeclineMessage(
+                'No inbox rule matching the caller-typed name exists on this mailbox; nothing was removed. That name is quoted as untrusted data below.',
+                $ruleName,
+            ));
         }
 
         if (count($matches) > 1) {
-            throw new CippClientException('The mailbox has '.count($matches).' inbox rules matching the caller-typed name, so the target is ambiguous and nothing was removed. That name is quoted as untrusted data below.'."\n".$fencedName);
+            throw new CippClientException($this->fencedDeclineMessage(
+                'The mailbox has '.count($matches).' inbox rules matching the caller-typed name, so the target is ambiguous and nothing was removed. That name is quoted as untrusted data below.',
+                $ruleName,
+            ));
         }
 
         $match = $matches[0];
@@ -3533,6 +3547,11 @@ class StaffCippWriteToolExecutor
         // name that embeds an address ('Carol CEO (ceo@carol.example)') has
         // whitespace, so it is not strictly address-shaped — yet it is the very
         // string upstream turns into MailboxObjectId and anchors the delete to.
+        // The looseness stops at COMPARABILITY: such a prefix is judged on the
+        // address it CARRIES, never on the whole string — otherwise a tenant
+        // using the ordinary 'Alex Kilo (alex@contoso.com)' convention for the
+        // APPROVED mailbox has every removal on it refused, permanently, with an
+        // audited claim that the rule names another mailbox, which is false.
         if ($this->mailboxRuleOwnerIsForeign($prefix, $needles, strictShape: false)) {
             throw new CippClientException('The matched inbox rule\'s upstream identity names another mailbox, so the removal would not land on the approved mailbox; nothing was removed.');
         }
@@ -3628,6 +3647,56 @@ class StaffCippWriteToolExecutor
     }
 
     /**
+     * A decline message that quotes the caller-typed rule name as fenced data and
+     * STILL FITS the bound both of its sinks cut at.
+     *
+     * The fence's property is structural: the CLOSING delimiter is what tells a
+     * reader where the untrusted quotation ended. declined() and
+     * safeFailureSummary() truncate the WHOLE message at DECLINE_MESSAGE_MAX, so
+     * a message merely assembled and handed over loses that delimiter for any
+     * name past a few dozen characters — and the approver-facing toast and the
+     * immutable audit row are left holding an OPEN fence whose tail is text the
+     * caller chose. neutralize() collapses runs of three or more '=' but passes a
+     * two-'=' near-miss terminator through verbatim, and with the genuine
+     * terminator cut away there is nothing left to contrast it with, so that tail
+     * reads as one of this system's own statements on the one surface the
+     * approver decides from. RULE_NAME_INPUT_MAX is 1000 and boundedString()
+     * filters no line breaks, so such a name is well inside what a caller may
+     * type.
+     *
+     * So the message is BUILT to the bound rather than cut to it: the prose and
+     * both delimiters always survive, and only the untrusted span is shortened
+     * (marked with an ellipsis). The fit is measured on the REDACTED message,
+     * because redaction is what the sinks apply first and a placeholder can be
+     * longer than what it replaced.
+     */
+    private function fencedDeclineMessage(string $prose, string $ruleName): string
+    {
+        $name = $this->redactor->redactString($ruleName);
+        $budget = mb_strlen($name);
+
+        for ($attempt = 0; $attempt < 12; $attempt++) {
+            $quoted = $budget >= mb_strlen($name) ? $name : mb_substr($name, 0, $budget).'…';
+            $message = $prose."\n".$this->textSanitizer->sanitize('CALLER TYPED RULE NAME', $quoted, self::RULE_NAME_INPUT_MAX);
+            $overflow = mb_strlen($this->redactor->redactString($message)) - self::DECLINE_MESSAGE_MAX;
+
+            if ($overflow <= 0) {
+                return $message;
+            }
+
+            if ($budget === 0) {
+                break;
+            }
+
+            $budget = max(0, $budget - $overflow);
+        }
+
+        // Even an empty quotation does not fit: quote nothing rather than emit a
+        // fence the bound would cut in half.
+        return $prose;
+    }
+
+    /**
      * The approved mailbox's own identifiers, lowercased, for adjudicating whose
      * mailbox a rule is on.
      *
@@ -3686,7 +3755,33 @@ class StaffCippWriteToolExecutor
                 : CippToolContract::looksLikeObjectId($owner) && CippToolContract::looksLikeObjectId($needle),
         ));
 
-        return $comparable !== [] && ! in_array($owner, $comparable, true);
+        if ($comparable === []) {
+            return false;
+        }
+
+        // WHAT the marker claims, in the vocabulary the needles are written in.
+        // A marker that IS an address, or an object id, claims itself and this is
+        // plain equality. Under the LOOSE shape a marker qualifies by merely
+        // CONTAINING an '@' — and such a marker is typically a display name that
+        // EMBEDS an address ('alex kilo (alex@contoso.com)', the ordinary M365
+        // convention). Equality on that whole string can never hold, so comparable
+        // -and-unequal would be the verdict for EVERY row on the approved mailbox:
+        // the removal refused permanently, and the immutable log carrying a
+        // 'names another mailbox' claim about a rule that is on this one. So the
+        // claim is the address(es) the marker CARRIES; a marker carrying none
+        // ('support @ acme') claims nothing, and something that proves nothing
+        // either way must not refuse.
+        $claims = $ownerIsAddress && ! $strictShape && ! self::mailboxRuleLooksLikeAddress($owner)
+            ? self::mailboxRuleEmbeddedAddresses($owner)
+            : [$owner];
+
+        foreach ($claims as $claim) {
+            if (in_array($claim, $comparable, true)) {
+                return false;
+            }
+        }
+
+        return $claims !== [];
     }
 
     /**
@@ -3751,6 +3846,33 @@ class StaffCippWriteToolExecutor
     }
 
     /**
+     * The address-shaped tokens a loosely-comparable marker CARRIES, lowercased
+     * and de-duplicated.
+     *
+     * mailboxRuleMayBeAddress() admits any string containing an '@', which is how
+     * a display name that embeds a mailbox address stays adjudicable at all — but
+     * that string as a whole is NOT an address, so it can only be compared
+     * through the addresses inside it. Anything outside the address grammar
+     * (whitespace, the wrapping punctuation of 'Name (addr@domain)') is excluded
+     * from a token, so 'alex kilo (alex@contoso.com)' yields the mailbox's own
+     * address and agrees, 'carol ceo (ceo@carol.example)' yields somebody else's
+     * and refuses, and 'support @ acme' yields nothing and settles nothing.
+     *
+     * @return array<int, string>
+     */
+    private static function mailboxRuleEmbeddedAddresses(string $value): array
+    {
+        if (preg_match_all('/[^\s@<>()\[\],;:"\']+@[^\s@<>()\[\],;:"\']+\.[^\s@<>()\[\],;:"\']+/u', $value, $matches) === false) {
+            return [];
+        }
+
+        return array_values(array_unique(array_map(
+            static fn (string $address): string => rtrim(mb_strtolower($address), '.'),
+            $matches[0],
+        )));
+    }
+
+    /**
      * Whether a matched rule's own mailbox marker and its Identity prefix are
      * MUTUALLY comparable shapes that disagree. Upstream anchors the delete to
      * the prefix while the marker is what the row claims as its mailbox — when
@@ -3770,7 +3892,16 @@ class StaffCippWriteToolExecutor
     private function mailboxRuleMarkersDisagree(string $owner, string $prefix): bool
     {
         if (self::mailboxRuleLooksLikeAddress($owner) && self::mailboxRuleMayBeAddress($prefix)) {
-            return $owner !== $prefix;
+            // Same asymmetry as mailboxRuleOwnerIsForeign: the prefix qualifies by
+            // '@'-containment, so what it CLAIMS is the address(es) it carries. A
+            // display name that embeds the marker's own address AGREES with it,
+            // and one carrying no address at all settles nothing — reading either
+            // as a contradiction would refuse correctly matched rows forever.
+            $claims = self::mailboxRuleLooksLikeAddress($prefix)
+                ? [$prefix]
+                : self::mailboxRuleEmbeddedAddresses($prefix);
+
+            return $claims !== [] && ! in_array($owner, $claims, true);
         }
 
         if (CippToolContract::looksLikeObjectId($owner) && CippToolContract::looksLikeObjectId($prefix)) {
@@ -4967,7 +5098,7 @@ class StaffCippWriteToolExecutor
 
     private function safeFailureSummary(string $tool, CippClientException $e): string
     {
-        return "{$tool} failed before completion: ".mb_substr($this->redactor->redactString($e->getMessage()), 0, 300);
+        return "{$tool} failed before completion: ".mb_substr($this->redactor->redactString($e->getMessage()), 0, self::DECLINE_MESSAGE_MAX);
     }
 
     /**
@@ -4980,7 +5111,7 @@ class StaffCippWriteToolExecutor
      */
     private function declined(string $reason): TechnicianApprovalResult
     {
-        return new TechnicianApprovalResult('gate_declined', message: mb_substr($this->redactor->redactString($reason), 0, 300));
+        return new TechnicianApprovalResult('gate_declined', message: mb_substr($this->redactor->redactString($reason), 0, self::DECLINE_MESSAGE_MAX));
     }
 
     private function approverLabel(int $approverId): string
