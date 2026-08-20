@@ -3424,12 +3424,30 @@ class StaffCippWriteToolExecutor
     /**
      * Direct path for the tenant-scoped licence assignment.
      *
-     * Shaped on executeGroupMembershipDirect(): the VERIFICATION READ FIRST,
-     * then both dedup rails (exact-content AND identity-keyed, because the same
-     * user + SKU assigned from a different reason is still the same entitlement
-     * change), then the targetKey cooldown, then upstream. The read leads
-     * because BOTH rails are keyed on the object id it returns and never on the
-     * caller's typed address — see licenseTargetKey().
+     * Shaped on executeGroupMembershipDirect() and then divergent from it in
+     * the two places that decide this method's behaviour, both deliberately.
+     *
+     * FIRST, THE READ LEADS. That verb resolves its target locally (a PSA
+     * person), so its rails can run before it reads anything; this one's target
+     * is a tenant object, so the VERIFICATION READ RUNS FIRST and the keys are
+     * built from the object id it returns rather than the caller's typed
+     * address — see licenseTargetKey(). The single refusal that precedes the
+     * read is audited under a CLAIM key instead, because a claim is all that
+     * exists at that point; the two key prefixes differ, so no LIKE built from
+     * one can match a row carrying the other (licenseTargetClaimKey()).
+     *
+     * SECOND, THERE IS NO DEDUP RAIL HERE OF EITHER KIND — not the exact-content
+     * one, not an identity-keyed one. A licence seat is a recreatable target
+     * (RECREATABLE_TARGET_STAGED_TOOLS): both keys this path could build come
+     * from the same (verified user, resolved SKU) pair and neither can observe a
+     * removal made in between, so suppressing a repeat answers success on a
+     * billing write that never happened. What actually runs, in order: the
+     * verification read, the held-only refusal for a target the PSA maps to a
+     * person record, the targetKey cooldown, then upstream. The cooldown is the
+     * ONLY runaway guard on this write, which is why it spans both of the
+     * family's action_type names (licenseTargetCooldownActive()) and why it
+     * refuses honestly instead of reporting an unmade write as done. The
+     * reasoning for each is at its own call site.
      *
      * The verified user is resolved INSIDE the try so a scope refusal is audited
      * as 'rejected' with the operator-readable reason rather than escaping as a
@@ -3730,8 +3748,22 @@ class StaffCippWriteToolExecutor
      * initial call, and the user is re-verified against the LIVE tenant
      * listing: a UPN that now resolves to a different object id declines
      * rather than assigning a paid seat to somebody the operator never
-     * reviewed. A re-fired approval of an identical already-executed
-     * assignment is a LOGGED NO-OP, never a second upstream call.
+     * reviewed.
+     *
+     * NO ALREADY-EXECUTED RAIL RUNS HERE, and the absence is the design. Such a
+     * rail did not merely mis-answer on this path — it advanced the approved run
+     * to Done, so the grant it had declined to perform could not even be
+     * re-approved. Re-firing THIS run is already impossible without it:
+     * claimForExecution() fails on a Done run. What a SECOND run staged for the
+     * same target meets is the shared cooldown, which spans both of the family's
+     * action_type names and DECLINES the approval — a refusal the operator can
+     * see and retry, not a silent no-op — and only inside its window. Past that
+     * window a duplicate proposal does reach upstream a second time, which is
+     * the honest outcome: assigning a SKU the user already holds is an upstream
+     * no-op, while suppressing it would report a write that never happened as
+     * done. The rails that DO close an approval short of upstream each refuse
+     * on something they can point at: the kill switch, the payload and
+     * re-resolution refusals, the three drift rails, and that cooldown.
      */
     private function approveLicenseTargetStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
     {
