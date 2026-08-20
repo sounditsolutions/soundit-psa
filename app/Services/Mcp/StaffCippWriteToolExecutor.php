@@ -4014,17 +4014,24 @@ class StaffCippWriteToolExecutor
      * and this method never calls it. Each verb calls it itself —
      * executeLicenseTargetDirect(), stageLicenseTargetAction(), and again in
      * approveLicenseTargetStagedRun()'s re-verify block — because each keys
-     * every rail it carries, and every audit row it writes after that call,
-     * on the object id it returns rather than on the address the caller
-     * typed. A refusal that fires BEFORE that call has no object id to key
-     * on, so it carries EITHER the claim key OR no key at all. Where the
-     * refusing site can see for itself that licenseTargetParams() has already
-     * produced validated $params, the row may be audited under
-     * licenseTargetClaimKey() — approveLicenseTargetStagedRun() does exactly
-     * that for its kill-switch and its re-verification refusal — and that is a
-     * different prefix, so such a row can never be matched by a dedup or
-     * cooldown LIKE built from licenseTargetKey(). Everywhere else the row is
-     * UNKEYED, which is every refusal this method itself writes. Note that
+     * every rail it carries on the object id it returns rather than on the
+     * address the caller typed, and so does every audit row written by a site
+     * that can see that id for itself. A refusal that fires BEFORE that call
+     * has no object id to key on, so it carries EITHER the claim key OR no key
+     * at all. Where the refusing site can see for itself that
+     * licenseTargetParams() has already produced validated $params, the row may
+     * be audited under licenseTargetClaimKey(), and ALL THREE verbs do that:
+     * executeLicenseTargetDirect() and stageLicenseTargetAction() for the
+     * refusal their own verifiedTenantUser() call raises, and
+     * approveLicenseTargetStagedRun() for its kill-switch and its
+     * re-verification refusal — a different prefix, so such a row can never be
+     * matched by a dedup or cooldown LIKE built from licenseTargetKey().
+     * Everywhere else the row is UNKEYED: every refusal this method itself
+     * writes, and in approveLicenseTargetStagedRun() the three earliest
+     * payload/client refusals, its resolution catch, and its sweep-up catch —
+     * which is also the one row this family writes AFTER a successful
+     * verification without a key, because that catch is shared by throw sites
+     * on both sides of it and cannot know which identity was in hand. Note that
      * "can see for itself" is the test and not "do $params exist": this
      * method's single resolution catch is entered from four throw sites and
      * cannot know which one fired, so it stays unkeyed even on the
