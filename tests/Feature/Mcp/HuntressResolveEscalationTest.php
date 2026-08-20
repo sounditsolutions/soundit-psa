@@ -277,6 +277,20 @@ class HuntressResolveEscalationTest extends TestCase
         $text = (string) $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture))->json('result.content.0.text');
         $this->assertStringContainsString('covers 2 Huntress organizations', $text);
 
+        // An organization entry the parser cannot read must NOT be silently
+        // dropped: narrowing the set to [42] would let a multi-tenant record
+        // pass the sole-org gate and close another MSP's slice of it.
+        foreach ([
+            [['id' => self::ORG_ID], ['name' => 'Other MSP tenant']],
+            [['id' => self::ORG_ID], ['id' => null]],
+            [['id' => self::ORG_ID], ['id' => 'org-99']],
+            [['id' => self::ORG_ID], 'Other MSP tenant'],
+        ] as $organizations) {
+            $this->mockReadClient($this->escalation(['organizations' => $organizations]));
+            $text = (string) $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture))->json('result.content.0.text');
+            $this->assertStringContainsString('cannot read', $text, 'an unparsable organization entry must refuse, not collapse to a sole-org set');
+        }
+
         // Client with no mapped organization at all.
         $unmapped = Client::factory()->create(['name' => 'Unmapped', 'huntress_organization_id' => null]);
         $unmappedTicket = Ticket::factory()->for($unmapped)->create();

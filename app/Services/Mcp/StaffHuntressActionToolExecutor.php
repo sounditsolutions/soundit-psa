@@ -572,14 +572,27 @@ class StaffHuntressActionToolExecutor
         }
 
         $orgIds = [];
+        $unreadable = 0;
         foreach ((array) ($escalation['organizations'] ?? []) as $org) {
             $id = is_array($org) ? $this->positiveInt($org['id'] ?? null) : $this->positiveInt($org);
             if ($id !== null) {
                 $orgIds[] = $id;
+            } else {
+                $unreadable++;
             }
         }
 
         $orgIds = array_values(array_unique($orgIds));
+
+        // The sole-org invariant below is only as sound as this parse: a
+        // DROPPED entry (missing/null/non-numeric id, or an entry shape this
+        // parser does not recognise) would collapse a multi-tenant escalation
+        // to a single-org set and admit exactly the cross-tenant whole-record
+        // resolve the count check exists to refuse. An unreadable entry means
+        // the organization set is UNKNOWN, so it refuses — fail closed.
+        if ($unreadable > 0) {
+            return "Escalation {$escalationId} has {$unreadable} Huntress organization ".($unreadable === 1 ? 'entry' : 'entries')." this tool cannot read, so its organization set cannot be established — it may cover tenants outside this client. Resolve it in the Huntress console, not through this tool.";
+        }
 
         if ($orgIds === []) {
             return "Escalation {$escalationId} is account-level (no organization association) — it has no PSA client scope and is resolved in the Huntress console, not through this tool.";
