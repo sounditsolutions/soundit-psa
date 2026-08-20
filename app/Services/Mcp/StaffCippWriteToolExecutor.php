@@ -3440,8 +3440,14 @@ class StaffCippWriteToolExecutor
      * (licenseTargetClaimKey()). The refusals inside licenseTargetContext() are
      * UNKEYED, all six of them: the upstream-identifier blocklist, the
      * person-shape guard, the missing reason, the kill switch, client-not-found
-     * and the resolution catch — and the first three run before
+     * and the resolution catch — and FIVE of those six run before
      * licenseTargetParams() has produced what licenseTargetClaimKey() needs.
+     * Only the resolution catch can be entered after it, and that one stays
+     * unkeyed regardless: a single catch serves four throw sites and cannot see
+     * which of them refused, so validated $params are not provably in hand
+     * there either. Do not read the enumeration as licensing the later
+     * refusals to claim-key themselves — $params is undefined at the kill
+     * switch and at client-not-found.
      * That is the family rule as licenseTargetContext() states it (claim key OR
      * no key at all), so do not search this log for a target's pre-read
      * refusals by claim-key prefix and read a clean result as "never
@@ -3772,10 +3778,15 @@ class StaffCippWriteToolExecutor
      * runs, so a throw from either of those two — a DB error on the audit
      * insert is the realistic one — reaches the catch (\Throwable) at the
      * bottom, which calls releaseClaim() and returns the run to
-     * AwaitingApproval with the paid seat already assigned. The cooldown does
-     * not cover that window either: it matches 'executed' rows, and there the
-     * executed row is precisely what failed to write, so a re-approval sends a
-     * second ExecBulkLicense 'Add' for the same seat. The sibling family closes
+     * AwaitingApproval with the paid seat already assigned. What the cooldown
+     * can do about that depends on WHICH of the two throws, because the
+     * executed row is written first: if advanceTo(Done) is what fails, the row
+     * is already committed and a re-approval inside the 300s window is refused
+     * at the cooldown — past the window it is not. If the audit insert is what
+     * fails there is no 'executed' row at all, so the cooldown is blind to a
+     * write that did reach upstream and a re-approval sends a second
+     * ExecBulkLicense 'Add' for the same seat. That is the unguarded case, and
+     * it is also the realistic one. The sibling family closes
      * this window with an explicit $writeCommitted flag
      * (StaffCalendarToolExecutor::approveStagedRun(), "no failure path below
      * may return the run to AwaitingApproval"); THIS path carries no such flag,
@@ -3992,8 +4003,14 @@ class StaffCippWriteToolExecutor
             // seat after reading a card naming the user and the SKU; the only
             // rails allowed to stop it are the ones that can PROVE something
             // changed (the two drift rails above) or that refuse honestly (the
-            // cooldown below). A re-fired approval of THIS run is already
-            // impossible without them: claimForExecution() fails on a Done run.
+            // cooldown below). Once this run reaches Done, re-firing it needs
+            // no rail here: claimForExecution() does its CAS only from
+            // AwaitingApproval. Read that as a property of the Done STATE and
+            // not as an invariant of this method — the upstream write commits
+            // before the executed row and before advanceTo(Done), so a throw
+            // from either returns the run to AwaitingApproval with the seat
+            // already assigned. The docblock carries that window in full,
+            // including which of the two throws the cooldown can still see.
             //
             // Which is exactly why this cooldown has to span BOTH action_type
             // names: the row an approval writes carries the STAGED one, so the
