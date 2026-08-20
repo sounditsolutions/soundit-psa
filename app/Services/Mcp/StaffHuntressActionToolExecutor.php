@@ -591,7 +591,7 @@ class StaffHuntressActionToolExecutor
         // resolve the count check exists to refuse. An unreadable entry means
         // the organization set is UNKNOWN, so it refuses — fail closed.
         if ($unreadable > 0) {
-            return "Escalation {$escalationId} has {$unreadable} Huntress organization ".($unreadable === 1 ? 'entry' : 'entries')." this tool cannot read, so its organization set cannot be established — it may cover tenants outside this client. Resolve it in the Huntress console, not through this tool.";
+            return "Escalation {$escalationId} has {$unreadable} Huntress organization ".($unreadable === 1 ? 'entry' : 'entries').' this tool cannot read, so its organization set cannot be established — it may cover tenants outside this client. Resolve it in the Huntress console, not through this tool.';
         }
 
         if ($orgIds === []) {
@@ -605,7 +605,7 @@ class StaffHuntressActionToolExecutor
         // PSA client, no ticket and no approver here. v1 requires the set to
         // be exactly the mapped org; under-acting is the right direction.
         if (count($orgIds) > 1) {
-            return "Escalation {$escalationId} covers ".count($orgIds)." Huntress organizations — resolving it would close the record for tenants outside this client. Multi-organization escalations are resolved in the Huntress console, not through this tool.";
+            return "Escalation {$escalationId} covers ".count($orgIds).' Huntress organizations — resolving it would close the record for tenants outside this client. Multi-organization escalations are resolved in the Huntress console, not through this tool.';
         }
 
         if (! in_array($mappedOrgId, $orgIds, true)) {
