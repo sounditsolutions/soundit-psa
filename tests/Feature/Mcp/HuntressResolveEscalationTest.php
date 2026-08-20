@@ -14,6 +14,7 @@ use App\Services\Huntress\HuntressClientException;
 use App\Services\Huntress\HuntressEscalationAlreadyResolvedException;
 use App\Services\Huntress\HuntressEscalationNotApiResolvableException;
 use App\Services\Huntress\HuntressWriteClient;
+use App\Services\Tactical\Actions\ActionRedactor;
 use App\Support\McpConfig;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -739,5 +740,59 @@ class HuntressResolveEscalationTest extends TestCase
         $result = $executor->execute('huntress_stage_resolve_escalation', $this->stageArguments($fixture), $fixture['client']->id, 'opsbot');
         $this->assertStringContainsString('write credential', (string) ($result['error'] ?? ''));
         $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_a_claim_stranded_by_a_dead_approval_is_recoverable_by_re_staging(): void
+    {
+        $this->configureHuntress();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $token = $this->token(['huntress_stage_resolve_escalation']);
+        $this->mockWriteClientNeverCalled();
+        $run = $this->stageRun($fixture, $token);
+
+        // A hard process death mid-approve (worker kill, redeploy, PHP
+        // max_execution_time) leaves the run claimed with no catch block ever
+        // running, and no reaper reopens this family. Long past any live
+        // claim, the re-stage must RECOVER it — otherwise the escalation is
+        // permanently unmanageable through the tool.
+        $run->update(['state' => TechnicianRunState::Executing->value, 'claimed_at' => now()]);
+        $this->travel(3601)->seconds();
+
+        $this->mockReadClient($this->escalation());
+        $result = $this->decodedResult($this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture)));
+
+        $this->assertArrayNotHasKey('idempotent', $result, 'a dead claim must not answer "currently executing" forever');
+        $this->assertSame($run->id, $result['run_id'] ?? null);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertSame(1, TechnicianRun::count());
+    }
+
+    public function test_a_finalization_failure_after_the_resolve_committed_never_reopens_the_run(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWriteClientNeverCalled();
+        $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+
+        $write = Mockery::mock(HuntressWriteClient::class);
+        $write->shouldReceive('resolveEscalation')->once()->with(900)->andReturn(['resolution_method' => 'rule']);
+        $this->app->instance(HuntressWriteClient::class, $write);
+        $this->mockReadClient($this->escalation());
+
+        // The upstream resolve LANDS (and created rules), then the audit write
+        // fails. Reopening the run here would send a second resolve POST and
+        // launder the HARD FAULT into a later clean 'executed'; the run must
+        // stay terminal and the fault must still reach the operator.
+        $redactor = Mockery::mock(ActionRedactor::class);
+        $redactor->shouldReceive('redactString')->andThrow(new \RuntimeException('audit unavailable'));
+        $this->app->instance(ActionRedactor::class, $redactor);
+
+        $response = $this->actingAs($actor)->postJson(route('cockpit.approve', $run));
+
+        $response->assertJson(['ok' => false, 'status' => 'executed_with_fault']);
+        $this->assertStringContainsString('HARD FAULT', (string) $response->json('message'));
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
     }
 }

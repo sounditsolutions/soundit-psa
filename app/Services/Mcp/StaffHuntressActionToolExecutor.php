@@ -66,6 +66,19 @@ class StaffHuntressActionToolExecutor
 
     private const COOLDOWN_SECONDS = 300;
 
+    /**
+     * How long an Executing claim may stand before a re-stage treats it as
+     * DEAD and revives the run. The approve path is bounded far below this
+     * (two 30 s live reads plus a POST whose 429 back-offs are clamped by
+     * HuntressWriteClient::RETRY_AFTER_CEILING_SECONDS), so no live approval
+     * is ever this old; a claim that outlives it means the worker died
+     * between claimForExecution() and any catch block — and this family is
+     * deliberately excluded from the stale-claim reaper's
+     * TechnicianRun::RECOVERY_SAFE_ACTION_TYPES, so nothing else will ever
+     * release it.
+     */
+    private const STALE_CLAIM_SECONDS = 900;
+
     private const REASON_MAX = 500;
 
     private const SUBJECT_DISPLAY_MAX = 300;
@@ -348,8 +361,27 @@ class StaffHuntressActionToolExecutor
         // upstream POST may be in flight. Reviving it here would rewrite
         // Executing back to AwaitingApproval, break the claimForExecution
         // invariant, and re-present an escalation for approval while it is
-        // being resolved. Answer idempotently and touch nothing.
-        if (! $run->wasRecentlyCreated && $run->state === TechnicianRunState::Executing) {
+        // being resolved. Answer idempotently and touch nothing — but ONLY
+        // while the claim can still be live.
+        //
+        // A hard process death mid-approve (worker kill, redeploy, PHP
+        // max_execution_time) strands the run in Executing with no catch
+        // block ever running, and no reaper may reopen this family. An
+        // unbounded "currently executing" answer would therefore make the
+        // escalation PERMANENTLY unresolvable through the tool: every
+        // re-stage collides with the same content_hash row forever and gets
+        // the same answer, with manual DB surgery the only exit. Past
+        // STALE_CLAIM_SECONDS the claim is provably dead, so the run falls
+        // through to the ordinary revive below.
+        //
+        // That revive cannot resurrect a resolve that already landed: an
+        // executed audit row short-circuits at alreadyExecuted() and a
+        // committed upstream resolve short-circuits at the live
+        // already-resolved read, both above this point — and approval itself
+        // re-reads the escalation LIVE (and maps a 409) before any POST.
+        $strandedClaim = ! $run->wasRecentlyCreated && $run->state === TechnicianRunState::Executing;
+
+        if ($strandedClaim && ! $this->claimIsStale($run)) {
             return [
                 'success' => true,
                 'idempotent' => true,
@@ -361,6 +393,18 @@ class StaffHuntressActionToolExecutor
         }
 
         if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
+            // The recovery is never silent: a run left claimed by a dead
+            // approval is an operational fault, so releasing it leaves a log
+            // line and an audit row rather than quietly re-presenting the card.
+            if ($strandedClaim) {
+                Log::warning('[StaffHuntressActionToolExecutor] Recovering a stranded execution claim on re-stage', [
+                    'run_id' => $run->id,
+                    'escalation_id' => $escalationId,
+                    'claimed_at' => $run->claimed_at?->toIso8601String(),
+                ]);
+                $this->auditAttempt($tool, 'error', $clientId, $ticket, $contentHash, "{$targetKey}: Stranded execution claim (run left Executing by a dead approval) recovered on re-stage; the run returns to awaiting approval and re-verifies the escalation LIVE before any upstream call.", $actorLabel, $run->id);
+            }
+
             $run->update([
                 'state' => TechnicianRunState::AwaitingApproval->value,
                 'proposed_content' => $proposedContent,
@@ -401,6 +445,14 @@ class StaffHuntressActionToolExecutor
         if (! self::isStagedActionType($run->action_type) || ! $run->claimForExecution()) {
             return new TechnicianApprovalResult('already_handled');
         }
+
+        // Tracks whether the upstream resolve has COMMITTED. Once it has, no
+        // failure path below may return this run to AwaitingApproval — a
+        // re-approval would send a second POST /escalations/{id}/resolution —
+        // and no failure may swallow the operator-facing outcome either. The
+        // sibling StaffCalendarToolExecutor keeps the same flag for exactly
+        // this window.
+        $writeCommitted = false;
 
         try {
             $payload = $this->decryptRunPayload($run);
@@ -516,6 +568,17 @@ class StaffHuntressActionToolExecutor
                 return new TechnicianApprovalResult('gate_declined', message: 'The Huntress resolve call failed — nothing was resolved. Try again.');
             }
 
+            // The upstream resolve has now COMMITTED. Land the run terminal
+            // FIRST; everything below is bookkeeping. A bookkeeping failure
+            // that reopened the run would re-present an already-resolved
+            // escalation for a second POST and — on the fault branch — drop
+            // the HARD FAULT audit row, so the later re-approval would
+            // converge through the live-read/409 path and report a clean
+            // 'executed', laundering a rules-were-created security fault into
+            // a green success.
+            $writeCommitted = true;
+            $run->advanceTo(TechnicianRunState::Done);
+
             // POST-CONDITION on the server's own report of what it did. The
             // id-only `{}` body legitimately produces `direct` or `dismiss`;
             // `rule` means attribute rules WERE created, and an unrecognised
@@ -533,17 +596,29 @@ class StaffHuntressActionToolExecutor
                 $fault = "HARD FAULT: Huntress reported resolution_method '{$method}' for escalation {$escalationId} — an id-only resolve must report 'direct' or 'dismiss'. "
                     ."'rule' means the server CREATED attribute rules during this resolution. The escalation IS resolved; inspect the Huntress console for created rules and escalate to a human immediately.";
                 Log::error("[StaffHuntressActionToolExecutor] {$fault}", ['run_id' => $run->id, 'escalation_id' => $escalationId]);
-                $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: {$fault}", $approverLabel, $run->id, $approverId);
-                $run->advanceTo(TechnicianRunState::Done);
+                $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: {$fault}", $approverLabel, $run->id, $approverId);
 
                 return new TechnicianApprovalResult('executed_with_fault', message: $fault);
             }
 
-            $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — escalation {$escalationId} resolved (resolution_method {$method}).", $approverLabel, $run->id, $approverId);
-            $run->advanceTo(TechnicianRunState::Done);
+            $this->safeAudit($run->action_type, 'executed', $client->id, $ticket, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — escalation {$escalationId} resolved (resolution_method {$method}).", $approverLabel, $run->id, $approverId);
 
             return new TechnicianApprovalResult('executed', message: "Escalation {$escalationId} resolved (server reported resolution_method '{$method}').");
         } catch (\Throwable $e) {
+            // Only reachable BEFORE the upstream resolve committed — safe to
+            // reopen for a retry. Once it HAS committed, reopening is the
+            // double-resolve this flag exists to prevent: keep the run
+            // terminal and hand the operator the executed-with-fault channel
+            // instead of a 500 that hides what landed upstream.
+            if ($writeCommitted) {
+                Log::error('[StaffHuntressActionToolExecutor] Finalizing a COMMITTED escalation resolve failed; the run is NOT reopened', [
+                    'run_id' => $run->id,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return new TechnicianApprovalResult('executed_with_fault', message: 'The escalation WAS resolved upstream, but recording the outcome failed — the resolution_method post-condition and its audit row may be missing. Do NOT re-approve; verify this escalation (and any attribute rules the server may have created) in the Huntress console.');
+            }
+
             $run->releaseClaim();
 
             throw $e;
@@ -622,6 +697,21 @@ class StaffHuntressActionToolExecutor
         $resolvedAt = $escalation['resolved_at'] ?? null;
 
         return $status === 'resolved' || (is_scalar($resolvedAt) && (string) $resolvedAt !== '');
+    }
+
+    /**
+     * Whether an Executing run's claim is old enough that no live approval
+     * can still be holding it. claimed_at is stamped inside
+     * claimForExecution()'s CAS; updated_at is the fallback for rows claimed
+     * before that column existed, and an unreadable stamp counts as STALE
+     * rather than pinning the escalation in Executing forever (mirrors
+     * TechnicianRun::scopeStaleExecuting).
+     */
+    private function claimIsStale(TechnicianRun $run): bool
+    {
+        $claimedAt = $run->claimed_at ?? $run->updated_at;
+
+        return $claimedAt === null || $claimedAt->lte(now()->subSeconds(self::STALE_CLAIM_SECONDS));
     }
 
     /**
@@ -776,6 +866,37 @@ class StaffHuntressActionToolExecutor
             ->where('result_status', 'executed')
             ->where('summary', 'like', $targetKey.':%')
             ->exists();
+    }
+
+    /**
+     * An audit row on a path where the upstream write has ALREADY COMMITTED.
+     * A throwing INSERT there must not escape: the handler above would either
+     * reopen an executed run (a second resolve POST) or turn the operator's
+     * HARD FAULT text into a 500 they never read. Losing the row to the log
+     * is strictly better than losing the fault. Mirrors the calendar family's
+     * post-write bookkeeping.
+     */
+    private function safeAudit(
+        string $actionType,
+        string $resultStatus,
+        ?int $clientId,
+        ?Ticket $ticket,
+        string $contentHash,
+        string $summary,
+        string $actorLabel,
+        ?int $runId = null,
+        ?int $approverId = null,
+    ): void {
+        try {
+            $this->auditAttempt($actionType, $resultStatus, $clientId, $ticket, $contentHash, $summary, $actorLabel, $runId, $approverId);
+        } catch (\Throwable $e) {
+            Log::error('[StaffHuntressActionToolExecutor] Post-write audit row failed after a COMMITTED escalation resolve', [
+                'run_id' => $runId,
+                'result_status' => $resultStatus,
+                'summary' => $summary,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     private function auditAttempt(
