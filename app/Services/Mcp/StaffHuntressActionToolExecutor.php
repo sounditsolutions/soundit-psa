@@ -287,6 +287,16 @@ class StaffHuntressActionToolExecutor
         }
 
         if ($this->escalationResolved($escalation)) {
+            // This short-circuit sits ABOVE the stranded-claim revive below, and
+            // must: a resolve that already committed may never be re-presented
+            // for a second POST. But that also puts a run stranded in Executing
+            // by a dead finalization (worker kill mid-approve, a throwing
+            // advanceTo) out of the revive's reach — and this family is excluded
+            // from TechnicianRun::RECOVERY_SAFE_ACTION_TYPES, so no reaper
+            // reopens it either. Land it TERMINAL here instead of leaving it
+            // wedged forever with manual DB surgery the only exit.
+            $this->finalizeStrandedResolvedRun($tool, $clientId, $ticket, $contentHash, $targetKey, $escalationId, $actorLabel);
+
             $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $contentHash, "{$targetKey}: Escalation already resolved upstream; staging skipped.", $actorLabel);
 
             return [
@@ -322,7 +332,7 @@ class StaffHuntressActionToolExecutor
             ];
         }
 
-        if ($this->cooldownActive([$tool, $directTool], $clientId, $targetKey, self::COOLDOWN_SECONDS)) {
+        if ($this->cooldownActive([$tool, $directTool], $clientId, $targetKey, self::COOLDOWN_SECONDS, $contentHash)) {
             $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $contentHash, "{$targetKey}: {$tool} cooldown active; staged proposal refused.", $actorLabel);
 
             return ['error' => "{$tool} cooldown active for this escalation; no proposal was staged."];
@@ -779,6 +789,82 @@ class StaffHuntressActionToolExecutor
     }
 
     /**
+     * Land a run left wedged in Executing by an approval that died AFTER its
+     * upstream resolve COMMITTED — the one strand the re-stage revive cannot
+     * reach, because the live already-resolved read short-circuits above it
+     * (correctly: the write landed, so the run must never be re-presented for a
+     * second POST). Without this the run never reaches a terminal state at all:
+     * excluded from TechnicianRun::RECOVERY_SAFE_ACTION_TYPES so no reaper
+     * touches it, not in PENDING_STATES so the cockpit cannot show it, no
+     * executed audit row, and manual DB surgery the only exit — while the
+     * stale-claim reaper logs the same error every five minutes forever.
+     *
+     * The audit row is `error`, not `executed`: the upstream state DID change,
+     * but the 201's resolution_method post-condition was never evaluated, so a
+     * server-created attribute rule cannot be ruled out — and a clean
+     * `executed` row is exactly how such a fault gets laundered into a green
+     * success (the same reason the hard-fault branch audits `error`).
+     *
+     * Only a claim past STALE_CLAIM_SECONDS is touched, and only through the
+     * same claim-CAS-under-row-lock the re-stage revive uses: an approval that
+     * is still finishing must always win the race.
+     */
+    private function finalizeStrandedResolvedRun(
+        string $tool,
+        int $clientId,
+        Ticket $ticket,
+        string $contentHash,
+        string $targetKey,
+        int $escalationId,
+        string $actorLabel,
+    ): void {
+        $run = TechnicianRun::query()
+            ->where('ticket_id', $ticket->id)
+            ->where('action_type', $tool)
+            ->where('content_hash', $contentHash)
+            ->where('state', TechnicianRunState::Executing->value)
+            ->first();
+
+        if ($run === null || ! $this->claimIsStale($run)) {
+            return;
+        }
+
+        $claimedAt = $run->claimed_at;
+        $finalized = DB::transaction(function () use ($run, $claimedAt): bool {
+            $fresh = TechnicianRun::query()->whereKey($run->getKey())->lockForUpdate()->first();
+            if (! $fresh || $fresh->state !== TechnicianRunState::Executing) {
+                return false;
+            }
+
+            $sameClaim = $claimedAt === null
+                ? $fresh->claimed_at === null
+                : ($fresh->claimed_at !== null && $fresh->claimed_at->equalTo($claimedAt));
+            if (! $sameClaim) {
+                return false;
+            }
+
+            $fresh->advanceTo(TechnicianRunState::Done);
+
+            return true;
+        });
+
+        if (! $finalized) {
+            return;
+        }
+
+        $run->state = TechnicianRunState::Done;
+
+        // Never silent: a run landed terminal by reconstruction rather than by
+        // its own approval is an operational fault, and the record must say so.
+        Log::warning('[StaffHuntressActionToolExecutor] Landing a run stranded in Executing by a dead approval whose resolve had already committed', [
+            'run_id' => $run->id,
+            'escalation_id' => $escalationId,
+            'claimed_at' => $claimedAt?->toIso8601String(),
+        ]);
+        $this->auditAttempt($tool, 'error', $clientId, $ticket, $contentHash, "{$targetKey}: Run left Executing by a dead approval; the escalation now reads RESOLVED upstream, so that approved resolve DID commit — the run is landed terminal here rather than wedged forever. Its resolution_method post-condition was never evaluated: inspect the Huntress console for attribute rules the server may have created during this resolution, and escalate to a human.", $actorLabel, $run->id);
+    }
+
+    /**
      * The approver-facing card body. The escalation subject is vendor-relayed
      * free text (SOC analyst prose, entity names, mail subjects) — fenced as
      * untrusted data; the scalar facts are bounded.
@@ -878,8 +964,16 @@ class StaffHuntressActionToolExecutor
      * keyed on the per-escalation target embedded in the audit summary — the
      * psa-eerg4 R2 lesson: a single-name lookup is asymmetric across the
      * stage/approve paths. Counts awaiting_approval rows too, so a second
-     * ticket cannot pile a duplicate proposal onto a live one (the same
-     * ticket's re-stage is answered idempotently before this check). The
+     * ticket cannot pile a duplicate proposal onto a live one — but NEVER this
+     * proposal's OWN staging row: $ownContentHash (ticket + escalation + tool)
+     * is excluded from the awaiting_approval leg, because a DENIED run misses
+     * the liveAwaitingRun() short-circuit above (that query filters on
+     * AwaitingApproval) and would otherwise collide with the very row its own
+     * staging wrote — refusing the deny-then-re-stage revive this family's
+     * firstOrCreate contract documents, for the rest of the window, under a
+     * message indistinguishable from a genuine runaway-staging refusal.
+     * Executed rows still count unconditionally: a resolve that landed is a
+     * cooldown for everyone. The
      * target key is built from a validated integer, so it cannot carry LIKE
      * wildcards — and the match is ANCHORED at the start of the summary with
      * the trailing `:` delimiter included, because every countable summary is
@@ -890,7 +984,7 @@ class StaffHuntressActionToolExecutor
      *
      * @param  array<int, string>  $actionTypes
      */
-    private function cooldownActive(array $actionTypes, int $clientId, string $targetKey, int $cooldownSeconds): bool
+    private function cooldownActive(array $actionTypes, int $clientId, string $targetKey, int $cooldownSeconds, ?string $ownContentHash = null): bool
     {
         if ($cooldownSeconds <= 0) {
             return false;
@@ -900,7 +994,19 @@ class StaffHuntressActionToolExecutor
             ->whereIn('action_type', $actionTypes)
             ->where('client_id', $clientId)
             ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
-            ->whereIn('result_status', ['executed', 'awaiting_approval'])
+            ->where(function ($query) use ($ownContentHash) {
+                $query->where('result_status', 'executed')
+                    ->orWhere(function ($awaiting) use ($ownContentHash) {
+                        $awaiting->where('result_status', 'awaiting_approval');
+                        if ($ownContentHash !== null) {
+                            // A row with no content_hash is not this proposal's own,
+                            // so it must keep counting — a bare `!=` would drop it
+                            // (NULL compares to neither).
+                            $awaiting->where(fn ($own) => $own->whereNull('content_hash')
+                                ->orWhere('content_hash', '!=', $ownContentHash));
+                        }
+                    });
+            })
             ->where('summary', 'like', $targetKey.':%')
             ->exists();
     }
