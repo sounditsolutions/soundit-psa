@@ -145,6 +145,13 @@ class TechnicianCockpitController extends Controller
             'queued_offline' => 'Device offline — queued to run automatically when it comes back online.',
             'already_handled' => $this->handledMessage($run, 'That draft was already handled.'),
             'recipient_invalid' => $result->message ?? 'One or more recipients are no longer valid — re-check the To/CC and try again.',
+            // The upstream write LANDED but violated its post-condition (e.g.
+            // the Huntress resolution_method 'rule' hard fault). Deliberately
+            // NOT in the $ok list: the fault text must arrive on the error
+            // channel — a green banner is how a rules-were-created fault gets
+            // scrolled past — while the run itself is Done because the
+            // upstream state really changed.
+            'executed_with_fault' => $result->message ?? 'The action executed upstream but failed its post-condition check — escalate to a human.',
             // psa-zjpd deep-review: a held destructive action can decline for a
             // specific recoverable reason (typed-id mismatch, identity drift,
             // lost mapping, kill-switch, cooldown) — surface it when provided.

@@ -152,4 +152,25 @@ class HuntressWriteClientTest extends TestCase
         $this->expectException(HuntressEscalationAlreadyResolvedException::class);
         $client->resolveEscalation(55);
     }
+
+    /**
+     * Retry-After is UPSTREAM-CONTROLLED and the sleep runs inside the
+     * synchronous cockpit approve request: whatever the header says, no single
+     * back-off may exceed RETRY_AFTER_CEILING_SECONDS. Non-numeric and
+     * negative headers fall back to the exponential default (2s, 4s), which
+     * sits under the ceiling by construction.
+     */
+    public function test_retry_delay_clamps_the_upstream_retry_after_header(): void
+    {
+        $ceiling = HuntressWriteClient::RETRY_AFTER_CEILING_SECONDS;
+
+        $this->assertSame($ceiling, HuntressWriteClient::retryDelaySeconds('3600', 1), 'an hour-long upstream header must clamp to the ceiling');
+        $this->assertSame($ceiling, HuntressWriteClient::retryDelaySeconds((string) ($ceiling + 1), 2));
+        $this->assertSame(3, HuntressWriteClient::retryDelaySeconds('3', 1), 'a sane header value is honoured');
+        $this->assertSame(0, HuntressWriteClient::retryDelaySeconds('0', 1), 'zero means retry immediately');
+        $this->assertSame(2, HuntressWriteClient::retryDelaySeconds('', 1), 'no header → exponential default');
+        $this->assertSame(4, HuntressWriteClient::retryDelaySeconds('', 2));
+        $this->assertSame(2, HuntressWriteClient::retryDelaySeconds('-5', 1), 'negative header → exponential default');
+        $this->assertSame(4, HuntressWriteClient::retryDelaySeconds('soon', 2), 'non-numeric header → exponential default');
+    }
 }

@@ -313,7 +313,12 @@ class StaffHuntressActionToolExecutor
                 'escalation_id' => $escalationId,
             ], JSON_THROW_ON_ERROR)),
         ];
-        $proposedContent = $this->stagedDisplay($escalation, $escalationId, $client)."\nReason: ".$reason;
+        // The reason is agent-authored free text and is the one field the
+        // approver actually reads to decide — it goes through the SAME fence
+        // as the vendor subject, never appended bare after the fenced block
+        // where it would read as system-authored framing.
+        $proposedContent = $this->stagedDisplay($escalation, $escalationId, $client)
+            ."\n".$this->fence->fence('AGENT SUPPLIED REASON', $reason);
 
         // Same idempotency-revive contract as the CIPP staged families
         // (bd psa-k4s0): the DB unique key (ticket_id + action_type +
@@ -334,6 +339,22 @@ class StaffHuntressActionToolExecutor
                 'tokens_used' => 0,
             ],
         );
+
+        // A run that approveStagedRun() has claimed is MID-EXECUTION — the
+        // upstream POST may be in flight. Reviving it here would rewrite
+        // Executing back to AwaitingApproval, break the claimForExecution
+        // invariant, and re-present an escalation for approval while it is
+        // being resolved. Answer idempotently and touch nothing.
+        if (! $run->wasRecentlyCreated && $run->state === TechnicianRunState::Executing) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run->id,
+                'message' => 'An approved resolve for this escalation is currently executing; nothing new was staged.',
+            ];
+        }
 
         if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
             $run->update([
@@ -496,8 +517,10 @@ class StaffHuntressActionToolExecutor
             // `rule` means attribute rules WERE created, and an unrecognised
             // value is treated identically (fail closed on unknown). The run
             // still advances to Done — the upstream state DID change — but the
-            // audit row is `error` and the operator gets the fault, because a
-            // fault that executed must never be reported as declined.
+            // audit row is `error` and the result status is the DISTINCT
+            // `executed_with_fault`, which the cockpit renders through the
+            // error channel: a fault that executed must never be reported as
+            // declined, and it must never be dressed as a green success either.
             $method = is_scalar($resolution['resolution_method'] ?? null)
                 ? (string) $resolution['resolution_method']
                 : '(missing)';
@@ -509,7 +532,7 @@ class StaffHuntressActionToolExecutor
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: {$fault}", $approverLabel, $run->id, $approverId);
                 $run->advanceTo(TechnicianRunState::Done);
 
-                return new TechnicianApprovalResult('executed', message: $fault);
+                return new TechnicianApprovalResult('executed_with_fault', message: $fault);
             }
 
             $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — escalation {$escalationId} resolved (resolution_method {$method}).", $approverLabel, $run->id, $approverId);
@@ -672,7 +695,12 @@ class StaffHuntressActionToolExecutor
      * ticket cannot pile a duplicate proposal onto a live one (the same
      * ticket's re-stage is answered idempotently before this check). The
      * target key is built from a validated integer, so it cannot carry LIKE
-     * wildcards.
+     * wildcards — and the match is ANCHORED at the start of the summary with
+     * the trailing `:` delimiter included, because every countable summary is
+     * written as "escalation:{id}: …". An unanchored substring match would let
+     * escalation:1234 collide with escalation:12345 (prefix ids) and let an
+     * agent-authored reason containing "escalation:N:" spoof cooldowns for
+     * escalations it never touched.
      *
      * @param  array<int, string>  $actionTypes
      */
@@ -687,7 +715,7 @@ class StaffHuntressActionToolExecutor
             ->where('client_id', $clientId)
             ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
             ->whereIn('result_status', ['executed', 'awaiting_approval'])
-            ->where('summary', 'like', '%'.$targetKey.'%')
+            ->where('summary', 'like', $targetKey.':%')
             ->exists();
     }
 
@@ -696,7 +724,10 @@ class StaffHuntressActionToolExecutor
      * call leaves an awaiting_approval row under the staged name carrying
      * this same target key, and counting it would make every proposal block
      * its own approval (the licenseTargetCooldownActive lesson). Runaway
-     * staging is the stage-time check's question, not this one's.
+     * staging is the stage-time check's question, not this one's. Anchored
+     * prefix match for the same reason as cooldownActive(): unanchored LIKE
+     * collides prefix-sharing escalation ids and silently declines legitimate
+     * approvals.
      *
      * @param  array<int, string>  $actionTypes
      */
@@ -711,7 +742,7 @@ class StaffHuntressActionToolExecutor
             ->where('client_id', $clientId)
             ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
             ->where('result_status', 'executed')
-            ->where('summary', 'like', '%'.$targetKey.'%')
+            ->where('summary', 'like', $targetKey.':%')
             ->exists();
     }
 
@@ -726,6 +757,17 @@ class StaffHuntressActionToolExecutor
         ?int $runId = null,
         ?int $approverId = null,
     ): void {
+        // technician_action_logs.client_id is FK-constrained. Several refusal
+        // paths audit BEFORE the client is resolved (whole-body refusal,
+        // missing reason, kill-switch, and "Client not found" itself), so an
+        // unvalidated id here would turn the intended refusal into a
+        // QueryException that leaks raw SQL to the MCP caller and writes no
+        // audit row at all. Verify existence and fall back to null — the
+        // summary text still names the attempt.
+        if ($clientId !== null && ! Client::whereKey($clientId)->exists()) {
+            $clientId = null;
+        }
+
         TechnicianActionLog::create([
             'actor_id' => TechnicianConfig::aiActorUserId(),
             'approver_user_id' => $approverId,

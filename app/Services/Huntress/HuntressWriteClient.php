@@ -33,6 +33,15 @@ class HuntressWriteClient
      */
     public const EMPTY_RESOLUTION_BODY = '{}';
 
+    /**
+     * Hard ceiling on any single 429 back-off sleep. Retry-After is an
+     * UPSTREAM-CONTROLLED value and this client runs inside the synchronous
+     * cockpit approve request — an unclamped `Retry-After: 3600` would park
+     * the PHP worker (and the run's execution claim) for an hour. Two retries
+     * at the ceiling bound the added wall time at 20 s.
+     */
+    public const RETRY_AFTER_CEILING_SECONDS = 10;
+
     private Client $http;
 
     /**
@@ -130,13 +139,10 @@ class HuntressWriteClient
                 }
 
                 if ($status === 429 && $attempt < $maxAttempts) {
-                    $retryAfter = 2 ** $attempt;
-                    if ($e instanceof RequestException && $e->getResponse() !== null) {
-                        $header = $e->getResponse()->getHeaderLine('Retry-After');
-                        if (is_numeric($header)) {
-                            $retryAfter = (int) $header;
-                        }
-                    }
+                    $header = $e instanceof RequestException && $e->getResponse() !== null
+                        ? $e->getResponse()->getHeaderLine('Retry-After')
+                        : '';
+                    $retryAfter = self::retryDelaySeconds($header, $attempt);
                     Log::info("[HuntressWriteClient] Rate limited on {$endpoint}, retrying in {$retryAfter}s");
                     if ($retryAfter > 0) {
                         sleep($retryAfter);
@@ -157,7 +163,34 @@ class HuntressWriteClient
             $body = [];
         }
 
-        // Defensive unwrap, mirroring HuntressClient::getEscalation().
+        return self::unwrapResolution($body);
+    }
+
+    /**
+     * The 429 back-off for one attempt: the upstream Retry-After when it is a
+     * sane numeric value, else exponential (2s, 4s) — ALWAYS clamped to
+     * RETRY_AFTER_CEILING_SECONDS, because the header is upstream-controlled
+     * and this sleep runs inside a synchronous approval request. Negative and
+     * non-numeric headers fall back to the exponential default.
+     */
+    public static function retryDelaySeconds(string $retryAfterHeader, int $attempt): int
+    {
+        $delay = 2 ** max(1, $attempt);
+        if (is_numeric($retryAfterHeader) && (int) $retryAfterHeader >= 0) {
+            $delay = (int) $retryAfterHeader;
+        }
+
+        return min($delay, self::RETRY_AFTER_CEILING_SECONDS);
+    }
+
+    /**
+     * Defensive unwrap, mirroring HuntressClient::getEscalation().
+     *
+     * @param  array<string, mixed>  $body
+     * @return array<string, mixed>
+     */
+    private static function unwrapResolution(array $body): array
+    {
         $resolution = $body['escalation_resolution'] ?? $body['resolution'] ?? $body;
 
         return is_array($resolution) ? $resolution : [];

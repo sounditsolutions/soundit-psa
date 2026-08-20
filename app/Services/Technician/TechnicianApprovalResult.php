@@ -4,9 +4,13 @@ namespace App\Services\Technician;
 
 /**
  * The outcome of an approve or reconnect-run action. status ∈ {sent, closed,
- * resolved, published, merged, executed, queued_offline, already_handled,
- * gate_declined, recipient_invalid}. 'resolved' vs 'closed' distinguishes which
- * terminal target an approved close_ticket run applied (psa-d9ayt). $message
+ * resolved, published, merged, executed, executed_with_fault, queued_offline,
+ * already_handled, gate_declined, recipient_invalid}. 'resolved' vs 'closed'
+ * distinguishes which terminal target an approved close_ticket run applied
+ * (psa-d9ayt). 'executed_with_fault' is an upstream write that LANDED but
+ * violated its post-condition (the Huntress resolution_method hard fault): the
+ * run is terminal, yet the cockpit must render $message on the ERROR channel —
+ * never as a success, never as a decline. $message
  * carries an operator-facing reason for
  * recipient_invalid (a To/CC that no longer resolves at approval time) or an
  * operator-facing summary for an executed action. $secret is a ONE-TIME
