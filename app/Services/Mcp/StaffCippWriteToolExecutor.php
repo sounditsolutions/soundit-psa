@@ -102,6 +102,33 @@ class StaffCippWriteToolExecutor
         'cipp_set_group_membership',
     ];
 
+    /**
+     * Staged writes whose TARGET can legitimately come back, so the 24h
+     * executed-content dedup must NOT answer a re-stage with "already executed".
+     *
+     * That dedup hashes only the safe local scalars — for the inbox-rule removal
+     * that is {tool, client, person, ticket, rule_name}, because the rule's
+     * upstream Identity does not exist at stage time by design — and nothing in
+     * it can tell the rule that WAS removed apart from a NEW rule an attacker
+     * re-planted under the same name minutes later. Re-planting a same-named
+     * forwarding rule is ordinary BEC behaviour, so short-circuiting there would
+     * report a live rule as already handled WITHOUT a live read and WITHOUT a
+     * removal, on the one verb that exists to clean up after a takeover — the
+     * false all-clear this module forbids.
+     *
+     * Only the executed-content rail is skipped, exactly as
+     * stageResetPasswordAction() skips it for a credential mint that must stay
+     * repeatable: the liveAwaitingRun() dedupe still collapses an identical
+     * proposal that is still pending approval, and the per-target proposal
+     * cooldown still stops runaway staging. Both of those refuse honestly rather
+     * than claiming the work is already done.
+     *
+     * @var array<int, string>
+     */
+    private const RECREATABLE_TARGET_STAGED_TOOLS = [
+        'cipp_stage_remove_mailbox_rule',
+    ];
+
     /** @var array<string, int> */
     private const COOLDOWNS = [
         'cipp_disable_user_sign_in' => 300,
@@ -1154,8 +1181,12 @@ class StaffCippWriteToolExecutor
 
         // The audit log is IMMUTABLE and stays authoritative ONLY for "was this exact
         // content already executed" — an 'executed' row can never go stale the way an
-        // 'awaiting_approval' row can (bd psa-k4s0 Root B).
-        if ($this->alreadyExecuted($tool, $client->id, $contentHash)) {
+        // 'awaiting_approval' row can (bd psa-k4s0 Root B). Skipped for the verbs whose
+        // target can legitimately be re-created under identical safe scalars
+        // (RECREATABLE_TARGET_STAGED_TOOLS): there "identical content" no longer means
+        // "the same upstream object", and answering already-executed would report a
+        // re-planted inbox rule as removed without reading the mailbox at all.
+        if (! in_array($tool, self::RECREATABLE_TARGET_STAGED_TOOLS, true) && $this->alreadyExecuted($tool, $client->id, $contentHash)) {
             return [
                 'success' => true,
                 'idempotent' => true,
@@ -3639,11 +3670,22 @@ class StaffCippWriteToolExecutor
      */
     private function mailboxRuleNameMatches(string $upstreamName, string $approvedName): bool
     {
-        if (strcasecmp($upstreamName, $approvedName) === 0) {
+        // The fold is mb_strtolower, NOT strcasecmp: strcasecmp folds ASCII A-Z
+        // only, so a rule named 'Überwachung Weiterleitung' typed back as
+        // 'überwachung weiterleitung' misses on BOTH branches (the fenced form is
+        // NFKC-folded but not case-folded), and the approval declines with "no inbox
+        // rule matching the caller-typed name exists on this mailbox" while the rule
+        // is live — the false all-clear polarity this module forbids, on input the
+        // schema's "matched case-insensitively" contract explicitly admits. Every
+        // other comparison on this path already folds with mb_strtolower; this one
+        // must not be the exception.
+        $approved = mb_strtolower($approvedName);
+
+        if (mb_strtolower($upstreamName) === $approved) {
             return true;
         }
 
-        return strcasecmp(trim($this->textSanitizer->sanitizedText($upstreamName, self::FENCED_FIELD_MAX)), $approvedName) === 0;
+        return mb_strtolower(trim($this->textSanitizer->sanitizedText($upstreamName, self::FENCED_FIELD_MAX))) === $approved;
     }
 
     /**
@@ -3707,14 +3749,26 @@ class StaffCippWriteToolExecutor
      * The approved mailbox's own identifiers, lowercased, for adjudicating whose
      * mailbox a rule is on.
      *
-     * Carries the SAME identity forms as the read guard it mirrors
-     * (CippToolContract::userIdentityNeedles), and for the same reason: CIPP takes
-     * an object id on the way IN and hands back a UPN — or the mailbox's primary
-     * SMTP address — on the way OUT, and those need not be the same string (an
+     * ADDRESSES ONLY, and both of them: CIPP hands the mailbox back as a UPN or as
+     * the mailbox's primary SMTP address, and those need not be the same string (an
      * onmicrosoft UPN, or a rename that left the UPN behind). Holding only the UPN
      * would adjudicate the user's OWN rows as another mailbox's and decline with
      * "no inbox rule named X exists on this mailbox" while the rule is still live —
      * a false all-clear on the one path that cleans up after a takeover.
+     *
+     * The person's AAD object id is deliberately NOT a needle, and that omission is
+     * a correctness constraint rather than an oversight. A rule's mailbox marker
+     * and its Identity prefix are EXCHANGE identifiers: where either is a GUID it
+     * is the mailbox's ExchangeGuid, a DIFFERENT namespace from the Entra user
+     * objectId, and the same mailbox legitimately carries one of each. Two unequal
+     * GUIDs drawn from those two namespaces prove nothing, so admitting the object
+     * id would adjudicate every row on the approved mailbox as foreign on any
+     * tenant whose Identity prefix is a GUID (the ordinary Exchange shape): rows
+     * dropped on the first read and reported to the approver as a rule that does
+     * not exist, or the approval refused with an immutable audit row claiming the
+     * rule names another mailbox — tenant-wide, on the remediation path. Hence
+     * mailboxRuleOwnerIsForeign() treats no GUID marker as comparable to a needle
+     * at all, and this list is what keeps that true.
      *
      * @return array<int, string>
      */
@@ -3722,7 +3776,7 @@ class StaffCippWriteToolExecutor
     {
         $needles = array_map(
             fn (string $value): string => mb_strtolower(trim($value)),
-            [$person->userPrincipalName, $person->userId, (string) $person->person->email],
+            [$person->userPrincipalName, (string) $person->person->email],
         );
 
         return array_values(array_unique(array_filter($needles, fn (string $needle): bool => $needle !== '')));
@@ -3731,8 +3785,11 @@ class StaffCippWriteToolExecutor
     /**
      * Whether a rule's mailbox marker PROVES it is another mailbox's. Compare
      * like with like (CippToolContract::mailboxRuleIsForeign): an address is
-     * adjudicated only by an address and a GUID only by a GUID — an alias or
-     * display name proves nothing either way, and guessing would drop the
+     * adjudicated only by an address, and NOTHING ELSE adjudicates against this
+     * mailbox at all — an alias, a display name, or a GUID proves nothing either
+     * way, because the GUID a marker or Identity prefix carries is Exchange's
+     * mailbox key and not the Entra objectId (see mailboxOwnerNeedles, which
+     * therefore carries no object-id needle), and guessing would drop the
      * target user's own rules. Those unprovable rows survive this filter; the
      * one row actually removed is then held to a persistence re-read (a second
      * live read of the approved mailbox must re-show its exact Identity under
@@ -3755,11 +3812,27 @@ class StaffCippWriteToolExecutor
             ? self::mailboxRuleLooksLikeAddress($owner)
             : self::mailboxRuleMayBeAddress($owner);
 
+        // A marker that is not address-shaped is comparable to NOTHING here. It may
+        // well be a GUID, but the GUID Exchange stamps into a mailbox marker or an
+        // Identity prefix is the mailbox's ExchangeGuid, while the only GUID this
+        // mailbox could offer as a needle would be the Entra user objectId — two
+        // namespaces, two different GUIDs for the very same mailbox, so inequality
+        // between them proves nothing. Adjudicating across them would make every row
+        // on the approved mailbox foreign wherever the prefix is a GUID: dropped on
+        // the first read (surfacing to the approver as "no such rule exists" while
+        // the rule forwards mail) or refused with a false audited claim, tenant-wide,
+        // on the compromise-remediation path. A GUID pair drawn from the SAME
+        // upstream row is still adjudicated — by mailboxRuleMarkersDisagree(), where
+        // both sides are Exchange's own and the vocabulary genuinely matches.
+        if (! $ownerIsAddress) {
+            return false;
+        }
+
         $comparable = array_values(array_filter(
             $needles,
-            fn (string $needle): bool => $ownerIsAddress
-                ? ($strictShape ? self::mailboxRuleLooksLikeAddress($needle) : self::mailboxRuleMayBeAddress($needle))
-                : CippToolContract::looksLikeObjectId($owner) && CippToolContract::looksLikeObjectId($needle),
+            fn (string $needle): bool => $strictShape
+                ? self::mailboxRuleLooksLikeAddress($needle)
+                : self::mailboxRuleMayBeAddress($needle),
         ));
 
         if ($comparable === []) {
@@ -3885,7 +3958,13 @@ class StaffCippWriteToolExecutor
      * the prefix while the marker is what the row claims as its mailbox — when
      * the marker is address-shaped and the prefix carries an address, or both
      * are object ids, they describe the same thing in the same vocabulary and
-     * must agree. The two sides use DIFFERENT address tests on purpose (see
+     * must agree. The object-id pair is comparable HERE and deliberately not
+     * against the approved mailbox's needles: both sides come from the SAME
+     * upstream row, so both are Exchange identifiers for whatever mailbox that
+     * row names, whereas a needle GUID would be the Entra user objectId — a
+     * different namespace from the mailbox's ExchangeGuid, where inequality
+     * proves nothing and refusing on it would brick the verb (see
+     * mailboxOwnerNeedles). The two sides use DIFFERENT address tests on purpose (see
      * mailboxRuleLooksLikeAddress): the marker is the free-form display-name
      * field and must be strictly address-shaped before it adjudicates anything,
      * while the prefix — the string the delete is anchored to — need only look
