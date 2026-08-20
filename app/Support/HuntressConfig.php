@@ -13,6 +13,8 @@ class HuntressConfig
             'api_key' => Setting::getEncrypted('huntress_api_key'),
             'api_secret' => Setting::getEncrypted('huntress_api_secret'),
             'cw_api_key' => Setting::getEncrypted('huntress_cw_api_key'),
+            'user_api_key' => Setting::getEncrypted('huntress_user_api_key'),
+            'user_api_secret' => Setting::getEncrypted('huntress_user_api_secret'),
             'system_user_id' => Setting::getValue('huntress_system_user_id'),
             default => null,
         };
@@ -38,6 +40,19 @@ class HuntressConfig
     public static function isCwCompatConfigured(): bool
     {
         return ! empty(self::get('cw_api_key'));
+    }
+
+    /**
+     * Phase 3: the escalation-resolve write lane is configured. This is a
+     * SEPARATE credential class — the spec documents the default account API
+     * key as read-only; resolution needs a user-based API key. The write
+     * client never falls back to the read pair, so an instance with only
+     * Phase 1 credentials keeps the write surface unpublished (fail closed).
+     */
+    public static function isWriteConfigured(): bool
+    {
+        return ! empty(self::get('user_api_key'))
+            && ! empty(self::get('user_api_secret'));
     }
 
     /**

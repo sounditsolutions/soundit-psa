@@ -1,0 +1,566 @@
+<?php
+
+namespace Tests\Feature\Mcp;
+
+use App\Enums\TechnicianRunState;
+use App\Models\Client;
+use App\Models\Setting;
+use App\Models\TechnicianActionLog;
+use App\Models\TechnicianRun;
+use App\Models\Ticket;
+use App\Models\User;
+use App\Services\Huntress\HuntressClient;
+use App\Services\Huntress\HuntressClientException;
+use App\Services\Huntress\HuntressEscalationAlreadyResolvedException;
+use App\Services\Huntress\HuntressEscalationNotApiResolvableException;
+use App\Services\Huntress\HuntressWriteClient;
+use App\Support\McpConfig;
+use App\Support\McpToolRegistry;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Testing\TestResponse;
+use Mockery;
+use Tests\TestCase;
+
+/**
+ * Staged Huntress escalation resolve (design doc 2026-08-20): one capability
+ * (huntress_resolve_escalation) with a staged twin, STRUCTURALLY HELD-ONLY —
+ * direct execution is refused for every grant mode, the upstream body is the
+ * literal `{}` by construction (the whole parameterised resolution body is
+ * refused, known-dangerous and unknown keys alike), scope is
+ * mapped-organization-only, and the 201's server-reported resolution_method
+ * is asserted after the call: direct/dismiss pass, `rule` (attribute rules
+ * were created) is a hard fault that is still reported as executed — because
+ * it did execute.
+ */
+class HuntressResolveEscalationTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private const ORG_ID = 42;
+
+    private function configureHuntress(bool $writeKey = true): void
+    {
+        Setting::setEncrypted('huntress_api_key', 'k');
+        Setting::setEncrypted('huntress_api_secret', 's');
+        if ($writeKey) {
+            Setting::setEncrypted('huntress_user_api_key', 'uk');
+            Setting::setEncrypted('huntress_user_api_secret', 'us');
+        }
+    }
+
+    private function configureAiActor(): User
+    {
+        $actor = User::factory()->create(['name' => 'AI Actor']);
+        Setting::setValue('triage_system_user_id', (string) $actor->id);
+
+        return $actor;
+    }
+
+    private function token(array $tools): string
+    {
+        return McpConfig::rotateStaffToken(allowedTools: $tools, label: 'opsbot');
+    }
+
+    private function callTool(string $token, string $name, array $arguments = []): TestResponse
+    {
+        return $this->withHeaders(['Authorization' => 'Bearer '.$token])
+            ->postJson('/api/mcp/staff', [
+                'jsonrpc' => '2.0',
+                'id' => 1,
+                'method' => 'tools/call',
+                'params' => ['name' => $name, 'arguments' => $arguments],
+            ]);
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function listTools(string $token): array
+    {
+        return $this->withHeaders(['Authorization' => 'Bearer '.$token])
+            ->postJson('/api/mcp/staff', [
+                'jsonrpc' => '2.0',
+                'id' => 1,
+                'method' => 'tools/list',
+                'params' => [],
+            ])
+            ->json('result.tools') ?? [];
+    }
+
+    /** @return array<string, mixed> */
+    private function decodedResult(TestResponse $response): array
+    {
+        return json_decode((string) $response->json('result.content.0.text'), true) ?? [];
+    }
+
+    /** @return array{client: Client, ticket: Ticket} */
+    private function fixture(int $orgId = self::ORG_ID): array
+    {
+        $client = Client::factory()->create(['name' => 'Acme', 'huntress_organization_id' => $orgId]);
+        $ticket = Ticket::factory()->for($client)->create(['subject' => 'SOC escalation follow-up']);
+
+        return compact('client', 'ticket');
+    }
+
+    /** @return array<string, mixed> */
+    private function escalation(array $overrides = []): array
+    {
+        return array_merge([
+            'id' => 900,
+            'status' => 'sent',
+            'resolved_at' => null,
+            'severity' => 'high',
+            'type' => 'identity',
+            'subtype' => 'session_token_theft',
+            'subject' => 'Suspicious session token reuse',
+            'organizations' => [['id' => self::ORG_ID, 'name' => 'Acme Org']],
+        ], $overrides);
+    }
+
+    private function mockReadClient(?array $escalation): void
+    {
+        $mock = Mockery::mock(HuntressClient::class);
+        $mock->shouldReceive('getEscalation')->andReturn($escalation ?? []);
+        $this->app->instance(HuntressClient::class, $mock);
+    }
+
+    private function mockWriteClientNeverCalled(): void
+    {
+        $mock = Mockery::mock(HuntressWriteClient::class);
+        $mock->shouldNotReceive('resolveEscalation');
+        $this->app->instance(HuntressWriteClient::class, $mock);
+    }
+
+    /** @return array<string, mixed> */
+    private function stageArguments(array $fixture, array $overrides = []): array
+    {
+        return array_merge([
+            'client_id' => $fixture['client']->id,
+            'escalation_id' => 900,
+            'ticket_id' => $fixture['ticket']->id,
+            'reason' => 'Worked with the user; the token was revoked and the device re-imaged.',
+        ], $overrides);
+    }
+
+    private function stageRun(array $fixture, string $token): TechnicianRun
+    {
+        $this->mockReadClient($this->escalation());
+        $response = $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture));
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+
+        return TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+    }
+
+    // ── surface & grants ────────────────────────────────────────────────────────
+
+    public function test_registry_grantable_explicit_grant_only_and_dormant_without_write_key(): void
+    {
+        $this->configureHuntress(writeKey: false);
+
+        $this->assertContains('huntress_resolve_escalation', McpToolRegistry::allToolNames());
+
+        // Without the user-based write key the tool is not live — even granted.
+        $granted = $this->token(['huntress_resolve_escalation:staged']);
+        $this->assertNotContains('huntress_resolve_escalation', array_column($this->listTools($granted), 'name'), 'dormant until the write key is configured');
+
+        Setting::setEncrypted('huntress_user_api_key', 'uk');
+        Setting::setEncrypted('huntress_user_api_secret', 'us');
+        $names = array_column($this->listTools($this->token(['huntress_resolve_escalation:staged'])), 'name');
+        $this->assertContains('huntress_resolve_escalation', $names);
+        $this->assertNotContains('huntress_stage_resolve_escalation', $names, 'the staged alias is absorbed into the unified definition');
+
+        // The legacy full-surface token must never inherit it.
+        $legacyNames = array_column($this->listTools(McpConfig::rotateStaffToken()), 'name');
+        $this->assertNotContains('huntress_resolve_escalation', $legacyNames);
+    }
+
+    public function test_advertised_schema_carries_only_the_pinned_parameters(): void
+    {
+        $this->configureHuntress();
+
+        $tools = $this->listTools($this->token(['huntress_resolve_escalation:staged']));
+        $tool = collect($tools)->firstWhere('name', 'huntress_resolve_escalation');
+        $this->assertNotNull($tool);
+
+        // client_id and staged are the harness's scope/mode parameters (the
+        // controller strips/consumes them before dispatch); the tool's own
+        // surface is escalation_id + ticket_id + reason and nothing else.
+        $properties = array_keys($tool['inputSchema']['properties'] ?? []);
+        sort($properties);
+        $this->assertSame(['client_id', 'escalation_id', 'reason', 'staged', 'ticket_id'], $properties, 'no resolution-body field may be advertised');
+    }
+
+    // ── structural refusals ─────────────────────────────────────────────────────
+
+    public function test_the_whole_parameterised_resolution_body_is_refused_known_and_unknown_keys_alike(): void
+    {
+        $this->configureHuntress();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $token = $this->token(['huntress_stage_resolve_escalation']);
+
+        foreach ([
+            ['determination' => 'unauthorized'],
+            ['scope' => 'account'],
+            ['revoke_and_disable_identities' => false], // even explicitly disarmed, the key itself refuses
+            ['expiration_date' => '2027-01-01'],
+            ['resolution_method' => 'direct'],
+            ['frobnicate' => 1], // unknown keys fail closed identically
+        ] as $poison) {
+            $this->mockReadClient($this->escalation());
+            $this->mockWriteClientNeverCalled();
+
+            $response = $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture, $poison));
+            $text = (string) $response->json('result.content.0.text');
+            $key = array_key_first($poison);
+
+            $this->assertStringContainsString($key, $text, "refusal must name the offending key {$key}");
+            $this->assertStringContainsString('id-only', $text);
+            $this->assertSame(0, TechnicianRun::count(), "no run may be staged when {$key} is present");
+        }
+
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'huntress_stage_resolve_escalation',
+            'result_status' => 'rejected',
+        ]);
+    }
+
+    public function test_direct_execution_is_refused_for_every_grant_mode(): void
+    {
+        $this->configureHuntress();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWriteClientNeverCalled();
+
+        // Immediate grant, staged=false: the call reaches the executor under
+        // the canonical name and is refused as held-only.
+        $immediateToken = $this->token(['huntress_resolve_escalation:immediate']);
+        $response = $this->callTool($immediateToken, 'huntress_resolve_escalation', $this->stageArguments($fixture, ['staged' => false]));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('held-only', $text);
+        $this->assertStringContainsString('staged=true', $text);
+        $this->assertSame(0, TechnicianRun::count());
+
+        // Staged-only grant, staged=false: auto-downgraded to a staged proposal.
+        $this->mockReadClient($this->escalation());
+        $stagedToken = $this->token(['huntress_resolve_escalation:staged']);
+        $response = $this->callTool($stagedToken, 'huntress_resolve_escalation', $this->stageArguments($fixture, ['staged' => false]));
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+        $this->assertSame('huntress_stage_resolve_escalation', $run->action_type);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->state);
+    }
+
+    // ── scope gates ─────────────────────────────────────────────────────────────
+
+    public function test_scope_gates_refuse_account_level_foreign_org_and_unmapped_client(): void
+    {
+        $this->configureHuntress();
+        $this->configureAiActor();
+        $token = $this->token(['huntress_stage_resolve_escalation']);
+
+        // Account-level escalation (no organization association).
+        $fixture = $this->fixture();
+        $this->mockReadClient($this->escalation(['organizations' => []]));
+        $this->mockWriteClientNeverCalled();
+        $text = (string) $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture))->json('result.content.0.text');
+        $this->assertStringContainsString('account-level', $text);
+
+        // Escalation touching only another organization.
+        $this->mockReadClient($this->escalation(['organizations' => [['id' => 99]]]));
+        $text = (string) $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture))->json('result.content.0.text');
+        $this->assertStringContainsString("does not touch this client's Huntress organization", $text);
+
+        // Client with no mapped organization at all.
+        $unmapped = Client::factory()->create(['name' => 'Unmapped', 'huntress_organization_id' => null]);
+        $unmappedTicket = Ticket::factory()->for($unmapped)->create();
+        $this->mockReadClient($this->escalation());
+        $text = (string) $this->callTool($token, 'huntress_stage_resolve_escalation', [
+            'client_id' => $unmapped->id,
+            'escalation_id' => 900,
+            'ticket_id' => $unmappedTicket->id,
+            'reason' => 'r',
+        ])->json('result.content.0.text');
+        $this->assertStringContainsString('no mapped Huntress organization', $text);
+
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_cross_client_ticket_and_missing_escalation_are_refused(): void
+    {
+        $this->configureHuntress();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $token = $this->token(['huntress_stage_resolve_escalation']);
+        $this->mockWriteClientNeverCalled();
+
+        $otherTicket = Ticket::factory()->for(Client::factory()->create())->create();
+        $this->mockReadClient($this->escalation());
+        $text = (string) $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture, ['ticket_id' => $otherTicket->id]))->json('result.content.0.text');
+        $this->assertStringContainsString('different client', $text);
+
+        $this->mockReadClient(null);
+        $text = (string) $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture))->json('result.content.0.text');
+        $this->assertStringContainsString('not found', $text);
+
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    // ── stage → approve → execute ───────────────────────────────────────────────
+
+    public function test_stage_and_approve_sends_the_id_only_resolve_and_verifies_the_post_condition(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWriteClientNeverCalled(); // staging makes no write call
+        $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+
+        // The held payload stores only safe scalars; the card names the
+        // escalation, the client, and the id-only contract.
+        $this->assertStringContainsString('escalation 900', mb_strtolower($run->proposed_content));
+        $this->assertStringContainsString('empty object {}', $run->proposed_content);
+        $this->assertStringContainsString('Acme', $run->proposed_content);
+
+        $write = Mockery::mock(HuntressWriteClient::class);
+        $write->shouldReceive('resolveEscalation')->once()->with(900)->andReturn(['resolution_method' => 'direct']);
+        $this->app->instance(HuntressWriteClient::class, $write);
+        $this->mockReadClient($this->escalation()); // approval re-reads live
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run));
+
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'huntress_stage_resolve_escalation',
+            'result_status' => 'executed',
+            'ticket_id' => $fixture['ticket']->id,
+            'client_id' => $fixture['client']->id,
+            'run_id' => $run->id,
+            'approver_user_id' => $actor->id,
+        ]);
+        $summary = TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed')->firstOrFail()->summary;
+        $this->assertStringContainsString('resolution_method direct', $summary);
+    }
+
+    public function test_resolution_method_rule_is_a_hard_fault_that_is_still_reported_as_executed(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWriteClientNeverCalled();
+        $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+
+        $write = Mockery::mock(HuntressWriteClient::class);
+        $write->shouldReceive('resolveEscalation')->once()->with(900)->andReturn(['resolution_method' => 'rule']);
+        $this->app->instance(HuntressWriteClient::class, $write);
+        $this->mockReadClient($this->escalation());
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run));
+
+        // The upstream state DID change: the run completes (never "declined"),
+        // but the audit row is an error naming the server-reported method.
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $fault = TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->firstOrFail()->summary;
+        $this->assertStringContainsString('HARD FAULT', $fault);
+        $this->assertStringContainsString("'rule'", $fault);
+        $this->assertDatabaseMissing('technician_action_logs', [
+            'run_id' => $run->id,
+            'result_status' => 'executed',
+        ]);
+    }
+
+    public function test_unrecognised_resolution_method_fails_closed_like_rule(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWriteClientNeverCalled();
+        $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+
+        $write = Mockery::mock(HuntressWriteClient::class);
+        $write->shouldReceive('resolveEscalation')->once()->with(900)->andReturn(['something' => 'else']);
+        $this->app->instance(HuntressWriteClient::class, $write);
+        $this->mockReadClient($this->escalation());
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run));
+
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $fault = TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->firstOrFail()->summary;
+        $this->assertStringContainsString('HARD FAULT', $fault);
+        $this->assertStringContainsString('(missing)', $fault);
+    }
+
+    // ── idempotency & upstream error mapping ────────────────────────────────────
+
+    public function test_already_resolved_at_stage_time_stages_nothing(): void
+    {
+        $this->configureHuntress();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $token = $this->token(['huntress_stage_resolve_escalation']);
+
+        $this->mockReadClient($this->escalation(['status' => 'resolved', 'resolved_at' => '2026-08-20T10:00:00Z']));
+        $this->mockWriteClientNeverCalled();
+
+        $response = $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture));
+        $result = $this->decodedResult($response);
+
+        $this->assertTrue((bool) ($result['idempotent'] ?? false));
+        $this->assertTrue((bool) ($result['already_resolved'] ?? false));
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_409_at_approval_satisfies_the_approved_intent(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWriteClientNeverCalled();
+        $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+
+        $write = Mockery::mock(HuntressWriteClient::class);
+        $write->shouldReceive('resolveEscalation')->once()->with(900)
+            ->andThrow(new HuntressEscalationAlreadyResolvedException('Escalation 900 has already been resolved upstream.', 409));
+        $this->app->instance(HuntressWriteClient::class, $write);
+        $this->mockReadClient($this->escalation());
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run));
+
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertDatabaseHas('technician_action_logs', [
+            'run_id' => $run->id,
+            'result_status' => 'executed',
+        ]);
+    }
+
+    public function test_422_at_approval_declines_and_releases_the_run(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWriteClientNeverCalled();
+        $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+
+        $write = Mockery::mock(HuntressWriteClient::class);
+        $write->shouldReceive('resolveEscalation')->once()->with(900)
+            ->andThrow(new HuntressEscalationNotApiResolvableException('Escalation 900 cannot be resolved through the API.', 422));
+        $this->app->instance(HuntressWriteClient::class, $write);
+        $this->mockReadClient($this->escalation());
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run));
+
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertDatabaseHas('technician_action_logs', [
+            'run_id' => $run->id,
+            'result_status' => 'error',
+        ]);
+    }
+
+    public function test_upstream_failure_at_approval_declines_without_advancing_the_run(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWriteClientNeverCalled();
+        $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+
+        $write = Mockery::mock(HuntressWriteClient::class);
+        $write->shouldReceive('resolveEscalation')->once()->with(900)
+            ->andThrow(new HuntressClientException('Huntress API error: 500'));
+        $this->app->instance(HuntressWriteClient::class, $write);
+        $this->mockReadClient($this->escalation());
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run));
+
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+    }
+
+    public function test_approval_re_reads_live_state_vanished_resolved_and_remapped_all_stop_the_write(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+
+        // Vanished upstream → declined, write never called.
+        $this->mockWriteClientNeverCalled();
+        $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+        $this->mockReadClient(null);
+        $this->actingAs($actor)->post(route('cockpit.approve', $run));
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+
+        // Resolved while held → executed-idempotent, write never called.
+        $this->mockReadClient($this->escalation(['status' => 'resolved']));
+        $this->actingAs($actor)->post(route('cockpit.approve', $run->fresh()));
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+
+        // Org drift while held → declined, write never called.
+        $fixture2 = ['client' => Client::factory()->create(['name' => 'Beta', 'huntress_organization_id' => 77])];
+        $fixture2['ticket'] = Ticket::factory()->for($fixture2['client'])->create();
+        $this->mockReadClient($this->escalation(['id' => 901, 'organizations' => [['id' => 77]]]));
+        $response = $this->callTool($this->token(['huntress_stage_resolve_escalation']), 'huntress_stage_resolve_escalation', [
+            'client_id' => $fixture2['client']->id,
+            'escalation_id' => 901,
+            'ticket_id' => $fixture2['ticket']->id,
+            'reason' => 'r',
+        ]);
+        $run2 = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+        $this->mockReadClient($this->escalation(['id' => 901, 'organizations' => [['id' => 99]]]));
+        $this->actingAs($actor)->post(route('cockpit.approve', $run2));
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run2->fresh()->state);
+    }
+
+    // ── operational rails ───────────────────────────────────────────────────────
+
+    public function test_kill_switch_blocks_staging(): void
+    {
+        $this->configureHuntress();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        Setting::setValue('technician_kill_switch', '1');
+        $this->mockWriteClientNeverCalled();
+        $this->mockReadClient($this->escalation());
+
+        $text = (string) $this->callTool($this->token(['huntress_stage_resolve_escalation']), 'huntress_stage_resolve_escalation', $this->stageArguments($fixture))->json('result.content.0.text');
+
+        $this->assertStringContainsString('kill-switch', $text);
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_restaging_the_same_escalation_is_idempotent_and_a_second_ticket_hits_the_cooldown(): void
+    {
+        $this->configureHuntress();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $token = $this->token(['huntress_stage_resolve_escalation']);
+        $this->mockWriteClientNeverCalled();
+        $run = $this->stageRun($fixture, $token);
+
+        // Same ticket + same escalation: idempotent, same run.
+        $this->mockReadClient($this->escalation());
+        $result = $this->decodedResult($this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture)));
+        $this->assertTrue((bool) ($result['idempotent'] ?? false));
+        $this->assertSame($run->id, $result['run_id'] ?? null);
+
+        // Different ticket, same escalation, inside the window: cooldown refusal.
+        $secondTicket = Ticket::factory()->for($fixture['client'])->create();
+        $this->mockReadClient($this->escalation());
+        $text = (string) $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture, ['ticket_id' => $secondTicket->id]))->json('result.content.0.text');
+        $this->assertStringContainsString('cooldown', $text);
+        $this->assertSame(1, TechnicianRun::count());
+    }
+
+    public function test_write_lane_unconfigured_refuses_at_dispatch_even_if_called(): void
+    {
+        $this->configureHuntress(writeKey: false);
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWriteClientNeverCalled();
+        $this->mockReadClient($this->escalation());
+
+        // The tool is not live, so tools/call refuses it by name before the
+        // executor — the executor's own gate is defence in depth, asserted at
+        // the unit boundary here.
+        $executor = app(\App\Services\Mcp\StaffHuntressActionToolExecutor::class);
+        $result = $executor->execute('huntress_stage_resolve_escalation', $this->stageArguments($fixture), $fixture['client']->id, 'opsbot');
+        $this->assertStringContainsString('write credential', (string) ($result['error'] ?? ''));
+        $this->assertSame(0, TechnicianRun::count());
+    }
+}

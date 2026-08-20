@@ -119,6 +119,7 @@ class TechnicianCockpitController extends Controller
             'calendar_stage_update_event',
             'calendar_stage_cancel_event',
             'calendar_stage_respond_event' => $service->approveStagedCalendarAction($run, (int) auth()->id()),
+            'huntress_stage_resolve_escalation' => $service->approveStagedHuntressAction($run, (int) auth()->id()),
             // Body is required only on the reply/resolution path, validated inside this arm.
             'send_reply', 'propose_resolution' => $service->approveAndSend(
                 $run,

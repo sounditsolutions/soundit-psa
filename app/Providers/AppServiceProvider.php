@@ -23,6 +23,7 @@ use App\Services\Cipp\CippMcpClient;
 use App\Services\Cipp\CippRestWriteClient;
 use App\Services\Graph\GraphClient;
 use App\Services\Huntress\HuntressClient;
+use App\Services\Huntress\HuntressWriteClient;
 use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
 use App\Services\Ninja\NinjaClient;
@@ -129,6 +130,15 @@ class AppServiceProvider extends ServiceProvider
             return new HuntressClient([
                 'api_key' => HuntressConfig::get('api_key'),
                 'api_secret' => HuntressConfig::get('api_secret'),
+            ]);
+        });
+
+        // The Huntress WRITE lane rides a separate user-based key pair and
+        // never falls back to the read credentials above (fail closed).
+        $this->app->singleton(HuntressWriteClient::class, function () {
+            return new HuntressWriteClient([
+                'user_api_key' => HuntressConfig::get('user_api_key'),
+                'user_api_secret' => HuntressConfig::get('user_api_secret'),
             ]);
         });
 

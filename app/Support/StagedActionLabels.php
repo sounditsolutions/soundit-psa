@@ -91,6 +91,9 @@ class StagedActionLabels
         'calendar_stage_update_event' => 'Calendar event update',
         'calendar_stage_cancel_event' => 'Calendar event cancel',
         'calendar_stage_respond_event' => 'Calendar event response',
+
+        // Huntress SOC
+        'huntress_stage_resolve_escalation' => 'Huntress escalation resolve',
     ];
 
     /**
@@ -110,7 +113,7 @@ class StagedActionLabels
      *
      * @var array<int, string>
      */
-    private const VENDOR_SIDE_EFFECT_PREFIXES = ['tactical_stage_', 'cipp_stage_', 'calendar_stage_'];
+    private const VENDOR_SIDE_EFFECT_PREFIXES = ['tactical_stage_', 'cipp_stage_', 'calendar_stage_', 'huntress_stage_'];
 
     /**
      * Whether a staged action_type is an externally side-effecting vendor write —

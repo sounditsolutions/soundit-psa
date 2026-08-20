@@ -4,6 +4,7 @@ namespace App\Support;
 
 use App\Services\Mcp\StaffCalendarToolExecutor;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
+use App\Services\Mcp\StaffHuntressActionToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
 use App\Services\Mcp\StaffTacticalAdminToolExecutor;
 
@@ -64,6 +65,7 @@ class McpToolModes
             StaffTacticalAdminToolExecutor::stagedToDirectMap(),
             StaffCippWriteToolExecutor::stagedToDirectMap(),
             StaffCalendarToolExecutor::stagedToDirectMap(),
+            StaffHuntressActionToolExecutor::stagedToDirectMap(),
         );
     }
 

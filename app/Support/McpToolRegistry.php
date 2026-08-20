@@ -10,6 +10,7 @@ use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Mcp\StaffCalendarToolExecutor;
 use App\Services\Mcp\StaffCippAdminToolExecutor;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
+use App\Services\Mcp\StaffHuntressActionToolExecutor;
 use App\Services\Mcp\StaffPsaTaxonomyToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
 use App\Services\Mcp\StaffTacticalAdminToolExecutor;
@@ -65,6 +66,7 @@ class McpToolRegistry
             $cippAdmin = self::shape(self::cippAdminTools());
             $tacticalActions = self::shape(self::withoutStagedAliases(self::tacticalActionTools()));
             $tacticalAdmin = self::shape(self::withoutStagedAliases(self::tacticalAdminTools()));
+            $huntressActions = self::shape(self::withoutStagedAliases(self::huntressActionTools()));
             $psaRecords = self::shape(self::psaRecordsTools());
             $psaRead = self::shape(self::psaReadTools());
             $intakeManage = self::shape(self::intakeManageTools());
@@ -86,6 +88,7 @@ class McpToolRegistry
                 'cipp_admin' => ['label' => 'CIPP sync & maintenance (sensitive)', 'sensitive' => true, 'tools' => $cippAdmin],
                 'tactical_action' => ['label' => 'Tactical endpoint actions (sensitive)', 'sensitive' => true, 'tools' => $tacticalActions],
                 'tactical_admin' => ['label' => 'Tactical admin/provisioning (sensitive)', 'sensitive' => true, 'tools' => $tacticalAdmin],
+                'huntress_action' => ['label' => 'Huntress SOC escalation actions (sensitive)', 'sensitive' => true, 'tools' => $huntressActions],
                 'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
                 'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],
                 'psa_records' => ['label' => 'PSA records — clients, people, assets (sensitive)', 'sensitive' => true, 'tools' => $psaRecords],
@@ -147,6 +150,7 @@ class McpToolRegistry
                 'cipp_admin' => ['cipp', 'admin', 'Sync & maintenance', 3],
                 'tactical_action' => ['tactical', 'actions', 'Endpoint actions', 2],
                 'tactical_admin' => ['tactical', 'admin', 'Admin & provisioning', 3],
+                'huntress_action' => ['huntress', 'actions', 'SOC escalation actions', 2],
                 'wiki_write' => ['wiki', 'write', 'Write', 2],
                 'bridge' => ['teams', 'bridge', 'Operator bridge', 2],
             ];
@@ -342,6 +346,12 @@ class McpToolRegistry
     public static function tacticalActionTools(): array
     {
         return StaffTacticalActionToolExecutor::definitions();
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public static function huntressActionTools(): array
+    {
+        return StaffHuntressActionToolExecutor::definitions();
     }
 
     /** @return array<int, array<string, mixed>> */

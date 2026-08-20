@@ -85,7 +85,15 @@ class McpToolsListResilienceTest extends TestCase
         // calendar_enabled defaults OFF, so isAvailable() short-circuits after the single
         // switch read (the Graph-configured conjunct is a config read, no query) — +1 x 2
         // assemblies = +2 flat, independent of catalog size.
-        $this->assertLessThanOrEqual(86, count($queries), $sql);
+        //
+        // Raised 86 -> 90 for the Huntress escalation-action surface (2026-08-20
+        // design doc): the write-lane predicate is consulted in
+        // liveClientScopedToolDefinitions(), which tools/list assembles twice.
+        // huntress_enabled defaults ON, so each assembly pays the switch read plus
+        // the huntress_api_key read (isConfigured() short-circuits on the empty
+        // key; isWriteConfigured() is never reached while unconfigured) — +2 x 2
+        // assemblies = +4 flat, independent of catalog size.
+        $this->assertLessThanOrEqual(90, count($queries), $sql);
     }
 
     public function test_tools_list_repairs_dynamic_cipp_schema_before_publishing(): void
