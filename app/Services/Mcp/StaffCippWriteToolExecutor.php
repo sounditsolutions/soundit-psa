@@ -4017,9 +4017,13 @@ class StaffCippWriteToolExecutor
      * ambiguous, cross-tenant, disabled and ACTIVELY-PSA-mapped targets. Only
      * ACTIVE mappings: a mapped but DEACTIVATED person is deliberately NOT
      * closed here — verifiedTenantUser() hands that person id back as
-     * mapped_inactive_person_id, and each caller carries its own held-only
-     * rail for it (executeLicenseTargetDirect()). A further verb on this front
-     * door must carry one too. Nor does the check
+     * mapped_inactive_person_id, and what happens next is each caller's own
+     * posture, not a shared rail: executeLicenseTargetDirect() refuses it
+     * held-only, stageLicenseTargetAction() serves it onto the approval card
+     * (verified_mapped_person_id), and approveLicenseTargetStagedRun()
+     * declines on mapping drift against that card. A further verb on this
+     * front door must choose its mapped-inactive posture explicitly. Nor does
+     * the check
      * establish that the address is the one the operator MEANT: two real,
      * enabled, unmapped addresses in the same tenant pass every gate here, and
      * unlike the person-path front door there is no opaque-id/confirm_upn
