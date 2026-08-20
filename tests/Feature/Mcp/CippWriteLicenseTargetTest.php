@@ -1853,6 +1853,98 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
     }
 
+    /**
+     * NO SHAPE MAY LEAVE A SEAT UNASSIGNABLE BY EVERY ROUTE.
+     *
+     * The stale sweep deactivates a leaver's Person row without clearing
+     * cipp_upn/cipp_user_id, and the person path now requires an ACTIVE person
+     * (#405). Refusing the tenant shape on that dead mapping therefore sent the
+     * operator to the one tool guaranteed to refuse them, and the new starter at
+     * the freed address could not be licensed at all — the deadlock the
+     * COMPLETE-mappings qualifier exists to prevent, through the other door.
+     */
+    public function test_a_deactivated_mapping_does_not_deadlock_the_new_starter_at_the_freed_address(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_tenant_user_license']);
+
+        // Lee left; the sweep deactivated the row and kept the mapping. The
+        // address has since been handed to a new starter with no person record
+        // of their own, who IS present and enabled in the tenant listing.
+        Person::create([
+            'client_id' => $f['client']->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Lee',
+            'last_name' => 'Aver',
+            'email' => 'lee@acme.example',
+            'cipp_user_id' => 'leaver-object-id',
+            'cipp_upn' => self::TARGET_UPN,
+            'is_active' => false,
+        ]);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $client->shouldReceive('assignUserLicense')->once()
+            ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $result = $this->decodedResult($this->callTool($token, 'cipp_assign_tenant_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'New starter at the freed address needs a seat.',
+        ]));
+
+        $this->assertTrue($result['success'] ?? false, (string) json_encode($result));
+        $this->assertSame(1, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
+    /**
+     * THE DEDUP HAD NO REVOCATION AWARENESS.
+     *
+     * assign -> remove -> re-assign is an ordinary sequence, and no key this
+     * path can build sees the removal: cipp_remove_user_license audits under a
+     * person-keyed target key, and a removal made in the CIPP portal audits
+     * nowhere. The 24h identity dedup therefore answered the re-assignment with
+     * success/idempotent and made no upstream call, telling the operator a seat
+     * had been granted that the user does not hold — a false success on a
+     * billing write.
+     */
+    public function test_a_reassignment_within_the_dedup_window_reaches_upstream_instead_of_reporting_a_false_success(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_tenant_user_license']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->twice()->with(self::TENANT)->andReturn([$this->userRow()]);
+        // TWICE is the whole assertion: the seat was pulled out of band between
+        // the two grants, so the second is a real write, not a duplicate.
+        $client->shouldReceive('assignUserLicense')->twice()
+            ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $arguments = [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ];
+
+        $first = $this->decodedResult($this->callTool($token, 'cipp_assign_tenant_user_license', $arguments));
+        $this->assertTrue($first['success'] ?? false, (string) json_encode($first));
+
+        // Past the per-target cooldown — the honest runaway guard that stays —
+        // and well inside the 24h window the identity dedup used to cover.
+        $this->travel(11)->minutes();
+
+        $second = $this->decodedResult($this->callTool($token, 'cipp_assign_tenant_user_license', $arguments));
+        $this->assertTrue($second['success'] ?? false, (string) json_encode($second));
+        $this->assertArrayNotHasKey('idempotent', $second, 'The re-grant was reported as already done while the user held no licence.');
+        $this->assertSame(2, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
     /** @return array<int, array<string, mixed>> */
     private function listTools(string $token): array
     {

@@ -77,8 +77,27 @@ class CippWriteScopeResolver
      * shape, which served them before this gate existed; the fix for them is
      * repairing the person's mapping, not blocking a licence.
      *
-     * Inactive people DO refuse — they keep their mapping and the licence
-     * person path uses the loose resolveCippPerson(), so it can still name them.
+     * INACTIVE PEOPLE DO NOT REFUSE, and that qualifier is load-bearing for the
+     * same reason completeness is. The premise that used to justify refusing
+     * them — "the licence person path uses the loose resolveCippPerson(), so it
+     * can still name them" — is FALSE: that path resolves through
+     * resolveActiveCippPerson() and refuses a deactivated person outright. The
+     * stale sweep deactivates a leaver's row without ever clearing cipp_upn or
+     * cipp_user_id, so a new starter created at the freed address matches a dead
+     * mapping. Refusing here would close the tenant shape while the person shape
+     * refuses too: NO path assigns the seat, and the refusal sends the operator
+     * to the shape that is guaranteed to refuse — the exact deadlock the
+     * completeness qualifier above exists to prevent, reintroduced through the
+     * other door.
+     *
+     * There is also nothing left to bypass. The rails this gate protects (typed
+     * confirm_upn, the person-scoped gates) belong to the person path, and an
+     * inactive person has no person path to be diverted from. What still applies
+     * to them is the tenant shape's own gates, in full: the address must be
+     * present in the resolved tenant's LIVE user listing, and the account must be
+     * enabled — so a genuine leaver whose M365 account is disabled is still
+     * refused, by the gate that can actually tell the difference between a leaver
+     * and their replacement.
      */
     public function assertNoPsaPersonMapping(int $clientId, string $upn, string $userId): void
     {
@@ -151,12 +170,23 @@ class CippWriteScopeResolver
         // wrong: three columns, not whole models. Correctness first, and the
         // cost bounded by the client's own mapped-person count.
         $person = Person::query()
-            ->select(['id', 'cipp_upn', 'cipp_user_id'])
+            ->select(['id', 'is_active', 'cipp_upn', 'cipp_user_id'])
             ->where('client_id', $clientId)
             ->where('cipp_upn', '<>', '')
             ->where('cipp_user_id', '<>', '')
             ->get()
             ->first(static function (Person $candidate) use ($upn, $userId): bool {
+                // ACTIVE mappings only, for the same reason as COMPLETE ones and
+                // decided in the same place: a person resolveActiveCippPerson()
+                // would refuse is one this gate must not refuse either, or the
+                // seat is unassignable by every shape (see the docblock). Decided
+                // in PHP through the model's boolean cast rather than narrowed in
+                // SQL, so this test cannot disagree with the person path's — the
+                // one-question-one-dialect rule the rest of this method follows.
+                if (! $candidate->is_active) {
+                    return false;
+                }
+
                 $candidateUpn = mb_strtolower(trim((string) $candidate->cipp_upn));
                 $candidateUserId = mb_strtolower(trim((string) $candidate->cipp_user_id));
 

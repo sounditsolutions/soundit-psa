@@ -140,10 +140,27 @@ class StaffCippWriteToolExecutor
      * cooldown still stops runaway staging. Both of those refuse honestly rather
      * than claiming the work is already done.
      *
+     * A LICENCE SEAT IS RECREATABLE THE SAME WAY, and it is the clearer case.
+     * assign -> remove -> re-assign is an ordinary supported sequence (a
+     * mis-click reversed, a suspension lifted, a contractor coming back), and
+     * NO log-derived key can see the removal: the person-keyed
+     * cipp_remove_user_license audits under a DIFFERENT target key, and a
+     * removal made in the CIPP portal audits nowhere at all, so "an executed row
+     * exists" never meant "the seat is still assigned". Answering the
+     * re-assignment with success/idempotent — or, on the staged path,
+     * TERMINATING the operator-approved run as Done/already_handled — reports a
+     * seat as granted while the user holds no licence: a false success on a
+     * billing write, and on the staged path one the operator cannot even
+     * re-approve. Unlike a device wipe, the write is harmless to repeat
+     * (assigning a SKU the user already holds is an upstream no-op), so the
+     * family lets the call through and keeps the per-target cooldown, which
+     * refuses honestly instead of claiming the work is already done.
+     *
      * @var array<int, string>
      */
     private const RECREATABLE_TARGET_STAGED_TOOLS = [
         'cipp_stage_remove_mailbox_rule',
+        'cipp_stage_assign_tenant_user_license',
     ];
 
     /** @var array<string, int> */
@@ -3415,16 +3432,18 @@ class StaffCippWriteToolExecutor
         $targetKey = $this->licenseTargetKey($user['user_id'], $license);
         $contentHash = $this->contentHash($tool, $client->id, null, $ticket?->id, $this->licenseTargetHashParams($user['user_id'], $license));
 
-        if ($this->alreadyExecuted($tool, $client->id, $contentHash) || $this->licenseTargetAlreadyExecuted($client->id, $targetKey)) {
-            $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Duplicate {$tool} suppressed before upstream call.", $actorLabel);
-
-            return [
-                'success' => true,
-                'idempotent' => true,
-                'message' => 'Already executed identical CIPP write recently; no upstream call was made.',
-            ];
-        }
-
+        // NO "already executed" rail on this verb either — see
+        // RECREATABLE_TARGET_STAGED_TOOLS. Both keys this path can build (the
+        // content hash and the identity key) come from the same (verified user,
+        // resolved SKU) pair, and neither can see that the seat was REMOVED in
+        // between: cipp_remove_user_license audits under a person-keyed target
+        // key, and a removal made in the CIPP portal audits nowhere. Suppressing
+        // the re-assignment as a duplicate answered success/idempotent with no
+        // upstream call while the user held no licence — a false success on a
+        // billing write. The write is harmless to repeat (assigning a SKU the
+        // user already holds is an upstream no-op), so it goes through, and the
+        // cooldown below is the runaway guard: it refuses honestly rather than
+        // reporting work that never happened as done.
         if ($this->emailSecurityCooldownActive($tool, $client->id, $targetKey, self::COOLDOWNS[$tool] ?? 300)) {
             $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: {$tool} cooldown active; upstream call refused.", $actorLabel);
 
@@ -3500,15 +3519,28 @@ class StaffCippWriteToolExecutor
         $targetKey = $this->licenseTargetKey($user['user_id'], $license);
         $contentHash = $this->contentHash($tool, $client->id, null, $ticket->id, $this->licenseTargetHashParams($user['user_id'], $license));
 
-        if ($this->alreadyExecuted($tool, $client->id, $contentHash)) {
-            return [
-                'success' => true,
-                'idempotent' => true,
-                'ticket_id' => $ticket->id,
-                'ticket_display_id' => $ticket->display_id,
-                'run_id' => $this->executedRunId($tool, $client->id, $contentHash),
-                'message' => 'Already executed identical action recently; no new proposal was staged.',
-            ];
+        // NO executed-content rail on this verb: the target is RECREATABLE
+        // (RECREATABLE_TARGET_STAGED_TOOLS). A seat that was granted, removed and
+        // needs granting again is an ordinary re-stage, and neither an audit row
+        // nor a content hash can tell it apart from a repeat — so answering
+        // "already executed" here refuses a real grant with a success.
+        //
+        // Skipping it means the firstOrCreate below can land on a run this ticket
+        // has already SPENT (the Done row for the earlier grant), which the revive
+        // branch would flip back to AwaitingApproval and overwrite — destroying
+        // the cockpit record of the assignment that ran, on exactly the re-grant
+        // this exemption exists to allow. A spent key is therefore walked forward,
+        // the same way stageAction() does it for the rule removal.
+        if (in_array($tool, self::RECREATABLE_TARGET_STAGED_TOOLS, true)) {
+            $unspent = $this->unspentContentHash($tool, $ticket->id, $contentHash);
+
+            if ($unspent === null) {
+                $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: {$tool} re-stage refused; this ticket already holds the maximum number of runs for this exact content.", $actorLabel);
+
+                return ['error' => "{$tool} could not be staged: this ticket already holds the maximum number of runs for this exact content; stage the assignment on a new ticket."];
+            }
+
+            $contentHash = $unspent;
         }
 
         $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
@@ -3776,17 +3808,18 @@ class StaffCippWriteToolExecutor
                 return $this->declined('The licence this SKU maps to changed after this action was staged, so approving it would assign a different licence than the one named on the proposal; deny this proposal and re-stage it.');
             }
 
-            // ONLY NOW the dedup, with BOTH halves of $targetKey proven to be the
-            // ones on the approved card: the user rail proved the object id and
-            // the licence rail immediately above proved the SKU. A rail that
-            // TERMINATES a run (advanceTo(Done)) must never outrun a rail that
-            // DECLINES it — the decline can be re-staged, the termination cannot.
-            if ($this->licenseTargetAlreadyExecuted($client->id, $targetKey)) {
-                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Duplicate licence assignment suppressed: identical user/SKU already executed within ".self::DIRECT_DEDUP_HOURS.'h; the approval was treated as a logged no-op.', $this->approverLabel($approverId), $run->id, $approverId);
-                $run->advanceTo(TechnicianRunState::Done);
-
-                return new TechnicianApprovalResult('already_handled');
-            }
+            // AND NO DEDUP AT ALL HERE, for the reason the direct path states:
+            // the identity key cannot see a removal between two grants, so it
+            // could not tell a duplicate approval from a legitimate re-grant. On
+            // this path that rail did not merely mis-answer — it TERMINATED the
+            // approved run (advanceTo(Done)), so the operator could not even
+            // re-approve the grant it had declined to perform, and the log said
+            // an identical user/SKU had already executed. A human approved this
+            // seat after reading a card naming the user and the SKU; the only
+            // rails allowed to stop it are the ones that can PROVE something
+            // changed (the two drift rails above) or that refuse honestly (the
+            // cooldown below). A re-fired approval of THIS run is already
+            // impossible without them: claimForExecution() fails on a Done run.
 
             if ($this->emailSecurityCooldownActive($directTool, $client->id, $targetKey, self::COOLDOWNS[$directTool] ?? 300)) {
                 $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: CIPP staged action cooldown active; approval refused before upstream call.", $this->approverLabel($approverId), $run->id, $approverId);
@@ -3996,10 +4029,14 @@ class StaffCippWriteToolExecutor
      *  - the USER — a UPN is reassignable, which is precisely why this family
      *    carries a drift rail at approval. Hashing the typed address made an
      *    assignment to a NEW object collide with the OLD object's executed row:
-     *    licenseTargetAlreadyExecuted() suppressed a real write inside
-     *    DIRECT_DEDUP_HOURS and answered success/idempotent while no seat was
-     *    assigned, and the staged path closed the approval as 'already_handled'
-     *    BEFORE the drift rail written for exactly that could see it.
+     *    the 24h identity dedup that used to sit on this key suppressed a real
+     *    write and answered success/idempotent while no seat was assigned, and
+     *    the staged path closed the approval as 'already_handled' BEFORE the
+     *    drift rail written for exactly that could see it. That dedup is GONE —
+     *    a licence seat is a recreatable target, see
+     *    RECREATABLE_TARGET_STAGED_TOOLS — but this key still selects the
+     *    per-target COOLDOWN and prefixes every audit row, so both halves must
+     *    still be the values that actually execute.
      *  - the SKU — the claim only ever SELECTS a local licence type; what
      *    reaches upstream, and what is billed, is $license->skuId read out of
      *    the client's active licence row (License.vendor_ref), which a CIPP
@@ -4089,16 +4126,6 @@ class StaffCippWriteToolExecutor
         return ['license_target' => $this->licenseTargetKey($verifiedUserId, $license)];
     }
 
-    private function licenseTargetAlreadyExecuted(int $clientId, string $targetKey): bool
-    {
-        return TechnicianActionLog::query()
-            ->where('client_id', $clientId)
-            ->where('result_status', 'executed')
-            ->where('summary', 'like', $targetKey.':%')
-            ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
-            ->exists();
-    }
-
     /**
      * @param  array{user_id: string, upn: string, display_name: string}  $user
      */
@@ -4121,7 +4148,7 @@ class StaffCippWriteToolExecutor
 
         return 'Assign licence "'.$license->licenseType->name.'" (SKU '.$license->skuId.') to tenant user '.$userLabel.'.'
             .' This consumes a paid seat and grants the Microsoft 365 apps and services that SKU carries.'
-            .' The target is NOT mapped to a PSA person: the PSA\'s person records were checked for this address AND for this object id, and a mapped target is refused rather than staged. The user itself was verified against the tenant\'s live user listing.'
+            .' The target is NOT mapped to an ACTIVE PSA person: the PSA\'s person records were checked for this address AND for this object id, and a target mapped to an active person is refused rather than staged (it belongs on the person-keyed tool). A mapped but DEACTIVATED person is served here, because the person-keyed tool refuses them and no other shape could grant the seat. The user itself was verified against the tenant\'s live user listing.'
             .' Approval re-verifies the user and the licence mapping fresh, and declines if that address now points at a different user object, or if this SKU now maps to a different licence than the one named here.';
     }
 
@@ -4179,10 +4206,14 @@ class StaffCippWriteToolExecutor
      * Zero-match and multi-match both refuse, and a matched row with no
      * object id refuses rather than falling through to an empty target.
      *
-     * AND SO DOES A TARGET THAT IS MAPPED TO A PSA PERSON. This shape's whole
-     * premise is a tenant user with no person record; a mapped target belongs
-     * on the person-keyed path with its typed confirmation and person-scoped
-     * gates, so $clientId is taken here purely to prove that (see
+     * AND SO DOES A TARGET THAT IS MAPPED TO AN ACTIVE PSA PERSON. This shape's
+     * premise is a tenant user the person-keyed path cannot express; a target
+     * mapped to an ACTIVE person belongs there instead, with its typed
+     * confirmation and person-scoped gates, so $clientId is taken here purely to
+     * prove that. A mapped but DEACTIVATED person is NOT diverted — that path
+     * refuses them outright, so diverting would leave the seat unassignable by
+     * every shape, and the enabled-account gate below is what tells a leaver
+     * apart from their replacement (see
      * CippWriteScopeResolver::assertNoPsaPersonMapping()).
      *
      * @return array{user_id: string, upn: string, display_name: string}
@@ -6779,7 +6810,7 @@ class StaffCippWriteToolExecutor
     {
         return self::tool(
             'cipp_assign_tenant_user_license',
-            'Assign one CIPP M365 license SKU to one tenant user with NO PSA person record, immediately. This can alter billing and app entitlements. The server verifies target_upn against the resolved client tenant\'s live user listing and derives the object id from it — an address that is absent, ambiguous, in another tenant, on a disabled account, or mapped to a PSA person is refused (a mapped person belongs on cipp_assign_user_license with its typed confirmation) — and matches sku_id against this client\'s synced licence rows. Requires an explicit token grant, reason, kill-switch, dedup/cooldown, and TechnicianActionLog audit. Dial note: human-smoke-verify before first live grant; no replace-all or remove-all license body is supported.',
+            'Assign one CIPP M365 license SKU to one tenant user with NO ACTIVE PSA person record, immediately. This can alter billing and app entitlements. The server verifies target_upn against the resolved client tenant\'s live user listing and derives the object id from it — an address that is absent, ambiguous, in another tenant, on a disabled account, or mapped to an ACTIVE PSA person is refused (that person belongs on cipp_assign_user_license with its typed confirmation; a mapped but deactivated person is served here, because that tool refuses them) — and matches sku_id against this client\'s synced licence rows. Requires an explicit token grant, reason, kill-switch, a per-target cooldown, and TechnicianActionLog audit. A licence can legitimately be removed and re-assigned, so a repeat grant is sent upstream rather than answered as an already-executed duplicate. Dial note: human-smoke-verify before first live grant; no replace-all or remove-all license body is supported.',
             array_merge(self::licenseTargetProperties(), self::licenseTargetCommonProperties(ticketRequired: false)),
             ['target_upn', 'sku_id', 'reason'],
         );
@@ -6790,7 +6821,7 @@ class StaffCippWriteToolExecutor
     {
         return self::tool(
             'cipp_stage_assign_tenant_user_license',
-            'Stage assignment of one CIPP M365 license SKU to one tenant user with NO PSA person record, for cockpit approval. This can alter billing and entitlements; the held payload is encrypted at rest, and approval re-verifies target_upn against the tenant\'s live user listing fresh — declining if the address now points at a different user object, a disabled account, or a PSA-mapped person — before anything is written. Requires ticket_id and reason.',
+            'Stage assignment of one CIPP M365 license SKU to one tenant user with NO ACTIVE PSA person record, for cockpit approval. This can alter billing and entitlements; the held payload is encrypted at rest, and approval re-verifies target_upn against the tenant\'s live user listing fresh — declining if the address now points at a different user object, a disabled account, or a person who is mapped AND active in the PSA — before anything is written. Requires ticket_id and reason.',
             array_merge(self::licenseTargetProperties(), self::licenseTargetCommonProperties(ticketRequired: true)),
             ['target_upn', 'sku_id', 'ticket_id', 'reason'],
         );
