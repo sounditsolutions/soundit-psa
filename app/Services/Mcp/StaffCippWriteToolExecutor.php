@@ -3688,7 +3688,14 @@ class StaffCippWriteToolExecutor
                 break;
             }
 
-            $budget = max(0, $budget - $overflow);
+            // $overflow is measured in OUTPUT space while $budget counts INPUT
+            // characters, and neutralize() collapses '='-runs — so trimming inside
+            // a collapsed run can remove zero output characters and the loop would
+            // stall. Halving the budget as a floor makes every pass shrink it
+            // geometrically: 2^12 > RULE_NAME_INPUT_MAX, so 12 attempts always
+            // reach a fitting quotation and the bare-prose fallback below is
+            // unreachable for in-contract input.
+            $budget = max(0, min($budget - $overflow, intdiv($budget, 2)));
         }
 
         // Even an empty quotation does not fit: quote nothing rather than emit a
