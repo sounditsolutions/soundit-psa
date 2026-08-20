@@ -4002,7 +4002,7 @@ class StaffCippWriteToolExecutor
             // an identical user/SKU had already executed. A human approved this
             // seat after reading a card naming the user and the SKU; the only
             // rails allowed to stop it are the ones that can PROVE something
-            // changed (the two drift rails above) or that refuse honestly (the
+            // changed (the three drift rails above) or that refuse honestly (the
             // cooldown below). Once this run reaches Done, re-firing it needs
             // no rail here: claimForExecution() does its CAS only from
             // AwaitingApproval. Read that as a property of the Done STATE and
