@@ -4002,14 +4002,25 @@ class StaffCippWriteToolExecutor
      * and are never removed from the global list; every other tool keeps
      * refusing both, and every OTHER blocklisted key still refuses here.
      *
-     * What makes it safe is the same property the blocklist protects: the
-     * caller supplies a CLAIM and the server derives the identity.
+     * What the relaxation preserves is the direction of trust: the caller
+     * supplies a CLAIM and the server VALIDATES it against its own reads —
+     * neither value reaches upstream as the caller typed it.
      * resolveCippLicenseBySku() matches the SKU claim against synced licence
      * rows and answers with local objects, with the client-entitlement gate
      * untouched — a SKU this client has no active local licence row for is
      * still refused. verifiedTenantUser() matches the address claim against the
      * resolved tenant's live listing and answers with the object id the SERVER
-     * read. Neither value reaches upstream as the caller typed it.
+     * read.
+     *
+     * WHAT THAT VALIDATION DOES NOT ESTABLISH: the live-listing check proves
+     * the address EXISTS and is unambiguous in this tenant — it closes absent,
+     * ambiguous, cross-tenant, disabled and PSA-mapped targets. It does NOT
+     * establish that the address is the one the operator MEANT: two real,
+     * enabled, unmapped addresses in the same tenant pass every gate here, and
+     * unlike the person-path front door there is no opaque-id/confirm_upn
+     * cross-check to catch the substitution. Wrong-but-real is closed by
+     * nothing in this method. That gap is why the direct tenant verbs stay
+     * ungranted absent a need the staged twin cannot meet (#525).
      *
      * (Measured the hard way: the first cut of this family allowed only
      * sku_id, on a reading of the key list that had been truncated before
