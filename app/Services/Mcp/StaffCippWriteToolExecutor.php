@@ -4014,7 +4014,12 @@ class StaffCippWriteToolExecutor
      *
      * WHAT THAT VALIDATION DOES NOT ESTABLISH: the live-listing check proves
      * the address EXISTS and is unambiguous in this tenant — it closes absent,
-     * ambiguous, cross-tenant, disabled and PSA-mapped targets. It does NOT
+     * ambiguous, cross-tenant, disabled and ACTIVELY-PSA-mapped targets. Only
+     * ACTIVE mappings: a mapped but DEACTIVATED person is deliberately NOT
+     * closed here — verifiedTenantUser() hands that person id back as
+     * mapped_inactive_person_id, and each caller carries its own held-only
+     * rail for it (executeLicenseTargetDirect()). A further verb on this front
+     * door must carry one too. Nor does the check
      * establish that the address is the one the operator MEANT: two real,
      * enabled, unmapped addresses in the same tenant pass every gate here, and
      * unlike the person-path front door there is no opaque-id/confirm_upn
