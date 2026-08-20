@@ -4014,7 +4014,13 @@ class StaffCippWriteToolExecutor
      * and this method never calls it. Each verb calls it itself —
      * executeLicenseTargetDirect(), stageLicenseTargetAction(), and again in
      * approveLicenseTargetStagedRun()'s re-verify block — because each keys
-     * its own audit, dedup and cooldown rows on the object id it returns.
+     * its own audit rows on the object id it returns, as does every keyed
+     * rail any of them does carry: the direct verb's cooldown and the staged
+     * verb's content hash. A DEDUP rail is NOT among them — a licence seat is
+     * a RECREATABLE target, so the direct and approve verbs carry no
+     * already-executed check at all (RECREATABLE_TARGET_STAGED_TOOLS; see
+     * licenseTargetKey()), and adding one back to match this paragraph would
+     * restore the false success their own comments record.
      *
      * WHAT THAT VALIDATION DOES NOT ESTABLISH — read as a description of the
      * VERB's rail, since none of it runs in this method: the live-listing
@@ -4027,13 +4033,18 @@ class StaffCippWriteToolExecutor
      * though unmapped, with mapped_inactive_person_id null, no held-only
      * rail, no confirm_upn and a null person linkage on the audit row. (That
      * mapping check is a local PSA Person query, not part of the CIPP listing
-     * read.) And the DEACTIVATED half is deliberately not closed:
-     * verifiedTenantUser() hands that person id back as
+     * read.) The DEACTIVATED half is deliberately not closed — but again ONLY
+     * WHERE THE MAPPING IS COMPLETE, because that same completeness filter
+     * runs before any is_active branching: for a COMPLETELY mapped
+     * deactivated person, verifiedTenantUser() hands that person id back as
      * mapped_inactive_person_id, and what happens next is each caller's own
      * posture, not a shared rail: executeLicenseTargetDirect() refuses it
      * held-only, stageLicenseTargetAction() serves it onto the approval card
      * (verified_mapped_person_id), and approveLicenseTargetStagedRun()
-     * declines on mapping drift against that card. Nor does the check
+     * declines on mapping drift against that card. A HALF-mapped DEACTIVATED
+     * person gets NONE of that: it is dropped by the completeness filter
+     * exactly like the active half-mapped case, comes back null, and the seat
+     * is granted with no human ever shown the record. Nor does the check
      * establish that the address is the one the operator MEANT: two real,
      * enabled, unmapped addresses in the same tenant pass every gate here, and
      * unlike the person-path front door there is no opaque-id/confirm_upn
