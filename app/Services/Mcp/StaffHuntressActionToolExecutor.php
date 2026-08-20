@@ -70,13 +70,15 @@ class StaffHuntressActionToolExecutor
     /**
      * How long an Executing claim may stand before a re-stage treats it as
      * DEAD and revives the run. BOTH legs of the approve path are bounded far
-     * below this: the LIVE re-read (HuntressClient) and the resolution POST
-     * (HuntressWriteClient) each cap at 3 attempts x a 30 s transport timeout
-     * plus two 429 back-offs clamped to their own client's
-     * RETRY_AFTER_CEILING_SECONDS — ~220 s worst case. The READ client's clamp
-     * is load-bearing here, not incidental: while its Retry-After was
-     * unclamped an upstream `Retry-After: 1200` could park a LIVE approval well
-     * past this bound, and the recovery below would then reopen a run whose
+     * below this: the LIVE re-read (a HuntressClient::withClampedBackoff()
+     * clone — the base read client stays unclamped for the claimless
+     * background readers) and the resolution POST (HuntressWriteClient,
+     * always clamped) each cap at 3 attempts x a 30 s transport timeout plus
+     * two 429 back-offs clamped to their client's RETRY_AFTER_CEILING_SECONDS
+     * — ~220 s worst case. The approve-path clamp is load-bearing here, not
+     * incidental: with an unclamped Retry-After an upstream `Retry-After:
+     * 1200` could park a LIVE approval well past this bound, and the recovery
+     * below would then reopen a run whose
      * approval was still in flight. So no live approval is ever this old; a
      * claim that outlives it means the worker died
      * between claimForExecution() and any catch block — and this family is
@@ -260,7 +262,9 @@ class StaffHuntressActionToolExecutor
 
         // LIVE read (read client, account key) before anything is staged: the
         // escalation must exist, must not already be resolved, and must touch
-        // THIS client's mapped organization.
+        // THIS client's mapped organization. No execution claim exists yet,
+        // so this read deliberately keeps the DEFAULT back-off — honouring
+        // the upstream Retry-After in full, like every other reader.
         try {
             $escalation = $this->readClient()->getEscalation($escalationId);
         } catch (\Throwable $e) {
@@ -575,9 +579,12 @@ class StaffHuntressActionToolExecutor
             // Fresh LIVE read: the record may have moved while the proposal
             // waited. Vanished → decline; resolved meanwhile → the approved
             // intent is satisfied without an upstream call; out of scope →
-            // decline (a remap while held must not widen the write).
+            // decline (a remap while held must not widen the write). This is
+            // the one read that sleeps while holding the run's execution
+            // claim, so it — and only it — clamps its 429 back-off; the
+            // STALE_CLAIM_SECONDS bound depends on that.
             try {
-                $escalation = $this->readClient()->getEscalation($escalationId);
+                $escalation = $this->readClient()->withClampedBackoff()->getEscalation($escalationId);
             } catch (\Throwable $e) {
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Approval refused — escalation lookup failed: ".mb_substr($e->getMessage(), 0, 200), $approverLabel, $run->id, $approverId);
                 $run->releaseClaim();

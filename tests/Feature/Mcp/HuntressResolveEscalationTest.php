@@ -120,6 +120,7 @@ class HuntressResolveEscalationTest extends TestCase
     private function mockReadClient(?array $escalation): void
     {
         $mock = Mockery::mock(HuntressClient::class);
+        $mock->shouldReceive('withClampedBackoff')->andReturnSelf();
         $mock->shouldReceive('getEscalation')->andReturn($escalation ?? []);
         $this->app->instance(HuntressClient::class, $mock);
     }
@@ -361,6 +362,46 @@ class HuntressResolveEscalationTest extends TestCase
         ]);
         $summary = TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed')->firstOrFail()->summary;
         $this->assertStringContainsString('resolution_method direct', $summary);
+    }
+
+    /**
+     * The stage-time read holds no execution claim and must keep the DEFAULT
+     * back-off (a clamp there regresses every claimless reader's behaviour
+     * class); the approve-time re-read sleeps while holding the run's claim
+     * and must go through the withClampedBackoff() clone — the
+     * STALE_CLAIM_SECONDS bound is measured against that clamp. Strict
+     * mocks: each leg's getEscalation is pinned to its own client, so the
+     * split failing in either direction fails the test.
+     */
+    public function test_staging_reads_unclamped_and_approval_re_reads_through_the_clamped_clone(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+
+        $base = Mockery::mock(HuntressClient::class);
+        $base->shouldReceive('getEscalation')->once()->with(900)->andReturn($this->escalation());
+        $base->shouldNotReceive('withClampedBackoff');
+        $this->app->instance(HuntressClient::class, $base);
+
+        $response = $this->callTool($this->token(['huntress_stage_resolve_escalation']), 'huntress_stage_resolve_escalation', $this->stageArguments($fixture));
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+
+        $clamped = Mockery::mock(HuntressClient::class);
+        $clamped->shouldReceive('getEscalation')->once()->with(900)->andReturn($this->escalation());
+        $approveBase = Mockery::mock(HuntressClient::class);
+        $approveBase->shouldReceive('withClampedBackoff')->once()->andReturn($clamped);
+        $approveBase->shouldNotReceive('getEscalation');
+        $this->app->instance(HuntressClient::class, $approveBase);
+
+        $write = Mockery::mock(HuntressWriteClient::class);
+        $write->shouldReceive('resolveEscalation')->once()->with(900)->andReturn(['resolution_method' => 'direct']);
+        $this->app->instance(HuntressWriteClient::class, $write);
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run));
+
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
     }
 
     public function test_resolution_method_rule_is_a_hard_fault_reported_on_the_error_channel(): void

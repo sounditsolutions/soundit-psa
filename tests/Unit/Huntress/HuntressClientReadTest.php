@@ -114,24 +114,52 @@ class HuntressClientReadTest extends TestCase
     }
 
     /**
-     * Retry-After is UPSTREAM-CONTROLLED, and this read client is not only a
-     * background sync client: the staged escalation-resolve approval re-reads
-     * LIVE inside the synchronous cockpit request while holding that run's
-     * execution claim. No single back-off may exceed the ceiling — an unclamped
-     * `Retry-After: 1200` would park the worker, and the claim, past
-     * StaffHuntressActionToolExecutor::STALE_CLAIM_SECONDS, whose bound is
-     * measured against exactly this clamp.
+     * The DEFAULT client honours the upstream Retry-After IN FULL. Its
+     * callers — huntress:sync-licenses, huntress:reconcile-*, the read-only
+     * MCP tools — hold no execution claim, and against the documented
+     * 60 req/min account limit obeying a `Retry-After: 60` is correct: a
+     * clamp here burns all three attempts in ~20 s and fails that day's
+     * licence sync instead of waiting out one rate-limit window.
      */
-    public function test_retry_delay_clamps_the_upstream_retry_after_header(): void
+    public function test_the_default_backoff_honours_the_upstream_retry_after_in_full(): void
     {
-        $ceiling = HuntressClient::RETRY_AFTER_CEILING_SECONDS;
-
-        $this->assertSame($ceiling, HuntressClient::retryDelaySeconds('1200', 1), 'a twenty-minute upstream header must clamp to the ceiling');
-        $this->assertSame($ceiling, HuntressClient::retryDelaySeconds((string) ($ceiling + 1), 2));
-        $this->assertSame(3, HuntressClient::retryDelaySeconds('3', 1), 'a sane header value is honoured');
+        $this->assertSame(60, HuntressClient::retryDelaySeconds('60', 1), 'a background reader must wait out a full rate-limit window, not fail the sync');
+        $this->assertSame(1200, HuntressClient::retryDelaySeconds('1200', 1));
         $this->assertSame(0, HuntressClient::retryDelaySeconds('0', 1), 'zero means retry immediately');
         $this->assertSame(2, HuntressClient::retryDelaySeconds('', 1), 'no header → exponential default');
         $this->assertSame(4, HuntressClient::retryDelaySeconds('', 2));
         $this->assertSame(4, HuntressClient::retryDelaySeconds('soon', 2), 'non-numeric header → exponential default');
+    }
+
+    /**
+     * Retry-After is UPSTREAM-CONTROLLED, and one caller sleeps on it while
+     * holding a run's execution claim: the staged escalation-resolve approval
+     * re-reads LIVE inside the synchronous cockpit request. THAT caller opts
+     * in via withClampedBackoff(), and only its clone clamps — an unclamped
+     * `Retry-After: 1200` would park the worker, and the claim, past
+     * StaffHuntressActionToolExecutor::STALE_CLAIM_SECONDS, whose bound is
+     * measured against exactly this clamp.
+     */
+    public function test_retry_delay_clamps_only_when_the_clamped_mode_is_requested(): void
+    {
+        $ceiling = HuntressClient::RETRY_AFTER_CEILING_SECONDS;
+
+        $this->assertSame($ceiling, HuntressClient::retryDelaySeconds('1200', 1, true), 'a twenty-minute upstream header must clamp to the ceiling');
+        $this->assertSame($ceiling, HuntressClient::retryDelaySeconds((string) ($ceiling + 1), 2, true));
+        $this->assertSame(3, HuntressClient::retryDelaySeconds('3', 1, true), 'a sane header value is honoured');
+        $this->assertSame(0, HuntressClient::retryDelaySeconds('0', 1, true), 'zero means retry immediately');
+        $this->assertSame(2, HuntressClient::retryDelaySeconds('', 1, true), 'exponential default sits under the ceiling');
+        $this->assertSame(4, HuntressClient::retryDelaySeconds('soon', 2, true));
+    }
+
+    public function test_with_clamped_backoff_returns_a_clamped_clone_and_leaves_the_receiver_unclamped(): void
+    {
+        $ceiling = HuntressClient::RETRY_AFTER_CEILING_SECONDS;
+        $client = $this->clientReturning([]);
+        $clamped = $client->withClampedBackoff();
+
+        $this->assertNotSame($client, $clamped, 'the clamp arrives on a clone, never by mutating the shared instance');
+        $this->assertSame($ceiling, $clamped->backoffDelaySeconds('1200', 1));
+        $this->assertSame(1200, $client->backoffDelaySeconds('1200', 1), 'the receiver keeps the full upstream Retry-After after the wither');
     }
 }
