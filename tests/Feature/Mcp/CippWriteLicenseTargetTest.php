@@ -23,9 +23,10 @@ use Mockery;
 use Tests\TestCase;
 
 /**
- * Tenant-scoped target for cipp_assign_user_license: target_upn + sku_id, for a
- * tenant user with NO PSA person record. Selected by argument shape rather than
- * by tool name, so the established person-keyed path is untouched.
+ * Tenant-scoped licence target: cipp_assign_tenant_user_license (and its staged
+ * twin), target_upn + sku_id, for a tenant user with NO PSA person record. Its
+ * own verb pair with its own grant — the established person-keyed
+ * cipp_assign_user_license keeps its original contract, restored by the split.
  *
  * The properties these tests exist to pin, in the order they matter:
  *
@@ -150,7 +151,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
         $client->shouldReceive('listUsers')->once()->with(self::TENANT)
@@ -165,7 +166,7 @@ class CippWriteLicenseTargetTest extends TestCase
             ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => strtoupper(self::TARGET_UPN),
             'sku_id' => self::SKU,
@@ -177,7 +178,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertSame(self::TARGET_UPN, $result['target_upn'] ?? null);
 
         $this->assertDatabaseHas('technician_action_logs', [
-            'action_type' => 'cipp_assign_user_license',
+            'action_type' => 'cipp_assign_tenant_user_license',
             'client_id' => $f['client']->id,
             'result_status' => 'executed',
         ]);
@@ -187,7 +188,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         // THE FINDING THIS FAMILY EXISTS TO AVOID: an unread listing and a
         // tenant with no such user are the same shape. The refusal must name
@@ -197,7 +198,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -214,7 +215,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
         $client->shouldReceive('listUsers')->once()->with(self::TENANT)
@@ -222,7 +223,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -240,7 +241,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         // Entitlement gate unchanged by this family: the licence row is the
         // PSA's assertion that the client is billed for the seat.
@@ -256,7 +257,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => 'sku-e5',
@@ -271,14 +272,14 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
         $client->shouldNotReceive('listUsers');
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => 'sku-that-does-not-exist',
@@ -293,7 +294,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
         $client->shouldNotReceive('listUsers');
@@ -302,7 +303,7 @@ class CippWriteLicenseTargetTest extends TestCase
 
         // The carve-out is for sku_id ALONE. Every other blocklisted key is
         // still refused on this family, before any upstream read.
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -323,14 +324,14 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
         $client->shouldNotReceive('listUsers');
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => 'not-an-address',
             'sku_id' => self::SKU,
@@ -345,7 +346,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
         $client->shouldNotReceive('listUsers');
@@ -354,7 +355,7 @@ class CippWriteLicenseTargetTest extends TestCase
 
         // The rail: two shapes name two different users, and routing on
         // target_upn alone would silently drop the person path's confirm_upn.
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -363,7 +364,7 @@ class CippWriteLicenseTargetTest extends TestCase
         ]);
 
         $body = (string) $response->json('result.content.0.text');
-        $this->assertStringContainsString('exactly ONE target shape', $body);
+        $this->assertStringContainsString('For a PSA-mapped person use cipp_assign_user_license', $body);
         $this->assertStringContainsString('person_id', $body);
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
     }
@@ -372,7 +373,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         // The published schema is the MERGED property set of both shapes, so a
         // client that fills every declared property sends nulls for the shape it
@@ -385,7 +386,7 @@ class CippWriteLicenseTargetTest extends TestCase
             ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -403,7 +404,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_stage_assign_user_license']);
+        $token = $this->token(['cipp_stage_assign_tenant_user_license']);
 
         // THE COLLISION THIS PINS: contentHash() strips every UPSTREAM_IDENTIFIER
         // key, and BOTH of this family's params are on that list — so without a
@@ -419,14 +420,14 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $one = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+        $one = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'ticket_id' => $f['ticket']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
             'reason' => 'Contractor one needs a seat.',
         ]));
-        $two = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+        $two = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'ticket_id' => $f['ticket']->id,
             'target_upn' => 'second@acme.example',
@@ -440,7 +441,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertNotSame($one['run_id'] ?? null, $two['run_id'] ?? null, 'The second target borrowed the first user\'s run_id.');
 
         $runs = TechnicianRun::where('ticket_id', $f['ticket']->id)
-            ->where('action_type', 'cipp_stage_assign_user_license')->get();
+            ->where('action_type', 'cipp_stage_assign_tenant_user_license')->get();
         $this->assertCount(2, $runs);
         $this->assertCount(2, $runs->pluck('content_hash')->unique(), 'Two distinct targets produced one content hash.');
     }
@@ -460,7 +461,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
         $client->shouldReceive('listUsers')->twice()->with(self::TENANT)->andReturn([$this->userRow()]);
@@ -477,13 +478,13 @@ class CippWriteLicenseTargetTest extends TestCase
             'reason' => 'Contractor needs a seat.',
         ];
 
-        $first = $this->decodedResult($this->callTool($token, 'cipp_assign_user_license', $arguments));
+        $first = $this->decodedResult($this->callTool($token, 'cipp_assign_tenant_user_license', $arguments));
         $this->assertTrue($first['success'] ?? false, (string) json_encode($first));
 
         // The re-sync: same claim, different seat.
         License::query()->where('client_id', $f['client']->id)->update(['vendor_ref' => 'sku-e5-guid']);
 
-        $second = $this->decodedResult($this->callTool($token, 'cipp_assign_user_license', $arguments));
+        $second = $this->decodedResult($this->callTool($token, 'cipp_assign_tenant_user_license', $arguments));
         $this->assertTrue($second['success'] ?? false, (string) json_encode($second));
         $this->assertArrayNotHasKey(
             'idempotent',
@@ -498,7 +499,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         // The direct twin of the collision: the exact-content rail must not
         // answer "already executed" for a DIFFERENT human.
@@ -511,7 +512,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->app->instance(CippRestWriteClient::class, $client);
 
         foreach ([self::TARGET_UPN, 'second@acme.example'] as $upn) {
-            $result = $this->decodedResult($this->callTool($token, 'cipp_assign_user_license', [
+            $result = $this->decodedResult($this->callTool($token, 'cipp_assign_tenant_user_license', [
                 'client_id' => $f['client']->id,
                 'target_upn' => $upn,
                 'sku_id' => self::SKU,
@@ -528,7 +529,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_stage_assign_user_license']);
+        $token = $this->token(['cipp_stage_assign_tenant_user_license']);
         $approver = User::factory()->create(['name' => 'Approver']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
@@ -536,7 +537,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'ticket_id' => $f['ticket']->id,
             'target_upn' => self::TARGET_UPN,
@@ -580,14 +581,14 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_stage_assign_user_license']);
+        $token = $this->token(['cipp_stage_assign_tenant_user_license']);
         $approver = User::factory()->create(['name' => 'Approver']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
         $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'ticket_id' => $f['ticket']->id,
             'target_upn' => self::TARGET_UPN,
@@ -632,7 +633,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_stage_assign_user_license', 'cipp_assign_user_license']);
+        $token = $this->token(['cipp_stage_assign_tenant_user_license', 'cipp_assign_tenant_user_license']);
         $approver = User::factory()->create(['name' => 'Approver']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
@@ -643,7 +644,7 @@ class CippWriteLicenseTargetTest extends TestCase
             ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-e5-guid');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'ticket_id' => $f['ticket']->id,
             'target_upn' => self::TARGET_UPN,
@@ -655,7 +656,7 @@ class CippWriteLicenseTargetTest extends TestCase
         // The re-sync, then an executed assignment for the SAME user on the NEW SKU.
         License::query()->where('client_id', $f['client']->id)->update(['vendor_ref' => 'sku-e5-guid']);
 
-        $direct = $this->decodedResult($this->callTool($token, 'cipp_assign_user_license', [
+        $direct = $this->decodedResult($this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -685,7 +686,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_stage_assign_user_license']);
+        $token = $this->token(['cipp_stage_assign_tenant_user_license']);
         $approver = User::factory()->create(['name' => 'Approver']);
 
         // psa-pgnj shape: enabled at staging, disabled by approval time. A
@@ -694,7 +695,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'ticket_id' => $f['ticket']->id,
             'target_upn' => self::TARGET_UPN,
@@ -727,7 +728,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
         $client->shouldReceive('listUsers')->once()->with(self::TENANT)
@@ -735,7 +736,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -759,7 +760,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         $row = $this->userRow();
         unset($row['accountEnabled']);
@@ -769,7 +770,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -782,18 +783,20 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
     }
 
-    public function test_a_person_shape_call_carrying_an_explicit_null_target_upn_reaches_the_person_path(): void
+    public function test_the_person_tool_refuses_target_upn_by_presence_the_restored_strict_contract(): void
     {
         $this->configureCipp();
         $f = $this->fixture();
         $token = $this->token(['cipp_assign_user_license']);
 
-        // The mirror of the guard defect, in the DISPATCH. execute() routed on
-        // array_key_exists('target_upn') while the mixed-shape guard treated null
-        // as unsent — so a client filling the MERGED template for the PERSON
-        // shape entered the tenant family and was then refused for carrying real
-        // person values. The person-keyed path was unreachable for any client
-        // that fills the published schema.
+        // THE RESTORED CONTRACT, pinned. In the merged-schema era the person
+        // path needed a value-test carve-out because its own published template
+        // carried target_upn/sku_id slots. The split takes those keys out of
+        // cipp_assign_user_license's schema entirely, so the tool goes back to
+        // the strict PRESENCE test every other tool runs: a blocklisted key
+        // appearing at all — even as an explicit null — is the signal, exactly
+        // as it was before the tenant family existed. A caller aiming a
+        // tenant-shape call at the person tool hits this wall by name.
         $client = Mockery::mock(CippRestWriteClient::class);
         $client->shouldNotReceive('listUsers');
         $client->shouldNotReceive('assignUserLicense');
@@ -810,34 +813,23 @@ class CippWriteLicenseTargetTest extends TestCase
         ]);
 
         $body = (string) $response->json('result.content.0.text');
-        // POSITIVE assertion first, because the negatives below held while the
-        // call was still unreachable: it routed to the person path and was then
-        // refused by the GLOBAL upstream-identifier blocklist, which keyed on
-        // presence while both merged-template keys (target_upn, sku_id) are on
-        // that list. The person path is only truly reachable when the refusal is
-        // the person gate's own.
-        $this->assertStringContainsString('Person not found', $body);
-        $this->assertStringNotContainsString('upstream CIPP identifiers are not accepted', $body);
-        // It must be judged by the PERSON path's own gates — here the unknown
-        // person_id — and never by the tenant family's mixed-shape refusal.
-        $this->assertStringNotContainsString('exactly ONE target shape', $body);
-        $this->assertStringNotContainsString('target_upn must be', $body);
+        $this->assertStringContainsString('upstream CIPP identifiers are not accepted', $body);
+        // Refused by the strict blocklist, never by the tenant family's guards:
+        // the split means this call no longer has a tenant family to wander into.
+        $this->assertStringNotContainsString('Person not found', $body);
+        $this->assertStringNotContainsString('tenant user with no PSA person record', $body);
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
     }
 
     /**
-     * THE MIRROR OF THE MIXED-SHAPE RAIL — the property the carve-out test is
-     * NAMED for, and the direction nothing exercised.
-     *
-     * With no target_upn the call routes to the PERSON path, where the
-     * tool-scoped carve-out in context() exempted sku_id UNCONDITIONALLY: a real
-     * SKU was neither refused nor read. It was silently dropped and
-     * license_type_id decided the seat, on a billing write — the operator
-     * believes they named E5 and the log says Business Basic. The carve-out is
-     * the VALUE test, not an allowance: an empty template slot passes (the test
-     * above), a real value refuses as it did before this family existed.
+     * THE MIRROR OF THE MIXED-SHAPE RAIL, on the person tool's side of the
+     * split: a real SKU on the person shape must refuse, never be silently
+     * dropped while license_type_id decides the seat — the operator believes
+     * they named E5 and the log says Business Basic, on a billing write. With
+     * the strict presence test restored the refusal comes from the global
+     * blocklist, and it must fire BEFORE the person gate.
      */
-    public function test_a_real_sku_id_without_target_upn_is_refused_on_the_person_shape(): void
+    public function test_a_real_sku_id_on_the_person_tool_is_refused_before_the_person_gate(): void
     {
         $this->configureCipp();
         $f = $this->fixture();
@@ -880,7 +872,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
         $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([[
@@ -892,7 +884,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $text = (string) $this->callTool($token, 'cipp_assign_user_license', [
+        $text = (string) $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -920,7 +912,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
         $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([[
@@ -933,7 +925,7 @@ class CippWriteLicenseTargetTest extends TestCase
             ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -952,14 +944,14 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_stage_assign_user_license']);
+        $token = $this->token(['cipp_stage_assign_tenant_user_license']);
         $approver = User::factory()->create(['name' => 'Approver']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
         $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'ticket_id' => $f['ticket']->id,
             'target_upn' => self::TARGET_UPN,
@@ -977,7 +969,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $run = TechnicianRun::findOrFail($staged['run_id']);
         $meta = $run->proposed_meta;
         $meta['encrypted_payload'] = Crypt::encryptString(json_encode([
-            'direct_tool' => 'cipp_assign_user_license',
+            'direct_tool' => 'cipp_assign_tenant_user_license',
             'family' => 'not_license_target',
             'client_id' => $f['client']->id,
             'person_id' => null,
@@ -1005,14 +997,14 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_stage_assign_user_license']);
+        $token = $this->token(['cipp_stage_assign_tenant_user_license']);
         $approver = User::factory()->create(['name' => 'Approver']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
         $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'ticket_id' => $f['ticket']->id,
             'target_upn' => self::TARGET_UPN,
@@ -1086,7 +1078,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         // A person whose cipp_user_id holds ONLY A TAB is half-mapped as far as
         // resolveCippPerson() is concerned — PHP trim() reads it blank, so the
@@ -1112,7 +1104,7 @@ class CippWriteLicenseTargetTest extends TestCase
             ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -1129,7 +1121,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         // NEGATIVE CONTROL for the above: the completeness qualifier must not
         // become a way to bypass the person-keyed rails. A person mapped on BOTH
@@ -1150,7 +1142,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -1181,7 +1173,7 @@ class CippWriteLicenseTargetTest extends TestCase
         // wearing a green tick. Each arm now carries its own case.
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         // BOTH arms padded: the address arm by a trailing newline, and the
         // object-id arm — the value the SERVER read out of the tenant — by a
@@ -1202,7 +1194,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -1220,7 +1212,7 @@ class CippWriteLicenseTargetTest extends TestCase
         // wearing a green tick. Each arm now carries its own case.
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         // BOTH arms padded: the address arm by a trailing newline, and the
         // object-id arm — the value the SERVER read out of the tenant — by a
@@ -1241,7 +1233,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -1256,7 +1248,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         // The licence sync stores vendor_sku_id RAW, exactly as it stores the
         // person mapping columns raw. Matched with SQL equality against a
@@ -1272,7 +1264,7 @@ class CippWriteLicenseTargetTest extends TestCase
             ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -1289,7 +1281,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         // NEGATIVE CONTROL on the normalisation itself: moving the decision from
         // SQL LOWER() into PHP would silently make the match case-sensitive if
@@ -1300,7 +1292,7 @@ class CippWriteLicenseTargetTest extends TestCase
             ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => strtoupper(self::SKU),
@@ -1317,7 +1309,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         // NEGATIVE CONTROL for the dispatch: with no target_upn the call must
         // still land on the person-keyed path and be judged by ITS gates —
@@ -1327,7 +1319,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'license_type_id' => $f['licenseType']->id,
             'reason' => 'New contractor needs a seat.',
@@ -1353,7 +1345,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         // Alex IS mapped (fixture: cipp_upn alex@acme.example) and is present
         // and enabled in the tenant listing — every other gate on this path
@@ -1364,7 +1356,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => 'alex@acme.example',
             'sku_id' => self::SKU,
@@ -1391,7 +1383,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         Person::create([
             'client_id' => $f['client']->id,
@@ -1409,7 +1401,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -1436,7 +1428,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         Person::create([
             'client_id' => $f['client']->id,
@@ -1455,7 +1447,7 @@ class CippWriteLicenseTargetTest extends TestCase
             ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -1482,7 +1474,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         License::create([
             'license_type_id' => $f['licenseType']->id,
@@ -1500,7 +1492,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldNotReceive('assignUserLicense');
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -1535,14 +1527,14 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_stage_assign_user_license']);
+        $token = $this->token(['cipp_stage_assign_tenant_user_license']);
         $approver = User::factory()->create(['name' => 'Approver']);
 
         $client = Mockery::mock(CippRestWriteClient::class);
         $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'ticket_id' => $f['ticket']->id,
             'target_upn' => self::TARGET_UPN,
@@ -1590,7 +1582,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         $relayError = 'POST https://cipp.internal/api/ExecAddLicense?tenantfilter='.self::TENANT.' returned 500';
 
@@ -1599,7 +1591,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $client->shouldReceive('assignUserLicense')->once()->andThrow(new CippClientException($relayError));
         $this->app->instance(CippRestWriteClient::class, $client);
 
-        $response = $this->callTool($token, 'cipp_assign_user_license', [
+        $response = $this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -1701,7 +1693,7 @@ class CippWriteLicenseTargetTest extends TestCase
     {
         $this->configureCipp();
         $f = $this->fixture();
-        $token = $this->token(['cipp_assign_user_license']);
+        $token = $this->token(['cipp_assign_tenant_user_license']);
 
         // Object A holds the address and is licensed.
         $first = Mockery::mock(CippRestWriteClient::class);
@@ -1709,7 +1701,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $first->shouldReceive('assignUserLicense')->once()->with(self::TENANT, self::TARGET_OBJECT_ID, Mockery::any());
         $this->app->instance(CippRestWriteClient::class, $first);
 
-        $a = $this->decodedResult($this->callTool($token, 'cipp_assign_user_license', [
+        $a = $this->decodedResult($this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -1726,7 +1718,7 @@ class CippWriteLicenseTargetTest extends TestCase
         $second->shouldReceive('assignUserLicense')->once()->with(self::TENANT, $newObjectId, Mockery::any());
         $this->app->instance(CippRestWriteClient::class, $second);
 
-        $b = $this->decodedResult($this->callTool($token, 'cipp_assign_user_license', [
+        $b = $this->decodedResult($this->callTool($token, 'cipp_assign_tenant_user_license', [
             'client_id' => $f['client']->id,
             'target_upn' => self::TARGET_UPN,
             'sku_id' => self::SKU,
@@ -1737,5 +1729,140 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertArrayNotHasKey('idempotent', $b, 'The new starter was suppressed as a duplicate of the leaver.');
         // Two DIFFERENT people were licensed, so there are two executed rows.
         $this->assertSame(2, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
+    /**
+     * THE SPLIT ITSELF, pinned from the advertised surface. The tenant target
+     * is its own verb with its own required list, so it arrives in nobody's
+     * allowed_tools until it is granted — and the person tool goes back to its
+     * original contract: person_id + license_type_id + confirm_upn + reason
+     * all required, and no tenant-shape keys in its schema at all.
+     */
+    public function test_the_tenant_verb_is_its_own_grant_and_the_person_contract_is_restored(): void
+    {
+        $this->configureCipp();
+
+        // A legacy full-surface token (no allowlist) must NOT gain the new verb.
+        $legacyNames = array_column($this->listTools(McpConfig::rotateStaffToken()), 'name');
+        $this->assertNotContains('cipp_assign_tenant_user_license', $legacyNames);
+        $this->assertNotContains('cipp_stage_assign_tenant_user_license', $legacyNames);
+
+        $tools = collect($this->listTools($this->token([
+            'cipp_assign_user_license',
+            'cipp_assign_tenant_user_license',
+        ])))->keyBy('name');
+
+        $person = $tools['cipp_assign_user_license'];
+        foreach (['person_id', 'license_type_id', 'confirm_upn', 'reason'] as $key) {
+            $this->assertContains($key, $person['inputSchema']['required'], "person tool must require {$key} again");
+        }
+        $this->assertArrayNotHasKey('target_upn', $person['inputSchema']['properties']);
+        $this->assertArrayNotHasKey('sku_id', $person['inputSchema']['properties']);
+
+        $tenant = $tools['cipp_assign_tenant_user_license'];
+        foreach (['target_upn', 'sku_id', 'reason'] as $key) {
+            $this->assertContains($key, $tenant['inputSchema']['required'], "tenant verb must require {$key}");
+        }
+        $this->assertArrayNotHasKey('person_id', $tenant['inputSchema']['properties']);
+        $this->assertArrayNotHasKey('license_type_id', $tenant['inputSchema']['properties']);
+        $this->assertArrayNotHasKey('confirm_upn', $tenant['inputSchema']['properties']);
+        // Unified surface: the staged twin rides the canonical verb as
+        // staged=true rather than being advertised as its own alias.
+        $this->assertFalse($tools->has('cipp_stage_assign_tenant_user_license'));
+        $this->assertArrayHasKey('staged', $tenant['inputSchema']['properties']);
+    }
+
+    /**
+     * #405, direct path: a freed M365 address stays on the departed person's
+     * DEACTIVATED row (the stale sweep never clears cipp_upn/cipp_user_id),
+     * and confirm_upn compares against that same stored column — so the
+     * friction rail passes while the write lands on the old occupant's object
+     * id. The licence grant now requires an ACTIVE person.
+     */
+    public function test_an_inactive_person_refuses_a_licence_assignment_on_the_direct_path(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        $leaver = Person::create([
+            'client_id' => $f['client']->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Lee',
+            'last_name' => 'Aver',
+            'email' => 'lee@acme.example',
+            'cipp_user_id' => 'leaver-object-id',
+            'cipp_upn' => 'lee@acme.example',
+            'is_active' => false,
+        ]);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        // confirm_upn matches the STORED column exactly — the friction rail
+        // passes, which is precisely why it cannot be the gate here.
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'person_id' => $leaver->id,
+            'license_type_id' => $f['licenseType']->id,
+            'confirm_upn' => 'lee@acme.example',
+            'reason' => 'New starter at this address needs a seat.',
+        ]);
+
+        $body = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('inactive in the PSA', $body);
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
+    /**
+     * #405, staged arm: the person may be offboarded — and their address
+     * reassigned — between staging and approval. Approval re-resolves fresh
+     * and must decline, mirroring the group-membership 'add' re-gate.
+     */
+    public function test_a_person_deactivated_between_staging_and_approval_declines_the_licence_grant(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_stage_assign_user_license']);
+        $approver = User::factory()->create(['name' => 'Approver']);
+
+        $person = Person::where('email', 'alex@acme.example')->firstOrFail();
+
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'ticket_id' => $f['ticket']->id,
+            'person_id' => $person->id,
+            'license_type_id' => $f['licenseType']->id,
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'Alex needs a seat.',
+        ]));
+        $this->assertTrue($staged['success'] ?? false, (string) json_encode($staged));
+
+        $person->update(['is_active' => false]);
+
+        $upstream = Mockery::mock(CippRestWriteClient::class);
+        $upstream->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $upstream);
+
+        $run = TechnicianRun::findOrFail($staged['run_id']);
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun($run, $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertStringContainsString('inactive in the PSA', (string) $result->message);
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function listTools(string $token): array
+    {
+        return $this->withHeaders(['Authorization' => 'Bearer '.$token])
+            ->postJson('/api/mcp/staff', [
+                'jsonrpc' => '2.0',
+                'id' => 1,
+                'method' => 'tools/list',
+                'params' => [],
+            ])
+            ->json('result.tools') ?? [];
     }
 }

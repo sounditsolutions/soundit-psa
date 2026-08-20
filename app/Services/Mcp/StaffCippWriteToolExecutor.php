@@ -39,6 +39,7 @@ class StaffCippWriteToolExecutor
         'cipp_stage_remove_user_mfa_methods' => 'cipp_remove_user_mfa_methods',
         'cipp_stage_set_legacy_per_user_mfa' => 'cipp_set_legacy_per_user_mfa',
         'cipp_stage_assign_user_license' => 'cipp_assign_user_license',
+        'cipp_stage_assign_tenant_user_license' => 'cipp_assign_tenant_user_license',
         'cipp_stage_remove_user_license' => 'cipp_remove_user_license',
         'cipp_stage_convert_mailbox' => 'cipp_convert_mailbox',
         'cipp_stage_set_mailbox_forwarding' => 'cipp_set_mailbox_forwarding',
@@ -104,6 +105,21 @@ class StaffCippWriteToolExecutor
     ];
 
     /**
+     * Tenant-scoped licence writes. The licence target for a tenant user with
+     * NO PSA person record is its OWN verb, not a second argument shape on
+     * cipp_assign_user_license — a new name arrives in nobody's allowed_tools
+     * until it is granted, so the blocklist allowance this family needs
+     * (target_upn/sku_id, see licenseTargetContext()) cannot ride into any
+     * existing grant of the person-keyed tool. cipp_assign_user_license keeps
+     * its original person-only contract and the strict identifier blocklist.
+     *
+     * @var array<int, string>
+     */
+    private const LICENSE_TARGET_TOOLS = [
+        'cipp_assign_tenant_user_license',
+    ];
+
+    /**
      * Staged writes whose TARGET can legitimately come back, so the 24h
      * executed-content dedup must NOT answer a re-stage with "already executed".
      *
@@ -144,6 +160,8 @@ class StaffCippWriteToolExecutor
         'cipp_stage_set_legacy_per_user_mfa' => 300,
         'cipp_assign_user_license' => 300,
         'cipp_stage_assign_user_license' => 300,
+        'cipp_assign_tenant_user_license' => 300,
+        'cipp_stage_assign_tenant_user_license' => 300,
         'cipp_remove_user_license' => 300,
         'cipp_stage_remove_user_license' => 300,
         'cipp_convert_mailbox' => 300,
@@ -251,11 +269,12 @@ class StaffCippWriteToolExecutor
     private const LICENSE_TARGET_ALLOWED_KEYS = ['target_upn', 'sku_id'];
 
     /**
-     * The person-keyed shape's own keys. A licence call that carries target_upn
-     * AND any of these is refused outright by licenseTargetContext(): dispatch
-     * routes on target_upn ALONE, so a mixed call would drop the person shape —
-     * confirm_upn included — without a word. Mutual exclusion has to be
-     * enforced, not merely described in the tool text.
+     * The person-keyed licence tool's own keys. A tenant-target licence call
+     * that carries a VALUE in any of these is refused outright by
+     * licenseTargetContext(): the two tools name two different users, and
+     * silently ignoring the person half would drop it — confirm_upn included —
+     * without a word. Mutual exclusion has to be enforced, not merely
+     * described in the tool text.
      *
      * @var array<int, string>
      */
@@ -573,6 +592,8 @@ class StaffCippWriteToolExecutor
             self::stageSetLegacyMfaTool(),
             self::assignLicenseTool(),
             self::stageAssignLicenseTool(),
+            self::assignTenantLicenseTool(),
+            self::stageAssignTenantLicenseTool(),
             self::removeLicenseTool(),
             self::stageRemoveLicenseTool(),
             self::convertMailboxTool(),
@@ -674,23 +695,16 @@ class StaffCippWriteToolExecutor
                 : $this->executeGroupMembershipDirect($name, $arguments, $clientId, $actorLabel);
         }
 
-        // Licence assignment has TWO target shapes under one tool name, so this
-        // family is selected by ARGUMENT SHAPE rather than by a *_TOOLS constant:
-        // target_upn present => tenant-scoped target (this family), otherwise the
-        // established person-keyed path through context(). The person path is
-        // untouched — a caller who sends neither still lands there and is refused
-        // by its own person_id gate, which is the pre-existing message.
-        //
-        // ROUTED ON A VALUE, NOT ON PRESENCE, and the two must never diverge: the
-        // mixed-shape guard inside licenseTargetContext() treats null/'' as NOT
-        // sent, so routing on presence made a person-shape call carrying an
-        // explicit "target_upn": null — which is exactly what a client filling
-        // the MERGED template emits — enter this family and then be refused by
-        // that guard for carrying real person values. The person path became
-        // unreachable for any client that fills the published schema. Both sides
-        // now ask the same question through sentValue().
-        if ((self::STAGED_TO_DIRECT[$name] ?? $name) === 'cipp_assign_user_license'
-            && $this->sentValue($arguments, 'target_upn')) {
+        // Tenant-scoped licence assignment is its own verb pair, routed by NAME
+        // like every other family. It was briefly a second argument shape on
+        // cipp_assign_user_license, selected by whether target_upn carried a
+        // value — which meant the blocklist relaxation the tenant shape needs
+        // rode inside every EXISTING grant of the person-keyed tool, and the
+        // person tool's required list had to drop to ['reason'] because a
+        // schema cannot require keys of a shape the caller is not using. The
+        // split restores the person tool's original contract and puts the new
+        // capability behind a new grant.
+        if (in_array(self::STAGED_TO_DIRECT[$name] ?? $name, self::LICENSE_TARGET_TOOLS, true)) {
             return isset(self::STAGED_TO_DIRECT[$name])
                 ? $this->stageLicenseTargetAction($name, $arguments, $clientId, $actorLabel)
                 : $this->executeLicenseTargetDirect($name, $arguments, $clientId, $actorLabel);
@@ -731,16 +745,7 @@ class StaffCippWriteToolExecutor
             return $this->approveGroupMembershipStagedRun($run, $approverId);
         }
 
-        // Same two-shapes-one-name problem as execute(), one layer on: routed by
-        // the redacted_params marker the staging path wrote, NOT by tool name.
-        // redacted_params is routing only — the approve path revalidates
-        // everything from the ENCRYPTED payload, which carries its own
-        // family marker. A meta stripped of the marker falls through to the
-        // generic tail and is refused there for want of license_type_id, which
-        // is the safe direction.
-        if ((self::STAGED_TO_DIRECT[$run->action_type] ?? '') === 'cipp_assign_user_license'
-            && is_array($run->proposed_meta['redacted_params'] ?? null)
-            && $this->sentValue($run->proposed_meta['redacted_params'], 'target_upn')) {
+        if (in_array(self::STAGED_TO_DIRECT[$run->action_type] ?? '', self::LICENSE_TARGET_TOOLS, true)) {
             return $this->approveLicenseTargetStagedRun($run, $approverId);
         }
 
@@ -768,6 +773,14 @@ class StaffCippWriteToolExecutor
 
             $tenant = $this->resolver->resolveCippTenant($client);
             $person = $this->resolver->resolveCippPerson($client->id, $payload['person_id'] ?? null);
+            if ($directTool === 'cipp_assign_user_license') {
+                // Fresh ACTIVE re-gate at approval (#405), mirroring context():
+                // the person may have been offboarded — and their address
+                // reassigned — between staging and approval, and a licence
+                // grant to the stored object id would land on the departed
+                // user. Same direction as the group-membership 'add' re-gate.
+                $person = $this->resolver->resolveActiveCippPerson($client->id, $person->person->id, 'user');
+            }
             $ticket = $this->resolver->resolveTicketForHeldAction($client->id, $payload['ticket_id'] ?? null);
             $params = is_array($payload['params'] ?? null) ? $payload['params'] : [];
             $license = $this->licenseForTool($directTool, $client->id, $params['license_type_id'] ?? null);
@@ -3863,30 +3876,29 @@ class StaffCippWriteToolExecutor
             return ['error' => 'Caller-supplied upstream CIPP identifiers are not accepted: '.implode(', ', $keys).'. Provide target_upn, sku_id, and ticket_id only.'];
         }
 
-        // EXACTLY ONE target shape per call, enforced rather than documented.
-        // execute() routes on the presence of target_upn alone, so a call
-        // carrying both shapes would silently drop person_id, license_type_id
-        // AND confirm_upn — a billing write landing on the tenant address with
-        // the person path's typed-confirmation rail bypassed and no error, and
-        // an audit summary naming only the target that won. The two shapes name
-        // two different users; there is no safe way to pick one, so refuse.
-        // PRESENCE IS NOT THE SAME AS A VALUE, and keying on array_key_exists()
-        // alone made this guard refuse the calls it exists to allow. The
-        // published schema for cipp_assign_user_license is the MERGED property
-        // set of both shapes, so a client filling every declared property emits
-        // "person_id": null alongside a perfectly unambiguous tenant-shape call;
-        // that is a filled-in template, not a second target. All three verify
-        // seats found this independently, which is why it is a value test now:
-        // a key counts as sent only when it carries something that could name a
-        // person. A REAL person-shape value still refuses — that is the rail.
+        // A REAL person-shape value on the tenant verb refuses, enforced rather
+        // than documented. This tool's schema declares no person keys, so a
+        // person_id / license_type_id / confirm_upn carrying a value here is a
+        // call that named TWO different users — one by PSA person, one by
+        // tenant address — and silently ignoring the person half would land a
+        // billing write on the address with the person tool's typed-confirmation
+        // rail bypassed and an audit summary naming only the target that won.
+        // There is no safe way to pick one, so refuse.
+        // PRESENCE IS NOT THE SAME AS A VALUE: a client templating from an old
+        // cached merged schema, or defensively filling every slot, emits
+        // "person_id": null alongside a perfectly unambiguous tenant-shape
+        // call. That is a filled-in template, not a second target — a key
+        // counts as sent only when it carries something that could name a
+        // person (sentValue), the reading all three verify seats of the merged
+        // era converged on.
         $mixedShape = array_values(array_filter(
             self::LICENSE_PERSON_SHAPE_KEYS,
             fn (string $key): bool => $this->sentValue($arguments, $key),
         ));
         if ($mixedShape !== []) {
-            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'Both licence target shapes in one call: target_upn with '.implode(', ', $mixedShape).'.', $actorLabel);
+            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'Person-shape keys on the tenant-target licence tool: '.implode(', ', $mixedShape).'.', $actorLabel);
 
-            return ['error' => 'Send exactly ONE target shape: person_id + license_type_id + confirm_upn for a PSA-mapped person, OR target_upn + sku_id for a tenant user with no PSA person record. This call sent target_upn together with '.implode(', ', $mixedShape).'; nothing was written. Drop one shape and retry.'];
+            return ['error' => 'This tool targets a tenant user with no PSA person record, by target_upn + sku_id only. For a PSA-mapped person use cipp_assign_user_license with person_id + license_type_id + confirm_upn. This call sent '.implode(', ', $mixedShape).'; nothing was written. Drop the person-shape keys or switch tools.'];
         }
 
         $reason = $this->requiredString($arguments, 'reason');
@@ -3946,12 +3958,12 @@ class StaffCippWriteToolExecutor
     private function upstreamIdentifierKeysAllowing(array $arguments, array $allowed): array
     {
         // VALUE-tests, unlike the global helper, and only this family calls it.
-        // The licence tool publishes the MERGED property set of both target
-        // shapes, so a client filling every declared property sends nulls for
-        // the shape it is not using; those are filled-in template slots, not
-        // attempts to drive upstream identity. Every other tool keeps the
-        // stricter presence test — the narrower schema means a blocklisted key
-        // appearing at all is already the signal.
+        // A client templating from the merged-era schema, or defensively
+        // filling slots, can still send nulls for keys it is not using; those
+        // are filled-in template slots, not attempts to drive upstream
+        // identity. Every other tool keeps the stricter presence test — a
+        // narrow schema means a blocklisted key appearing at all is already
+        // the signal.
         $keys = [];
         foreach (self::UPSTREAM_IDENTIFIER_KEYS as $key) {
             if (! in_array($key, $allowed, true) && $this->sentValue($arguments, $key)) {
@@ -4048,16 +4060,13 @@ class StaffCippWriteToolExecutor
     /**
      * Was this key actually SENT, as opposed to merely present?
      *
-     * The single answer to that question for the licence family, because the
-     * dispatch and the mutual-exclusion guard asking it differently is what made
-     * the person-keyed path unreachable: the guard treated null as unsent while
-     * execute() routed on array_key_exists(), so a person-shape call carrying
-     * "target_upn": null entered the tenant family and was then refused for
-     * carrying person values. A client filling the published MERGED schema sends
-     * exactly that. One helper, and EVERY seat that asks the question goes
-     * through it — the dispatch, the mutual-exclusion guard, and the
-     * upstream-identifier blocklist itself — so there is no way for them to
-     * drift apart again.
+     * The single answer to that question for the licence family. In the
+     * merged-schema era the mutual-exclusion guard and the dispatch asked it
+     * differently (null-as-unsent vs array_key_exists), which made the
+     * person-keyed path unreachable for any client that filled the published
+     * template; dispatch is by tool name now, but the guard and the
+     * upstream-identifier blocklist still both ask, and they go through this
+     * one helper so they cannot drift apart again.
      *
      * A filled-in template is not an argument: null and a whitespace-only string
      * are both "not sent". Anything else is the caller naming a target.
@@ -4307,34 +4316,7 @@ class StaffCippWriteToolExecutor
     {
         $contentHash = $this->contentHash($tool, $clientId, null, null, $arguments);
 
-        // SCOPED EXCEPTION, and it is keyed on the TOOL rather than the family.
-        // cipp_assign_user_license is the only tool publishing the MERGED
-        // property set of two target shapes, so a client filling every declared
-        // property reaches THIS path carrying target_upn/sku_id as empty template
-        // slots. Those are not attempts to drive upstream identity and must not
-        // trip the blocklist — but that is true of this tool alone. Every other
-        // caller of context() keeps the strict presence test, because a narrow
-        // schema gives a blocklisted key no innocent reason to appear at all.
-        //
-        // AND THE RELAXATION IS THE VALUE TEST, NOT AN ALLOW-LIST — EMPTY
-        // ALLOWANCE, DELIBERATELY. Passing LICENSE_TARGET_ALLOWED_KEYS here
-        // exempted sku_id UNCONDITIONALLY, and this path is reached only when
-        // target_upn was NOT sent: the PERSON shape. So a call carrying
-        // person_id + license_type_id + confirm_upn AND a real sku_id had its
-        // SKU neither refused nor read — silently discarded on a billing write,
-        // with license_type_id deciding the seat while the operator believes
-        // they named the SKU. That is the mirror of the mixed-shape refusal
-        // licenseTargetContext() enforces, and mutual exclusion has to refuse in
-        // BOTH directions or it is not an invariant. The scoped exception this
-        // tool actually needs is the VALUE test, nothing more: null and ''
-        // template slots pass (that is the whole point), and any REAL
-        // blocklisted value — sku_id and target_upn included — refuses exactly
-        // as it did before this family existed.
-        $blocklisted = (self::STAGED_TO_DIRECT[$tool] ?? $tool) === 'cipp_assign_user_license'
-            ? $this->upstreamIdentifierKeysAllowing($arguments, [])
-            : $this->upstreamIdentifierKeys($arguments);
-
-        if ($keys = $blocklisted) {
+        if ($keys = $this->upstreamIdentifierKeys($arguments)) {
             $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'Caller-supplied upstream CIPP identifiers are not accepted: '.implode(', ', $keys).'.', $actorLabel);
 
             return ['error' => 'Caller-supplied upstream CIPP identifiers are not accepted; provide PSA person_id, license_type_id, and ticket_id only.'];
@@ -4364,6 +4346,16 @@ class StaffCippWriteToolExecutor
         try {
             $tenant = $this->resolver->resolveCippTenant($client);
             $person = $this->resolver->resolveCippPerson($client->id, $arguments['person_id'] ?? null);
+            if ((self::STAGED_TO_DIRECT[$tool] ?? $tool) === 'cipp_assign_user_license') {
+                // ACTIVE gate on the entitlement grant (#405): a freed M365
+                // address stays on the departed person's DEACTIVATED row
+                // (the stale sweep never clears cipp_upn/cipp_user_id), and
+                // confirm_upn compares against that same stored column — so
+                // the friction rail passes while the write lands on the old
+                // occupant's object id. Requiring an active person here makes
+                // a licence assignment to a reassigned address refuse instead.
+                $person = $this->resolver->resolveActiveCippPerson($client->id, $person->person->id, 'user');
+            }
             $ticket = $requireTicket
                 ? $this->resolver->resolveTicketForHeldAction($client->id, $arguments['ticket_id'] ?? null)
                 : $this->resolver->resolveOptionalTicket($client->id, $arguments['ticket_id'] ?? null);
@@ -6765,9 +6757,9 @@ class StaffCippWriteToolExecutor
     {
         return self::tool(
             'cipp_assign_user_license',
-            'Assign one CIPP M365 license SKU to one server-derived user immediately. This can alter billing and app entitlements. TWO TARGET SHAPES, and you must send exactly one of them: (a) person_id + license_type_id + confirm_upn for a user mapped to a PSA person; (b) target_upn + sku_id for a tenant user with no PSA person record — the address is verified against the tenant\'s live user listing before anything is written, and the SKU is matched against this client\'s synced licence rows. Both require reason, and both are subject to grant, kill-switch, dedup/cooldown, and audit. Dial note: human-smoke-verify before first live grant; no replace-all or remove-all license body is supported.',
-            array_merge(self::personProperties(), self::licenseProperties(), self::licenseTargetProperties()),
-            ['reason'],
+            'Assign one local CIPP M365 license SKU to one server-derived user immediately. This can alter billing and app entitlements. Requires explicit grant, reason, confirm_upn, kill-switch, dedup/cooldown, and audit. The target must be an ACTIVE PSA person; for a tenant user with no PSA person record use cipp_assign_tenant_user_license (its own grant). Dial note: human-smoke-verify before first live grant; no replace-all or remove-all license body is supported.',
+            array_merge(self::personProperties(), self::licenseProperties()),
+            ['person_id', 'license_type_id', 'confirm_upn', 'reason'],
         );
     }
 
@@ -6776,10 +6768,49 @@ class StaffCippWriteToolExecutor
     {
         return self::tool(
             'cipp_stage_assign_user_license',
-            'Stage assignment of one CIPP M365 license SKU for cockpit approval. This can alter billing and entitlements; the held payload is encrypted at rest and approval revalidates every mapping fresh. TWO TARGET SHAPES, exactly one of them: (a) person_id + license_type_id + confirm_upn; (b) target_upn + sku_id for a tenant user with no PSA person record — approval re-verifies that address against the tenant\'s live user listing and declines if it now points at a different user object. Both require ticket_id and reason.',
-            array_merge(self::personProperties(ticket: true), self::licenseProperties(), self::licenseTargetProperties()),
-            ['ticket_id', 'reason'],
+            'Stage assignment of one local CIPP M365 license SKU for cockpit approval. This can alter billing and entitlements; the held payload is encrypted at rest and approval revalidates person, tenant, and SKU mappings. The target must be an ACTIVE PSA person; for a tenant user with no PSA person record use cipp_stage_assign_tenant_user_license (its own grant).',
+            array_merge(self::personProperties(ticket: true), self::licenseProperties()),
+            ['person_id', 'license_type_id', 'ticket_id', 'confirm_upn', 'reason'],
         );
+    }
+
+    /** @return array<string, mixed> */
+    private static function assignTenantLicenseTool(): array
+    {
+        return self::tool(
+            'cipp_assign_tenant_user_license',
+            'Assign one CIPP M365 license SKU to one tenant user with NO PSA person record, immediately. This can alter billing and app entitlements. The server verifies target_upn against the resolved client tenant\'s live user listing and derives the object id from it — an address that is absent, ambiguous, in another tenant, on a disabled account, or mapped to a PSA person is refused (a mapped person belongs on cipp_assign_user_license with its typed confirmation) — and matches sku_id against this client\'s synced licence rows. Requires an explicit token grant, reason, kill-switch, dedup/cooldown, and TechnicianActionLog audit. Dial note: human-smoke-verify before first live grant; no replace-all or remove-all license body is supported.',
+            array_merge(self::licenseTargetProperties(), self::licenseTargetCommonProperties(ticketRequired: false)),
+            ['target_upn', 'sku_id', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageAssignTenantLicenseTool(): array
+    {
+        return self::tool(
+            'cipp_stage_assign_tenant_user_license',
+            'Stage assignment of one CIPP M365 license SKU to one tenant user with NO PSA person record, for cockpit approval. This can alter billing and entitlements; the held payload is encrypted at rest, and approval re-verifies target_upn against the tenant\'s live user listing fresh — declining if the address now points at a different user object, a disabled account, or a PSA-mapped person — before anything is written. Requires ticket_id and reason.',
+            array_merge(self::licenseTargetProperties(), self::licenseTargetCommonProperties(ticketRequired: true)),
+            ['target_upn', 'sku_id', 'ticket_id', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function licenseTargetCommonProperties(bool $ticketRequired): array
+    {
+        return [
+            'reason' => [
+                'type' => 'string',
+                'description' => 'Specific operational reason for this CIPP write.',
+            ],
+            'ticket_id' => [
+                'type' => 'integer',
+                'description' => $ticketRequired
+                    ? 'Required ticket ID for cockpit-held actions. The server verifies it belongs to client_id.'
+                    : 'Optional ticket ID for incident attribution. The server verifies it belongs to client_id when supplied.',
+            ],
+        ];
     }
 
     /**
@@ -6795,11 +6826,11 @@ class StaffCippWriteToolExecutor
         return [
             'target_upn' => [
                 'type' => 'string',
-                'description' => 'Full Microsoft 365 user principal name of the target, for a tenant user with no PSA person record (e.g. person@contoso.com). The server verifies this address against the tenant\'s live user listing and derives the object id from it; an address that is absent, ambiguous, or in another tenant is refused. Use person_id instead when the user is mapped to a PSA person — an address (or object id) that IS mapped to a PSA person is refused here, because that target belongs on the person-keyed shape with its typed confirmation.',
+                'description' => 'Full Microsoft 365 user principal name of the target, for a tenant user with no PSA person record (e.g. person@contoso.com). The server verifies this address against the tenant\'s live user listing and derives the object id from it; an address that is absent, ambiguous, or in another tenant is refused. Use cipp_assign_user_license with person_id instead when the user is mapped to a PSA person — an address (or object id) that IS mapped to a PSA person is refused here, because that target belongs on the person-keyed tool with its typed confirmation.',
             ],
             'sku_id' => [
                 'type' => 'string',
-                'description' => 'Upstream Microsoft 365 SKU id as returned by the CIPP licence reads (e.g. cipp_list_licenses). Only accepted alongside target_upn. The server matches it against this client\'s synced licence rows and refuses a SKU the client has no active local licence row for; use license_type_id with person_id for the PSA-person shape.',
+                'description' => 'Upstream Microsoft 365 SKU id as returned by the CIPP licence reads (e.g. cipp_list_licenses). Accepted on this tool only. The server matches it against this client\'s synced licence rows and refuses a SKU the client has no active local licence row for; use license_type_id with person_id on cipp_assign_user_license for the PSA-person shape.',
             ],
         ];
     }

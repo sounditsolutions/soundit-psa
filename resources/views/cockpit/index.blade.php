@@ -47,6 +47,7 @@
             'cipp_stage_remove_user_mfa_methods' => ['bg-danger text-white', 'CIPP remove MFA', 'bi-shield-x'],
             'cipp_stage_set_legacy_per_user_mfa' => ['bg-danger text-white', 'CIPP legacy MFA', 'bi-shield-lock'],
             'cipp_stage_assign_user_license' => ['bg-danger text-white', 'CIPP assign license', 'bi-person-badge'],
+            'cipp_stage_assign_tenant_user_license' => ['bg-danger text-white', 'CIPP assign license (tenant user)', 'bi-person-badge'],
             'cipp_stage_remove_user_license' => ['bg-danger text-white', 'CIPP remove license', 'bi-person-dash'],
             'cipp_stage_convert_mailbox' => ['bg-danger text-white', 'CIPP mailbox convert', 'bi-envelope-gear'],
             'cipp_stage_set_mailbox_forwarding' => ['bg-danger text-white', 'CIPP mailbox forwarding', 'bi-envelope-arrow-up'],
