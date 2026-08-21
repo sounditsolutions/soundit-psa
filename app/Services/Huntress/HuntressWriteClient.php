@@ -42,6 +42,15 @@ class HuntressWriteClient
      */
     public const RETRY_AFTER_CEILING_SECONDS = 10;
 
+    /**
+     * MIRROR of StaffHuntressActionToolExecutor::SAFE_RESOLUTION_METHODS (which
+     * is private to the executor): the resolution methods the executor's
+     * post-condition can clear. Anything outside this set — `rule` above all —
+     * means server-side state WAS created and must reach the executor to fault
+     * on, whichever position in the body reported it.
+     */
+    private const SAFE_RESOLUTION_METHODS = ['direct', 'dismiss'];
+
     private Client $http;
 
     /**
@@ -199,12 +208,16 @@ class HuntressWriteClient
      * its array carries the field; otherwise the body — which may report the
      * method itself — falls through unchanged.
      *
-     * Wrapper-first is the fail-safe PRECEDENCE, not a style choice. When a
-     * body carries BOTH a top-level `resolution_method` and a content-verified
-     * wrapper, the wrapper is the server's report of the code path it actually
-     * took and the top-level field may be a summary/legacy echo; letting the
-     * body win could record a `rule` resolution — attribute rules WERE created
-     * — as a clean `executed` with nobody paged. Every misread in this
+     * Precedence is SEVERITY-AWARE, not positional. Every content-verified
+     * candidate — each wrapper that carries the field, and the body itself
+     * when it does — is considered together, and the first whose
+     * `resolution_method` falls OUTSIDE the executor's safe set
+     * (SAFE_RESOLUTION_METHODS, mirrored from the executor) wins; only when
+     * every candidate is safe does the first in wrapper-then-body order stand.
+     * Any FIXED positional rule — wrapper-first or body-first — lets a `rule`
+     * resolution in the losing position (attribute rules WERE created) be
+     * laundered into a clean `executed` with nobody paged; severity-first
+     * selection closes that hole in both directions. Every misread in this
      * function must fail toward the loud false fault, never toward the silent
      * false success. Defensive code must never be able to turn a valid body
      * into a worse one than no unwrapping at all.
@@ -214,20 +227,31 @@ class HuntressWriteClient
      */
     private static function unwrapResolution(array $body): array
     {
-        // Wrappers are tried FIRST and only on content: an inner object that
-        // carries the field IS the resolution object, and its method is the
-        // one the executor's post-condition must judge.
+        // Candidates are collected on CONTENT, in wrapper-then-body order: an
+        // inner object that carries the field IS a resolution object, and the
+        // body itself is one when it reports the method at top level.
+        $candidates = [];
         foreach (['escalation_resolution', 'resolution'] as $wrapperKey) {
             $candidate = $body[$wrapperKey] ?? null;
             if (is_array($candidate) && is_scalar($candidate['resolution_method'] ?? null)) {
+                $candidates[] = $candidate;
+            }
+        }
+        if (is_scalar($body['resolution_method'] ?? null)) {
+            $candidates[] = $body;
+        }
+
+        // Severity first: an unsafe method anywhere is the one the executor's
+        // post-condition must judge, whatever position reported it.
+        foreach ($candidates as $candidate) {
+            if (! in_array($candidate['resolution_method'], self::SAFE_RESOLUTION_METHODS, true)) {
                 return $candidate;
             }
         }
 
-        // No wrapper carried the field, so any same-named sibling is a detail
-        // field whatever its shape: a body that reports the method itself
-        // stands, and a body that reports nothing falls through unchanged for
-        // the executor to fault on.
-        return $body;
+        // All candidates safe → the first stands. No candidate at all → any
+        // same-named sibling is a detail field whatever its shape, and the
+        // body falls through unchanged for the executor to fault on.
+        return $candidates[0] ?? $body;
     }
 }

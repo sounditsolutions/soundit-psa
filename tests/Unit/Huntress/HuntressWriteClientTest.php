@@ -158,6 +158,26 @@ class HuntressWriteClientTest extends TestCase
 
             $this->assertSame('rule', $resolution['resolution_method'], "the {$wrapperKey} wrapper's own method must reach the executor's post-condition, not a top-level echo");
         }
+
+        // The MIRRORED shapes: selection is severity-aware, not positional, so
+        // an unsafe `rule` must survive from EITHER position. A fixed
+        // wrapper-first rule launders shape one; a fixed body-first rule
+        // launders the original pair above — each ordering's fix opens the
+        // mirror hole, which is why severity decides.
+        foreach ([
+            // top-level `rule` + content-verified wrapper reporting `direct`
+            ['id' => 9, 'resolution_method' => 'rule', 'resolution' => ['resolution_method' => 'direct']],
+            // two wrappers: escalation_resolution `direct` + resolution `rule`
+            ['id' => 9, 'escalation_resolution' => ['resolution_method' => 'direct'], 'resolution' => ['resolution_method' => 'rule', 'rules_created' => [['id' => 3]]]],
+        ] as $mirroredBody) {
+            $client = $this->clientReturning([
+                new Response(201, [], json_encode($mirroredBody)),
+            ]);
+
+            $resolution = $client->resolveEscalation(9);
+
+            $this->assertSame('rule', $resolution['resolution_method'], 'an unsafe method must reach the post-condition from either position — severity outranks order');
+        }
     }
 
     public function test_409_maps_to_the_already_resolved_exception(): void
