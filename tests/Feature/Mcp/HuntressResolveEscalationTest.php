@@ -143,10 +143,10 @@ class HuntressResolveEscalationTest extends TestCase
         ], $overrides);
     }
 
-    private function stageRun(array $fixture, string $token): TechnicianRun
+    private function stageRun(array $fixture, string $token, int $escalationId = 900): TechnicianRun
     {
-        $this->mockReadClient($this->escalation());
-        $response = $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture));
+        $this->mockReadClient($this->escalation(['id' => $escalationId]));
+        $response = $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture, ['escalation_id' => $escalationId]));
         $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
 
         return TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
@@ -545,7 +545,64 @@ class HuntressResolveEscalationTest extends TestCase
         ]);
     }
 
-    public function test_upstream_failure_at_approval_declines_without_advancing_the_run(): void
+    /**
+     * A transport failure whose outcome is INDETERMINATE — a read/connect
+     * timeout (code 0) or a 5xx, both of which can arrive AFTER the POST has
+     * committed — must never be reported as "nothing was resolved" and must
+     * never re-arm the run: the retry converges through the live-read/409
+     * branches to a clean `executed` with the resolution_method
+     * post-condition never evaluated, laundering a `rule` (attribute rules
+     * were created) into a green success. The run lands terminal and the
+     * fault reaches the operator on the ERROR channel.
+     */
+    public function test_an_indeterminate_upstream_failure_never_claims_nothing_was_resolved(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+
+        // clients.huntress_organization_id is UNIQUE, so the two cases share
+        // ONE mapped client and differ by ESCALATION ID instead — which is what
+        // the cooldown and dedup keys are anchored on anyway, so the second
+        // case still stages and approves independently of the first.
+        $fixture = $this->fixture();
+
+        foreach ([
+            ['escalation_id' => 900, 'message' => 'Huntress API error: cURL error 28: Operation timed out after 30000 milliseconds', 'code' => 0],
+            ['escalation_id' => 901, 'message' => 'Huntress API error: 502 Bad Gateway', 'code' => 502],
+        ] as $failure) {
+            $escalationId = $failure['escalation_id'];
+            $this->mockWriteClientNeverCalled();
+            $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']), $escalationId);
+
+            $write = Mockery::mock(HuntressWriteClient::class);
+            $write->shouldReceive('resolveEscalation')->once()->with($escalationId)
+                ->andThrow(new HuntressClientException($failure['message'], $failure['code']));
+            $this->app->instance(HuntressWriteClient::class, $write);
+            $this->mockReadClient($this->escalation(['id' => $escalationId]));
+
+            $response = $this->actingAs($actor)->postJson(route('cockpit.approve', $run));
+
+            $response->assertJson(['ok' => false, 'status' => 'executed_with_fault']);
+            $this->assertStringContainsString('HARD FAULT', (string) $response->json('message'));
+            $this->assertStringNotContainsString('nothing was resolved', (string) $response->json('message'));
+            $this->assertSame(TechnicianRunState::Done, $run->fresh()->state, 'an indeterminate outcome must never be re-armed for a retry');
+
+            $fault = TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->firstOrFail()->summary;
+            $this->assertStringContainsString('INDETERMINATE', $fault);
+            $this->assertStringContainsString('post-condition was never evaluated', $fault);
+            $this->assertDatabaseMissing('technician_action_logs', [
+                'run_id' => $run->id,
+                'result_status' => 'executed',
+            ]);
+        }
+    }
+
+    /**
+     * The other half of the split: a status the vendor answered while
+     * REFUSING the request wrote nothing upstream, so the decline is truthful
+     * and the run returns to AwaitingApproval for a legitimate retry.
+     */
+    public function test_an_upstream_rejection_that_cannot_have_committed_declines_and_releases(): void
     {
         $this->configureHuntress();
         $actor = $this->configureAiActor();
@@ -555,13 +612,17 @@ class HuntressResolveEscalationTest extends TestCase
 
         $write = Mockery::mock(HuntressWriteClient::class);
         $write->shouldReceive('resolveEscalation')->once()->with(900)
-            ->andThrow(new HuntressClientException('Huntress API error: 500'));
+            ->andThrow(new HuntressClientException('Huntress API error: 403 Forbidden', 403));
         $this->app->instance(HuntressWriteClient::class, $write);
         $this->mockReadClient($this->escalation());
 
         $this->actingAs($actor)->post(route('cockpit.approve', $run));
 
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertDatabaseHas('technician_action_logs', [
+            'run_id' => $run->id,
+            'result_status' => 'error',
+        ]);
     }
 
     public function test_approval_re_reads_live_state_vanished_resolved_and_remapped_all_stop_the_write(): void

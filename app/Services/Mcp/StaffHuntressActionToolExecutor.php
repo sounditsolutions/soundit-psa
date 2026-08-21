@@ -525,6 +525,15 @@ class StaffHuntressActionToolExecutor
         // this window.
         $writeCommitted = false;
 
+        // The INDETERMINATE arm's own operator-facing fault text, set only on
+        // that path. It is deliberately NOT $writeCommitted: that flag means
+        // the resolve is KNOWN to have landed, and the handler below says so
+        // in as many words. An indeterminate transport failure cannot know it,
+        // so it carries its own text — widening the flag's meaning is how a
+        // path that knows nothing ends up asserting the escalation was
+        // resolved.
+        $indeterminateFault = null;
+
         try {
             $payload = $this->decryptRunPayload($run);
             if ($payload === null) {
@@ -635,11 +644,55 @@ class StaffHuntressActionToolExecutor
                 $run->releaseClaim();
 
                 return new TechnicianApprovalResult('gate_declined', message: "Huntress refused: escalation {$escalationId} cannot be resolved through the API — resolve it in the Huntress console. Nothing was changed.");
-            } catch (HuntressWriteScopeException|HuntressClientException $e) {
-                $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: ".mb_substr($e->getMessage(), 0, 300), $approverLabel, $run->id, $approverId);
+            } catch (HuntressWriteScopeException $e) {
+                // Refused INSIDE the write client BEFORE any HTTP (missing
+                // user-key credential, non-positive id): nothing reached
+                // Huntress, so "nothing was resolved" is a fact here and the
+                // run may safely return to AwaitingApproval.
+                $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Refused before sending — ".mb_substr($e->getMessage(), 0, 300), $approverLabel, $run->id, $approverId);
                 $run->releaseClaim();
 
-                return new TechnicianApprovalResult('gate_declined', message: 'The Huntress resolve call failed — nothing was resolved. Try again.');
+                return new TechnicianApprovalResult('gate_declined', message: 'The Huntress resolve call was refused before it was sent — nothing was resolved.');
+            } catch (HuntressClientException $e) {
+                if (! self::upstreamFailureMayHaveCommitted($e)) {
+                    // A status the vendor answered while REFUSING the request
+                    // (401/403/404/…): the POST landed at Huntress and wrote
+                    // nothing, so the decline is truthful and a retry is
+                    // legitimate.
+                    $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: ".mb_substr($e->getMessage(), 0, 300), $approverLabel, $run->id, $approverId);
+                    $run->releaseClaim();
+
+                    return new TechnicianApprovalResult('gate_declined', message: 'Huntress rejected the resolve call — nothing was resolved. Try again.');
+                }
+
+                // INDETERMINATE outcome, and a routine one: the transport
+                // times out at 30 s and a 5xx (or an edge 502) can arrive
+                // after the server has already committed the resolution. This
+                // path may NOT assert "nothing was resolved" — it cannot know
+                // — and above all may not re-arm the run: the retry converges
+                // through the live-read/409 branches to a clean `executed`
+                // WITHOUT ever evaluating the resolution_method
+                // post-condition, laundering a `rule` (attribute rules WERE
+                // created) into a green success with nobody paged. So the
+                // outcome is treated as TERMINAL — terminal run, `error`
+                // audit row, fault on the ERROR channel — the same
+                // refuse-to-requeue the sibling StaffCalendarToolExecutor
+                // applies to its own indeterminate upstream failures. Terminal
+                // is not the same as COMMITTED: this path never sets
+                // $writeCommitted, whose handler reports the resolve as a fact.
+                //
+                // The fault row goes down BEFORE the state write. advanceTo()
+                // is itself a DB write that can fail (observer, deadlock, lost
+                // connection), and ordering it first — as the COMMITTED path
+                // below safely can — would here lose the only record that an
+                // indeterminate resolve happened.
+                $indeterminateFault = "HARD FAULT: the Huntress resolve for escalation {$escalationId} failed with an INDETERMINATE outcome (".mb_substr($e->getMessage(), 0, 200).'). '
+                    .'The resolve POST may already have COMMITTED upstream, and its resolution_method post-condition was never evaluated — a `rule` resolution would mean the server CREATED attribute rules. Do NOT re-approve: establish in the Huntress console whether this escalation is resolved, inspect it for created rules, and escalate to a human.';
+                Log::error("[StaffHuntressActionToolExecutor] {$indeterminateFault}", ['run_id' => $run->id, 'escalation_id' => $escalationId]);
+                $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: {$indeterminateFault}", $approverLabel, $run->id, $approverId);
+                $run->advanceTo(TechnicianRunState::Done);
+
+                return new TechnicianApprovalResult('executed_with_fault', message: $indeterminateFault);
             }
 
             // The upstream resolve has now COMMITTED. Land the run terminal
@@ -679,11 +732,29 @@ class StaffHuntressActionToolExecutor
 
             return new TechnicianApprovalResult('executed', message: "Escalation {$escalationId} resolved (server reported resolution_method '{$method}').");
         } catch (\Throwable $e) {
-            // Only reachable BEFORE the upstream resolve committed — safe to
-            // reopen for a retry. Once it HAS committed, reopening is the
-            // double-resolve this flag exists to prevent: keep the run
-            // terminal and hand the operator the executed-with-fault channel
-            // instead of a 500 that hides what landed upstream.
+            // Reopening for a retry is safe ONLY while the upstream resolve
+            // provably has not happened. Once it HAS committed — or once its
+            // outcome is unknown — reopening is the double-resolve these flags
+            // exist to prevent: keep the run terminal and hand the operator the
+            // executed-with-fault channel instead of a 500 that hides what may
+            // have landed upstream.
+            //
+            // An INDETERMINATE resolve that failed while finalizing keeps its
+            // OWN text and is checked FIRST: its fault row is already written
+            // (the arm audits before advanceTo), and it may not borrow the
+            // committed handler's "the escalation WAS resolved upstream" —
+            // that path cannot know whether the POST ever reached Huntress.
+            // The claim is deliberately not released, for the same reason the
+            // arm itself refuses to re-arm the run.
+            if ($indeterminateFault !== null) {
+                Log::error('[StaffHuntressActionToolExecutor] Finalizing an INDETERMINATE escalation resolve failed; the run is NOT reopened', [
+                    'run_id' => $run->id,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return new TechnicianApprovalResult('executed_with_fault', message: $indeterminateFault);
+            }
+
             if ($writeCommitted) {
                 Log::error('[StaffHuntressActionToolExecutor] Finalizing a COMMITTED escalation resolve failed; the run is NOT reopened', [
                     'run_id' => $run->id,
@@ -762,6 +833,30 @@ class StaffHuntressActionToolExecutor
         }
 
         return null;
+    }
+
+    /**
+     * Whether a failed resolve POST may nonetheless have COMMITTED upstream.
+     * The transport times out at 30 s and Huntress can answer 5xx after the
+     * resolution has already been written, so those outcomes are
+     * INDETERMINATE: the approval may neither claim "nothing was resolved"
+     * nor re-arm the run, because the retry converges through the
+     * live-read/409 branches to a clean `executed` with the
+     * resolution_method post-condition never evaluated.
+     *
+     * Only a status the vendor returned while REFUSING the request proves
+     * nothing was written: a 4xx other than 408 (request timeout). A code of
+     * 0 — connect/read timeout, DNS, TLS, a proxy that dropped the response —
+     * proves nothing at all and therefore counts as may-have-committed;
+     * unknown values fail the same safe way. The code carried by
+     * HuntressClientException is Guzzle's: the HTTP status when there was a
+     * response, 0 when there was not.
+     */
+    private static function upstreamFailureMayHaveCommitted(HuntressClientException $e): bool
+    {
+        $status = (int) $e->getCode();
+
+        return ! ($status >= 400 && $status < 500 && $status !== 408);
     }
 
     /** @param array<string, mixed> $escalation */
