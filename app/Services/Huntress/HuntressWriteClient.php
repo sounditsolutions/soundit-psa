@@ -186,23 +186,36 @@ class HuntressWriteClient
     /**
      * Defensive unwrap, mirroring HuntressClient::getEscalation().
      *
-     * A wrapper arm is taken ONLY when that key holds an array. A scalar
-     * top-level `resolution` (a note, a state string) is a SIBLING field of
-     * the resolution object, not a wrapper around it — falling through to the
-     * body is the only safe reading. Returning [] on that shape would erase
-     * `resolution_method`, and the executor's post-condition reads a missing
-     * method as a HARD FAULT: every clean resolve would be recorded as a
-     * security fault and page a human. Defensive code must never be able to
-     * turn a valid body into a worse one than no unwrapping at all.
+     * The arm is selected by CONTENT, not by structure. `resolution` is only
+     * a wrapper when the thing it holds is the resolution object — i.e. when
+     * it carries the required `resolution_method`. A structural `is_array()`
+     * test would also hijack a non-wrapper sibling (a nested detail object
+     * `{"notes":…,"analyst":…}`, a list of notes, an empty array) exactly as a
+     * scalar sibling (a note, a state string) would, discarding a body whose
+     * own top-level `resolution_method` is perfectly valid. The executor's
+     * post-condition reads a missing method as a HARD FAULT, so either
+     * misreading turns every clean resolve into a recorded security fault
+     * that pages a human. Hence: a body that already carries the field IS the
+     * resolution object and wins outright; otherwise a wrapper key is taken
+     * only when its array carries the field; otherwise the body falls
+     * through unchanged. Defensive code must never be able to turn a valid
+     * body into a worse one than no unwrapping at all.
      *
      * @param  array<string, mixed>  $body
      * @return array<string, mixed>
      */
     private static function unwrapResolution(array $body): array
     {
+        // The body reports the method itself — any same-named sibling is a
+        // detail field, whatever its shape.
+        if (is_scalar($body['resolution_method'] ?? null)) {
+            return $body;
+        }
+
         foreach (['escalation_resolution', 'resolution'] as $wrapperKey) {
-            if (isset($body[$wrapperKey]) && is_array($body[$wrapperKey])) {
-                return $body[$wrapperKey];
+            $candidate = $body[$wrapperKey] ?? null;
+            if (is_array($candidate) && is_scalar($candidate['resolution_method'] ?? null)) {
+                return $candidate;
             }
         }
 

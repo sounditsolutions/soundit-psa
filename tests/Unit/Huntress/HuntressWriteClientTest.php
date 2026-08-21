@@ -103,6 +103,36 @@ class HuntressWriteClientTest extends TestCase
         $this->assertSame(9, $resolution['id']);
     }
 
+    /**
+     * The same trap one shape out: a NON-scalar sibling `resolution` — a
+     * nested detail object, a list of notes, an empty array — is still not a
+     * wrapper. Selecting the arm on structure alone discards a body whose
+     * top-level `resolution_method` is valid and reproduces the identical
+     * false HARD FAULT. The wrapper arm is selected by content: only an array
+     * that itself carries `resolution_method` is the resolution object.
+     */
+    public function test_a_non_wrapper_array_resolution_sibling_does_not_discard_the_body(): void
+    {
+        foreach ([
+            ['notes' => 'Resolved by analyst', 'analyst' => 'jdoe'],
+            ['Resolved by analyst'],
+            [],
+        ] as $sibling) {
+            $client = $this->clientReturning([
+                new Response(201, [], json_encode([
+                    'id' => 9,
+                    'resolution_method' => 'direct',
+                    'resolution' => $sibling,
+                ])),
+            ]);
+
+            $resolution = $client->resolveEscalation(9);
+
+            $this->assertSame('direct', $resolution['resolution_method'], 'an array sibling that is not the resolution object must never discard the body');
+            $this->assertSame(9, $resolution['id']);
+        }
+    }
+
     public function test_409_maps_to_the_already_resolved_exception(): void
     {
         $client = $this->clientReturning([
