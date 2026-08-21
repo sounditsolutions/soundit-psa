@@ -126,6 +126,31 @@ class StaffHuntressActionToolExecutor
     /** The 201 resolution_method values an id-only `{}` call may legitimately produce. */
     private const SAFE_RESOLUTION_METHODS = ['direct', 'dismiss'];
 
+    /**
+     * Every audit result_status that means a resolve POST MAY have changed
+     * upstream state. The idempotency rails — the 24 h dedup
+     * (alreadyExecuted/executedRunId), both cooldowns, and through them the
+     * re-stage revive — must count ALL of them, not just the clean one:
+     *
+     *  - `executed`              the resolve landed and its post-condition passed;
+     *  - `executed_with_fault`   it landed and reported a resolution_method the
+     *                            post-condition refuses (`rule` means the server
+     *                            CREATED attribute rules) — the escalation IS
+     *                            resolved, so the row is a fault, never a success;
+     *  - `resolve_indeterminate` the request went out and the outcome could not
+     *                            be established (transport timeout, 5xx).
+     *
+     * Counting only `executed` leaves every rail blind to a resolve that did
+     * commit: a re-stage while the upstream read lags then rewrites the terminal
+     * run back to AwaitingApproval and buys a SECOND POST, whose
+     * 409/already-resolved branch reports a clean `executed` with the
+     * resolution_method post-condition never evaluated. Only `executed` may be
+     * reported to an operator as a clean success.
+     *
+     * @var array<int, string>
+     */
+    private const RESOLVE_MAY_HAVE_LANDED_STATUSES = ['executed', 'executed_with_fault', 'resolve_indeterminate'];
+
     public function __construct(
         private readonly HuntressWriteClient $writeClient,
         private readonly ActionRedactor $redactor,
@@ -316,7 +341,10 @@ class StaffHuntressActionToolExecutor
                 'ticket_id' => $ticket->id,
                 'ticket_display_id' => $ticket->display_id,
                 'run_id' => $this->executedRunId($tool, $clientId, $contentHash),
-                'message' => 'Already executed identical action recently; no new proposal was staged.',
+                // Not necessarily a CLEAN execution: the same rail counts an
+                // executed_with_fault and a resolve_indeterminate row, so the
+                // message claims only that a resolve already ran.
+                'message' => 'An identical resolve already ran recently; no new proposal was staged. If it faulted or its outcome was indeterminate, verify this escalation in the Huntress console.',
             ];
         }
 
@@ -395,11 +423,16 @@ class StaffHuntressActionToolExecutor
         // STALE_CLAIM_SECONDS the claim is provably dead, so the run falls
         // through to the ordinary revive below.
         //
-        // That revive cannot resurrect a resolve that already landed: an
-        // executed audit row short-circuits at alreadyExecuted() and a
-        // committed upstream resolve short-circuits at the live
-        // already-resolved read, both above this point — and approval itself
-        // re-reads the escalation LIVE (and maps a 409) before any POST.
+        // That revive cannot resurrect a resolve that already landed: ANY
+        // RESOLVE_MAY_HAVE_LANDED_STATUSES audit row — a clean `executed`, an
+        // `executed_with_fault` whose post-condition failed, or a
+        // `resolve_indeterminate` whose outcome could not be established —
+        // short-circuits at alreadyExecuted(), and a committed upstream resolve
+        // short-circuits at the live already-resolved read, both above this
+        // point — and approval itself re-reads the escalation LIVE (and maps a
+        // 409) before any POST. The audit-row guard is the load-bearing one when
+        // the upstream read lags: a status field that has not flipped for us yet
+        // must never reopen a resolve we already sent.
         $strandedClaim = ! $run->wasRecentlyCreated && $run->state === TechnicianRunState::Executing;
 
         if ($strandedClaim && ! $this->claimIsStale($run)) {
@@ -525,6 +558,14 @@ class StaffHuntressActionToolExecutor
         // this window.
         $writeCommitted = false;
 
+        // The INDETERMINATE arm's own operator-facing fault text, set only on
+        // that path. It is deliberately NOT $writeCommitted: that flag means the
+        // resolve is KNOWN to have landed, and its handler says so in as many
+        // words. An indeterminate transport failure cannot know it, so it
+        // carries its own text — widening the flag's meaning is how a path that
+        // knows nothing ends up asserting the escalation was resolved.
+        $indeterminateFault = null;
+
         try {
             $payload = $this->decryptRunPayload($run);
             if ($payload === null) {
@@ -635,11 +676,58 @@ class StaffHuntressActionToolExecutor
                 $run->releaseClaim();
 
                 return new TechnicianApprovalResult('gate_declined', message: "Huntress refused: escalation {$escalationId} cannot be resolved through the API — resolve it in the Huntress console. Nothing was changed.");
-            } catch (HuntressWriteScopeException|HuntressClientException $e) {
-                $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: ".mb_substr($e->getMessage(), 0, 300), $approverLabel, $run->id, $approverId);
+            } catch (HuntressWriteScopeException $e) {
+                // Refused INSIDE the write client BEFORE any HTTP (missing
+                // user-key credential, non-positive id): nothing reached
+                // Huntress, so "nothing was resolved" is a fact here and the run
+                // may safely return to AwaitingApproval.
+                $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Refused before sending — ".mb_substr($e->getMessage(), 0, 300), $approverLabel, $run->id, $approverId);
                 $run->releaseClaim();
 
-                return new TechnicianApprovalResult('gate_declined', message: 'The Huntress resolve call failed — nothing was resolved. Try again.');
+                return new TechnicianApprovalResult('gate_declined', message: 'The Huntress resolve call was refused before it was sent — nothing was resolved.');
+            } catch (HuntressClientException $e) {
+                if (! self::upstreamFailureMayHaveCommitted($e)) {
+                    // A status the vendor answered while REFUSING the request
+                    // (401/403/404/…): the POST reached Huntress and wrote
+                    // nothing, so the decline is truthful and the retry it
+                    // invites is legitimate.
+                    $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: ".mb_substr($e->getMessage(), 0, 300), $approverLabel, $run->id, $approverId);
+                    $run->releaseClaim();
+
+                    return new TechnicianApprovalResult('gate_declined', message: 'Huntress rejected the resolve call — nothing was resolved. Try again.');
+                }
+
+                // INDETERMINATE outcome, and a routine one: the transport times
+                // out at 30 s and a 5xx (or an edge 502) can arrive after the
+                // server has already committed the resolution. This path may NOT
+                // assert "nothing was resolved" — it cannot know — and above all
+                // may not re-arm the run: the operator's retry converges through
+                // the live-read/409 branches to a clean `executed` WITHOUT ever
+                // evaluating the resolution_method post-condition, laundering a
+                // `rule` (attribute rules WERE created) into a green success with
+                // nobody paged. So the outcome is TERMINAL — terminal run,
+                // `error` audit row, fault on the ERROR channel. Terminal is not
+                // the same as COMMITTED: this path never sets $writeCommitted,
+                // whose handler reports the resolve as a fact.
+                //
+                // The rows go down BEFORE the state write: advanceTo() is itself
+                // a DB write that can fail (observer, deadlock, lost connection),
+                // and ordering it first — as the COMMITTED path below safely can
+                // — would here lose the only record that an indeterminate resolve
+                // ever happened.
+                $indeterminateFault = "HARD FAULT: the Huntress resolve for escalation {$escalationId} failed with an INDETERMINATE outcome (".mb_substr($e->getMessage(), 0, 200).'). '
+                    .'The resolve POST may already have COMMITTED upstream, and its resolution_method post-condition was never evaluated — a `rule` resolution would mean the server CREATED attribute rules. Do NOT re-approve: establish in the Huntress console whether this escalation is resolved, inspect it for created rules, and escalate to a human.';
+                Log::error("[StaffHuntressActionToolExecutor] {$indeterminateFault}", ['run_id' => $run->id, 'escalation_id' => $escalationId]);
+                $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: {$indeterminateFault}", $approverLabel, $run->id, $approverId);
+                // Every idempotency rail keys on result_status and the row above
+                // is an `error`, so the possible commit is recorded under its own
+                // RESOLVE_MAY_HAVE_LANDED_STATUSES status too — otherwise the
+                // 24 h dedup, both cooldowns and the re-stage revive stay blind
+                // to it and a re-stage buys the second POST this arm refuses.
+                $this->safeAudit($run->action_type, 'resolve_indeterminate', $client->id, $ticket, $contentHash, "{$targetKey}: Resolve POST outcome INDETERMINATE — it may have COMMITTED upstream (see the HARD FAULT row); recorded so the dedup, cooldown and re-stage rails cannot re-present this escalation for a second POST.", $approverLabel, $run->id, $approverId);
+                $run->advanceTo(TechnicianRunState::Done);
+
+                return new TechnicianApprovalResult('executed_with_fault', message: $indeterminateFault);
             }
 
             // The upstream resolve has now COMMITTED. Land the run terminal
@@ -671,6 +759,14 @@ class StaffHuntressActionToolExecutor
                     ."'rule' means the server CREATED attribute rules during this resolution. The escalation IS resolved; inspect the Huntress console for created rules and escalate to a human immediately.";
                 Log::error("[StaffHuntressActionToolExecutor] {$fault}", ['run_id' => $run->id, 'escalation_id' => $escalationId]);
                 $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: {$fault}", $approverLabel, $run->id, $approverId);
+                // The fault row above is an `error`, and every idempotency rail
+                // keys on result_status — so the COMMIT itself is recorded too,
+                // under a RESOLVE_MAY_HAVE_LANDED_STATUSES status. Without it the
+                // 24 h dedup, both cooldowns and the re-stage revive stay blind
+                // to a resolve that DID land: a re-stage while the upstream read
+                // lags would rewrite this terminal run back to AwaitingApproval
+                // and buy a second POST for an escalation we already resolved.
+                $this->safeAudit($run->action_type, 'executed_with_fault', $client->id, $ticket, $contentHash, "{$targetKey}: Resolve COMMITTED upstream reporting resolution_method '{$method}' — the escalation IS resolved (see the HARD FAULT row); recorded so the dedup, cooldown and re-stage rails treat it as resolved by us.", $approverLabel, $run->id, $approverId);
 
                 return new TechnicianApprovalResult('executed_with_fault', message: $fault);
             }
@@ -679,11 +775,28 @@ class StaffHuntressActionToolExecutor
 
             return new TechnicianApprovalResult('executed', message: "Escalation {$escalationId} resolved (server reported resolution_method '{$method}').");
         } catch (\Throwable $e) {
-            // Only reachable BEFORE the upstream resolve committed — safe to
-            // reopen for a retry. Once it HAS committed, reopening is the
-            // double-resolve this flag exists to prevent: keep the run
-            // terminal and hand the operator the executed-with-fault channel
-            // instead of a 500 that hides what landed upstream.
+            // Reopening for a retry is safe ONLY while the upstream resolve
+            // provably has not happened. Once it HAS committed — or once its
+            // outcome is unknown — reopening is the double-resolve these flags
+            // exist to prevent: keep the run terminal and hand the operator the
+            // executed-with-fault channel instead of a 500 that hides what may
+            // have landed upstream.
+            //
+            // An INDETERMINATE resolve that then failed while finalizing keeps
+            // its OWN text and is checked FIRST: its rows are already written
+            // (that arm audits before advanceTo), and it may not borrow the
+            // committed handler's "the escalation WAS resolved upstream" — a
+            // claim it cannot support. The claim is deliberately not released,
+            // for the same reason the arm itself refuses to re-arm the run.
+            if ($indeterminateFault !== null) {
+                Log::error('[StaffHuntressActionToolExecutor] Finalizing an INDETERMINATE escalation resolve failed; the run is NOT reopened', [
+                    'run_id' => $run->id,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return new TechnicianApprovalResult('executed_with_fault', message: $indeterminateFault);
+            }
+
             if ($writeCommitted) {
                 Log::error('[StaffHuntressActionToolExecutor] Finalizing a COMMITTED escalation resolve failed; the run is NOT reopened', [
                     'run_id' => $run->id,
@@ -762,6 +875,22 @@ class StaffHuntressActionToolExecutor
         }
 
         return null;
+    }
+
+    /**
+     * Whether an upstream failure leaves the resolve's outcome UNKNOWN. A status
+     * the vendor answered while REFUSING the request (401/403/404/…) proves the
+     * POST reached Huntress and wrote nothing. Everything else — a connect/read
+     * timeout (code 0, the client's 30 s transport bound), a 408, any 5xx, a
+     * proxy 502 — can arrive AFTER the server committed the resolution, so the
+     * caller may neither claim "nothing was resolved" nor re-arm the run for a
+     * retry.
+     */
+    private static function upstreamFailureMayHaveCommitted(HuntressClientException $e): bool
+    {
+        $status = (int) $e->getCode();
+
+        return ! ($status >= 400 && $status < 500 && $status !== 408);
     }
 
     /** @param array<string, mixed> $escalation */
@@ -941,7 +1070,7 @@ class StaffHuntressActionToolExecutor
             ->where('action_type', $tool)
             ->where('client_id', $clientId)
             ->where('content_hash', $contentHash)
-            ->where('result_status', 'executed')
+            ->whereIn('result_status', self::RESOLVE_MAY_HAVE_LANDED_STATUSES)
             ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
             ->exists();
     }
@@ -952,7 +1081,7 @@ class StaffHuntressActionToolExecutor
             ->where('action_type', $tool)
             ->where('client_id', $clientId)
             ->where('content_hash', $contentHash)
-            ->where('result_status', 'executed')
+            ->whereIn('result_status', self::RESOLVE_MAY_HAVE_LANDED_STATUSES)
             ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
             ->latest('id')
             ->value('run_id');
@@ -981,8 +1110,9 @@ class StaffHuntressActionToolExecutor
      * staging wrote — refusing the deny-then-re-stage revive this family's
      * firstOrCreate contract documents, for the rest of the window, under a
      * message indistinguishable from a genuine runaway-staging refusal.
-     * Executed rows still count unconditionally: a resolve that landed is a
-     * cooldown for everyone. The
+     * RESOLVE_MAY_HAVE_LANDED_STATUSES rows still count unconditionally: a
+     * resolve that landed — cleanly, with a post-condition fault, or with an
+     * outcome we could not establish — is a cooldown for everyone. The
      * target key is built from a validated integer, so it cannot carry LIKE
      * wildcards — and the match is ANCHORED at the start of the summary with
      * the trailing `:` delimiter included, because every countable summary is
@@ -1004,7 +1134,7 @@ class StaffHuntressActionToolExecutor
             ->where('client_id', $clientId)
             ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
             ->where(function ($query) use ($ownContentHash) {
-                $query->where('result_status', 'executed')
+                $query->whereIn('result_status', self::RESOLVE_MAY_HAVE_LANDED_STATUSES)
                     ->orWhere(function ($awaiting) use ($ownContentHash) {
                         $awaiting->where('result_status', 'awaiting_approval');
                         if ($ownContentHash !== null) {
@@ -1021,7 +1151,8 @@ class StaffHuntressActionToolExecutor
     }
 
     /**
-     * APPROVE-TIME cooldown: EXECUTED rows only, deliberately — the staging
+     * APPROVE-TIME cooldown: rows that mean a resolve may have landed
+     * (RESOLVE_MAY_HAVE_LANDED_STATUSES) only, deliberately — the staging
      * call leaves an awaiting_approval row under the staged name carrying
      * this same target key, and counting it would make every proposal block
      * its own approval (the licenseTargetCooldownActive lesson). Runaway
@@ -1042,7 +1173,7 @@ class StaffHuntressActionToolExecutor
             ->whereIn('action_type', $actionTypes)
             ->where('client_id', $clientId)
             ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
-            ->where('result_status', 'executed')
+            ->whereIn('result_status', self::RESOLVE_MAY_HAVE_LANDED_STATUSES)
             ->where('summary', 'like', $targetKey.':%')
             ->exists();
     }

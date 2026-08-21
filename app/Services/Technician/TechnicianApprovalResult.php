@@ -8,9 +8,12 @@ namespace App\Services\Technician;
  * already_handled, gate_declined, recipient_invalid}. 'resolved' vs 'closed'
  * distinguishes which terminal target an approved close_ticket run applied
  * (psa-d9ayt). 'executed_with_fault' is an upstream write that LANDED but
- * violated its post-condition (the Huntress resolution_method hard fault): the
- * run is terminal, yet the cockpit must render $message on the ERROR channel —
- * never as a success, never as a decline. $message
+ * violated its post-condition (the Huntress resolution_method hard fault), or
+ * one whose outcome could NOT be established (an indeterminate transport
+ * failure after the request went out). The run is terminal either way — a retry
+ * could double-apply a write that may already have committed — yet the cockpit
+ * must render $message on the ERROR channel: never as a success, never as a
+ * decline. $message
  * carries an operator-facing reason for
  * recipient_invalid (a To/CC that no longer resolves at approval time) or an
  * operator-facing summary for an executed action. $secret is a ONE-TIME
