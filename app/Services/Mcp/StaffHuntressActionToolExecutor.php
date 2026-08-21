@@ -874,19 +874,28 @@ class StaffHuntressActionToolExecutor
      * Whether an Executing run is the DELIBERATE indeterminate-outcome hold
      * (the resolve POST was sent and no conclusive reply arrived) rather than
      * an approval still in flight. Both leave the identical claimed row, so the
-     * discriminator is the run's own LATEST audit row — the hold writes it
-     * carrying INDETERMINATE_AUDIT_MARKER before it returns. A run with no
-     * readable marker answers as ordinarily in-flight; this only reads the
-     * record, it never writes one.
+     * discriminator is the run's own audit trail: the hold writes a row
+     * carrying INDETERMINATE_AUDIT_MARKER before it returns.
+     *
+     * The test is EXISTENCE, never recency. A latest-row-only read is
+     * SELF-MASKING, because the branch that consults it audits its own
+     * marker-less 'blocked' refusal against the same run_id: the first
+     * re-stage in the hold window would disclose the UNKNOWN outcome and
+     * simultaneously bury the signal, so every later re-stage would fall back
+     * to the green "currently executing" all-clear the hold exists to prevent
+     * — on the one surface whose consumer never saw the cockpit decline. No
+     * marker-carrying row is ever written for a run that was not held, so the
+     * existence test cannot false-positive, and it stays true however many
+     * ordinary rows the run accumulates afterwards. A run with no readable
+     * marker answers as ordinarily in-flight; this only reads the record, it
+     * never writes one.
      */
     private function heldIndeterminateRun(TechnicianRun $run): bool
     {
-        $latest = TechnicianActionLog::query()
+        return TechnicianActionLog::query()
             ->where('run_id', $run->id)
-            ->latest('id')
-            ->value('summary');
-
-        return is_string($latest) && str_contains($latest, self::INDETERMINATE_AUDIT_MARKER);
+            ->where('summary', 'like', '%'.self::INDETERMINATE_AUDIT_MARKER.'%')
+            ->exists();
     }
 
     /**
