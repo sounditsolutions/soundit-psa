@@ -127,6 +127,15 @@ class StaffHuntressActionToolExecutor
     /** The 201 resolution_method values an id-only `{}` call may legitimately produce. */
     private const SAFE_RESOLUTION_METHODS = ['direct', 'dismiss'];
 
+    /**
+     * The audit-summary marker the indeterminate-outcome hold writes and the
+     * re-stage path reads back. The run row itself cannot tell that hold apart
+     * from a live in-flight approval — both are Executing on the original
+     * claim — so this string is the discriminator, and the two sites must never
+     * spell it differently.
+     */
+    private const INDETERMINATE_AUDIT_MARKER = 'INDETERMINATE OUTCOME';
+
     public function __construct(
         private readonly HuntressWriteClient $writeClient,
         private readonly ActionRedactor $redactor,
@@ -404,6 +413,23 @@ class StaffHuntressActionToolExecutor
         $strandedClaim = ! $run->wasRecentlyCreated && $run->state === TechnicianRunState::Executing;
 
         if ($strandedClaim && ! $this->claimIsStale($run)) {
+            // TWO different states share "Executing on a claim that could still
+            // be live", and they must not share one answer. The ordinary one is
+            // an approval genuinely mid-flight. The other is the
+            // indeterminate-outcome hold: the POST WAS SENT, its reply was
+            // lost, and the run is kept claimed precisely because nobody knows
+            // what landed — the outcome is UNKNOWN and its resolution_method
+            // post-condition was never evaluated. Answering that window with a
+            // green "currently executing" is the false all-clear the hold
+            // exists to prevent, on the one surface whose consumer never saw
+            // the cockpit decline.
+            if ($this->heldIndeterminateRun($run)) {
+                $message = "A resolve for escalation {$escalationId} was already SENT to Huntress and its outcome is UNKNOWN — the reply was lost, so whether the escalation was resolved, and whether the server created attribute rules while resolving it, has NOT been established. Nothing new was staged and nothing may be re-sent: establish in the Huntress console what happened (including any attribute rules the server may have created) and escalate to a human.";
+                $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $contentHash, "{$targetKey}: {$message}", $actorLabel, $run->id);
+
+                return ['error' => $message];
+            }
+
             return [
                 'success' => true,
                 'idempotent' => true,
@@ -525,6 +551,12 @@ class StaffHuntressActionToolExecutor
         // sibling StaffCalendarToolExecutor keeps the same flag for exactly
         // this window.
         $writeCommitted = false;
+
+        // Set ALONGSIDE $writeCommitted on the indeterminate-outcome hold: that
+        // branch may have committed, so the run may not be reopened — but
+        // nothing may claim it DID commit, which is what the committed-path
+        // message says.
+        $outcomeUnknown = false;
 
         try {
             $payload = $this->decryptRunPayload($run);
@@ -655,15 +687,25 @@ class StaffHuntressActionToolExecutor
                 // revive reopens it past STALE_CLAIM_SECONDS (the live re-read
                 // and the 409 mapping still guard that path), and if it DID land
                 // finalizeStrandedResolvedRun lands it terminal carrying this
-                // same indeterminacy — never a clean executed row. safeAudit,
-                // not auditAttempt: a throwing INSERT would fall to the outer
-                // handler, which releases the claim.
+                // same indeterminacy — never a clean executed row.
+                //
+                // NOTHING in this block may reach the outer handler: that
+                // handler releases the claim and reopens the run unless the
+                // may-have-committed flag is set, and a reopened run is exactly
+                // the second POST / laundered 'executed' this branch exists to
+                // close. So the flags are flipped FIRST — before the log line
+                // (an unwritable channel throws) and before the audit — and the
+                // audit goes through safeAudit, not auditAttempt, so a throwing
+                // INSERT cannot escape either.
+                $writeCommitted = true;
+                $outcomeUnknown = true;
+
                 Log::error('[StaffHuntressActionToolExecutor] Huntress resolve outcome UNKNOWN after the POST was sent; the run is held CLAIMED, not reopened', [
                     'run_id' => $run->id,
                     'escalation_id' => $escalationId,
                     'error' => $e->getMessage(),
                 ]);
-                $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: INDETERMINATE OUTCOME — the resolve POST was sent and no conclusive reply arrived (".mb_substr($e->getMessage(), 0, 200)."). Whether escalation {$escalationId} was resolved is UNKNOWN, and if it was, its resolution_method post-condition was never evaluated. The run is held CLAIMED so it cannot be one-tap re-approved into a second POST. Establish in the Huntress console whether this escalation is resolved and whether the server created attribute rules; if it did, escalate to a human.", $approverLabel, $run->id, $approverId);
+                $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: ".self::INDETERMINATE_AUDIT_MARKER." — the resolve POST was sent and no conclusive reply arrived (".mb_substr($e->getMessage(), 0, 200)."). Whether escalation {$escalationId} was resolved is UNKNOWN, and if it was, its resolution_method post-condition was never evaluated. The run is held CLAIMED so it cannot be one-tap re-approved into a second POST. Establish in the Huntress console whether this escalation is resolved and whether the server created attribute rules; if it did, escalate to a human.", $approverLabel, $run->id, $approverId);
 
                 return new TechnicianApprovalResult('gate_declined', message: "The Huntress resolve request was SENT but its outcome is UNKNOWN (the reply was lost, or the server errored) — escalation {$escalationId} may already be resolved, and if it is, the resolution_method post-condition was never checked. This run is held for manual verification and deliberately NOT reopened for re-approval: check the escalation in the Huntress console, including any attribute rules the server may have created, before any re-send.");
             } catch (HuntressWriteScopeException|HuntressClientException $e) {
@@ -722,6 +764,13 @@ class StaffHuntressActionToolExecutor
                     'run_id' => $run->id,
                     'error' => $e->getMessage(),
                 ]);
+
+                // The indeterminate hold sets the same flag — it MAY have
+                // committed — so its message may not assert that the resolve
+                // landed, which is precisely what nobody knows.
+                if ($outcomeUnknown) {
+                    return new TechnicianApprovalResult('executed_with_fault', message: 'The Huntress resolve request was SENT, its outcome is UNKNOWN (the reply was lost, or the server errored), and recording that outcome then failed as well. The run is deliberately NOT reopened. Do NOT re-approve; establish in the Huntress console whether this escalation is resolved and whether the server created attribute rules, and escalate to a human.');
+                }
 
                 return new TechnicianApprovalResult('executed_with_fault', message: 'The escalation WAS resolved upstream, but recording the outcome failed — the resolution_method post-condition and its audit row may be missing. Do NOT re-approve; verify this escalation (and any attribute rules the server may have created) in the Huntress console.');
             }
@@ -819,6 +868,25 @@ class StaffHuntressActionToolExecutor
         $claimedAt = $run->claimed_at ?? $run->updated_at;
 
         return $claimedAt === null || $claimedAt->lte(now()->subSeconds(self::STALE_CLAIM_SECONDS));
+    }
+
+    /**
+     * Whether an Executing run is the DELIBERATE indeterminate-outcome hold
+     * (the resolve POST was sent and no conclusive reply arrived) rather than
+     * an approval still in flight. Both leave the identical claimed row, so the
+     * discriminator is the run's own LATEST audit row — the hold writes it
+     * carrying INDETERMINATE_AUDIT_MARKER before it returns. A run with no
+     * readable marker answers as ordinarily in-flight; this only reads the
+     * record, it never writes one.
+     */
+    private function heldIndeterminateRun(TechnicianRun $run): bool
+    {
+        $latest = TechnicianActionLog::query()
+            ->where('run_id', $run->id)
+            ->latest('id')
+            ->value('summary');
+
+        return is_string($latest) && str_contains($latest, self::INDETERMINATE_AUDIT_MARKER);
     }
 
     /**
