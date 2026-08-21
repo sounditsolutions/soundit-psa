@@ -22,6 +22,7 @@ use App\Services\Cipp\CippMcpDynamicToolExecutor;
 use App\Services\Mcp\StaffCalendarToolExecutor;
 use App\Services\Mcp\StaffCippAdminToolExecutor;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
+use App\Services\Mcp\StaffHuntressActionToolExecutor;
 use App\Services\Mcp\StaffPsaActionToolExecutor;
 use App\Services\Mcp\StaffPsaTaxonomyToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
@@ -862,6 +863,20 @@ class McpStaffController extends Controller
             ]);
         }
 
+        if ($this->isHuntressActionTool((string) $name) && $clientId === null) {
+            $message = "client_id is required for {$name}.";
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
+
         if ($this->isCippWriteTool((string) $name) && $clientId === null) {
             $message = "client_id is required for {$name}.";
             $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
@@ -993,6 +1008,13 @@ class McpStaffController extends Controller
                 );
             } elseif ($this->isTacticalActionTool((string) $name)) {
                 $result = app(StaffTacticalActionToolExecutor::class)->execute(
+                    (string) $name,
+                    $arguments,
+                    (int) $clientId,
+                    $this->actorLabel($request),
+                );
+            } elseif ($this->isHuntressActionTool((string) $name)) {
+                $result = app(StaffHuntressActionToolExecutor::class)->execute(
                     (string) $name,
                     $arguments,
                     (int) $clientId,
@@ -2317,6 +2339,15 @@ class McpStaffController extends Controller
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 
+        // Huntress escalation actions: EXPLICIT-GRANT-ONLY, never inherited by
+        // the legacy full-surface token — resolving a SOC escalation is a
+        // security record change and rides a write credential the operator
+        // added deliberately; the per-tool grant is the operator's decision
+        // point. Mirrors the CIPP-write and calendar gates.
+        if ($this->isHuntressActionTool($toolName)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
         if (CippMcpTool::handles($toolName)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
@@ -2497,6 +2528,11 @@ class McpStaffController extends Controller
     private function isTacticalActionTool(string $toolName): bool
     {
         return StaffTacticalActionToolExecutor::handles($toolName);
+    }
+
+    private function isHuntressActionTool(string $toolName): bool
+    {
+        return StaffHuntressActionToolExecutor::handles($toolName);
     }
 
     private function isTacticalAdminTool(string $toolName): bool

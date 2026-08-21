@@ -16,7 +16,7 @@ class McpToolRegistryTest extends TestCase
     {
         $groups = McpToolRegistry::groups();
 
-        $this->assertSame(['general', 'client', 'integration', 'cipp_write', 'cipp_admin', 'tactical_action', 'tactical_admin', 'wiki_write', 'psa_action', 'psa_records', 'psa_read', 'intake_manage', 'taxonomy', 'calendar', 'calendar_write', 'bridge'], array_keys($groups));
+        $this->assertSame(['general', 'client', 'integration', 'cipp_write', 'cipp_admin', 'tactical_action', 'tactical_admin', 'huntress_action', 'wiki_write', 'psa_action', 'psa_records', 'psa_read', 'intake_manage', 'taxonomy', 'calendar', 'calendar_write', 'bridge'], array_keys($groups));
 
         $names = fn (string $group): array => array_column($groups[$group]['tools'], 'name');
 

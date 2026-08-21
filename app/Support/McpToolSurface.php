@@ -141,6 +141,13 @@ class McpToolSurface
             // isConfigured() — publish and dispatch answering one question (psa-wzjzz).
             $cippRestLive ? McpToolRegistry::cippAdminTools() : [],
             TacticalConfig::isConfigured() ? McpToolRegistry::tacticalActionTools() : [],
+            // Huntress escalation actions: gated on exactly the predicate
+            // StaffHuntressActionToolExecutor refuses on — integration on,
+            // read pair configured, AND the separate user-based write key
+            // present (psa-wzjzz: publish and dispatch answer one question).
+            HuntressConfig::isEnabled() && HuntressConfig::isConfigured() && HuntressConfig::isWriteConfigured()
+                ? McpToolRegistry::huntressActionTools()
+                : [],
         );
     }
 

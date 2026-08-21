@@ -9,6 +9,35 @@ use Illuminate\Support\Facades\Log;
 
 class HuntressClient
 {
+    /**
+     * Hard ceiling on a single 429 back-off sleep — applied ONLY by a clone
+     * obtained through withClampedBackoff(), mirroring
+     * HuntressWriteClient::RETRY_AFTER_CEILING_SECONDS. The DEFAULT client
+     * honours the upstream Retry-After in full: the background readers
+     * (huntress:sync-licenses, huntress:reconcile-*, the read-only MCP tools)
+     * hold no execution claim, and against the documented 60 req/min account
+     * limit obeying a `Retry-After: 60` is the correct behaviour — a clamp
+     * there burns the whole retry budget in ~20 s and fails that day's sync
+     * instead of waiting out one rate-limit window.
+     *
+     * The staged escalation-resolve APPROVE path is the exception, not the
+     * rule: it re-reads the escalation LIVE inside the synchronous cockpit
+     * approve request while holding that run's execution claim, and an
+     * unclamped `Retry-After: 3600` would park the PHP worker — and the
+     * claim — for an hour, which is exactly the bound
+     * StaffHuntressActionToolExecutor::STALE_CLAIM_SECONDS is measured
+     * against. That one caller opts in via withClampedBackoff(); two retries
+     * at the ceiling bound its added wall time at 20 s.
+     */
+    public const RETRY_AFTER_CEILING_SECONDS = 10;
+
+    /**
+     * Set only by withClampedBackoff(). Never default this to true: the
+     * clamp's blast radius must stay no wider than the claim-holding approve
+     * path that needs it.
+     */
+    private bool $clampBackoff = false;
+
     private Client $http;
 
     /**
@@ -35,6 +64,20 @@ class HuntressClient
     public function get(string $endpoint, array $params = []): array
     {
         return $this->request('GET', $endpoint, ['query' => $params]);
+    }
+
+    /**
+     * A clone whose 429 back-off sleeps are clamped to
+     * RETRY_AFTER_CEILING_SECONDS, for the caller that sleeps while holding a
+     * run's execution claim. The receiver is untouched — everything resolved
+     * from the container keeps honouring the upstream Retry-After in full.
+     */
+    public function withClampedBackoff(): static
+    {
+        $clone = clone $this;
+        $clone->clampBackoff = true;
+
+        return $clone;
     }
 
     /**
@@ -187,8 +230,9 @@ class HuntressClient
         ]);
 
         // The Huntress account is rate-limited (60 req/min). A 429 is transient —
-        // honor Retry-After (falling back to exponential backoff) and retry a bounded
-        // number of times rather than surfacing the first bump as an error.
+        // honor Retry-After (falling back to exponential backoff) and retry a
+        // bounded number of times rather than surfacing the first bump as an
+        // error. Only a withClampedBackoff() clone caps the sleep.
         $maxAttempts = 3;
         $attempt = 0;
 
@@ -204,16 +248,10 @@ class HuntressClient
                     : 0;
 
                 if ($status === 429 && $attempt < $maxAttempts) {
-                    $retryAfter = 2 ** $attempt;
-                    // Distinguish an absent Retry-After from a present "0" — PHP's ?:
-                    // treats the string "0" as falsy, which would wrongly ignore a
-                    // server asking us to retry immediately.
-                    if ($e instanceof RequestException && $e->getResponse() !== null) {
-                        $header = $e->getResponse()->getHeaderLine('Retry-After');
-                        if (is_numeric($header)) {
-                            $retryAfter = (int) $header;
-                        }
-                    }
+                    $header = $e instanceof RequestException && $e->getResponse() !== null
+                        ? $e->getResponse()->getHeaderLine('Retry-After')
+                        : '';
+                    $retryAfter = $this->backoffDelaySeconds($header, $attempt);
                     Log::info("[HuntressClient] Rate limited on {$endpoint}, retrying in {$retryAfter}s");
                     if ($retryAfter > 0) {
                         sleep($retryAfter);
@@ -232,5 +270,39 @@ class HuntressClient
         $body = (string) $response->getBody();
 
         return json_decode($body, true) ?? [];
+    }
+
+    /**
+     * The back-off request() actually sleeps on, carrying this instance's
+     * clamp mode — public so the withClampedBackoff() split is observable in
+     * a test without a real 429 sleep.
+     */
+    public function backoffDelaySeconds(string $retryAfterHeader, int $attempt): int
+    {
+        return self::retryDelaySeconds($retryAfterHeader, $attempt, $this->clampBackoff);
+    }
+
+    /**
+     * The 429 back-off for one attempt: the upstream Retry-After when it is a
+     * sane numeric value, else exponential (2s, 4s) — clamped to
+     * RETRY_AFTER_CEILING_SECONDS only when $clamped is set, i.e. only for a
+     * withClampedBackoff() clone on the claim-holding approve path. The
+     * unclamped shape mirrors what HuntressWriteClient::retryDelaySeconds()
+     * feeds its own (always-on) clamp, and negative headers fall back to the
+     * exponential default exactly as they do there — without the guard a
+     * Retry-After of -1 would burn every attempt with zero delay.
+     *
+     * A present "0" stays distinguished from an absent header — PHP's ?: treats
+     * the string "0" as falsy, which would wrongly ignore a server asking us to
+     * retry immediately.
+     */
+    public static function retryDelaySeconds(string $retryAfterHeader, int $attempt, bool $clamped = false): int
+    {
+        $delay = 2 ** max(1, $attempt);
+        if (is_numeric($retryAfterHeader) && (int) $retryAfterHeader >= 0) {
+            $delay = (int) $retryAfterHeader;
+        }
+
+        return $clamped ? min($delay, self::RETRY_AFTER_CEILING_SECONDS) : $delay;
     }
 }
