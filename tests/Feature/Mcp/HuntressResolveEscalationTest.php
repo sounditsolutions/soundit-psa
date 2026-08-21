@@ -143,10 +143,10 @@ class HuntressResolveEscalationTest extends TestCase
         ], $overrides);
     }
 
-    private function stageRun(array $fixture, string $token): TechnicianRun
+    private function stageRun(array $fixture, string $token, int $escalationId = 900): TechnicianRun
     {
-        $this->mockReadClient($this->escalation());
-        $response = $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture));
+        $this->mockReadClient($this->escalation(['id' => $escalationId]));
+        $response = $this->callTool($token, 'huntress_stage_resolve_escalation', $this->stageArguments($fixture, ['escalation_id' => $escalationId]));
         $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
 
         return TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
@@ -567,19 +567,25 @@ class HuntressResolveEscalationTest extends TestCase
         $this->configureHuntress();
         $actor = $this->configureAiActor();
 
+        // clients.huntress_organization_id is UNIQUE, so the two cases share
+        // ONE mapped client and differ by ESCALATION ID instead — which is what
+        // the cooldown and dedup keys are anchored on anyway, so the second
+        // case still stages and approves independently of the first.
+        $fixture = $this->fixture();
+
         foreach ([
-            ['message' => 'Huntress API error: cURL error 28: Operation timed out after 30000 milliseconds', 'code' => 0],
-            ['message' => 'Huntress API error: 502 Bad Gateway', 'code' => 502],
+            ['escalation_id' => 900, 'message' => 'Huntress API error: cURL error 28: Operation timed out after 30000 milliseconds', 'code' => 0],
+            ['escalation_id' => 901, 'message' => 'Huntress API error: 502 Bad Gateway', 'code' => 502],
         ] as $failure) {
-            $fixture = $this->fixture();
+            $escalationId = $failure['escalation_id'];
             $this->mockWriteClientNeverCalled();
-            $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+            $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']), $escalationId);
 
             $write = Mockery::mock(HuntressWriteClient::class);
-            $write->shouldReceive('resolveEscalation')->once()->with(900)
+            $write->shouldReceive('resolveEscalation')->once()->with($escalationId)
                 ->andThrow(new HuntressClientException($failure['message'], $failure['code']));
             $this->app->instance(HuntressWriteClient::class, $write);
-            $this->mockReadClient($this->escalation());
+            $this->mockReadClient($this->escalation(['id' => $escalationId]));
 
             $response = $this->actingAs($actor)->postJson(route('cockpit.approve', $run));
 

@@ -534,6 +534,15 @@ class StaffHuntressActionToolExecutor
         // this window.
         $writeCommitted = false;
 
+        // The INDETERMINATE arm's own operator-facing fault text, set only on
+        // that path. It is deliberately NOT $writeCommitted: that flag means
+        // the resolve is KNOWN to have landed, and the handler below says so
+        // in as many words. An indeterminate transport failure cannot know it,
+        // so it carries its own text — widening the flag's meaning is how a
+        // path that knows nothing ends up asserting the escalation was
+        // resolved.
+        $indeterminateFault = null;
+
         try {
             $payload = $this->decryptRunPayload($run);
             if ($payload === null) {
@@ -674,19 +683,25 @@ class StaffHuntressActionToolExecutor
                 // WITHOUT ever evaluating the resolution_method
                 // post-condition, laundering a `rule` (attribute rules WERE
                 // created) into a green success with nobody paged. So the
-                // outcome is treated as committed — terminal run, `error`
+                // outcome is treated as TERMINAL — terminal run, `error`
                 // audit row, fault on the ERROR channel — the same
                 // refuse-to-requeue the sibling StaffCalendarToolExecutor
-                // applies to its own indeterminate upstream failures.
-                $writeCommitted = true;
+                // applies to its own indeterminate upstream failures. Terminal
+                // is not the same as COMMITTED: this path never sets
+                // $writeCommitted, whose handler reports the resolve as a fact.
+                //
+                // The fault row goes down BEFORE the state write. advanceTo()
+                // is itself a DB write that can fail (observer, deadlock, lost
+                // connection), and ordering it first — as the COMMITTED path
+                // below safely can — would here lose the only record that an
+                // indeterminate resolve happened.
+                $indeterminateFault = "HARD FAULT: the Huntress resolve for escalation {$escalationId} failed with an INDETERMINATE outcome (".mb_substr($e->getMessage(), 0, 200).'). '
+                    .'The resolve POST may already have COMMITTED upstream, and its resolution_method post-condition was never evaluated — a `rule` resolution would mean the server CREATED attribute rules. Do NOT re-approve: establish in the Huntress console whether this escalation is resolved, inspect it for created rules, and escalate to a human.';
+                Log::error("[StaffHuntressActionToolExecutor] {$indeterminateFault}", ['run_id' => $run->id, 'escalation_id' => $escalationId]);
+                $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: {$indeterminateFault}", $approverLabel, $run->id, $approverId);
                 $run->advanceTo(TechnicianRunState::Done);
 
-                $fault = "HARD FAULT: the Huntress resolve for escalation {$escalationId} failed with an INDETERMINATE outcome (".mb_substr($e->getMessage(), 0, 200).'). '
-                    .'The resolve POST may already have COMMITTED upstream, and its resolution_method post-condition was never evaluated — a `rule` resolution would mean the server CREATED attribute rules. Do NOT re-approve: establish in the Huntress console whether this escalation is resolved, inspect it for created rules, and escalate to a human.';
-                Log::error("[StaffHuntressActionToolExecutor] {$fault}", ['run_id' => $run->id, 'escalation_id' => $escalationId]);
-                $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: {$fault}", $approverLabel, $run->id, $approverId);
-
-                return new TechnicianApprovalResult('executed_with_fault', message: $fault);
+                return new TechnicianApprovalResult('executed_with_fault', message: $indeterminateFault);
             }
 
             // The upstream resolve has now COMMITTED. Land the run terminal
@@ -726,11 +741,29 @@ class StaffHuntressActionToolExecutor
 
             return new TechnicianApprovalResult('executed', message: "Escalation {$escalationId} resolved (server reported resolution_method '{$method}').");
         } catch (\Throwable $e) {
-            // Only reachable BEFORE the upstream resolve committed — safe to
-            // reopen for a retry. Once it HAS committed, reopening is the
-            // double-resolve this flag exists to prevent: keep the run
-            // terminal and hand the operator the executed-with-fault channel
-            // instead of a 500 that hides what landed upstream.
+            // Reopening for a retry is safe ONLY while the upstream resolve
+            // provably has not happened. Once it HAS committed — or once its
+            // outcome is unknown — reopening is the double-resolve these flags
+            // exist to prevent: keep the run terminal and hand the operator the
+            // executed-with-fault channel instead of a 500 that hides what may
+            // have landed upstream.
+            //
+            // An INDETERMINATE resolve that failed while finalizing keeps its
+            // OWN text and is checked FIRST: its fault row is already written
+            // (the arm audits before advanceTo), and it may not borrow the
+            // committed handler's "the escalation WAS resolved upstream" —
+            // that path cannot know whether the POST ever reached Huntress.
+            // The claim is deliberately not released, for the same reason the
+            // arm itself refuses to re-arm the run.
+            if ($indeterminateFault !== null) {
+                Log::error('[StaffHuntressActionToolExecutor] Finalizing an INDETERMINATE escalation resolve failed; the run is NOT reopened', [
+                    'run_id' => $run->id,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return new TechnicianApprovalResult('executed_with_fault', message: $indeterminateFault);
+            }
+
             if ($writeCommitted) {
                 Log::error('[StaffHuntressActionToolExecutor] Finalizing a COMMITTED escalation resolve failed; the run is NOT reopened', [
                     'run_id' => $run->id,
