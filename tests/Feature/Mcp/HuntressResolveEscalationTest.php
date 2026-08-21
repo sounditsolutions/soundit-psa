@@ -13,6 +13,7 @@ use App\Services\Huntress\HuntressClient;
 use App\Services\Huntress\HuntressClientException;
 use App\Services\Huntress\HuntressEscalationAlreadyResolvedException;
 use App\Services\Huntress\HuntressEscalationNotApiResolvableException;
+use App\Services\Huntress\HuntressResolveOutcomeUnknownException;
 use App\Services\Huntress\HuntressWriteClient;
 use App\Services\Tactical\Actions\ActionRedactor;
 use App\Support\McpConfig;
@@ -553,6 +554,9 @@ class HuntressResolveEscalationTest extends TestCase
         $this->mockWriteClientNeverCalled();
         $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
 
+        // A DEFINITE failure (the client classifies an answered 4xx as one):
+        // the request was refused before the server acted, so reopening for a
+        // retry is correct here — and only here.
         $write = Mockery::mock(HuntressWriteClient::class);
         $write->shouldReceive('resolveEscalation')->once()->with(900)
             ->andThrow(new HuntressClientException('Huntress API error: 500'));
@@ -562,6 +566,47 @@ class HuntressResolveEscalationTest extends TestCase
         $this->actingAs($actor)->post(route('cockpit.approve', $run));
 
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+    }
+
+    /**
+     * The may-have-committed window: the POST was sent and the reply was lost
+     * (read timeout / reset / 5xx). Asserting "nothing was resolved" and
+     * releasing the claim invites a second POST, and that re-approval converges
+     * through the live-read/409 path as a clean 'executed' with the
+     * resolution_method post-condition never evaluated — a rules-were-created
+     * fault laundered into a green success. So the run stays CLAIMED, the audit
+     * row records the indeterminacy, and the operator is told the outcome is
+     * unknown, never that nothing happened.
+     */
+    public function test_an_indeterminate_upstream_outcome_holds_the_claim_and_never_claims_nothing_was_resolved(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWriteClientNeverCalled();
+        $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+
+        $write = Mockery::mock(HuntressWriteClient::class);
+        $write->shouldReceive('resolveEscalation')->once()->with(900)
+            ->andThrow(new HuntressResolveOutcomeUnknownException('Huntress resolve outcome UNKNOWN for escalation 900: the request was sent and no conclusive reply arrived (cURL error 28).'));
+        $this->app->instance(HuntressWriteClient::class, $write);
+        $this->mockReadClient($this->escalation());
+
+        $response = $this->actingAs($actor)->postJson(route('cockpit.approve', $run));
+
+        $response->assertJson(['ok' => false, 'status' => 'gate_declined']);
+        $message = (string) $response->json('message');
+        $this->assertStringContainsString('UNKNOWN', $message);
+        $this->assertStringNotContainsString('nothing was resolved', $message);
+
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'a may-have-committed resolve must never be reopened for one-tap re-approval');
+
+        $summary = TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->firstOrFail()->summary;
+        $this->assertStringContainsString('INDETERMINATE', $summary);
+        $this->assertDatabaseMissing('technician_action_logs', [
+            'run_id' => $run->id,
+            'result_status' => 'executed',
+        ]);
     }
 
     public function test_approval_re_reads_live_state_vanished_resolved_and_remapped_all_stop_the_write(): void

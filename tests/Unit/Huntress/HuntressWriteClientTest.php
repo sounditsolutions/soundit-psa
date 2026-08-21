@@ -5,12 +5,15 @@ namespace Tests\Unit\Huntress;
 use App\Services\Huntress\HuntressClientException;
 use App\Services\Huntress\HuntressEscalationAlreadyResolvedException;
 use App\Services\Huntress\HuntressEscalationNotApiResolvableException;
+use App\Services\Huntress\HuntressResolveOutcomeUnknownException;
 use App\Services\Huntress\HuntressWriteClient;
 use App\Services\Huntress\HuntressWriteScopeException;
 use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Psr\Http\Message\RequestInterface;
 use Tests\TestCase;
@@ -206,6 +209,56 @@ class HuntressWriteClientTest extends TestCase
 
         $this->expectException(HuntressClientException::class);
         $client->resolveEscalation(55);
+    }
+
+    /**
+     * The POST has been SENT by the time these fail. Guzzle maps a read timeout
+     * after the request was flushed to the SAME ConnectException as a
+     * connection that never opened, and a 5xx can answer after the server
+     * already resolved the escalation — so both must reach the executor as
+     * INDETERMINATE. Reported as the ordinary failure they release the run's
+     * claim under "nothing was resolved", and the re-approval's second POST
+     * converges on the live-read/409 path as a clean 'executed', with the
+     * resolution_method post-condition never evaluated.
+     */
+    public function test_a_lost_or_ambiguous_reply_surfaces_as_an_unknown_outcome(): void
+    {
+        foreach ([
+            new Response(500, [], 'boom'),
+            new Response(502, [], ''),
+            new ConnectException('cURL error 28: Operation timed out after 30001 milliseconds', new Request('POST', 'escalations/55/resolution')),
+        ] as $failure) {
+            $client = $this->clientReturning([$failure]);
+
+            try {
+                $client->resolveEscalation(55);
+                $this->fail('expected HuntressResolveOutcomeUnknownException');
+            } catch (HuntressResolveOutcomeUnknownException $e) {
+                $this->assertStringContainsString('UNKNOWN', $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * The mirror case: an ANSWERED 4xx means the request was refused before the
+     * server acted, so nothing changed upstream and the approval may safely
+     * reopen for a retry. Classifying it as indeterminate would wedge every
+     * refused call behind a manual console check.
+     */
+    public function test_an_answered_client_error_stays_a_definite_failure(): void
+    {
+        foreach ([400, 401, 403, 404] as $status) {
+            $client = $this->clientReturning([new Response($status, [], '')]);
+
+            try {
+                $client->resolveEscalation(55);
+                $this->fail("expected HuntressClientException for {$status}");
+            } catch (HuntressResolveOutcomeUnknownException) {
+                $this->fail("an answered {$status} must not read as an indeterminate outcome");
+            } catch (HuntressClientException) {
+                // expected
+            }
+        }
     }
 
     public function test_missing_write_credentials_fail_closed_before_any_http(): void

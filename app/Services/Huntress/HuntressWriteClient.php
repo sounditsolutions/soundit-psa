@@ -93,7 +93,8 @@ class HuntressWriteClient
      * @throws HuntressWriteScopeException when the write credential is missing
      * @throws HuntressEscalationAlreadyResolvedException upstream 409
      * @throws HuntressEscalationNotApiResolvableException upstream 422
-     * @throws HuntressClientException any other upstream failure
+     * @throws HuntressResolveOutcomeUnknownException the POST was sent and no conclusive reply arrived (lost reply / 5xx) — the resolve MAY have committed
+     * @throws HuntressClientException any other upstream failure (an ANSWERED 4xx: the request was refused, nothing changed)
      */
     public function resolveEscalation(int $escalationId): array
     {
@@ -161,6 +162,29 @@ class HuntressWriteClient
                 }
 
                 Log::error("[HuntressWriteClient] POST {$endpoint} failed: {$e->getMessage()}");
+
+                // WAS THE POST COMMITTED? By the time a transport fails the
+                // request has usually been SENT, and nothing here can tell a
+                // connection that never opened from a reply lost after it was:
+                // Guzzle maps the 30 s read timeout (CURLE_OPERATION_TIMEOUTED)
+                // to the SAME ConnectException as CURLE_COULDNT_CONNECT, so "no
+                // response" may NEVER be reported as "nothing was resolved". A
+                // 5xx is that same window from the other side — the server can
+                // answer 500 after it already resolved the escalation. Both are
+                // INDETERMINATE and get their own type, because the caller holds
+                // a run's execution claim and must not reopen it for a second
+                // POST. An ANSWERED 4xx (400/401/403/404, or a 429 with the
+                // retry budget spent) is the opposite: the request was refused
+                // before the server acted, so it stays the ordinary failure the
+                // approval may safely retry.
+                if ($status === 0 || $status >= 500) {
+                    throw new HuntressResolveOutcomeUnknownException(
+                        "Huntress resolve outcome UNKNOWN for escalation {$escalationId}: the request was sent and no conclusive reply arrived ({$e->getMessage()}).",
+                        $e->getCode(),
+                        $e
+                    );
+                }
+
                 throw new HuntressClientException(
                     "Huntress API error: {$e->getMessage()}", $e->getCode(), $e
                 );

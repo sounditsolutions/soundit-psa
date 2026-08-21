@@ -13,6 +13,7 @@ use App\Services\Huntress\HuntressClient;
 use App\Services\Huntress\HuntressClientException;
 use App\Services\Huntress\HuntressEscalationAlreadyResolvedException;
 use App\Services\Huntress\HuntressEscalationNotApiResolvableException;
+use App\Services\Huntress\HuntressResolveOutcomeUnknownException;
 use App\Services\Huntress\HuntressWriteClient;
 use App\Services\Huntress\HuntressWriteScopeException;
 use App\Services\Tactical\Actions\ActionRedactor;
@@ -635,7 +636,39 @@ class StaffHuntressActionToolExecutor
                 $run->releaseClaim();
 
                 return new TechnicianApprovalResult('gate_declined', message: "Huntress refused: escalation {$escalationId} cannot be resolved through the API — resolve it in the Huntress console. Nothing was changed.");
+            } catch (HuntressResolveOutcomeUnknownException $e) {
+                // The POST WAS SENT and its outcome is INDETERMINATE — the reply
+                // was lost (a 30 s read timeout is indistinguishable from a
+                // connection that never opened) or the server answered 5xx. The
+                // escalation MAY be resolved, and if it is, the server's
+                // resolution_method was never seen, so the post-condition never
+                // ran. Two things must therefore NOT happen here. The claim is
+                // NOT released: reopening invites a second POST, and that replay
+                // converges on the live-read/409 branch as a clean 'executed' —
+                // exactly how a rules-were-created fault launders into a green
+                // success. And the operator is NOT told nothing was resolved,
+                // because nobody knows that.
+                //
+                // The run stays CLAIMED rather than terminal, the shape the
+                // sibling StaffCalendarToolExecutor gives an indeterminate
+                // non-idempotent write: if the POST never landed the re-stage
+                // revive reopens it past STALE_CLAIM_SECONDS (the live re-read
+                // and the 409 mapping still guard that path), and if it DID land
+                // finalizeStrandedResolvedRun lands it terminal carrying this
+                // same indeterminacy — never a clean executed row. safeAudit,
+                // not auditAttempt: a throwing INSERT would fall to the outer
+                // handler, which releases the claim.
+                Log::error('[StaffHuntressActionToolExecutor] Huntress resolve outcome UNKNOWN after the POST was sent; the run is held CLAIMED, not reopened', [
+                    'run_id' => $run->id,
+                    'escalation_id' => $escalationId,
+                    'error' => $e->getMessage(),
+                ]);
+                $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: INDETERMINATE OUTCOME — the resolve POST was sent and no conclusive reply arrived (".mb_substr($e->getMessage(), 0, 200)."). Whether escalation {$escalationId} was resolved is UNKNOWN, and if it was, its resolution_method post-condition was never evaluated. The run is held CLAIMED so it cannot be one-tap re-approved into a second POST. Establish in the Huntress console whether this escalation is resolved and whether the server created attribute rules; if it did, escalate to a human.", $approverLabel, $run->id, $approverId);
+
+                return new TechnicianApprovalResult('gate_declined', message: "The Huntress resolve request was SENT but its outcome is UNKNOWN (the reply was lost, or the server errored) — escalation {$escalationId} may already be resolved, and if it is, the resolution_method post-condition was never checked. This run is held for manual verification and deliberately NOT reopened for re-approval: check the escalation in the Huntress console, including any attribute rules the server may have created, before any re-send.");
             } catch (HuntressWriteScopeException|HuntressClientException $e) {
+                // An ANSWERED 4xx: the request was refused before the server
+                // acted, so nothing was resolved and reopening is safe.
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: ".mb_substr($e->getMessage(), 0, 300), $approverLabel, $run->id, $approverId);
                 $run->releaseClaim();
 
@@ -807,7 +840,11 @@ class StaffHuntressActionToolExecutor
      * all run while it is held, while a committed resolve advances the run to
      * Done immediately; so a run found stranded here most likely died BEFORE
      * the POST, and a third-party console resolve then leaves the escalation
-     * reading resolved with nothing ever sent by us. The row therefore records
+     * reading resolved with nothing ever sent by us. The one path that strands
+     * a run DELIBERATELY after the POST was sent — the indeterminate-outcome
+     * hold, where the reply was lost — cannot be told apart from those here
+     * either: it leaves the same claimed row, and whether its POST resolved
+     * anything is precisely what nobody knows. The row therefore records
      * only what was observed (the run was stranded; the escalation now reads
      * resolved) and asks the operator to establish which — rather than
      * directing a human security investigation into writes that may never have
@@ -1048,7 +1085,8 @@ class StaffHuntressActionToolExecutor
     }
 
     /**
-     * An audit row on a path where the upstream write has ALREADY COMMITTED.
+     * An audit row on a path where the upstream write has ALREADY COMMITTED —
+     * or, on the indeterminate-outcome path, MAY have.
      * A throwing INSERT there must not escape: the handler above would either
      * reopen an executed run (a second resolve POST) or turn the operator's
      * HARD FAULT text into a 500 they never read. Losing the row to the log
