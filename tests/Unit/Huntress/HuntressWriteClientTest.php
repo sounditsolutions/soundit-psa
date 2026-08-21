@@ -80,6 +80,29 @@ class HuntressWriteClientTest extends TestCase
         $this->assertSame('dismiss', $client->resolveEscalation(7)['resolution_method']);
     }
 
+    /**
+     * A SCALAR top-level `resolution` is a sibling field (a note, a state
+     * string), not a wrapper. Treating it as one and discarding the body
+     * erases `resolution_method`, which the executor reads as '(missing)' and
+     * escalates as a HARD FAULT — turning every clean resolve into a false
+     * security incident.
+     */
+    public function test_a_scalar_resolution_sibling_key_does_not_discard_the_body(): void
+    {
+        $client = $this->clientReturning([
+            new Response(201, [], json_encode([
+                'id' => 9,
+                'resolution_method' => 'direct',
+                'resolution' => 'Resolved by analyst',
+            ])),
+        ]);
+
+        $resolution = $client->resolveEscalation(9);
+
+        $this->assertSame('direct', $resolution['resolution_method'], 'a scalar sibling key must never discard the decoded body');
+        $this->assertSame(9, $resolution['id']);
+    }
+
     public function test_409_maps_to_the_already_resolved_exception(): void
     {
         $client = $this->clientReturning([
