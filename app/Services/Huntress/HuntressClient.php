@@ -20,21 +20,24 @@ class HuntressClient
      * there burns the whole retry budget in ~20 s and fails that day's sync
      * instead of waiting out one rate-limit window.
      *
-     * The staged escalation-resolve APPROVE path is the exception, not the
-     * rule: it re-reads the escalation LIVE inside the synchronous cockpit
-     * approve request while holding that run's execution claim, and an
-     * unclamped `Retry-After: 3600` would park the PHP worker — and the
-     * claim — for an hour, which is exactly the bound
-     * StaffHuntressActionToolExecutor::STALE_CLAIM_SECONDS is measured
-     * against. That one caller opts in via withClampedBackoff(); two retries
-     * at the ceiling bound its added wall time at 20 s.
+     * The staged escalation-resolve tool's two SYNCHRONOUS REQUEST-PATH reads
+     * are the exception, not the rule: it re-reads the escalation LIVE inside
+     * an MCP `tools/call` (stage time) and again inside the cockpit approve
+     * request while holding that run's execution claim (approve time).
+     * Retry-After is upstream-controlled and sleep() is not counted against
+     * PHP's max_execution_time, so an unclamped `Retry-After: 3600` would park
+     * a PHP worker — and, at approve time, the claim — for an hour, which is
+     * exactly the bound StaffHuntressActionToolExecutor::STALE_CLAIM_SECONDS
+     * is measured against; enough concurrent stage calls would exhaust the
+     * worker pool outright. Those two callers opt in via withClampedBackoff();
+     * two retries at the ceiling bound their added wall time at 20 s.
      */
     public const RETRY_AFTER_CEILING_SECONDS = 10;
 
     /**
      * Set only by withClampedBackoff(). Never default this to true: the
-     * clamp's blast radius must stay no wider than the claim-holding approve
-     * path that needs it.
+     * clamp's blast radius must stay no wider than the synchronous
+     * request-path callers that need it.
      */
     private bool $clampBackoff = false;
 

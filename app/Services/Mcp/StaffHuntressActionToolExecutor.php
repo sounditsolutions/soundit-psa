@@ -262,11 +262,20 @@ class StaffHuntressActionToolExecutor
 
         // LIVE read (read client, account key) before anything is staged: the
         // escalation must exist, must not already be resolved, and must touch
-        // THIS client's mapped organization. No execution claim exists yet,
-        // so this read deliberately keeps the DEFAULT back-off — honouring
-        // the upstream Retry-After in full, like every other reader.
+        // THIS client's mapped organization. No execution claim is held yet,
+        // but this read runs inside the SYNCHRONOUS MCP `tools/call` request,
+        // so it clamps its 429 back-off too: Retry-After is
+        // upstream-controlled and sleep() is not counted against PHP's
+        // max_execution_time, so an unclamped `Retry-After: 3600` would pin
+        // this PHP-FPM worker (and the MCP client connection) for hours with
+        // nothing staged — and this tool re-reads LIVE on EVERY stage call,
+        // before any dedup or cooldown check, so a handful of concurrent
+        // staging attempts would exhaust the pool. Only the CLAIMLESS
+        // BACKGROUND readers (huntress:sync-licenses, huntress:reconcile-*)
+        // keep the default full-Retry-After behaviour: they can afford to
+        // wait out a rate-limit window, a synchronous request cannot.
         try {
-            $escalation = $this->readClient()->getEscalation($escalationId);
+            $escalation = $this->readClient()->withClampedBackoff()->getEscalation($escalationId);
         } catch (\Throwable $e) {
             $message = 'Huntress escalation lookup failed: '.mb_substr($e->getMessage(), 0, 200);
             $this->auditAttempt($tool, 'error', $clientId, $ticket, $contentHash, "{$targetKey}: {$message}", $actorLabel);
@@ -635,11 +644,49 @@ class StaffHuntressActionToolExecutor
                 $run->releaseClaim();
 
                 return new TechnicianApprovalResult('gate_declined', message: "Huntress refused: escalation {$escalationId} cannot be resolved through the API — resolve it in the Huntress console. Nothing was changed.");
-            } catch (HuntressWriteScopeException|HuntressClientException $e) {
-                $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: ".mb_substr($e->getMessage(), 0, 300), $approverLabel, $run->id, $approverId);
+            } catch (HuntressWriteScopeException $e) {
+                // Refused INSIDE the write client BEFORE any HTTP (missing
+                // user-key credential, non-positive id): nothing reached
+                // Huntress, so "nothing was resolved" is a fact here and the
+                // run may safely return to AwaitingApproval.
+                $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Refused before sending — ".mb_substr($e->getMessage(), 0, 300), $approverLabel, $run->id, $approverId);
                 $run->releaseClaim();
 
-                return new TechnicianApprovalResult('gate_declined', message: 'The Huntress resolve call failed — nothing was resolved. Try again.');
+                return new TechnicianApprovalResult('gate_declined', message: 'The Huntress resolve call was refused before it was sent — nothing was resolved.');
+            } catch (HuntressClientException $e) {
+                if (! self::upstreamFailureMayHaveCommitted($e)) {
+                    // A status the vendor answered while REFUSING the request
+                    // (401/403/404/…): the POST landed at Huntress and wrote
+                    // nothing, so the decline is truthful and a retry is
+                    // legitimate.
+                    $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: ".mb_substr($e->getMessage(), 0, 300), $approverLabel, $run->id, $approverId);
+                    $run->releaseClaim();
+
+                    return new TechnicianApprovalResult('gate_declined', message: 'Huntress rejected the resolve call — nothing was resolved. Try again.');
+                }
+
+                // INDETERMINATE outcome, and a routine one: the transport
+                // times out at 30 s and a 5xx (or an edge 502) can arrive
+                // after the server has already committed the resolution. This
+                // path may NOT assert "nothing was resolved" — it cannot know
+                // — and above all may not re-arm the run: the retry converges
+                // through the live-read/409 branches to a clean `executed`
+                // WITHOUT ever evaluating the resolution_method
+                // post-condition, laundering a `rule` (attribute rules WERE
+                // created) into a green success with nobody paged. So the
+                // outcome is treated as committed — terminal run, `error`
+                // audit row, fault on the ERROR channel — the same
+                // refuse-to-requeue the sibling StaffCalendarToolExecutor
+                // applies to its own indeterminate upstream failures.
+                $writeCommitted = true;
+                $run->advanceTo(TechnicianRunState::Done);
+
+                $fault = "HARD FAULT: the Huntress resolve for escalation {$escalationId} failed with an INDETERMINATE outcome (".mb_substr($e->getMessage(), 0, 200).'). '
+                    .'The resolve POST may already have COMMITTED upstream, and its resolution_method post-condition was never evaluated — a `rule` resolution would mean the server CREATED attribute rules. Do NOT re-approve: establish in the Huntress console whether this escalation is resolved, inspect it for created rules, and escalate to a human.';
+                Log::error("[StaffHuntressActionToolExecutor] {$fault}", ['run_id' => $run->id, 'escalation_id' => $escalationId]);
+                $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: {$fault}", $approverLabel, $run->id, $approverId);
+
+                return new TechnicianApprovalResult('executed_with_fault', message: $fault);
             }
 
             // The upstream resolve has now COMMITTED. Land the run terminal
@@ -762,6 +809,30 @@ class StaffHuntressActionToolExecutor
         }
 
         return null;
+    }
+
+    /**
+     * Whether a failed resolve POST may nonetheless have COMMITTED upstream.
+     * The transport times out at 30 s and Huntress can answer 5xx after the
+     * resolution has already been written, so those outcomes are
+     * INDETERMINATE: the approval may neither claim "nothing was resolved"
+     * nor re-arm the run, because the retry converges through the
+     * live-read/409 branches to a clean `executed` with the
+     * resolution_method post-condition never evaluated.
+     *
+     * Only a status the vendor returned while REFUSING the request proves
+     * nothing was written: a 4xx other than 408 (request timeout). A code of
+     * 0 — connect/read timeout, DNS, TLS, a proxy that dropped the response —
+     * proves nothing at all and therefore counts as may-have-committed;
+     * unknown values fail the same safe way. The code carried by
+     * HuntressClientException is Guzzle's: the HTTP status when there was a
+     * response, 0 when there was not.
+     */
+    private static function upstreamFailureMayHaveCommitted(HuntressClientException $e): bool
+    {
+        $status = (int) $e->getCode();
+
+        return ! ($status >= 400 && $status < 500 && $status !== 408);
     }
 
     /** @param array<string, mixed> $escalation */

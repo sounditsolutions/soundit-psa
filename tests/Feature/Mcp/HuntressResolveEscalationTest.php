@@ -365,23 +365,30 @@ class HuntressResolveEscalationTest extends TestCase
     }
 
     /**
-     * The stage-time read holds no execution claim and must keep the DEFAULT
-     * back-off (a clamp there regresses every claimless reader's behaviour
-     * class); the approve-time re-read sleeps while holding the run's claim
-     * and must go through the withClampedBackoff() clone — the
-     * STALE_CLAIM_SECONDS bound is measured against that clamp. Strict
-     * mocks: each leg's getEscalation is pinned to its own client, so the
-     * split failing in either direction fails the test.
+     * BOTH of this family's live reads run inside a SYNCHRONOUS request — the
+     * stage-time read inside an MCP `tools/call`, the approve-time re-read
+     * inside the cockpit approve request while holding the run's claim — so
+     * both must go through the withClampedBackoff() clone. Retry-After is
+     * upstream-controlled and sleep() is not counted against
+     * max_execution_time, so an unclamped `Retry-After: 3600` would pin a PHP
+     * worker for hours (and, at approve time, park the claim past
+     * STALE_CLAIM_SECONDS); concurrent stage calls would exhaust the pool.
+     * Only the CLAIMLESS BACKGROUND readers keep the full-Retry-After
+     * default. Strict mocks: each leg's getEscalation is pinned to its own
+     * CLONE and the receivers refuse it, so a read taken on the unclamped
+     * client fails the test.
      */
-    public function test_staging_reads_unclamped_and_approval_re_reads_through_the_clamped_clone(): void
+    public function test_both_synchronous_live_reads_go_through_the_clamped_clone(): void
     {
         $this->configureHuntress();
         $actor = $this->configureAiActor();
         $fixture = $this->fixture();
 
+        $stageClamped = Mockery::mock(HuntressClient::class);
+        $stageClamped->shouldReceive('getEscalation')->once()->with(900)->andReturn($this->escalation());
         $base = Mockery::mock(HuntressClient::class);
-        $base->shouldReceive('getEscalation')->once()->with(900)->andReturn($this->escalation());
-        $base->shouldNotReceive('withClampedBackoff');
+        $base->shouldReceive('withClampedBackoff')->once()->andReturn($stageClamped);
+        $base->shouldNotReceive('getEscalation');
         $this->app->instance(HuntressClient::class, $base);
 
         $response = $this->callTool($this->token(['huntress_stage_resolve_escalation']), 'huntress_stage_resolve_escalation', $this->stageArguments($fixture));
@@ -545,7 +552,58 @@ class HuntressResolveEscalationTest extends TestCase
         ]);
     }
 
-    public function test_upstream_failure_at_approval_declines_without_advancing_the_run(): void
+    /**
+     * A transport failure whose outcome is INDETERMINATE — a read/connect
+     * timeout (code 0) or a 5xx, both of which can arrive AFTER the POST has
+     * committed — must never be reported as "nothing was resolved" and must
+     * never re-arm the run: the retry converges through the live-read/409
+     * branches to a clean `executed` with the resolution_method
+     * post-condition never evaluated, laundering a `rule` (attribute rules
+     * were created) into a green success. The run lands terminal and the
+     * fault reaches the operator on the ERROR channel.
+     */
+    public function test_an_indeterminate_upstream_failure_never_claims_nothing_was_resolved(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+
+        foreach ([
+            ['message' => 'Huntress API error: cURL error 28: Operation timed out after 30000 milliseconds', 'code' => 0],
+            ['message' => 'Huntress API error: 502 Bad Gateway', 'code' => 502],
+        ] as $failure) {
+            $fixture = $this->fixture();
+            $this->mockWriteClientNeverCalled();
+            $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+
+            $write = Mockery::mock(HuntressWriteClient::class);
+            $write->shouldReceive('resolveEscalation')->once()->with(900)
+                ->andThrow(new HuntressClientException($failure['message'], $failure['code']));
+            $this->app->instance(HuntressWriteClient::class, $write);
+            $this->mockReadClient($this->escalation());
+
+            $response = $this->actingAs($actor)->postJson(route('cockpit.approve', $run));
+
+            $response->assertJson(['ok' => false, 'status' => 'executed_with_fault']);
+            $this->assertStringContainsString('HARD FAULT', (string) $response->json('message'));
+            $this->assertStringNotContainsString('nothing was resolved', (string) $response->json('message'));
+            $this->assertSame(TechnicianRunState::Done, $run->fresh()->state, 'an indeterminate outcome must never be re-armed for a retry');
+
+            $fault = TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->firstOrFail()->summary;
+            $this->assertStringContainsString('INDETERMINATE', $fault);
+            $this->assertStringContainsString('post-condition was never evaluated', $fault);
+            $this->assertDatabaseMissing('technician_action_logs', [
+                'run_id' => $run->id,
+                'result_status' => 'executed',
+            ]);
+        }
+    }
+
+    /**
+     * The other half of the split: a status the vendor answered while
+     * REFUSING the request wrote nothing upstream, so the decline is truthful
+     * and the run returns to AwaitingApproval for a legitimate retry.
+     */
+    public function test_an_upstream_rejection_that_cannot_have_committed_declines_and_releases(): void
     {
         $this->configureHuntress();
         $actor = $this->configureAiActor();
@@ -555,13 +613,17 @@ class HuntressResolveEscalationTest extends TestCase
 
         $write = Mockery::mock(HuntressWriteClient::class);
         $write->shouldReceive('resolveEscalation')->once()->with(900)
-            ->andThrow(new HuntressClientException('Huntress API error: 500'));
+            ->andThrow(new HuntressClientException('Huntress API error: 403 Forbidden', 403));
         $this->app->instance(HuntressWriteClient::class, $write);
         $this->mockReadClient($this->escalation());
 
         $this->actingAs($actor)->post(route('cockpit.approve', $run));
 
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertDatabaseHas('technician_action_logs', [
+            'run_id' => $run->id,
+            'result_status' => 'error',
+        ]);
     }
 
     public function test_approval_re_reads_live_state_vanished_resolved_and_remapped_all_stop_the_write(): void
