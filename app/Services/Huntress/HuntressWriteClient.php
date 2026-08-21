@@ -195,23 +195,28 @@ class HuntressWriteClient
      * own top-level `resolution_method` is perfectly valid. The executor's
      * post-condition reads a missing method as a HARD FAULT, so either
      * misreading turns every clean resolve into a recorded security fault
-     * that pages a human. Hence: a body that already carries the field IS the
-     * resolution object and wins outright; otherwise a wrapper key is taken
-     * only when its array carries the field; otherwise the body falls
-     * through unchanged. Defensive code must never be able to turn a valid
-     * body into a worse one than no unwrapping at all.
+     * that pages a human. Hence: a wrapper key is taken FIRST, and only when
+     * its array carries the field; otherwise the body — which may report the
+     * method itself — falls through unchanged.
+     *
+     * Wrapper-first is the fail-safe PRECEDENCE, not a style choice. When a
+     * body carries BOTH a top-level `resolution_method` and a content-verified
+     * wrapper, the wrapper is the server's report of the code path it actually
+     * took and the top-level field may be a summary/legacy echo; letting the
+     * body win could record a `rule` resolution — attribute rules WERE created
+     * — as a clean `executed` with nobody paged. Every misread in this
+     * function must fail toward the loud false fault, never toward the silent
+     * false success. Defensive code must never be able to turn a valid body
+     * into a worse one than no unwrapping at all.
      *
      * @param  array<string, mixed>  $body
      * @return array<string, mixed>
      */
     private static function unwrapResolution(array $body): array
     {
-        // The body reports the method itself — any same-named sibling is a
-        // detail field, whatever its shape.
-        if (is_scalar($body['resolution_method'] ?? null)) {
-            return $body;
-        }
-
+        // Wrappers are tried FIRST and only on content: an inner object that
+        // carries the field IS the resolution object, and its method is the
+        // one the executor's post-condition must judge.
         foreach (['escalation_resolution', 'resolution'] as $wrapperKey) {
             $candidate = $body[$wrapperKey] ?? null;
             if (is_array($candidate) && is_scalar($candidate['resolution_method'] ?? null)) {
@@ -219,6 +224,10 @@ class HuntressWriteClient
             }
         }
 
+        // No wrapper carried the field, so any same-named sibling is a detail
+        // field whatever its shape: a body that reports the method itself
+        // stands, and a body that reports nothing falls through unchanged for
+        // the executor to fault on.
         return $body;
     }
 }

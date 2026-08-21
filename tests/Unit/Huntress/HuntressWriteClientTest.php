@@ -133,6 +133,33 @@ class HuntressWriteClientTest extends TestCase
         }
     }
 
+    /**
+     * BOTH shapes present at once: a top-level `resolution_method` AND a
+     * content-verified wrapper reporting a DIFFERENT one. The wrapper is the
+     * server's report of the code path it actually took; the top-level field
+     * may be a summary/legacy echo. If the body won here, a resolution that
+     * CREATED attribute rules would reach the executor as a clean 'direct',
+     * be audited as `executed`, and page nobody — the one direction this
+     * defensive unwrap may never fail in. Every other misread in it fails
+     * toward the loud false fault; this one must too.
+     */
+    public function test_a_content_verified_wrapper_outranks_a_top_level_resolution_method(): void
+    {
+        foreach (['escalation_resolution', 'resolution'] as $wrapperKey) {
+            $client = $this->clientReturning([
+                new Response(201, [], json_encode([
+                    'id' => 9,
+                    'resolution_method' => 'direct',
+                    $wrapperKey => ['resolution_method' => 'rule', 'rules_created' => [['id' => 3]]],
+                ])),
+            ]);
+
+            $resolution = $client->resolveEscalation(9);
+
+            $this->assertSame('rule', $resolution['resolution_method'], "the {$wrapperKey} wrapper's own method must reach the executor's post-condition, not a top-level echo");
+        }
+    }
+
     public function test_409_maps_to_the_already_resolved_exception(): void
     {
         $client = $this->clientReturning([
