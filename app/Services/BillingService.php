@@ -738,8 +738,13 @@ class BillingService
         if ($type === QuantityType::Overage && $line) {
             $client = $contract?->client ?? $line->profile?->contract?->client;
             $usage = $client ? $this->countLicensesByType($client, $contract, $line->usage_license_type_id) : 0;
+            // Same base count as countOverage(): an included ALLOWANCE, not a billed quantity,
+            // so it counts every PSA-active row regardless of vendor_status. The two sites are a
+            // matched pair — if this one applied the predicate and the resolver did not, the
+            // stored quantity_source would contradict the quantity it documents (and would report
+            // zero base seats for a vendor-held base subscription).
             $base = $line->base_license_type_id
-                ? ($client ? $this->countLicensesByType($client, $contract, $line->base_license_type_id) : 1)
+                ? ($client ? $this->countLicensesByType($client, $contract, $line->base_license_type_id, vendorBillableOnly: false) : 1)
                 : 1;
             $includedPer = $line->included_per_base_unit ?? 0;
             $divisor = max(1, $line->overage_divisor ?? 1);
