@@ -375,6 +375,16 @@ class AppRiverLicenseSyncService
 
                 $seenLicenseIds = array_merge($seenLicenseIds, $protectedIds);
 
+                // Hold the data, but RECORD the observation. Every other fact on the row
+                // is left exactly as it stands — that is the point of this guard — but the
+                // vendor-reported status itself is new information this run measured, and
+                // writing it on every observation is what makes the billing guard work:
+                // License::vendorBillable() keys on `vendor_status`, and a persisted column
+                // is the instrument that survives log level. Without this write, a
+                // vendor-suspended subscription keeps billing at its held seat count for as
+                // long as the vendor leaves it suspended.
+                License::whereIn('id', $protectedIds)->update(['vendor_status' => $status]);
+
                 Log::info("[AppRiverSync] Subscription {$inconclusiveKey} for {$client->name} is {$status}; leaving its licence as it stands and out of stale cleanup");
 
                 // Hold the DATA, withdraw the INSTRUCTION. The seat count, the status and
@@ -524,6 +534,11 @@ class AppRiverLicenseSyncService
                     'quantity' => $counts['total'] ?? 0,
                     'assigned_quantity' => $counts['assigned'],
                     'status' => 'active',
+                    // Written on EVERY observation, not only the hold-out path: 'Active' or
+                    // 'Trial' here. A subscription that returns from Suspended overwrites the
+                    // held value on the same write that refreshes its seat count, so the
+                    // billing guard releases exactly when the vendor reports it active again.
+                    'vendor_status' => $status,
                     'synced_at' => now(),
                 ]);
 

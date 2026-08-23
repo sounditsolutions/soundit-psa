@@ -216,6 +216,14 @@ PROMPT;
                 'unassigned' => $l->unassigned_quantity,
                 'utilization' => $l->utilization_percent,
                 'status' => $l->utilization_status,
+                // Vendor-held rows stay VISIBLE on this client-readable surface —
+                // a seat that vanishes between monthly reports reads as a billing
+                // error — but they are annotated and their quantity stays out of
+                // billing. The wording on this surface is deliberately only
+                // "not being charged" + "nothing cancelled": the vendor's own status
+                // word belongs to the reseller surface, not the customer's, and the
+                // two surfaces must not share a string (ruling 2026-08-19).
+                'vendor_held' => $l->isVendorHeld(),
             ])
             ->values()
             ->all();
@@ -367,8 +375,12 @@ PROMPT;
             foreach ($data['licenses'] as $l) {
                 $assigned = $l['assigned'] ?? '—';
                 $util = $l['utilization'] !== null ? $l['utilization'].'%' : '—';
+                $name = $this->mdCell($l['name']);
+                if (! empty($l['vendor_held'])) {
+                    $name .= ' _(not being charged this period; nothing has been cancelled)_';
+                }
                 $lines[] = '| '.implode(' | ', [
-                    $this->mdCell($l['name']),
+                    $name,
                     $this->mdCell($l['vendor'] ?: '—'),
                     (string) $assigned,
                     (string) $l['quantity'],
@@ -428,10 +440,13 @@ PROMPT;
 
         if (! empty($data['licenses'])) {
             foreach ($data['licenses'] as $l) {
+                $held = ! empty($l['vendor_held'])
+                    ? ' This license is not being charged this period; nothing has been cancelled.'
+                    : '';
                 if ($l['utilization'] !== null) {
-                    $lines[] = "License '{$l['name']}': {$l['assigned']}/{$l['quantity']} seats assigned ({$l['utilization']}% utilization).";
+                    $lines[] = "License '{$l['name']}': {$l['assigned']}/{$l['quantity']} seats assigned ({$l['utilization']}% utilization).".$held;
                 } else {
-                    $lines[] = "License '{$l['name']}': {$l['quantity']} seats (assignment data unavailable).";
+                    $lines[] = "License '{$l['name']}': {$l['quantity']} seats (assignment data unavailable).".$held;
                 }
             }
         }

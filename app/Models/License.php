@@ -9,6 +9,19 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 
 class License extends Model
 {
+    /**
+     * Vendor-reported statuses that hold a licence out of billing.
+     *
+     * Mirrors {@see \App\Services\AppRiver\AppRiverLicenseSyncService::INCONCLUSIVE_SUBSCRIPTION_STATUSES}:
+     * these are the only values the hold-out path ever writes to `vendor_status`, and a row
+     * carries one only because the vendor AFFIRMATIVELY reported it. AppRiver publishes no
+     * documentation on whether 'Suspended' is terminal or recoverable — that absence is
+     * recorded here deliberately (the sync's constant says the same): the billing rule does
+     * not move on the answer, because a vendor-suspended subscription is not billable in
+     * either reading until the vendor reports it active again.
+     */
+    public const VENDOR_HELD_STATUSES = ['Suspended', 'Pending'];
+
     protected $fillable = [
         'license_type_id',
         'client_id',
@@ -17,6 +30,7 @@ class License extends Model
         'scheduled_quantity',
         'vendor_ref',
         'status',
+        'vendor_status',
         'synced_at',
         'notes',
     ];
@@ -192,6 +206,54 @@ class License extends Model
                 'status' => 'suspended',
                 'synced_at' => now(),
             ]);
+    }
+
+    // ── Vendor billing guard ──
+
+    /**
+     * Whether the vendor has affirmatively reported this subscription in a held
+     * (inconclusive) state — the row is kept visible and out of stale cleanup, but
+     * its quantity must not be billed and must stay out of report totals.
+     */
+    public function isVendorHeld(): bool
+    {
+        return in_array($this->vendor_status, self::VENDOR_HELD_STATUSES, true);
+    }
+
+    /**
+     * Apply the vendor-billable predicate to a query: exclude rows whose
+     * `vendor_status` is one of VENDOR_HELD_STATUSES.
+     *
+     * DELIBERATE FAIL-OPEN ON NULL: `vendor_status` is written only by syncs that
+     * report one (AppRiver today). NULL is not the unknown-status case — it is the
+     * no-such-vendor case. Every CIPP and Microsoft licence row has NULL here, and
+     * excluding NULL would stop invoicing all of them on deploy day. An UNRECOGNISED
+     * non-NULL value also bills normally, for the same reason the sync treats an
+     * unrecognised SubscriptionStatus as unobserved rather than inactive: only a
+     * status the vendor affirmatively reported, and this build affirmatively lists
+     * as held, withholds billing.
+     *
+     * Works on both Eloquent and raw query builders — two of the read sites are
+     * `DB::table('licenses')` and no Eloquent scope can reach them, which is why
+     * this is a static helper applied EXPLICITLY at every read site rather than a
+     * scope. A source-scan guard test fails if a new `licenses.status = 'active'`
+     * read site appears without this predicate being considered
+     * ({@see \Tests\Feature\Billing\LicenseActiveReadSiteGuardTest}).
+     *
+     * @template TQuery of \Illuminate\Contracts\Database\Query\Builder|\Illuminate\Contracts\Database\Eloquent\Builder
+     *
+     * @param  TQuery  $query
+     * @param  string|null  $table  qualify the column when the query joins other tables
+     * @return TQuery
+     */
+    public static function vendorBillable($query, ?string $table = null)
+    {
+        $column = ($table !== null ? $table.'.' : '').'vendor_status';
+
+        return $query->where(function ($q) use ($column) {
+            $q->whereNull($column)
+                ->orWhereNotIn($column, self::VENDOR_HELD_STATUSES);
+        });
     }
 
     // ── Scopes ──

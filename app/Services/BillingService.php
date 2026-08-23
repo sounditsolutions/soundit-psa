@@ -9,6 +9,7 @@ use App\Models\Client;
 use App\Models\Contract;
 use App\Models\Invoice;
 use App\Models\InvoiceLine;
+use App\Models\License;
 use App\Models\RecurringInvoiceProfile;
 use App\Models\RecurringInvoiceProfileLine;
 use App\Models\Setting;
@@ -121,12 +122,14 @@ class BillingService
     private function countLicenses(Client $client, ?Contract $contract): int
     {
         if ($contract && $contract->licenses()->exists()) {
-            return $contract->licenses()
+            // vendorBillable: vendor-held rows (see License::VENDOR_HELD_STATUSES) are
+            // excluded from every billed quantity; NULL vendor_status bills normally.
+            return License::vendorBillable($contract->licenses(), 'licenses')
                 ->where('licenses.status', 'active')
                 ->sum('licenses.quantity');
         }
 
-        return $client->licenses()
+        return License::vendorBillable($client->licenses())
             ->where('status', 'active')
             ->sum('quantity');
     }
@@ -141,13 +144,13 @@ class BillingService
         }
 
         if ($contract && $contract->licenses()->exists()) {
-            return $contract->licenses()
+            return License::vendorBillable($contract->licenses(), 'licenses')
                 ->where('licenses.status', 'active')
                 ->where('licenses.license_type_id', $licenseTypeId)
                 ->sum('licenses.quantity');
         }
 
-        return $client->licenses()
+        return License::vendorBillable($client->licenses())
             ->where('status', 'active')
             ->where('license_type_id', $licenseTypeId)
             ->sum('quantity');
@@ -170,7 +173,9 @@ class BillingService
             return 0;
         }
 
-        return (int) DB::table('licenses')
+        // Raw query builder — no Eloquent scope reaches this site, which is why the
+        // vendor-billable predicate is a static helper applied explicitly here.
+        return (int) License::vendorBillable(DB::table('licenses'))
             ->whereIn('client_id', $childIds)
             ->where('status', 'active')
             ->where('license_type_id', $licenseTypeId)
@@ -796,9 +801,12 @@ class BillingService
      */
     private function getLicenseStalenessHours(?Contract $contract, ?int $licenseTypeId): ?int
     {
+        // Staleness is measured over the same rows the quantity resolvers count, so the
+        // vendor-billable predicate applies here too: a held row's synced_at is frozen by
+        // design and would otherwise flag every resolution as stale.
         $query = $contract && $contract->licenses()->exists()
-            ? $contract->licenses()->where('licenses.status', 'active')
-            : ($contract ? $contract->client->licenses()->where('status', 'active') : null);
+            ? License::vendorBillable($contract->licenses(), 'licenses')->where('licenses.status', 'active')
+            : ($contract ? License::vendorBillable($contract->client->licenses())->where('status', 'active') : null);
 
         if (! $query) {
             return null;
@@ -837,7 +845,7 @@ class BillingService
             return null;
         }
 
-        $query = DB::table('licenses')
+        $query = License::vendorBillable(DB::table('licenses'))
             ->whereIn('client_id', $childIds)
             ->where('status', 'active');
 
