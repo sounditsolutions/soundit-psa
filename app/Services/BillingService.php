@@ -136,21 +136,30 @@ class BillingService
 
     /**
      * Count active licenses of a specific type — contract-scoped if possible.
+     *
+     * $vendorBillableOnly is TRUE at every site that counts seats TO BILL. It is false
+     * only where the count is an ALLOWANCE subtracted from a billed quantity (the
+     * Overage base), because there the predicate would ADD billing rather than withhold
+     * it — see countOverage().
      */
-    private function countLicensesByType(Client $client, ?Contract $contract, ?int $licenseTypeId): int
+    private function countLicensesByType(Client $client, ?Contract $contract, ?int $licenseTypeId, bool $vendorBillableOnly = true): int
     {
         if (! $licenseTypeId) {
             return 0;
         }
 
         if ($contract && $contract->licenses()->exists()) {
-            return License::vendorBillable($contract->licenses(), 'licenses')
+            $scoped = $contract->licenses();
+
+            return ($vendorBillableOnly ? License::vendorBillable($scoped, 'licenses') : $scoped)
                 ->where('licenses.status', 'active')
                 ->where('licenses.license_type_id', $licenseTypeId)
                 ->sum('licenses.quantity');
         }
 
-        return License::vendorBillable($client->licenses())
+        $clientWide = $client->licenses();
+
+        return ($vendorBillableOnly ? License::vendorBillable($clientWide) : $clientWide)
             ->where('status', 'active')
             ->where('license_type_id', $licenseTypeId)
             ->sum('quantity');
@@ -201,8 +210,15 @@ class BillingService
 
         $usage = $this->countLicensesByType($client, $contract, $usageLicenseTypeId);
 
+        // The BASE count is an included ALLOWANCE, not a billed quantity: it is subtracted
+        // from usage below. Applying the vendor-held predicate here would drop a held base
+        // row out of $base, shrink $included, and ENLARGE the overage line — so a vendor
+        // suspending the base subscription would INCREASE what the client is charged. The
+        // guard exists to withhold billing, never to add it, so base counts every
+        // PSA-active row regardless of vendor_status; only the usage side carries the
+        // predicate.
         $base = $baseLicenseTypeId
-            ? $this->countLicensesByType($client, $contract, $baseLicenseTypeId)
+            ? $this->countLicensesByType($client, $contract, $baseLicenseTypeId, vendorBillableOnly: false)
             : 1;
 
         $included = $base * $includedPerBaseUnit;

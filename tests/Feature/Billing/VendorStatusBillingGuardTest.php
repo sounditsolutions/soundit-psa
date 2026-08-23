@@ -164,4 +164,51 @@ class VendorStatusBillingGuardTest extends TestCase
 
         $this->assertSame(5, $quantity, 'Only statuses this build affirmatively lists as held withhold billing; an unrecognised value fails open.');
     }
+
+    /**
+     * The guard withholds billing; it must never ADD any. The Overage base count is an
+     * included allowance subtracted from usage, so excluding a held base row would shrink
+     * the allowance and charge the client MORE precisely because the vendor suspended
+     * their base subscription.
+     */
+    public function test_vendor_held_base_seats_still_earn_their_included_allowance(): void
+    {
+        $client = $this->client();
+        $usageType = $this->licenseType('appriver', 'usage-seat');
+        $baseType = $this->licenseType('appriver', 'base-seat');
+        $this->license($client, $usageType, 100, 'Active', 'sub-usage');
+        $this->license($client, $baseType, 10, 'Suspended', 'sub-base');
+
+        $quantity = app(BillingService::class)->resolveQuantity(
+            QuantityType::Overage,
+            $client,
+            usageLicenseTypeId: $usageType->id,
+            baseLicenseTypeId: $baseType->id,
+            includedPerBaseUnit: 5,
+            overageDivisor: 1,
+        );
+
+        $this->assertSame(50, $quantity, 'A vendor-held base subscription must keep its included allowance — dropping it would double the overage line on the invoice.');
+    }
+
+    public function test_vendor_held_usage_seats_stay_out_of_the_overage_usage_count(): void
+    {
+        $client = $this->client();
+        $usageType = $this->licenseType('appriver', 'usage-seat');
+        $baseType = $this->licenseType('appriver', 'base-seat');
+        $this->license($client, $usageType, 60, 'Active', 'sub-usage-a');
+        $this->license($client, $usageType, 40, 'Suspended', 'sub-usage-b');
+        $this->license($client, $baseType, 10, 'Active', 'sub-base');
+
+        $quantity = app(BillingService::class)->resolveQuantity(
+            QuantityType::Overage,
+            $client,
+            usageLicenseTypeId: $usageType->id,
+            baseLicenseTypeId: $baseType->id,
+            includedPerBaseUnit: 5,
+            overageDivisor: 1,
+        );
+
+        $this->assertSame(10, $quantity, 'Held USAGE seats are a billed quantity and stay excluded — only the allowance side counts held rows.');
+    }
 }
