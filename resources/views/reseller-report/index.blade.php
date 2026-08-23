@@ -65,6 +65,10 @@
                 <div class="card-body text-center">
                     <div class="text-muted small">Total Licenses</div>
                     <div class="fs-3 fw-bold">{{ number_format($data['grandTotal']) }}</div>
+                    @php($grandHeld = $data['typeTotals']->sum('held_quantity'))
+                    @if($grandHeld > 0)
+                        <div class="small text-muted">+ {{ number_format($grandHeld) }} not billed — vendor reports {{ $data['heldStatusLabel'] }}</div>
+                    @endif
                 </div>
             </div>
         </div>
@@ -92,7 +96,12 @@
                         <span class="badge bg-light text-dark ms-1">{{ $typeTotal->vendor }}</span>
                     @endif
                 </span>
-                <span class="badge bg-primary">Total: {{ number_format($typeTotal->total_quantity) }}</span>
+                <span>
+                    @if(($typeTotal->held_quantity ?? 0) > 0)
+                        <span class="badge bg-warning text-dark me-1" title="Not billed while the vendor reports these subscriptions {{ $data['heldStatusLabel'] }}">Vendor reports {{ $data['heldStatusLabel'] }}: {{ number_format($typeTotal->held_quantity) }} (not billed)</span>
+                    @endif
+                    <span class="badge bg-primary">Total: {{ number_format($typeTotal->total_quantity) }}</span>
+                </span>
             </div>
             <div class="table-responsive">
                 <table class="table table-hover mb-0">
@@ -110,7 +119,12 @@
                                         {{ $row->client_name }}
                                     </a>
                                 </td>
-                                <td class="text-end fw-semibold">{{ number_format($row->quantity) }}</td>
+                                <td class="text-end fw-semibold">
+                                    {{ number_format($row->quantity) }}
+                                    @if(($row->held_quantity ?? 0) > 0)
+                                        <br><small class="text-muted">+ {{ number_format($row->held_quantity) }} — vendor reports {{ $data['heldStatusLabel'] }}, not billed</small>
+                                    @endif
+                                </td>
                             </tr>
                         @endforeach
                         <tr class="table-light">

@@ -9,6 +9,7 @@ use App\Models\Client;
 use App\Models\Contract;
 use App\Models\Invoice;
 use App\Models\InvoiceLine;
+use App\Models\License;
 use App\Models\RecurringInvoiceProfile;
 use App\Models\RecurringInvoiceProfileLine;
 use App\Models\Setting;
@@ -121,33 +122,44 @@ class BillingService
     private function countLicenses(Client $client, ?Contract $contract): int
     {
         if ($contract && $contract->licenses()->exists()) {
-            return $contract->licenses()
+            // vendorBillable: vendor-held rows (see License::VENDOR_HELD_STATUSES) are
+            // excluded from every billed quantity; NULL vendor_status bills normally.
+            return License::vendorBillable($contract->licenses(), 'licenses')
                 ->where('licenses.status', 'active')
                 ->sum('licenses.quantity');
         }
 
-        return $client->licenses()
+        return License::vendorBillable($client->licenses())
             ->where('status', 'active')
             ->sum('quantity');
     }
 
     /**
      * Count active licenses of a specific type — contract-scoped if possible.
+     *
+     * $vendorBillableOnly is TRUE at every site that counts seats TO BILL. It is false
+     * only where the count is an ALLOWANCE subtracted from a billed quantity (the
+     * Overage base), because there the predicate would ADD billing rather than withhold
+     * it — see countOverage().
      */
-    private function countLicensesByType(Client $client, ?Contract $contract, ?int $licenseTypeId): int
+    private function countLicensesByType(Client $client, ?Contract $contract, ?int $licenseTypeId, bool $vendorBillableOnly = true): int
     {
         if (! $licenseTypeId) {
             return 0;
         }
 
         if ($contract && $contract->licenses()->exists()) {
-            return $contract->licenses()
+            $scoped = $contract->licenses();
+
+            return ($vendorBillableOnly ? License::vendorBillable($scoped, 'licenses') : $scoped)
                 ->where('licenses.status', 'active')
                 ->where('licenses.license_type_id', $licenseTypeId)
                 ->sum('licenses.quantity');
         }
 
-        return $client->licenses()
+        $clientWide = $client->licenses();
+
+        return ($vendorBillableOnly ? License::vendorBillable($clientWide) : $clientWide)
             ->where('status', 'active')
             ->where('license_type_id', $licenseTypeId)
             ->sum('quantity');
@@ -170,7 +182,9 @@ class BillingService
             return 0;
         }
 
-        return (int) DB::table('licenses')
+        // Raw query builder — no Eloquent scope reaches this site, which is why the
+        // vendor-billable predicate is a static helper applied explicitly here.
+        return (int) License::vendorBillable(DB::table('licenses'))
             ->whereIn('client_id', $childIds)
             ->where('status', 'active')
             ->where('license_type_id', $licenseTypeId)
@@ -196,8 +210,15 @@ class BillingService
 
         $usage = $this->countLicensesByType($client, $contract, $usageLicenseTypeId);
 
+        // The BASE count is an included ALLOWANCE, not a billed quantity: it is subtracted
+        // from usage below. Applying the vendor-held predicate here would drop a held base
+        // row out of $base, shrink $included, and ENLARGE the overage line — so a vendor
+        // suspending the base subscription would INCREASE what the client is charged. The
+        // guard exists to withhold billing, never to add it, so base counts every
+        // PSA-active row regardless of vendor_status; only the usage side carries the
+        // predicate.
         $base = $baseLicenseTypeId
-            ? $this->countLicensesByType($client, $contract, $baseLicenseTypeId)
+            ? $this->countLicensesByType($client, $contract, $baseLicenseTypeId, vendorBillableOnly: false)
             : 1;
 
         $included = $base * $includedPerBaseUnit;
@@ -717,8 +738,13 @@ class BillingService
         if ($type === QuantityType::Overage && $line) {
             $client = $contract?->client ?? $line->profile?->contract?->client;
             $usage = $client ? $this->countLicensesByType($client, $contract, $line->usage_license_type_id) : 0;
+            // Same base count as countOverage(): an included ALLOWANCE, not a billed quantity,
+            // so it counts every PSA-active row regardless of vendor_status. The two sites are a
+            // matched pair — if this one applied the predicate and the resolver did not, the
+            // stored quantity_source would contradict the quantity it documents (and would report
+            // zero base seats for a vendor-held base subscription).
             $base = $line->base_license_type_id
-                ? ($client ? $this->countLicensesByType($client, $contract, $line->base_license_type_id) : 1)
+                ? ($client ? $this->countLicensesByType($client, $contract, $line->base_license_type_id, vendorBillableOnly: false) : 1)
                 : 1;
             $includedPer = $line->included_per_base_unit ?? 0;
             $divisor = max(1, $line->overage_divisor ?? 1);
@@ -796,9 +822,12 @@ class BillingService
      */
     private function getLicenseStalenessHours(?Contract $contract, ?int $licenseTypeId): ?int
     {
+        // Staleness is measured over the same rows the quantity resolvers count, so the
+        // vendor-billable predicate applies here too: a held row's synced_at is frozen by
+        // design and would otherwise flag every resolution as stale.
         $query = $contract && $contract->licenses()->exists()
-            ? $contract->licenses()->where('licenses.status', 'active')
-            : ($contract ? $contract->client->licenses()->where('status', 'active') : null);
+            ? License::vendorBillable($contract->licenses(), 'licenses')->where('licenses.status', 'active')
+            : ($contract ? License::vendorBillable($contract->client->licenses())->where('status', 'active') : null);
 
         if (! $query) {
             return null;
@@ -837,7 +866,7 @@ class BillingService
             return null;
         }
 
-        $query = DB::table('licenses')
+        $query = License::vendorBillable(DB::table('licenses'))
             ->whereIn('client_id', $childIds)
             ->where('status', 'active');
 
