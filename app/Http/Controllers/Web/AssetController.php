@@ -259,13 +259,23 @@ class AssetController extends Controller
             return collect();
         }
 
+        // Both blank is not a match signal. Without this guard the nested
+        // where-group below has zero clauses, Laravel drops it entirely, and
+        // every same-client asset renders as a "possible duplicate" — inviting a
+        // wrong irreversible merge on a manually created asset (#584).
+        $serial = $asset->serial_number;
+        $hostname = $asset->hostname;
+        if (($serial === null || $serial === '') && ($hostname === null || $hostname === '')) {
+            return collect();
+        }
+
         return Asset::withTrashed()
             ->where('client_id', $asset->client_id)
             ->where('id', '!=', $asset->id)
             ->whereNull('merged_into_asset_id')
-            ->where(function ($q) use ($asset) {
-                $q->when($asset->serial_number, fn ($qq) => $qq->orWhere('serial_number', $asset->serial_number))
-                    ->when($asset->hostname, fn ($qq) => $qq->orWhere('hostname', $asset->hostname));
+            ->where(function ($q) use ($serial, $hostname) {
+                $q->when($serial !== null && $serial !== '', fn ($qq) => $qq->orWhere('serial_number', $serial))
+                    ->when($hostname !== null && $hostname !== '', fn ($qq) => $qq->orWhere('hostname', $hostname));
             })
             ->get(['id', 'name', 'hostname', 'serial_number', 'is_active', 'deleted_at']);
     }
@@ -318,6 +328,19 @@ class AssetController extends Controller
 
         if (! empty($summary['carried_identities'])) {
             $message .= ' Carried over: '.implode(', ', $summary['carried_identities']).'.';
+        }
+
+        if (! empty($summary['tickets_folded'])) {
+            $folded = $summary['tickets_folded'];
+            $message .= " Kept Halo/primary link data from {$folded} shared ticket link".($folded === 1 ? '' : 's').'.';
+        }
+
+        if (! empty($summary['reactivated_survivor'])) {
+            $message .= ' Reactivated this asset — it absorbed a live device, so it stays on the billed count.';
+        }
+
+        foreach ($summary['billing_warnings'] ?? [] as $warning) {
+            $message .= ' '.$warning;
         }
 
         return redirect()->route('assets.show', $survivor)->with('success', $message);

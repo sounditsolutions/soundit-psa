@@ -2683,9 +2683,10 @@ class StaffPsaActionToolExecutor
 
     /**
      * Held asset-merge proposal (#584). Never merges here: approval revalidates
-     * the pair and runs AssetService::mergeAssets. Identity conflicts (both
-     * assets carrying differing live vendor ids) refuse at proposal time so an
-     * un-approvable pair never reaches the cockpit. technician_runs.ticket_id
+     * the pair and runs AssetService::mergeAssets. Every refusal mergeAssets
+     * makes on the pair itself — differing live vendor ids, and a Tactical agent
+     * record on BOTH sides — is mirrored at proposal time so an un-approvable
+     * pair never reaches the cockpit. technician_runs.ticket_id
      * is NOT NULL, so the proposal anchors to a same-client ticket the work is
      * being done under.
      */
@@ -2733,6 +2734,12 @@ class StaffPsaActionToolExecutor
         $conflicts = $this->assetService->assetMergeIdentityConflicts($survivor, $duplicate);
         if ($conflicts !== []) {
             return ['error' => 'Refusing to propose: both assets carry a differing live external identity ('.implode(', ', array_keys($conflicts)).') — two live agents is two devices, not a duplicate.'];
+        }
+
+        // mergeAssets throws on this one too; refuse here so the pair never becomes
+        // a cockpit card that can only 500 when an operator approves it.
+        if ($this->assetService->assetMergeHasTacticalConflict($survivor, $duplicate)) {
+            return ['error' => 'Refusing to propose: both assets have a linked Tactical agent record — two live agents is two devices, not a duplicate.'];
         }
 
         $survivorLabel = $survivor->hostname ?: $survivor->name;

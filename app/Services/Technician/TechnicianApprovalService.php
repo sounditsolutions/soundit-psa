@@ -423,8 +423,9 @@ class TechnicianApprovalService
 
     /**
      * Approve a staged asset merge (#584). Revalidates the pair at approval
-     * time — either asset gone, cross-client, already merged, or newly
-     * conflicting external identities declines rather than executes.
+     * time — either asset gone, cross-client, already merged, newly conflicting
+     * external identities, or a Tactical agent record now on both sides declines
+     * rather than executes.
      * AssetService::mergeAssets re-enforces every guard inside its transaction
      * as the inner layer.
      */
@@ -505,7 +506,16 @@ class TechnicianApprovalService
             return null;
         }
 
-        if (app(\App\Services\AssetService::class)->assetMergeIdentityConflicts($survivor, $duplicate) !== []) {
+        $assetService = app(\App\Services\AssetService::class);
+
+        if ($assetService->assetMergeIdentityConflicts($survivor, $duplicate) !== []) {
+            return null;
+        }
+
+        // mergeAssets refuses a pair where BOTH rows carry a Tactical agent record
+        // with a RuntimeException, and this method's caller rethrows anything the
+        // executor throws — so revalidate it here and decline the card instead.
+        if ($assetService->assetMergeHasTacticalConflict($survivor, $duplicate)) {
             return null;
         }
 

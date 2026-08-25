@@ -317,4 +317,59 @@ class AssetMergeServiceTest extends TestCase
         $this->assertSame($survivor->id, $matches->first()->id);
         $this->assertNull($matches->first()->deleted_at);
     }
+
+    public function test_merge_clears_the_serial_number_so_the_rmm_serial_fallback_cannot_resurrect_the_tombstone(): void
+    {
+        // The sync services fall back to
+        // withTrashed()->where('serial_number', …)->whereNull('level_id') and write
+        // deleted_at => null. Clearing the duplicate's vendor ids is exactly what makes
+        // the tombstone eligible for that leg, so the serial must go too.
+        $user = User::factory()->create();
+        $client = Client::factory()->create();
+        $survivor = Asset::factory()->for($client)->create(['serial_number' => null, 'level_id' => null]);
+        $duplicate = Asset::factory()->for($client)->create(['serial_number' => 'SN-777', 'ninja_id' => 'ninja-live']);
+
+        $this->service()->mergeAssets($survivor, $duplicate, $user->id);
+
+        $matches = Asset::withTrashed()->where('serial_number', 'SN-777')->whereNull('level_id')->get();
+        $this->assertCount(1, $matches);
+        $this->assertSame($survivor->id, $matches->first()->id);
+        $this->assertNull(Asset::withTrashed()->find($duplicate->id)->serial_number);
+    }
+
+    public function test_merge_reactivates_an_inactive_survivor_that_absorbs_a_live_duplicate(): void
+    {
+        // BillingService::countAssets counts not-trashed + is_active + billed type —
+        // retiring the live row into an inactive survivor would drop the device.
+        $user = User::factory()->create();
+        $client = Client::factory()->create();
+        $survivor = Asset::factory()->for($client)->create(['is_active' => false]);
+        $duplicate = Asset::factory()->for($client)->create(['is_active' => true]);
+
+        $summary = $this->service()->mergeAssets($survivor, $duplicate, $user->id);
+
+        $this->assertTrue($summary['reactivated_survivor']);
+        $this->assertTrue((bool) $survivor->fresh()->is_active);
+    }
+
+    public function test_shared_ticket_link_folds_the_duplicate_pivot_data_into_the_survivor_row(): void
+    {
+        $user = User::factory()->create();
+        $client = Client::factory()->create();
+        $survivor = Asset::factory()->for($client)->create();
+        $duplicate = Asset::factory()->for($client)->create();
+
+        $ticket = $this->ticketFor($client, 'Shared');
+        $survivor->tickets()->attach($ticket->id, ['is_primary' => false, 'halo_asset_id' => null]);
+        $duplicate->tickets()->attach($ticket->id, ['is_primary' => true, 'halo_asset_id' => 'HALO-123']);
+
+        $summary = $this->service()->mergeAssets($survivor, $duplicate, $user->id);
+
+        $this->assertSame(0, $summary['tickets']);
+        $this->assertSame(1, $summary['tickets_folded']);
+        $row = DB::table('ticket_asset')->where('asset_id', $survivor->id)->where('ticket_id', $ticket->id)->first();
+        $this->assertSame('HALO-123', $row->halo_asset_id);
+        $this->assertTrue((bool) $row->is_primary);
+        $this->assertSame(0, DB::table('ticket_asset')->where('asset_id', $duplicate->id)->count());
+    }
 }

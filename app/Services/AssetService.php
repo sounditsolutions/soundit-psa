@@ -15,8 +15,11 @@ class AssetService
      * The identity columns are what RMM/vendor syncs and webhooks match on
      * (several write `deleted_at => null` straight through on a match, e.g.
      * NinjaSyncService/LevelSyncService and their webhook paths), so a merged
-     * duplicate MUST end with every one of these cleared — that is the only
-     * thing that actually stops it resurrecting on the next device event.
+     * duplicate MUST end with every one of these cleared. Necessary but NOT
+     * sufficient: those same syncs fall back to a serial_number match guarded by
+     * `whereNull(<vendor id>)`, and clearing the vendor ids is exactly what makes
+     * the tombstone eligible for that fallback — so mergeAssets clears the
+     * duplicate's serial_number too.
      * ninja_id / level_id / halo_id / controld_device_id / zorus_endpoint_id /
      * comet_device_id / m365_device_id / screenconnect_session_id are UNIQUE
      * indexes, which forces the clear-duplicate-then-save-survivor order below.
@@ -216,16 +219,32 @@ class AssetService
     }
 
     /**
+     * Both rows carrying their OWN Tactical detail row — the same two-live-agents
+     * situation as a differing vendor id, even when assets.tactical_asset_id is
+     * null on either side (the detail row links back via asset_id). Public for the
+     * same reason as assetMergeIdentityConflicts: mergeAssets throws on this, so
+     * the MCP propose path and the approval revalidation must refuse it too rather
+     * than let an un-approvable pair reach the cockpit and blow up at approval.
+     */
+    public function assetMergeHasTacticalConflict(Asset $survivor, Asset $duplicate): bool
+    {
+        return DB::table('tactical_assets')->where('asset_id', $duplicate->id)->exists()
+            && DB::table('tactical_assets')->where('asset_id', $survivor->id)->exists();
+    }
+
+    /**
      * Merge a duplicate asset into a surviving asset within the same client (#584).
      *
      * Repoints every reference to the duplicate (ticket links, alerts, user and
      * contract assignments, Tactical detail row and action logs, ScreenConnect
      * events), carries blank-only descriptive fields and any external vendor
-     * identity the survivor lacks, clears EVERY external identity on the
-     * duplicate (the only remedy that stops RMM sync/webhooks resurrecting it —
-     * those paths write `deleted_at => null` straight through, never restore()),
-     * then tombstones the duplicate: merged_into_asset_id set, inactive,
-     * soft-deleted. Mirrors PersonService::mergePeople: query-builder repoints
+     * identity the survivor lacks, clears EVERY external identity AND the
+     * serial_number on the duplicate (the RMM sync/webhook paths match on vendor
+     * id and FALL BACK to a serial_number match guarded by `whereNull(<vendor
+     * id>)`, then write `deleted_at => null` straight through, never restore() —
+     * so clearing the ids alone would leave the tombstone newly eligible for the
+     * serial leg), then tombstones the duplicate: merged_into_asset_id set,
+     * inactive, soft-deleted. Mirrors PersonService::mergePeople: query-builder repoints
      * (no model events), pessimistic locking, one transaction.
      *
      * A retired (soft-deleted) duplicate is accepted — retire is exactly the
@@ -236,7 +255,7 @@ class AssetService
      * rule reconciliation never strips the consolidated link — same reasoning
      * as mergePeople.
      *
-     * @return array{tickets:int,alerts:int,users:int,contracts:int,tactical_logs:int,screenconnect_events:int,carried_identities:array<int,string>}
+     * @return array{tickets:int,tickets_folded:int,alerts:int,users:int,contracts:int,tactical_logs:int,screenconnect_events:int,reactivated_survivor:bool,billing_warnings:array<int,string>,carried_identities:array<int,string>}
      */
     public function mergeAssets(Asset $survivor, Asset $duplicate, int $mergedByUserId): array
     {
@@ -253,6 +272,17 @@ class AssetService
             // duplicate may already be soft-deleted (retired); the survivor may not.
             $survivor = Asset::lockForUpdate()->findOrFail($survivor->id);
             $duplicate = Asset::withTrashed()->lockForUpdate()->findOrFail($duplicate->id);
+
+            // Re-run the caller-facing guards against the LOCKED rows, not the
+            // pre-lock snapshots: a concurrent reassignment between the caller's
+            // fetch and this transaction would otherwise let a cross-client merge
+            // through — the one invariant this service says must never break.
+            if ($survivor->id === $duplicate->id) {
+                throw new \InvalidArgumentException('Cannot merge an asset into itself.');
+            }
+            if ($survivor->client_id === null || $survivor->client_id !== $duplicate->client_id) {
+                throw new \InvalidArgumentException('Cannot merge assets from different clients. A cross-client duplicate is a mislinked asset — fix the client link first.');
+            }
 
             if ($survivor->merged_into_asset_id !== null) {
                 throw new \RuntimeException("Asset #{$survivor->id} was itself merged away and cannot survive a merge.");
@@ -274,17 +304,55 @@ class AssetService
             // two-live-agents situation even when assets.tactical_asset_id is
             // null on either side (the detail row links back via asset_id).
             $duplicateHasTactical = DB::table('tactical_assets')->where('asset_id', $duplicate->id)->exists();
-            if ($duplicateHasTactical && DB::table('tactical_assets')->where('asset_id', $survivor->id)->exists()) {
+            if ($this->assetMergeHasTacticalConflict($survivor, $duplicate)) {
                 throw new \RuntimeException('Refusing to merge: both assets have a linked Tactical agent record — two live agents is two devices, not a duplicate.');
             }
 
             // Ticket links — move the ones the survivor lacks (keeping is_primary /
-            // halo_asset_id on the moved row), drop the rest (unique ticket_id+asset_id).
+            // halo_asset_id on the moved row). For a ticket BOTH assets are linked to
+            // the duplicate's row can't move (unique ticket_id+asset_id), so fold its
+            // pivot data into the survivor's row before dropping it: is_primary and the
+            // Halo binding live only on that row and would otherwise be hard-deleted.
             $survivorTicketIds = DB::table('ticket_asset')->where('asset_id', $survivor->id)->pluck('ticket_id')->all();
             $ticketCount = DB::table('ticket_asset')
                 ->where('asset_id', $duplicate->id)
                 ->whereNotIn('ticket_id', $survivorTicketIds)
                 ->update(['asset_id' => $survivor->id]);
+
+            $foldedTicketCount = 0;
+            foreach (DB::table('ticket_asset')->where('asset_id', $duplicate->id)->get() as $sharedLink) {
+                $survivorLink = DB::table('ticket_asset')
+                    ->where('asset_id', $survivor->id)
+                    ->where('ticket_id', $sharedLink->ticket_id)
+                    ->first();
+                if (! $survivorLink) {
+                    continue;
+                }
+
+                $folded = [];
+                if (empty($survivorLink->halo_asset_id) && ! empty($sharedLink->halo_asset_id)) {
+                    $folded['halo_asset_id'] = $sharedLink->halo_asset_id;
+                }
+                // Never create a second primary asset on the ticket — same rule as
+                // the user assignments below.
+                if (! $survivorLink->is_primary && $sharedLink->is_primary
+                    && ! DB::table('ticket_asset')
+                        ->where('ticket_id', $sharedLink->ticket_id)
+                        ->where('asset_id', '!=', $duplicate->id)
+                        ->where('is_primary', true)
+                        ->exists()) {
+                    $folded['is_primary'] = true;
+                }
+
+                if ($folded !== []) {
+                    DB::table('ticket_asset')
+                        ->where('asset_id', $survivor->id)
+                        ->where('ticket_id', $sharedLink->ticket_id)
+                        ->update($folded);
+                    $foldedTicketCount++;
+                }
+            }
+
             DB::table('ticket_asset')->where('asset_id', $duplicate->id)->delete();
 
             // Alerts, Tactical action history, ScreenConnect events — plain FK repoints.
@@ -364,6 +432,26 @@ class AssetService
                 $duplicate->{$column} = null;
             }
 
+            // Billing safety: BillingService::countAssets counts not-trashed +
+            // is_active + billed asset_type, so retiring a live duplicate into an
+            // inactive survivor would silently drop a still-deployed device from the
+            // client's billed count. Reactivate the survivor instead. asset_type is
+            // fill-blank-only (never overwritten), so a survivor that already carries a
+            // different type is REPORTED rather than rewritten — the technician decides
+            // which type is right, but the divergence is never silent.
+            $duplicateWasLive = ! $duplicate->trashed() && (bool) $duplicate->is_active;
+            $reactivatedSurvivor = false;
+            $billingWarnings = [];
+            if ($duplicateWasLive && ! $survivor->is_active) {
+                $survivor->is_active = true;
+                $reactivatedSurvivor = true;
+            }
+            $duplicateType = $duplicate->getAttribute('asset_type');
+            if ($duplicateWasLive && $duplicateType !== null && $duplicateType !== ''
+                && (string) $survivor->asset_type !== (string) $duplicateType) {
+                $billingWarnings[] = "Device type kept as '{$survivor->asset_type}'; the merged live duplicate was '{$duplicateType}' — confirm the type is right for billing.";
+            }
+
             // Audit notes: a record line on the survivor, a tombstone on the duplicate.
             $merger = User::find($mergedByUserId)?->name ?? 'Unknown';
             $when = now()->toDateString();
@@ -382,17 +470,33 @@ class AssetService
             }
             $movedSummary = $moved ? ' Moved: '.implode(', ', $moved).'.' : '';
             $carriedSummary = $carriedIdentities ? ' Carried identities: '.implode(', ', $carriedIdentities).'.' : '';
+            $foldedSummary = $foldedTicketCount
+                ? " Kept Halo/primary link data from {$foldedTicketCount} shared ticket link".($foldedTicketCount === 1 ? '' : 's').'.'
+                : '';
+            $billingSummary = $reactivatedSurvivor ? ' Reactivated this asset: it absorbed a live device.' : '';
+            $warningSummary = $billingWarnings ? ' '.implode(' ', $billingWarnings) : '';
             $duplicateLabel = ($duplicate->hostname ?: $duplicate->name)." (#{$duplicate->id})";
             $survivorLabel = ($survivor->hostname ?: $survivor->name)." (#{$survivor->id})";
 
             $survivor->notes = trim(($survivor->notes ? $survivor->notes."\n\n" : '')
-                ."Merged duplicate asset '{$duplicateLabel}' on {$when} by {$merger}.{$movedSummary}{$carriedSummary}");
+                ."Merged duplicate asset '{$duplicateLabel}' on {$when} by {$merger}.{$movedSummary}{$foldedSummary}{$carriedSummary}{$billingSummary}{$warningSummary}");
+
+            // The tombstone's serial_number is a resurrection key in its own right:
+            // NinjaSyncService/LevelSyncService fall back to
+            // withTrashed()->where('serial_number', …)->whereNull('ninja_id'/'level_id')
+            // and write `deleted_at => null` straight through — and clearing the vendor
+            // ids above is precisely what makes this row eligible for that fallback. The
+            // serial is already carried to the survivor where it was blank, so clear it
+            // here and keep the record in the tombstone note.
+            $clearedSerial = $duplicate->serial_number;
+            $duplicate->serial_number = null;
 
             $duplicate->merged_into_asset_id = $survivor->id;
             $duplicate->is_active = false;
             $duplicate->rmm_online = null;
             $duplicate->notes = trim(($duplicate->notes ? $duplicate->notes."\n\n" : '')
-                ."Merged into '{$survivorLabel}' on {$when} by {$merger}.");
+                ."Merged into '{$survivorLabel}' on {$when} by {$merger}."
+                .($clearedSerial ? " Serial number '{$clearedSerial}' cleared from this tombstone so RMM serial-number matching binds to the survivor." : ''));
 
             // Persist the duplicate FIRST: it clears the duplicate's UNIQUE
             // external IDs so the survivor can take them on its own save without
@@ -408,11 +512,14 @@ class AssetService
 
             return [
                 'tickets' => $ticketCount,
+                'tickets_folded' => $foldedTicketCount,
                 'alerts' => $alertCount,
                 'users' => $movedUsers,
                 'contracts' => $movedContracts,
                 'tactical_logs' => $tacticalLogCount,
                 'screenconnect_events' => $screenconnectCount,
+                'reactivated_survivor' => $reactivatedSurvivor,
+                'billing_warnings' => $billingWarnings,
                 'carried_identities' => $carriedIdentities,
             ];
         });
