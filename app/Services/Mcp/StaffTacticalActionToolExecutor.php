@@ -76,7 +76,12 @@ class StaffTacticalActionToolExecutor
     private const COOLDOWNS = [
         'tactical_run_script' => 120,
         'tactical_stage_script' => 120,
-        'tactical_run_command' => 300,
+        // 0 = no dispatch cooldown, per Charlie's ruling 2026-08-25 (T-22782: a failed
+        // dispatch armed the window and blocked the live retry). The key must stay —
+        // every lookup falls back to `?? 60`, so deleting it would silently reinstate
+        // a 60s cooldown. Applies to direct dispatch AND the approval-time recheck of
+        // staged commands; the per-ticket staging cooldown below is separate and kept.
+        'tactical_run_command' => 0,
         'tactical_stage_command' => 300,
         'tactical_reboot_device' => 300,
         'tactical_stage_reboot' => 300,
@@ -1649,9 +1654,9 @@ class StaffTacticalActionToolExecutor
     {
         return self::tool(
             'tactical_run_command',
-            'Run an arbitrary command on one endpoint immediately. This is arbitrary remote code execution: it can change or destroy data, alter security posture, and disrupt service. Requires an explicit token grant, kill-switch, reason, confirm_hostname friction, dedup/cooldown, and audited TacticalActionService dispatch.',
+            'Run an arbitrary command on one endpoint immediately. This is arbitrary remote code execution: it can change or destroy data, alter security posture, and disrupt service. Requires an explicit token grant, kill-switch, reason, confirm_hostname friction, identical-content dedup, and audited TacticalActionService dispatch. No dispatch cooldown: distinct commands may be sent back-to-back.',
             array_merge(self::targetProperties(), [
-                'confirm_hostname' => ['type' => 'string', 'description' => 'Typed target hostname. Defense-in-depth friction only; grant, held/default posture, kill-switch, and cooldown are the real gates.'],
+                'confirm_hostname' => ['type' => 'string', 'description' => 'Typed target hostname. Defense-in-depth friction only; grant, held/default posture, and kill-switch are the real gates.'],
                 'shell' => ['type' => 'string', 'enum' => ['cmd', 'powershell', 'shell'], 'description' => 'Command shell.'],
                 'cmd' => ['type' => 'string', 'description' => 'Command body to execute. Avoid inline secrets; audits redact known credential shapes.'],
                 'timeout' => ['type' => 'integer', 'description' => 'Timeout seconds, 10 to 600.'],
