@@ -347,11 +347,10 @@ class AssetController extends Controller
             // fires only on type DIVERGENCE, so a survivor and duplicate sharing the same
             // non-billed type produce no warning and would get a false all-clear while the
             // still-deployed device sits on no invoice. Point at the type field instead —
-            // skipping that prompt only when a divergence warning below already carries it.
+            // unconditionally: the prompt is never false when the type is billed and
+            // coexists harmlessly with a divergence warning.
             $message .= ' Reactivated this asset — it absorbed a live device.';
-            if (empty($summary['billing_warnings'])) {
-                $message .= " Confirm its device type is one you bill — reactivation alone doesn't put it on the billed count.";
-            }
+            $message .= " Confirm its device type is one you bill — reactivation alone doesn't put it on the billed count.";
         }
 
         foreach ($summary['billing_warnings'] ?? [] as $warning) {
