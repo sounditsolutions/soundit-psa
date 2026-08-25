@@ -296,7 +296,7 @@ class TacticalActionToolsPhase2Test extends TestCase
         ]);
     }
 
-    public function test_direct_command_requires_reason_confirm_hostname_and_enforces_cooldown_before_upstream_call(): void
+    public function test_direct_command_requires_reason_confirm_hostname_and_has_no_dispatch_cooldown(): void
     {
         $this->configureTactical();
         $this->configureAiActor();
@@ -331,6 +331,10 @@ class TacticalActionToolsPhase2Test extends TestCase
             ->once()
             ->with('agent-1', 'hostname', 'powershell', 30)
             ->andReturn('PC-01');
+        $tactical->shouldReceive('cmd')
+            ->once()
+            ->with('agent-1', 'whoami', 'powershell', 30)
+            ->andReturn('corp\\svc');
         $this->app->instance(TacticalClient::class, $tactical);
 
         $first = $this->callTool($token, 'tactical_run_command', [
@@ -345,6 +349,8 @@ class TacticalActionToolsPhase2Test extends TestCase
         $first->assertOk();
         $this->assertFalse((bool) $first->json('result.isError'), (string) $first->json('result.content.0.text'));
 
+        // No dispatch cooldown (Charlie's ruling, T-22782): a rapid second DISTINCT
+        // command reaches upstream immediately.
         $second = $this->callTool($token, 'tactical_run_command', [
             'client_id' => $fixture['client']->id,
             'hostname' => 'PC-01',
@@ -352,13 +358,29 @@ class TacticalActionToolsPhase2Test extends TestCase
             'shell' => 'powershell',
             'cmd' => 'whoami',
             'timeout' => 30,
-            'reason' => 'Rapid second command should be blocked by cooldown.',
+            'reason' => 'Rapid second distinct command dispatches without a cooldown.',
         ]);
-        $this->assertTrue((bool) $second->json('result.isError'));
-        $this->assertStringContainsString('cooldown', (string) $second->json('result.content.0.text'));
+        $second->assertOk();
+        $this->assertFalse((bool) $second->json('result.isError'), (string) $second->json('result.content.0.text'));
 
-        $this->assertSame(1, TacticalActionLog::where('action_key', 'tactical.run_command')->count());
-        $this->assertSame(1, TechnicianActionLog::where('action_type', 'tactical_run_command')->where('result_status', 'executed')->count());
+        // Identical-content dedup is NOT the cooldown and must survive its removal:
+        // re-sending the exact first command is answered idempotent, no upstream call
+        // (the mock's once() on 'hostname' enforces that no second call was made).
+        $identical = $this->callTool($token, 'tactical_run_command', [
+            'client_id' => $fixture['client']->id,
+            'hostname' => 'PC-01',
+            'confirm_hostname' => 'PC-01',
+            'shell' => 'powershell',
+            'cmd' => 'hostname',
+            'timeout' => 30,
+            'reason' => 'Verify the device hostname.',
+        ]);
+        $identical->assertOk();
+        $this->assertFalse((bool) $identical->json('result.isError'), (string) $identical->json('result.content.0.text'));
+        $this->assertStringContainsString('Already executed', (string) $identical->json('result.content.0.text'));
+
+        $this->assertSame(2, TacticalActionLog::where('action_key', 'tactical.run_command')->count());
+        $this->assertSame(2, TechnicianActionLog::where('action_type', 'tactical_run_command')->where('result_status', 'executed')->count());
         $this->assertSame(1, TechnicianActionLog::where('action_type', 'tactical_run_command')->where('result_status', 'blocked')->count());
     }
 
