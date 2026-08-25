@@ -341,12 +341,17 @@ class AssetController extends Controller
         }
 
         if (! empty($summary['reactivated_survivor'])) {
-            // Reactivation only closes the is_active leg of BillingService::countAssets; the
-            // asset_type leg is fill-blank-only and merely reported. Never claim the billed
-            // count is settled while a billing warning says otherwise.
-            $message .= empty($summary['billing_warnings'])
-                ? ' Reactivated this asset — it absorbed a live device, so it stays on the billed count.'
-                : ' Reactivated this asset — it absorbed a live device.';
+            // Reactivation only closes the is_active leg of BillingService::countAssets. The
+            // asset_type leg is fill-blank-only and is never tested against the billed types,
+            // so this flash must NEVER assert the asset is on the billed count: billing_warnings
+            // fires only on type DIVERGENCE, so a survivor and duplicate sharing the same
+            // non-billed type produce no warning and would get a false all-clear while the
+            // still-deployed device sits on no invoice. Point at the type field instead —
+            // skipping that prompt only when a divergence warning below already carries it.
+            $message .= ' Reactivated this asset — it absorbed a live device.';
+            if (empty($summary['billing_warnings'])) {
+                $message .= " Confirm its device type is one you bill — reactivation alone doesn't put it on the billed count.";
+            }
         }
 
         foreach ($summary['billing_warnings'] ?? [] as $warning) {
