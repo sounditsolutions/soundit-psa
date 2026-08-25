@@ -54,9 +54,23 @@ use App\Models\TacticalScript;
  *    compatibility: treating an empty claim as "runs anywhere" is exactly how
  *    a wrong-platform always-failing check ships (psa-0pb9m R2).
  *  - AGENT target with a provably incompatible script → refused, no override.
- *  - POLICY target whose check could not run on some platform (a
- *    platform-bound script, or ANY non-script check — those are Windows-only
- *    per the vendor constraint above) → allowed ONLY on SERVER-DERIVED
+ *  - POLICY target, script check whose script DECLARES supported_platforms →
+ *    allowed WITHOUT membership proof. Tactical scopes policy script-check
+ *    delivery per member agent by the script's own supported_platforms:
+ *    generate_checks / delivered check lists include a policy script check
+ *    only when agent.is_supported_script(script.supported_platforms) — read
+ *    at the deployed v1.5.1 server (automation/models.py, agents/models.py
+ *    is_supported_script, 2026-08-25) — so a member on an undeclared
+ *    platform NEVER RECEIVES the check; the server itself withholds it.
+ *    Requiring an all-compatible membership on top of that was refusing
+ *    writes the vendor already renders safe (Charlie's ruling 2026-08-25:
+ *    "Tactical Option A" — platform scoping is the script's own
+ *    supported_platforms' job on mixed-platform policies).
+ *  - POLICY target whose check could not run on some platform AND is not
+ *    delivery-scoped upstream — a SHELL-ONLY script (empty
+ *    supported_platforms is delivered to EVERY member: `... if platforms
+ *    else True`), or ANY non-script check (Windows-only per the vendor
+ *    constraint above) — → allowed ONLY on SERVER-DERIVED
  *    MEMBERSHIP PROOF: the policy's current membership is resolved live from
  *    Tactical (GET automation/policies/{pk}/related/ + the fleet agents
  *    list) and every member agent must be on a provably compatible platform.
@@ -339,6 +353,21 @@ class TacticalCheckPlatformGuard
     {
         if ($isScriptCheck) {
             $meta = self::resolveScriptMeta($payload, $client);
+
+            // A script that DECLARES its supported_platforms is delivery-
+            // scoped by Tactical itself: a policy script check reaches a
+            // member agent only when is_supported_script(supported_platforms)
+            // says so, and members on undeclared platforms never receive it
+            // (automation/models.py + agents/models.py, read at the deployed
+            // v1.5.1 server). No membership proof is needed — the vendor
+            // withholds the check from incompatible members, including ones
+            // added to the policy later. A shell-only script gets no such
+            // scoping (empty supported_platforms delivers everywhere), so it
+            // falls through to the proof.
+            if (self::hasDeclaredPlatforms($meta['supported_platforms'])) {
+                return;
+            }
+
             $blocked = self::incompatiblePlatforms($meta['shell'], $meta['supported_platforms']);
         } else {
             // Non-script checks exist on WINDOWS agents only (vendor
@@ -357,8 +386,10 @@ class TacticalCheckPlatformGuard
             throw new TacticalClientException(
                 'Refusing to create this policy check before any write: '.$proof['reason']
                 .' A check that cannot run on a member platform fails on every run there and manufactures broken coverage '
-                .'(the original psa-0pb9m defect arrived through exactly this route). There is no override: either make the '
-                .'policy cover only compatible platforms, or target the compatible agents directly (one agent-target check each).'
+                .'(the original psa-0pb9m defect arrived through exactly this route). There is no override: for a script check, '
+                .'declare the script\'s supported_platforms in Tactical (Tactical then delivers the policy check only to members '
+                .'on those platforms); otherwise make the policy cover only compatible platforms, or target the compatible '
+                .'agents directly (one agent-target check each).'
             );
         }
     }
@@ -860,6 +891,27 @@ class TacticalCheckPlatformGuard
             return true;
         }
 
+        return self::hasDeclaredPlatforms($supportedPlatforms);
+    }
+
+    /**
+     * Whether script metadata DECLARES at least one supported platform (a
+     * non-blank supported_platforms entry). Deliberately narrower than
+     * hasUsablePlatformSignal: a shell alone is a usable signal for
+     * compatibility math, but it does NOT engage Tactical's per-agent policy
+     * delivery scoping — the server delivers a policy script check to a
+     * member only when the script's supported_platforms names the member's
+     * platform, and an EMPTY list is delivered to every member
+     * (agents/models.py is_supported_script: `plat in platforms if platforms
+     * else True`, read at the deployed v1.5.1 server 2026-08-25). Only a
+     * declared list therefore waives the policy membership proof. Public so
+     * the MCP executor pre-check makes the same call with its own audited
+     * copy.
+     *
+     * @param  array<int, mixed>|null  $supportedPlatforms
+     */
+    public static function hasDeclaredPlatforms(?array $supportedPlatforms): bool
+    {
         foreach ($supportedPlatforms ?? [] as $platform) {
             if (is_scalar($platform) && trim((string) $platform) !== '') {
                 return true;

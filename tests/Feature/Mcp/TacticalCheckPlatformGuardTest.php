@@ -30,10 +30,17 @@ use Tests\TestCase;
  * CLOSED before any upstream call: an agent whose platform is unknown is
  * refused (remedy: sync devices), a provably incompatible agent create is
  * refused outright, script metadata without a usable platform signal is
- * refused (absence is not compatibility), and a platform-bound check on a
- * POLICY is allowed only on SERVER-DERIVED MEMBERSHIP PROOF — the policy's
- * current member agents enumerated live from Tactical, every one on a
- * compatible platform. The R1 acknowledge_platform_risk boolean is GONE
+ * refused (absence is not compatibility). On a POLICY, a script that
+ * DECLARES supported_platforms is allowed regardless of membership: Tactical
+ * scopes policy script-check delivery per member agent by the script's own
+ * supported_platforms (agents/models.py is_supported_script — read at the
+ * deployed v1.5.1 server 2026-08-25), so members on undeclared platforms
+ * never receive the check (Charlie's ruling 2026-08-25, "Tactical Option
+ * A"). A platform-bound check WITHOUT that upstream scoping — a shell-only
+ * script (empty supported_platforms is delivered to every member), or any
+ * non-script check — is allowed only on SERVER-DERIVED MEMBERSHIP PROOF —
+ * the policy's current member agents enumerated live from Tactical, every
+ * one on a compatible platform. The R1 acknowledge_platform_risk boolean is GONE
  * (psa-0pb9m R2 HIGH): a caller-assertable claim was not evidence, and an AI
  * caller could simply retry with it set. The same invariant is enforced again
  * at the shared TacticalClient TRANSPORT seam — post() asserts the guard on
@@ -255,15 +262,61 @@ class TacticalCheckPlatformGuardTest extends TestCase
         $this->assertTrue($rejected, 'unknown-platform refusal must be audited');
     }
 
-    public function test_policy_target_with_a_mac_member_is_refused_pre_write_naming_the_member(): void
+    public function test_policy_target_with_a_mac_member_and_declared_platforms_creates_without_membership_proof(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+
+        // Charlie's ruling (2026-08-25, "Tactical Option A"): the script
+        // DECLARES supported_platforms=['windows'], and Tactical delivers a
+        // policy script check only to member agents on a declared platform
+        // (is_supported_script — read at the deployed v1.5.1 server), so a
+        // mixed-platform membership is irrelevant: the darwin members never
+        // receive the check. NO membership read happens and the create
+        // proceeds, with a note explaining the upstream delivery scoping.
+        $tactical = Mockery::mock(TacticalClient::class);
+        $tactical->shouldReceive('getPolicies')->once()->andReturn([['id' => 7, 'name' => 'Workstations']]);
+        $tactical->shouldReceive('getScripts')->once()->with(true, true)
+            ->andReturn($this->upstreamScripts('powershell', ['windows']));
+        $tactical->shouldNotReceive('getAutomationPolicyRelated');
+        $tactical->shouldNotReceive('getAgents');
+        $tactical->shouldReceive('createCheck')->once()->andReturn('Script Check was added!');
+        $tactical->shouldReceive('getPolicyChecks')->once()->with(7)->andReturn([
+            ['id' => 214, 'check_type' => 'script', 'script' => 102],
+        ]);
+        $this->app->instance(TacticalClient::class, $tactical);
+
+        $this->seedLocalScript();
+
+        $response = $this->callTool($this->token(), [
+            'reason' => 'Policy-wide detector; Tactical scopes delivery by supported_platforms.',
+            'policy_id' => 7,
+            'confirm_policy_name' => 'Workstations',
+            'script_name' => 'Fleet Health Detector',
+        ]);
+
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $payload = json_decode((string) $response->json('result.content.0.text'), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame(214, $payload['check_id']);
+        $this->assertArrayHasKey('platform_note', $payload);
+        $this->assertStringContainsStringIgnoringCase('supported_platforms', $payload['platform_note']);
+        $this->assertStringContainsStringIgnoringCase('never receive', $payload['platform_note']);
+    }
+
+    public function test_policy_target_with_a_mac_member_is_refused_for_a_shell_only_script_naming_the_member(): void
     {
         $this->configureTactical();
         $this->configureAiActor();
 
         $tactical = Mockery::mock(TacticalClient::class);
         $tactical->shouldReceive('getPolicies')->once()->andReturn([['id' => 7, 'name' => 'Workstations']]);
+        // SHELL-ONLY metadata: powershell with an EMPTY supported_platforms
+        // list. Tactical delivers such a policy check to EVERY member
+        // (is_supported_script: `... if platforms else True`), so upstream
+        // delivery scoping does NOT protect the darwin member and the
+        // membership proof still governs.
         $tactical->shouldReceive('getScripts')->once()->with(true, true)
-            ->andReturn($this->upstreamScripts('powershell', ['windows']));
+            ->andReturn($this->upstreamScripts('powershell', []));
         // SERVER-DERIVED membership proof (R2): the policy's related payload +
         // the fleet list are read live; the Mac member is discovered here, not
         // asserted away by a caller boolean.
@@ -298,9 +351,11 @@ class TacticalCheckPlatformGuardTest extends TestCase
         $this->assertTrue((bool) $response->json('result.isError'));
         $text = (string) $response->json('result.content.0.text');
         // The refusal is an informed affordance: it names the incompatible
-        // member and says there is no override.
+        // member, says there is no override, and names the declared-platforms
+        // remedy that WOULD make this create safe.
         $this->assertStringContainsString('MAC-01', $text);
         $this->assertStringContainsString('no override', $text);
+        $this->assertStringContainsString('supported_platforms', $text);
         $this->assertStringNotContainsString('acknowledge_platform_risk', $text, 'the caller-assertable escape hatch is gone');
     }
 
@@ -311,8 +366,11 @@ class TacticalCheckPlatformGuardTest extends TestCase
 
         $tactical = Mockery::mock(TacticalClient::class);
         $tactical->shouldReceive('getPolicies')->once()->andReturn([['id' => 7, 'name' => 'Workstations']]);
+        // Shell-only (empty supported_platforms): no upstream delivery
+        // scoping, so this Windows-bound script still needs the membership
+        // proof — the path this test pins.
         $tactical->shouldReceive('getScripts')->once()->with(true, true)
-            ->andReturn($this->upstreamScripts('powershell', ['windows']));
+            ->andReturn($this->upstreamScripts('powershell', []));
         $tactical->shouldReceive('getAutomationPolicyRelated')->with(7)->andReturn([
             'pk' => 7, 'name' => 'Workstations',
             'agents' => [
@@ -354,8 +412,9 @@ class TacticalCheckPlatformGuardTest extends TestCase
 
         $tactical = Mockery::mock(TacticalClient::class);
         $tactical->shouldReceive('getPolicies')->once()->andReturn([['id' => 7, 'name' => 'Workstations']]);
+        // Shell-only: still on the membership-proof path (see above).
         $tactical->shouldReceive('getScripts')->once()->with(true, true)
-            ->andReturn($this->upstreamScripts('powershell', ['windows']));
+            ->andReturn($this->upstreamScripts('powershell', []));
         $tactical->shouldReceive('getAutomationPolicyRelated')->once()->with(7)
             ->andThrow(new \App\Services\Tactical\TacticalClientException('boom'));
         // Unverifiable membership is UNKNOWN, and unknown is never compatible.
@@ -503,7 +562,10 @@ class TacticalCheckPlatformGuardTest extends TestCase
 
     public function test_client_boundary_refuses_policy_create_when_membership_includes_an_incompatible_agent(): void
     {
-        $this->seedLocalScript(); // powershell → cannot run on darwin/linux
+        // Shell-only catalog row (powershell, no declared supported_platforms):
+        // Tactical delivers such a policy check to EVERY member, so the
+        // membership proof still governs — cannot run on darwin/linux.
+        $this->seedLocalScript();
 
         // The guard reads membership over the SAME client: exactly two queued
         // read responses (related, then the fleet list). Refusal must consume
@@ -532,6 +594,36 @@ class TacticalCheckPlatformGuardTest extends TestCase
             'script' => 102,
             'name' => 'Policy check',
         ]);
+    }
+
+    public function test_client_boundary_allows_policy_create_for_a_declared_platform_script_without_membership_reads(): void
+    {
+        // Charlie's ruling (2026-08-25, "Tactical Option A"): a script that
+        // DECLARES supported_platforms is delivery-scoped by Tactical itself —
+        // a policy script check reaches a member agent only when
+        // is_supported_script(supported_platforms) says so (read at the
+        // deployed v1.5.1 server) — so the boundary requires no membership
+        // proof. The mock queue holds ONLY the write response: a membership
+        // read would consume it (or hit an empty queue) and fail, so success
+        // here is machine proof that zero membership HTTP happened.
+        TacticalScript::create([
+            'tactical_script_id' => 102,
+            'name' => 'Fleet Health Detector',
+            'shell' => 'powershell',
+            'supported_platforms' => ['windows'],
+            'synced_at' => now(),
+        ]);
+
+        $result = $this->realClient([
+            new \GuzzleHttp\Psr7\Response(200, [], json_encode('Script Check was added!')),
+        ])->createCheck([
+            'policy' => 7,
+            'check_type' => 'script',
+            'script' => 102,
+            'name' => 'Policy check',
+        ]);
+
+        $this->assertSame('Script Check was added!', $result);
     }
 
     public function test_client_boundary_refuses_non_script_policy_check_without_all_windows_proof(): void
