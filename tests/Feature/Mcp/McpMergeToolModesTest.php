@@ -313,5 +313,15 @@ class McpMergeToolModesTest extends TestCase
 
         $immediate = new McpStaffToken(allowedTools: ['merge_ticket'], toolModes: ['merge_ticket' => McpToolModes::MODE_IMMEDIATE]);
         $this->assertTrue($immediate->allowsImmediate('merge_ticket'));
+
+        // A SCOPED token holding no per-tool mode entry must not fall to the
+        // full-surface default: that default is legacy full-surface trust, not a
+        // scoped grant's. It resolves staged on every stageable capability, so a
+        // scoped token can never acquire an approval-free lane it was not granted.
+        $scopedBare = new McpStaffToken(allowedTools: ['send_email', 'close_ticket']);
+        foreach (['send_email', 'close_ticket'] as $name) {
+            $this->assertSame(McpToolModes::MODE_STAGED, McpToolModes::effectiveMode($scopedBare, $name));
+            $this->assertFalse($scopedBare->allowsImmediate($name), "scoped {$name} without an explicit mode entry must not execute immediately");
+        }
     }
 }
