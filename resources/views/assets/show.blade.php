@@ -2710,6 +2710,7 @@
     });
 })();
 </script>
+@endif
 
 {{-- Control D DNS Activity JS --}}
 @if($asset->controld_device_id && \App\Support\ControlDConfig::isAnalyticsConfigured())
