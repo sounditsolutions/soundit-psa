@@ -219,17 +219,46 @@ class AssetService
     }
 
     /**
-     * Both rows carrying their OWN Tactical detail row — the same two-live-agents
-     * situation as a differing vendor id, even when assets.tactical_asset_id is
-     * null on either side (the detail row links back via asset_id). Public for the
-     * same reason as assetMergeIdentityConflicts: mergeAssets throws on this, so
-     * the MCP propose path and the approval revalidation must refuse it too rather
-     * than let an un-approvable pair reach the cockpit and blow up at approval.
+     * Both rows carrying their OWN Tactical agent record — the same two-live-agents
+     * situation as a differing vendor id. The two link directions populate
+     * INDEPENDENTLY (assets.tactical_asset_id on the asset row, tactical_assets.asset_id
+     * pointing back), so each side is resolved from BOTH: a pair where the survivor is
+     * linked only by the column and the duplicate only by its detail row is still two
+     * live agents, and reading one direction alone would let mergeAssets repoint them
+     * onto a single asset. The SAME detail row on both sides is one agent double-linked,
+     * not a conflict — mirroring assetMergeIdentityConflicts. Public for the same reason
+     * as that method: mergeAssets throws on this, so the MCP propose path and the
+     * approval revalidation must refuse it too rather than let an un-approvable pair
+     * reach the cockpit and blow up at approval.
      */
     public function assetMergeHasTacticalConflict(Asset $survivor, Asset $duplicate): bool
     {
-        return DB::table('tactical_assets')->where('asset_id', $duplicate->id)->exists()
-            && DB::table('tactical_assets')->where('asset_id', $survivor->id)->exists();
+        $survivorAgents = $this->tacticalAgentRowIds($survivor);
+        $duplicateAgents = $this->tacticalAgentRowIds($duplicate);
+
+        return $survivorAgents !== [] && $duplicateAgents !== []
+            && count(array_unique(array_merge($survivorAgents, $duplicateAgents))) > 1;
+    }
+
+    /**
+     * Every Tactical detail row this asset is linked to, by detail-row id, across BOTH
+     * link directions — tactical_assets.asset_id pointing at the asset, and the asset's
+     * own tactical_asset_id column. Either can be populated without the other, so the
+     * conflict guard must read both. A column pointing at a row that no longer exists
+     * still counts: a refusal is the safe side of a stale link.
+     *
+     * @return array<int, int>
+     */
+    private function tacticalAgentRowIds(Asset $asset): array
+    {
+        $ids = DB::table('tactical_assets')->where('asset_id', $asset->id)->pluck('id')->all();
+
+        $linked = $asset->getAttribute('tactical_asset_id');
+        if ($linked !== null && $linked !== '') {
+            $ids[] = $linked;
+        }
+
+        return array_values(array_unique(array_map('intval', $ids)));
     }
 
     /**
@@ -300,9 +329,11 @@ class AssetService
                 throw new \RuntimeException('Refusing to merge: both assets carry a live external identity that differs — two live agents is two devices, not a duplicate. Conflicting: '.implode('; ', $pairs).'.');
             }
 
-            // Both assets carrying their OWN Tactical detail row is the same
-            // two-live-agents situation even when assets.tactical_asset_id is
-            // null on either side (the detail row links back via asset_id).
+            // Both assets carrying their OWN Tactical agent record is the same
+            // two-live-agents situation, whichever direction each side is linked by
+            // (assets.tactical_asset_id, or tactical_assets.asset_id pointing back) —
+            // the guard resolves both so a mixed-direction pair cannot slip past and
+            // have the repoint below collapse two agents onto one asset.
             $duplicateHasTactical = DB::table('tactical_assets')->where('asset_id', $duplicate->id)->exists();
             if ($this->assetMergeHasTacticalConflict($survivor, $duplicate)) {
                 throw new \RuntimeException('Refusing to merge: both assets have a linked Tactical agent record — two live agents is two devices, not a duplicate.');
