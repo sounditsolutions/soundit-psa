@@ -148,7 +148,13 @@ class McpStaffController extends Controller
         'stage_email',
         'write_public_note',
         'stage_public_note',
+        // merge_ticket/merge_asset are the canonical stageable names; propose_merge /
+        // propose_asset_merge are their staged twins (the mode gate rewrites the
+        // canonical name to them), so all four must route to StaffPsaActionToolExecutor
+        // — mirrors send_email/stage_email and close_ticket/stage_close_ticket.
+        'merge_ticket',
         'propose_merge',
+        'merge_asset',
         'propose_asset_merge',
         'update_ticket',
         'set_ticket_status',
@@ -1269,11 +1275,11 @@ class McpStaffController extends Controller
             return $this->auditBodyLengthArguments($args);
         }
 
-        if ($tool === 'propose_merge') {
+        if ($tool === 'merge_ticket' || $tool === 'propose_merge') {
             return $this->auditProposeMergeArguments($args);
         }
 
-        if ($tool === 'propose_asset_merge') {
+        if ($tool === 'merge_asset' || $tool === 'propose_asset_merge') {
             return $this->auditProposeAssetMergeArguments($args);
         }
 
@@ -2389,9 +2395,13 @@ class McpStaffController extends Controller
     }
 
     /**
-     * Whether staged=false may execute a stageable tool now. The legacy
-     * full-surface token retains full trust; scoped tokens need the per-tool
-     * immediate mode grant (see McpStaffToken::allowsImmediate()).
+     * Whether staged=false may execute a stageable tool now. Delegates to
+     * McpStaffToken::allowsImmediate(), which resolves the mode through
+     * McpToolModes::effectiveMode() — the same single resolution point
+     * tools/list advertises from, so this gate can never grant a lane the
+     * published surface says is approval-gated. A capability whose immediate
+     * lane is new (merge_ticket / merge_asset) needs the explicit per-tool
+     * `:immediate` grant; every other stageable tool keeps its legacy default.
      */
     private function allowsImmediateExecution(Request $request, string $toolName): bool
     {

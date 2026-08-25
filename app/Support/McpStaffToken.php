@@ -34,18 +34,27 @@ final class McpStaffToken
     }
 
     /**
-     * Whether staged=false may execute this stageable tool now. The legacy
-     * full-surface token keeps full trust; scoped tokens need the immediate
-     * mode grant. (Staging itself needs only allows() — any grant of a
-     * stageable tool permits the strictly-safer staged path.)
+     * Whether staged=false may execute this stageable tool now. Resolved through
+     * McpToolModes::effectiveMode() — the SAME call tools/list resolves the
+     * advertised definition with — so the surface a token is shown and the lane
+     * it can actually reach cannot drift apart. A token holding no per-tool mode
+     * entry, INCLUDING the legacy full-surface token (allowedTools === null),
+     * therefore falls to McpToolModes::defaultMode(): full trust exactly as
+     * before, except for the capabilities whose immediate lane did not exist
+     * before the unification (merge_ticket / merge_asset), which need the
+     * explicit `:immediate` grant rather than acquiring an approval-free
+     * destructive lane on deploy. An ungranted tool stays fail-closed here even
+     * though the grant gate already refused it. (Staging itself needs only
+     * allows() — any grant of a stageable tool permits the strictly-safer
+     * staged path.)
      */
     public function allowsImmediate(string $toolName): bool
     {
-        if ($this->allowedTools === null) {
-            return true;
+        if (! $this->allows($toolName)) {
+            return false;
         }
 
-        return $this->modeFor($toolName) === McpToolModes::MODE_IMMEDIATE;
+        return McpToolModes::effectiveMode($this, $toolName) === McpToolModes::MODE_IMMEDIATE;
     }
 
     public function actorLabel(): string

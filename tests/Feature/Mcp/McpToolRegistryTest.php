@@ -43,7 +43,10 @@ class McpToolRegistryTest extends TestCase
         $this->assertNotContains('stage_email', $names('psa_action'));
         $this->assertContains('write_public_note', $names('psa_action'));
         $this->assertNotContains('stage_public_note', $names('psa_action'));
-        $this->assertContains('propose_merge', $names('psa_action'));
+        $this->assertContains('merge_ticket', $names('psa_action'));
+        $this->assertNotContains('propose_merge', $names('psa_action'));
+        $this->assertContains('merge_asset', $names('psa_action'));
+        $this->assertNotContains('propose_asset_merge', $names('psa_action'));
         $this->assertContains('create_client', $names('psa_records'));
         $this->assertContains('update_client', $names('psa_records'));
         $this->assertContains('update_client_site_notes', $names('psa_records'));
@@ -228,7 +231,8 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('tactical_get_or_create_installer', $all);
         $this->assertContains('send_email', $all);
         $this->assertContains('write_public_note', $all);
-        $this->assertContains('propose_merge', $all);
+        $this->assertContains('merge_ticket', $all);
+        $this->assertContains('merge_asset', $all);
         $this->assertContains('post_to_operator', $all);
         $this->assertSame(array_values(array_unique($all)), $all, 'no duplicates');
     }
