@@ -190,12 +190,12 @@ class PsaActionToolsTest extends TestCase
         $this->assertTrue($groups['psa_action']['sensitive']);
 
         $actionNames = array_column($groups['psa_action']['tools'], 'name');
-        foreach (['create_ticket', 'send_email', 'write_public_note', 'propose_merge', 'update_ticket', 'set_ticket_status', 'assign_ticket', 'assign_asset', 'unassign_asset', 'set_ticket_contact', 'move_ticket_to_client'] as $name) {
+        foreach (['create_ticket', 'send_email', 'write_public_note', 'merge_ticket', 'update_ticket', 'set_ticket_status', 'assign_ticket', 'assign_asset', 'unassign_asset', 'set_ticket_contact', 'move_ticket_to_client'] as $name) {
             $this->assertContains($name, $actionNames);
         }
         // Retired staged aliases: callable, but the catalog carries only the
-        // canonical capability (send_email / write_public_note).
-        foreach (['stage_email', 'stage_public_note'] as $alias) {
+        // canonical capability (send_email / write_public_note / merge_ticket).
+        foreach (['stage_email', 'stage_public_note', 'propose_merge', 'propose_asset_merge'] as $alias) {
             $this->assertNotContains($alias, $actionNames);
             $this->assertContains(McpToolModes::canonicalForAlias($alias), $actionNames);
         }

@@ -49,6 +49,8 @@ class McpToolModes
         'stage_email' => 'send_email',
         'stage_public_note' => 'write_public_note',
         'stage_close_ticket' => 'close_ticket',
+        'propose_merge' => 'merge_ticket',
+        'propose_asset_merge' => 'merge_asset',
     ];
 
     /**

@@ -91,7 +91,9 @@ class StaffPsaActionToolExecutor
             'write_public_note' => $this->writePublicNote($arguments, $clientId, $actorLabel, $tokenLabel),
             'stage_email' => $this->stageTicketAction('stage_email', $arguments, $clientId, $actorLabel, sendsEmail: true, tokenLabel: $tokenLabel),
             'stage_public_note' => $this->stageTicketAction('stage_public_note', $arguments, $clientId, $actorLabel, sendsEmail: false, tokenLabel: $tokenLabel),
+            'merge_ticket' => $this->mergeTicketNow($arguments, $clientId, $actorLabel),
             'propose_merge' => $this->proposeMerge($arguments, $clientId, $actorLabel),
+            'merge_asset' => $this->mergeAssetNow($arguments, $clientId, $actorLabel),
             'propose_asset_merge' => $this->proposeAssetMerge($arguments, $clientId, $actorLabel),
             'update_ticket' => $this->updateTicket($arguments, $clientId, $actorLabel),
             'set_ticket_status' => $this->setTicketStatus($arguments, $clientId, $actorLabel),
@@ -2586,6 +2588,182 @@ class StaffPsaActionToolExecutor
             'ticket_display_id' => $ticket->display_id,
             'run_id' => $run->id,
             'message' => 'Staged for cockpit approval.',
+        ];
+    }
+
+    /**
+     * Immediate ticket merge — the staged=false lane of the merge_ticket
+     * capability (propose_merge is its staged twin). Only reachable when the
+     * token holds the immediate mode grant; the controller's mode gate
+     * downgrades every other call to the staged proposal path.
+     *
+     * @return array<string, mixed>
+     */
+    private function mergeTicketNow(array $arguments, int $clientId, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $reason = $this->requiredString($arguments, 'reason');
+        if ($reason === null) {
+            return ['error' => 'reason is required'];
+        }
+
+        $primaryId = $this->positiveInteger($arguments['primary_ticket_id'] ?? null);
+        $secondaryId = $this->positiveInteger($arguments['secondary_ticket_id'] ?? null);
+        if ($primaryId === null || $secondaryId === null) {
+            return ['error' => 'primary_ticket_id and secondary_ticket_id are required'];
+        }
+
+        $pair = $this->mergePairForClient($primaryId, $secondaryId, $clientId);
+        if (isset($pair['error'])) {
+            // An exact retry of a merge that already executed fails the pair guard
+            // (the secondary now carries parent_ticket_id), so the dedup below can
+            // never see it — answer it idempotently here instead of as an error.
+            $merged = Ticket::find($primaryId);
+            if ($merged && (int) $merged->client_id === $clientId
+                && $this->alreadyExecuted('merge_ticket', $merged->id, $this->contentHash('merge_ticket', $merged->id, "{$secondaryId}:{$reason}"))) {
+                return $this->idempotentResult('merge_ticket', $merged);
+            }
+
+            return $pair;
+        }
+
+        /** @var Ticket $primary */
+        $primary = $pair['primary'];
+        /** @var Ticket $secondary */
+        $secondary = $pair['secondary'];
+
+        $contentHash = $this->contentHash('merge_ticket', $primary->id, "{$secondary->id}:{$reason}");
+        if ($this->alreadyExecuted('merge_ticket', $primary->id, $contentHash)) {
+            return $this->idempotentResult('merge_ticket', $primary);
+        }
+
+        if ($this->rateLimited('merge_ticket', $primary->id, $this->cooldownSeconds('mcp_direct_merge_ticket_cooldown_seconds', 300))) {
+            return ['error' => 'merge_ticket rate limit: a ticket was already merged into this primary recently'];
+        }
+
+        try {
+            DB::transaction(function () use ($primary, $secondary, $actorLabel, $contentHash, $reason): void {
+                $this->ticketService->mergeTickets($primary, $secondary, TechnicianConfig::requiredAiActorUserId());
+                $summary = "Direct MCP ticket merge: #{$secondary->id} into #{$primary->id} — ".EmailRedactor::redact($reason);
+                $this->auditDirectExecution('merge_ticket', $primary, $actorLabel, $contentHash, $summary);
+            });
+        } catch (\InvalidArgumentException $e) {
+            return ['error' => $e->getMessage()];
+        }
+
+        return [
+            'success' => true,
+            'ticket_id' => $primary->id,
+            'ticket_display_id' => $primary->display_id,
+            'merged_ticket_id' => $secondary->id,
+            'message' => "Ticket #{$secondary->id} merged into #{$primary->id}.",
+        ];
+    }
+
+    /**
+     * Immediate asset merge — the staged=false lane of the merge_asset
+     * capability (propose_asset_merge is its staged twin). Pre-checks mirror
+     * the proposal path so refusals carry the same copy; mergeAssets
+     * re-enforces every guard against locked rows inside its transaction.
+     *
+     * @return array<string, mixed>
+     */
+    private function mergeAssetNow(array $arguments, int $clientId, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $reason = $this->requiredString($arguments, 'reason');
+        if ($reason === null) {
+            return ['error' => 'reason is required'];
+        }
+
+        $survivorId = $this->positiveInteger($arguments['survivor_asset_id'] ?? null);
+        $duplicateId = $this->positiveInteger($arguments['duplicate_asset_id'] ?? null);
+        if ($survivorId === null || $duplicateId === null) {
+            return ['error' => 'survivor_asset_id and duplicate_asset_id are required'];
+        }
+        if ($survivorId === $duplicateId) {
+            return ['error' => 'survivor_asset_id and duplicate_asset_id must differ.'];
+        }
+
+        $ticketId = $this->positiveInteger($arguments['ticket_id'] ?? null);
+        if ($ticketId === null) {
+            return ['error' => 'ticket_id is required for asset merges'];
+        }
+        $ticket = Ticket::find($ticketId);
+        if (! $ticket || (int) $ticket->client_id !== $clientId) {
+            return ['error' => 'Ticket not found or belongs to a different client'];
+        }
+
+        $survivor = Asset::find($survivorId);
+        if (! $survivor || (int) $survivor->client_id !== $clientId) {
+            return ['error' => 'Survivor asset not found or belongs to a different client'];
+        }
+        if ($survivor->merged_into_asset_id !== null) {
+            return ['error' => "Survivor asset #{$survivor->id} was itself merged away."];
+        }
+
+        $duplicate = Asset::withTrashed()->find($duplicateId);
+        if (! $duplicate || (int) $duplicate->client_id !== $clientId) {
+            return ['error' => 'Duplicate asset not found or belongs to a different client'];
+        }
+        if ($duplicate->merged_into_asset_id !== null) {
+            // An exact retry of a merge that already executed lands here (the
+            // duplicate now carries the tombstone) — answer it idempotently.
+            if ((int) $duplicate->merged_into_asset_id === $survivor->id
+                && $this->alreadyExecuted('merge_asset', $ticket->id, $this->contentHash('merge_asset', $ticket->id, "{$survivor->id}:{$duplicate->id}:{$reason}"))) {
+                return $this->idempotentResult('merge_asset', $ticket);
+            }
+
+            return ['error' => "Asset #{$duplicate->id} was already merged into asset #{$duplicate->merged_into_asset_id}."];
+        }
+
+        $conflicts = $this->assetService->assetMergeIdentityConflicts($survivor, $duplicate);
+        if ($conflicts !== []) {
+            return ['error' => 'Refusing to merge: both assets carry a differing live external identity ('.implode(', ', array_keys($conflicts)).') — two live agents is two devices, not a duplicate.'];
+        }
+
+        if ($this->assetService->assetMergeHasTacticalConflict($survivor, $duplicate)) {
+            return ['error' => 'Refusing to merge: both assets have a linked Tactical agent record — two live agents is two devices, not a duplicate.'];
+        }
+
+        $survivorLabel = $survivor->hostname ?: $survivor->name;
+        $duplicateLabel = $duplicate->hostname ?: $duplicate->name;
+
+        $contentHash = $this->contentHash('merge_asset', $ticket->id, "{$survivor->id}:{$duplicate->id}:{$reason}");
+        if ($this->alreadyExecuted('merge_asset', $ticket->id, $contentHash)) {
+            return $this->idempotentResult('merge_asset', $ticket);
+        }
+
+        if ($this->rateLimited('merge_asset', $ticket->id, $this->cooldownSeconds('mcp_direct_merge_asset_cooldown_seconds', 300))) {
+            return ['error' => 'merge_asset rate limit: an asset merge was already executed under this ticket recently'];
+        }
+
+        try {
+            $mergeSummary = DB::transaction(function () use ($ticket, $survivor, $duplicate, $survivorLabel, $duplicateLabel, $actorLabel, $contentHash, $reason): array {
+                $mergeSummary = $this->assetService->mergeAssets($survivor, $duplicate, TechnicianConfig::requiredAiActorUserId());
+                $summary = "Direct MCP asset merge: #{$duplicate->id} ({$duplicateLabel}) into #{$survivor->id} ({$survivorLabel}) — ".EmailRedactor::redact($reason);
+                $this->auditDirectExecution('merge_asset', $ticket, $actorLabel, $contentHash, $summary);
+
+                return $mergeSummary;
+            });
+        } catch (\InvalidArgumentException|\RuntimeException $e) {
+            return ['error' => $e->getMessage()];
+        }
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'survivor_asset_id' => $survivor->id,
+            'duplicate_asset_id' => $duplicate->id,
+            'merge_summary' => $mergeSummary,
+            'message' => "Asset #{$duplicate->id} ({$duplicateLabel}) merged into #{$survivor->id} ({$survivorLabel}).",
         ];
     }
 

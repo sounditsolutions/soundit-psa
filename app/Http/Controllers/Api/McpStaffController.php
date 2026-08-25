@@ -148,7 +148,13 @@ class McpStaffController extends Controller
         'stage_email',
         'write_public_note',
         'stage_public_note',
+        // merge_ticket/merge_asset are the canonical stageable names; propose_merge /
+        // propose_asset_merge are their staged twins (the mode gate rewrites the
+        // canonical name to them), so all four must route to StaffPsaActionToolExecutor
+        // — mirrors send_email/stage_email and close_ticket/stage_close_ticket.
+        'merge_ticket',
         'propose_merge',
+        'merge_asset',
         'propose_asset_merge',
         'update_ticket',
         'set_ticket_status',
@@ -1269,11 +1275,11 @@ class McpStaffController extends Controller
             return $this->auditBodyLengthArguments($args);
         }
 
-        if ($tool === 'propose_merge') {
+        if ($tool === 'merge_ticket' || $tool === 'propose_merge') {
             return $this->auditProposeMergeArguments($args);
         }
 
-        if ($tool === 'propose_asset_merge') {
+        if ($tool === 'merge_asset' || $tool === 'propose_asset_merge') {
             return $this->auditProposeAssetMergeArguments($args);
         }
 

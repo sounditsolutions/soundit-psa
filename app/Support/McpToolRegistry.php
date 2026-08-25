@@ -514,7 +514,9 @@ class McpToolRegistry
             self::stageEmailTool(),
             self::writePublicNoteTool(),
             self::stagePublicNoteTool(),
+            self::mergeTicketTool(),
             self::proposeMergeTool(),
+            self::mergeAssetTool(),
             self::proposeAssetMergeTool(),
             self::updateTicketTool(),
             self::setTicketStatusTool(),
@@ -1008,6 +1010,64 @@ class McpToolRegistry
                     ],
                 ],
                 'required' => ['ticket_id', 'reason', 'body'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function mergeTicketTool(): array
+    {
+        return [
+            'name' => 'merge_ticket',
+            'description' => 'Merge a duplicate ticket into its primary immediately: notes, calls, emails and asset links move to the primary and the secondary is closed as merged. Immediate execution requires the per-tool immediate mode grant; without it (or with staged=true) the call is held as a merge proposal for cockpit approval.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'primary_ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'Ticket ID that should remain as the primary ticket.',
+                    ],
+                    'secondary_ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'Ticket ID that should be merged into the primary ticket.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Specific ticket-based evidence that the two tickets are duplicates.',
+                    ],
+                ],
+                'required' => ['primary_ticket_id', 'secondary_ticket_id', 'reason'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function mergeAssetTool(): array
+    {
+        return [
+            'name' => 'merge_asset',
+            'description' => 'Merge a duplicate asset record into the surviving one immediately: tickets, alerts, user/contract assignments and RMM history move to the survivor and the duplicate is retired with a tombstone. Refused when both assets carry differing live RMM identities — that is two devices, not a duplicate. Immediate execution requires the per-tool immediate mode grant; without it (or with staged=true) the call is held as an asset-merge proposal for cockpit approval.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'survivor_asset_id' => [
+                        'type' => 'integer',
+                        'description' => 'Asset ID that should remain as the live device record.',
+                    ],
+                    'duplicate_asset_id' => [
+                        'type' => 'integer',
+                        'description' => 'Asset ID that should be merged into the survivor and retired. A retired (soft-deleted) duplicate is accepted.',
+                    ],
+                    'ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'Open ticket on the same client this merge is worked under; the action audit anchors to it.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Specific evidence that the two asset records are the same physical device.',
+                    ],
+                ],
+                'required' => ['survivor_asset_id', 'duplicate_asset_id', 'ticket_id', 'reason'],
             ],
         ];
     }
