@@ -3,10 +3,43 @@
 namespace App\Services;
 
 use App\Models\Asset;
+use App\Models\User;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Facades\DB;
 
 class AssetService
 {
+    /**
+     * External identity column => the vendor companion columns carried with it.
+     *
+     * The identity columns are what RMM/vendor syncs and webhooks match on
+     * (several write `deleted_at => null` straight through on a match, e.g.
+     * NinjaSyncService/LevelSyncService and their webhook paths), so a merged
+     * duplicate MUST end with every one of these cleared — that is the only
+     * thing that actually stops it resurrecting on the next device event.
+     * ninja_id / level_id / halo_id / controld_device_id / zorus_endpoint_id /
+     * comet_device_id / m365_device_id / screenconnect_session_id are UNIQUE
+     * indexes, which forces the clear-duplicate-then-save-survivor order below.
+     */
+    private const EXTERNAL_IDENTITY_COLUMNS = [
+        'ninja_id' => ['ninja_url', 'ninja_synced_at'],
+        'level_id' => ['level_url', 'level_synced_at'],
+        'halo_id' => [],
+        'tactical_asset_id' => [],
+        'controld_device_id' => ['controld_profile_name', 'controld_status', 'controld_agent_status', 'controld_agent_version', 'controld_last_seen_at', 'controld_synced_at'],
+        'zorus_endpoint_id' => ['zorus_group_name', 'zorus_filtering_enabled', 'zorus_cybersight_enabled', 'zorus_agent_version', 'zorus_agent_state', 'zorus_last_seen_at', 'zorus_synced_at'],
+        'comet_device_id' => ['comet_username', 'comet_backup_enabled', 'backup_cloud_bytes', 'backup_local_bytes', 'backup_revisions_bytes', 'backup_synced_at'],
+        'servosity_dr_backup_id' => ['servosity_backup_enabled', 'servosity_backup_password'],
+        'm365_device_id' => ['m365_compliance_state', 'm365_is_compliant', 'm365_enrollment_type', 'm365_os_version', 'm365_last_sync_at', 'm365_device_owner_type', 'm365_defender_status', 'm365_defender_version', 'm365_last_scan_at', 'm365_synced_at'],
+        'screenconnect_session_id' => ['screenconnect_online', 'screenconnect_client_version', 'screenconnect_last_seen_at', 'screenconnect_synced_at'],
+    ];
+
+    /** Plain descriptive fields carried onto the survivor only where it is blank. */
+    private const FILL_BLANK_COLUMNS = [
+        'serial_number', 'hostname', 'asset_type', 'os', 'cpu', 'ram_gb',
+        'disk_summary', 'ip_address', 'last_user', 'warranty_start',
+        'warranty_end', 'last_seen_at', 'last_boot_at',
+    ];
     public function getAssetList(array $filters): LengthAwarePaginator
     {
         $query = Asset::query()->with(['client', 'users' => fn ($q) => $q->wherePivot('is_primary', true)]);
@@ -157,6 +190,232 @@ class AssetService
         $asset->update($data);
 
         return $asset->fresh();
+    }
+
+    /**
+     * External-identity columns where BOTH rows carry a value and the values
+     * differ. Two live vendor identities is two devices, not a duplicate —
+     * every caller must refuse the merge and name the pairs. Public so the
+     * MCP propose path can refuse at proposal time, not only at approval.
+     *
+     * @return array<string, array{survivor: mixed, duplicate: mixed}> column => both values
+     */
+    public function assetMergeIdentityConflicts(Asset $survivor, Asset $duplicate): array
+    {
+        $conflicts = [];
+        foreach (array_keys(self::EXTERNAL_IDENTITY_COLUMNS) as $column) {
+            $survivorValue = $survivor->getAttribute($column);
+            $duplicateValue = $duplicate->getAttribute($column);
+            if ($survivorValue !== null && $duplicateValue !== null
+                && (string) $survivorValue !== (string) $duplicateValue) {
+                $conflicts[$column] = ['survivor' => $survivorValue, 'duplicate' => $duplicateValue];
+            }
+        }
+
+        return $conflicts;
+    }
+
+    /**
+     * Merge a duplicate asset into a surviving asset within the same client (#584).
+     *
+     * Repoints every reference to the duplicate (ticket links, alerts, user and
+     * contract assignments, Tactical detail row and action logs, ScreenConnect
+     * events), carries blank-only descriptive fields and any external vendor
+     * identity the survivor lacks, clears EVERY external identity on the
+     * duplicate (the only remedy that stops RMM sync/webhooks resurrecting it —
+     * those paths write `deleted_at => null` straight through, never restore()),
+     * then tombstones the duplicate: merged_into_asset_id set, inactive,
+     * soft-deleted. Mirrors PersonService::mergePeople: query-builder repoints
+     * (no model events), pessimistic locking, one transaction.
+     *
+     * A retired (soft-deleted) duplicate is accepted — retire is exactly the
+     * wrong tool this replaces, so the common repair case is a duplicate
+     * someone already retired. The survivor must be live.
+     *
+     * Moved contract assignments are stored as `manual` with no rule_id so
+     * rule reconciliation never strips the consolidated link — same reasoning
+     * as mergePeople.
+     *
+     * @return array{tickets:int,alerts:int,users:int,contracts:int,tactical_logs:int,screenconnect_events:int,carried_identities:array<int,string>}
+     */
+    public function mergeAssets(Asset $survivor, Asset $duplicate, int $mergedByUserId): array
+    {
+        if ($survivor->id === $duplicate->id) {
+            throw new \InvalidArgumentException('Cannot merge an asset into itself.');
+        }
+
+        if ($survivor->client_id === null || $survivor->client_id !== $duplicate->client_id) {
+            throw new \InvalidArgumentException('Cannot merge assets from different clients. A cross-client duplicate is a mislinked asset — fix the client link first.');
+        }
+
+        return DB::transaction(function () use ($survivor, $duplicate, $mergedByUserId) {
+            // Pessimistic lock both rows for the duration of the merge. The
+            // duplicate may already be soft-deleted (retired); the survivor may not.
+            $survivor = Asset::lockForUpdate()->findOrFail($survivor->id);
+            $duplicate = Asset::withTrashed()->lockForUpdate()->findOrFail($duplicate->id);
+
+            if ($survivor->merged_into_asset_id !== null) {
+                throw new \RuntimeException("Asset #{$survivor->id} was itself merged away and cannot survive a merge.");
+            }
+            if ($duplicate->merged_into_asset_id !== null) {
+                throw new \RuntimeException("Asset #{$duplicate->id} was already merged into asset #{$duplicate->merged_into_asset_id}.");
+            }
+
+            $conflicts = $this->assetMergeIdentityConflicts($survivor, $duplicate);
+            if ($conflicts !== []) {
+                $pairs = [];
+                foreach ($conflicts as $column => $values) {
+                    $pairs[] = "{$column} (survivor: {$values['survivor']}, duplicate: {$values['duplicate']})";
+                }
+                throw new \RuntimeException('Refusing to merge: both assets carry a live external identity that differs — two live agents is two devices, not a duplicate. Conflicting: '.implode('; ', $pairs).'.');
+            }
+
+            // Both assets carrying their OWN Tactical detail row is the same
+            // two-live-agents situation even when assets.tactical_asset_id is
+            // null on either side (the detail row links back via asset_id).
+            $duplicateHasTactical = DB::table('tactical_assets')->where('asset_id', $duplicate->id)->exists();
+            if ($duplicateHasTactical && DB::table('tactical_assets')->where('asset_id', $survivor->id)->exists()) {
+                throw new \RuntimeException('Refusing to merge: both assets have a linked Tactical agent record — two live agents is two devices, not a duplicate.');
+            }
+
+            // Ticket links — move the ones the survivor lacks (keeping is_primary /
+            // halo_asset_id on the moved row), drop the rest (unique ticket_id+asset_id).
+            $survivorTicketIds = DB::table('ticket_asset')->where('asset_id', $survivor->id)->pluck('ticket_id')->all();
+            $ticketCount = DB::table('ticket_asset')
+                ->where('asset_id', $duplicate->id)
+                ->whereNotIn('ticket_id', $survivorTicketIds)
+                ->update(['asset_id' => $survivor->id]);
+            DB::table('ticket_asset')->where('asset_id', $duplicate->id)->delete();
+
+            // Alerts, Tactical action history, ScreenConnect events — plain FK repoints.
+            $alertCount = DB::table('alerts')->where('asset_id', $duplicate->id)->update(['asset_id' => $survivor->id]);
+            $tacticalLogCount = DB::table('tactical_action_logs')->where('asset_id', $duplicate->id)->update(['asset_id' => $survivor->id]);
+            $screenconnectCount = DB::table('screenconnect_events')->where('asset_id', $duplicate->id)->update(['asset_id' => $survivor->id]);
+
+            // User assignments — move the ones the survivor lacks, preserving
+            // primary/last-seen, stored as manual so nothing auto-strips them.
+            // Never create a second primary user on the survivor.
+            $survivorPersonIds = $survivor->users()->pluck('people.id')->all();
+            $survivorHasPrimaryUser = $survivor->users()->wherePivot('is_primary', true)->exists();
+            $movedUsers = 0;
+            foreach ($duplicate->users as $person) {
+                if (! in_array($person->id, $survivorPersonIds, true)) {
+                    $isPrimary = (bool) $person->pivot->is_primary && ! $survivorHasPrimaryUser;
+                    $survivor->users()->attach($person->id, [
+                        'is_primary' => $isPrimary,
+                        'assignment_source' => 'manual',
+                        'last_seen_at' => $person->pivot->last_seen_at,
+                    ]);
+                    $survivorHasPrimaryUser = $survivorHasPrimaryUser || $isPrimary;
+                    $movedUsers++;
+                }
+            }
+            $duplicate->users()->detach();
+
+            // Contract assignments — move the ones the survivor lacks; manual,
+            // no rule_id, so rule reconciliation never strips the moved link.
+            $survivorContractIds = $survivor->contracts()->pluck('contracts.id')->all();
+            $movedContracts = 0;
+            foreach ($duplicate->contracts as $contract) {
+                if (! in_array($contract->id, $survivorContractIds, true)) {
+                    $survivor->contracts()->attach($contract->id, [
+                        'assigned_at' => $contract->pivot->assigned_at ?? now(),
+                        'assignment_source' => 'manual',
+                    ]);
+                    $movedContracts++;
+                }
+            }
+            $duplicate->contracts()->detach();
+
+            // Tactical detail row — repoint to the survivor (the both-sides case
+            // was refused above).
+            if ($duplicateHasTactical) {
+                DB::table('tactical_assets')->where('asset_id', $duplicate->id)->update(['asset_id' => $survivor->id]);
+            }
+
+            // Plain descriptive fields — fill blanks only, never overwrite.
+            foreach (self::FILL_BLANK_COLUMNS as $column) {
+                $survivorValue = $survivor->getAttribute($column);
+                if (($survivorValue === null || $survivorValue === '') && $duplicate->getAttribute($column) !== null) {
+                    $survivor->{$column} = $duplicate->getAttribute($column);
+                }
+            }
+
+            // External identities — carry each one the survivor lacks, with its
+            // vendor companion fields (blank-only), so the next sync binds to the
+            // survivor instead of the tombstone.
+            $carriedIdentities = [];
+            foreach (self::EXTERNAL_IDENTITY_COLUMNS as $column => $companions) {
+                if ($survivor->getAttribute($column) === null && $duplicate->getAttribute($column) !== null) {
+                    $survivor->{$column} = $duplicate->getAttribute($column);
+                    $carriedIdentities[] = $column;
+                    foreach ($companions as $companion) {
+                        if ($survivor->getAttribute($companion) === null && $duplicate->getAttribute($companion) !== null) {
+                            $survivor->{$companion} = $duplicate->getAttribute($companion);
+                        }
+                    }
+                }
+            }
+
+            // Clear EVERY external identity on the duplicate — carried or not.
+            // This, not any restore guard, is what stops the sync/webhook paths
+            // resurrecting the tombstone on the next device event.
+            foreach (array_keys(self::EXTERNAL_IDENTITY_COLUMNS) as $column) {
+                $duplicate->{$column} = null;
+            }
+
+            // Audit notes: a record line on the survivor, a tombstone on the duplicate.
+            $merger = User::find($mergedByUserId)?->name ?? 'Unknown';
+            $when = now()->toDateString();
+            $moved = [];
+            foreach ([
+                [$ticketCount, 'ticket', 'tickets'],
+                [$alertCount, 'alert', 'alerts'],
+                [$movedUsers, 'user assignment', 'user assignments'],
+                [$movedContracts, 'contract', 'contracts'],
+                [$tacticalLogCount, 'Tactical action log', 'Tactical action logs'],
+                [$screenconnectCount, 'ScreenConnect event', 'ScreenConnect events'],
+            ] as [$n, $one, $many]) {
+                if ($n) {
+                    $moved[] = "{$n} ".($n === 1 ? $one : $many);
+                }
+            }
+            $movedSummary = $moved ? ' Moved: '.implode(', ', $moved).'.' : '';
+            $carriedSummary = $carriedIdentities ? ' Carried identities: '.implode(', ', $carriedIdentities).'.' : '';
+            $duplicateLabel = ($duplicate->hostname ?: $duplicate->name)." (#{$duplicate->id})";
+            $survivorLabel = ($survivor->hostname ?: $survivor->name)." (#{$survivor->id})";
+
+            $survivor->notes = trim(($survivor->notes ? $survivor->notes."\n\n" : '')
+                ."Merged duplicate asset '{$duplicateLabel}' on {$when} by {$merger}.{$movedSummary}{$carriedSummary}");
+
+            $duplicate->merged_into_asset_id = $survivor->id;
+            $duplicate->is_active = false;
+            $duplicate->rmm_online = null;
+            $duplicate->notes = trim(($duplicate->notes ? $duplicate->notes."\n\n" : '')
+                ."Merged into '{$survivorLabel}' on {$when} by {$merger}.");
+
+            // Persist the duplicate FIRST: it clears the duplicate's UNIQUE
+            // external IDs so the survivor can take them on its own save without
+            // colliding on the unique indexes.
+            $duplicate->save();
+            $survivor->save();
+
+            // Preserve the original retire timestamp if the duplicate was
+            // already soft-deleted before the merge.
+            if (! $duplicate->trashed()) {
+                $duplicate->delete();
+            }
+
+            return [
+                'tickets' => $ticketCount,
+                'alerts' => $alertCount,
+                'users' => $movedUsers,
+                'contracts' => $movedContracts,
+                'tactical_logs' => $tacticalLogCount,
+                'screenconnect_events' => $screenconnectCount,
+                'carried_identities' => $carriedIdentities,
+            ];
+        });
     }
 
     /**

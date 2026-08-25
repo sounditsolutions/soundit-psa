@@ -175,6 +175,15 @@ class Asset extends Model
         return $this->hasOne(TacticalAsset::class, 'asset_id');
     }
 
+    /**
+     * The survivor this row was merged into (#584). Deliberately not in
+     * $fillable — only AssetService::mergeAssets sets it.
+     */
+    public function mergedInto(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'merged_into_asset_id')->withTrashed();
+    }
+
     // ── Scopes ──
 
     public function scopeActive(Builder $query): Builder

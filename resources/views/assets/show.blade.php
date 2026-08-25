@@ -22,17 +22,44 @@
 </div>
 
 @if($asset->trashed())
-    <div class="alert alert-danger d-flex align-items-center justify-content-between mb-3">
-        <div>
-            <i class="bi bi-trash me-2"></i>
-            This asset was deleted on {{ $asset->deleted_at->toAppTz()->format('M j, Y g:i A') }}.
+    @if($asset->merged_into_asset_id)
+        {{-- Merged-away tombstone: no Restore — its links and external
+             identities live on the survivor now (#584). --}}
+        <div class="alert alert-secondary d-flex align-items-center mb-3">
+            <i class="bi bi-intersect me-2"></i>
+            <div>
+                This asset was merged into
+                <a href="{{ route('assets.show', $asset->merged_into_asset_id) }}" class="alert-link">
+                    {{ $asset->mergedInto ? ($asset->mergedInto->hostname ?: $asset->mergedInto->name) : 'asset' }} (#{{ $asset->merged_into_asset_id }})</a>
+                on {{ $asset->deleted_at->toAppTz()->format('M j, Y g:i A') }}. It cannot be restored.
+            </div>
         </div>
-        <form method="POST" action="{{ route('assets.restore', $asset) }}">
+    @else
+        <div class="alert alert-danger d-flex align-items-center justify-content-between mb-3">
+            <div>
+                <i class="bi bi-trash me-2"></i>
+                This asset was deleted on {{ $asset->deleted_at->toAppTz()->format('M j, Y g:i A') }}.
+            </div>
+            <form method="POST" action="{{ route('assets.restore', $asset) }}">
             @csrf
             <button type="submit" class="btn btn-outline-danger btn-sm">
                 <i class="bi bi-arrow-counterclockwise me-1"></i>Restore
             </button>
         </form>
+        </div>
+    @endif
+@endif
+
+@if(($likelyDuplicates ?? collect())->isNotEmpty())
+    <div class="alert alert-warning d-flex align-items-center mb-3">
+        <i class="bi bi-intersect me-2"></i>
+        <div>
+            Possible duplicate{{ $likelyDuplicates->count() === 1 ? '' : 's' }} of this device (same serial or hostname):
+            @foreach($likelyDuplicates as $dup)
+                <a href="{{ route('assets.show', $dup->id) }}" class="alert-link">{{ $dup->hostname ?: $dup->name }} (#{{ $dup->id }}{{ $dup->deleted_at ? ', retired' : '' }})</a>{{ $loop->last ? '' : ', ' }}
+            @endforeach
+            — consider a merge.
+        </div>
     </div>
 @endif
 
@@ -76,6 +103,12 @@
             <a href="{{ route('assets.edit', $asset) }}" class="btn btn-outline-primary btn-sm">
                 <i class="bi bi-pencil me-1"></i>Edit
             </a>
+            @if(($mergeCandidates ?? collect())->isNotEmpty())
+                <button type="button" class="btn btn-outline-secondary btn-sm" title="Merge a duplicate asset into this one"
+                        data-bs-toggle="modal" data-bs-target="#mergeAssetModal">
+                    <i class="bi bi-intersect me-1"></i>Merge
+                </button>
+            @endif
             <button type="button" class="btn btn-outline-danger btn-sm" title="Offboard device"
                     data-bs-toggle="modal" data-bs-target="#deleteAssetModal">
                 <i class="bi bi-trash"></i>
@@ -2592,6 +2625,88 @@
     document.getElementById('deleteAssetModal')?.addEventListener('hidden.bs.modal', function() {
         input.value = '';
         btn.disabled = true;
+    });
+})();
+</script>
+
+{{-- Merge Modal (#584) --}}
+@if(($mergeCandidates ?? collect())->isNotEmpty())
+<div class="modal fade" id="mergeAssetModal" tabindex="-1" aria-labelledby="mergeAssetModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="{{ route('assets.merge', $asset) }}">
+                @csrf
+                <div class="modal-header">
+                    <h5 class="modal-title" id="mergeAssetModalLabel"><i class="bi bi-intersect me-2"></i>Merge Duplicate Asset</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="mergeAssetDuplicateSelect" class="form-label">Asset to merge into this one</label>
+                        <select class="form-select" id="mergeAssetDuplicateSelect" name="duplicate_id" required>
+                            <option value="" selected disabled>Choose an asset…</option>
+                            @foreach($mergeCandidates as $candidate)
+                                @php
+                                    $candidateLabel = $candidate->hostname ?: $candidate->name;
+                                    if ($candidate->serial_number) {
+                                        $candidateLabel .= ' — SN '.$candidate->serial_number;
+                                    }
+                                    if ($candidate->deleted_at) {
+                                        $candidateLabel .= ' (retired)';
+                                    } elseif (! $candidate->is_active) {
+                                        $candidateLabel .= ' (inactive)';
+                                    }
+                                @endphp
+                                <option value="{{ $candidate->id }}" data-name="{{ $candidate->hostname ?: $candidate->name }}">{{ $candidateLabel }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div class="alert alert-warning small py-2 mb-2">
+                        <i class="bi bi-exclamation-triangle me-1"></i><strong>This cannot be undone.</strong>
+                        All tickets, alerts, user &amp; contract assignments, and RMM history from the
+                        selected asset move to this asset, and any RMM/backup links this asset lacks
+                        transfer here too. The selected asset is then retired with a pointer to this
+                        one. If both devices have their own live RMM agent the merge will refuse —
+                        two live agents means two real devices.
+                    </div>
+                    <p class="mb-0" id="mergeAssetDirection" style="display: none;">
+                        Merge <strong id="mergeAssetDuplicateName"></strong> into
+                        <strong>{{ $asset->hostname ?: $asset->name }}</strong> <span class="text-muted">(kept)</span>.
+                    </p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-danger" id="mergeAssetBtn" disabled>
+                        <i class="bi bi-intersect me-1"></i>Merge assets
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+<script>
+(function() {
+    var select = document.getElementById('mergeAssetDuplicateSelect');
+    var btn = document.getElementById('mergeAssetBtn');
+    var direction = document.getElementById('mergeAssetDirection');
+    var nameEl = document.getElementById('mergeAssetDuplicateName');
+    var modal = document.getElementById('mergeAssetModal');
+    if (!select || !btn) return;
+    select.addEventListener('change', function() {
+        var opt = select.options[select.selectedIndex];
+        if (select.value) {
+            btn.disabled = false;
+            if (nameEl) nameEl.textContent = (opt && opt.getAttribute('data-name')) || 'this asset';
+            if (direction) direction.style.display = '';
+        } else {
+            btn.disabled = true;
+            if (direction) direction.style.display = 'none';
+        }
+    });
+    modal?.addEventListener('hidden.bs.modal', function() {
+        select.value = '';
+        btn.disabled = true;
+        if (direction) direction.style.display = 'none';
     });
 })();
 </script>

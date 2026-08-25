@@ -39,6 +39,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 
 class AssetController extends Controller
 {
@@ -222,7 +223,104 @@ class AssetController extends Controller
             'clientPeople' => $clientPeople,
             'tacticalInsight' => $this->tacticalInsight($asset),
             'tacticalActionTotal' => $this->tacticalActionTotal($asset),
+            'mergeCandidates' => $this->mergeCandidatesFor($asset),
+            'likelyDuplicates' => $this->likelyDuplicatesFor($asset),
         ]);
+    }
+
+    /**
+     * Same-client assets this one could absorb. Retired (trashed) assets are
+     * included — a duplicate someone already retired is the common repair case —
+     * but merged-away tombstones are not. Empty when the asset can't survive a
+     * merge (trashed or itself merged away).
+     */
+    private function mergeCandidatesFor(Asset $asset)
+    {
+        if (! $asset->client_id || $asset->trashed() || $asset->merged_into_asset_id !== null) {
+            return collect();
+        }
+
+        return Asset::withTrashed()
+            ->where('client_id', $asset->client_id)
+            ->where('id', '!=', $asset->id)
+            ->whereNull('merged_into_asset_id')
+            ->orderBy('hostname')
+            ->orderBy('name')
+            ->get(['id', 'name', 'hostname', 'serial_number', 'asset_type', 'is_active', 'deleted_at']);
+    }
+
+    /**
+     * Merge candidates sharing this asset's serial number or hostname — the
+     * "this looks like the same device twice" hint on the asset page (#584).
+     */
+    private function likelyDuplicatesFor(Asset $asset)
+    {
+        if (! $asset->client_id || $asset->trashed() || $asset->merged_into_asset_id !== null) {
+            return collect();
+        }
+
+        return Asset::withTrashed()
+            ->where('client_id', $asset->client_id)
+            ->where('id', '!=', $asset->id)
+            ->whereNull('merged_into_asset_id')
+            ->where(function ($q) use ($asset) {
+                $q->when($asset->serial_number, fn ($qq) => $qq->orWhere('serial_number', $asset->serial_number))
+                    ->when($asset->hostname, fn ($qq) => $qq->orWhere('hostname', $asset->hostname));
+            })
+            ->get(['id', 'name', 'hostname', 'serial_number', 'is_active', 'deleted_at']);
+    }
+
+    public function merge(Request $request, int $asset)
+    {
+        $survivor = Asset::findOrFail($asset);
+
+        // Bare `exists` ignores the SoftDeletes scope, which is what we want
+        // here: a retired duplicate is mergeable. Scope to the same client and
+        // to rows not already merged away; the service re-enforces every guard
+        // as the inner layer (defense in depth).
+        $validated = $request->validate([
+            'duplicate_id' => [
+                'required',
+                'integer',
+                Rule::exists('assets', 'id')->where(fn ($q) => $q
+                    ->where('client_id', $survivor->client_id)
+                    ->whereNull('merged_into_asset_id')),
+            ],
+        ]);
+
+        $duplicate = Asset::withTrashed()
+            ->where('client_id', $survivor->client_id)
+            ->findOrFail($validated['duplicate_id']);
+
+        try {
+            $summary = $this->assetService->mergeAssets($survivor, $duplicate, auth()->id());
+        } catch (\InvalidArgumentException|\RuntimeException $e) {
+            return redirect()->route('assets.show', $survivor)->with('error', $e->getMessage());
+        }
+
+        $parts = [];
+        foreach ([
+            ['tickets', 'ticket', 'tickets'],
+            ['alerts', 'alert', 'alerts'],
+            ['users', 'user assignment', 'user assignments'],
+            ['contracts', 'contract', 'contracts'],
+            ['tactical_logs', 'Tactical action log', 'Tactical action logs'],
+            ['screenconnect_events', 'ScreenConnect event', 'ScreenConnect events'],
+        ] as [$key, $one, $many]) {
+            if (! empty($summary[$key])) {
+                $parts[] = $summary[$key].' '.($summary[$key] === 1 ? $one : $many);
+            }
+        }
+        $movedText = $parts ? ' Moved '.implode(', ', $parts).'.' : '';
+        $duplicateLabel = $duplicate->hostname ?: $duplicate->name;
+        $survivorLabel = $survivor->hostname ?: $survivor->name;
+        $message = "Merged {$duplicateLabel} into {$survivorLabel}.{$movedText}";
+
+        if (! empty($summary['carried_identities'])) {
+            $message .= ' Carried over: '.implode(', ', $summary['carried_identities']).'.';
+        }
+
+        return redirect()->route('assets.show', $survivor)->with('success', $message);
     }
 
     /**
@@ -363,6 +461,14 @@ class AssetController extends Controller
     public function restore(int $id)
     {
         $asset = Asset::withTrashed()->findOrFail($id);
+
+        // A merged-away tombstone must never come back as a live duplicate —
+        // its links and external identities now live on the survivor (#584).
+        if ($asset->merged_into_asset_id !== null) {
+            return redirect()->route('assets.show', $asset->id)
+                ->with('error', "This asset was merged into asset #{$asset->merged_into_asset_id} and cannot be restored. Work with the surviving asset instead.");
+        }
+
         $asset->restore();
         $asset->is_active = true;
         $asset->save();
