@@ -2619,8 +2619,9 @@ class StaffPsaActionToolExecutor
         $pair = $this->mergePairForClient($primaryId, $secondaryId, $clientId);
         if (isset($pair['error'])) {
             // An exact retry of a merge that already executed fails the pair guard
-            // (the secondary now carries parent_ticket_id), so the dedup below can
-            // never see it — answer it idempotently here instead of as an error.
+            // (the secondary now carries parent_ticket_id), so this is the ONLY
+            // place an exact retry can be recognised — answer it idempotently here
+            // instead of as an error.
             $merged = Ticket::find($primaryId);
             if ($merged && (int) $merged->client_id === $clientId
                 && $this->alreadyExecuted('merge_ticket', $merged->id, $this->contentHash('merge_ticket', $merged->id, "{$secondaryId}:{$reason}"))) {
@@ -2636,9 +2637,12 @@ class StaffPsaActionToolExecutor
         $secondary = $pair['secondary'];
 
         $contentHash = $this->contentHash('merge_ticket', $primary->id, "{$secondary->id}:{$reason}");
-        if ($this->alreadyExecuted('merge_ticket', $primary->id, $contentHash)) {
-            return $this->idempotentResult('merge_ticket', $primary);
-        }
+        // Deliberately NO dedup short-circuit here: reaching this line means the
+        // pair guard passed, i.e. the secondary is not currently merged. A 24h
+        // audit-hash hit can then only mean the merge was reverted (a technician
+        // un-merged in the cockpit), so answering idempotently would report a merge
+        // as done while nothing is merged and silently drop the requested action.
+        // The still-in-effect retry is caught by the pair-guard branch above.
 
         if ($this->rateLimited('merge_ticket', $primary->id, $this->cooldownSeconds('mcp_direct_merge_ticket_cooldown_seconds', 300))) {
             return ['error' => 'merge_ticket rate limit: a ticket was already merged into this primary recently'];
@@ -2650,7 +2654,11 @@ class StaffPsaActionToolExecutor
                 $summary = "Direct MCP ticket merge: #{$secondary->id} into #{$primary->id} — ".EmailRedactor::redact($reason);
                 $this->auditDirectExecution('merge_ticket', $primary, $actorLabel, $contentHash, $summary);
             });
-        } catch (\InvalidArgumentException $e) {
+        } catch (\InvalidArgumentException|\RuntimeException $e) {
+            // Same catch set as mergeAssetNow: TechnicianConfig::requiredAiActorUserId()
+            // and the guards TicketService::mergeTickets re-enforces against locked
+            // rows throw RuntimeException, which must surface as a tool-level error
+            // rather than escaping as a JSON-RPC internal error.
             return ['error' => $e->getMessage()];
         }
 

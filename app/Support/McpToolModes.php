@@ -81,6 +81,48 @@ class McpToolModes
         return array_flip(self::stagedToCanonical());
     }
 
+    /**
+     * Capabilities whose IMMEDIATE lane did not exist before the staged/immediate
+     * unification: merge_ticket / merge_asset shipped only as cockpit-approved
+     * proposals (propose_merge / propose_asset_merge). A token that never opted
+     * into immediate merging — including a full-surface token (allowedTools ===
+     * null), which resolves every unlisted tool to immediate — must not acquire an
+     * approval-free destructive merge just because this change landed, so these
+     * default to STAGED. Immediate merging is reachable only through the explicit
+     * `merge_ticket:immediate` / `merge_asset:immediate` grant, exactly as both
+     * tool descriptions promise.
+     *
+     * Every other stageable capability keeps its legacy default (a bare grant, or
+     * a full-surface token, meant immediate before this change and still does).
+     *
+     * @var array<int, string>
+     */
+    private const IMMEDIATE_REQUIRES_EXPLICIT_GRANT = [
+        'merge_ticket',
+        'merge_asset',
+    ];
+
+    /**
+     * Mode for a capability the token holds no explicit per-tool mode entry for.
+     */
+    public static function defaultMode(string $name): string
+    {
+        return in_array($name, self::IMMEDIATE_REQUIRES_EXPLICIT_GRANT, true)
+            ? self::MODE_STAGED
+            : self::MODE_IMMEDIATE;
+    }
+
+    /**
+     * The effective mode for one capability under one token. This is the single
+     * resolution point for BOTH the advertised tools/list definition and the
+     * controller's call-time mode gate — the surface a token is shown and the lane
+     * it can actually reach must not be able to drift apart.
+     */
+    public static function effectiveMode(?McpStaffToken $token, string $name): string
+    {
+        return $token?->modeFor($name) ?? self::defaultMode($name);
+    }
+
     public static function isStagedAlias(string $name): bool
     {
         return array_key_exists($name, self::stagedToCanonical());
@@ -249,10 +291,7 @@ class McpToolModes
             }
 
             if (self::isStageable($name)) {
-                $mode = $token === null || $token->allowedTools === null
-                    ? self::MODE_IMMEDIATE
-                    : ($token->modeFor($name) ?? self::MODE_IMMEDIATE);
-                $tool = self::unifyDefinition($tool, $stagedDefs[$name] ?? null, $mode);
+                $tool = self::unifyDefinition($tool, $stagedDefs[$name] ?? null, self::effectiveMode($token, $name));
             }
 
             $unified[] = $tool;
