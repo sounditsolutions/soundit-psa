@@ -335,8 +335,18 @@ class AssetController extends Controller
             $message .= " Kept Halo/primary link data from {$folded} shared ticket link".($folded === 1 ? '' : 's').'.';
         }
 
+        if (! empty($summary['halo_link_conflicts'])) {
+            $message .= ' Halo link divergence on '.implode('; ', $summary['halo_link_conflicts'])
+                ." — the duplicate's differing Halo binding was dropped; confirm the right binding in Halo.";
+        }
+
         if (! empty($summary['reactivated_survivor'])) {
-            $message .= ' Reactivated this asset — it absorbed a live device, so it stays on the billed count.';
+            // Reactivation only closes the is_active leg of BillingService::countAssets; the
+            // asset_type leg is fill-blank-only and merely reported. Never claim the billed
+            // count is settled while a billing warning says otherwise.
+            $message .= empty($summary['billing_warnings'])
+                ? ' Reactivated this asset — it absorbed a live device, so it stays on the billed count.'
+                : ' Reactivated this asset — it absorbed a live device.';
         }
 
         foreach ($summary['billing_warnings'] ?? [] as $warning) {

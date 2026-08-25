@@ -255,7 +255,7 @@ class AssetService
      * rule reconciliation never strips the consolidated link — same reasoning
      * as mergePeople.
      *
-     * @return array{tickets:int,tickets_folded:int,alerts:int,users:int,contracts:int,tactical_logs:int,screenconnect_events:int,reactivated_survivor:bool,billing_warnings:array<int,string>,carried_identities:array<int,string>}
+     * @return array{tickets:int,tickets_folded:int,halo_link_conflicts:array<int,string>,alerts:int,users:int,contracts:int,tactical_logs:int,screenconnect_events:int,reactivated_survivor:bool,billing_warnings:array<int,string>,carried_identities:array<int,string>}
      */
     public function mergeAssets(Asset $survivor, Asset $duplicate, int $mergedByUserId): array
     {
@@ -320,6 +320,7 @@ class AssetService
                 ->update(['asset_id' => $survivor->id]);
 
             $foldedTicketCount = 0;
+            $haloLinkConflicts = [];
             foreach (DB::table('ticket_asset')->where('asset_id', $duplicate->id)->get() as $sharedLink) {
                 $survivorLink = DB::table('ticket_asset')
                     ->where('asset_id', $survivor->id)
@@ -332,6 +333,13 @@ class AssetService
                 $folded = [];
                 if (empty($survivorLink->halo_asset_id) && ! empty($sharedLink->halo_asset_id)) {
                     $folded['halo_asset_id'] = $sharedLink->halo_asset_id;
+                } elseif (! empty($sharedLink->halo_asset_id)
+                    && (string) $survivorLink->halo_asset_id !== (string) $sharedLink->halo_asset_id) {
+                    // Both rows carry a Halo binding and they DIFFER. The duplicate's row is
+                    // hard-deleted below (unique ticket_id+asset_id blocks a move), so record the
+                    // divergence rather than dropping it silently — same policy as the asset_type
+                    // divergence: the survivor's value is kept, never rewritten, and never silent.
+                    $haloLinkConflicts[] = "ticket #{$sharedLink->ticket_id} (kept '{$survivorLink->halo_asset_id}', dropped '{$sharedLink->halo_asset_id}')";
                 }
                 // Never create a second primary asset on the ticket — same rule as
                 // the user assignments below.
@@ -473,13 +481,16 @@ class AssetService
             $foldedSummary = $foldedTicketCount
                 ? " Kept Halo/primary link data from {$foldedTicketCount} shared ticket link".($foldedTicketCount === 1 ? '' : 's').'.'
                 : '';
+            $haloConflictSummary = $haloLinkConflicts
+                ? ' Halo link divergence on '.implode('; ', $haloLinkConflicts).' — the duplicate carried a different halo_asset_id and that binding was dropped; confirm the right binding in Halo.'
+                : '';
             $billingSummary = $reactivatedSurvivor ? ' Reactivated this asset: it absorbed a live device.' : '';
             $warningSummary = $billingWarnings ? ' '.implode(' ', $billingWarnings) : '';
             $duplicateLabel = ($duplicate->hostname ?: $duplicate->name)." (#{$duplicate->id})";
             $survivorLabel = ($survivor->hostname ?: $survivor->name)." (#{$survivor->id})";
 
             $survivor->notes = trim(($survivor->notes ? $survivor->notes."\n\n" : '')
-                ."Merged duplicate asset '{$duplicateLabel}' on {$when} by {$merger}.{$movedSummary}{$foldedSummary}{$carriedSummary}{$billingSummary}{$warningSummary}");
+                ."Merged duplicate asset '{$duplicateLabel}' on {$when} by {$merger}.{$movedSummary}{$foldedSummary}{$haloConflictSummary}{$carriedSummary}{$billingSummary}{$warningSummary}");
 
             // The tombstone's serial_number is a resurrection key in its own right:
             // NinjaSyncService/LevelSyncService fall back to
@@ -489,6 +500,12 @@ class AssetService
             // serial is already carried to the survivor where it was blank, so clear it
             // here and keep the record in the tombstone note.
             $clearedSerial = $duplicate->serial_number;
+            // The serial only reaches the survivor through FILL_BLANK_COLUMNS, i.e. only when
+            // the survivor's own serial was blank. When the survivor already carried a
+            // different serial the cleared value now lives on NO row, so the tombstone note
+            // must say that rather than claim matching binds to the survivor.
+            $serialCarriedToSurvivor = $clearedSerial !== null && $clearedSerial !== ''
+                && (string) $survivor->serial_number === (string) $clearedSerial;
             $duplicate->serial_number = null;
 
             $duplicate->merged_into_asset_id = $survivor->id;
@@ -496,7 +513,11 @@ class AssetService
             $duplicate->rmm_online = null;
             $duplicate->notes = trim(($duplicate->notes ? $duplicate->notes."\n\n" : '')
                 ."Merged into '{$survivorLabel}' on {$when} by {$merger}."
-                .($clearedSerial ? " Serial number '{$clearedSerial}' cleared from this tombstone so RMM serial-number matching binds to the survivor." : ''));
+                .($clearedSerial
+                    ? ($serialCarriedToSurvivor
+                        ? " Serial number '{$clearedSerial}' cleared from this tombstone so RMM serial-number matching binds to the survivor."
+                        : " Serial number '{$clearedSerial}' cleared from this tombstone so an RMM serial-number match cannot resurrect it. The survivor kept its own serial '{$survivor->serial_number}', so '{$clearedSerial}' is now on NO asset — if it is the device's real serial, set it on the survivor or the next sync will create a new asset.")
+                    : ''));
 
             // Persist the duplicate FIRST: it clears the duplicate's UNIQUE
             // external IDs so the survivor can take them on its own save without
@@ -513,6 +534,7 @@ class AssetService
             return [
                 'tickets' => $ticketCount,
                 'tickets_folded' => $foldedTicketCount,
+                'halo_link_conflicts' => $haloLinkConflicts,
                 'alerts' => $alertCount,
                 'users' => $movedUsers,
                 'contracts' => $movedContracts,
