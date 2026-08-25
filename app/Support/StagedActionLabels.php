@@ -35,6 +35,7 @@ class StagedActionLabels
         // PSA-native
         'propose_close' => 'Proposed close',
         'propose_merge' => 'Proposed merge',
+        'propose_asset_merge' => 'Proposed asset merge',
         'propose_resolution' => 'Proposed resolution',
         'stage_email' => 'Staged email',
         'send_email' => 'Staged email',

@@ -4,7 +4,7 @@
 
 @php
     $replyTypes = ['send_reply', 'propose_resolution', 'stage_email', 'stage_public_note'];
-    $closureTypes = ['propose_close', 'stage_close_ticket', 'propose_merge'];
+    $closureTypes = ['propose_close', 'stage_close_ticket', 'propose_merge', 'propose_asset_merge'];
     $isAccountAction = fn (string $type): bool => \App\Support\StagedActionLabels::isVendorSideEffectAction($type);
 
     $replyDrafts = $drafts->filter(fn ($run) => in_array($run->action_type, $replyTypes, true));
@@ -24,6 +24,7 @@
             // mirrors propose_close. Present so the staged-type badge guard holds.
             'stage_close_ticket' => ['bg-warning-subtle text-warning-emphasis border border-warning-subtle', 'Proposed close', 'bi-archive'],
             'propose_merge' => ['bg-warning-subtle text-warning-emphasis border border-warning-subtle', 'Proposed merge', 'bi-intersect'],
+            'propose_asset_merge' => ['bg-warning-subtle text-warning-emphasis border border-warning-subtle', 'Proposed asset merge', 'bi-intersect'],
             'propose_resolution' => ['bg-info-subtle text-info-emphasis border border-info-subtle', 'Proposed resolution', 'bi-send'],
             'stage_email' => ['bg-success-subtle text-success-emphasis border border-success-subtle', 'Staged email', 'bi-envelope'],
             'stage_public_note' => ['bg-info-subtle text-info-emphasis border border-info-subtle', 'Staged public note', 'bi-journal-text'],
@@ -388,7 +389,10 @@
                                 </div>
                                 <div class="text-muted small text-truncate">
                                     {{ $run->proposed_content }}
-                                    @if(!$isClose)
+                                    @if($run->action_type === 'propose_asset_merge')
+                                        · Survivor: {{ $mergeMeta['survivor_label'] ?? '#'.($mergeMeta['survivor_asset_id'] ?? '?') }}
+                                        · Duplicate: {{ $mergeMeta['duplicate_label'] ?? '#'.($mergeMeta['duplicate_asset_id'] ?? '?') }}
+                                    @elseif(!$isClose)
                                         · Primary: {{ $mergeMeta['primary_display_id'] ?? $mergeMeta['primary_ticket_display_id'] ?? '#'.$run->ticket_id }}
                                         · Secondary: {{ $mergeMeta['secondary_display_id'] ?? $mergeMeta['secondary_ticket_display_id'] ?? '#'.($mergeMeta['secondary_ticket_id'] ?? '?') }}
                                     @endif

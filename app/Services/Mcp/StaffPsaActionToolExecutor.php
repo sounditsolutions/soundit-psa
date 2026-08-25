@@ -92,6 +92,7 @@ class StaffPsaActionToolExecutor
             'stage_email' => $this->stageTicketAction('stage_email', $arguments, $clientId, $actorLabel, sendsEmail: true, tokenLabel: $tokenLabel),
             'stage_public_note' => $this->stageTicketAction('stage_public_note', $arguments, $clientId, $actorLabel, sendsEmail: false, tokenLabel: $tokenLabel),
             'propose_merge' => $this->proposeMerge($arguments, $clientId, $actorLabel),
+            'propose_asset_merge' => $this->proposeAssetMerge($arguments, $clientId, $actorLabel),
             'update_ticket' => $this->updateTicket($arguments, $clientId, $actorLabel),
             'set_ticket_status' => $this->setTicketStatus($arguments, $clientId, $actorLabel),
             'close_ticket' => $this->closeTicket($arguments, $clientId, $actorLabel),
@@ -1789,6 +1790,9 @@ class StaffPsaActionToolExecutor
         if (! $asset->trashed()) {
             return ['error' => 'Asset is not retired; nothing to restore.'];
         }
+        if ($asset->merged_into_asset_id !== null) {
+            return ['error' => "Asset #{$asset->id} was merged into asset #{$asset->merged_into_asset_id} and cannot be restored; work with the surviving asset."];
+        }
 
         $asset->restore();
         $asset->is_active = true;
@@ -2674,6 +2678,129 @@ class StaffPsaActionToolExecutor
             'ticket_display_id' => $primary->display_id,
             'run_id' => $run->id,
             'message' => 'Merge proposed for cockpit approval.',
+        ];
+    }
+
+    /**
+     * Held asset-merge proposal (#584). Never merges here: approval revalidates
+     * the pair and runs AssetService::mergeAssets. Identity conflicts (both
+     * assets carrying differing live vendor ids) refuse at proposal time so an
+     * un-approvable pair never reaches the cockpit. technician_runs.ticket_id
+     * is NOT NULL, so the proposal anchors to a same-client ticket the work is
+     * being done under.
+     */
+    private function proposeAssetMerge(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $reason = $this->requiredString($arguments, 'reason');
+        if ($reason === null) {
+            return ['error' => 'reason is required'];
+        }
+
+        $survivorId = $this->positiveInteger($arguments['survivor_asset_id'] ?? null);
+        $duplicateId = $this->positiveInteger($arguments['duplicate_asset_id'] ?? null);
+        if ($survivorId === null || $duplicateId === null) {
+            return ['error' => 'survivor_asset_id and duplicate_asset_id are required'];
+        }
+        if ($survivorId === $duplicateId) {
+            return ['error' => 'survivor_asset_id and duplicate_asset_id must differ.'];
+        }
+
+        $ticketId = $this->positiveInteger($arguments['ticket_id'] ?? null);
+        if ($ticketId === null) {
+            return ['error' => 'ticket_id is required for staged asset merges'];
+        }
+        $ticket = Ticket::find($ticketId);
+        if (! $ticket || (int) $ticket->client_id !== $clientId) {
+            return ['error' => 'Ticket not found or belongs to a different client'];
+        }
+
+        $survivor = Asset::find($survivorId);
+        if (! $survivor || (int) $survivor->client_id !== $clientId) {
+            return ['error' => 'Survivor asset not found or belongs to a different client'];
+        }
+        if ($survivor->merged_into_asset_id !== null) {
+            return ['error' => "Survivor asset #{$survivor->id} was itself merged away."];
+        }
+
+        $duplicate = Asset::withTrashed()->find($duplicateId);
+        if (! $duplicate || (int) $duplicate->client_id !== $clientId) {
+            return ['error' => 'Duplicate asset not found or belongs to a different client'];
+        }
+        if ($duplicate->merged_into_asset_id !== null) {
+            return ['error' => "Asset #{$duplicate->id} was already merged into asset #{$duplicate->merged_into_asset_id}."];
+        }
+
+        $conflicts = $this->assetService->assetMergeIdentityConflicts($survivor, $duplicate);
+        if ($conflicts !== []) {
+            return ['error' => 'Refusing to propose: both assets carry a differing live external identity ('.implode(', ', array_keys($conflicts)).') — two live agents is two devices, not a duplicate.'];
+        }
+
+        $survivorLabel = $survivor->hostname ?: $survivor->name;
+        $duplicateLabel = $duplicate->hostname ?: $duplicate->name;
+        $contentHash = hash('sha256', "propose_asset_merge:{$survivor->id}:{$duplicate->id}:{$reason}");
+        $meta = [
+            'survivor_asset_id' => $survivor->id,
+            'duplicate_asset_id' => $duplicate->id,
+            'survivor_label' => $survivorLabel,
+            'duplicate_label' => $duplicateLabel,
+            'drafted_by' => $actorLabel,
+        ];
+
+        $run = TechnicianRun::firstOrCreate(
+            [
+                'ticket_id' => $ticket->id,
+                'action_type' => 'propose_asset_merge',
+                'content_hash' => $contentHash,
+            ],
+            [
+                'client_id' => $ticket->client_id,
+                'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => $reason,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ],
+        );
+
+        if (! $run->wasRecentlyCreated) {
+            if ($run->state === TechnicianRunState::AwaitingApproval) {
+                return [
+                    'success' => true,
+                    'ticket_id' => $ticket->id,
+                    'ticket_display_id' => $ticket->display_id,
+                    'run_id' => $run->id,
+                    'message' => 'Already proposed asset merge; awaiting approval.',
+                ];
+            }
+
+            $run->update([
+                'state' => TechnicianRunState::AwaitingApproval->value,
+                'proposed_content' => $reason,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ]);
+        }
+
+        $this->gate->dispatch(
+            actionType: 'propose_asset_merge',
+            ticketId: $ticket->id,
+            clientId: $ticket->client_id,
+            contentHash: $contentHash,
+            summary: "MCP proposed merging asset #{$duplicate->id} ({$duplicateLabel}) into #{$survivor->id} ({$survivorLabel}): {$reason}",
+            runId: $run->id,
+            executor: static function (): void {
+                throw new \LogicException('Held-only MCP propose_asset_merge path must not execute directly.');
+            },
+            confidence: null,
+        );
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'run_id' => $run->id,
+            'message' => 'Asset merge proposed for cockpit approval.',
         ];
     }
 

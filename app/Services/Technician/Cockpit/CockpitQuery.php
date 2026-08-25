@@ -32,6 +32,7 @@ class CockpitQuery
     private const CLOSURE_ACTIONS = [
         'propose_close',
         'propose_merge',
+        'propose_asset_merge',
     ];
 
     /** How far back the "re-assessed → left as-is" lane looks (psa-3q0c). Self-clearing. */

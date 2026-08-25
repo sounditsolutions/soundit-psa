@@ -6,6 +6,7 @@ use App\Enums\NoteType;
 use App\Enums\TechnicianRunState;
 use App\Enums\TicketStatus;
 use App\Enums\WhoType;
+use App\Models\Asset;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
@@ -418,6 +419,97 @@ class TechnicianApprovalService
         }
 
         return new TechnicianApprovalResult('merged');
+    }
+
+    /**
+     * Approve a staged asset merge (#584). Revalidates the pair at approval
+     * time — either asset gone, cross-client, already merged, or newly
+     * conflicting external identities declines rather than executes.
+     * AssetService::mergeAssets re-enforces every guard inside its transaction
+     * as the inner layer.
+     */
+    public function approveAssetMerge(TechnicianRun $run, int $approverId): TechnicianApprovalResult
+    {
+        if ($run->action_type !== 'propose_asset_merge' || ! $run->claimForExecution()) {
+            return new TechnicianApprovalResult('already_handled');
+        }
+
+        $pair = $this->validAssetMergePair($run);
+        if ($pair === null) {
+            $run->releaseClaim();
+
+            return new TechnicianApprovalResult('gate_declined');
+        }
+
+        [$survivor, $duplicate] = $pair;
+
+        try {
+            $hash = hash('sha256', 'propose_asset_merge:'.$survivor->id.':'.$duplicate->id.':'.$run->proposed_content);
+            $token = TechnicianApprovalGrant::issue('propose_asset_merge', $run->ticket_id, $hash, $approverId);
+
+            $result = $this->gate->dispatch(
+                actionType: 'propose_asset_merge',
+                ticketId: $run->ticket_id,
+                clientId: $run->client_id,
+                contentHash: $hash,
+                summary: 'Operator-approved asset merge.',
+                runId: $run->id,
+                executor: function () use ($run, $survivor, $duplicate, $approverId): void {
+                    app(\App\Services\AssetService::class)->mergeAssets($survivor, $duplicate, $approverId);
+
+                    $run->advanceTo(TechnicianRunState::Done);
+                },
+                approvalToken: $token,
+                approverUserId: $approverId,
+                confidence: null,
+            );
+        } catch (\Throwable $e) {
+            $run->releaseClaim();
+            throw $e;
+        }
+
+        if ($result->status !== 'executed') {
+            $run->releaseClaim();
+
+            return new TechnicianApprovalResult('gate_declined');
+        }
+
+        return new TechnicianApprovalResult('merged');
+    }
+
+    /** @return array{0: Asset, 1: Asset}|null */
+    private function validAssetMergePair(TechnicianRun $run): ?array
+    {
+        $meta = $run->proposed_meta ?? [];
+        $survivorId = (int) ($meta['survivor_asset_id'] ?? 0);
+        $duplicateId = (int) ($meta['duplicate_asset_id'] ?? 0);
+
+        if ($survivorId <= 0 || $duplicateId <= 0 || $survivorId === $duplicateId) {
+            return null;
+        }
+
+        // Survivor must still be live and unmerged; the duplicate may be
+        // retired (trashed) but not already merged away.
+        $survivor = Asset::query()->find($survivorId);
+        $duplicate = Asset::withTrashed()->find($duplicateId);
+
+        if (! $survivor || ! $duplicate) {
+            return null;
+        }
+
+        if ($survivor->client_id !== $run->client_id || $duplicate->client_id !== $run->client_id) {
+            return null;
+        }
+
+        if ($survivor->merged_into_asset_id !== null || $duplicate->merged_into_asset_id !== null) {
+            return null;
+        }
+
+        if (app(\App\Services\AssetService::class)->assetMergeIdentityConflicts($survivor, $duplicate) !== []) {
+            return null;
+        }
+
+        return [$survivor, $duplicate];
     }
 
     public function approveStagedTacticalAction(TechnicianRun $run, int $approverId): TechnicianApprovalResult

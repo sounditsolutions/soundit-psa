@@ -420,8 +420,9 @@ class AssetService
 
     /**
      * Deliberately offboard (soft-delete) an Asset at operator request.
-     * This is the ONLY place a PSA Asset is ever soft-deleted — RMM sync jobs
-     * must NEVER call delete() on an Asset; they clear only their own vendor fields.
+     * Assets are only ever soft-deleted here and in mergeAssets() (tombstoning
+     * the merged-away duplicate) — RMM sync jobs must NEVER call delete() on an
+     * Asset; they clear only their own vendor fields.
      */
     public function deleteAsset(Asset $asset): void
     {

@@ -58,7 +58,7 @@ class TechnicianTierClassifier
         // without a human's approval. Hard-coding Approve means even an operator who
         // (mis)maps one of these to 'auto' — and any confidence — cannot auto-send,
         // auto-publish, or auto-merge. Confidence does NOT gate a client send.
-        if (in_array($actionType, ['send_reply', 'stage_email', 'stage_public_note', 'propose_merge'], true)) {
+        if (in_array($actionType, ['send_reply', 'stage_email', 'stage_public_note', 'propose_merge', 'propose_asset_merge'], true)) {
             return TechnicianTier::Approve;
         }
 
