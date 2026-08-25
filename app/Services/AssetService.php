@@ -43,6 +43,7 @@ class AssetService
         'disk_summary', 'ip_address', 'last_user', 'warranty_start',
         'warranty_end', 'last_seen_at', 'last_boot_at',
     ];
+
     public function getAssetList(array $filters): LengthAwarePaginator
     {
         $query = Asset::query()->with(['client', 'users' => fn ($q) => $q->wherePivot('is_primary', true)]);
