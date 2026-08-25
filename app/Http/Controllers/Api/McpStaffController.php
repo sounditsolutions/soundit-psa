@@ -2395,9 +2395,13 @@ class McpStaffController extends Controller
     }
 
     /**
-     * Whether staged=false may execute a stageable tool now. The legacy
-     * full-surface token retains full trust; scoped tokens need the per-tool
-     * immediate mode grant (see McpStaffToken::allowsImmediate()).
+     * Whether staged=false may execute a stageable tool now. Delegates to
+     * McpStaffToken::allowsImmediate(), which resolves the mode through
+     * McpToolModes::effectiveMode() — the same single resolution point
+     * tools/list advertises from, so this gate can never grant a lane the
+     * published surface says is approval-gated. A capability whose immediate
+     * lane is new (merge_ticket / merge_asset) needs the explicit per-tool
+     * `:immediate` grant; every other stageable tool keeps its legacy default.
      */
     private function allowsImmediateExecution(Request $request, string $toolName): bool
     {

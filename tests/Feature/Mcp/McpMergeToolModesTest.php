@@ -11,6 +11,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Support\McpConfig;
+use App\Support\McpStaffToken;
 use App\Support\McpToolModes;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
@@ -283,5 +284,34 @@ class McpMergeToolModesTest extends TestCase
         $byName = array_column($tools, null, 'name');
         $this->assertArrayHasKey('staged', $byName['merge_ticket']['inputSchema']['properties'] ?? []);
         $this->assertArrayHasKey('staged', $byName['merge_asset']['inputSchema']['properties'] ?? []);
+    }
+
+    /**
+     * The advertised mode and the executable lane resolve through ONE point
+     * (McpToolModes::effectiveMode()). A token holding no per-tool mode entry —
+     * including the legacy full-surface token — is both shown the staged merge
+     * surface and refused the immediate lane; wiring effectiveMode() into
+     * tools/list alone would advertise an approval-gated merge while the gate
+     * still executed an approval-free one.
+     */
+    public function test_a_token_without_an_explicit_mode_is_denied_the_immediate_merge_lane(): void
+    {
+        $full = new McpStaffToken(allowedTools: null);
+
+        foreach (['merge_ticket', 'merge_asset'] as $name) {
+            $this->assertSame(McpToolModes::MODE_STAGED, McpToolModes::effectiveMode($full, $name));
+            $this->assertFalse($full->allowsImmediate($name), "{$name} must not execute immediately without the explicit :immediate grant");
+        }
+
+        // Every other stageable capability keeps its legacy full-surface trust.
+        $this->assertSame(McpToolModes::MODE_IMMEDIATE, McpToolModes::effectiveMode($full, 'send_email'));
+        $this->assertTrue($full->allowsImmediate('send_email'));
+
+        // A scoped token resolves through the same point, unchanged.
+        $staged = new McpStaffToken(allowedTools: ['merge_ticket'], toolModes: ['merge_ticket' => McpToolModes::MODE_STAGED]);
+        $this->assertFalse($staged->allowsImmediate('merge_ticket'));
+
+        $immediate = new McpStaffToken(allowedTools: ['merge_ticket'], toolModes: ['merge_ticket' => McpToolModes::MODE_IMMEDIATE]);
+        $this->assertTrue($immediate->allowsImmediate('merge_ticket'));
     }
 }
