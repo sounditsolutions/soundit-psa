@@ -531,6 +531,7 @@ Route::middleware('auth')->group(function () {
     Route::patch('/assets/{asset}', [AssetController::class, 'update'])->name('assets.update');
     Route::delete('/assets/{asset}', [AssetController::class, 'destroy'])->name('assets.destroy');
     Route::post('/assets/{asset}/restore', [AssetController::class, 'restore'])->name('assets.restore');
+    Route::post('/assets/{asset}/merge', [AssetController::class, 'merge'])->name('assets.merge');
     Route::post('/assets/{asset}/refresh', [AssetController::class, 'refresh'])->name('assets.refresh');
     Route::post('/assets/{asset}/controld/link', [AssetController::class, 'linkControlD'])->name('assets.controld.link');
     Route::post('/assets/{asset}/controld/unlink', [AssetController::class, 'unlinkControlD'])->name('assets.controld.unlink');

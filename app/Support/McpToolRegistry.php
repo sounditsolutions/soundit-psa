@@ -515,6 +515,7 @@ class McpToolRegistry
             self::writePublicNoteTool(),
             self::stagePublicNoteTool(),
             self::proposeMergeTool(),
+            self::proposeAssetMergeTool(),
             self::updateTicketTool(),
             self::setTicketStatusTool(),
             self::closeTicketTool(),
@@ -1034,6 +1035,37 @@ class McpToolRegistry
                     ],
                 ],
                 'required' => ['primary_ticket_id', 'secondary_ticket_id', 'reason'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function proposeAssetMergeTool(): array
+    {
+        return [
+            'name' => 'propose_asset_merge',
+            'description' => 'Submit a held asset-merge proposal (duplicate device record into the surviving one) for cockpit approval. The call never merges directly; approval revalidates both assets and runs the merge, which moves tickets, alerts, user/contract assignments and RMM history to the survivor and retires the duplicate with a tombstone. Refused when both assets carry differing live RMM identities — that is two devices, not a duplicate.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'survivor_asset_id' => [
+                        'type' => 'integer',
+                        'description' => 'Asset ID that should remain as the live device record.',
+                    ],
+                    'duplicate_asset_id' => [
+                        'type' => 'integer',
+                        'description' => 'Asset ID that should be merged into the survivor and retired. A retired (soft-deleted) duplicate is accepted.',
+                    ],
+                    'ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'Open ticket on the same client this staged action is worked under.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Specific evidence that the two asset records are the same physical device.',
+                    ],
+                ],
+                'required' => ['survivor_asset_id', 'duplicate_asset_id', 'ticket_id', 'reason'],
             ],
         ];
     }

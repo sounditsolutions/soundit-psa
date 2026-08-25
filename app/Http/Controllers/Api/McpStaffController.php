@@ -149,6 +149,7 @@ class McpStaffController extends Controller
         'write_public_note',
         'stage_public_note',
         'propose_merge',
+        'propose_asset_merge',
         'update_ticket',
         'set_ticket_status',
         // psa-d9ayt: close_ticket is the only terminal transition; stage_close_ticket
@@ -1272,6 +1273,10 @@ class McpStaffController extends Controller
             return $this->auditProposeMergeArguments($args);
         }
 
+        if ($tool === 'propose_asset_merge') {
+            return $this->auditProposeAssetMergeArguments($args);
+        }
+
         if ($tool === 'update_ticket') {
             return $this->auditUpdateTicketArguments($args);
         }
@@ -1479,6 +1484,25 @@ class McpStaffController extends Controller
             $normalized = mb_strtolower((string) $key);
 
             if (in_array($normalized, ['client_id', 'primary_ticket_id', 'secondary_ticket_id'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'reason') {
+                $safe['reason_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+        }
+
+        return $safe;
+    }
+
+    private function auditProposeAssetMergeArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['client_id', 'survivor_asset_id', 'duplicate_asset_id', 'ticket_id'], true)) {
                 $safe[$normalized] = $value;
             }
 

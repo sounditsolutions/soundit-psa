@@ -163,6 +163,7 @@ class TechnicianRun extends Model
         'propose_resolution',
         'propose_close',
         'propose_merge',
+        'propose_asset_merge',
         'stage_email',
         'stage_public_note',
     ];

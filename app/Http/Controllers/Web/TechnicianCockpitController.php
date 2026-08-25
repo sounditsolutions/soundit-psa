@@ -64,6 +64,7 @@ class TechnicianCockpitController extends Controller
             // match so the every-staged-type-can-be-approved guard holds.
             'propose_close', 'stage_close_ticket' => $service->approveClose($run, (int) auth()->id()),
             'propose_merge' => $service->approveMerge($run, (int) auth()->id()),
+            'propose_asset_merge' => $service->approveAssetMerge($run, (int) auth()->id()),
             'stage_email' => $service->approveStagedEmail(
                 $run,
                 $request->validate(['body' => ['required', 'string']])['body'],
