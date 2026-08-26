@@ -54,8 +54,16 @@ use App\Models\TacticalScript;
  *    compatibility: treating an empty claim as "runs anywhere" is exactly how
  *    a wrong-platform always-failing check ships (psa-0pb9m R2).
  *  - AGENT target with a provably incompatible script → refused, no override.
- *  - POLICY target, script check whose script DECLARES supported_platforms →
- *    allowed WITHOUT membership proof. Tactical scopes policy script-check
+ *  - POLICY target, a check whose check_type IS 'script' and whose script
+ *    DECLARES supported_platforms that are ALL exact vendor platform tokens
+ *    (windows/darwin/linux — upstream matching is case-sensitive membership,
+ *    so a mis-cased or unknown token is delivered to ZERO agents and waives
+ *    nothing) and are ALL platforms the script's own shell can run on
+ *    (scoping delivers the check to every DECLARED platform, so a declared
+ *    platform the shell cannot run on receives a check that fails on every
+ *    run) → allowed WITHOUT membership proof; anything else — a shell-only
+ *    script, a mis-declared one, or a non-script check carrying a script id
+ *    — stays on the proof path. Tactical scopes policy script-check
  *    delivery per member agent by the script's own supported_platforms:
  *    generate_checks / delivered check lists include a policy script check
  *    only when agent.is_supported_script(script.supported_platforms) — read
@@ -351,30 +359,51 @@ class TacticalCheckPlatformGuard
      */
     private static function assertPolicyTargetSafe(int $policyId, bool $isScriptCheck, array $payload, TacticalClient $client): void
     {
+        // A payload is classified as a script check whenever it carries a
+        // script id, but only a check whose declared check_type IS 'script'
+        // is delivery-scoped upstream: non-script checks are not filtered by
+        // the script's supported_platforms at all (PING is not filtered even
+        // by platform), so a ping-with-a-script-id payload still owes the
+        // all-Windows vendor constraint — the delivery-scoping waiver must
+        // not reopen the psa-0pb9m R2 non-script bypass.
+        $checkType = isset($payload['check_type']) && is_scalar($payload['check_type'])
+            ? mb_strtolower(trim((string) $payload['check_type']))
+            : '';
+        $isDeliverableScriptCheck = $checkType === 'script';
+
+        $blocked = [];
+
         if ($isScriptCheck) {
             $meta = self::resolveScriptMeta($payload, $client);
 
-            // A script that DECLARES its supported_platforms is delivery-
-            // scoped by Tactical itself: a policy script check reaches a
-            // member agent only when is_supported_script(supported_platforms)
-            // says so, and members on undeclared platforms never receive it
-            // (automation/models.py + agents/models.py, read at the deployed
-            // v1.5.1 server). No membership proof is needed — the vendor
-            // withholds the check from incompatible members, including ones
-            // added to the policy later. A shell-only script gets no such
-            // scoping (empty supported_platforms delivers everywhere), so it
-            // falls through to the proof.
-            if (self::hasDeclaredPlatforms($meta['supported_platforms'])) {
+            // The compatibility math runs FIRST: delivery scoping only helps
+            // where the script can actually RUN. Tactical scopes policy
+            // script-check delivery per member agent by the script's own
+            // supported_platforms (is_supported_script — read at the deployed
+            // v1.5.1 server), so members on undeclared platforms never receive
+            // it; but it DELIVERS to every declared platform, so a script
+            // declaring a platform its own shell cannot run on lands exactly
+            // where it fails on every run. A shell-only script gets no scoping
+            // at all (empty supported_platforms delivers everywhere), and an
+            // unknown/mis-cased token is delivered to nobody. All of those
+            // fall through to the membership proof.
+            $blocked = self::incompatiblePlatforms($meta['shell'], $meta['supported_platforms']);
+
+            if ($isDeliverableScriptCheck && self::isPolicyDeliveryScoped($meta['shell'], $meta['supported_platforms'])) {
                 return;
             }
+        }
 
-            $blocked = self::incompatiblePlatforms($meta['shell'], $meta['supported_platforms']);
-        } else {
+        if (! $isDeliverableScriptCheck) {
             // Non-script checks exist on WINDOWS agents only (vendor
             // constraint) — on a policy they demand an all-Windows membership
             // exactly like a Windows-bound script (psa-0pb9m R2: this path
-            // previously bypassed the guard entirely).
-            $blocked = [TacticalPlatform::DARWIN, TacticalPlatform::LINUX];
+            // previously bypassed the guard entirely). A script id in the
+            // payload does not make the check delivery-scoped.
+            $blocked = array_values(array_unique(array_merge(
+                $blocked,
+                [TacticalPlatform::DARWIN, TacticalPlatform::LINUX],
+            )));
         }
 
         if ($blocked === []) {
@@ -919,5 +948,66 @@ class TacticalCheckPlatformGuard
         }
 
         return false;
+    }
+
+    /**
+     * Whether Tactical's own per-agent delivery scoping actually protects a
+     * POLICY script check — the ONLY condition that waives the membership
+     * proof. Deliberately narrower than hasDeclaredPlatforms, which answers
+     * the weaker "is there a usable signal" question: three things must hold,
+     * and each is checked because it is what makes the waiver true rather
+     * than merely plausible.
+     *
+     *  - At least one platform is DECLARED. An empty list is delivered to
+     *    EVERY member (`plat in platforms if platforms else True`).
+     *  - Every declared token is one of the vendor's own platform values,
+     *    matched EXACTLY as upstream matches it — `plat in platforms` is
+     *    case-sensitive membership against a lowercase `plat`, so 'Windows'
+     *    or 'win32' names no platform at all and the check is delivered to
+     *    ZERO agents: phantom coverage, and unknown is never compatible
+     *    (psa-0pb9m).
+     *  - Every declared platform is one the script's SHELL can run on.
+     *    Scoping delivers the check to every declared platform, so a
+     *    powershell script declaring ['linux'] is delivered precisely where
+     *    it fails on every run — the original broken-coverage defect.
+     *
+     * Public so the MCP executor pre-check makes the same call with its own
+     * audited copy.
+     *
+     * @param  array<int, mixed>|null  $supportedPlatforms
+     */
+    public static function isPolicyDeliveryScoped(?string $shell, ?array $supportedPlatforms): bool
+    {
+        $declared = [];
+
+        foreach ($supportedPlatforms ?? [] as $platform) {
+            if (! is_scalar($platform)) {
+                return false;
+            }
+
+            $token = (string) $platform;
+
+            if (! in_array($token, [TacticalPlatform::WINDOWS, TacticalPlatform::DARWIN, TacticalPlatform::LINUX], true)) {
+                return false;
+            }
+
+            $declared[] = $token;
+        }
+
+        if ($declared === []) {
+            return false;
+        }
+
+        if (! is_string($shell) || trim($shell) === '') {
+            return true;
+        }
+
+        foreach ($declared as $token) {
+            if (TacticalPlatform::scriptIncompatibility($token, $shell, null) !== null) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
