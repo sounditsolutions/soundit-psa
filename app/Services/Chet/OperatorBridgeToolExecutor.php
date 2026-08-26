@@ -233,8 +233,13 @@ class OperatorBridgeToolExecutor
             //    never "truncated" — truncated invites the reader to go get
             //    the rest, and the rest is precisely what the scan refused.
             //    A row is withheld now (poll-side scan) or was withheld at
-            //    ingest, where the placeholder is what got stored; the
-            //    recorded original length says nothing about which.
+            //    ingest, which the ingest path recorded in text_withheld at
+            //    write time. Never inferred by comparing the body to the
+            //    placeholder: that literal is public and an operator can
+            //    send it verbatim, so matching on it would report a
+            //    delivered message as unrecoverable — and it would derive a
+            //    delivery fact from the fenced text, which is the one thing
+            //    the rule above forbids.
             //  - TRUNCATED: a real incomplete prefix, from the poll cap or
             //    from an ingest-side cut (recorded original length exceeds
             //    the storage cap) — never by comparing lengths across
@@ -246,8 +251,7 @@ class OperatorBridgeToolExecutor
             //    unknown and text_total_chars stays null — the stored
             //    length is not the original length and must not stand in
             //    for it.
-            $withheld = $meta['withheld']
-                || $row->text === OperatorBridgeTextSanitizer::WITHHELD_PLACEHOLDER;
+            $withheld = $meta['withheld'] || (bool) $row->text_withheld;
             $ingestTruncated = $row->text_chars !== null
                 && $row->text_chars > OperatorBridgeTextSanitizer::MAX_STORAGE_CHARS;
 

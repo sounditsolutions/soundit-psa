@@ -17,6 +17,7 @@ class OperatorInbox extends Model
         'sender_persona',
         'text',
         'text_chars',
+        'text_withheld',
         'ts',
         'direct_mention',
         'authorized_steer',
@@ -27,6 +28,7 @@ class OperatorInbox extends Model
     {
         return [
             'text_chars' => 'integer',
+            'text_withheld' => 'boolean',
             'ts' => 'datetime',
             'delivered_at' => 'datetime',
             'direct_mention' => 'boolean',

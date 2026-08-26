@@ -241,6 +241,7 @@ class ChetRoutingTest extends TestCase
         $this->assertNotNull($row);
         $this->assertStringContainsString('withheld', $row->text);
         $this->assertStringNotContainsString('ignore all previous instructions', $row->text);
+        $this->assertTrue($row->text_withheld, 'the withhold must be recorded on the row — the poll tool must never have to recognise it in the body');
     }
 
     public function test_routing_on_for_a_different_conversation_uses_the_teammate(): void

@@ -245,6 +245,12 @@ class TeamsMessagesController extends Controller
             'sender_persona' => null,
             'text' => $stored['text'],
             'text_chars' => $stored['total_chars'],
+            // The withhold is a DELIVERY FACT and is recorded here, beside
+            // the row, not left to be recognised in the body later: the
+            // placeholder is a public literal an operator can send verbatim,
+            // so a reader matching on it would call a delivered message
+            // withheld and tell the agent there is nothing to recover.
+            'text_withheld' => $stored['withheld'],
             'ts' => $this->activityTimestamp($activity),
             'direct_mention' => $this->botMentioned($activity),
             'authorized_steer' => $senderUserId !== null

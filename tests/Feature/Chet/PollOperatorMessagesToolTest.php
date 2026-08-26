@@ -354,6 +354,7 @@ class PollOperatorMessagesToolTest extends TestCase
         $this->seedMessage([
             'text' => '[operator message withheld - unsafe content]',
             'text_chars' => 20000,
+            'text_withheld' => true,
         ]);
 
         $out = $this->poll();
@@ -361,6 +362,29 @@ class PollOperatorMessagesToolTest extends TestCase
         $this->assertTrue($out['messages'][0]['text_withheld']);
         $this->assertFalse($out['messages'][0]['text_truncated']);
         $this->assertSame(20000, $out['messages'][0]['text_total_chars']);
+    }
+
+    /**
+     * The withheld fact comes from the row, never from the body. The
+     * placeholder is a public literal — an operator who has seen it rendered
+     * can type it back verbatim, and it survives the scan untouched. Reading
+     * the flag off the text called that delivered message withheld, and the
+     * tool description then tells the agent there is nothing of the original
+     * to recover and not to go looking: a message that arrived intact,
+     * silently dropped.
+     */
+    public function test_delivered_message_equal_to_the_placeholder_is_not_reported_as_withheld(): void
+    {
+        $this->seedMessage([
+            'text' => '[operator message withheld - unsafe content]',
+            'text_chars' => 44,
+        ]);
+
+        $out = $this->poll();
+
+        $this->assertFalse($out['messages'][0]['text_withheld']);
+        $this->assertFalse($out['messages'][0]['text_truncated']);
+        $this->assertStringContainsString('[operator message withheld - unsafe content]', $out['messages'][0]['text']);
     }
 
     public function test_token_without_poll_scope_is_denied(): void
