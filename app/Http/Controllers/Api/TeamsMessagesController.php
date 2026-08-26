@@ -231,13 +231,26 @@ class TeamsMessagesController extends Controller
     {
         $senderUserId = $sender->user->id;
 
+        // Store at the STORAGE cap (16000 chars), not the prompt cap: the
+        // row keeps the whole message and the poll tool's prompt cap becomes
+        // presentation-only, with text_chars preserving the true original
+        // length so a capped delivery can say so.
+        $stored = $this->textSanitizer->sanitizeForStorage($this->stripMention((string) ($activity['text'] ?? '')));
+
         OperatorInbox::create([
             'conversation_id' => (string) ($activity['conversation']['id'] ?? ''),
             'persona' => $sender->personaKey,
             'kind' => 'human',
             'sender_user_id' => $senderUserId,
             'sender_persona' => null,
-            'text' => $this->textSanitizer->sanitizeForPrompt($this->stripMention((string) ($activity['text'] ?? ''))),
+            'text' => $stored['text'],
+            'text_chars' => $stored['total_chars'],
+            // The withhold is a DELIVERY FACT and is recorded here, beside
+            // the row, not left to be recognised in the body later: the
+            // placeholder is a public literal an operator can send verbatim,
+            // so a reader matching on it would call a delivered message
+            // withheld and tell the agent there is nothing to recover.
+            'text_withheld' => $stored['withheld'],
             'ts' => $this->activityTimestamp($activity),
             'direct_mention' => $this->botMentioned($activity),
             'authorized_steer' => $senderUserId !== null

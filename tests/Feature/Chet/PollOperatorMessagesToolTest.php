@@ -275,6 +275,118 @@ class PollOperatorMessagesToolTest extends TestCase
         $this->assertNull($personaRow->fresh()->delivered_at, 'a legacy token must never drain a persona-laned row');
     }
 
+    /**
+     * T-22782 regression lock: a message longer than the prompt cap used to
+     * be cut silently mid-body — 15 rows of a pasted printer log delivered
+     * as if they were the whole thing, producing a wrong conclusion
+     * published onto a client ticket. The cap may cut; it must SAY SO, and
+     * it must say how long the original was — outside the fence, where the
+     * message text cannot spoof it.
+     */
+    public function test_long_message_delivery_is_capped_with_truncation_metadata(): void
+    {
+        $long = implode("\n", array_map(
+            fn (int $i): string => sprintf('printer log row %04d with some diagnostic detail text', $i),
+            range(1, 200),
+        ));
+        $this->assertGreaterThan(6000, mb_strlen($long));
+        $this->seedMessage(['text' => $long, 'text_chars' => mb_strlen($long)]);
+
+        $out = $this->poll();
+        $m = $out['messages'][0];
+
+        $this->assertTrue($m['text_truncated']);
+        $this->assertSame(mb_strlen($long), $m['text_total_chars']);
+        $this->assertStringContainsString('printer log row 0001', $m['text']);
+        $this->assertStringNotContainsString('printer log row 0200', $m['text']);
+    }
+
+    public function test_short_message_reports_untruncated_metadata(): void
+    {
+        $this->seedMessage(['text' => 'short note', 'text_chars' => 10]);
+
+        $out = $this->poll();
+
+        $this->assertFalse($out['messages'][0]['text_truncated']);
+        $this->assertSame(10, $out['messages'][0]['text_total_chars']);
+    }
+
+    /**
+     * A pre-column row (text_chars null) reports UNKNOWN, not complete.
+     * These are the T-22782 rows — cut at the old 2000 cap with nothing
+     * recording it — so an affirmative text_truncated=false would be a
+     * machine-readable claim of completeness on exactly the population that
+     * caused the incident. The stored length is not the original length and
+     * must not stand in for it.
+     */
+    public function test_legacy_row_without_text_chars_reports_unknown_completeness(): void
+    {
+        $this->seedMessage(['text' => str_repeat('legacy body text ', 100)]);
+
+        $out = $this->poll();
+
+        $this->assertFalse($out['messages'][0]['text_withheld']);
+        $this->assertNull($out['messages'][0]['text_truncated']);
+        $this->assertNull($out['messages'][0]['text_total_chars']);
+    }
+
+    /** A row the INGEST cap already shortened stays marked truncated with its true original length. */
+    public function test_ingest_capped_row_reports_truncated_with_original_length(): void
+    {
+        $this->seedMessage(['text' => str_repeat('stored body text ', 900), 'text_chars' => 17500]);
+
+        $out = $this->poll();
+
+        $this->assertFalse($out['messages'][0]['text_withheld']);
+        $this->assertTrue($out['messages'][0]['text_truncated']);
+        $this->assertSame(17500, $out['messages'][0]['text_total_chars']);
+    }
+
+    /**
+     * A long message the scanner REFUSED is withheld, never truncated. The
+     * row stores a placeholder plus the true original length, so deriving
+     * truncation from the length alone would deliver a 44-char placeholder
+     * as "an incomplete prefix of a 20000-char message" — sending the agent
+     * after precisely the body the pipeline declined to hand it.
+     */
+    public function test_withheld_row_over_the_storage_cap_is_not_reported_as_truncated(): void
+    {
+        $this->seedMessage([
+            'text' => '[operator message withheld - unsafe content]',
+            'text_chars' => 20000,
+            'text_withheld' => true,
+        ]);
+
+        $out = $this->poll();
+
+        $this->assertTrue($out['messages'][0]['text_withheld']);
+        $this->assertFalse($out['messages'][0]['text_truncated']);
+        $this->assertSame(20000, $out['messages'][0]['text_total_chars']);
+    }
+
+    /**
+     * The withheld fact comes from the row, never from the body. The
+     * placeholder is a public literal — an operator who has seen it rendered
+     * can type it back verbatim, and it survives the scan untouched. Reading
+     * the flag off the text called that delivered message withheld, and the
+     * tool description then tells the agent there is nothing of the original
+     * to recover and not to go looking: a message that arrived intact,
+     * silently dropped.
+     */
+    public function test_delivered_message_equal_to_the_placeholder_is_not_reported_as_withheld(): void
+    {
+        $this->seedMessage([
+            'text' => '[operator message withheld - unsafe content]',
+            'text_chars' => 44,
+        ]);
+
+        $out = $this->poll();
+
+        $this->assertFalse($out['messages'][0]['text_withheld']);
+        $this->assertFalse($out['messages'][0]['text_truncated']);
+        $this->assertStringContainsString('[operator message withheld - unsafe content]', $out['messages'][0]['text']);
+    }
+
     public function test_token_without_poll_scope_is_denied(): void
     {
         $chet = McpConfig::rotateStaffToken(allowedTools: ['find_staff', 'get_staff'], label: 'chet');

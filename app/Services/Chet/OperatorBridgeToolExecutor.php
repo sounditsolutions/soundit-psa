@@ -222,19 +222,60 @@ class OperatorBridgeToolExecutor
             ->limit(50)
             ->get();
 
-        $messages = $rows->map(fn (OperatorInbox $row): array => [
-            'id' => $row->id,
-            'conversation_id' => $row->conversation_id,
-            'sender_user_id' => $row->sender_user_id,
-            'sender_name' => $row->sender?->name,
-            'text' => $this->promptFence->fence(
-                'operator message',
-                $this->textSanitizer->sanitizeForPrompt($row->text),
-            ),
-            'ts' => $row->ts?->toIso8601String(),
-            'direct_mention' => (bool) $row->direct_mention,
-            'authorized_steer' => (bool) $row->authorized_steer,
-        ])->all();
+        $messages = $rows->map(function (OperatorInbox $row): array {
+            $meta = $this->textSanitizer->sanitizeForPromptWithMeta($row->text);
+
+            // Delivery facts ride OUTSIDE the fenced text — a marker inside
+            // the fence would be spoofable by the operator message itself.
+            //
+            // Three states, and they must never be conflated:
+            //  - WITHHELD: the body is a placeholder, not a prefix. It is
+            //    never "truncated" — truncated invites the reader to go get
+            //    the rest, and the rest is precisely what the scan refused.
+            //    A row is withheld now (poll-side scan) or was withheld at
+            //    ingest, which the ingest path recorded in text_withheld at
+            //    write time. Never inferred by comparing the body to the
+            //    placeholder: that literal is public and an operator can
+            //    send it verbatim, so matching on it would report a
+            //    delivered message as unrecoverable — and it would derive a
+            //    delivery fact from the fenced text, which is the one thing
+            //    the rule above forbids.
+            //  - TRUNCATED: a real incomplete prefix, from the poll cap or
+            //    from an ingest-side cut (recorded original length exceeds
+            //    the storage cap) — never by comparing lengths across
+            //    redaction.
+            //  - UNKNOWN (null): a pre-column legacy row (text_chars null).
+            //    These are the T-22782 rows, cut at the old 2000 cap with
+            //    nothing recording it. false would be an affirmative claim
+            //    of completeness we cannot support, so the field says
+            //    unknown and text_total_chars stays null — the stored
+            //    length is not the original length and must not stand in
+            //    for it.
+            $withheld = $meta['withheld'] || (bool) $row->text_withheld;
+            $ingestTruncated = $row->text_chars !== null
+                && $row->text_chars > OperatorBridgeTextSanitizer::MAX_STORAGE_CHARS;
+
+            $truncated = match (true) {
+                $withheld => false,
+                $meta['truncated'] || $ingestTruncated => true,
+                $row->text_chars === null => null,
+                default => false,
+            };
+
+            return [
+                'id' => $row->id,
+                'conversation_id' => $row->conversation_id,
+                'sender_user_id' => $row->sender_user_id,
+                'sender_name' => $row->sender?->name,
+                'text' => $this->promptFence->fence('operator message', $meta['text']),
+                'text_withheld' => $withheld,
+                'text_truncated' => $truncated,
+                'text_total_chars' => $row->text_chars,
+                'ts' => $row->ts?->toIso8601String(),
+                'direct_mention' => (bool) $row->direct_mention,
+                'authorized_steer' => (bool) $row->authorized_steer,
+            ];
+        })->all();
 
         return [
             'messages' => $messages,
