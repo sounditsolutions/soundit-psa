@@ -3993,12 +3993,30 @@ class StaffTacticalAdminToolExecutor
             return ['error' => "assigned_check is only valid for task_type 'checkfailure'."];
         }
 
-        foreach (['run_time_date', 'expire_date', 'task_repetition_duration', 'task_repetition_interval', 'random_task_delay'] as $key) {
+        foreach (['run_time_date', 'expire_date'] as $key) {
             if (array_key_exists($key, $arguments)) {
                 if ($arguments[$key] !== null && ! is_scalar($arguments[$key])) {
                     return ['error' => "{$key} must be a string or null."];
                 }
                 $body[$key] = $arguments[$key] === null ? null : trim((string) $arguments[$key]);
+            }
+        }
+
+        foreach (['task_repetition_duration', 'task_repetition_interval', 'random_task_delay'] as $key) {
+            if (array_key_exists($key, $arguments)) {
+                if ($arguments[$key] === null) {
+                    $body[$key] = null;
+
+                    continue;
+                }
+                if (! is_scalar($arguments[$key])) {
+                    return ['error' => "{$key} must be a string or null."];
+                }
+                $normalized = $this->tacticalDuration((string) $arguments[$key]);
+                if ($normalized === null) {
+                    return ['error' => "{$key} must be a Tactical duration like '30m', '4h', or '1d2h' — d/h/m/s components in order, max 10 chars, and a days component needs a following time component. ISO-8601 'PT…' values are not accepted: Tactical prefixes the stored string into ISO at delivery time, so an ISO input corrupts the agent schedule payload and the task is silently never delivered."];
+                }
+                $body[$key] = $normalized;
             }
         }
 
@@ -4780,6 +4798,39 @@ class StaffTacticalAdminToolExecutor
         return $value !== '' ? $value : null;
     }
 
+    /**
+     * Tactical stores duration-shaped task fields verbatim (CharField
+     * max_length=10) and its schedule serializer BLINDLY prefixes them into
+     * ISO-8601 at payload-build time (utils.convert_to_iso_duration: value
+     * containing "D" → "P{value, D→DT}", else "PT{value}"). Two inputs that
+     * look reasonable therefore brick the task: an already-ISO value
+     * ("PT4H" → "PTPT4H") and a days-only value ("1d" → "P1DT") both
+     * produce invalid ISO, and the agent silently drops the whole schedule
+     * payload — the server logs only a generic timeout and nothing anywhere
+     * names the field. So this fails closed at the tool boundary: lowercase
+     * Tactical shorthand only, d/h/m/s components in order, at least one
+     * component, a days component only with a following time component, and
+     * within Tactical's 10-char column.
+     */
+    private function tacticalDuration(string $value): ?string
+    {
+        $value = strtolower(trim($value));
+
+        if ($value === '' || strlen($value) > 10) {
+            return null;
+        }
+
+        if (preg_match('/^(?:\d+d)?(?:\d+h)?(?:\d+m)?(?:\d+s)?$/', $value) !== 1) {
+            return null;
+        }
+
+        if (str_ends_with($value, 'd')) {
+            return null;
+        }
+
+        return $value;
+    }
+
     private function positiveInteger(mixed $value): ?int
     {
         if (is_int($value)) {
@@ -5341,10 +5392,10 @@ class StaffTacticalAdminToolExecutor
             'monthly_months_of_year' => ['type' => 'integer', 'description' => 'Tactical month bitmask required for monthly and monthlydow tasks.'],
             'monthly_days_of_month' => ['type' => 'integer', 'description' => 'Tactical day-of-month bitmask required for monthly tasks.'],
             'monthly_weeks_of_month' => ['type' => 'integer', 'description' => 'Tactical week-of-month bitmask required for monthlydow tasks.'],
-            'task_repetition_duration' => ['type' => 'string', 'description' => 'Optional Tactical repetition duration string.'],
-            'task_repetition_interval' => ['type' => 'string', 'description' => 'Optional Tactical repetition interval string.'],
+            'task_repetition_duration' => ['type' => 'string', 'description' => 'Optional total repetition window in Tactical shorthand, e.g. "4h" or "1d2h" (d/h/m/s in order, max 10 chars; days need a following time component). Never ISO-8601 "PT…" — Tactical converts the stored shorthand to ISO itself and an ISO input silently breaks scheduling on the agent. Repetition only applies when task_repetition_interval is also set.'],
+            'task_repetition_interval' => ['type' => 'string', 'description' => 'Optional gap between repetitions in Tactical shorthand, e.g. "30m" or "4h" (d/h/m/s in order, max 10 chars; days need a following time component). Never ISO-8601 "PT…". Repetition only applies when task_repetition_duration is also set.'],
             'stop_task_at_duration_end' => ['type' => 'boolean', 'description' => 'Whether repetition stops at duration end.'],
-            'random_task_delay' => ['type' => 'string', 'description' => 'Optional Tactical random-delay string.'],
+            'random_task_delay' => ['type' => 'string', 'description' => 'Optional random start delay in Tactical shorthand, e.g. "10m" (d/h/m/s in order, max 10 chars; days need a following time component). Never ISO-8601 "PT…".'],
             'remove_if_not_scheduled' => ['type' => 'boolean', 'description' => 'Delete expired scheduled task from agent when no longer scheduled.'],
             'run_asap_after_missed' => ['type' => 'boolean', 'description' => 'Run as soon as possible after missed schedule.'],
             'task_instance_policy' => ['type' => 'integer', 'description' => 'Tactical task multiple-instance policy value.'],
