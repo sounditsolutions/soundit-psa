@@ -359,6 +359,84 @@ class TacticalTaskCrudPhase4Test extends TestCase
         $this->assertStringNotContainsString('SECRET_ARG', $summaries);
     }
 
+    /**
+     * Regression lock for issue #666: Tactical stores duration-shaped task
+     * fields verbatim and blindly prefixes them into ISO-8601 at schedule
+     * delivery, so an already-ISO value ("PT4H" → "PTPT4H") or a days-only
+     * value ("1d" → "P1DT") produces invalid ISO and the agent silently
+     * drops the whole schedule payload. These fields must be validated as
+     * Tactical shorthand at the tool boundary and normalized before the
+     * upstream call.
+     */
+    public function test_create_task_rejects_iso_and_days_only_duration_fields_and_normalizes_shorthand(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $fixture = $this->endpointFixture();
+        $token = $this->token(['tactical_create_agent_task']);
+
+        $baseArguments = [
+            'client_id' => $fixture['client']->id,
+            'reason' => 'Create repeating cleanup task.',
+            'hostname' => 'PC-01',
+            'name' => 'Repeating cleanup',
+            'enabled' => true,
+            'task_type' => 'daily',
+            'run_time_date' => '2026-07-04T03:00:00Z',
+            'daily_interval' => 1,
+            'actions' => [['type' => 'cmd', 'shell' => 'powershell', 'command' => 'whoami', 'timeout' => 30]],
+        ];
+
+        $iso = $this->callTool($token, 'tactical_create_agent_task', $baseArguments + [
+            'task_repetition_interval' => 'PT4H',
+        ]);
+        $this->assertTrue((bool) $iso->json('result.isError'));
+        $this->assertStringContainsString('task_repetition_interval must be a Tactical duration', (string) $iso->json('result.content.0.text'));
+        $this->assertStringContainsString('ISO-8601', (string) $iso->json('result.content.0.text'));
+
+        $daysOnly = $this->callTool($token, 'tactical_create_agent_task', $baseArguments + [
+            'task_repetition_duration' => '1d',
+        ]);
+        $this->assertTrue((bool) $daysOnly->json('result.isError'));
+        $this->assertStringContainsString('task_repetition_duration must be a Tactical duration', (string) $daysOnly->json('result.content.0.text'));
+
+        $garbage = $this->callTool($token, 'tactical_create_agent_task', $baseArguments + [
+            'random_task_delay' => '4 hours',
+        ]);
+        $this->assertTrue((bool) $garbage->json('result.isError'));
+        $this->assertStringContainsString('random_task_delay must be a Tactical duration', (string) $garbage->json('result.content.0.text'));
+
+        $overlong = $this->callTool($token, 'tactical_create_agent_task', $baseArguments + [
+            'random_task_delay' => '10000000d2h',
+        ]);
+        $this->assertTrue((bool) $overlong->json('result.isError'));
+        $this->assertStringContainsString('random_task_delay must be a Tactical duration', (string) $overlong->json('result.content.0.text'));
+
+        $tactical = Mockery::mock(TacticalClient::class);
+        $tactical->shouldReceive('createTask')->once()->with([
+            'agent' => 'agent-1',
+            'name' => 'Repeating cleanup',
+            'enabled' => true,
+            'task_type' => 'daily',
+            'run_time_date' => '2026-07-04T03:00:00Z',
+            'task_repetition_duration' => '1d2h',
+            'task_repetition_interval' => '4h',
+            'random_task_delay' => '10m',
+            'daily_interval' => 1,
+            'actions' => [
+                ['type' => 'cmd', 'shell' => 'powershell', 'command' => 'whoami', 'timeout' => 30],
+            ],
+        ])->andReturn('The task has been created. It will show up on the agent on next checkin');
+        $this->app->instance(TacticalClient::class, $tactical);
+
+        $accepted = $this->callTool($token, 'tactical_create_agent_task', $baseArguments + [
+            'task_repetition_duration' => '1D2H',
+            'task_repetition_interval' => ' 4H ',
+            'random_task_delay' => '10m',
+        ]);
+        $this->assertFalse((bool) $accepted->json('result.isError'), (string) $accepted->json('result.content.0.text'));
+    }
+
     public function test_read_update_and_delete_validate_task_ids_and_preserve_schedule_unless_task_type_is_supplied(): void
     {
         $this->configureTactical();
