@@ -311,15 +311,23 @@ class PollOperatorMessagesToolTest extends TestCase
         $this->assertSame(10, $out['messages'][0]['text_total_chars']);
     }
 
-    /** A pre-column row (text_chars null) falls back to the stored text's own length. */
-    public function test_legacy_row_without_text_chars_falls_back_to_stored_length(): void
+    /**
+     * A pre-column row (text_chars null) reports UNKNOWN, not complete.
+     * These are the T-22782 rows — cut at the old 2000 cap with nothing
+     * recording it — so an affirmative text_truncated=false would be a
+     * machine-readable claim of completeness on exactly the population that
+     * caused the incident. The stored length is not the original length and
+     * must not stand in for it.
+     */
+    public function test_legacy_row_without_text_chars_reports_unknown_completeness(): void
     {
         $this->seedMessage(['text' => str_repeat('legacy body text ', 100)]);
 
         $out = $this->poll();
 
-        $this->assertFalse($out['messages'][0]['text_truncated']);
-        $this->assertSame(1700, $out['messages'][0]['text_total_chars']);
+        $this->assertFalse($out['messages'][0]['text_withheld']);
+        $this->assertNull($out['messages'][0]['text_truncated']);
+        $this->assertNull($out['messages'][0]['text_total_chars']);
     }
 
     /** A row the INGEST cap already shortened stays marked truncated with its true original length. */
@@ -329,8 +337,30 @@ class PollOperatorMessagesToolTest extends TestCase
 
         $out = $this->poll();
 
+        $this->assertFalse($out['messages'][0]['text_withheld']);
         $this->assertTrue($out['messages'][0]['text_truncated']);
         $this->assertSame(17500, $out['messages'][0]['text_total_chars']);
+    }
+
+    /**
+     * A long message the scanner REFUSED is withheld, never truncated. The
+     * row stores a placeholder plus the true original length, so deriving
+     * truncation from the length alone would deliver a 44-char placeholder
+     * as "an incomplete prefix of a 20000-char message" — sending the agent
+     * after precisely the body the pipeline declined to hand it.
+     */
+    public function test_withheld_row_over_the_storage_cap_is_not_reported_as_truncated(): void
+    {
+        $this->seedMessage([
+            'text' => '[operator message withheld - unsafe content]',
+            'text_chars' => 20000,
+        ]);
+
+        $out = $this->poll();
+
+        $this->assertTrue($out['messages'][0]['text_withheld']);
+        $this->assertFalse($out['messages'][0]['text_truncated']);
+        $this->assertSame(20000, $out['messages'][0]['text_total_chars']);
     }
 
     public function test_token_without_poll_scope_is_denied(): void

@@ -225,16 +225,38 @@ class OperatorBridgeToolExecutor
         $messages = $rows->map(function (OperatorInbox $row): array {
             $meta = $this->textSanitizer->sanitizeForPromptWithMeta($row->text);
 
-            // Truncation facts ride OUTSIDE the fenced text — a marker inside
+            // Delivery facts ride OUTSIDE the fenced text — a marker inside
             // the fence would be spoofable by the operator message itself.
-            // text_total_chars prefers the ingest-recorded original length
-            // (text_chars); for pre-column legacy rows the stored length is
-            // the best available. text_truncated also covers an ingest-side
-            // cut (row stored at MAX_STORAGE_CHARS): detected from the
-            // recorded original length, never by comparing lengths across
-            // redaction.
+            //
+            // Three states, and they must never be conflated:
+            //  - WITHHELD: the body is a placeholder, not a prefix. It is
+            //    never "truncated" — truncated invites the reader to go get
+            //    the rest, and the rest is precisely what the scan refused.
+            //    A row is withheld now (poll-side scan) or was withheld at
+            //    ingest, where the placeholder is what got stored; the
+            //    recorded original length says nothing about which.
+            //  - TRUNCATED: a real incomplete prefix, from the poll cap or
+            //    from an ingest-side cut (recorded original length exceeds
+            //    the storage cap) — never by comparing lengths across
+            //    redaction.
+            //  - UNKNOWN (null): a pre-column legacy row (text_chars null).
+            //    These are the T-22782 rows, cut at the old 2000 cap with
+            //    nothing recording it. false would be an affirmative claim
+            //    of completeness we cannot support, so the field says
+            //    unknown and text_total_chars stays null — the stored
+            //    length is not the original length and must not stand in
+            //    for it.
+            $withheld = $meta['withheld']
+                || $row->text === OperatorBridgeTextSanitizer::WITHHELD_PLACEHOLDER;
             $ingestTruncated = $row->text_chars !== null
                 && $row->text_chars > OperatorBridgeTextSanitizer::MAX_STORAGE_CHARS;
+
+            $truncated = match (true) {
+                $withheld => false,
+                $meta['truncated'] || $ingestTruncated => true,
+                $row->text_chars === null => null,
+                default => false,
+            };
 
             return [
                 'id' => $row->id,
@@ -242,8 +264,9 @@ class OperatorBridgeToolExecutor
                 'sender_user_id' => $row->sender_user_id,
                 'sender_name' => $row->sender?->name,
                 'text' => $this->promptFence->fence('operator message', $meta['text']),
-                'text_truncated' => $meta['truncated'] || $ingestTruncated,
-                'text_total_chars' => $row->text_chars ?? $meta['total_chars'],
+                'text_withheld' => $withheld,
+                'text_truncated' => $truncated,
+                'text_total_chars' => $row->text_chars,
                 'ts' => $row->ts?->toIso8601String(),
                 'direct_mention' => (bool) $row->direct_mention,
                 'authorized_steer' => (bool) $row->authorized_steer,
