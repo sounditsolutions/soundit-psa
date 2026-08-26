@@ -1687,9 +1687,39 @@ class StaffTacticalAdminToolExecutor
                 return ['error' => $message];
             }
         } elseif (($target['target_type'] ?? null) === 'policy') {
+            // A non-empty supported_platforms is the vendor's own declaration
+            // and is final both ways inside scriptIncompatibility — the same
+            // reading the agent branch above gives it. A script that is not
+            // delivery-scoped simply stays on the membership-proof path with
+            // the blocked set as computed; re-deriving the shell's own
+            // constraints with the declared list withheld would refuse on a
+            // policy what the same script is allowed to do per agent, naming
+            // a remedy (declare supported_platforms) the operator has already
+            // applied (psa-0pb9m). The client-boundary guard derives the same
+            // set.
             $blockedPlatforms = TacticalCheckPlatformGuard::incompatiblePlatforms($scriptShell, $scriptPlatforms);
+            $deliveryScoped = TacticalCheckPlatformGuard::isPolicyDeliveryScoped($scriptShell, $scriptPlatforms);
 
-            if ($blockedPlatforms !== []) {
+            if ($blockedPlatforms !== [] && $deliveryScoped) {
+                // A script whose DECLARED supported_platforms are all real
+                // vendor platform tokens its own shell can run on is delivery-
+                // scoped by Tactical itself: policy script checks reach a
+                // member agent only when is_supported_script(supported_
+                // platforms) says so, so members on undeclared platforms —
+                // current or added later — never receive the check
+                // (automation/models.py + agents/models.py, read at the
+                // deployed v1.5.1 server 2026-08-25). No membership proof is
+                // needed on a mixed-platform policy (Charlie's ruling,
+                // 2026-08-25). A shell-only script gets no such scoping
+                // (empty supported_platforms delivers everywhere), and a
+                // script declaring an unknown/mis-cased token or a platform
+                // its own shell cannot run on is not protected either — those
+                // all stay on the proof path below.
+                $platformNote = "Platform-scoped script on a policy: script '{$resolvedScript['script_name']}' declares "
+                    .'supported_platforms, and Tactical delivers a policy script check only to member agents on a declared '
+                    .'platform — members on '.implode('/', $blockedPlatforms).' (current or added later) never receive it, '
+                    .'so no policy membership proof is required.';
+            } elseif ($blockedPlatforms !== []) {
                 // SERVER-DERIVED membership proof, before any write (psa-0pb9m
                 // R2): a caller-assertable acknowledgement was an AI-settable
                 // claim, not evidence — the policy's CURRENT member agents are
@@ -1703,7 +1733,8 @@ class StaffTacticalAdminToolExecutor
                     $message = "Refusing to create this policy check before any write: script '{$resolvedScript['script_name']}' cannot run on "
                         .implode('/', $blockedPlatforms).' agents, and '.$proof['reason']
                         .' A check that cannot run on a member fails on every run there — broken-coverage noise, the original psa-0pb9m defect. '
-                        .'There is no override: make the policy cover only compatible platforms, or target the compatible agents directly.';
+                        .'There is no override: declare the script\'s supported_platforms in Tactical (delivery is then scoped to those '
+                        .'platforms per member), make the policy cover only compatible platforms, or target the compatible agents directly.';
                     $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $message, $actorLabel);
 
                     return ['error' => $message];
@@ -5275,7 +5306,7 @@ class StaffTacticalAdminToolExecutor
     {
         return self::tool(
             'tactical_create_check',
-            'Create one Tactical script check on a verified automation policy or PSA-derived agent using POST checks/. Policy-level checks can affect all policy agents and require typed policy-name confirmation; agent checks require typed hostname confirmation. The tool resolves scripts through getScripts and refuses caller-supplied Tactical agent/script aliases. PLATFORM SAFETY (psa-0pb9m): a wrong-platform script check fails on every run forever and reads as broken coverage, so creation FAILS CLOSED before any write — an agent whose platform is unknown to the PSA is refused (run tactical:sync-devices first), a script provably incompatible with the agent platform (or without verifiable platform metadata) is refused outright, and a platform-bound script on a POLICY is allowed only on SERVER-DERIVED MEMBERSHIP PROOF: the policy\'s current member agents are enumerated live from Tactical and every one must be on a compatible platform. There is no caller-assertable override; a refusal names the incompatible members — make the policy cover only compatible platforms, or target compatible agents directly.',
+            'Create one Tactical script check on a verified automation policy or PSA-derived agent using POST checks/. Policy-level checks can affect all policy agents and require typed policy-name confirmation; agent checks require typed hostname confirmation. The tool resolves scripts through getScripts and refuses caller-supplied Tactical agent/script aliases. PLATFORM SAFETY (psa-0pb9m): a wrong-platform script check fails on every run forever and reads as broken coverage, so creation FAILS CLOSED before any write — an agent whose platform is unknown to the PSA is refused (run tactical:sync-devices first), a script provably incompatible with the agent platform (or without verifiable platform metadata) is refused outright. On a POLICY, a script check whose script declares supported_platforms that are all exact Tactical platform values its own shell can run on is allowed regardless of membership — Tactical delivers a policy script check only to member agents on a declared platform, so incompatible members never receive it — while any other platform-bound check (a SHELL-ONLY script, whose empty supported_platforms is delivered to every member; a script declaring an unknown, mis-cased, or shell-incompatible platform, which is delivered to nobody or delivered where it always fails; or a non-script check) is allowed only on SERVER-DERIVED MEMBERSHIP PROOF: the policy\'s current member agents are enumerated live from Tactical and every one must be on a compatible platform. There is no caller-assertable override; a refusal names the incompatible members — declare the script\'s supported_platforms in Tactical, make the policy cover only compatible platforms, or target compatible agents directly.',
             array_merge(self::reasonProperties(), self::scriptSelectorProperties(), self::checkBodyProperties()),
             ['reason'],
         );
