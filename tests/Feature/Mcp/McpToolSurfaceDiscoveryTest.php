@@ -188,6 +188,53 @@ class McpToolSurfaceDiscoveryTest extends TestCase
     }
 
     /**
+     * Raw-file-content reads must NEVER be auto-inherited by the legacy full-surface
+     * token (psa-688). get_ticket_attachment serves raw attachment bytes (base64)
+     * straight into agent context — content whose nature nobody controls, because it
+     * is whatever a client or operator ever attached. Same class as the tenant-wide
+     * mailbox-rule sweep above: it fell through toolAllowed()'s family branches to
+     * `$token->allows($toolName)`, unconditionally true for a legacy token.
+     *
+     * The metadata siblings (get_ticket_notes / get_ticket_detail list attachments as
+     * refs) are deliberately asserted GRANTED alongside: the discriminator is the
+     * RETURN SHAPE (bytes vs records), not the subject matter. If someone later
+     * "simplifies" by dropping the RAW_FILE_CONTENT_EXPLICIT_GRANT_TOOLS branch,
+     * this fails.
+     */
+    public function test_legacy_full_surface_token_does_not_inherit_the_raw_attachment_read(): void
+    {
+        $legacy = McpConfig::rotateStaffToken();
+
+        $states = $this->statesByName($this->surface($legacy));
+
+        $this->assertSame(
+            McpToolSurface::STATE_AVAILABLE_UNGRANTED,
+            $states['get_ticket_attachment'],
+            'A legacy full-surface token must not inherit get_ticket_attachment — raw file bytes into agent context require an explicit operator grant.',
+        );
+
+        // The metadata sibling stays an ordinary inherited read — return shape is
+        // the discriminator here, not the subject matter.
+        $this->assertSame(McpToolSurface::STATE_GRANTED, $states['get_ticket_notes']);
+    }
+
+    /**
+     * The other half: an explicit grant DOES enable it — explicit-grant class,
+     * not a blocklist (Charlie's model: the operator decides).
+     */
+    public function test_an_explicit_grant_enables_the_raw_attachment_read_for_a_scoped_token(): void
+    {
+        $token = McpConfig::rotateStaffToken(
+            allowedTools: ['get_ticket_attachment'],
+            label: 'chet',
+        );
+
+        $states = $this->statesByName($this->surface($token));
+
+        $this->assertSame(McpToolSurface::STATE_GRANTED, $states['get_ticket_attachment']);
+    }
+
+    /**
      * Without CIPP configured the tool is `unavailable_config`, not `available_ungranted`
      * — an infrastructure fact, not a token-grant fact. Asserted because the two tests
      * above would BOTH pass vacuously if the tool silently fell into unavailable_config

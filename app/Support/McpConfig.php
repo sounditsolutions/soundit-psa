@@ -18,6 +18,17 @@ class McpConfig
         return Setting::getEncrypted('mcp_staff_token');
     }
 
+    /**
+     * Delete the legacy full-surface token. Returns whether one existed.
+     * The CLI refuses to mint an unscoped replacement (psa-688), so
+     * break-glass on a leaked legacy token is retirement, not rotation.
+     * Scoped tokens (mcp_tokens rows) are untouched.
+     */
+    public static function retireLegacyStaffToken(): bool
+    {
+        return Setting::where('key', 'mcp_staff_token')->delete() > 0;
+    }
+
     public static function isStaffEnabled(): bool
     {
         return ! empty(self::staffToken()) || McpToken::query()->active()->exists();
