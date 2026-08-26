@@ -392,6 +392,24 @@ class TacticalCheckPlatformGuard
             if ($isDeliverableScriptCheck && self::isPolicyDeliveryScoped($meta['shell'], $meta['supported_platforms'])) {
                 return;
             }
+
+            // NOT delivery-scoped, so the declared list buys nothing upstream
+            // and must not stand in for the shell here: scriptIncompatibility
+            // gives a non-empty supported_platforms precedence over the shell
+            // ("vendor metadata vouches for this platform"), so a powershell
+            // script declaring windows/darwin/linux yields NO blocked
+            // platforms at all and would exit at the `$blocked === []` return
+            // below with no membership proof — delivered to every member,
+            // failing on every run on the darwin/linux ones. Union in the
+            // SHELL's own constraints (declared list deliberately withheld)
+            // so any shell-bound script that is not delivery-scoped stays on
+            // the proof path wherever its shell cannot run (psa-0pb9m).
+            if (is_string($meta['shell']) && trim($meta['shell']) !== '') {
+                $blocked = array_values(array_unique(array_merge(
+                    $blocked,
+                    self::incompatiblePlatforms($meta['shell'], null),
+                )));
+            }
         }
 
         if (! $isDeliverableScriptCheck) {
