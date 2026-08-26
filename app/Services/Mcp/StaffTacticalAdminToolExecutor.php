@@ -1687,24 +1687,18 @@ class StaffTacticalAdminToolExecutor
                 return ['error' => $message];
             }
         } elseif (($target['target_type'] ?? null) === 'policy') {
+            // A non-empty supported_platforms is the vendor's own declaration
+            // and is final both ways inside scriptIncompatibility — the same
+            // reading the agent branch above gives it. A script that is not
+            // delivery-scoped simply stays on the membership-proof path with
+            // the blocked set as computed; re-deriving the shell's own
+            // constraints with the declared list withheld would refuse on a
+            // policy what the same script is allowed to do per agent, naming
+            // a remedy (declare supported_platforms) the operator has already
+            // applied (psa-0pb9m). The client-boundary guard derives the same
+            // set.
             $blockedPlatforms = TacticalCheckPlatformGuard::incompatiblePlatforms($scriptShell, $scriptPlatforms);
             $deliveryScoped = TacticalCheckPlatformGuard::isPolicyDeliveryScoped($scriptShell, $scriptPlatforms);
-
-            if (! $deliveryScoped && is_string($scriptShell) && trim($scriptShell) !== '') {
-                // Not delivery-scoped: the declared supported_platforms buys
-                // nothing upstream, so it must not outvote the shell here
-                // either. A non-empty list takes precedence inside
-                // scriptIncompatibility, so a powershell script declaring all
-                // three platforms yields NO blocked platforms and would reach
-                // the POST with neither a platform note nor a membership
-                // proof. Union in the shell's own constraints so it stays on
-                // the proof path (psa-0pb9m); the client-boundary guard
-                // re-derives the same set.
-                $blockedPlatforms = array_values(array_unique(array_merge(
-                    $blockedPlatforms,
-                    TacticalCheckPlatformGuard::incompatiblePlatforms($scriptShell, null),
-                )));
-            }
 
             if ($blockedPlatforms !== [] && $deliveryScoped) {
                 // A script whose DECLARED supported_platforms are all real

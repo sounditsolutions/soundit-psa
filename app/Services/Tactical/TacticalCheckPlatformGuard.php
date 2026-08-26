@@ -393,23 +393,19 @@ class TacticalCheckPlatformGuard
                 return;
             }
 
-            // NOT delivery-scoped, so the declared list buys nothing upstream
-            // and must not stand in for the shell here: scriptIncompatibility
-            // gives a non-empty supported_platforms precedence over the shell
-            // ("vendor metadata vouches for this platform"), so a powershell
-            // script declaring windows/darwin/linux yields NO blocked
-            // platforms at all and would exit at the `$blocked === []` return
-            // below with no membership proof — delivered to every member,
-            // failing on every run on the darwin/linux ones. Union in the
-            // SHELL's own constraints (declared list deliberately withheld)
-            // so any shell-bound script that is not delivery-scoped stays on
-            // the proof path wherever its shell cannot run (psa-0pb9m).
-            if (is_string($meta['shell']) && trim($meta['shell']) !== '') {
-                $blocked = array_values(array_unique(array_merge(
-                    $blocked,
-                    self::incompatiblePlatforms($meta['shell'], null),
-                )));
-            }
+            // NOT delivery-scoped: the check reaches every member, so the
+            // membership proof below governs — and it governs against the
+            // blocked set exactly as computed above. A non-empty
+            // supported_platforms is the vendor's OWN declaration and is
+            // final both ways inside scriptIncompatibility, the same reading
+            // assertAgentTargetSafe gives it per agent (a powershell script
+            // declaring darwin is allowed on a darwin agent — the operator
+            // has declared pwsh present). Do NOT re-derive the shell's own
+            // constraints with the declared list withheld: that refuses on a
+            // policy what the identical script is allowed to do on each of
+            // its members, and the refusal's only stated remedy — declare
+            // supported_platforms — is precisely what would trigger it
+            // (psa-0pb9m).
         }
 
         if (! $isDeliverableScriptCheck) {

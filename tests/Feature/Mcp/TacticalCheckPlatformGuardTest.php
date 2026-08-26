@@ -303,6 +303,101 @@ class TacticalCheckPlatformGuardTest extends TestCase
         $this->assertStringContainsStringIgnoringCase('never receive', $payload['platform_note']);
     }
 
+    public function test_policy_target_allows_a_declared_platform_the_shell_alone_would_block(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+
+        // The declared supported_platforms is the vendor's own statement and
+        // is final BOTH ways: an MSP that ships pwsh to its Macs declares
+        // ['windows','darwin'] on a powershell script, and the agent path
+        // allows exactly that on a darwin agent. The policy path must read it
+        // the same way — only the UNdeclared platform (linux) is blocked, so
+        // the membership proof runs against [linux] and this windows+darwin
+        // membership passes. Re-deriving from the shell with the declared
+        // list withheld would refuse the write and name a remedy already in
+        // place.
+        $tactical = Mockery::mock(TacticalClient::class);
+        $tactical->shouldReceive('getPolicies')->once()->andReturn([['id' => 7, 'name' => 'Workstations']]);
+        $tactical->shouldReceive('getScripts')->once()->with(true, true)
+            ->andReturn($this->upstreamScripts('powershell', ['windows', 'darwin']));
+        $tactical->shouldReceive('getAutomationPolicyRelated')->once()->with(7)->andReturn([
+            'pk' => 7, 'name' => 'Workstations',
+            'agents' => [
+                ['id' => 1, 'hostname' => 'PC-01', 'agent_id' => 'agent-pc1', 'client' => 'Acme', 'site' => 'Main'],
+                ['id' => 2, 'hostname' => 'MAC-01', 'agent_id' => 'agent-mac', 'client' => 'Acme', 'site' => 'Main'],
+            ],
+            'workstation_clients' => [], 'server_clients' => [],
+            'workstation_sites' => [], 'server_sites' => [],
+            'is_default_server_policy' => false, 'is_default_workstation_policy' => false,
+        ]);
+        $tactical->shouldReceive('getAgents')->once()->andReturn([
+            ['agent_id' => 'agent-pc1', 'hostname' => 'PC-01', 'plat' => 'windows', 'monitoring_type' => 'workstation', 'client_name' => 'Acme', 'site_name' => 'Main'],
+            ['agent_id' => 'agent-mac', 'hostname' => 'MAC-01', 'plat' => 'darwin', 'monitoring_type' => 'workstation', 'client_name' => 'Acme', 'site_name' => 'Main'],
+        ]);
+        $tactical->shouldReceive('createCheck')->once()->andReturn('Script Check was added!');
+        $tactical->shouldReceive('getPolicyChecks')->once()->with(7)->andReturn([
+            ['id' => 216, 'check_type' => 'script', 'script' => 102],
+        ]);
+        $this->app->instance(TacticalClient::class, $tactical);
+
+        $this->seedLocalScript();
+
+        $response = $this->callTool($this->token(), [
+            'reason' => 'Fleet detector; pwsh is deployed to the Macs.',
+            'policy_id' => 7,
+            'confirm_policy_name' => 'Workstations',
+            'script_name' => 'Fleet Health Detector',
+        ]);
+
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $payload = json_decode((string) $response->json('result.content.0.text'), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame(216, $payload['check_id']);
+        $this->assertStringContainsStringIgnoringCase('membership proof', $payload['platform_note']);
+    }
+
+    public function test_client_boundary_allows_a_policy_create_on_a_declared_platform_the_shell_alone_would_block(): void
+    {
+        // The same invariant at the mandatory transport seam: powershell
+        // declared on ['windows','darwin'] blocks only linux, so the proof
+        // reads the policy's windows+darwin membership and passes — the write
+        // goes out. The queue holds exactly the two membership reads plus the
+        // write, so a refusal (or an extra derived block) could not produce
+        // this result.
+        TacticalScript::create([
+            'tactical_script_id' => 102,
+            'name' => 'Fleet Health Detector',
+            'shell' => 'powershell',
+            'supported_platforms' => ['windows', 'darwin'],
+            'synced_at' => now(),
+        ]);
+
+        $result = $this->realClient([
+            new \GuzzleHttp\Psr7\Response(200, [], json_encode([
+                'pk' => 7, 'name' => 'Workstations',
+                'agents' => [
+                    ['id' => 1, 'hostname' => 'PC-01', 'agent_id' => 'agent-pc1', 'client' => 'Acme', 'site' => 'Main'],
+                    ['id' => 2, 'hostname' => 'MAC-01', 'agent_id' => 'agent-mac', 'client' => 'Acme', 'site' => 'Main'],
+                ],
+                'workstation_clients' => [], 'server_clients' => [],
+                'workstation_sites' => [], 'server_sites' => [],
+                'is_default_server_policy' => false, 'is_default_workstation_policy' => false,
+            ])),
+            new \GuzzleHttp\Psr7\Response(200, [], json_encode([
+                ['agent_id' => 'agent-pc1', 'hostname' => 'PC-01', 'plat' => 'windows', 'monitoring_type' => 'workstation', 'client_name' => 'Acme', 'site_name' => 'Main'],
+                ['agent_id' => 'agent-mac', 'hostname' => 'MAC-01', 'plat' => 'darwin', 'monitoring_type' => 'workstation', 'client_name' => 'Acme', 'site_name' => 'Main'],
+            ])),
+            new \GuzzleHttp\Psr7\Response(200, [], json_encode('Script Check was added!')),
+        ])->createCheck([
+            'policy' => 7,
+            'check_type' => 'script',
+            'script' => 102,
+            'name' => 'Policy check',
+        ]);
+
+        $this->assertSame('Script Check was added!', $result);
+    }
+
     public function test_policy_target_with_a_mac_member_is_refused_for_a_shell_only_script_naming_the_member(): void
     {
         $this->configureTactical();
