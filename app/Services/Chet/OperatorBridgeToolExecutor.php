@@ -222,19 +222,33 @@ class OperatorBridgeToolExecutor
             ->limit(50)
             ->get();
 
-        $messages = $rows->map(fn (OperatorInbox $row): array => [
-            'id' => $row->id,
-            'conversation_id' => $row->conversation_id,
-            'sender_user_id' => $row->sender_user_id,
-            'sender_name' => $row->sender?->name,
-            'text' => $this->promptFence->fence(
-                'operator message',
-                $this->textSanitizer->sanitizeForPrompt($row->text),
-            ),
-            'ts' => $row->ts?->toIso8601String(),
-            'direct_mention' => (bool) $row->direct_mention,
-            'authorized_steer' => (bool) $row->authorized_steer,
-        ])->all();
+        $messages = $rows->map(function (OperatorInbox $row): array {
+            $meta = $this->textSanitizer->sanitizeForPromptWithMeta($row->text);
+
+            // Truncation facts ride OUTSIDE the fenced text — a marker inside
+            // the fence would be spoofable by the operator message itself.
+            // text_total_chars prefers the ingest-recorded original length
+            // (text_chars); for pre-column legacy rows the stored length is
+            // the best available. text_truncated also covers an ingest-side
+            // cut (row stored at MAX_STORAGE_CHARS): detected from the
+            // recorded original length, never by comparing lengths across
+            // redaction.
+            $ingestTruncated = $row->text_chars !== null
+                && $row->text_chars > OperatorBridgeTextSanitizer::MAX_STORAGE_CHARS;
+
+            return [
+                'id' => $row->id,
+                'conversation_id' => $row->conversation_id,
+                'sender_user_id' => $row->sender_user_id,
+                'sender_name' => $row->sender?->name,
+                'text' => $this->promptFence->fence('operator message', $meta['text']),
+                'text_truncated' => $meta['truncated'] || $ingestTruncated,
+                'text_total_chars' => $row->text_chars ?? $meta['total_chars'],
+                'ts' => $row->ts?->toIso8601String(),
+                'direct_mention' => (bool) $row->direct_mention,
+                'authorized_steer' => (bool) $row->authorized_steer,
+            ];
+        })->all();
 
         return [
             'messages' => $messages,

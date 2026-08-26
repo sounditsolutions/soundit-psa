@@ -194,6 +194,36 @@ class ChetRoutingTest extends TestCase
         $this->assertStringNotContainsString('Hunter2', $row->text);
     }
 
+    /**
+     * T-22782 regression lock, ingest half: the old ingest path stored the
+     * PROMPT-capped (2000-char) text, so the tail of a long paste was lost
+     * permanently — no later reader could recover it. Storage now caps at
+     * MAX_STORAGE_CHARS with the true original length in text_chars.
+     */
+    public function test_long_routed_message_is_stored_beyond_the_prompt_cap_with_true_length(): void
+    {
+        Setting::setValue('teams_bot_enabled', '1');
+        Setting::setValue('teams_chet_routing_enabled', '1');
+        Setting::setValue('teams_chet_conversation_id', 'a:conv-1');
+        User::factory()->create(['microsoft_id' => 'aad-charlie', 'is_active' => true]);
+
+        $this->mock(TeamsReplyService::class, fn (MockInterface $m) => $m->shouldReceive('reply')->never());
+
+        $long = implode("\n", array_map(
+            fn (int $i): string => sprintf('printer log row %04d with some diagnostic detail text', $i),
+            range(1, 200),
+        ));
+        $activity = $this->activity('aad-charlie', mention: false);
+        $activity['text'] = $long;
+        $this->sendActivity($activity)->assertOk();
+
+        $row = OperatorInbox::first();
+        $this->assertNotNull($row);
+        $this->assertGreaterThan(2000, mb_strlen($row->text));
+        $this->assertStringContainsString('printer log row 0200', $row->text);
+        $this->assertSame(mb_strlen($long), $row->text_chars);
+    }
+
     public function test_routed_prompt_injection_message_is_withheld_before_inbox_storage(): void
     {
         Setting::setValue('teams_bot_enabled', '1');
