@@ -55,7 +55,8 @@
                             <td>{{ $line->description }}</td>
                             <td class="text-end">{{ $line->quantity }}</td>
                             <td class="text-end">${{ number_format($line->unit_price, 2) }}</td>
-                            <td class="text-end">${{ number_format($line->amount, 2) }}</td>
+                            {{-- reportable_amount: $0 for a voided invoice's lines, per the model invariant that no reportable reader uses raw amount (psa-oc5q2). --}}
+                            <td class="text-end">${{ number_format($line->reportable_amount, 2) }}</td>
                         </tr>
                     @endforeach
                 </tbody>

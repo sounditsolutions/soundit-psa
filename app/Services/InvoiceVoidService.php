@@ -61,16 +61,20 @@ class InvoiceVoidService
             }
 
             foreach ($invoice->lines as $line) {
-                $hasAmount = (float) $line->amount != 0.0;
-                $hasCost = (float) ($line->cost_amount ?? 0) != 0.0;
-
-                if (! $hasAmount && ! $hasCost) {
-                    continue;
-                }
+                // Snapshot EVERY line on the first void — INCLUDING $0 lines,
+                // which were previously skipped. pre_void_amount is the
+                // line-local void marker that InvoiceLine::reportable_amount
+                // trusts, so it must be COMPLETE: a skipped $0 line left no
+                // marker, and the out-of-lock QBO status-pull residual could
+                // then re-inflate that line to read as live money on a Void
+                // invoice (psa-oc5q2.1). Preserve an existing snapshot across a
+                // re-void/re-import so a re-inflated value never overwrites the
+                // ORIGINAL billed amount.
+                $snapshotted = $line->pre_void_amount !== null;
 
                 $line->update([
-                    'pre_void_amount' => $line->amount,
-                    'pre_void_cost_amount' => $line->cost_amount,
+                    'pre_void_amount' => $snapshotted ? $line->pre_void_amount : $line->amount,
+                    'pre_void_cost_amount' => $snapshotted ? $line->pre_void_cost_amount : $line->cost_amount,
                     'amount' => 0,
                     'cost_amount' => $line->cost_amount === null ? null : 0,
                 ]);

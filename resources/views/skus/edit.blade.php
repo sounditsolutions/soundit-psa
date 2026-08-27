@@ -312,7 +312,8 @@
                                     <td>{{ $line->invoice?->client?->name ?? '—' }}</td>
                                     <td class="small">{{ $line->invoice?->invoice_date?->format('M j, Y') ?? '—' }}</td>
                                     <td class="text-end">{{ $line->quantity }}</td>
-                                    <td class="text-end">${{ number_format($line->amount, 2) }}</td>
+                                    {{-- reportable_amount: $0 for a voided line, immune to an out-of-lock re-inflation (psa-oc5q2); matches the invoice's zeroed reportable totals. --}}
+                                    <td class="text-end">${{ number_format($line->reportable_amount, 2) }}</td>
                                 </tr>
                             @endforeach
                         </tbody>
