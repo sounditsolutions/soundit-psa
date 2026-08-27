@@ -147,7 +147,7 @@ case "$DB_CONNECTION" in
   mysql|mariadb)
     DB_HOST="$(env_val DB_HOST)"; DB_PORT="$(env_val DB_PORT)"
     DB_USERNAME="$(env_val DB_USERNAME)"; DB_DATABASE="$(env_val DB_DATABASE)"
-    BACKUP_FILE="$BACKUP_DIR/pre-deploy-$STAMP.sql.gz"
+    BACKUP_FILE="$BACKUP_DIR/attempt-$STAMP.sql.gz"
     # --single-transaction: consistent snapshot without locking a live InnoDB DB.
     # --no-tablespaces: avoids needing the PROCESS privilege. Password via MYSQL_PWD
     # so it never appears in the process list. pipefail aborts the deploy if the
@@ -159,7 +159,7 @@ case "$DB_CONNECTION" in
     ;;
   sqlite)
     DB_FILE="$(env_val DB_DATABASE)"
-    BACKUP_FILE="$BACKUP_DIR/pre-deploy-$STAMP.sqlite"
+    BACKUP_FILE="$BACKUP_DIR/attempt-$STAMP.sqlite"
     cp "${DB_FILE:-database/database.sqlite}" "$BACKUP_FILE"
     ;;
   *)
@@ -172,11 +172,15 @@ if [ ! -s "$BACKUP_FILE" ]; then
   exit 1
 fi
 echo "  Backed up to $BACKUP_FILE ($(du -h "$BACKUP_FILE" | cut -f1))"
-# Retention pruning deliberately does NOT run here. This block runs before the
-# ff-only guard, so a deploy that aborts at the guard (or at composer) would
-# otherwise evict real pre-migration restore points from earlier successful
-# deploys, one per retry, while the database is unchanged. The prune runs after
-# migrate instead — see below.
+# This dump is written before the ff-only guard, so it is only an ATTEMPT dump:
+# it lives in its own attempt-* namespace, separate from the retained
+# pre-deploy-* restore points, and is promoted across only once migrate has
+# actually run (see below). Two consequences, both deliberate: a deploy that
+# aborts at the guard (or at composer) can never evict a real pre-migration
+# backup from an earlier successful deploy, and the attempt dumps themselves
+# stay bounded because this prune runs on every attempt, failed ones included —
+# repeated retries can no longer grow storage/app/backups without limit.
+ls -1t "$BACKUP_DIR"/attempt-* 2>/dev/null | tail -n +11 | xargs -r rm -f
 
 echo "  Fast-forwarding to $TARGET (ff-only — a diverged prod checkout FAILS LOUD, no silent merge)..."
 if ! git merge --ff-only "$TARGET"; then
@@ -193,8 +197,11 @@ composer install --no-dev --optimize-autoloader --quiet
 echo "  Running migrations..."
 php artisan migrate --force
 
-# Retain only the 10 most recent pre-deploy backups. Only reached once the
-# migration has actually run, so aborted deploys never consume a retention slot.
+# The migration has run, so this attempt's dump is now a genuine pre-migration
+# restore point: promote it out of attempt-* into pre-deploy-* and retain only
+# the 10 most recent. Aborted attempts never enter this namespace, so they
+# cannot occupy a retention slot here or push a real backup off the end.
+mv "$BACKUP_FILE" "$BACKUP_DIR/pre-deploy-${BACKUP_FILE#$BACKUP_DIR/attempt-}"
 ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | tail -n +11 | xargs -r rm -f
 
 echo "  Caching config/routes/views..."
