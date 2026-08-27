@@ -133,6 +133,7 @@ class PowerDmarcDomainController extends Controller
         $revoked = $deselected->isEmpty()
             ? []
             : ClientPowerdmarcDomain::whereIn('powerdmarc_domain_id', $deselected->all())
+                ->whereHas('client')
                 ->pluck('powerdmarc_domain_id')
                 ->map(fn ($domainId) => (string) $domainId)
                 ->values()
