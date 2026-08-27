@@ -64,6 +64,7 @@ class McpIntegrationGroupsTest extends TestCase
         $expect('wiki_add_fact', 'wiki', true);
         $expect('post_to_operator', 'teams', true);
         $expect('list_teams_chats', 'teams', false);
+        $expect('powerdmarc_list_domains', 'powerdmarc', false);
     }
 
     public function test_integration_group_carries_counts_and_metadata(): void

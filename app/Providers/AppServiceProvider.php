@@ -27,6 +27,7 @@ use App\Services\Huntress\HuntressWriteClient;
 use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
 use App\Services\Ninja\NinjaClient;
+use App\Services\PowerDmarc\PowerDmarcClient;
 use App\Services\Servosity\ServosityClient;
 use App\Services\Stripe\StripeClient;
 use App\Services\Tactical\TacticalClient;
@@ -151,6 +152,12 @@ class AppServiceProvider extends ServiceProvider
         // the API (the tool tests bind a mock, which hid it). fromConfig() reads the
         // encrypted key from Settings, mirroring the Huntress/Mesh closures above.
         $this->app->singleton(UnifiClient::class, fn () => UnifiClient::fromConfig());
+
+        // PowerDmarcClient's constructor also takes an unbound array (same trap the
+        // UnifiClient note above records) — the powerdmarc_* MCP reads resolve it
+        // from the container, so it must be bound or every live call fails first.
+        // fromConfig() reads the encrypted key from Settings.
+        $this->app->singleton(PowerDmarcClient::class, fn () => PowerDmarcClient::fromConfig());
 
         // ServosityClient's constructor also takes an unbound array (same trap the
         // UnifiClient note above records) — the servosity_* MCP reads resolve it

@@ -2251,6 +2251,98 @@
             </div>
         </div>
 
+        {{-- PowerDMARC Card --}}
+        <div class="card card-static shadow-sm mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="bi bi-envelope-lock me-2"></i>PowerDMARC
+                </div>
+                @if($powerdmarcConnected ?? false)
+                    <span class="badge bg-success">Connected</span>
+                @elseif($powerdmarcConfigured ?? false)
+                    <span class="badge bg-warning text-dark">Not tested</span>
+                @else
+                    <span class="badge bg-secondary">Not configured</span>
+                @endif
+            </div>
+            <div class="card-body">
+                <p class="text-muted small mb-3">
+                    Read-only email-authentication visibility from the PowerDMARC platform &mdash; per-domain
+                    SPF/DKIM/DMARC status and scores, aggregate (RUA) report summaries and the DNS change timeline,
+                    surfaced as MCP tools for the AI technician. One API key covers every domain the PowerDMARC
+                    account manages; hosted-record writes are out of scope.
+                </p>
+                <div class="alert alert-light border small mb-3">
+                    <strong>Setup:</strong>
+                    <ol class="mb-0 ps-3 mt-1">
+                        <li>Sign in at <strong>app.powerdmarc.com</strong> with the account that manages your clients' domains, and create an API token (<strong>profile menu &rarr; API Tokens</strong>).</li>
+                        <li>Enter the API Key below and click <strong>Save</strong>, then <strong>Test Connection</strong>.</li>
+                        <li>Click <strong>Domain Mapping</strong> to map PowerDMARC domains to your clients (or use <strong>Auto-Match by Name</strong>).</li>
+                        <li>Switch the integration <strong>on</strong> &mdash; it ships off, and per-domain tools are only offered to the AI for mapped clients.</li>
+                    </ol>
+                </div>
+
+                <form method="POST" action="{{ route('settings.integrations.powerdmarc.update') }}">
+                    @csrf
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="powerdmarc_api_key" class="form-label">API Key</label>
+                            <input type="password"
+                                   class="form-control"
+                                   id="powerdmarc_api_key"
+                                   name="api_key"
+                                   value=""
+                                   placeholder="{{ ($powerdmarcConfigured ?? false) ? '••••••••' : 'Enter API key' }}">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="powerdmarc_base_url" class="form-label">Base URL <span class="text-muted">(optional override)</span></label>
+                            <input type="url"
+                                   class="form-control"
+                                   id="powerdmarc_base_url"
+                                   name="base_url"
+                                   value="{{ $powerdmarcBaseUrl }}"
+                                   placeholder="https://app.powerdmarc.com">
+                        </div>
+                    </div>
+
+                    <div class="d-flex gap-2">
+                        <button type="submit" class="btn btn-primary btn-sm">Save PowerDMARC Settings</button>
+                        <button type="button" class="btn btn-outline-secondary" id="test-powerdmarc-btn"
+                                onclick="testConnection('powerdmarc')">
+                            <i class="bi bi-plug me-1"></i>Test Connection
+                        </button>
+                    </div>
+                    <div id="test-result-powerdmarc" class="alert mt-2" style="display:none;"></div>
+                </form>
+
+                @if($powerdmarcConnected ?? false)
+                <div class="mt-3 pt-3 border-top">
+                    <a href="{{ route('settings.powerdmarc-domains.index') }}" class="btn btn-outline-primary btn-sm">
+                        <i class="bi bi-diagram-3 me-1"></i>Domain Mapping
+                    </a>
+                </div>
+                @endif
+
+                @if($powerdmarcConfigured)
+                <div class="border-top pt-3 mt-3">
+                    <form method="POST" action="{{ route('settings.integrations.toggle') }}">
+                        @csrf
+                        <input type="hidden" name="integration" value="powerdmarc">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="enabled" value="1"
+                                   id="powerdmarc_enabled" {{ $powerdmarcEnabled ? 'checked' : '' }} onchange="this.form.submit()">
+                            <label class="form-check-label" for="powerdmarc_enabled">
+                                Integration enabled
+                                <small class="text-muted d-block">Turning this off also withdraws PowerDMARC tools from MCP &mdash; turn it back on to restore them.</small>
+                            </label>
+                        </div>
+                    </form>
+                </div>
+                @endif
+            </div>
+        </div>
+
         </div>{{-- /licensing tab --}}
 
         {{-- ============================================================ --}}
@@ -4435,6 +4527,7 @@ function testConnection(service) {
         cipp: '{{ route("settings.integrations.cipp.test") }}',
         huntress: '{{ route("settings.integrations.huntress.test") }}',
         unifi: '{{ route("settings.integrations.unifi.test") }}',
+        powerdmarc: '{{ route("settings.integrations.powerdmarc.test") }}',
         servosity: '{{ route("settings.integrations.servosity.test") }}',
         controld: '{{ route("settings.integrations.controld.test") }}',
         zorus: '{{ route("settings.integrations.zorus.test") }}',

@@ -1,0 +1,52 @@
+{
+    "data": {
+        "07-Feb-2024": [
+            {
+                "times": {
+                    "date": "2025-03-10 15:29:00",
+                    "domain": "example.com",
+                    "time": "15:29:00",
+                    "type": ["dkim"],
+                    "change": "Selector value was added",
+                    "old_record": "{'dkim': {'fd2': null}}",
+                    "new_record": "{'dkim': {'fd2': 'v=DKIM1;...'}}",
+                    "old_record_string": "",
+                    "new_record_string": "v=DKIM1;k=rsa;p=MIIBIj...",
+                    "score": 100,
+                    "score_mark": "A"
+                },
+                "recordInfo": {
+                    "type": "DKIM",
+                    "status": null,
+                    "changelog": [],
+                    "statusClass": "timeline-badge-F",
+                    "recordErrors": [],
+                    "extraInfo": {
+                        "Selector:": "fd2"
+                    }
+                }
+            }
+        ]
+    },
+    "meta": {
+        "current_page": 3,
+        "first_page_url": "http://example.com/api/v1/dns-changes?page=1",
+        "from": 11,
+        "last_page": 3,
+        "last_page_url": "http://example.com/api/v1/dns-changes?page=3",
+        "links": [
+            {
+                "url": "https://example.com/api/v1/dns-timeline/dns-changes/1234?tab1_page=1",
+                "label": "1",
+                "page": 1,
+                "active": false
+            }
+        ],
+        "next_page_url": null,
+        "path": "http://example.com/api/v1/dns-changes",
+        "per_page": 5,
+        "prev_page_url": null,
+        "to": 12,
+        "total": 12
+    }
+}

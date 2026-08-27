@@ -194,6 +194,15 @@ class Client extends Model
         return $this->hasMany(ClientUnifiSite::class);
     }
 
+    /**
+     * PowerDMARC domains mapped to this client (issue #689: one-to-MANY). A
+     * domain maps to at most one client (UNIQUE on powerdmarc_domain_id).
+     */
+    public function powerdmarcDomains(): HasMany
+    {
+        return $this->hasMany(ClientPowerdmarcDomain::class);
+    }
+
     // ── Scopes ──
 
     public function scopeActive(Builder $query): Builder

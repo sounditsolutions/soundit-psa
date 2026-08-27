@@ -1,0 +1,48 @@
+{
+    "data": [
+        {
+            "policy": "reject",
+            "percent": 93,
+            "score": 93,
+            "scoreMark": "A",
+            "suggestions": {
+                "MtaSts": [
+                    {
+                        "url": "https://www.example.com/mta-sts",
+                        "url_text": "Switch MTA-STS policy to Enforce mode"
+                    }
+                ],
+                "Bimi": [
+                    {
+                        "url": "https://www.example.com/tools/powerbimi",
+                        "url_text": "Setup BIMI for the domain"
+                    }
+                ]
+            },
+            "errors": {
+                "MtaSts": [
+                    {
+                        "record": ["v=STSv1; id=20210330085244295304;"],
+                        "message": "MTA-STS is in testing mode",
+                        "text": "Having your MTA-STS mode set to testing..."
+                    }
+                ],
+                "Bimi": [
+                    {
+                        "record": [],
+                        "message": "BIMI record not found",
+                        "text": "BIMI helps your outgoing emails get brand recognition..."
+                    }
+                ]
+            },
+            "statuses": {
+                "Dmarc": "valid",
+                "MtaSts": "valid",
+                "Spf": "valid",
+                "TlsRpt": "valid",
+                "Dkim": "valid",
+                "Bimi": "notFound"
+            }
+        }
+    ]
+}

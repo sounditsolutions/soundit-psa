@@ -4,6 +4,7 @@ namespace App\Services\Chet;
 
 use App\Services\Comet\CometReadOnlyToolset;
 use App\Services\Huntress\HuntressReadOnlyToolset;
+use App\Services\PowerDmarc\PowerDmarcReadOnlyToolset;
 use App\Services\ScreenConnect\ScreenConnectReadOnlyToolset;
 use App\Services\Servosity\ServosityReadOnlyToolset;
 use App\Services\Tactical\TacticalReadOnlyToolset;
@@ -11,6 +12,7 @@ use App\Services\Unifi\UnifiReadOnlyToolset;
 use App\Services\Zorus\ZorusReadOnlyToolset;
 use App\Support\CometConfig;
 use App\Support\HuntressConfig;
+use App\Support\PowerDmarcConfig;
 use App\Support\ScreenConnectConfig;
 use App\Support\ServosityConfig;
 use App\Support\TacticalConfig;
@@ -42,6 +44,12 @@ class ChetDataSurfaceTools
             $tools = array_merge($tools, UnifiReadOnlyToolset::generalDefinitions());
         }
 
+        // PowerDMARC email-auth visibility ships dormant, and OFF=OFF: isAvailable()
+        // is the master switch AND the key, so switching it off withdraws these tools.
+        if (PowerDmarcConfig::isAvailable()) {
+            $tools = array_merge($tools, PowerDmarcReadOnlyToolset::generalDefinitions());
+        }
+
         return $tools;
     }
 
@@ -54,6 +62,11 @@ class ChetDataSurfaceTools
 
         if (UnifiConfig::isAvailable()) {
             $tools = array_merge($tools, UnifiReadOnlyToolset::clientDefinitions());
+        }
+
+        // PowerDMARC hosted email-auth reads — OFF=OFF, same as UniFi.
+        if (PowerDmarcConfig::isAvailable()) {
+            $tools = array_merge($tools, PowerDmarcReadOnlyToolset::clientDefinitions());
         }
 
         // ScreenConnect session-state reads ship dormant, and OFF=OFF: they answer
@@ -98,6 +111,7 @@ class ChetDataSurfaceTools
             TacticalReadOnlyToolset::definitions(),
             HuntressReadOnlyToolset::definitions(),
             UnifiReadOnlyToolset::definitions(),
+            PowerDmarcReadOnlyToolset::definitions(),
             ScreenConnectReadOnlyToolset::definitions(),
             ZorusReadOnlyToolset::definitions(),
             CometReadOnlyToolset::definitions(),
@@ -111,6 +125,7 @@ class ChetDataSurfaceTools
             || TacticalReadOnlyToolset::handles($toolName)
             || HuntressReadOnlyToolset::handles($toolName)
             || UnifiReadOnlyToolset::handles($toolName)
+            || PowerDmarcReadOnlyToolset::handles($toolName)
             || ScreenConnectReadOnlyToolset::handles($toolName)
             || ZorusReadOnlyToolset::handles($toolName)
             || CometReadOnlyToolset::handles($toolName)
@@ -122,6 +137,7 @@ class ChetDataSurfaceTools
         return TacticalReadOnlyToolset::requiresClient($toolName)
             || HuntressReadOnlyToolset::requiresClient($toolName)
             || UnifiReadOnlyToolset::requiresClient($toolName)
+            || PowerDmarcReadOnlyToolset::requiresClient($toolName)
             || ScreenConnectReadOnlyToolset::requiresClient($toolName)
             || ZorusReadOnlyToolset::requiresClient($toolName)
             || CometReadOnlyToolset::requiresClient($toolName)

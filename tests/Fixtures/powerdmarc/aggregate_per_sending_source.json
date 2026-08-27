@@ -1,0 +1,31 @@
+{
+    "data": [
+        {
+            "domain_id": 1,
+            "domain_name": "example.com",
+            "org": "unknown",
+            "policy_dmarc_pass_percentage": 0,
+            "policy_dmarc_fail_percentage": 100,
+            "policy_dmarc_pass_count": 0,
+            "policy_dmarc_fail_count": 776,
+            "policy_applied_forwarded": 776,
+            "policy_applied_other": 0,
+            "volume": 776,
+            "policy_dkim_pass_count": 0,
+            "policy_dkim_pass_percentage": 0,
+            "policy_dkim_align_count": 515,
+            "policy_dkim_align_percentage": 66.4,
+            "policy_dkim_fail_count": 261,
+            "policy_dkim_fail_percentage": 33.6,
+            "policy_spf_pass_count": 0,
+            "policy_spf_pass_percentage": 0,
+            "policy_spf_align_count": 491,
+            "policy_spf_align_percentage": 63.3,
+            "policy_spf_fail_count": 285,
+            "policy_spf_fail_percentage": 36.7,
+            "policy_dmarc_none_percentage": 100,
+            "policy_dmarc_reject_percentage": 0,
+            "policy_dmarc_quarantine_percentage": 0
+        }
+    ]
+}
