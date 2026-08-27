@@ -7,7 +7,11 @@ return [
     // Memo stamped on NON-recurring invoices (profile_id null) at QBO push time
     // so a payment processor's memo skip rule can exclude them from
     // autopay. Customer-visible on the QBO invoice — pick wording that reads as
-    // customer-facing text. Null disables stamping entirely.
+    // customer-facing text. Null disables stamping entirely. The wording may
+    // span several lines but must not contain a BLANK line: a blank line
+    // separates two entries in the retired list below, so a wording holding one
+    // could never be retired as itself. Such a value is logged and NOT stamped,
+    // rather than stamped into something no rotation can remove cleanly.
     'qbo_nonrecurring_skip_memo' => env('QBO_NONRECURRING_SKIP_MEMO'),
 
     // Skip memos this app stamped in the past, SEPARATED BY A BLANK LINE — in
@@ -26,6 +30,12 @@ return [
     // — or clearing it to turn stamping off — move the old wording here so
     // already-stamped open invoices are unstamped on their next push instead
     // of keeping an autopay exemption nobody can revoke.
+    // UPGRADING: this list used to be ONE PER LINE. A blank line now separates
+    // entries and a single line break no longer does, so a value already
+    // written one per line reads as ONE multi-line wording that matches nothing
+    // and strips nothing. If your current value holds several wordings on
+    // consecutive lines, insert a blank line between them when you upgrade, or
+    // those old stamps stay on already-stamped invoices forever.
     'qbo_nonrecurring_skip_memo_retired' => env('QBO_NONRECURRING_SKIP_MEMO_RETIRED'),
 
     'quantity_sources' => [

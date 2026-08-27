@@ -184,7 +184,47 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
         $this->assertArrayNotHasKey('CustomerMemo', $posts[0]);
     }
 
+    public function test_create_does_not_stamp_a_wording_that_contains_a_blank_line(): void
+    {
+        // A blank line separates two entries in the retired list, so this
+        // wording could never be retired as itself — moved there verbatim it
+        // would arm "Pay by check or portal." as its own strip target and
+        // delete an operator's identical memo line. Refuse to stamp it: not
+        // stamping is recoverable, deleting operator text is not.
+        config(['billing.qbo_nonrecurring_skip_memo' => "Not auto-charged.\n\nPay by check or portal."]);
+        $invoice = $this->makeInvoice();
+        $posts = [];
+        $this->mockQboClient($posts);
+
+        app(QboSyncService::class)->pushInvoiceToQbo($invoice);
+
+        $this->assertCount(1, $posts);
+        $this->assertArrayNotHasKey('CustomerMemo', $posts[0]);
+    }
+
     // ── UPDATE path ──
+
+    public function test_update_removes_a_blank_line_wording_whole_and_never_strips_its_halves(): void
+    {
+        // Stamped by an older build that admitted the blank line. It is still
+        // configured, so it is still recognised and stripped as ONE block —
+        // and not re-stamped. The operator's own line, identical to the
+        // wording's second half, is preserved: the halves are not strip
+        // targets of their own.
+        config(['billing.qbo_nonrecurring_skip_memo' => "Not auto-charged.\n\nPay by check or portal."]);
+        $invoice = $this->makeInvoice(['qbo_invoice_id' => '7786', 'status' => InvoiceStatus::Synced]);
+        $posts = [];
+        $this->mockQboClient($posts, [
+            'Id' => '7786',
+            'SyncToken' => '10',
+            'CustomerMemo' => ['value' => "Pay by check or portal.\nNot auto-charged.\n\nPay by check or portal."],
+        ]);
+
+        app(QboSyncService::class)->pushInvoiceToQbo($invoice);
+
+        $this->assertCount(1, $posts);
+        $this->assertSame(['value' => 'Pay by check or portal.'], $posts[0]['CustomerMemo'] ?? null);
+    }
 
     public function test_update_stamps_alongside_an_existing_memo_on_a_non_recurring_invoice(): void
     {

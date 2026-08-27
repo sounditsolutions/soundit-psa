@@ -806,6 +806,17 @@ class QboSyncService
      * stamped. Only NON-recurring invoices (profile_id null) are stamped, and
      * only when the wording is configured — the payment processor's memo skip
      * rule then excludes them from auto-processing (#736).
+     *
+     * A wording is free-form prose and may span lines, but one containing a
+     * BLANK line is refused rather than stamped: a blank line is what separates
+     * two entries in `qbo_nonrecurring_skip_memo_retired`, so such a wording
+     * could never be retired as itself — moved there verbatim it would arm each
+     * of its halves as an independent one-line strip target and silently delete
+     * operator-typed memo text that matches one. Not stamping is the
+     * recoverable direction (rewrite the wording without the blank line and
+     * push again); deleting operator text is not. The wording is still listed
+     * by knownSkipMemos(), so a stamp written before this check is stripped on
+     * the next push instead of becoming permanent.
      */
     private function nonRecurringSkipMemo(Invoice $invoice): ?string
     {
@@ -815,7 +826,23 @@ class QboSyncService
 
         $memo = trim((string) config('billing.qbo_nonrecurring_skip_memo', ''));
 
-        return $memo !== '' ? $memo : null;
+        if ($memo === '') {
+            return null;
+        }
+
+        // trim() already removed leading/trailing blank lines, so any blank
+        // line left is an interior one — the retired-list separator.
+        foreach ($this->memoLines($memo) as $line) {
+            if (trim($line) === '') {
+                Log::warning('[QboSync] Skip memo wording contains a blank line, which the retired list cannot represent — not stamping', [
+                    'invoice_id' => $invoice->id,
+                ]);
+
+                return null;
+            }
+        }
+
+        return $memo;
     }
 
     /**
@@ -860,6 +887,12 @@ class QboSyncService
      * documentation arrives with the two literal characters — `\n\n` therefore
      * separates two wordings. A stamp we fail to recognise is one we can never
      * remove (#736).
+     *
+     * A blank line is therefore not representable INSIDE a wording here, which
+     * is why nonRecurringSkipMemo() refuses to stamp a wording that contains
+     * one: every wording we ever stamp can be listed here as itself, so moving
+     * one here verbatim can never shred it into fragments that strip
+     * operator-typed text.
      *
      * @return list<string>
      */
