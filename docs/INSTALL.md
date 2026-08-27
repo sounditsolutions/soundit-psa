@@ -1277,9 +1277,9 @@ Per-tool MSP custom instructions are configured on the Settings -> MCP Tokens pa
 **Enable:**
 1. Mint a **scoped** bearer token — every token carries an explicit tool allowlist, and an unscoped mint is refused (a token with no allowlist would inherit the full tool surface):
 
-   bash
+   ```bash
    php artisan mcp:rotate-staff-token --label=chet --tools=list_open_tickets,get_ticket_detail,send_email:staged
-   
+   ```
 
    Grant only the tools this consumer needs (`--tool` repeats, `--tools` comma-separates; a stageable action takes a `:staged` / `:immediate` suffix — bare means immediate). The token is displayed once. Rotating the same `--label` replaces that label's token; grants can also be edited afterwards on Settings → MCP Tokens. To delete a pre-existing legacy full-surface token (break-glass on a leak is retirement, not rotation): `php artisan mcp:rotate-staff-token --retire-legacy` — scoped tokens are unaffected.
 2. In the client configuration, add an entry with `url: "https://your-psa-domain/api/mcp/staff"` and the generated token as `authorization_token`
