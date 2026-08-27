@@ -10,11 +10,16 @@ return [
     // customer-facing text. Null disables stamping entirely.
     'qbo_nonrecurring_skip_memo' => env('QBO_NONRECURRING_SKIP_MEMO'),
 
-    // Skip memos this app stamped in the past, ONE PER LINE — in .env, a REAL
-    // line break inside the double-quoted value. A `\n` escape does not work:
-    // phpdotenv either rejects it (boot fails) or passes it through literally.
-    // Not comma-separated — the wording above is free-form customer-facing
-    // prose and may contain a comma, so only a newline can delimit the list
+    // Skip memos this app stamped in the past, SEPARATED BY A BLANK LINE — in
+    // .env, an empty line inside the double-quoted value. A wording may itself
+    // span several lines (the memo matcher recognises it as a whole block), so
+    // a single line break belongs to one wording and never separates two: a
+    // per-line list would arm the lines of a multi-line wording as strip
+    // targets and delete operator-typed memo lines that match one. A `\n`
+    // escape is not expanded by phpdotenv and arrives literally; it is read as
+    // a line break inside a wording, so `\n\n` separates two. Not
+    // comma-separated — the wording above is free-form customer-facing prose
+    // and may contain a comma, so only a blank line can delimit the list
     // without shredding it.
     // A QBO full update rewrites CustomerMemo wholesale, so a stamp can only
     // be removed while we still recognise it: when changing the wording above

@@ -844,18 +844,22 @@ class QboSyncService
 
     /**
      * The retired wordings a configured value carries: an array as given, or a
-     * string ONE PER LINE. Newline is the documented delimiter because the
-     * configured wording is free-form customer-facing prose in which a comma is
-     * legal and unescapable, so splitting on commas would shred exactly the
-     * wordings ops rotate out.
+     * string in which wordings are SEPARATED BY A BLANK LINE. A wording is
+     * free-form customer-facing prose and nothing restricts it to one line, so
+     * a single line break belongs to the wording it sits in and never
+     * separates two: splitting per line would hand stripSkipMemos() the lines
+     * of a multi-line wording as independent one-line strip targets, and an
+     * operator-typed memo line equal to one of them would then be silently
+     * deleted. A comma is never a delimiter either, and never a fallback, for
+     * the same reason. An ambiguous list is read as one multi-line wording
+     * rather than several one-line ones, because failing to strip a stamp is
+     * recoverable (list it again) and deleting operator text is not.
      *
-     * A literal `\n` is recognised as a delimiter too, because phpdotenv does
-     * not turn it into a line break, so a value written that way following the
-     * documentation arrives with the two literal characters. A stamp we fail
-     * to recognise is one we can never remove (#736). A comma is never a
-     * delimiter, and never a fallback: fragments of a wording must never
-     * become strip targets, or operator-typed memo lines matching a fragment
-     * would be silently deleted.
+     * A literal `\n` is folded into a line break first, because phpdotenv does
+     * not turn it into one, so a value written that way following the
+     * documentation arrives with the two literal characters — `\n\n` therefore
+     * separates two wordings. A stamp we fail to recognise is one we can never
+     * remove (#736).
      *
      * @return list<string>
      */
@@ -865,11 +869,31 @@ class QboSyncService
             return array_values($retired);
         }
 
-        // ASCII newline forms only, plus the literal two-character `\n` — see
-        // memoLines() for why `\R` is unsafe on UTF-8 memo text.
-        $values = preg_split('/\r\n|\n|\r|\\\\n/', (string) $retired) ?: [];
+        $text = str_replace('\n', "\n", (string) $retired);
 
-        return array_values($values);
+        $values = [];
+        $wording = [];
+
+        // memoLines() splits on the ASCII newline forms only — see there for
+        // why `\R` is unsafe on UTF-8 memo text.
+        foreach ($this->memoLines($text) as $line) {
+            if (trim($line) === '') {
+                if ($wording !== []) {
+                    $values[] = implode("\n", $wording);
+                    $wording = [];
+                }
+
+                continue;
+            }
+
+            $wording[] = $line;
+        }
+
+        if ($wording !== []) {
+            $values[] = implode("\n", $wording);
+        }
+
+        return $values;
     }
 
     /**

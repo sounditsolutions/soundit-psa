@@ -33,9 +33,10 @@ use Tests\TestCase;
  * invoice — and stamp the wording alongside it, on its own line, rather than
  * instead of it. A stamp we wrote earlier is never echoed for its own sake:
  * it is re-derived on every push from `billing.qbo_nonrecurring_skip_memo`
- * (recognised via that setting plus the newline-separated `..._retired` list,
- * newline-separated because a wording may contain a comma), so it disappears when the
- * invoice becomes recurring or stamping is switched off.
+ * (recognised via that setting plus the blank-line-separated `..._retired`
+ * list — blank-line-separated because a wording may contain a comma and may
+ * itself span lines), so it disappears when the invoice becomes recurring or
+ * stamping is switched off.
  */
 class QboInvoiceAutopaySkipMemoTest extends TestCase
 {
@@ -277,13 +278,13 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
     {
         // The documented rotation must work for the wordings the current
         // setting actually accepts — free-form prose, in which a comma is
-        // legal and unescapable. Retired values are newline-separated, so the
-        // old wording is still recognised, stripped, and replaced by the new
-        // one instead of accumulating as a stamp nobody can remove.
+        // legal and unescapable. Retired values are blank-line-separated, so
+        // the old wording is still recognised, stripped, and replaced by the
+        // new one instead of accumulating as a stamp nobody can remove.
         $retired = 'Not auto-charged, pay by check or portal';
         config([
             'billing.qbo_nonrecurring_skip_memo' => self::SKIP_MEMO,
-            'billing.qbo_nonrecurring_skip_memo_retired' => "An even older wording\n".$retired,
+            'billing.qbo_nonrecurring_skip_memo_retired' => "An even older wording\n\n".$retired,
         ]);
         $invoice = $this->makeInvoice(['qbo_invoice_id' => '7782', 'status' => InvoiceStatus::Synced]);
         $posts = [];
@@ -330,16 +331,47 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
         );
     }
 
+    public function test_a_multi_line_retired_wording_matches_whole_and_its_lines_are_never_stripped(): void
+    {
+        // A wording may span lines, so only a BLANK line separates two retired
+        // wordings: the two-line wording below is one entry, stripped whole,
+        // and an operator-typed memo line that happens to equal one of its
+        // lines is operator text to preserve, not a stamp. Splitting the
+        // retired list per line would arm that line as its own strip target
+        // and silently delete customer-visible text on this update.
+        $retired = "Not auto-charged.\nPay by check or portal.";
+        config([
+            'billing.qbo_nonrecurring_skip_memo' => self::SKIP_MEMO,
+            'billing.qbo_nonrecurring_skip_memo_retired' => "An even older wording\n\n".$retired,
+        ]);
+        $invoice = $this->makeInvoice(['qbo_invoice_id' => '7785', 'status' => InvoiceStatus::Synced]);
+        $posts = [];
+        $this->mockQboClient($posts, [
+            'Id' => '7785',
+            'SyncToken' => '9',
+            'CustomerMemo' => ['value' => "Pay by check or portal.\n".$retired],
+        ]);
+
+        app(QboSyncService::class)->pushInvoiceToQbo($invoice);
+
+        $this->assertCount(1, $posts);
+        $this->assertSame(
+            ['value' => "Pay by check or portal.\n".self::SKIP_MEMO],
+            $posts[0]['CustomerMemo'] ?? null
+        );
+    }
+
     public function test_update_removes_a_retired_memo_separated_by_a_literal_backslash_n(): void
     {
         // phpdotenv does not expand `\n` inside a double-quoted .env value, so a
-        // value written that way arrives with the two literal characters. It is
-        // split all the same — and the comma-bearing wording is still matched
-        // whole, not shredded.
+        // value written that way arrives with the two literal characters. They
+        // are read as a line break inside a wording, so a literal `\n\n` is the
+        // blank line that separates two — and the comma-bearing wording is
+        // still matched whole, not shredded.
         $retired = 'Not auto-charged, pay by check';
         config([
             'billing.qbo_nonrecurring_skip_memo' => self::SKIP_MEMO,
-            'billing.qbo_nonrecurring_skip_memo_retired' => 'An even older wording\nNot auto-charged, pay by check',
+            'billing.qbo_nonrecurring_skip_memo_retired' => 'An even older wording\n\nNot auto-charged, pay by check',
         ]);
         $invoice = $this->makeInvoice(['qbo_invoice_id' => '7784', 'status' => InvoiceStatus::Synced]);
         $posts = [];
