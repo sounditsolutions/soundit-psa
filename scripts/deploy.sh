@@ -207,38 +207,74 @@ composer install --no-dev --optimize-autoloader --quiet
 # them unconditionally would (a) put snapshots of the half-applied schema into
 # the namespace an operator restores from, indistinguishable by name or content
 # from real ones, and (b) fill all 10 retention slots so the next successful
-# prune evicts the one clean snapshot. Promotion is therefore gated on the
-# marker below: it is written immediately before migrate and removed only after
-# migrate exits zero, so its presence means "the last migrate did not finish —
-# this database is not a clean pre-migration state". Dirty attempts stay in
-# attempt-*, which is pruned on every attempt, so a retry storm can neither grow
-# storage/app/backups without limit nor add to (or evict from) pre-deploy-*.
+# prune evicts the one clean snapshot. Promotion is therefore gated on two
+# markers, both written immediately before migrate:
+#   .migrate-incomplete — removed as soon as migrate exits zero. Its presence
+#     means only "the last migrate did not exit zero": the database MAY be
+#     half-applied, but it may equally be untouched (MySQL unreachable, a bad
+#     .env, a PHP fatal during boot), and nothing on disk can tell those apart.
+#     So this attempt's dump is not promoted UP FRONT — but it is not abandoned
+#     in attempt-* either: if this attempt's own migrate then exits zero, that
+#     dump IS the pre-migration state those migrations applied to, so it is
+#     promoted after migrate under a pre-deploy-postincident-* name (same
+#     retained namespace, honestly labelled as taken after an incomplete run).
+#     Otherwise it stays in attempt-*, so a retry storm still never adds to or
+#     evicts from pre-deploy-*.
+#   .deploy-incomplete — removed only after the LAST step of the deploy. A
+#     failure after a zero-exit migrate (config:cache, route:cache, view:cache,
+#     chown) leaves the database migrated and this deploy's restore point
+#     already retained, so every retry that follows must not promote again:
+#     without this marker each retry would spend one retention slot and evict a
+#     genuine older restore point.
 # Attempts that abort earlier — at the ff-only guard or at composer, with the
 # database untouched — never reach this line either.
 MIGRATE_MARKER="$BACKUP_DIR/.migrate-incomplete"
+DEPLOY_MARKER="$BACKUP_DIR/.deploy-incomplete"
+PROMOTE_AFTER_MIGRATE=""
+# `|| true`: under `set -eo pipefail` an unmatched pre-deploy-* glob makes ls
+# exit 2 and pipefail propagates it, which would kill the deploy right here —
+# an empty retained namespace is exactly the case the warnings below exist for.
+RESTORE_POINT="$(ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | head -1)" || true
 if [ -e "$MIGRATE_MARKER" ]; then
-  RESTORE_POINT="$(ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | head -1)"
+  PROMOTE_AFTER_MIGRATE=1
   echo "  WARNING: a previous migrate did not complete ($(cat "$MIGRATE_MARKER" 2>/dev/null))." >&2
   echo "  The database may be PARTIALLY MIGRATED, so this attempt's dump is NOT a clean" >&2
-  echo "  pre-migration snapshot — leaving it in attempt-* as $BACKUP_FILE." >&2
+  echo "  pre-migration snapshot — holding it in attempt-* as $BACKUP_FILE until this" >&2
+  echo "  attempt's own migrate succeeds, then retaining it as pre-deploy-postincident-*." >&2
   echo "  Clean restore point remains: ${RESTORE_POINT:-NONE FOUND — do not restore blind}" >&2
+elif [ -e "$DEPLOY_MARKER" ]; then
+  echo "  NOTE: a previous attempt of this deploy did not finish ($(cat "$DEPLOY_MARKER" 2>/dev/null))." >&2
+  echo "  Its migrate exited zero, so the database is already migrated and that attempt's" >&2
+  echo "  pre-migration dump is already retained — leaving this attempt's dump in attempt-*" >&2
+  echo "  as $BACKUP_FILE rather than spending another retention slot on every retry." >&2
+  echo "  Restore point remains: ${RESTORE_POINT:-NONE FOUND — do not restore blind}" >&2
 else
   mv "$BACKUP_FILE" "$BACKUP_DIR/pre-deploy-${BACKUP_FILE#$BACKUP_DIR/attempt-}"
   BACKUP_FILE="$BACKUP_DIR/pre-deploy-${BACKUP_FILE#$BACKUP_DIR/attempt-}"
   RESTORE_POINT="$BACKUP_FILE"
 fi
 
-echo "  Running migrations (restore point: $RESTORE_POINT)..."
-# Written BEFORE migrate and cleared only on a zero exit: under set -e a failed
-# migrate leaves it in place, and that is what gates the next attempt's promotion.
+echo "  Running migrations (restore point: ${RESTORE_POINT:-NONE RETAINED — see warning above})..."
+# Both written BEFORE migrate. Under set -e a failed migrate leaves both in
+# place; a zero exit clears only the migrate marker, and the deploy marker is
+# cleared after the last step of the deploy, so a retry following a post-migrate
+# failure still meets a gate and cannot promote a second dump.
 echo "$TARGET @ $STAMP" > "$MIGRATE_MARKER"
+echo "$TARGET @ $STAMP" > "$DEPLOY_MARKER"
 php artisan migrate --force
 rm -f "$MIGRATE_MARKER"
-# Still only after a successful migrate: an unsuccessful deploy must never delete
-# from the retained namespace. It stays bounded because an unsuccessful deploy can
-# now add at most one entry (the first attempt, taken on a clean database) before
-# the marker shuts promotion off for every retry that follows.
-ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | tail -n +11 | xargs -r rm -f
+if [ -n "$PROMOTE_AFTER_MIGRATE" ]; then
+  # The migrations just applied cleanly from the state this dump captures, so it
+  # is the only pre-migration restore point for THIS schema change — it must not
+  # be left in attempt-*, where the count prune evicts it after 10 attempts. The
+  # postincident- infix keeps it distinguishable from a dump taken on a database
+  # no failed migrate had touched.
+  PROMOTED_FILE="$BACKUP_DIR/pre-deploy-postincident-${BACKUP_FILE#$BACKUP_DIR/attempt-}"
+  mv "$BACKUP_FILE" "$PROMOTED_FILE"
+  BACKUP_FILE="$PROMOTED_FILE"
+  RESTORE_POINT="$PROMOTED_FILE"
+  echo "  Retained this attempt's dump as $RESTORE_POINT (the pre-migration state the migrations just applied to)."
+fi
 
 echo "  Caching config/routes/views..."
 php artisan config:cache
@@ -247,6 +283,13 @@ php artisan view:cache
 
 echo "  Fixing storage permissions..."
 chown -R www-data:www-data storage bootstrap/cache
+
+# Retention prune runs LAST: only a deploy that reached this line — every step
+# done — may delete from the retained namespace, so an unsuccessful deploy never
+# does, whether it failed before migrate or after it. `|| true` for the same
+# empty-glob-under-pipefail reason as the restore-point lookup above.
+ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | tail -n +11 | xargs -r rm -f || true
+rm -f "$DEPLOY_MARKER"
 
 echo "  Done!"
 REMOTE
