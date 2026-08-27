@@ -4,6 +4,7 @@ namespace App\Services\Chet;
 
 use App\Services\Comet\CometReadOnlyToolset;
 use App\Services\Huntress\HuntressReadOnlyToolset;
+use App\Services\PowerDmarc\PowerDmarcReadOnlyToolset;
 use App\Services\ScreenConnect\ScreenConnectReadOnlyToolset;
 use App\Services\Servosity\ServosityReadOnlyToolset;
 use App\Services\Tactical\TacticalReadOnlyToolset;
@@ -32,6 +33,14 @@ class ChetDataSurfaceToolExecutor
             }
 
             return app(UnifiReadOnlyToolset::class)->execute($toolName, $input, $clientId);
+        }
+
+        if (PowerDmarcReadOnlyToolset::handles($toolName)) {
+            if (PowerDmarcReadOnlyToolset::requiresClient($toolName) && $clientId === null) {
+                return ['error' => 'client_id is required for '.$toolName.'.'];
+            }
+
+            return app(PowerDmarcReadOnlyToolset::class)->execute($toolName, $input, $clientId);
         }
 
         if (ScreenConnectReadOnlyToolset::handles($toolName)) {

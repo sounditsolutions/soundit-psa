@@ -417,6 +417,13 @@ Route::middleware('auth')->group(function () {
     Route::post('/settings/integrations/unifi', [IntegrationsController::class, 'updateUnifi'])->name('settings.integrations.unifi.update');
     Route::post('/settings/integrations/unifi/test', [IntegrationsController::class, 'testUnifi'])->name('settings.integrations.unifi.test');
 
+    // PowerDMARC credentials + Domain Mapping (writes the client_powerdmarc_domains pivot — a client may map to several domains)
+    Route::get('/settings/integrations/powerdmarc/domains', [\App\Http\Controllers\Web\PowerDmarcDomainController::class, 'index'])->name('settings.powerdmarc-domains.index');
+    Route::post('/settings/integrations/powerdmarc/domains', [\App\Http\Controllers\Web\PowerDmarcDomainController::class, 'update'])->name('settings.powerdmarc-domains.update');
+    Route::get('/settings/integrations/powerdmarc/domains/auto-match', [\App\Http\Controllers\Web\PowerDmarcDomainController::class, 'autoMatch'])->name('settings.powerdmarc-domains.auto-match');
+    Route::post('/settings/integrations/powerdmarc', [IntegrationsController::class, 'updatePowerDmarc'])->name('settings.integrations.powerdmarc.update');
+    Route::post('/settings/integrations/powerdmarc/test', [IntegrationsController::class, 'testPowerDmarc'])->name('settings.integrations.powerdmarc.test');
+
     // Settings — Servosity
     Route::post('/settings/integrations/servosity', [IntegrationsController::class, 'updateServosity'])->name('settings.integrations.servosity.update');
     Route::post('/settings/integrations/servosity/test', [IntegrationsController::class, 'testServosity'])->name('settings.integrations.servosity.test');

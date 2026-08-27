@@ -93,7 +93,14 @@ class McpToolsListResilienceTest extends TestCase
         // the huntress_api_key read (isConfigured() short-circuits on the empty
         // key; isWriteConfigured() is never reached while unconfigured) — +2 x 2
         // assemblies = +4 flat, independent of catalog size.
-        $this->assertLessThanOrEqual(90, count($queries), $sql);
+        //
+        // Raised 90 -> 94 for the PowerDMARC read surface (issue #689):
+        // PowerDmarcConfig::isAvailable() is consulted once in generalTools() and
+        // once in clientTools(), and tools/list assembles the surface twice (the
+        // published list + the liveness lookup). powerdmarc_enabled defaults OFF,
+        // so isAvailable() short-circuits after the single switch read — +1 x 2
+        // consultations x 2 assemblies = +4 flat, independent of catalog size.
+        $this->assertLessThanOrEqual(94, count($queries), $sql);
     }
 
     public function test_tools_list_repairs_dynamic_cipp_schema_before_publishing(): void

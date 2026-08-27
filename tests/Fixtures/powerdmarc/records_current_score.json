@@ -1,0 +1,37 @@
+{
+    "data": {
+        "percent": 95,
+        "score": 95,
+        "score_mark": "A",
+        "completed_actions_count": 18,
+        "errors_count": 1,
+        "details": {
+            "dmarc": {
+                "status": "valid",
+                "value": "v=DMARC1; p=reject; ..."
+            },
+            "spf": {
+                "status": "valid",
+                "value": "v=spf1 ..."
+            },
+            "dkim": {
+                "status": "valid",
+                "value": "v=DKIM1; ..."
+            },
+            "mta-sts": {
+                "status": "not_found",
+                "value": null
+            },
+            "tls-rpt": {
+                "status": "valid",
+                "value": "v=TLSRPTv1; ..."
+            },
+            "bimi": {
+                "status": "valid",
+                "value": {
+                    "default": "v=BIMI1;l=https://sg.by1.space/bimi/6598/9addcaee-a174-49b4-8c00-e37a6afef7be.svg;"
+                }
+            }
+        }
+    }
+}

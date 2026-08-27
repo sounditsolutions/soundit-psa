@@ -1,0 +1,25 @@
+{
+    "data": [
+        {
+            "id": 1,
+            "name": "google.com",
+            "is_dmarc_record_correct": true,
+            "is_setup_completed": false
+        }
+    ],
+    "links": {
+        "first": "https://example.com/api/v1/?page=1",
+        "last": "https://example.com/api/v1/?page=1",
+        "prev": null,
+        "next": null
+    },
+    "meta": {
+        "current_page": 1,
+        "from": 1,
+        "last_page": 1,
+        "path": "https://example.com/api/v1/?page=1",
+        "per_page": 10,
+        "to": 1,
+        "total": 1
+    }
+}
