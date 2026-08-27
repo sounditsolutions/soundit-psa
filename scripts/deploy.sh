@@ -208,10 +208,10 @@ composer install --no-dev --optimize-autoloader --quiet
 # still cannot occupy a retention slot here or push a real backup off the end.
 mv "$BACKUP_FILE" "$BACKUP_DIR/pre-deploy-${BACKUP_FILE#$BACKUP_DIR/attempt-}"
 BACKUP_FILE="$BACKUP_DIR/pre-deploy-${BACKUP_FILE#$BACKUP_DIR/attempt-}"
-ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | tail -n +11 | xargs -r rm -f
 
 echo "  Running migrations (restore point: $BACKUP_FILE)..."
 php artisan migrate --force
+ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | tail -n +11 | xargs -r rm -f
 
 echo "  Caching config/routes/views..."
 php artisan config:cache
