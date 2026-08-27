@@ -14,8 +14,13 @@
 #                                  pre-existing style debt, so we hold only
 #                                  NEW/changed code to the standard, not the
 #                                  whole tree.
-#   3. real-data / secret guard  — fail if the diff reintroduces operator
-#                                  emails, private keys, or known token shapes
+#   3. real-data / secret guard  — fail if the outbound history reintroduces
+#                                  operator emails, private keys, or known token
+#                                  shapes, OR if a secret-bearing FILE
+#                                  (env/backup/key) is tracked at HEAD or was
+#                                  added-then-deleted in the pushed range
+#                                  (php artisan secret:scan --range, so-ssoj).
+#                                  Fails CLOSED on any enumeration error.
 #                                  (this is a public OSS repo).
 #
 # Assumes a ready app environment (.env with APP_KEY, vendor/ installed).
@@ -53,12 +58,38 @@ else
 fi
 
 echo "==> [3/3] real-data / secret guard"
+# Content guard: reject operator emails, private keys, and known token shapes.
+# Scan the FULL outbound history (git log -p), not the net BASE...HEAD diff, so a
+# secret added and then removed in an intermediate commit is still seen. FAIL
+# CLOSED: a failed enumeration must not read as an empty (clean) diff — the old
+# `|| true` here did exactly that (psa-6vfw1 review).
 GUARD_RE='@couttspnw\.com|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[baprs]-[0-9A-Za-z-]{8,}|AKIA[0-9A-Z]{16}'
-DIFF="$( { [ -n "$BASE" ] && git diff -U0 "$BASE"...HEAD; git diff -U0; } 2>/dev/null || true )"
-if printf '%s' "$DIFF" | grep -nEi "$GUARD_RE" >/dev/null 2>&1; then
-    echo "ERROR: possible real-data/secret leak in diff:" >&2
-    printf '%s' "$DIFF" | grep -nEi "$GUARD_RE" >&2
+HIST=""
+if [ -n "$BASE" ]; then
+    if ! HIST="$(git log -p --no-color --diff-filter=ACMR "$BASE..HEAD" 2>/dev/null)"; then
+        echo "ERROR: secret guard could not enumerate history ($BASE..HEAD) — failing closed" >&2
+        exit 1
+    fi
+fi
+if ! WORK="$(git diff -U0 2>/dev/null)"; then
+    echo "ERROR: secret guard could not enumerate the working diff — failing closed" >&2
     exit 1
+fi
+if printf '%s\n%s' "$HIST" "$WORK" | grep -nEi "$GUARD_RE" >/dev/null 2>&1; then
+    echo "ERROR: possible real-data/secret leak in history/diff:" >&2
+    printf '%s\n%s' "$HIST" "$WORK" | grep -nEi "$GUARD_RE" >&2
+    exit 1
+fi
+
+# Filename + content guard (so-ssoj / psa-6vfw1): the GUARD_RE above scans CONTENT
+# for token shapes, but the leak that started this was a `.env.bak-*` FILE whose
+# secrets (APP_KEY / DB_PASSWORD / HALO / PLIVO) match none of those shapes. The
+# tip scan catches such a file if it is tracked at HEAD; the --range scan catches
+# it even when a later commit deleted it before the tip (the add-then-delete gap
+# the review found). Both fail closed if git cannot be enumerated.
+php artisan secret:scan || exit 1
+if [ -n "$BASE" ]; then
+    php artisan secret:scan --range="$BASE..HEAD" || exit 1
 fi
 
 echo "==> gc-verify: PASS"

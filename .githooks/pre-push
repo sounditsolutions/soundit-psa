@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+#
+# so-ssoj / psa-6vfw1 (#5): block a push whose OUTBOUND HISTORY carries a secret —
+# including a secret that was added and then deleted before the tip, and whatever
+# ref is actually being pushed (not just the current index). This is the local
+# PREVENTION layer.
+#
+# Auto-enabled by `composer install` (post-autoload-dump sets core.hooksPath),
+# or by hand:  git config core.hooksPath .githooks
+#
+# HARD LIMIT: `git push --no-verify` bypasses ALL local hooks, and a hook is a
+# local convenience an attacker or a mistake can skip. The ONLY control that
+# actually blocks a push to a PUBLIC remote is server-side push protection (a
+# GitHub setting). This hook is the strongest local layer; scripts/gc-verify.sh
+# in CI is a post-push detection backstop. Neither un-leaks an object already on
+# the remote.
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+ZERO='0000000000000000000000000000000000000000'
+status=0
+
+# git feeds ref updates on stdin: <local ref> <local sha> <remote ref> <remote sha>
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    [ "$local_sha" = "$ZERO" ] && continue          # deleting a ref pushes no objects
+
+    if [ "$remote_sha" = "$ZERO" ]; then
+        range="$local_sha --not --remotes"          # new branch: commits not already on any remote
+    else
+        range="$remote_sha..$local_sha"             # existing branch: only the new commits
+    fi
+
+    if ! php artisan secret:scan --range="$range"; then
+        status=1
+    fi
+done
+
+if [ "$status" -ne 0 ]; then
+    echo >&2
+    echo "pre-push BLOCKED: the pushed history carries a secret (see above)." >&2
+    echo "This is a PUBLIC repo. Scrub it from history — deleting it at the tip does NOT un-leak it." >&2
+    exit 1
+fi
