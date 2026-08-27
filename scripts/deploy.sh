@@ -174,8 +174,9 @@ fi
 echo "  Backed up to $BACKUP_FILE ($(du -h "$BACKUP_FILE" | cut -f1))"
 # This dump is written before the ff-only guard, so it is only an ATTEMPT dump:
 # it lives in its own attempt-* namespace, separate from the retained
-# pre-deploy-* restore points, and is promoted across only once migrate has
-# actually run (see below). Two consequences, both deliberate: a deploy that
+# pre-deploy-* restore points, and is promoted across once the deploy actually
+# reaches the migrate step — immediately BEFORE migrate runs, not after it
+# succeeds (see below). Two consequences, both deliberate: a deploy that
 # aborts at the guard (or at composer) can never evict a real pre-migration
 # backup from an earlier successful deploy, and the attempt dumps themselves
 # stay bounded because this prune runs on every attempt, failed ones included —
@@ -194,15 +195,23 @@ fi
 echo "  Installing dependencies..."
 composer install --no-dev --optimize-autoloader --quiet
 
-echo "  Running migrations..."
-php artisan migrate --force
-
-# The migration has run, so this attempt's dump is now a genuine pre-migration
+# We are about to migrate, so this attempt's dump is now a genuine pre-migration
 # restore point: promote it out of attempt-* into pre-deploy-* and retain only
-# the 10 most recent. Aborted attempts never enter this namespace, so they
-# cannot occupy a retention slot here or push a real backup off the end.
+# the 10 most recent. Promoting BEFORE migrate rather than after a zero exit is
+# deliberate and load-bearing: on MySQL/MariaDB DDL is implicitly committed per
+# statement, so a migration that fails part-way leaves prod partially migrated
+# and this dump is the ONLY clean pre-migration snapshot — exactly the one that
+# must not be left in attempt-*, where the count-based prune would evict it
+# after 10 further attempts (and a failed migration is precisely what generates
+# a rapid pile of retries). Attempts that abort earlier — at the ff-only guard
+# or at composer, with the database untouched — never reach this line, so they
+# still cannot occupy a retention slot here or push a real backup off the end.
 mv "$BACKUP_FILE" "$BACKUP_DIR/pre-deploy-${BACKUP_FILE#$BACKUP_DIR/attempt-}"
+BACKUP_FILE="$BACKUP_DIR/pre-deploy-${BACKUP_FILE#$BACKUP_DIR/attempt-}"
 ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | tail -n +11 | xargs -r rm -f
+
+echo "  Running migrations (restore point: $BACKUP_FILE)..."
+php artisan migrate --force
 
 echo "  Caching config/routes/views..."
 php artisan config:cache
