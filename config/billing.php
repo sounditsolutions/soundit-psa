@@ -10,10 +10,15 @@ return [
     // customer-facing text. Null disables stamping entirely.
     'qbo_nonrecurring_skip_memo' => env('QBO_NONRECURRING_SKIP_MEMO'),
 
-    // Skip memos this app stamped in the past, ONE PER LINE (in .env: a single
-    // double-quoted value with `\n` between wordings). Not comma-separated —
-    // the wording above is free-form customer-facing prose and may contain a
-    // comma, so only a newline can delimit the list without shredding it.
+    // Skip memos this app stamped in the past, ONE PER LINE — in .env, a REAL
+    // line break inside the double-quoted value. A `\n` escape does not work:
+    // phpdotenv either rejects it (boot fails) or passes it through literally.
+    // Not comma-separated — the wording above is free-form customer-facing
+    // prose and may contain a comma, so only a newline can delimit the list
+    // without shredding it. A comma-separated value left from the older
+    // documented format is still honoured (its pieces are matched alongside
+    // the whole value), so upgrading needs no .env edit — but rewrite it one
+    // per line when you next touch it.
     // A QBO full update rewrites CustomerMemo wholesale, so a stamp can only
     // be removed while we still recognise it: when changing the wording above
     // — or clearing it to turn stamping off — move the old wording here so

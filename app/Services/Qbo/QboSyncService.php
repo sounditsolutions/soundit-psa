@@ -829,17 +829,7 @@ class QboSyncService
      */
     private function knownSkipMemos(): array
     {
-        $retired = config('billing.qbo_nonrecurring_skip_memo_retired', []);
-
-        // Newline-separated, NEVER comma-separated. The configured wording is
-        // taken whole and is free-form customer-facing prose, so a comma is
-        // legal in it and there is no escaping; splitting the retired list on
-        // commas would shred exactly the wordings ops rotate out, leaving a
-        // stamp we can no longer recognise and therefore can never remove. A
-        // stamp is matched one line at a time, so a newline is the one
-        // character a wording can never contain — the only delimiter able to
-        // carry every value the current setting accepts (#736).
-        $retired = is_array($retired) ? $retired : (preg_split('/\R/', (string) $retired) ?: []);
+        $retired = $this->retiredSkipMemos(config('billing.qbo_nonrecurring_skip_memo_retired', []));
 
         $known = [];
         foreach (array_merge([config('billing.qbo_nonrecurring_skip_memo', '')], $retired) as $value) {
@@ -850,6 +840,40 @@ class QboSyncService
         }
 
         return $known;
+    }
+
+    /**
+     * The retired wordings a configured value carries: an array as given, or a
+     * string ONE PER LINE. Newline is the documented delimiter because the
+     * configured wording is free-form customer-facing prose in which a comma is
+     * legal and unescapable, so splitting on commas would shred exactly the
+     * wordings ops rotate out.
+     *
+     * Two other forms are still recognised, because both are values an ops team
+     * that followed the documentation can already have in .env today:
+     *  - a literal `\n`, which phpdotenv does not turn into a line break;
+     *  - the older comma-separated format, whose pieces are matched ALONGSIDE
+     *    the whole value rather than instead of it, so a comma-bearing wording
+     *    written under the current format is still recognised whole.
+     * A stamp we fail to recognise is one we can never remove (#736), so the
+     * parse errs towards recognising more.
+     *
+     * @return list<string>
+     */
+    private function retiredSkipMemos(mixed $retired): array
+    {
+        if (is_array($retired)) {
+            return array_values($retired);
+        }
+
+        $retired = (string) $retired;
+        $values = preg_split('/\R|\\\\n/', $retired) ?: [];
+
+        if (count($values) === 1 && str_contains($retired, ',')) {
+            $values = array_merge($values, explode(',', $retired));
+        }
+
+        return array_values($values);
     }
 
     /**

@@ -302,6 +302,61 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
         );
     }
 
+    public function test_update_removes_a_retired_memo_from_a_legacy_comma_separated_list(): void
+    {
+        // The retired list used to be documented as comma-separated. A .env set
+        // that way must keep working: an old stamp we stop recognising is one
+        // nobody can ever remove.
+        $retired = 'Not auto-charged - pay by check';
+        config([
+            'billing.qbo_nonrecurring_skip_memo' => self::SKIP_MEMO,
+            'billing.qbo_nonrecurring_skip_memo_retired' => $retired.',An even older wording',
+        ]);
+        $invoice = $this->makeInvoice(['qbo_invoice_id' => '7783', 'status' => InvoiceStatus::Synced]);
+        $posts = [];
+        $this->mockQboClient($posts, [
+            'Id' => '7783',
+            'SyncToken' => '7',
+            'CustomerMemo' => ['value' => "Ship to warehouse dock B\n".$retired],
+        ]);
+
+        app(QboSyncService::class)->pushInvoiceToQbo($invoice);
+
+        $this->assertCount(1, $posts);
+        $this->assertSame(
+            ['value' => "Ship to warehouse dock B\n".self::SKIP_MEMO],
+            $posts[0]['CustomerMemo'] ?? null
+        );
+    }
+
+    public function test_update_removes_a_retired_memo_separated_by_a_literal_backslash_n(): void
+    {
+        // phpdotenv does not expand `\n` inside a double-quoted .env value, so a
+        // value written that way arrives with the two literal characters. It is
+        // split all the same — and the comma-bearing wording is still matched
+        // whole, not shredded.
+        $retired = 'Not auto-charged, pay by check';
+        config([
+            'billing.qbo_nonrecurring_skip_memo' => self::SKIP_MEMO,
+            'billing.qbo_nonrecurring_skip_memo_retired' => 'An even older wording\nNot auto-charged, pay by check',
+        ]);
+        $invoice = $this->makeInvoice(['qbo_invoice_id' => '7784', 'status' => InvoiceStatus::Synced]);
+        $posts = [];
+        $this->mockQboClient($posts, [
+            'Id' => '7784',
+            'SyncToken' => '8',
+            'CustomerMemo' => ['value' => "Ship to warehouse dock B\n".$retired],
+        ]);
+
+        app(QboSyncService::class)->pushInvoiceToQbo($invoice);
+
+        $this->assertCount(1, $posts);
+        $this->assertSame(
+            ['value' => "Ship to warehouse dock B\n".self::SKIP_MEMO],
+            $posts[0]['CustomerMemo'] ?? null
+        );
+    }
+
     public function test_update_stamps_a_non_recurring_invoice_whose_qbo_memo_is_empty(): void
     {
         $invoice = $this->makeInvoice(['qbo_invoice_id' => '7777', 'status' => InvoiceStatus::Synced]);
