@@ -866,23 +866,6 @@ class QboSyncService
     }
 
     /**
-     * The one-line form a release before the folding fix stamped for this
-     * wording: the value as phpdotenv delivered it, with the two literal
-     * characters `\n` still standing where the line breaks are now. Stamps in
-     * that form sit on open invoices right now, and no configured value can
-     * express them any more — every reader folds — so they are recognised here
-     * instead of becoming permanent, with no rotation for ops to perform.
-     * Matched only, never stamped: what we write is always the folded form,
-     * and this variant is exactly the text this app itself wrote, so it can no
-     * more swallow operator-typed lines than the folded form already does
-     * (#736).
-     */
-    private function unfoldedSkipMemoForm(string $value): string
-    {
-        return trim(str_replace("\n", '\n', $value));
-    }
-
-    /**
      * Every skip memo this app may have stamped: the configured one plus the
      * retired values ops rotated out. A stamp is only removable while we can
      * still recognise it, so clearing or rotating the configured wording
@@ -896,21 +879,24 @@ class QboSyncService
         $retired = $this->retiredSkipMemos(config('billing.qbo_nonrecurring_skip_memo_retired', []));
 
         $known = [];
-        // The configured value is folded the same way retiredSkipMemos() folds
-        // its input, so a wording is recognised identically before and after it
-        // is rotated into the retired list.
-        $configured = $this->foldEscapedNewlines((string) config('billing.qbo_nonrecurring_skip_memo', ''));
+        // Taken in the notation it was configured in, exactly like the
+        // wordings retiredSkipMemos() returns, so both forms below are derived
+        // the same way before and after a wording is rotated into that list.
+        $configured = (string) config('billing.qbo_nonrecurring_skip_memo', '');
 
         foreach (array_merge([$configured], $retired) as $value) {
             $value = trim((string) $value);
 
             // Both forms of every wording: the folded one we stamp now, and
-            // the one-line form a release before the folding fix stamped for
-            // the same configured value. Recognising only the folded one would
-            // read a legacy stamp as operator text and append the new stamp
-            // beside it on the next push, growing a customer-visible field
-            // that no configuration can prune (#736).
-            foreach ([$value, $this->unfoldedSkipMemoForm($value)] as $form) {
+            // the wording exactly as configured, which is what a release
+            // before the folding fix stamped — phpdotenv hands a real line
+            // break through as one and a literal `\n` as the two characters,
+            // so a wording written in both notations was stamped in both and
+            // only the unconverted source reproduces it. Recognising only the
+            // folded form would read such a legacy stamp as operator text and
+            // append the new stamp beside it on the next push, growing a
+            // customer-visible field that no configuration can prune (#736).
+            foreach ([$this->foldEscapedNewlines($value), $value] as $form) {
                 if ($form !== '' && ! in_array($form, $known, true)) {
                     $known[] = $form;
                 }
@@ -933,11 +919,21 @@ class QboSyncService
      * rather than several one-line ones, because failing to strip a stamp is
      * recoverable (list it again) and deleting operator text is not.
      *
-     * A literal `\n` is folded into a line break first, because phpdotenv does
-     * not turn it into one, so a value written that way following the
-     * documentation arrives with the two literal characters — `\n\n` therefore
-     * separates two wordings. A stamp we fail to recognise is one we can never
-     * remove (#736).
+     * A literal `\n` is read as a line break, because phpdotenv does not turn
+     * it into one, so a value written that way following the documentation
+     * arrives with the two literal characters — `\n\n` therefore separates two
+     * wordings. Wordings come back in the notation they were configured in
+     * rather than folded, because knownSkipMemos() needs that form too (it is
+     * what a release before the folding fix stamped) and derives the folded
+     * one from it. A stamp we fail to recognise is one we can never remove
+     * (#736).
+     *
+     * An ARRAY entry is split on blank lines exactly like the string form. It
+     * carries the same literal `\n` when it was pasted here from the env value,
+     * so an entry holding `\n\n` is two wordings; kept whole it would be one
+     * known value with a blank line INSIDE it, and stripSkipMemos() matches
+     * that blank against any blank line in the operator's memo — a block that
+     * spans, and silently deletes, operator-typed text.
      *
      * A blank line is therefore not representable INSIDE a wording here, which
      * is why nonRecurringSkipMemo() refuses to stamp a wording that contains
@@ -949,39 +945,55 @@ class QboSyncService
      */
     private function retiredSkipMemos(mixed $retired): array
     {
-        if (is_array($retired)) {
-            // Folded exactly like the string path: every reader of a
-            // configured wording must fold identically, and an entry pasted
-            // here from the env value carries the same literal `\n` — listed
-            // unfolded it would never match the folded stamp (#736).
-            return array_values(array_map(
-                fn (mixed $value): string => $this->foldEscapedNewlines((string) $value),
-                $retired
-            ));
+        $values = [];
+
+        foreach (is_array($retired) ? $retired : [$retired] as $entry) {
+            foreach ($this->retiredWordings((string) $entry) as $wording) {
+                $values[] = $wording;
+            }
         }
 
-        $text = $this->foldEscapedNewlines((string) $retired);
+        return $values;
+    }
+
+    /**
+     * One configured value's wordings, separated by a blank line and returned
+     * in the notation they were written in. A line break is a real one or the
+     * two literal characters `\n`, and the break that produced each split is
+     * put back when a multi-line wording is rejoined, so a wording written in
+     * both notations comes back exactly as configured: that mixed text is what
+     * a release before the folding fix stamped, and it cannot be reconstructed
+     * from the folded wording afterwards (#736).
+     *
+     * @return list<string>
+     */
+    private function retiredWordings(string $text): array
+    {
+        // Breaks are captured so a wording can be rejoined in its own
+        // notation. `\R` is unsafe on UTF-8 memo text — see memoLines().
+        $parts = preg_split('/(\r\n|\n|\r|\\\\n)/', $text, -1, PREG_SPLIT_DELIM_CAPTURE) ?: [$text];
 
         $values = [];
-        $wording = [];
+        $wording = '';
 
-        // memoLines() splits on the ASCII newline forms only — see there for
-        // why `\R` is unsafe on UTF-8 memo text.
-        foreach ($this->memoLines($text) as $line) {
+        for ($i = 0, $count = count($parts); $i < $count; $i += 2) {
+            $line = $parts[$i];
+
             if (trim($line) === '') {
-                if ($wording !== []) {
-                    $values[] = implode("\n", $wording);
-                    $wording = [];
+                if ($wording !== '') {
+                    $values[] = trim($wording);
+                    $wording = '';
                 }
 
                 continue;
             }
 
-            $wording[] = $line;
+            // $parts[$i - 1] is the break that preceded this line.
+            $wording = $wording === '' ? $line : $wording.$parts[$i - 1].$line;
         }
 
-        if ($wording !== []) {
-            $values[] = implode("\n", $wording);
+        if ($wording !== '') {
+            $values[] = trim($wording);
         }
 
         return $values;
