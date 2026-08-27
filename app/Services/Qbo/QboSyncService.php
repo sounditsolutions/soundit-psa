@@ -817,6 +817,12 @@ class QboSyncService
      * push again); deleting operator text is not. The wording is still listed
      * by knownSkipMemos(), so a stamp written before this check is stripped on
      * the next push instead of becoming permanent.
+     *
+     * The wording is folded by foldEscapedNewlines() before it is inspected AND
+     * before it is returned, so what we stamp is exactly what retiredSkipMemos()
+     * produces from the same value: a wording carrying a literal `\n` would
+     * otherwise be stamped unfolded and never match its folded retired form,
+     * leaving a stamp no rotation can remove (#736).
      */
     private function nonRecurringSkipMemo(Invoice $invoice): ?string
     {
@@ -824,7 +830,7 @@ class QboSyncService
             return null;
         }
 
-        $memo = trim((string) config('billing.qbo_nonrecurring_skip_memo', ''));
+        $memo = $this->foldEscapedNewlines((string) config('billing.qbo_nonrecurring_skip_memo', ''));
 
         if ($memo === '') {
             return null;
@@ -832,7 +838,7 @@ class QboSyncService
 
         // trim() already removed leading/trailing blank lines, so any blank
         // line left is an interior one — the retired-list separator.
-        foreach ($this->memoLines(str_replace('\n', "\n", $memo)) as $line) {
+        foreach ($this->memoLines($memo) as $line) {
             if (trim($line) === '') {
                 Log::warning('[QboSync] Skip memo wording contains a blank line, which the retired list cannot represent — not stamping', [
                     'invoice_id' => $invoice->id,
@@ -843,6 +849,20 @@ class QboSyncService
         }
 
         return $memo;
+    }
+
+    /**
+     * A configured value with any literal `\n` folded into a real line break,
+     * then trimmed. phpdotenv does not expand the escape, so a value written
+     * that way following the documentation arrives as the two literal
+     * characters. Every reader of a configured wording must fold identically:
+     * a wording stamped in one form and matched in the other is a stamp we can
+     * never remove, and the literal backslash-n would be customer-visible on
+     * the invoice besides (#736).
+     */
+    private function foldEscapedNewlines(string $value): string
+    {
+        return trim(str_replace('\n', "\n", $value));
     }
 
     /**
@@ -859,7 +879,12 @@ class QboSyncService
         $retired = $this->retiredSkipMemos(config('billing.qbo_nonrecurring_skip_memo_retired', []));
 
         $known = [];
-        foreach (array_merge([config('billing.qbo_nonrecurring_skip_memo', '')], $retired) as $value) {
+        // The configured value is folded the same way retiredSkipMemos() folds
+        // its input, so a wording is recognised identically before and after it
+        // is rotated into the retired list.
+        $configured = $this->foldEscapedNewlines((string) config('billing.qbo_nonrecurring_skip_memo', ''));
+
+        foreach (array_merge([$configured], $retired) as $value) {
             $value = trim((string) $value);
             if ($value !== '' && ! in_array($value, $known, true)) {
                 $known[] = $value;
@@ -902,7 +927,7 @@ class QboSyncService
             return array_values($retired);
         }
 
-        $text = str_replace('\n', "\n", (string) $retired);
+        $text = $this->foldEscapedNewlines((string) $retired);
 
         $values = [];
         $wording = [];
