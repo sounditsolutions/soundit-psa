@@ -358,6 +358,7 @@ class QboSyncService
             $currentInvoice = $current['Invoice'] ?? $current;
             $qboData['Id'] = $currentInvoice['Id'];
             $qboData['SyncToken'] = $currentInvoice['SyncToken'];
+            $this->applyCustomerMemoForUpdate($qboData, $invoice, $currentInvoice);
         }
 
         try {
@@ -372,6 +373,7 @@ class QboSyncService
                 $retryInvoice = $retry['Invoice'] ?? $retry;
                 $qboData['Id'] = $retryInvoice['Id'];
                 $qboData['SyncToken'] = $retryInvoice['SyncToken'];
+                $this->applyCustomerMemoForUpdate($qboData, $invoice, $retryInvoice);
                 $response = $this->qboClient->post('invoice', $qboData);
             } else {
                 $invoice->update(['qbo_sync_error' => $e->getMessage()]);
@@ -784,13 +786,301 @@ class QboSyncService
             $lines[] = $lineData;
         }
 
-        return [
+        $qboData = [
             'CustomerRef' => ['value' => $invoice->client->qbo_customer_id],
             'DocNumber' => $invoice->invoice_number,
             'TxnDate' => $invoice->invoice_date->format('Y-m-d'),
             'DueDate' => $invoice->due_date->format('Y-m-d'),
             'Line' => $lines,
         ];
+
+        if ($memo = $this->nonRecurringSkipMemo($invoice)) {
+            $qboData['CustomerMemo'] = ['value' => $memo];
+        }
+
+        return $qboData;
+    }
+
+    /**
+     * The autopay-skip memo for this invoice, or null when it should not be
+     * stamped. Only NON-recurring invoices (profile_id null) are stamped, and
+     * only when the wording is configured — the payment processor's memo skip
+     * rule then excludes them from auto-processing (#736).
+     *
+     * A wording is free-form prose and may span lines, but one containing a
+     * BLANK line is refused rather than stamped: a blank line is what separates
+     * two entries in `qbo_nonrecurring_skip_memo_retired`, so such a wording
+     * could never be retired as itself — moved there verbatim it would arm each
+     * of its halves as an independent one-line strip target and silently delete
+     * operator-typed memo text that matches one. Not stamping is the
+     * recoverable direction (rewrite the wording without the blank line and
+     * push again); deleting operator text is not. The wording is still listed
+     * by knownSkipMemos(), so a stamp written before this check is stripped on
+     * the next push instead of becoming permanent.
+     *
+     * The wording is folded by foldEscapedNewlines() before it is inspected AND
+     * before it is returned, so what we stamp is exactly what retiredSkipMemos()
+     * produces from the same value: a wording carrying a literal `\n` would
+     * otherwise be stamped unfolded and never match its folded retired form,
+     * leaving a stamp no rotation can remove (#736).
+     */
+    private function nonRecurringSkipMemo(Invoice $invoice): ?string
+    {
+        if ($invoice->profile_id !== null) {
+            return null;
+        }
+
+        $memo = $this->foldEscapedNewlines((string) config('billing.qbo_nonrecurring_skip_memo', ''));
+
+        if ($memo === '') {
+            return null;
+        }
+
+        // trim() already removed leading/trailing blank lines, so any blank
+        // line left is an interior one — the retired-list separator.
+        foreach ($this->memoLines($memo) as $line) {
+            if (trim($line) === '') {
+                Log::warning('[QboSync] Skip memo wording contains a blank line, which the retired list cannot represent — not stamping', [
+                    'invoice_id' => $invoice->id,
+                ]);
+
+                return null;
+            }
+        }
+
+        return $memo;
+    }
+
+    /**
+     * A configured value with any literal `\n` folded into a real line break,
+     * then trimmed. phpdotenv does not expand the escape, so a value written
+     * that way following the documentation arrives as the two literal
+     * characters. Every reader of a configured wording must fold identically:
+     * a wording stamped in one form and matched in the other is a stamp we can
+     * never remove, and the literal backslash-n would be customer-visible on
+     * the invoice besides (#736).
+     */
+    private function foldEscapedNewlines(string $value): string
+    {
+        return trim(str_replace('\n', "\n", $value));
+    }
+
+    /**
+     * Every skip memo this app may have stamped: the configured one plus the
+     * retired values ops rotated out. A stamp is only removable while we can
+     * still recognise it, so clearing or rotating the configured wording
+     * without listing the old value in `qbo_nonrecurring_skip_memo_retired`
+     * leaves every already-stamped invoice carrying it (#736).
+     *
+     * @return list<string>
+     */
+    private function knownSkipMemos(): array
+    {
+        $retired = $this->retiredSkipMemos(config('billing.qbo_nonrecurring_skip_memo_retired', []));
+
+        $known = [];
+        $configured = (string) config('billing.qbo_nonrecurring_skip_memo', '');
+
+        foreach (array_merge([$configured], $retired) as $value) {
+            // ONE form per wording: the folded one, which is the only form
+            // this app stamps. Recognition is made notation-insensitive by
+            // NORMALISING rather than by enumerating notations — a wording
+            // re-listed carrying a literal `\n` and the same wording written
+            // with a real line break fold to the same text, so a stamp is
+            // matched whichever notation ops rotated it into the retired list
+            // in (#736). No stamp exists in any other form: the stamp path
+            // folds before writing, so an unfolded stamp could only have been
+            // left by a release that never shipped.
+            $form = $this->foldEscapedNewlines((string) $value);
+
+            if ($form !== '' && ! in_array($form, $known, true)) {
+                $known[] = $form;
+            }
+        }
+
+        return $known;
+    }
+
+    /**
+     * The retired wordings a configured value carries: an array as given, or a
+     * string in which wordings are SEPARATED BY A BLANK LINE. A wording is
+     * free-form customer-facing prose and nothing restricts it to one line, so
+     * a single line break belongs to the wording it sits in and never
+     * separates two: splitting per line would hand stripSkipMemos() the lines
+     * of a multi-line wording as independent one-line strip targets, and an
+     * operator-typed memo line equal to one of them would then be silently
+     * deleted. A comma is never a delimiter either, and never a fallback, for
+     * the same reason. An ambiguous list is read as one multi-line wording
+     * rather than several one-line ones, because failing to strip a stamp is
+     * recoverable (list it again) and deleting operator text is not.
+     *
+     * A literal `\n` is read as a line break, because phpdotenv does not turn
+     * it into one, so a value written that way following the documentation
+     * arrives with the two literal characters — `\n\n` therefore separates two
+     * wordings. Wordings come back FOLDED, in the one form this app stamps, so
+     * a retired wording is recognised whichever notation it is listed in. A
+     * stamp we fail to recognise is one we can never remove (#736).
+     *
+     * An ARRAY entry is split on blank lines exactly like the string form. It
+     * carries the same literal `\n` when it was pasted here from the env value,
+     * so an entry holding `\n\n` is two wordings; kept whole it would be one
+     * known value with a blank line INSIDE it, and stripSkipMemos() matches
+     * that blank against any blank line in the operator's memo — a block that
+     * spans, and silently deletes, operator-typed text.
+     *
+     * A blank line is therefore not representable INSIDE a wording here, which
+     * is why nonRecurringSkipMemo() refuses to stamp a wording that contains
+     * one: every wording we ever stamp can be listed here as itself, so moving
+     * one here verbatim can never shred it into fragments that strip
+     * operator-typed text.
+     *
+     * @return list<string>
+     */
+    private function retiredSkipMemos(mixed $retired): array
+    {
+        $values = [];
+
+        foreach (is_array($retired) ? $retired : [$retired] as $entry) {
+            foreach ($this->retiredWordings((string) $entry) as $wording) {
+                $values[] = $wording;
+            }
+        }
+
+        return $values;
+    }
+
+    /**
+     * One configured value's wordings, separated by a blank line and returned
+     * folded. A line break is a real one or the two literal characters `\n` —
+     * phpdotenv does not expand the escape — and both are folded to a real
+     * break before splitting, so a wording reads the same whichever notation
+     * it was written in and a literal `\n\n` separates two wordings exactly
+     * like a blank line (#736).
+     *
+     * @return list<string>
+     */
+    private function retiredWordings(string $text): array
+    {
+        $values = [];
+        $wording = '';
+
+        // memoLines() splits on the ASCII newline forms only; `\R` is unsafe
+        // on UTF-8 memo text — see its docblock.
+        foreach ($this->memoLines($this->foldEscapedNewlines($text)) as $line) {
+            if (trim($line) === '') {
+                if ($wording !== '') {
+                    $values[] = trim($wording);
+                    $wording = '';
+                }
+
+                continue;
+            }
+
+            $wording = $wording === '' ? $line : $wording."\n".$line;
+        }
+
+        if ($wording !== '') {
+            $values[] = trim($wording);
+        }
+
+        return $values;
+    }
+
+    /**
+     * The operator-owned part of a QBO CustomerMemo — every run of lines except
+     * the ones we stamped. Our own stamp is not text to preserve: it is
+     * re-derived from the invoice on every push, so it cannot outlive the
+     * reason it was written (a one-off invoice later attached to a recurring
+     * profile, or the stamping being switched off).
+     *
+     * A configured wording is free-form customer-facing prose and nothing
+     * restricts it to one line, so a known wording is matched as a whole BLOCK
+     * of consecutive lines rather than line by line: a multi-line stamp we
+     * failed to recognise would be re-appended by applyCustomerMemoForUpdate on
+     * every push, growing a customer-visible field without bound and never
+     * removable (#736). The longest matching block wins, so a wording that
+     * begins with another known wording is still consumed whole. Individual
+     * lines of a multi-line wording are never strip targets on their own —
+     * fragments must not delete operator-typed text.
+     */
+    private function stripSkipMemos(string $memo): string
+    {
+        $known = [];
+        foreach ($this->knownSkipMemos() as $value) {
+            $block = array_map('trim', $this->memoLines($value));
+            if ($block !== []) {
+                $known[] = $block;
+            }
+        }
+
+        $lines = $this->memoLines($memo);
+        $trimmed = array_map('trim', $lines);
+        $kept = [];
+
+        for ($i = 0, $count = count($lines); $i < $count;) {
+            $matched = 0;
+            foreach ($known as $block) {
+                $length = count($block);
+                if ($length > $matched && array_slice($trimmed, $i, $length) === $block) {
+                    $matched = $length;
+                }
+            }
+
+            if ($matched > 0) {
+                $i += $matched;
+
+                continue;
+            }
+
+            $kept[] = $lines[$i];
+            $i++;
+        }
+
+        return trim(implode("\n", $kept));
+    }
+
+    /**
+     * Memo text split into lines on the ASCII newline forms only. PCRE's `\R`
+     * without the `u` modifier also matches the lone byte 0x85 (NEL), which is
+     * a legal UTF-8 continuation byte (`Å` is 0xC3 0x85), so it splits ordinary
+     * operator text mid-character — and the pieces are rejoined and posted back
+     * as the whole customer-visible memo. Adding `u` would fix the split but
+     * makes preg_split return false on any non-UTF-8 memo, i.e. wipe it; CR and
+     * LF bytes never occur inside a UTF-8 multi-byte sequence, so this class is
+     * correct either way.
+     *
+     * @return list<string>
+     */
+    private function memoLines(string $text): array
+    {
+        return preg_split('/\r\n|\n|\r/', $text) ?: [];
+    }
+
+    /**
+     * UPDATE-path memo decision. Operator text already on the QBO invoice is
+     * echoed back — a QBO full update clears omitted writable fields, so
+     * leaving it out would clobber it — and the skip memo is re-derived
+     * alongside it, appended on its own line rather than replacing it or being
+     * displaced by it: a memo someone typed in QBO must not cost a one-off
+     * invoice the autopay exemption the stamp exists to give it (#736).
+     * Conversely a stamp we wrote earlier is stripped before that decision, so
+     * it survives only while the invoice is still non-recurring and the memo
+     * still configured. Called again after a 409-retry refetch so the decision
+     * always reflects the invoice state the write is based on.
+     */
+    private function applyCustomerMemoForUpdate(array &$qboData, Invoice $invoice, array $currentInvoice): void
+    {
+        $memo = $this->stripSkipMemos((string) ($currentInvoice['CustomerMemo']['value'] ?? ''));
+
+        if ($skip = $this->nonRecurringSkipMemo($invoice)) {
+            $memo = $memo === '' ? $skip : $memo."\n".$skip;
+        }
+
+        unset($qboData['CustomerMemo']);
+
+        if ($memo !== '') {
+            $qboData['CustomerMemo'] = ['value' => $memo];
+        }
     }
 
     private function normalizeName(string $name): string
