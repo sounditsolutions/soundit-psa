@@ -358,6 +358,7 @@ class QboSyncService
             $currentInvoice = $current['Invoice'] ?? $current;
             $qboData['Id'] = $currentInvoice['Id'];
             $qboData['SyncToken'] = $currentInvoice['SyncToken'];
+            $this->applyCustomerMemoForUpdate($qboData, $invoice, $currentInvoice);
         }
 
         try {
@@ -372,6 +373,7 @@ class QboSyncService
                 $retryInvoice = $retry['Invoice'] ?? $retry;
                 $qboData['Id'] = $retryInvoice['Id'];
                 $qboData['SyncToken'] = $retryInvoice['SyncToken'];
+                $this->applyCustomerMemoForUpdate($qboData, $invoice, $retryInvoice);
                 $response = $this->qboClient->post('invoice', $qboData);
             } else {
                 $invoice->update(['qbo_sync_error' => $e->getMessage()]);
@@ -784,13 +786,61 @@ class QboSyncService
             $lines[] = $lineData;
         }
 
-        return [
+        $qboData = [
             'CustomerRef' => ['value' => $invoice->client->qbo_customer_id],
             'DocNumber' => $invoice->invoice_number,
             'TxnDate' => $invoice->invoice_date->format('Y-m-d'),
             'DueDate' => $invoice->due_date->format('Y-m-d'),
             'Line' => $lines,
         ];
+
+        if ($memo = $this->nonRecurringSkipMemo($invoice)) {
+            $qboData['CustomerMemo'] = ['value' => $memo];
+        }
+
+        return $qboData;
+    }
+
+    /**
+     * The autopay-skip memo for this invoice, or null when it should not be
+     * stamped. Only NON-recurring invoices (profile_id null) are stamped, and
+     * only when the token is configured — the payment processor's memo-token
+     * skip rule then excludes them from auto-processing (#736).
+     */
+    private function nonRecurringSkipMemo(Invoice $invoice): ?string
+    {
+        if ($invoice->profile_id !== null) {
+            return null;
+        }
+
+        $memo = trim((string) config('billing.qbo_nonrecurring_skip_memo', ''));
+
+        return $memo !== '' ? $memo : null;
+    }
+
+    /**
+     * UPDATE-path memo decision. A non-empty CustomerMemo already on the QBO
+     * invoice (manually entered, or a previously stamped token) is echoed back
+     * unchanged — a QBO full update clears omitted writable fields, so leaving
+     * it out of the payload would clobber it. Only when QBO's field is empty
+     * does the skip token apply. Called again after a 409-retry refetch so the
+     * decision always reflects the invoice state the write is based on.
+     */
+    private function applyCustomerMemoForUpdate(array &$qboData, Invoice $invoice, array $currentInvoice): void
+    {
+        $existing = trim((string) ($currentInvoice['CustomerMemo']['value'] ?? ''));
+
+        if ($existing !== '') {
+            $qboData['CustomerMemo'] = ['value' => $existing];
+
+            return;
+        }
+
+        unset($qboData['CustomerMemo']);
+
+        if ($memo = $this->nonRecurringSkipMemo($invoice)) {
+            $qboData['CustomerMemo'] = ['value' => $memo];
+        }
     }
 
     private function normalizeName(string $name): string
