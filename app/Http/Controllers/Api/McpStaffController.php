@@ -142,10 +142,15 @@ class McpStaffController extends Controller
      * than records — content whose nature nobody controls, because it is
      * whatever a client or operator ever attached. A tool that returns
      * sensitive FIELDS does not belong here; the per-token grant covers it.
+     *
+     * The names live in {@see McpToolRegistry::RAW_FILE_CONTENT_TOOLS} so this gate and
+     * the OPERATOR GRANT CATALOG cannot disagree: the registry marks exactly these tools
+     * sensitive and gives them their own tier, because a decision this branch says must
+     * be made BY NAME must not also be makeable by a bulk "Grant shown" click on a tier
+     * labelled "Read" (psa-lulgh — a mislabelled tier is how an operator grants a
+     * capability believing it is an ordinary read).
      */
-    private const RAW_FILE_CONTENT_EXPLICIT_GRANT_TOOLS = [
-        'get_ticket_attachment',
-    ];
+    private const RAW_FILE_CONTENT_EXPLICIT_GRANT_TOOLS = McpToolRegistry::RAW_FILE_CONTENT_TOOLS;
 
     private const WIKI_WRITE_TOOLS = [
         'wiki_add_fact',

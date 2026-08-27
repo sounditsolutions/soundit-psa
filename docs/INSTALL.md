@@ -1275,7 +1275,13 @@ CIPP's dynamic MCP catalog can be imported from Settings > Integrations > CIPP w
 Per-tool MSP custom instructions are configured on the Settings -> MCP Tokens page. These instructions are appended to the matching tool description only in `tools/list`; the base tool descriptions remain platform defaults. Token directives remain per-token and are returned by `whoami`.
 
 **Enable:**
-1. Generate a bearer token: `php artisan mcp:rotate-staff-token` (token only displayed once)
+1. Mint a **scoped** bearer token — every token carries an explicit tool allowlist, and an unscoped mint is refused (a token with no allowlist would inherit the full tool surface):
+
+   bash
+   php artisan mcp:rotate-staff-token --label=chet --tools=list_open_tickets,get_ticket_detail,send_email:staged
+   
+
+   Grant only the tools this consumer needs (`--tool` repeats, `--tools` comma-separates; a stageable action takes a `:staged` / `:immediate` suffix — bare means immediate). The token is displayed once. Rotating the same `--label` replaces that label's token; grants can also be edited afterwards on Settings → MCP Tokens. To delete a pre-existing legacy full-surface token (break-glass on a leak is retirement, not rotation): `php artisan mcp:rotate-staff-token --retire-legacy` — scoped tokens are unaffected.
 2. In the client configuration, add an entry with `url: "https://your-psa-domain/api/mcp/staff"` and the generated token as `authorization_token`
 3. The remote identity is treated as a single service account; gate end-user access in the calling client
 
