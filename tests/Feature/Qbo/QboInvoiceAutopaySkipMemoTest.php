@@ -450,6 +450,49 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
         );
     }
 
+    public function test_update_removes_a_folded_stamp_however_the_retired_entry_is_notated(): void
+    {
+        // The only form this app ever stamps is the FOLDED one, so recognition
+        // comes from NORMALISING the retired list rather than from listing the
+        // notations it might be written in: the same wording rotated in with a
+        // literal `\n` and with a real line break folds to the same text, and
+        // the stamp must be matched — and removed whole — either way. `\n\n`
+        // still separates two wordings in both notations.
+        $stamped = "Not auto-charged.\nPay by check or portal.";
+        $client = Client::factory()->create(['qbo_customer_id' => 'QBO-CUST-N1']);
+        $notations = [
+            'literal backslash n' => 'An even older wording\n\nNot auto-charged.\nPay by check or portal.',
+            'real newline' => "An even older wording\n\nNot auto-charged.\nPay by check or portal.",
+        ];
+
+        foreach ($notations as $label => $retired) {
+            config([
+                'billing.qbo_nonrecurring_skip_memo' => self::SKIP_MEMO,
+                'billing.qbo_nonrecurring_skip_memo_retired' => $retired,
+            ]);
+            $invoice = $this->makeInvoice([
+                'client_id' => $client->id,
+                'qbo_invoice_id' => '7787',
+                'status' => InvoiceStatus::Synced,
+            ]);
+            $posts = [];
+            $this->mockQboClient($posts, [
+                'Id' => '7787',
+                'SyncToken' => '10',
+                'CustomerMemo' => ['value' => "Ship to warehouse dock B\n".$stamped],
+            ]);
+
+            app(QboSyncService::class)->pushInvoiceToQbo($invoice);
+
+            $this->assertCount(1, $posts, $label);
+            $this->assertSame(
+                ['value' => "Ship to warehouse dock B\n".self::SKIP_MEMO],
+                $posts[0]['CustomerMemo'] ?? null,
+                $label
+            );
+        }
+    }
+
     public function test_update_stamps_a_non_recurring_invoice_whose_qbo_memo_is_empty(): void
     {
         $invoice = $this->makeInvoice(['qbo_invoice_id' => '7777', 'status' => InvoiceStatus::Synced]);

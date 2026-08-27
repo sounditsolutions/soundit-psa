@@ -30,12 +30,6 @@ return [
     // — or clearing it to turn stamping off — move the old wording here so
     // already-stamped open invoices are unstamped on their next push instead
     // of keeping an autopay exemption nobody can revoke.
-    // UPGRADING: this list used to be ONE PER LINE. A blank line now separates
-    // entries and a single line break no longer does, so a value already
-    // written one per line reads as ONE multi-line wording that matches nothing
-    // and strips nothing. If your current value holds several wordings on
-    // consecutive lines, insert a blank line between them when you upgrade, or
-    // those old stamps stay on already-stamped invoices forever.
     'qbo_nonrecurring_skip_memo_retired' => env('QBO_NONRECURRING_SKIP_MEMO_RETIRED'),
 
     'quantity_sources' => [
