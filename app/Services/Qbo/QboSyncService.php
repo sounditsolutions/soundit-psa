@@ -849,14 +849,13 @@ class QboSyncService
      * legal and unescapable, so splitting on commas would shred exactly the
      * wordings ops rotate out.
      *
-     * Two other forms are still recognised, because both are values an ops team
-     * that followed the documentation can already have in .env today:
-     *  - a literal `\n`, which phpdotenv does not turn into a line break;
-     *  - the older comma-separated format, whose pieces are matched ALONGSIDE
-     *    the whole value rather than instead of it, so a comma-bearing wording
-     *    written under the current format is still recognised whole.
-     * A stamp we fail to recognise is one we can never remove (#736), so the
-     * parse errs towards recognising more.
+     * A literal `\n` is recognised as a delimiter too, because phpdotenv does
+     * not turn it into a line break, so a value written that way following the
+     * documentation arrives with the two literal characters. A stamp we fail
+     * to recognise is one we can never remove (#736). A comma is never a
+     * delimiter, and never a fallback: fragments of a wording must never
+     * become strip targets, or operator-typed memo lines matching a fragment
+     * would be silently deleted.
      *
      * @return list<string>
      */
@@ -866,12 +865,7 @@ class QboSyncService
             return array_values($retired);
         }
 
-        $retired = (string) $retired;
-        $values = preg_split('/\R|\\\\n/', $retired) ?: [];
-
-        if (count($values) === 1 && str_contains($retired, ',')) {
-            $values = array_merge($values, explode(',', $retired));
-        }
+        $values = preg_split('/\R|\\\\n/', (string) $retired) ?: [];
 
         return array_values($values);
     }

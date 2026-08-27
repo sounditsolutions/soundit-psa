@@ -302,29 +302,30 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
         );
     }
 
-    public function test_update_removes_a_retired_memo_from_a_legacy_comma_separated_list(): void
+    public function test_a_comma_bearing_retired_wording_matches_whole_and_its_fragments_are_never_stripped(): void
     {
-        // The retired list used to be documented as comma-separated. A .env set
-        // that way must keep working: an old stamp we stop recognising is one
-        // nobody can ever remove.
-        $retired = 'Not auto-charged - pay by check';
+        // A comma is prose inside a wording, never a delimiter: the retired
+        // value must match WHOLE, and its comma fragments must never become
+        // strip targets — an operator-typed memo line that happens to equal a
+        // fragment ("pay by check") is operator text to preserve, not a stamp.
+        $retired = 'Please, pay by check';
         config([
             'billing.qbo_nonrecurring_skip_memo' => self::SKIP_MEMO,
-            'billing.qbo_nonrecurring_skip_memo_retired' => $retired.',An even older wording',
+            'billing.qbo_nonrecurring_skip_memo_retired' => $retired,
         ]);
         $invoice = $this->makeInvoice(['qbo_invoice_id' => '7783', 'status' => InvoiceStatus::Synced]);
         $posts = [];
         $this->mockQboClient($posts, [
             'Id' => '7783',
             'SyncToken' => '7',
-            'CustomerMemo' => ['value' => "Ship to warehouse dock B\n".$retired],
+            'CustomerMemo' => ['value' => "pay by check\n".$retired],
         ]);
 
         app(QboSyncService::class)->pushInvoiceToQbo($invoice);
 
         $this->assertCount(1, $posts);
         $this->assertSame(
-            ['value' => "Ship to warehouse dock B\n".self::SKIP_MEMO],
+            ['value' => "pay by check\n".self::SKIP_MEMO],
             $posts[0]['CustomerMemo'] ?? null
         );
     }
