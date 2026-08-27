@@ -804,8 +804,8 @@ class QboSyncService
     /**
      * The autopay-skip memo for this invoice, or null when it should not be
      * stamped. Only NON-recurring invoices (profile_id null) are stamped, and
-     * only when the token is configured — the payment processor's memo-token
-     * skip rule then excludes them from auto-processing (#736).
+     * only when the wording is configured — the payment processor's memo skip
+     * rule then excludes them from auto-processing (#736).
      */
     private function nonRecurringSkipMemo(Invoice $invoice): ?string
     {
@@ -830,7 +830,16 @@ class QboSyncService
     private function knownSkipMemos(): array
     {
         $retired = config('billing.qbo_nonrecurring_skip_memo_retired', []);
-        $retired = is_array($retired) ? $retired : explode(',', (string) $retired);
+
+        // Newline-separated, NEVER comma-separated. The configured wording is
+        // taken whole and is free-form customer-facing prose, so a comma is
+        // legal in it and there is no escaping; splitting the retired list on
+        // commas would shred exactly the wordings ops rotate out, leaving a
+        // stamp we can no longer recognise and therefore can never remove. A
+        // stamp is matched one line at a time, so a newline is the one
+        // character a wording can never contain — the only delimiter able to
+        // carry every value the current setting accepts (#736).
+        $retired = is_array($retired) ? $retired : (preg_split('/\R/', (string) $retired) ?: []);
 
         $known = [];
         foreach (array_merge([config('billing.qbo_nonrecurring_skip_memo', '')], $retired) as $value) {

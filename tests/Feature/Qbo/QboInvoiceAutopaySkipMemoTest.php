@@ -15,10 +15,10 @@ use Mockery\MockInterface;
 use Tests\TestCase;
 
 /**
- * Autopay scoping via QBO memo-token skip (#736).
+ * Autopay scoping via QBO memo skip (#736).
  *
  * The payment processor auto-charges every open QBO invoice on a client's
- * saved card unless the invoice's memo carries a configured skip token
+ * saved card unless the invoice's memo carries a configured skip wording
  * (its Invoice Skip Settings). Policy: autopay is for RECURRING invoices
  * only — a one-off hardware invoice must never hit the subscription card
  * (plus its CC surcharge) when the client is deliberately paying by check.
@@ -30,10 +30,11 @@ use Tests\TestCase;
  *
  * The clobber rule: QBO full updates clear omitted writable fields, so the
  * UPDATE path must echo back operator-entered memo text already on the QBO
- * invoice — and stamp the token alongside it, on its own line, rather than
+ * invoice — and stamp the wording alongside it, on its own line, rather than
  * instead of it. A stamp we wrote earlier is never echoed for its own sake:
  * it is re-derived on every push from `billing.qbo_nonrecurring_skip_memo`
- * (recognised via that setting plus `..._retired`), so it disappears when the
+ * (recognised via that setting plus the newline-separated `..._retired` list,
+ * newline-separated because a wording may contain a comma), so it disappears when the
  * invoice becomes recurring or stamping is switched off.
  */
 class QboInvoiceAutopaySkipMemoTest extends TestCase
@@ -156,7 +157,7 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
         $this->assertArrayNotHasKey('CustomerMemo', $posts[0]);
     }
 
-    public function test_create_does_not_stamp_when_the_token_is_not_configured(): void
+    public function test_create_does_not_stamp_when_the_memo_is_not_configured(): void
     {
         config(['billing.qbo_nonrecurring_skip_memo' => null]);
         $invoice = $this->makeInvoice();
@@ -169,7 +170,7 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
         $this->assertArrayNotHasKey('CustomerMemo', $posts[0]);
     }
 
-    public function test_create_treats_a_whitespace_only_token_as_unconfigured(): void
+    public function test_create_treats_a_whitespace_only_memo_as_unconfigured(): void
     {
         config(['billing.qbo_nonrecurring_skip_memo' => '   ']);
         $invoice = $this->makeInvoice();
@@ -272,6 +273,35 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
         $this->assertSame(['value' => 'Ship to warehouse dock B'], $posts[0]['CustomerMemo'] ?? null);
     }
 
+    public function test_update_removes_a_retired_memo_that_contains_a_comma(): void
+    {
+        // The documented rotation must work for the wordings the current
+        // setting actually accepts — free-form prose, in which a comma is
+        // legal and unescapable. Retired values are newline-separated, so the
+        // old wording is still recognised, stripped, and replaced by the new
+        // one instead of accumulating as a stamp nobody can remove.
+        $retired = 'Not auto-charged, pay by check or portal';
+        config([
+            'billing.qbo_nonrecurring_skip_memo' => self::SKIP_MEMO,
+            'billing.qbo_nonrecurring_skip_memo_retired' => "An even older wording\n".$retired,
+        ]);
+        $invoice = $this->makeInvoice(['qbo_invoice_id' => '7782', 'status' => InvoiceStatus::Synced]);
+        $posts = [];
+        $this->mockQboClient($posts, [
+            'Id' => '7782',
+            'SyncToken' => '6',
+            'CustomerMemo' => ['value' => "Ship to warehouse dock B\n".$retired],
+        ]);
+
+        app(QboSyncService::class)->pushInvoiceToQbo($invoice);
+
+        $this->assertCount(1, $posts);
+        $this->assertSame(
+            ['value' => "Ship to warehouse dock B\n".self::SKIP_MEMO],
+            $posts[0]['CustomerMemo'] ?? null
+        );
+    }
+
     public function test_update_stamps_a_non_recurring_invoice_whose_qbo_memo_is_empty(): void
     {
         $invoice = $this->makeInvoice(['qbo_invoice_id' => '7777', 'status' => InvoiceStatus::Synced]);
@@ -305,9 +335,9 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
 
     public function test_409_retry_redecides_the_memo_from_the_refetched_invoice(): void
     {
-        // First fetch: empty memo → the payload carries the token. The write
+        // First fetch: empty memo → the payload carries the stamp. The write
         // 409s; the refetch shows a memo someone just entered in QBO. The
-        // retried write must echo THAT memo and keep the token beside it.
+        // retried write must echo THAT memo and keep the stamp beside it.
         $invoice = $this->makeInvoice(['qbo_invoice_id' => '7779', 'status' => InvoiceStatus::Synced]);
         $posts = [];
 
