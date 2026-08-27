@@ -128,19 +128,15 @@ TARGET="$2"
 echo "  Fetching origin..."
 git fetch --prune origin
 
-echo "  Fast-forwarding to $TARGET (ff-only — a diverged prod checkout FAILS LOUD, no silent merge)..."
-if ! git merge --ff-only "$TARGET"; then
-  echo "  ERROR: cannot fast-forward the production checkout to $TARGET." >&2
-  echo "  The prod checkout has DIVERGED from origin (local commits, or a non-ancestor ref)." >&2
-  echo "  Refusing to merge/rewrite history on production. Inspect 'git status' / 'git log --oneline -5'" >&2
-  echo "  and reconcile manually — do NOT --force. (so-e67m cutover-safety guard.)" >&2
-  exit 1
-fi
-
-echo "  Installing dependencies..."
-composer install --no-dev --optimize-autoloader --quiet
-
-echo "  Backing up database (pre-migration safety net)..."
+# The backup runs BEFORE the code swap (issue #733). It reads only .env and the
+# live database — nothing from the new tree — so ordering it first costs nothing
+# and buys two things: the serve-new-code-before-migrate window shrinks from
+# composer + a multi-minute mysqldump down to composer install alone (it does
+# NOT close — closing it is #675's app-side durable-ingest half), and a FAILED
+# backup now aborts before anything mutates, instead of stranding prod on
+# already-swapped code with no migration run. Accepted trade: the dump is taken
+# minutes earlier, so a rollback restore is very slightly staler.
+echo "  Backing up database (pre-checkout/pre-migration safety net)..."
 BACKUP_DIR="storage/app/backups"
 mkdir -p "$BACKUP_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -178,6 +174,18 @@ fi
 echo "  Backed up to $BACKUP_FILE ($(du -h "$BACKUP_FILE" | cut -f1))"
 # Retain only the 10 most recent pre-deploy backups.
 ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | tail -n +11 | xargs -r rm -f
+
+echo "  Fast-forwarding to $TARGET (ff-only — a diverged prod checkout FAILS LOUD, no silent merge)..."
+if ! git merge --ff-only "$TARGET"; then
+  echo "  ERROR: cannot fast-forward the production checkout to $TARGET." >&2
+  echo "  The prod checkout has DIVERGED from origin (local commits, or a non-ancestor ref)." >&2
+  echo "  Refusing to merge/rewrite history on production. Inspect 'git status' / 'git log --oneline -5'" >&2
+  echo "  and reconcile manually — do NOT --force. (so-e67m cutover-safety guard.)" >&2
+  exit 1
+fi
+
+echo "  Installing dependencies..."
+composer install --no-dev --optimize-autoloader --quiet
 
 echo "  Running migrations..."
 php artisan migrate --force
