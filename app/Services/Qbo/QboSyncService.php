@@ -865,28 +865,81 @@ class QboSyncService
             return array_values($retired);
         }
 
-        $values = preg_split('/\R|\\\\n/', (string) $retired) ?: [];
+        // ASCII newline forms only, plus the literal two-character `\n` — see
+        // memoLines() for why `\R` is unsafe on UTF-8 memo text.
+        $values = preg_split('/\r\n|\n|\r|\\\\n/', (string) $retired) ?: [];
 
         return array_values($values);
     }
 
     /**
-     * The operator-owned part of a QBO CustomerMemo — every line except the
-     * ones we stamped. Our own stamp is not text to preserve: it is re-derived
-     * from the invoice on every push, so it cannot outlive the reason it was
-     * written (a one-off invoice later attached to a recurring profile, or the
-     * stamping being switched off).
+     * The operator-owned part of a QBO CustomerMemo — every run of lines except
+     * the ones we stamped. Our own stamp is not text to preserve: it is
+     * re-derived from the invoice on every push, so it cannot outlive the
+     * reason it was written (a one-off invoice later attached to a recurring
+     * profile, or the stamping being switched off).
+     *
+     * A configured wording is free-form customer-facing prose and nothing
+     * restricts it to one line, so a known wording is matched as a whole BLOCK
+     * of consecutive lines rather than line by line: a multi-line stamp we
+     * failed to recognise would be re-appended by applyCustomerMemoForUpdate on
+     * every push, growing a customer-visible field without bound and never
+     * removable (#736). The longest matching block wins, so a wording that
+     * begins with another known wording is still consumed whole. Individual
+     * lines of a multi-line wording are never strip targets on their own —
+     * fragments must not delete operator-typed text.
      */
     private function stripSkipMemos(string $memo): string
     {
-        $known = $this->knownSkipMemos();
+        $known = [];
+        foreach ($this->knownSkipMemos() as $value) {
+            $block = array_map('trim', $this->memoLines($value));
+            if ($block !== []) {
+                $known[] = $block;
+            }
+        }
 
-        $kept = array_filter(
-            preg_split('/\R/', $memo) ?: [],
-            fn (string $line): bool => ! in_array(trim($line), $known, true),
-        );
+        $lines = $this->memoLines($memo);
+        $trimmed = array_map('trim', $lines);
+        $kept = [];
+
+        for ($i = 0, $count = count($lines); $i < $count;) {
+            $matched = 0;
+            foreach ($known as $block) {
+                $length = count($block);
+                if ($length > $matched && array_slice($trimmed, $i, $length) === $block) {
+                    $matched = $length;
+                }
+            }
+
+            if ($matched > 0) {
+                $i += $matched;
+
+                continue;
+            }
+
+            $kept[] = $lines[$i];
+            $i++;
+        }
 
         return trim(implode("\n", $kept));
+    }
+
+    /**
+     * Memo text split into lines on the ASCII newline forms only. PCRE's `\R`
+     * without the `u` modifier also matches the lone byte 0x85 (NEL), which is
+     * a legal UTF-8 continuation byte (`Å` is 0xC3 0x85), so it splits ordinary
+     * operator text mid-character — and the pieces are rejoined and posted back
+     * as the whole customer-visible memo. Adding `u` would fix the split but
+     * makes preg_split return false on any non-UTF-8 memo, i.e. wipe it; CR and
+     * LF bytes never occur inside a UTF-8 multi-byte sequence, so this class is
+     * correct either way.
+     *
+     * @return list<string>
+     */
+    private function memoLines(string $text): array
+    {
+        return preg_split('/\r\n|\n|\r/', $text) ?: [];
     }
 
     /**
