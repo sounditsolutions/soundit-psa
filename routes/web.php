@@ -420,7 +420,9 @@ Route::middleware('auth')->group(function () {
     // PowerDMARC credentials + Domain Mapping (writes the client_powerdmarc_domains pivot — a client may map to several domains)
     Route::get('/settings/integrations/powerdmarc/domains', [\App\Http\Controllers\Web\PowerDmarcDomainController::class, 'index'])->name('settings.powerdmarc-domains.index');
     Route::post('/settings/integrations/powerdmarc/domains', [\App\Http\Controllers\Web\PowerDmarcDomainController::class, 'update'])->name('settings.powerdmarc-domains.update');
-    Route::get('/settings/integrations/powerdmarc/domains/auto-match', [\App\Http\Controllers\Web\PowerDmarcDomainController::class, 'autoMatch'])->name('settings.powerdmarc-domains.auto-match');
+    // Auto-match WRITES pivot rows, so it is a POST under the web group's CSRF
+    // middleware — a GET here is forgeable by an <img> tag or a link prefetcher.
+    Route::post('/settings/integrations/powerdmarc/domains/auto-match', [\App\Http\Controllers\Web\PowerDmarcDomainController::class, 'autoMatch'])->name('settings.powerdmarc-domains.auto-match');
     Route::post('/settings/integrations/powerdmarc', [IntegrationsController::class, 'updatePowerDmarc'])->name('settings.integrations.powerdmarc.update');
     Route::post('/settings/integrations/powerdmarc/test', [IntegrationsController::class, 'testPowerDmarc'])->name('settings.integrations.powerdmarc.test');
 

@@ -56,6 +56,15 @@ class PowerDmarcClient
     /** Documented values for the aggregate per-sending-source `status` parameter. */
     public const AGGREGATE_STATUSES = ['compliant', 'failed', 'forwarded'];
 
+    /**
+     * Upper bound on a 429 backoff sleep. Retry-After is server-supplied (and the
+     * base URL is an operator-settable override), while this client runs
+     * synchronously inside web page loads, mapping saves and MCP tool calls — so
+     * honoring an arbitrary header would pin a php-fpm worker and the session lock
+     * for as long as the vendor asks.
+     */
+    private const MAX_RETRY_SLEEP_SECONDS = 5;
+
     private Client $http;
 
     /**
@@ -303,6 +312,10 @@ class PowerDmarcClient
                             $retryAfter = (int) $header;
                         }
                     }
+                    // CLAMP the server-controlled wait (see MAX_RETRY_SLEEP_SECONDS):
+                    // a rate-limited account must cost a bounded wait and then a loud
+                    // error, never a request that hangs for minutes or hours.
+                    $retryAfter = max(0, min($retryAfter, self::MAX_RETRY_SLEEP_SECONDS));
                     Log::info("[PowerDmarcClient] Rate limited on {$endpoint}, retrying in {$retryAfter}s");
                     if ($retryAfter > 0) {
                         sleep($retryAfter);

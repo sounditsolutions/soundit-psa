@@ -98,7 +98,7 @@ class PowerDmarcReadOnlyToolset
             ],
             [
                 'name' => 'powerdmarc_get_aggregate_summary',
-                'description' => "DMARC aggregate (RUA) report volumes per sending source for a mapped client's domain over a date range, as parsed and stored by PowerDMARC: sending organization, message volume, DMARC pass/fail counts and percentages, and SPF/DKIM alignment percentages. Use this to answer 'who is sending as this domain and is it passing DMARC'. Dates are YYYY-MM-DD. status is one of compliant, failed or forwarded; omit it to get all three grouped by status.",
+                'description' => "DMARC aggregate (RUA) report volumes per sending source for a mapped client's domain over a date range, as parsed and stored by PowerDMARC: sending organization, message volume, DMARC pass/fail counts and percentages, and SPF/DKIM alignment percentages. Use this to answer 'who is sending as this domain and is it passing DMARC'. Dates are YYYY-MM-DD. status is one of compliant, failed or forwarded; omit it to get all three grouped by status. Sending sources are PAGED (50 per page): every result carries `page` metadata, and when page.current_page is below page.last_page there are more sending sources — fetch them with the `page` argument before concluding a source is absent.",
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -107,6 +107,7 @@ class PowerDmarcReadOnlyToolset
                         'from' => ['type' => 'string', 'description' => 'Start date, YYYY-MM-DD.'],
                         'to' => ['type' => 'string', 'description' => 'End date, YYYY-MM-DD.'],
                         'status' => ['type' => 'string', 'description' => "Optional compliance filter: 'compliant', 'failed' or 'forwarded'. Omit to get all three grouped by status."],
+                        'page' => ['type' => 'integer', 'description' => 'Page number of the sending-source listing (default 1). 50 sources per page — check the returned `page` metadata and fetch further pages while current_page is below last_page.'],
                     ],
                     'required' => ['client_id', 'from', 'to'],
                 ],
@@ -275,12 +276,13 @@ class PowerDmarcReadOnlyToolset
         }
 
         $statuses = $status !== '' ? [$status] : PowerDmarcClient::AGGREGATE_STATUSES;
+        $page = $this->positiveInt($input['page'] ?? null) ?? 1;
 
         $byStatus = [];
         try {
             foreach ($statuses as $wanted) {
                 $response = $this->client()->getAggregatePerSendingSource(
-                    $mapping->powerdmarc_domain_id, $from, $to, $wanted,
+                    $mapping->powerdmarc_domain_id, $from, $to, $wanted, page: $page,
                 );
 
                 $sources = [];
@@ -297,7 +299,16 @@ class PowerDmarcReadOnlyToolset
                     ];
                 }
 
-                $byStatus[$wanted] = ['count' => count($sources), 'sources' => $sources];
+                // Paging state rides along ALWAYS. The listing is capped at 50
+                // sending sources per page, so without it a domain with more
+                // sources would answer "who is sending as this domain" with a
+                // silently truncated list wearing a success shape — the same
+                // partial-as-success this read refuses below for a failed group.
+                $byStatus[$wanted] = [
+                    'count' => count($sources),
+                    'sources' => $sources,
+                    'page' => $this->pageMeta($response),
+                ];
             }
         } catch (\Throwable $e) {
             // One failed status query fails the whole read — a grouped answer

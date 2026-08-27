@@ -57,6 +57,18 @@ class PowerDmarcDomainController extends Controller
 
         $allClients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
+        // A client that has LEFT the operational() scope (inactive, prospect, …)
+        // can still hold mappings. It must stay in the dropdown: otherwise its row
+        // renders '— Not mapped —' while the Status column says 'Mapped', and the
+        // next save of ANY row posts '' for it and silently deletes the mapping.
+        $missingClientIds = $mappedClients->pluck('id')->diff($allClients->pluck('id'));
+        if ($missingClientIds->isNotEmpty()) {
+            $allClients = $allClients
+                ->concat(Client::whereIn('id', $missingClientIds->all())->get(['id', 'name']))
+                ->sortBy('name')
+                ->values();
+        }
+
         return view('settings.powerdmarc-domains', [
             'domains' => $domains,
             'mappedClients' => $mappedClients,
@@ -90,24 +102,31 @@ class PowerDmarcDomainController extends Controller
                 ->with('error', "Could not save mappings — the PowerDMARC domain listing failed ({$e->getMessage()}). Existing mappings were left untouched.");
         }
 
-        $skipped = [];
+        // A domain that dropped out of the live listing between render and save
+        // cannot be re-asserted (its name is unverifiable) — so it must not be
+        // DELETED either. Wiping a row we then refuse to rewrite would destroy a
+        // mapping under a success flash. Only still-visible domains are re-asserted.
+        $visible = $submitted->keys()->filter(fn ($domainId) => isset($domains[(string) $domainId]));
+        $skipped = $selected->keys()
+            ->reject(fn ($domainId) => isset($domains[(string) $domainId]))
+            ->map(fn ($domainId) => (string) $domainId)
+            ->values()
+            ->all();
 
-        DB::transaction(function () use ($submitted, $selected, $domains, &$skipped) {
-            // Re-assert only the domains shown in this form: drop their current
-            // pivot rows, then insert the chosen ones. Deleting by domain id (the
-            // pivot is not soft-deleted) also clears a row held by a soft-deleted
-            // client, so remapping that domain to a live client cannot collide on
-            // the UNIQUE.
-            ClientPowerdmarcDomain::whereIn('powerdmarc_domain_id', $submitted->keys()->all())->delete();
+        DB::transaction(function () use ($visible, $selected, $domains) {
+            // Re-assert only the domains shown in this form AND still visible to
+            // the API key: drop their current pivot rows, then insert the chosen
+            // ones. Deleting by domain id (the pivot is not soft-deleted) also
+            // clears a row held by a soft-deleted client, so remapping that domain
+            // to a live client cannot collide on the UNIQUE.
+            ClientPowerdmarcDomain::whereIn('powerdmarc_domain_id', $visible->all())->delete();
 
             foreach ($selected as $domainId => $clientId) {
                 $domain = $domains[(string) $domainId] ?? null;
 
                 if ($domain === null) {
-                    // Submitted for a domain the API key can no longer see —
-                    // writing it would store a name we cannot verify. Skip and say so.
-                    $skipped[] = (string) $domainId;
-
+                    // No longer visible: its existing mapping was deliberately
+                    // excluded from the delete above, so it survives untouched.
                     continue;
                 }
 
@@ -121,7 +140,7 @@ class PowerDmarcDomainController extends Controller
 
         $message = 'Saved '.($selected->count() - count($skipped)).' PowerDMARC domain mapping(s).';
         if ($skipped !== []) {
-            $message .= ' Skipped '.count($skipped).' domain(s) no longer visible to this API key: '.implode(', ', $skipped).'.';
+            $message .= ' Skipped '.count($skipped).' domain(s) no longer visible to this API key: '.implode(', ', $skipped).'. Any existing mapping for those domains was left untouched.';
         }
 
         return redirect()->route('settings.powerdmarc-domains.index')

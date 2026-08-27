@@ -265,8 +265,9 @@ class PowerDmarcDomainMappingTest extends TestCase
             ]),
         ]);
 
+        // Auto-match is a state-changing write, so it rides a CSRF-protected POST.
         $this->actingAs($this->user)
-            ->get(route('settings.powerdmarc-domains.auto-match'))
+            ->post(route('settings.powerdmarc-domains.auto-match'))
             ->assertRedirect(route('settings.powerdmarc-domains.index'))
             ->assertSessionHas('success', fn (string $message) => str_contains($message, '1'));
 
