@@ -202,6 +202,26 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
         $this->assertArrayNotHasKey('CustomerMemo', $posts[0]);
     }
 
+    public function test_create_does_not_stamp_a_wording_with_a_literal_backslash_n_blank_line(): void
+    {
+        // phpdotenv does not expand \n, so a wording written per the .env
+        // docs arrives carrying the two literal characters. retiredSkipMemos()
+        // folds them into real line breaks before splitting, so literal \n\n
+        // IS the retired-list separator — this wording could never be retired
+        // as itself and folding would arm "Pay by check or portal." as its own
+        // strip target. The guard must fold identically and refuse it exactly
+        // like a real blank line.
+        config(['billing.qbo_nonrecurring_skip_memo' => 'Not auto-charged.\n\nPay by check or portal.']);
+        $invoice = $this->makeInvoice();
+        $posts = [];
+        $this->mockQboClient($posts);
+
+        app(QboSyncService::class)->pushInvoiceToQbo($invoice);
+
+        $this->assertCount(1, $posts);
+        $this->assertArrayNotHasKey('CustomerMemo', $posts[0]);
+    }
+
     // ── UPDATE path ──
 
     public function test_update_removes_a_blank_line_wording_whole_and_never_strips_its_halves(): void
