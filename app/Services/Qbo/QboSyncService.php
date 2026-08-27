@@ -832,7 +832,7 @@ class QboSyncService
 
         // trim() already removed leading/trailing blank lines, so any blank
         // line left is an interior one — the retired-list separator.
-        foreach ($this->memoLines($memo) as $line) {
+        foreach ($this->memoLines(str_replace('\n', "\n", $memo)) as $line) {
             if (trim($line) === '') {
                 Log::warning('[QboSync] Skip memo wording contains a blank line, which the retired list cannot represent — not stamping', [
                     'invoice_id' => $invoice->id,
