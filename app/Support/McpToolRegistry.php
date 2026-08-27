@@ -24,6 +24,21 @@ class McpToolRegistry
     private static array $memoized = [];
 
     /**
+     * Reads that serve RAW FILE BYTES into agent context (psa-688). The staff MCP gate
+     * takes its explicit-grant list from here (McpStaffController::RAW_FILE_CONTENT_EXPLICIT_GRANT_TOOLS),
+     * and groups() marks exactly these tools sensitive in their own tier, so the gate and
+     * the operator grant catalog state the same thing: the operator grants them by name.
+     *
+     * NOT a blocklist — everything here stays fully grantable; it just may never arrive
+     * by default, nor inside a non-sensitive tier's bulk "Grant shown" (psa-lulgh).
+     *
+     * @var array<int, string>
+     */
+    public const RAW_FILE_CONTENT_TOOLS = [
+        'get_ticket_attachment',
+    ];
+
+    /**
      * @return array<string, array{label: string, sensitive: bool, tools: array<int, array{name: string, description: string}>}>
      */
     public static function groups(): array
@@ -56,6 +71,16 @@ class McpToolRegistry
                     && ! isset($integrationNames[$tool['name']])
                     && ! isset($psaActionNames[$tool['name']]),
             ));
+
+            // Split the raw-file-content reads out of the client-scoped tier so the grant
+            // catalog shows them as SENSITIVE (psa-688). They are explicit-grant-only at the
+            // gate, and a tool sitting in the non-sensitive "Read" tier is granted by the
+            // tier's bulk "Grant shown" button in one silent batch click — which is exactly
+            // the by-name decision the gate says the operator must make (psa-lulgh: a
+            // mislabelled tier is how an operator grants a capability believing it is a read).
+            $rawFileNames = array_flip(self::RAW_FILE_CONTENT_TOOLS);
+            $rawFileContent = array_values(array_filter($client, fn (array $t): bool => isset($rawFileNames[$t['name']])));
+            $client = array_values(array_filter($client, fn (array $t): bool => ! isset($rawFileNames[$t['name']])));
 
             $bridge = self::shape(OperatorBridgeTools::definitions());
             $wikiWrites = self::shape([self::wikiAddFactTool(), self::wikiCreatePageTool(), self::wikiUpdatePageTool()]);
@@ -93,6 +118,7 @@ class McpToolRegistry
                 'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],
                 'psa_records' => ['label' => 'PSA records — clients, people, assets (sensitive)', 'sensitive' => true, 'tools' => $psaRecords],
                 'psa_read' => ['label' => 'PSA reads (sensitive)', 'sensitive' => true, 'tools' => $psaRead],
+                'psa_raw_file' => ['label' => 'PSA attachment content (sensitive)', 'sensitive' => true, 'tools' => $rawFileContent],
                 'intake_manage' => ['label' => 'Intake email/call manage (sensitive)', 'sensitive' => true, 'tools' => $intakeManage],
                 'taxonomy' => ['label' => 'Ticket taxonomy & SOPs (sensitive)', 'sensitive' => true, 'tools' => $taxonomy],
                 'calendar' => ['label' => 'Calendar & scheduling reads (sensitive)', 'sensitive' => true, 'tools' => $calendar],
@@ -142,6 +168,9 @@ class McpToolRegistry
                 'psa_action' => ['psa', 'write', 'Write & act', 2],
                 'psa_records' => ['psa', 'write', 'Write & act', 2],
                 'psa_read' => ['psa', 'read', 'Reads', 3],
+                // Its own tier key, never merged into 'read': the tier flag is what drives the
+                // shield styling and the bulk-grant confirmation on the token page (psa-688).
+                'psa_raw_file' => ['psa', 'raw_file', 'Attachment content', 5],
                 'intake_manage' => ['psa', 'write', 'Write & act', 2],
                 'taxonomy' => ['psa', 'taxonomy', 'Taxonomy & SOPs', 4],
                 'calendar' => ['calendar', 'read', 'Reads', 1],

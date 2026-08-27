@@ -16,7 +16,7 @@ class McpToolRegistryTest extends TestCase
     {
         $groups = McpToolRegistry::groups();
 
-        $this->assertSame(['general', 'client', 'integration', 'cipp_write', 'cipp_admin', 'tactical_action', 'tactical_admin', 'huntress_action', 'wiki_write', 'psa_action', 'psa_records', 'psa_read', 'intake_manage', 'taxonomy', 'calendar', 'calendar_write', 'bridge'], array_keys($groups));
+        $this->assertSame(['general', 'client', 'integration', 'cipp_write', 'cipp_admin', 'tactical_action', 'tactical_admin', 'huntress_action', 'wiki_write', 'psa_action', 'psa_records', 'psa_read', 'psa_raw_file', 'intake_manage', 'taxonomy', 'calendar', 'calendar_write', 'bridge'], array_keys($groups));
 
         $names = fn (string $group): array => array_column($groups[$group]['tools'], 'name');
 
@@ -53,6 +53,9 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('delete_client', $names('psa_records'));
         $this->assertContains('list_client_contracts', $names('psa_read'));
         $this->assertContains('get_contract', $names('psa_read'));
+        // Explicit-grant-only at the gate, so never a plain client-scoped read here (psa-688).
+        $this->assertNotContains('get_ticket_attachment', $names('client'));
+        $this->assertContains('get_ticket_attachment', $names('psa_raw_file'));
         $this->assertContains('link_email_to_ticket', $names('intake_manage'));
         $this->assertContains('create_ticket_from_email', $names('intake_manage'));
         $this->assertContains('dismiss_email_item', $names('intake_manage'));
@@ -71,6 +74,7 @@ class McpToolRegistryTest extends TestCase
         $this->assertTrue($groups['psa_action']['sensitive']);
         $this->assertTrue($groups['psa_records']['sensitive']);
         $this->assertTrue($groups['psa_read']['sensitive']);
+        $this->assertTrue($groups['psa_raw_file']['sensitive']);
         $this->assertTrue($groups['intake_manage']['sensitive']);
         $this->assertTrue($groups['taxonomy']['sensitive']);
         $this->assertTrue($groups['calendar']['sensitive']);
@@ -264,5 +268,34 @@ class McpToolRegistryTest extends TestCase
         $this->assertTrue($flags['cipp_convert_mailbox'] ?? true, 'cipp tools only render when configured');
         $this->assertFalse($flags['create_ticket']);
         $this->assertFalse($flags['find_clients'] ?? false);
+    }
+
+    /**
+     * psa-688: raw-file-content reads are explicit-grant-only at the gate
+     * (McpStaffController::RAW_FILE_CONTENT_EXPLICIT_GRANT_TOOLS, which takes its names
+     * from McpToolRegistry::RAW_FILE_CONTENT_TOOLS), so the operator grant catalog must
+     * render them as SENSITIVE in their own tier — never inside the PSA "Read" tier,
+     * whose "Grant shown" bulk button would make that by-name decision in one silent
+     * batch click (psa-lulgh: a mislabelled tier is how an operator grants a capability
+     * believing it is an ordinary read).
+     *
+     * BOTH flags are asserted because the token page reads them for different things:
+     * the TIER flag drives the shield styling and the bulk-grant confirmation, the TOOL
+     * flag drives the per-tool "Sensitive" badge and the sensitive-enabled counter.
+     */
+    public function test_raw_file_content_reads_render_as_a_sensitive_tier_not_a_plain_read(): void
+    {
+        $tiers = collect(McpToolRegistry::integrationGroups()['psa']['tiers']);
+
+        foreach (McpToolRegistry::RAW_FILE_CONTENT_TOOLS as $name) {
+            $tier = $tiers->first(fn (array $t): bool => in_array($name, array_column($t['tools'], 'name'), true));
+
+            $this->assertNotNull($tier, "{$name} must render on the PSA card");
+            $this->assertTrue($tier['sensitive'], "{$name} must sit in a sensitive tier — the bulk-grant confirmation is driven by the tier flag");
+            $this->assertTrue(
+                collect($tier['tools'])->firstWhere('name', $name)['sensitive'],
+                "{$name} must carry the Sensitive badge",
+            );
+        }
     }
 }

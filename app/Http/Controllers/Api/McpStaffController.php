@@ -131,6 +131,27 @@ class McpStaffController extends Controller
         'cipp_list_tenant_mailbox_rules',
     ];
 
+    /**
+     * Reads that serve RAW FILE BYTES into agent context: explicit grant only,
+     * never auto-inherited by the legacy full-surface token (psa-688). Same
+     * posture as CIPP_EXPLICIT_GRANT_READ_TOOLS above — NOT a blocklist,
+     * everything here stays fully grantable; it just cannot arrive by default.
+     *
+     * The bar for adding a name here is the RETURN SHAPE, not sensitivity:
+     * the tool hands back file content (bytes, base64, raw documents) rather
+     * than records — content whose nature nobody controls, because it is
+     * whatever a client or operator ever attached. A tool that returns
+     * sensitive FIELDS does not belong here; the per-token grant covers it.
+     *
+     * The names live in {@see McpToolRegistry::RAW_FILE_CONTENT_TOOLS} so this gate and
+     * the OPERATOR GRANT CATALOG cannot disagree: the registry marks exactly these tools
+     * sensitive and gives them their own tier, because a decision this branch says must
+     * be made BY NAME must not also be makeable by a bulk "Grant shown" click on a tier
+     * labelled "Read" (psa-lulgh — a mislabelled tier is how an operator grants a
+     * capability believing it is an ordinary read).
+     */
+    private const RAW_FILE_CONTENT_EXPLICIT_GRANT_TOOLS = McpToolRegistry::RAW_FILE_CONTENT_TOOLS;
+
     private const WIKI_WRITE_TOOLS = [
         'wiki_add_fact',
         'wiki_create_page',
@@ -2321,6 +2342,13 @@ class McpStaffController extends Controller
         // the only one that gates a CURATED READ — a reader scanning for "why doesn't the
         // legacy token get this?" will look here before the write families.
         if (in_array($toolName, self::CIPP_EXPLICIT_GRANT_READ_TOOLS, true)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
+        // Raw-file-content reads (psa-688): explicit grant only, never auto-inherited
+        // by the legacy full-surface token. Attachment bytes flow straight into agent
+        // context, so the operator grants this by name or not at all.
+        if (in_array($toolName, self::RAW_FILE_CONTENT_EXPLICIT_GRANT_TOOLS, true)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 
