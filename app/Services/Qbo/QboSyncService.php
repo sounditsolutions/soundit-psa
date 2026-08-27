@@ -866,6 +866,23 @@ class QboSyncService
     }
 
     /**
+     * The one-line form a release before the folding fix stamped for this
+     * wording: the value as phpdotenv delivered it, with the two literal
+     * characters `\n` still standing where the line breaks are now. Stamps in
+     * that form sit on open invoices right now, and no configured value can
+     * express them any more — every reader folds — so they are recognised here
+     * instead of becoming permanent, with no rotation for ops to perform.
+     * Matched only, never stamped: what we write is always the folded form,
+     * and this variant is exactly the text this app itself wrote, so it can no
+     * more swallow operator-typed lines than the folded form already does
+     * (#736).
+     */
+    private function unfoldedSkipMemoForm(string $value): string
+    {
+        return trim(str_replace("\n", '\n', $value));
+    }
+
+    /**
      * Every skip memo this app may have stamped: the configured one plus the
      * retired values ops rotated out. A stamp is only removable while we can
      * still recognise it, so clearing or rotating the configured wording
@@ -886,8 +903,17 @@ class QboSyncService
 
         foreach (array_merge([$configured], $retired) as $value) {
             $value = trim((string) $value);
-            if ($value !== '' && ! in_array($value, $known, true)) {
-                $known[] = $value;
+
+            // Both forms of every wording: the folded one we stamp now, and
+            // the one-line form a release before the folding fix stamped for
+            // the same configured value. Recognising only the folded one would
+            // read a legacy stamp as operator text and append the new stamp
+            // beside it on the next push, growing a customer-visible field
+            // that no configuration can prune (#736).
+            foreach ([$value, $this->unfoldedSkipMemoForm($value)] as $form) {
+                if ($form !== '' && ! in_array($form, $known, true)) {
+                    $known[] = $form;
+                }
             }
         }
 
@@ -924,7 +950,14 @@ class QboSyncService
     private function retiredSkipMemos(mixed $retired): array
     {
         if (is_array($retired)) {
-            return array_values($retired);
+            // Folded exactly like the string path: every reader of a
+            // configured wording must fold identically, and an entry pasted
+            // here from the env value carries the same literal `\n` — listed
+            // unfolded it would never match the folded stamp (#736).
+            return array_values(array_map(
+                fn (mixed $value): string => $this->foldEscapedNewlines((string) $value),
+                $retired
+            ));
         }
 
         $text = $this->foldEscapedNewlines((string) $retired);
