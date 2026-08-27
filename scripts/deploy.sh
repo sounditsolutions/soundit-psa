@@ -195,22 +195,49 @@ fi
 echo "  Installing dependencies..."
 composer install --no-dev --optimize-autoloader --quiet
 
-# We are about to migrate, so this attempt's dump is now a genuine pre-migration
-# restore point: promote it out of attempt-* into pre-deploy-* and retain only
-# the 10 most recent. Promoting BEFORE migrate rather than after a zero exit is
-# deliberate and load-bearing: on MySQL/MariaDB DDL is implicitly committed per
-# statement, so a migration that fails part-way leaves prod partially migrated
-# and this dump is the ONLY clean pre-migration snapshot — exactly the one that
-# must not be left in attempt-*, where the count-based prune would evict it
-# after 10 further attempts (and a failed migration is precisely what generates
-# a rapid pile of retries). Attempts that abort earlier — at the ff-only guard
-# or at composer, with the database untouched — never reach this line, so they
-# still cannot occupy a retention slot here or push a real backup off the end.
-mv "$BACKUP_FILE" "$BACKUP_DIR/pre-deploy-${BACKUP_FILE#$BACKUP_DIR/attempt-}"
-BACKUP_FILE="$BACKUP_DIR/pre-deploy-${BACKUP_FILE#$BACKUP_DIR/attempt-}"
+# We are about to migrate, so this attempt's dump may be a genuine pre-migration
+# restore point — but ONLY if the database is actually still pre-migration.
+# Promoting BEFORE migrate rather than after a zero exit is deliberate and
+# load-bearing: on MySQL/MariaDB DDL is implicitly committed per statement, so a
+# migration that fails part-way leaves prod partially migrated and that dump is
+# the ONLY clean pre-migration snapshot — exactly the one that must not be left
+# in attempt-*, where the count-based prune would evict it after 10 further
+# attempts (and a failed migration is precisely what generates a rapid pile of
+# retries). But those same retries dump an ALREADY-DIRTY database, so promoting
+# them unconditionally would (a) put snapshots of the half-applied schema into
+# the namespace an operator restores from, indistinguishable by name or content
+# from real ones, and (b) fill all 10 retention slots so the next successful
+# prune evicts the one clean snapshot. Promotion is therefore gated on the
+# marker below: it is written immediately before migrate and removed only after
+# migrate exits zero, so its presence means "the last migrate did not finish —
+# this database is not a clean pre-migration state". Dirty attempts stay in
+# attempt-*, which is pruned on every attempt, so a retry storm can neither grow
+# storage/app/backups without limit nor add to (or evict from) pre-deploy-*.
+# Attempts that abort earlier — at the ff-only guard or at composer, with the
+# database untouched — never reach this line either.
+MIGRATE_MARKER="$BACKUP_DIR/.migrate-incomplete"
+if [ -e "$MIGRATE_MARKER" ]; then
+  RESTORE_POINT="$(ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | head -1)"
+  echo "  WARNING: a previous migrate did not complete ($(cat "$MIGRATE_MARKER" 2>/dev/null))." >&2
+  echo "  The database may be PARTIALLY MIGRATED, so this attempt's dump is NOT a clean" >&2
+  echo "  pre-migration snapshot — leaving it in attempt-* as $BACKUP_FILE." >&2
+  echo "  Clean restore point remains: ${RESTORE_POINT:-NONE FOUND — do not restore blind}" >&2
+else
+  mv "$BACKUP_FILE" "$BACKUP_DIR/pre-deploy-${BACKUP_FILE#$BACKUP_DIR/attempt-}"
+  BACKUP_FILE="$BACKUP_DIR/pre-deploy-${BACKUP_FILE#$BACKUP_DIR/attempt-}"
+  RESTORE_POINT="$BACKUP_FILE"
+fi
 
-echo "  Running migrations (restore point: $BACKUP_FILE)..."
+echo "  Running migrations (restore point: $RESTORE_POINT)..."
+# Written BEFORE migrate and cleared only on a zero exit: under set -e a failed
+# migrate leaves it in place, and that is what gates the next attempt's promotion.
+echo "$TARGET @ $STAMP" > "$MIGRATE_MARKER"
 php artisan migrate --force
+rm -f "$MIGRATE_MARKER"
+# Still only after a successful migrate: an unsuccessful deploy must never delete
+# from the retained namespace. It stays bounded because an unsuccessful deploy can
+# now add at most one entry (the first attempt, taken on a clean database) before
+# the marker shuts promotion off for every retry that follows.
 ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | tail -n +11 | xargs -r rm -f
 
 echo "  Caching config/routes/views..."
