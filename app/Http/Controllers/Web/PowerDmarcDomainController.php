@@ -107,8 +107,18 @@ class PowerDmarcDomainController extends Controller
         // DELETED either. Wiping a row we then refuse to rewrite would destroy a
         // mapping under a success flash. Only still-visible domains are re-asserted.
         $visible = $submitted->keys()->filter(fn ($domainId) => isset($domains[(string) $domainId]));
-        $skipped = $selected->keys()
-            ->reject(fn ($domainId) => isset($domains[(string) $domainId]))
+
+        // EVERY submitted domain that dropped out of the listing — not only the
+        // ones still carrying a client. A row the operator set back to
+        // '— Not mapped —' is excluded from the delete above along with the
+        // rest, so its mapping SURVIVES; reporting only the still-selected ones
+        // would drop an explicit revoke under a green "Saved N" flash, and the
+        // row is gone from the reload too, so the operator could never see it.
+        $unresolvable = $submitted->reject(fn ($clientId, $domainId) => isset($domains[(string) $domainId]));
+        $skipped = $unresolvable->keys()->map(fn ($domainId) => (string) $domainId)->values()->all();
+        $revoked = $unresolvable
+            ->filter(fn ($clientId) => $clientId === '')
+            ->keys()
             ->map(fn ($domainId) => (string) $domainId)
             ->values()
             ->all();
@@ -138,9 +148,22 @@ class PowerDmarcDomainController extends Controller
             }
         });
 
-        $message = 'Saved '.($selected->count() - count($skipped)).' PowerDMARC domain mapping(s).';
+        // Saved = the rows actually re-asserted: selected AND still visible.
+        // Deriving it by subtracting $skipped would now under-count, because
+        // $skipped also holds deselections that were never in $selected.
+        $saved = $selected->keys()->filter(fn ($domainId) => isset($domains[(string) $domainId]))->count();
+
+        $message = "Saved {$saved} PowerDMARC domain mapping(s).";
         if ($skipped !== []) {
             $message .= ' Skipped '.count($skipped).' domain(s) no longer visible to this API key: '.implode(', ', $skipped).'. Any existing mapping for those domains was left untouched.';
+        }
+        if ($revoked !== []) {
+            // The operator explicitly asked to UNMAP these and we could not do
+            // it. Say so by name: a silent drop here leaves every powerdmarc_*
+            // read for that client resolving to a domain the key cannot see.
+            $message .= ' NOT unmapped: '.implode(', ', $revoked).' — you cleared the client for '
+                .(count($revoked) === 1 ? 'that domain' : 'those domains')
+                .', but it is no longer in the PowerDMARC listing, so the existing mapping could not be removed and is still in force.';
         }
 
         return redirect()->route('settings.powerdmarc-domains.index')

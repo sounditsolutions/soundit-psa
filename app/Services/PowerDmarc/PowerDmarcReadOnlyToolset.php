@@ -52,6 +52,19 @@ class PowerDmarcReadOnlyToolset
         'powerdmarc_get_dns_timeline',
     ];
 
+    /**
+     * Page sizes this toolset REQUESTS explicitly (they match PowerDmarcClient's
+     * own defaults). They are passed rather than left implicit because
+     * pageMeta()'s has_more fallback measures the returned row count against
+     * them when the vendor answers without a paginator envelope — a silent
+     * drift between the two would turn that completeness signal into a guess.
+     */
+    private const DOMAINS_PER_PAGE = 100;
+
+    private const SOURCES_PER_PAGE = 50;
+
+    private const DNS_CHANGES_PER_PAGE = 50;
+
     public function __construct(
         private readonly ChetDataSurfaceTextSanitizer $textSanitizer,
     ) {}
@@ -98,7 +111,7 @@ class PowerDmarcReadOnlyToolset
             ],
             [
                 'name' => 'powerdmarc_get_aggregate_summary',
-                'description' => "DMARC aggregate (RUA) report volumes per sending source for a mapped client's domain over a date range, as parsed and stored by PowerDMARC: sending organization, message volume, DMARC pass/fail counts and percentages, and SPF/DKIM alignment percentages. Use this to answer 'who is sending as this domain and is it passing DMARC'. Dates are YYYY-MM-DD. status is one of compliant, failed or forwarded; omit it to get all three grouped by status. Sending sources are PAGED (50 per page): every result carries `page` metadata, and when page.current_page is below page.last_page there are more sending sources — fetch them with the `page` argument before concluding a source is absent.",
+                'description' => "DMARC aggregate (RUA) report volumes per sending source for a mapped client's domain over a date range, as parsed and stored by PowerDMARC: sending organization, message volume, DMARC pass/fail counts and percentages, and SPF/DKIM alignment percentages. Use this to answer 'who is sending as this domain and is it passing DMARC'. Dates are YYYY-MM-DD. status is one of compliant, failed or forwarded; omit it to get all three grouped by status. Sending sources are PAGED (50 per page): every result carries `page` metadata whose `page.has_more` boolean is the ONLY completeness signal to trust — this endpoint frequently answers WITHOUT a paginator envelope, so current_page/last_page/total can be null even when more sending sources exist. While page.has_more is true, fetch the next page with the `page` argument before concluding a sending source is absent. Each status group is paged independently upstream, so `page` above 1 REQUIRES `status` — page one group at a time.",
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -107,7 +120,7 @@ class PowerDmarcReadOnlyToolset
                         'from' => ['type' => 'string', 'description' => 'Start date, YYYY-MM-DD.'],
                         'to' => ['type' => 'string', 'description' => 'End date, YYYY-MM-DD.'],
                         'status' => ['type' => 'string', 'description' => "Optional compliance filter: 'compliant', 'failed' or 'forwarded'. Omit to get all three grouped by status."],
-                        'page' => ['type' => 'integer', 'description' => 'Page number of the sending-source listing (default 1). 50 sources per page — check the returned `page` metadata and fetch further pages while current_page is below last_page.'],
+                        'page' => ['type' => 'integer', 'description' => 'Page number of the sending-source listing (default 1). 50 sources per page — fetch further pages while the returned `page.has_more` is true. Requires `status`: each status group is paged independently upstream, so one page number cannot advance all three.'],
                     ],
                     'required' => ['client_id', 'from', 'to'],
                 ],
@@ -173,15 +186,16 @@ class PowerDmarcReadOnlyToolset
         $page = $this->positiveInt($input['page'] ?? null) ?? 1;
 
         try {
-            $response = $this->client()->listDomains(page: $page);
+            $response = $this->client()->listDomains(page: $page, perPage: self::DOMAINS_PER_PAGE);
         } catch (\Throwable $e) {
             return $this->apiError($e);
         }
 
         $mapped = $this->mappedClientsByDomainId();
 
+        $rows = $this->rows($response);
         $domains = [];
-        foreach ($this->rows($response) as $row) {
+        foreach ($rows as $row) {
             $domainId = $this->positiveInt($row['id'] ?? null);
             if ($domainId === null) {
                 continue;
@@ -204,7 +218,7 @@ class PowerDmarcReadOnlyToolset
         return [
             'count' => count($domains),
             'domains' => $domains,
-            'page' => $this->pageMeta($response),
+            'page' => $this->pageMeta($response, $page, self::DOMAINS_PER_PAGE, count($rows)),
         ];
     }
 
@@ -278,11 +292,21 @@ class PowerDmarcReadOnlyToolset
         $statuses = $status !== '' ? [$status] : PowerDmarcClient::AGGREGATE_STATUSES;
         $page = $this->positiveInt($input['page'] ?? null) ?? 1;
 
+        // Each status is an INDEPENDENTLY paged upstream listing with its own
+        // end. One `page` fanned across all three pages past the end of the
+        // shorter groups, which then answer count 0 / sources [] —
+        // indistinguishable from "nothing sends compliantly as this domain".
+        // Refuse instead: past page 1 the caller must name the group it pages.
+        if ($page > 1 && $status === '') {
+            return ['error' => 'page > 1 requires `status`. compliant, failed and forwarded are paged independently by PowerDMARC, so one page number cannot advance all three — re-call with status set to the group you are paging (one of: '.implode(', ', PowerDmarcClient::AGGREGATE_STATUSES).').'];
+        }
+
         $byStatus = [];
         try {
             foreach ($statuses as $wanted) {
                 $response = $this->client()->getAggregatePerSendingSource(
-                    $mapping->powerdmarc_domain_id, $from, $to, $wanted, page: $page,
+                    $mapping->powerdmarc_domain_id, $from, $to, $wanted,
+                    page: $page, perPage: self::SOURCES_PER_PAGE,
                 );
 
                 $sources = [];
@@ -304,10 +328,13 @@ class PowerDmarcReadOnlyToolset
                 // sources would answer "who is sending as this domain" with a
                 // silently truncated list wearing a success shape — the same
                 // partial-as-success this read refuses below for a failed group.
+                // This endpoint returns NO paginator envelope, so the row count
+                // against the requested page size is what makes has_more real
+                // here; nulls alone would read as "complete".
                 $byStatus[$wanted] = [
                     'count' => count($sources),
                     'sources' => $sources,
-                    'page' => $this->pageMeta($response),
+                    'page' => $this->pageMeta($response, $page, self::SOURCES_PER_PAGE, count($sources)),
                 ];
             }
         } catch (\Throwable $e) {
@@ -351,13 +378,16 @@ class PowerDmarcReadOnlyToolset
             }
         }
 
+        $page = $this->positiveInt($input['page'] ?? null) ?? 1;
+
         try {
             $response = $this->client()->getDnsChanges(
                 $mapping->powerdmarc_domain_id,
                 type: trim((string) ($input['type'] ?? '')) ?: null,
                 startDate: trim((string) ($input['start_date'] ?? '')) ?: null,
                 endDate: trim((string) ($input['end_date'] ?? '')) ?: null,
-                page: $this->positiveInt($input['page'] ?? null) ?? 1,
+                page: $page,
+                perPage: self::DNS_CHANGES_PER_PAGE,
             );
         } catch (\Throwable $e) {
             return $this->apiError($e);
@@ -399,7 +429,7 @@ class PowerDmarcReadOnlyToolset
             'domain' => $mapping->domain_name,
             'count' => count($changes),
             'changes' => $changes,
-            'page' => $this->pageMeta($response),
+            'page' => $this->pageMeta($response, $page, self::DNS_CHANGES_PER_PAGE, count($changes)),
         ];
     }
 
@@ -555,20 +585,38 @@ class PowerDmarcReadOnlyToolset
 
     /**
      * Laravel-paginator meta projection ({current_page, last_page, per_page,
-     * total} — shape fact 2).
+     * total} — shape fact 2), PLUS an unambiguous `has_more` verdict.
+     *
+     * NOT every paged endpoint carries the envelope: the aggregate
+     * per-sending-source response is `data` alone (see the vendor payload in
+     * tests/Fixtures/powerdmarc/aggregate_per_sending_source.json). With no
+     * meta every projected field is null, and a "current_page below last_page"
+     * rule reads null < null as "this is the last page" — truncation wearing a
+     * success shape on the one read that answers "who is sending as this
+     * domain". So `has_more` is never null: with meta it is the paginator's own
+     * verdict; without it, a FULL page of rows means more may follow.
      *
      * @param  array<string, mixed>  $response
-     * @return array<string, int|float|null>
+     * @param  int  $requestedPage  the page this call asked for
+     * @param  int  $perPage  the page size this call asked for
+     * @param  int  $rowCount  rows this page actually returned
+     * @return array<string, int|float|bool|null>
      */
-    private function pageMeta(array $response): array
+    private function pageMeta(array $response, int $requestedPage, int $perPage, int $rowCount): array
     {
         $meta = is_array($response['meta'] ?? null) ? $response['meta'] : [];
 
+        $currentPage = $this->numberOrNull($meta['current_page'] ?? null);
+        $lastPage = $this->numberOrNull($meta['last_page'] ?? null);
+
         return [
-            'current_page' => $this->numberOrNull($meta['current_page'] ?? null),
-            'last_page' => $this->numberOrNull($meta['last_page'] ?? null),
-            'per_page' => $this->numberOrNull($meta['per_page'] ?? null),
+            'current_page' => $currentPage ?? $requestedPage,
+            'last_page' => $lastPage,
+            'per_page' => $this->numberOrNull($meta['per_page'] ?? null) ?? $perPage,
             'total' => $this->numberOrNull($meta['total'] ?? null),
+            'has_more' => is_int($currentPage) && is_int($lastPage)
+                ? $currentPage < $lastPage
+                : $rowCount >= $perPage,
         ];
     }
 
