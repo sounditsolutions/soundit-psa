@@ -10,6 +10,14 @@ return [
     // customer-facing text. Null disables stamping entirely.
     'qbo_nonrecurring_skip_memo' => env('QBO_NONRECURRING_SKIP_MEMO'),
 
+    // Skip memos this app stamped in the past (comma-separated). A QBO full
+    // update rewrites CustomerMemo wholesale, so a stamp can only be removed
+    // while we still recognise it: when changing the wording above — or
+    // clearing it to turn stamping off — move the old wording here so
+    // already-stamped open invoices are unstamped on their next push instead
+    // of keeping an autopay exemption nobody can revoke.
+    'qbo_nonrecurring_skip_memo_retired' => env('QBO_NONRECURRING_SKIP_MEMO_RETIRED'),
+
     'quantity_sources' => [
         'per_workstation' => [
             'label' => 'Per Workstation',

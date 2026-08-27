@@ -819,26 +819,72 @@ class QboSyncService
     }
 
     /**
-     * UPDATE-path memo decision. A non-empty CustomerMemo already on the QBO
-     * invoice (manually entered, or a previously stamped token) is echoed back
-     * unchanged — a QBO full update clears omitted writable fields, so leaving
-     * it out of the payload would clobber it. Only when QBO's field is empty
-     * does the skip token apply. Called again after a 409-retry refetch so the
-     * decision always reflects the invoice state the write is based on.
+     * Every skip memo this app may have stamped: the configured one plus the
+     * retired values ops rotated out. A stamp is only removable while we can
+     * still recognise it, so clearing or rotating the configured wording
+     * without listing the old value in `qbo_nonrecurring_skip_memo_retired`
+     * leaves every already-stamped invoice carrying it (#736).
+     *
+     * @return list<string>
+     */
+    private function knownSkipMemos(): array
+    {
+        $retired = config('billing.qbo_nonrecurring_skip_memo_retired', []);
+        $retired = is_array($retired) ? $retired : explode(',', (string) $retired);
+
+        $known = [];
+        foreach (array_merge([config('billing.qbo_nonrecurring_skip_memo', '')], $retired) as $value) {
+            $value = trim((string) $value);
+            if ($value !== '' && ! in_array($value, $known, true)) {
+                $known[] = $value;
+            }
+        }
+
+        return $known;
+    }
+
+    /**
+     * The operator-owned part of a QBO CustomerMemo — every line except the
+     * ones we stamped. Our own stamp is not text to preserve: it is re-derived
+     * from the invoice on every push, so it cannot outlive the reason it was
+     * written (a one-off invoice later attached to a recurring profile, or the
+     * stamping being switched off).
+     */
+    private function stripSkipMemos(string $memo): string
+    {
+        $known = $this->knownSkipMemos();
+
+        $kept = array_filter(
+            preg_split('/\R/', $memo) ?: [],
+            fn (string $line): bool => ! in_array(trim($line), $known, true),
+        );
+
+        return trim(implode("\n", $kept));
+    }
+
+    /**
+     * UPDATE-path memo decision. Operator text already on the QBO invoice is
+     * echoed back — a QBO full update clears omitted writable fields, so
+     * leaving it out would clobber it — and the skip memo is re-derived
+     * alongside it, appended on its own line rather than replacing it or being
+     * displaced by it: a memo someone typed in QBO must not cost a one-off
+     * invoice the autopay exemption the stamp exists to give it (#736).
+     * Conversely a stamp we wrote earlier is stripped before that decision, so
+     * it survives only while the invoice is still non-recurring and the memo
+     * still configured. Called again after a 409-retry refetch so the decision
+     * always reflects the invoice state the write is based on.
      */
     private function applyCustomerMemoForUpdate(array &$qboData, Invoice $invoice, array $currentInvoice): void
     {
-        $existing = trim((string) ($currentInvoice['CustomerMemo']['value'] ?? ''));
+        $memo = $this->stripSkipMemos((string) ($currentInvoice['CustomerMemo']['value'] ?? ''));
 
-        if ($existing !== '') {
-            $qboData['CustomerMemo'] = ['value' => $existing];
-
-            return;
+        if ($skip = $this->nonRecurringSkipMemo($invoice)) {
+            $memo = $memo === '' ? $skip : $memo."\n".$skip;
         }
 
         unset($qboData['CustomerMemo']);
 
-        if ($memo = $this->nonRecurringSkipMemo($invoice)) {
+        if ($memo !== '') {
             $qboData['CustomerMemo'] = ['value' => $memo];
         }
     }

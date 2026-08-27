@@ -29,22 +29,25 @@ use Tests\TestCase;
  * profile-generated recurring ones.
  *
  * The clobber rule: QBO full updates clear omitted writable fields, so the
- * UPDATE path must echo back a non-empty memo already on the QBO invoice
- * (manually entered or previously stamped) and may stamp the token only
- * when QBO's field is empty.
+ * UPDATE path must echo back operator-entered memo text already on the QBO
+ * invoice — and stamp the token alongside it, on its own line, rather than
+ * instead of it. A stamp we wrote earlier is never echoed for its own sake:
+ * it is re-derived on every push from `billing.qbo_nonrecurring_skip_memo`
+ * (recognised via that setting plus `..._retired`), so it disappears when the
+ * invoice becomes recurring or stamping is switched off.
  */
 class QboInvoiceAutopaySkipMemoTest extends TestCase
 {
     use RefreshDatabase;
 
-    private const TOKEN = 'Not auto-charged - pay by check or portal';
+    private const SKIP_MEMO = 'Not auto-charged - pay by check or portal';
 
     private static int $seq = 0;
 
     protected function setUp(): void
     {
         parent::setUp();
-        config(['billing.qbo_nonrecurring_skip_memo' => self::TOKEN]);
+        config(['billing.qbo_nonrecurring_skip_memo' => self::SKIP_MEMO]);
     }
 
     private function makeInvoice(array $attrs = []): Invoice
@@ -136,7 +139,7 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
         app(QboSyncService::class)->pushInvoiceToQbo($invoice);
 
         $this->assertCount(1, $posts);
-        $this->assertSame(['value' => self::TOKEN], $posts[0]['CustomerMemo'] ?? null);
+        $this->assertSame(['value' => self::SKIP_MEMO], $posts[0]['CustomerMemo'] ?? null);
     }
 
     public function test_create_does_not_stamp_a_recurring_invoice(): void
@@ -181,10 +184,11 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
 
     // ── UPDATE path ──
 
-    public function test_update_echoes_back_an_existing_memo_instead_of_the_token(): void
+    public function test_update_stamps_alongside_an_existing_memo_on_a_non_recurring_invoice(): void
     {
         // Manually entered memo in QBO must survive a re-push — a full update
-        // omitting CustomerMemo would clear it, and the token must not replace it.
+        // omitting CustomerMemo would clear it — and it must not cost the
+        // invoice its autopay exemption either. Both end up in the payload.
         $invoice = $this->makeInvoice(['qbo_invoice_id' => '7777', 'status' => InvoiceStatus::Synced]);
         $posts = [];
         $this->mockQboClient($posts, [
@@ -196,7 +200,76 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
         app(QboSyncService::class)->pushInvoiceToQbo($invoice);
 
         $this->assertCount(1, $posts);
-        $this->assertSame(['value' => 'Net 45 per phone agreement'], $posts[0]['CustomerMemo'] ?? null);
+        $this->assertSame(
+            ['value' => "Net 45 per phone agreement\n".self::SKIP_MEMO],
+            $posts[0]['CustomerMemo'] ?? null
+        );
+    }
+
+    public function test_update_does_not_duplicate_an_already_stamped_memo(): void
+    {
+        $invoice = $this->makeInvoice(['qbo_invoice_id' => '7777', 'status' => InvoiceStatus::Synced]);
+        $posts = [];
+        $this->mockQboClient($posts, [
+            'Id' => '7777',
+            'SyncToken' => '2',
+            'CustomerMemo' => ['value' => "Net 45 per phone agreement\n".self::SKIP_MEMO],
+        ]);
+
+        app(QboSyncService::class)->pushInvoiceToQbo($invoice);
+
+        $this->assertCount(1, $posts);
+        $this->assertSame(
+            ['value' => "Net 45 per phone agreement\n".self::SKIP_MEMO],
+            $posts[0]['CustomerMemo'] ?? null
+        );
+    }
+
+    public function test_update_unstamps_an_invoice_that_has_become_recurring(): void
+    {
+        // Stamped while it was a one-off, then attached to a recurring profile:
+        // the stamp must go, or the invoice is excluded from autopay forever.
+        $client = Client::factory()->create(['qbo_customer_id' => 'QBO-CUST-R3']);
+        $profile = $this->makeRecurringProfile($client);
+        $invoice = $this->makeInvoice([
+            'client_id' => $client->id,
+            'profile_id' => $profile->id,
+            'qbo_invoice_id' => '7780',
+            'status' => InvoiceStatus::Synced,
+        ]);
+        $posts = [];
+        $this->mockQboClient($posts, [
+            'Id' => '7780',
+            'SyncToken' => '4',
+            'CustomerMemo' => ['value' => self::SKIP_MEMO],
+        ]);
+
+        app(QboSyncService::class)->pushInvoiceToQbo($invoice);
+
+        $this->assertCount(1, $posts);
+        $this->assertArrayNotHasKey('CustomerMemo', $posts[0]);
+    }
+
+    public function test_update_removes_a_retired_memo_when_stamping_is_switched_off(): void
+    {
+        // Turning the feature off must restore autopay on invoices already
+        // stamped — the old wording is recognised via the retired list.
+        config([
+            'billing.qbo_nonrecurring_skip_memo' => null,
+            'billing.qbo_nonrecurring_skip_memo_retired' => self::SKIP_MEMO,
+        ]);
+        $invoice = $this->makeInvoice(['qbo_invoice_id' => '7781', 'status' => InvoiceStatus::Synced]);
+        $posts = [];
+        $this->mockQboClient($posts, [
+            'Id' => '7781',
+            'SyncToken' => '5',
+            'CustomerMemo' => ['value' => "Ship to warehouse dock B\n".self::SKIP_MEMO],
+        ]);
+
+        app(QboSyncService::class)->pushInvoiceToQbo($invoice);
+
+        $this->assertCount(1, $posts);
+        $this->assertSame(['value' => 'Ship to warehouse dock B'], $posts[0]['CustomerMemo'] ?? null);
     }
 
     public function test_update_stamps_a_non_recurring_invoice_whose_qbo_memo_is_empty(): void
@@ -208,7 +281,7 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
         app(QboSyncService::class)->pushInvoiceToQbo($invoice);
 
         $this->assertCount(1, $posts);
-        $this->assertSame(['value' => self::TOKEN], $posts[0]['CustomerMemo'] ?? null);
+        $this->assertSame(['value' => self::SKIP_MEMO], $posts[0]['CustomerMemo'] ?? null);
     }
 
     public function test_update_does_not_stamp_a_recurring_invoice_with_an_empty_qbo_memo(): void
@@ -234,7 +307,7 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
     {
         // First fetch: empty memo → the payload carries the token. The write
         // 409s; the refetch shows a memo someone just entered in QBO. The
-        // retried write must echo THAT memo, not overwrite it with the token.
+        // retried write must echo THAT memo and keep the token beside it.
         $invoice = $this->makeInvoice(['qbo_invoice_id' => '7779', 'status' => InvoiceStatus::Synced]);
         $posts = [];
 
@@ -264,7 +337,10 @@ class QboInvoiceAutopaySkipMemoTest extends TestCase
         app(QboSyncService::class)->pushInvoiceToQbo($invoice);
 
         $this->assertCount(2, $posts);
-        $this->assertSame(['value' => self::TOKEN], $posts[0]['CustomerMemo'] ?? null);
-        $this->assertSame(['value' => 'Client prefers ACH'], $posts[1]['CustomerMemo'] ?? null);
+        $this->assertSame(['value' => self::SKIP_MEMO], $posts[0]['CustomerMemo'] ?? null);
+        $this->assertSame(
+            ['value' => "Client prefers ACH\n".self::SKIP_MEMO],
+            $posts[1]['CustomerMemo'] ?? null
+        );
     }
 }
