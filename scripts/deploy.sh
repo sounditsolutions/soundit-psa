@@ -217,15 +217,23 @@ composer install --no-dev --optimize-autoloader --quiet
 #     in attempt-* either: if this attempt's own migrate then exits zero, that
 #     dump IS the pre-migration state those migrations applied to, so it is
 #     promoted after migrate under a pre-deploy-postincident-* name (same
-#     retained namespace, honestly labelled as taken after an incomplete run).
+#     retained namespace, honestly labelled as taken after an incomplete run,
+#     and EXCLUDED from the clean-restore-point lookup below — that dump may
+#     capture a half-applied schema, so it must never be the file an operator
+#     is pointed at under the word "clean").
 #     Otherwise it stays in attempt-*, so a retry storm still never adds to or
 #     evicts from pre-deploy-*.
-#   .deploy-incomplete — removed only after the LAST step of the deploy. A
-#     failure after a zero-exit migrate (config:cache, route:cache, view:cache,
-#     chown) leaves the database migrated and this deploy's restore point
-#     already retained, so every retry that follows must not promote again:
-#     without this marker each retry would spend one retention slot and evict a
-#     genuine older restore point.
+#   .deploy-incomplete — written at the MOMENT A DUMP IS PROMOTED (up front, or
+#     after migrate in the postincident case) and removed only after the LAST
+#     step of the deploy. It records "$TARGET @ $STAMP" and the gate below
+#     matches its TARGET against this deploy's, so it means exactly "THIS
+#     deploy's restore point is already retained": every later attempt of the
+#     same deploy must not promote again, including one whose migrate flaked in
+#     between, or each retry would spend another retention slot and evict a
+#     genuine older restore point. Matching on TARGET is what stops a marker
+#     left behind by an abandoned deploy from suppressing promotion for the
+#     next, unrelated one — a mismatched marker is simply overwritten when this
+#     deploy promotes.
 # Attempts that abort earlier — at the ff-only guard or at composer, with the
 # database untouched — never reach this line either.
 MIGRATE_MARKER="$BACKUP_DIR/.migrate-incomplete"
@@ -234,33 +242,46 @@ PROMOTE_AFTER_MIGRATE=""
 # `|| true`: under `set -eo pipefail` an unmatched pre-deploy-* glob makes ls
 # exit 2 and pipefail propagates it, which would kill the deploy right here —
 # an empty retained namespace is exactly the case the warnings below exist for.
-RESTORE_POINT="$(ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | head -1)" || true
-if [ -e "$MIGRATE_MARKER" ]; then
+# The grep drops pre-deploy-postincident-*: those dumps were taken after a
+# migrate that did NOT exit zero, so they may hold a half-applied schema and can
+# never be the file this script announces as the clean restore point. They stay
+# on disk under their own name for an operator who knows what they are.
+RESTORE_POINT="$(ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | grep -v '/pre-deploy-postincident-' | head -1)" || true
+# The "already retained" gate is checked FIRST and matched against THIS deploy's
+# target: once this deploy has a retained restore point, no later attempt of it
+# promotes again, whatever its migrate did in between — a migrate that flakes
+# mid-retry must not buy another retention slot.
+if [ -e "$DEPLOY_MARKER" ] && [ "$(cut -d' ' -f1 "$DEPLOY_MARKER" 2>/dev/null)" = "$TARGET" ]; then
+  echo "  NOTE: an earlier attempt of THIS deploy already retained its pre-migration dump ($(cat "$DEPLOY_MARKER" 2>/dev/null))." >&2
+  echo "  Leaving this attempt's dump in attempt-* as $BACKUP_FILE rather than spending" >&2
+  echo "  another retention slot on every retry." >&2
+  if [ -e "$MIGRATE_MARKER" ]; then
+    echo "  WARNING: the last migrate did not complete ($(cat "$MIGRATE_MARKER" 2>/dev/null)) — the" >&2
+    echo "  database may be PARTIALLY MIGRATED. The restore point below predates this deploy." >&2
+  fi
+  echo "  Clean restore point remains: ${RESTORE_POINT:-NONE FOUND — do not restore blind}" >&2
+elif [ -e "$MIGRATE_MARKER" ]; then
   PROMOTE_AFTER_MIGRATE=1
   echo "  WARNING: a previous migrate did not complete ($(cat "$MIGRATE_MARKER" 2>/dev/null))." >&2
   echo "  The database may be PARTIALLY MIGRATED, so this attempt's dump is NOT a clean" >&2
   echo "  pre-migration snapshot — holding it in attempt-* as $BACKUP_FILE until this" >&2
   echo "  attempt's own migrate succeeds, then retaining it as pre-deploy-postincident-*." >&2
   echo "  Clean restore point remains: ${RESTORE_POINT:-NONE FOUND — do not restore blind}" >&2
-elif [ -e "$DEPLOY_MARKER" ]; then
-  echo "  NOTE: a previous attempt of this deploy did not finish ($(cat "$DEPLOY_MARKER" 2>/dev/null))." >&2
-  echo "  Its migrate exited zero, so the database is already migrated and that attempt's" >&2
-  echo "  pre-migration dump is already retained — leaving this attempt's dump in attempt-*" >&2
-  echo "  as $BACKUP_FILE rather than spending another retention slot on every retry." >&2
-  echo "  Restore point remains: ${RESTORE_POINT:-NONE FOUND — do not restore blind}" >&2
 else
   mv "$BACKUP_FILE" "$BACKUP_DIR/pre-deploy-${BACKUP_FILE#$BACKUP_DIR/attempt-}"
   BACKUP_FILE="$BACKUP_DIR/pre-deploy-${BACKUP_FILE#$BACKUP_DIR/attempt-}"
   RESTORE_POINT="$BACKUP_FILE"
+  # This deploy's restore point is now retained — later attempts of it must not
+  # promote a second dump. Overwrites any marker left by an abandoned deploy.
+  echo "$TARGET @ $STAMP" > "$DEPLOY_MARKER"
 fi
 
 echo "  Running migrations (restore point: ${RESTORE_POINT:-NONE RETAINED — see warning above})..."
-# Both written BEFORE migrate. Under set -e a failed migrate leaves both in
-# place; a zero exit clears only the migrate marker, and the deploy marker is
-# cleared after the last step of the deploy, so a retry following a post-migrate
-# failure still meets a gate and cannot promote a second dump.
+# Written BEFORE migrate. Under set -e a failed migrate leaves it in place; a
+# zero exit clears it. The deploy marker is deliberately NOT written here: it is
+# written at the moment a dump is promoted, so it records "this deploy's restore
+# point is retained" rather than the weaker "this deploy reached migrate".
 echo "$TARGET @ $STAMP" > "$MIGRATE_MARKER"
-echo "$TARGET @ $STAMP" > "$DEPLOY_MARKER"
 php artisan migrate --force
 rm -f "$MIGRATE_MARKER"
 if [ -n "$PROMOTE_AFTER_MIGRATE" ]; then
@@ -272,8 +293,12 @@ if [ -n "$PROMOTE_AFTER_MIGRATE" ]; then
   PROMOTED_FILE="$BACKUP_DIR/pre-deploy-postincident-${BACKUP_FILE#$BACKUP_DIR/attempt-}"
   mv "$BACKUP_FILE" "$PROMOTED_FILE"
   BACKUP_FILE="$PROMOTED_FILE"
-  RESTORE_POINT="$PROMOTED_FILE"
-  echo "  Retained this attempt's dump as $RESTORE_POINT (the pre-migration state the migrations just applied to)."
+  # This deploy's dump is now retained, so no later attempt of it promotes again.
+  echo "$TARGET @ $STAMP" > "$DEPLOY_MARKER"
+  # Deliberately NOT assigned to RESTORE_POINT: it was taken after a migrate that
+  # did not exit zero, so it may hold a half-applied schema and must never be the
+  # file this script hands an operator as the clean restore point.
+  echo "  Retained this attempt's dump as $PROMOTED_FILE (the state those migrations applied to — taken after an INCOMPLETE migrate, so it is NOT a clean pre-migration snapshot)."
 fi
 
 echo "  Caching config/routes/views..."
