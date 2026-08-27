@@ -172,8 +172,11 @@ if [ ! -s "$BACKUP_FILE" ]; then
   exit 1
 fi
 echo "  Backed up to $BACKUP_FILE ($(du -h "$BACKUP_FILE" | cut -f1))"
-# Retain only the 10 most recent pre-deploy backups.
-ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | tail -n +11 | xargs -r rm -f
+# Retention pruning deliberately does NOT run here. This block runs before the
+# ff-only guard, so a deploy that aborts at the guard (or at composer) would
+# otherwise evict real pre-migration restore points from earlier successful
+# deploys, one per retry, while the database is unchanged. The prune runs after
+# migrate instead — see below.
 
 echo "  Fast-forwarding to $TARGET (ff-only — a diverged prod checkout FAILS LOUD, no silent merge)..."
 if ! git merge --ff-only "$TARGET"; then
@@ -189,6 +192,10 @@ composer install --no-dev --optimize-autoloader --quiet
 
 echo "  Running migrations..."
 php artisan migrate --force
+
+# Retain only the 10 most recent pre-deploy backups. Only reached once the
+# migration has actually run, so aborted deploys never consume a retention slot.
+ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | tail -n +11 | xargs -r rm -f
 
 echo "  Caching config/routes/views..."
 php artisan config:cache
