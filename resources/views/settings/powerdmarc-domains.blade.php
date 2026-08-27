@@ -85,6 +85,9 @@
                                 <td>
                                     <select name="mappings[{{ $domain['domain_id'] }}]" class="form-select form-select-sm client-select" data-selected="{{ $mapped?->id }}" aria-label="Mapped client for {{ $domain['name'] }}">
                                         <option value="">&mdash; Not mapped &mdash;</option>
+                                        @foreach($allClients as $client)
+                                            <option value="{{ $client->id }}" @selected($mapped?->id === $client->id)>{{ $client->name }}</option>
+                                        @endforeach
                                     </select>
                                 </td>
                                 <td class="text-center">
@@ -114,20 +117,3 @@
     </div>
 </div>
 @endsection
-
-@push('scripts')
-<script>
-    const clients = @json($allClients->map(fn ($c) => ['id' => $c->id, 'name' => $c->name]));
-
-    document.querySelectorAll('.client-select').forEach(select => {
-        const selected = select.dataset.selected;
-        clients.forEach(c => {
-            const opt = document.createElement('option');
-            opt.value = c.id;
-            opt.textContent = c.name;
-            if (String(c.id) === selected) opt.selected = true;
-            select.appendChild(opt);
-        });
-    });
-</script>
-@endpush

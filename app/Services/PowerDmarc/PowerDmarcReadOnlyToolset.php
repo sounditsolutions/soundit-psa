@@ -714,6 +714,6 @@ class PowerDmarcReadOnlyToolset
     {
         Log::warning('[PowerDMARC reads] query failed', ['error' => $e->getMessage()]);
 
-        return ['error' => 'PowerDMARC query failed: '.mb_substr($e->getMessage(), 0, 200)];
+        return ['error' => 'PowerDMARC query failed: '.$this->textSanitizer->sanitize('PowerDMARC API error', $e->getMessage(), 200)];
     }
 }
