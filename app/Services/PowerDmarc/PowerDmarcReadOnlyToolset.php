@@ -396,8 +396,16 @@ class PowerDmarcReadOnlyToolset
         // SHAPE FACT (PowerDmarcClient fact 3): `data` is an OBJECT keyed by
         // 'd-M-Y' date strings, each holding a LIST of {times, recordInfo}
         // entries. Flatten it into one chronological list an agent can scan.
+        // The PAGED grain is the date-keyed `data` entries themselves — that is
+        // what the requested page size bounds. pageMeta()'s has_more fallback
+        // measures "rows this page actually returned" against perPage, so the
+        // FLATTENED change count must not be handed to it: a full page whose
+        // date groups flatten below perPage would answer has_more:false and
+        // report truncation as completeness.
+        $dataRows = is_array($response['data'] ?? null) ? $response['data'] : [];
+
         $changes = [];
-        foreach ((array) ($response['data'] ?? []) as $date => $entries) {
+        foreach ($dataRows as $date => $entries) {
             if (! is_array($entries)) {
                 continue;
             }
@@ -429,7 +437,7 @@ class PowerDmarcReadOnlyToolset
             'domain' => $mapping->domain_name,
             'count' => count($changes),
             'changes' => $changes,
-            'page' => $this->pageMeta($response, $page, self::DNS_CHANGES_PER_PAGE, count($changes)),
+            'page' => $this->pageMeta($response, $page, self::DNS_CHANGES_PER_PAGE, count($dataRows)),
         ];
     }
 

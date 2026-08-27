@@ -116,12 +116,27 @@ class PowerDmarcDomainController extends Controller
         // row is gone from the reload too, so the operator could never see it.
         $unresolvable = $submitted->reject(fn ($clientId, $domainId) => isset($domains[(string) $domainId]));
         $skipped = $unresolvable->keys()->map(fn ($domainId) => (string) $domainId)->values()->all();
-        $revoked = $unresolvable
+        // A revoke is only real if there is a mapping left to survive it. The
+        // form posts '' for every untouched '— Not mapped —' row as well as for
+        // a deliberate deselection, so filtering on the posted value alone would
+        // report every never-mapped domain that merely dropped out of the
+        // listing as an operator-cleared mapping that is 'still in force' — an
+        // unhedged claim about DB state that was never checked, and one that
+        // buries a genuine surviving revoke among the false ones. Confirm
+        // against the pivot instead. (These domains are excluded from the
+        // delete below, so the rows are the same before and after it.)
+        $deselected = $unresolvable
             ->filter(fn ($clientId) => $clientId === '')
             ->keys()
             ->map(fn ($domainId) => (string) $domainId)
-            ->values()
-            ->all();
+            ->values();
+        $revoked = $deselected->isEmpty()
+            ? []
+            : ClientPowerdmarcDomain::whereIn('powerdmarc_domain_id', $deselected->all())
+                ->pluck('powerdmarc_domain_id')
+                ->map(fn ($domainId) => (string) $domainId)
+                ->values()
+                ->all();
 
         DB::transaction(function () use ($visible, $selected, $domains) {
             // Re-assert only the domains shown in this form AND still visible to
