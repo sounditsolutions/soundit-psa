@@ -476,8 +476,10 @@ class AssistantToolExecutor
         //              out-of-scope id is not-found, never a partial read.
         //   unscoped — the ticket text stays readable, but the psa-823 payload
         //              does NOT: the linked devices (hostname/type, plus
-        //              serial/os/last_user under expand) and the client/contact
-        //              stubs are withheld below, because a bare id here is the
+        //              serial/os/last_user under expand) and every client/
+        //              contact name — the related stubs AND the top-level
+        //              client/contact scalars, which carry those same two
+        //              names — are withheld below, because a bare id here is the
         //              one path where a caller names a record it was never
         //              scoped to, and that payload would hand it another
         //              client's fleet. find_assets is the staff route to device
@@ -594,8 +596,11 @@ class AssistantToolExecutor
             // Withheld, and it says so: an empty assets array would read as
             // "this ticket has no devices" and a missing related block as "no
             // client on file" — the T-22797 false clear, on the fenced side.
-            unset($out['assets'], $out['related']);
-            $out['client_scoped_detail'] = 'withheld — linked devices and related-record stubs are returned only on a client-scoped read of this ticket; use find_assets for device data on this surface';
+            // The top-level client/contact scalars go with the stubs: they hold
+            // the SAME two names, so dropping only the related block would keep
+            // disclosing the foreign client while the marker claims otherwise.
+            unset($out['assets'], $out['related'], $out['client'], $out['contact']);
+            $out['client_scoped_detail'] = 'withheld — the client and contact names, the linked devices, and the related-record stubs are returned only on a client-scoped read of this ticket; use find_assets for device data on this surface';
         }
 
         return $out;
