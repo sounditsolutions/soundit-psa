@@ -15,7 +15,9 @@ use Illuminate\Support\Facades\Log;
  * prose. Every endpoint, parameter and field below is taken from the vendor's own
  * machine-readable OpenAPI 3.0 spec for https://app.powerdmarc.com (a copy of which
  * is what tests/Fixtures/powerdmarc/*.json is authored from, using the spec's own
- * example values).
+ * example values). Sole exception: the /api/v1/mssp/* surface (#801) is ABSENT from
+ * that spec — its shape was measured against the live tenant portal instead; see
+ * allMsspDomains().
  *
  * SHAPE FACTS A NAIVE WRAPPER GETS WRONG:
  *  1. GET /api/v1/me returns the UserDataResource DIRECTLY — it is the one endpoint
@@ -87,6 +89,8 @@ class PowerDmarcClient
         return new self([
             'api_key' => PowerDmarcConfig::get('api_key') ?? '',
             'base_url' => PowerDmarcConfig::baseUrl(),
+            'mssp_base_url' => PowerDmarcConfig::msspBaseUrl(),
+            'mssp_walk_seconds' => PowerDmarcConfig::msspWalkSeconds(),
         ]);
     }
 
@@ -149,6 +153,125 @@ class PowerDmarcClient
         throw new PowerDmarcClientException(
             "PowerDMARC returned more than {$maxPages} pages of domains and the scan was stopped at that safe limit, ".
             'so this answer would be incomplete. Refusing rather than reporting a partial result.'
+        );
+    }
+
+    /**
+     * Every domain across every MSSP sub-account, from the MSSP tenant-portal
+     * surface (#801): GET {mssp_base_url}/api/v1/mssp/accounts/domains.
+     *
+     * SHAPE SOURCE for this endpoint: NOT the OpenAPI spec (the /api/v1/mssp/*
+     * family is absent from it) — the shape was MEASURED against the live
+     * tenant portal on 2026-08-28 under a real MSSP console PAT, and
+     * tests/Fixtures/powerdmarc/mssp_accounts_domains.json is authored from
+     * that measurement. Envelope is a Laravel paginator {data, links, meta};
+     * rows are {domain_name: string, domain_id: int, account: {account_name:
+     * string, id: int}} — note the row field names DIFFER from the end-user
+     * /api/v1/domains rows (domain_name/domain_id here vs name/id there), and
+     * the health booleans do not exist on this surface.
+     *
+     * Paging FOLLOWS links.next (measured guidance: per_page is pinned or
+     * ignored on the /mssp/* family, so offset-style page walking is not
+     * trustworthy here). links.next is server-supplied and every request
+     * carries the Bearer key, so a next URL that leaves the configured MSSP
+     * host is refused as drift rather than followed — same credential-
+     * exfiltration class as the base_url guard (#724/#763).
+     *
+     * PAGE CAP: per_page is pinned (~15 rows) on the /mssp/* family and the
+     * client deliberately sends none, so $maxPages IS the domain ceiling — at
+     * a 20-page cap any MSSP over ~300 domains threw on every fetchDomains()
+     * path (index, update, autoMatch) with no in-product remedy, i.e. the
+     * feature failed for exactly the account class it exists for. The default
+     * is therefore sized as a runaway-loop backstop (a cycling or endless
+     * links.next), not as a supported account size: 400 pages x ~15 rows is
+     * ~6000 domains. Callers may pass a smaller cap.
+     *
+     * TIME BUDGET: because the cap alone no longer bounds how long this walk
+     * blocks, $maxSeconds does — the walk refuses to start another page once
+     * the budget is spent. This runs synchronously inside a page load, so a
+     * throttled or cycling portal must fail loudly and fast rather than pin a
+     * php-fpm worker and the session lock until the gateway times out.
+     *
+     * The budget must NOT re-break the account class the 400-page cap exists
+     * for: 400 sequential round trips at ~150-250ms is ~60-100s, so the default
+     * (PowerDmarcConfig::DEFAULT_MSSP_WALK_SECONDS, 120s) clears the ceiling
+     * this docblock advertises, and it is OPERATOR-SETTABLE
+     * (powerdmarc_mssp_walk_seconds) — PowerDmarcDomainController passes no
+     * argument, so a config that could not be changed would leave a large
+     * account with no in-product remedy. A null $maxSeconds means "use the
+     * configured budget"; callers may still pass an explicit one.
+     *
+     * Like allDomains(), hitting $maxPages with pages still outstanding THROWS
+     * rather than returning a partial list: a mapping screen missing domains
+     * it never fetched would read as "those domains are gone".
+     *
+     * @return array<int, array<string, mixed>> raw MSSP domain rows exactly as the vendor shapes them
+     */
+    public function allMsspDomains(int $maxPages = 400, ?int $maxSeconds = null): array
+    {
+        // Null = the configured budget (fromConfig() feeds it in), so the only
+        // caller — fetchDomains(), which passes no arguments — still has a dial.
+        $maxSeconds ??= (int) ($this->config['mssp_walk_seconds'] ?? PowerDmarcConfig::DEFAULT_MSSP_WALK_SECONDS);
+
+        $msspBase = rtrim(trim((string) ($this->config['mssp_base_url'] ?? '')), '/');
+
+        if ($msspBase === '') {
+            throw new PowerDmarcClientException(
+                'The PowerDMARC MSSP portal URL is not configured, so the MSSP domain listing cannot be fetched.'
+            );
+        }
+
+        $rows = [];
+        $url = $msspBase.'/api/v1/mssp/accounts/domains';
+        // Monotonic: hrtime() cannot be dragged backwards by a clock adjustment
+        // mid-walk, which would silently extend the budget.
+        $deadline = hrtime(true) + ($maxSeconds * 1_000_000_000);
+
+        for ($page = 1; $page <= $maxPages; $page++) {
+            // Spend the budget check BEFORE another round trip: the page cap is
+            // a runaway-loop backstop, this is the wall-clock bound (see
+            // PowerDmarcConfig::msspWalkSeconds()). Throwing here keeps the failure loud and
+            // inside the request; paging on would hand the operator a gateway
+            // timeout with no banner instead.
+            if ($page > 1 && hrtime(true) >= $deadline) {
+                throw new PowerDmarcClientException(
+                    "PowerDMARC MSSP domain listing was still paging after {$maxSeconds}s (stopped at page {$page}), ".
+                    'so this answer would be incomplete. The portal is responding too slowly to enumerate within one '.
+                    'page load — refusing rather than reporting a partial result. If this account is simply large, '.
+                    'raise the MSSP enumeration budget on Settings > Integrations > PowerDMARC.'
+                );
+            }
+
+            // An absolute URL overrides the Guzzle base_uri, so the same
+            // transport (and any injected test handler) serves both hosts.
+            $response = $this->getEnveloped($url);
+
+            foreach ((array) $response['data'] as $row) {
+                if (is_array($row)) {
+                    $rows[] = $row;
+                }
+            }
+
+            $next = $response['links']['next'] ?? null;
+            if (! is_string($next) || $next === '') {
+                return $rows;
+            }
+
+            if (! str_starts_with($next, $msspBase.'/') && $next !== $msspBase) {
+                throw new PowerDmarcClientException(
+                    'PowerDMARC MSSP paging returned a next-page URL on a different host than the configured '.
+                    'MSSP portal URL. Refusing to follow it: every request signs with the API key, and '.
+                    'following an off-host redirect would send the credential elsewhere.'
+                );
+            }
+
+            $url = $next;
+        }
+
+        throw new PowerDmarcClientException(
+            "PowerDMARC returned more than {$maxPages} pages of MSSP domains (~".($maxPages * 15).' domains at this '.
+            "surface's pinned page size) and the scan was stopped at that limit, so this answer would be incomplete. ".
+            'Refusing rather than reporting a partial result.'
         );
     }
 
@@ -270,7 +393,10 @@ class PowerDmarcClient
      */
     private function getEnveloped(string $endpoint, array $params = []): array
     {
-        $response = $this->request('GET', $endpoint, ['query' => $params]);
+        // Guzzle's `query` option REPLACES the URI's query string even when the
+        // array is empty — which would strip the ?page= cursor off a followed
+        // MSSP links.next URL. Only set it when there are params to send.
+        $response = $this->request('GET', $endpoint, $params === [] ? [] : ['query' => $params]);
 
         if (! array_key_exists('data', $response)) {
             throw new PowerDmarcClientException(

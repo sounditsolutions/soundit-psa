@@ -2326,6 +2326,28 @@
                                    value="{{ $powerdmarcBaseUrl }}"
                                    placeholder="https://app.powerdmarc.com">
                         </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="powerdmarc_mssp_base_url" class="form-label">MSSP Portal URL <span class="text-muted">(MSSP accounts only)</span></label>
+                            <input type="url"
+                                   class="form-control"
+                                   id="powerdmarc_mssp_base_url"
+                                   name="mssp_base_url"
+                                   value="{{ $powerdmarcMsspBaseUrl }}"
+                                   placeholder="https://yourtenant.powerdmarc.com">
+                            <div class="form-text">When set, Domain Mapping lists domains from the MSSP portal (<code>/api/v1/mssp/…</code>) instead of the end-user API — required for MSSP console keys, which cannot list domains on the end-user surface. Leave blank for a direct PowerDMARC account.</div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="powerdmarc_mssp_walk_seconds" class="form-label">MSSP Enumeration Budget <span class="text-muted">(seconds, optional)</span></label>
+                            <input type="number"
+                                   class="form-control"
+                                   id="powerdmarc_mssp_walk_seconds"
+                                   name="mssp_walk_seconds"
+                                   min="10"
+                                   max="600"
+                                   value="{{ $powerdmarcMsspWalkSeconds }}"
+                                   placeholder="{{ \App\Support\PowerDmarcConfig::DEFAULT_MSSP_WALK_SECONDS }}">
+                            <div class="form-text">How long Domain Mapping may spend paging the MSSP listing before it gives up with an error rather than a partial table. The default clears the ~6000-domain ceiling on a normal portal — raise it for a very large account on a slow one, lower it if a proxy in front of this app times out sooner. Blank = default.</div>
+                        </div>
                     </div>
 
                     <div class="d-flex gap-2">
