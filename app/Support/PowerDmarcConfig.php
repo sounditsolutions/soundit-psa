@@ -57,4 +57,18 @@ class PowerDmarcConfig
 
         return rtrim($configured !== '' ? $configured : self::DEFAULT_BASE_URL, '/');
     }
+
+    /**
+     * Per-client API key override (ops 440/442), or null when the client has
+     * none stored. Callers fall back to the account-level key: an MSSP account
+     * key is refused (403) on the end-user platform routes, but a DIRECT
+     * PowerDMARC account's key works account-wide — so absence of a per-client
+     * key must keep meaning "use the account key", never "unconfigured".
+     */
+    public static function apiKeyForClient(int $clientId): ?string
+    {
+        $key = \App\Models\ClientPowerdmarcKey::where('client_id', $clientId)->first()?->api_key;
+
+        return is_string($key) && $key !== '' ? $key : null;
+    }
 }

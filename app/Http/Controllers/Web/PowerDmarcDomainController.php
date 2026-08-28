@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Web;
 use App\Http\Controllers\Controller;
 use App\Models\Client;
 use App\Models\ClientPowerdmarcDomain;
+use App\Models\ClientPowerdmarcKey;
 use App\Services\PowerDmarc\PowerDmarcClient;
 use App\Support\PowerDmarcConfig;
 use Illuminate\Http\Request;
@@ -33,6 +34,13 @@ use Illuminate\Support\Facades\DB;
  */
 class PowerDmarcDomainController extends Controller
 {
+    /**
+     * Masked placeholder for an already-stored per-client key — same convention
+     * as IntegrationsController::SECRET_MASK: submitting it back (or blank)
+     * means "keep the stored value".
+     */
+    private const SECRET_MASK = '••••••••';
+
     public function index()
     {
         if (! PowerDmarcConfig::isConfigured()) {
@@ -40,11 +48,17 @@ class PowerDmarcDomainController extends Controller
                 ->with('error', 'PowerDMARC is not configured. Add an API key first.');
         }
 
+        // A failed account-level listing renders INLINE rather than bouncing to
+        // the Integrations page (ops 440/442): on an MSSP account the /domains
+        // route can 403 under the account key, and the per-client key entry
+        // below is exactly the remedy — a redirect would make the fix
+        // unreachable from its own error.
+        $domainsError = null;
         try {
             $domains = $this->fetchDomains();
         } catch (\Throwable $e) {
-            return redirect()->route('settings.integrations')
-                ->with('error', "Could not list PowerDMARC domains: {$e->getMessage()}");
+            $domains = [];
+            $domainsError = $e->getMessage();
         }
 
         // domain id => the client mapped to it, for per-row preselection. Joining
@@ -69,10 +83,27 @@ class PowerDmarcDomainController extends Controller
                 ->values();
         }
 
+        // Per-client API keys (ops 440/442): the operational clients plus any
+        // client that already holds a key — a key on a client that has since
+        // left the operational scope must stay visible, or it could never be
+        // cleared or rotated.
+        $clientKeys = ClientPowerdmarcKey::get()->keyBy('client_id');
+        $keyClients = Client::operational()->orderBy('name')->get(['id', 'name']);
+        $missingKeyClientIds = $clientKeys->keys()->diff($keyClients->pluck('id'));
+        if ($missingKeyClientIds->isNotEmpty()) {
+            $keyClients = $keyClients
+                ->concat(Client::whereIn('id', $missingKeyClientIds->all())->get(['id', 'name']))
+                ->sortBy('name')
+                ->values();
+        }
+
         return view('settings.powerdmarc-domains', [
             'domains' => $domains,
+            'domainsError' => $domainsError,
             'mappedClients' => $mappedClients,
             'allClients' => $allClients,
+            'keyClients' => $keyClients,
+            'clientKeys' => $clientKeys,
         ]);
     }
 
@@ -246,6 +277,126 @@ class PowerDmarcDomainController extends Controller
 
         return redirect()->route('settings.powerdmarc-domains.index')
             ->with($matched > 0 ? 'success' : 'info', $message);
+    }
+
+    /**
+     * Save per-client PowerDMARC API keys (ops 440/442). Follows the
+     * IntegrationsController secret conventions: a blank submit or the masked
+     * placeholder means "keep the stored key" — removal is only ever the
+     * explicit per-row clear checkbox, so a mask that fails to round-trip can
+     * never silently delete a credential. A newly stored key resets
+     * verified_at: it has not passed a Test Connection yet.
+     *
+     * Admin-gated in routes (RequireAdmin) — this is a credential write, the
+     * same class as powerdmarc.update (#762/#763).
+     */
+    public function updateKeys(Request $request)
+    {
+        // PowerDMARC keys are vendor JWTs (>1300 chars today) — the 5000 cap and
+        // the rendered page-level errors are the #751 lesson: max:500 bounced
+        // Charlie's real token with an invisible error.
+        $validated = $request->validate([
+            'keys' => 'nullable|array',
+            'keys.*' => 'nullable|string|max:5000',
+            'clear' => 'nullable|array',
+        ]);
+
+        $submitted = collect((array) ($validated['keys'] ?? []))
+            ->mapWithKeys(fn ($value, $clientId) => [(string) $clientId => trim((string) $value)]);
+        $cleared = collect((array) ($validated['clear'] ?? []))->keys()->map(fn ($id) => (string) $id);
+
+        // Only rows for clients that actually exist are touched — an unknown id
+        // in a tampered form is skipped, not an FK error page.
+        $validIds = Client::whereIn('id', $submitted->keys()->merge($cleared)->unique()->all())
+            ->pluck('id')
+            ->map(fn ($id) => (string) $id);
+
+        $saved = 0;
+        $removed = 0;
+
+        foreach ($cleared as $clientId) {
+            if (! $validIds->contains($clientId)) {
+                continue;
+            }
+            $removed += ClientPowerdmarcKey::where('client_id', (int) $clientId)->delete();
+        }
+
+        foreach ($submitted as $clientId => $value) {
+            // A cleared row wins over anything typed into its input — the
+            // checkbox is the explicit signal, and honoring a leftover mask or
+            // stray paste would resurrect the key the operator just removed.
+            if ($value === '' || $value === self::SECRET_MASK || $cleared->contains($clientId) || ! $validIds->contains($clientId)) {
+                continue;
+            }
+
+            ClientPowerdmarcKey::updateOrCreate(
+                ['client_id' => (int) $clientId],
+                ['api_key' => $value, 'verified_at' => null],
+            );
+            $saved++;
+        }
+
+        $parts = [];
+        if ($saved > 0) {
+            $parts[] = "Saved {$saved} per-client PowerDMARC key(s) — use Test to verify each one.";
+        }
+        if ($removed > 0) {
+            $parts[] = "Removed {$removed} per-client key(s).";
+        }
+
+        return redirect()->route('settings.powerdmarc-domains.index')
+            ->with($parts === [] ? 'info' : 'success', $parts === [] ? 'No per-client key changes.' : implode(' ', $parts));
+    }
+
+    /**
+     * Test one client's stored per-client key against the routes that MATTER.
+     * When the client has a mapped domain the probe is a real per-domain read
+     * (domain-health) — the exact route class the account-level MSSP key 403s
+     * on, which is the question the key exists to answer. Only an unmapped
+     * client falls back to /api/v1/me, and the reply says that evidence is
+     * weaker. verified_at is set only on a mapped-domain success.
+     */
+    public function testKey(Client $client)
+    {
+        $keyRow = ClientPowerdmarcKey::where('client_id', $client->id)->first();
+        if ($keyRow === null) {
+            return response()->json(['success' => false, 'message' => 'No per-client API key is stored for this client. Save one first.']);
+        }
+
+        $api = app(PowerDmarcClient::class)->withApiKey($keyRow->api_key);
+        $mapping = $client->powerdmarcDomains()->first();
+
+        if ($mapping === null) {
+            $healthy = false;
+            try {
+                $healthy = $api->isHealthy();
+            } catch (\Throwable) {
+                // isHealthy() already swallows client exceptions; anything else falls through to the failure reply.
+            }
+
+            return response()->json([
+                'success' => $healthy,
+                'message' => $healthy
+                    ? 'The key authenticates (/me), but this client has no mapped domain yet — map one and re-test for a decisive per-domain check.'
+                    : 'The key was rejected by PowerDMARC (/me). Check that it is a client-portal token for this client.',
+            ]);
+        }
+
+        try {
+            $api->getDomainHealth($mapping->powerdmarc_domain_id);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => "The key was refused on the domain-health read for {$mapping->domain_name}: {$e->getMessage()}",
+            ]);
+        }
+
+        $keyRow->update(['verified_at' => now()]);
+
+        return response()->json([
+            'success' => true,
+            'message' => "Key verified — per-domain reads work for {$mapping->domain_name}.",
+        ]);
     }
 
     /**

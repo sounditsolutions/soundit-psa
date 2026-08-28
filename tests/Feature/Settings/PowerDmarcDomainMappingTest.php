@@ -286,16 +286,24 @@ class PowerDmarcDomainMappingTest extends TestCase
     {
         // 21 pages, meta.last_page always further out: the walk stops at the
         // safe cap and must SCREAM, not render the 20 pages it happened to
-        // fetch as the whole account.
+        // fetch as the whole account. Since the per-client key work (ops
+        // 440/442) the scream renders INLINE — a redirect to Integrations
+        // would put the per-client key remedy behind its own error — and no
+        // domain row or Save Mappings form may render alongside it.
         $pages = [];
         for ($i = 1; $i <= 21; $i++) {
             $pages[] = $this->domainsPage([$this->domainRow($i, "domain-{$i}.com")], $i, 99);
         }
         $this->bindClientReturning($pages);
 
-        $this->actingAs($this->user)
+        $response = $this->actingAs($this->user)
             ->get(route('settings.powerdmarc-domains.index'))
-            ->assertRedirect(route('settings.integrations'))
-            ->assertSessionHas('error', fn (string $message) => str_contains($message, 'incomplete'));
+            ->assertOk();
+
+        $response->assertSee('incomplete');
+        $response->assertDontSee('domain-1.com');
+        $response->assertDontSee('Save Mappings');
+        // The remedy stays reachable next to the failure.
+        $response->assertSee('Per-Client API Keys');
     }
 }

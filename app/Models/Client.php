@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Client extends Model
@@ -201,6 +202,15 @@ class Client extends Model
     public function powerdmarcDomains(): HasMany
     {
         return $this->hasMany(ClientPowerdmarcDomain::class);
+    }
+
+    /**
+     * Per-client PowerDMARC API key (ops 440/442) — at most one. Absent means
+     * this client's PowerDMARC reads use the account-level key from Settings.
+     */
+    public function powerdmarcKey(): HasOne
+    {
+        return $this->hasOne(ClientPowerdmarcKey::class);
     }
 
     // ── Scopes ──

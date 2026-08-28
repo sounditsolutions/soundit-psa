@@ -91,6 +91,17 @@ class PowerDmarcClient
     }
 
     /**
+     * Same transport, different credential (per-client keys, ops 440/442). The
+     * Bearer key is attached per-request from config (see request()), so reusing
+     * $http keeps the container-bound instance's transport — including a test's
+     * mock handler — while swapping which key signs the calls.
+     */
+    public function withApiKey(string $apiKey): self
+    {
+        return new self(['api_key' => $apiKey] + $this->config, $this->http);
+    }
+
+    /**
      * List domains registered in the PowerDMARC account, one paginator page.
      *
      * Rows: id, name, is_dmarc_record_correct, is_setup_completed. Envelope is a
