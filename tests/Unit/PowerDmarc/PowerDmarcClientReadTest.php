@@ -474,4 +474,26 @@ class PowerDmarcClientReadTest extends TestCase
 
         $client->allMsspDomains(maxPages: 2);
     }
+
+    public function test_all_mssp_domains_stops_on_the_wall_clock_budget_rather_than_walking_the_full_cap(): void
+    {
+        // The 400-page cap is a runaway-loop backstop, not a time bound. This
+        // walk runs synchronously inside a page load and each page can burn 429
+        // backoff, so an exhausted budget must throw — loud and inside the
+        // request — instead of paging on until PHP or the gateway kills it.
+        $next = self::MSSP_BASE.'/api/v1/mssp/accounts/domains?page=2';
+        $client = $this->msspClientReturning([
+            $this->msspPage([$this->msspRow(101, 'a.com')], $next),
+            $this->msspPage([$this->msspRow(102, 'b.com')], $next),
+        ]);
+
+        try {
+            $client->allMsspDomains(maxPages: 400, maxSeconds: 0);
+            $this->fail('an exhausted wall-clock budget must throw, not keep paging');
+        } catch (PowerDmarcClientException $e) {
+            $this->assertStringContainsString('still paging', $e->getMessage());
+        }
+
+        $this->assertCount(1, $this->history, 'no page may be fetched once the budget is spent');
+    }
 }

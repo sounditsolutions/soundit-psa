@@ -67,6 +67,25 @@ class PowerDmarcClient
      */
     private const MAX_RETRY_SLEEP_SECONDS = 5;
 
+    /**
+     * Wall-clock budget for ONE MSSP page walk (#801). The page cap is a
+     * runaway-loop backstop, not a time bound — and at 400 pages it stopped
+     * being one: allMsspDomains() runs synchronously on every fetchDomains()
+     * path (index, update, autoMatch), and a throttled portal can burn
+     * 2 x MAX_RETRY_SLEEP_SECONDS of 429 backoff per page before that page even
+     * succeeds. Without a deadline the walk outlives max_execution_time and the
+     * request dies as a gateway 502 with no error banner, so the deliberate
+     * cap-exhaustion throw never fires and reloads exhaust the worker pool —
+     * exactly what the retry clamp above exists to prevent.
+     *
+     * The deadline is checked BETWEEN pages, so the residual worst case is this
+     * budget plus one page's own bounded attempt window (the same per-page
+     * exposure the old 20-page cap already carried) — no longer multiplied by
+     * the cap. Sized under the usual 30s max_execution_time so the loud throw
+     * wins the race against PHP and the front-end proxy.
+     */
+    private const MAX_MSSP_WALK_SECONDS = 20;
+
     private Client $http;
 
     /**
@@ -185,13 +204,20 @@ class PowerDmarcClient
      * links.next), not as a supported account size: 400 pages x ~15 rows is
      * ~6000 domains. Callers may pass a smaller cap.
      *
+     * TIME BUDGET: because the cap alone no longer bounds how long this walk
+     * blocks, $maxSeconds (MAX_MSSP_WALK_SECONDS) does — the walk refuses to
+     * start another page once the budget is spent. This runs synchronously
+     * inside a page load, so a throttled or cycling portal must fail loudly and
+     * fast rather than pin a php-fpm worker and the session lock until the
+     * gateway times out. Callers may pass a smaller budget.
+     *
      * Like allDomains(), hitting $maxPages with pages still outstanding THROWS
      * rather than returning a partial list: a mapping screen missing domains
      * it never fetched would read as "those domains are gone".
      *
      * @return array<int, array<string, mixed>> raw MSSP domain rows exactly as the vendor shapes them
      */
-    public function allMsspDomains(int $maxPages = 400): array
+    public function allMsspDomains(int $maxPages = 400, int $maxSeconds = self::MAX_MSSP_WALK_SECONDS): array
     {
         $msspBase = rtrim(trim((string) ($this->config['mssp_base_url'] ?? '')), '/');
 
@@ -203,8 +229,24 @@ class PowerDmarcClient
 
         $rows = [];
         $url = $msspBase.'/api/v1/mssp/accounts/domains';
+        // Monotonic: hrtime() cannot be dragged backwards by a clock adjustment
+        // mid-walk, which would silently extend the budget.
+        $deadline = hrtime(true) + ($maxSeconds * 1_000_000_000);
 
         for ($page = 1; $page <= $maxPages; $page++) {
+            // Spend the budget check BEFORE another round trip: the page cap is
+            // a runaway-loop backstop, this is the wall-clock bound (see
+            // MAX_MSSP_WALK_SECONDS). Throwing here keeps the failure loud and
+            // inside the request; paging on would hand the operator a gateway
+            // timeout with no banner instead.
+            if ($page > 1 && hrtime(true) >= $deadline) {
+                throw new PowerDmarcClientException(
+                    "PowerDMARC MSSP domain listing was still paging after {$maxSeconds}s (stopped at page {$page}), ".
+                    'so this answer would be incomplete. The portal is responding too slowly to enumerate within one '.
+                    'page load — refusing rather than reporting a partial result.'
+                );
+            }
+
             // An absolute URL overrides the Guzzle base_uri, so the same
             // transport (and any injected test handler) serves both hosts.
             $response = $this->getEnveloped($url);
