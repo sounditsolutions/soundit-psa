@@ -372,4 +372,26 @@ class PowerDmarcPerClientKeyTest extends TestCase
         $this->assertSame('rotated-jwt', $row->api_key);
         $this->assertNull($row->verified_at);
     }
+
+    public function test_a_soft_deleted_clients_key_can_still_be_tested(): void
+    {
+        // The page renders a Test button on every key-holding row, trashed ones
+        // included, so the route binding must resolve a trashed client — else
+        // the button the page itself renders 404s and reads as a transport
+        // failure rather than anything about the stored credential.
+        $client = Client::factory()->create();
+        ClientPowerdmarcDomain::create(['client_id' => $client->id, 'powerdmarc_domain_id' => 7, 'domain_name' => 'acme.com']);
+        ClientPowerdmarcKey::create(['client_id' => $client->id, 'api_key' => 'client-jwt-7']);
+        $client->delete();
+
+        $this->bindClientReturning([$this->domainHealthResponse()]);
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('settings.powerdmarc-domains.keys.test', $client))
+            ->assertOk()
+            ->assertJson(['success' => true]);
+
+        $this->assertSame(['Bearer client-jwt-7'], $this->authorizationHeaders());
+        $this->assertNotNull(ClientPowerdmarcKey::where('client_id', $client->id)->firstOrFail()->verified_at);
+    }
 }
