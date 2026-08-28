@@ -23,6 +23,7 @@ return Application::configure(basePath: dirname(__DIR__))
             \App\Http\Middleware\CheckStorageHealth::class,
         ]);
         $middleware->alias([
+            'admin' => \App\Http\Middleware\RequireAdmin::class,
             'assistant.enabled' => \App\Http\Middleware\AssistantEnabled::class,
             'portal.enabled' => \App\Http\Middleware\PortalEnabled::class,
             'portal.auth' => \App\Http\Middleware\PortalAuthenticate::class,

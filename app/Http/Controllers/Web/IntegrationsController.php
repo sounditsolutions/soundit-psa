@@ -1419,9 +1419,12 @@ class IntegrationsController extends Controller
     {
         // PowerDMARC API keys are JWTs (~1300 chars today, vendor-controlled and
         // free to grow); storage is a TEXT column, so the cap only guards abuse.
+        // base_url gets the SSRF guard (#724): PowerDmarcClient feeds it to
+        // Guzzle's base_uri and attaches the Bearer key to every request, so an
+        // http:// or private/metadata target here exfiltrates the credential.
         $validated = $request->validate([
             'api_key' => 'nullable|string|min:1|max:5000',
-            'base_url' => 'nullable|url|max:255',
+            'base_url' => ['nullable', 'string', 'max:255', new \App\Rules\SafeWebhookUrl('PowerDMARC base URL')],
         ]);
 
         if (! empty($validated['api_key'])) {
