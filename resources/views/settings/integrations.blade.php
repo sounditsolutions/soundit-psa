@@ -18,6 +18,22 @@
             </div>
         @endif
 
+        {{-- Most cards on this page sit inside tabs, so a per-field error under
+             a form in a non-default tab is invisible after the redirect back.
+             This page-level summary is what makes a validation bounce visible
+             at all (a PowerDMARC key bounce used to look like Save did nothing). --}}
+        @if ($errors->any())
+            <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                <strong>Settings not saved.</strong>
+                <ul class="mb-0 ps-3">
+                    @foreach ($errors->all() as $error)
+                        <li>{{ $error }}</li>
+                    @endforeach
+                </ul>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+        @endif
+
         <div class="alert alert-light border mb-4 d-flex align-items-center gap-3">
             <i class="bi bi-sliders fs-5 text-muted"></i>
             <div class="small">
@@ -2288,6 +2304,12 @@
                     <div class="row">
                         <div class="col-md-6 mb-3">
                             <label for="powerdmarc_api_key" class="form-label">API Key</label>
+                            {{-- No field-level @error here: every vendor card on this page
+                                 posts its own form into the shared default error bag, which is
+                                 keyed by field name only. Marking this input invalid on a bare
+                                 'api_key' would paint PowerDMARC red with another card's message
+                                 (several cards validate the same generic name). The page-level
+                                 summary above is the bounce channel for this form. --}}
                             <input type="password"
                                    class="form-control"
                                    id="powerdmarc_api_key"

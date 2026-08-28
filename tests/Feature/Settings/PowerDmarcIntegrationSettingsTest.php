@@ -75,6 +75,50 @@ class PowerDmarcIntegrationSettingsTest extends TestCase
         $this->assertNotSame('powerdmarc-secret-key', Setting::where('key', 'powerdmarc_api_key')->value('value'));
     }
 
+    public function test_a_full_length_powerdmarc_jwt_saves(): void
+    {
+        // Real PowerDMARC keys are JWTs well past the old max:500 — Charlie's
+        // measured 1326 chars and the form bounced it silently (Chet, 08-28).
+        $jwt = 'eyJhbGciOiJSUzI1NiJ9.'.str_repeat('a', 1400).'.sig';
+
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.powerdmarc.update'), [
+                'api_key' => $jwt,
+                'base_url' => '',
+            ])
+            ->assertRedirect(route('settings.integrations'))
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame($jwt, PowerDmarcConfig::get('api_key'));
+    }
+
+    public function test_an_oversized_api_key_bounces_with_an_error_and_stores_nothing(): void
+    {
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.powerdmarc.update'), [
+                'api_key' => str_repeat('a', 5001),
+                'base_url' => '',
+            ])
+            ->assertSessionHasErrors('api_key');
+
+        $this->assertNull(Setting::where('key', 'powerdmarc_api_key')->value('value'));
+    }
+
+    public function test_a_validation_bounce_is_visible_on_the_integrations_page(): void
+    {
+        // The PowerDMARC card lives in a non-default tab, so a bounce must
+        // surface in the page-level summary or it looks like Save did nothing.
+        $this->actingAs($this->user)
+            ->from(route('settings.integrations'))
+            ->followingRedirects()
+            ->post(route('settings.integrations.powerdmarc.update'), [
+                'api_key' => str_repeat('a', 5001),
+                'base_url' => '',
+            ])
+            ->assertOk()
+            ->assertSee('Settings not saved.');
+    }
+
     public function test_blank_api_key_submit_keeps_the_existing_secret(): void
     {
         Setting::setEncrypted('powerdmarc_api_key', 'original-key');
