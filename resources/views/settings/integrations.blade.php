@@ -4008,6 +4008,16 @@
 
                     <hr class="my-3">
                     <h6 class="text-muted text-uppercase small mb-2">Notify</h6>
+                    {{-- psa-tmdw: a notification path (daily digest / worker-down alert) is active but has
+                         nowhere to deliver — warn, or every Technician notification is silently dropped. --}}
+                    @if(\App\Support\TechnicianConfig::notificationsUndeliverable())
+                    <div class="alert alert-warning py-2 px-3 small mb-3">
+                        <i class="bi bi-exclamation-triangle me-1"></i>
+                        AI Technician notifications (daily digest / worker-down alert) are enabled but
+                        <strong>no delivery channel is configured</strong> — add a Teams webhook or a notify email
+                        below, or these notifications (including the worker-down alert) will be silently dropped.
+                    </div>
+                    @endif
                     <div class="mb-3">
                         <label class="form-label small" for="technician_teams_webhook_url">Teams webhook URL</label>
                         {{-- psa-uvuy: a stored secret — never echo the raw URL; show a mask and keep on blank submit. --}}
