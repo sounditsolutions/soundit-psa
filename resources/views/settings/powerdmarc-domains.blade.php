@@ -231,7 +231,7 @@
 
             <div class="mt-3 d-flex align-items-center gap-3">
                 <button type="submit" class="btn btn-primary">Save Per-Client Keys</button>
-                <span class="text-muted small">Blank fields keep the stored key. Removal is the Clear checkbox only. Saving a key requires administrator access.</span>
+                <span class="text-muted small">Blank fields keep the stored key. Removal is the Clear checkbox only. Saving or testing a key requires administrator access.</span>
             </div>
         </form>
     </div>

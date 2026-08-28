@@ -308,4 +308,68 @@ class PowerDmarcPerClientKeyTest extends TestCase
         // Identity is weaker evidence than a per-domain read: not marked verified.
         $this->assertNull(ClientPowerdmarcKey::where('client_id', $client->id)->firstOrFail()->verified_at);
     }
+
+    public function test_a_non_admin_cannot_test_a_per_client_key(): void
+    {
+        // The test route is a credential operation, not a read: it signs an
+        // outbound call with the stored key, writes verified_at, and answers
+        // whether this client holds a working key. Same gate as the write.
+        $client = Client::factory()->create();
+        ClientPowerdmarcDomain::create(['client_id' => $client->id, 'powerdmarc_domain_id' => 7, 'domain_name' => 'acme.com']);
+        ClientPowerdmarcKey::create(['client_id' => $client->id, 'api_key' => 'client-jwt-7']);
+
+        $this->bindClientReturning([$this->domainHealthResponse()]);
+
+        $this->actingAs(User::factory()->tech()->create())
+            ->post(route('settings.powerdmarc-domains.keys.test', $client))
+            ->assertForbidden();
+
+        $this->assertSame([], $this->authorizationHeaders(), 'a refused caller must not drive an outbound call signed with the stored key');
+        $this->assertNull(ClientPowerdmarcKey::where('client_id', $client->id)->firstOrFail()->verified_at);
+    }
+
+    // ── offboarding ────────────────────────────────────────────────────────────
+
+    public function test_a_soft_deleted_clients_key_stays_visible_and_clearable(): void
+    {
+        // clients.destroy soft-deletes, and the FK cascade only fires on a hard
+        // delete — so the encrypted token outlives the client. It must remain
+        // revocable, or offboarding strands a credential nobody can reach.
+        $client = Client::factory()->create(['name' => 'Offboarded Co']);
+        ClientPowerdmarcKey::create(['client_id' => $client->id, 'api_key' => 'stored-jwt']);
+        $client->delete();
+
+        $this->bindClientReturning([$this->forbiddenResponse()]);
+        $this->actingAs(User::factory()->create())
+            ->get(route('settings.powerdmarc-domains.index'))
+            ->assertOk()
+            ->assertSee('Offboarded Co');
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('settings.powerdmarc-domains.keys.update'), [
+                'clear' => [$client->id => '1'],
+            ])
+            ->assertRedirect(route('settings.powerdmarc-domains.index'))
+            ->assertSessionHas('success');
+
+        $this->assertDatabaseMissing('client_powerdmarc_keys', ['client_id' => $client->id]);
+    }
+
+    public function test_a_soft_deleted_clients_key_can_still_be_rotated(): void
+    {
+        $client = Client::factory()->create();
+        ClientPowerdmarcKey::create(['client_id' => $client->id, 'api_key' => 'old-jwt', 'verified_at' => now()]);
+        $client->delete();
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('settings.powerdmarc-domains.keys.update'), [
+                'keys' => [$client->id => 'rotated-jwt'],
+            ])
+            ->assertRedirect(route('settings.powerdmarc-domains.index'))
+            ->assertSessionHas('success');
+
+        $row = ClientPowerdmarcKey::where('client_id', $client->id)->firstOrFail();
+        $this->assertSame('rotated-jwt', $row->api_key);
+        $this->assertNull($row->verified_at);
+    }
 }

@@ -86,13 +86,16 @@ class PowerDmarcDomainController extends Controller
         // Per-client API keys (ops 440/442): the operational clients plus any
         // client that already holds a key — a key on a client that has since
         // left the operational scope must stay visible, or it could never be
-        // cleared or rotated.
+        // cleared or rotated. withTrashed() because SOFT-DELETING a client
+        // (ordinary offboarding) leaves the key row behind — the FK cascade only
+        // fires on a hard delete — and a credential nobody can see is a
+        // credential nobody can revoke.
         $clientKeys = ClientPowerdmarcKey::get()->keyBy('client_id');
         $keyClients = Client::operational()->orderBy('name')->get(['id', 'name']);
         $missingKeyClientIds = $clientKeys->keys()->diff($keyClients->pluck('id'));
         if ($missingKeyClientIds->isNotEmpty()) {
             $keyClients = $keyClients
-                ->concat(Client::whereIn('id', $missingKeyClientIds->all())->get(['id', 'name']))
+                ->concat(Client::withTrashed()->whereIn('id', $missingKeyClientIds->all())->get(['id', 'name']))
                 ->sortBy('name')
                 ->values();
         }
@@ -306,8 +309,10 @@ class PowerDmarcDomainController extends Controller
         $cleared = collect((array) ($validated['clear'] ?? []))->keys()->map(fn ($id) => (string) $id);
 
         // Only rows for clients that actually exist are touched — an unknown id
-        // in a tampered form is skipped, not an FK error page.
-        $validIds = Client::whereIn('id', $submitted->keys()->merge($cleared)->unique()->all())
+        // in a tampered form is skipped, not an FK error page. withTrashed()
+        // matches the index(): a soft-deleted client keeps its key row, so its
+        // credential must stay clearable and rotatable here too.
+        $validIds = Client::withTrashed()->whereIn('id', $submitted->keys()->merge($cleared)->unique()->all())
             ->pluck('id')
             ->map(fn ($id) => (string) $id);
 
@@ -355,6 +360,10 @@ class PowerDmarcDomainController extends Controller
      * on, which is the question the key exists to answer. Only an unmapped
      * client falls back to /api/v1/me, and the reply says that evidence is
      * weaker. verified_at is set only on a mapped-domain success.
+     *
+     * Admin-gated in routes (RequireAdmin) like updateKeys: this signs an
+     * outbound call with the stored credential, writes verified_at, and its
+     * reply reveals which clients hold a key and whether it works.
      */
     public function testKey(Client $client)
     {
