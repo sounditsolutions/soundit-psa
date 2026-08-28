@@ -411,18 +411,65 @@ class PowerDmarcDomainController extends Controller
     /**
      * All domains the API key can see, projected for this page and keyed by the
      * vendor domain id (as a string, for form round-tripping), sorted by name.
-     * PowerDmarcClient::allDomains() walks meta.last_page and FAILS LOUD if it
-     * cannot fetch everything — a partial table here would read as "those domains
-     * are gone".
+     *
+     * TWO enumeration lanes (#801), chosen by config, never by fallback:
+     * when powerdmarc_mssp_base_url is set the listing comes from the MSSP
+     * tenant-portal surface (allMsspDomains) — the ONLY surface an MSSP account
+     * key can enumerate, since the end-user /api/v1/domains route 403s that key
+     * class as steady state. When it is unset, the end-user listing (allDomains)
+     * is used exactly as before. Deliberately not a catch-and-fall-back: a
+     * transient outage on the configured lane must render as the error banner
+     * (#789's adjudicated behavior), not silently switch to a surface whose
+     * rows may differ.
+     *
+     * ⚠️ FLAGGED ASSUMPTION (#801 open question): the MSSP rows' domain_id is
+     * assumed to be THE SAME id space as the end-user /api/v1/domains ids,
+     * because powerdmarc_domain_id is the read grain every per-domain read
+     * (domain-health, current-score, dns-changes — signed with per-client keys)
+     * consumes. Measured 2026-08-28: unverifiable from the MSSP token alone
+     * (the end-user surface 403s it by design and no per-client key was stored
+     * yet to cross-check). If the id spaces differ, mappings written from the
+     * MSSP lane resolve names correctly but per-domain reads break — the
+     * per-client key Test button (testKey) is the detector, since it performs a
+     * real domain-health read against the stored mapping's id.
+     *
+     * Both lanes FAIL LOUD if they cannot fetch everything — a partial table
+     * here would read as "those domains are gone".
      *
      * @return array<string, array{domain_id: int, name: string, is_dmarc_record_correct: ?bool, is_setup_completed: ?bool}>
      */
     private function fetchDomains(): array
     {
-        $rows = app(PowerDmarcClient::class)->allDomains();
+        $api = app(PowerDmarcClient::class);
+
+        if (PowerDmarcConfig::msspBaseUrl() !== null) {
+            // MSSP rows: {domain_name, domain_id, account: {account_name, id}}.
+            // Field names differ from the end-user rows (name/id), and this
+            // surface carries no health booleans — the blade renders its
+            // dashes for null.
+            $domains = [];
+            foreach ($api->allMsspDomains() as $row) {
+                $domainId = $row['domain_id'] ?? null;
+                $name = $row['domain_name'] ?? null;
+                if (! is_int($domainId) || ! is_string($name) || trim($name) === '') {
+                    continue;
+                }
+
+                $domains[(string) $domainId] = [
+                    'domain_id' => $domainId,
+                    'name' => trim($name),
+                    'is_dmarc_record_correct' => null,
+                    'is_setup_completed' => null,
+                ];
+            }
+
+            uasort($domains, fn ($a, $b) => strcasecmp($a['name'], $b['name']));
+
+            return $domains;
+        }
 
         $domains = [];
-        foreach ($rows as $row) {
+        foreach ($api->allDomains() as $row) {
             $domainId = $row['id'] ?? null;
             $name = $row['name'] ?? null;
             if (! is_int($domainId) || ! is_string($name) || trim($name) === '') {

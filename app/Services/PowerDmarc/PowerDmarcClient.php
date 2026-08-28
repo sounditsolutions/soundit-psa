@@ -15,7 +15,9 @@ use Illuminate\Support\Facades\Log;
  * prose. Every endpoint, parameter and field below is taken from the vendor's own
  * machine-readable OpenAPI 3.0 spec for https://app.powerdmarc.com (a copy of which
  * is what tests/Fixtures/powerdmarc/*.json is authored from, using the spec's own
- * example values).
+ * example values). Sole exception: the /api/v1/mssp/* surface (#801) is ABSENT from
+ * that spec — its shape was measured against the live tenant portal instead; see
+ * allMsspDomains().
  *
  * SHAPE FACTS A NAIVE WRAPPER GETS WRONG:
  *  1. GET /api/v1/me returns the UserDataResource DIRECTLY — it is the one endpoint
@@ -87,6 +89,7 @@ class PowerDmarcClient
         return new self([
             'api_key' => PowerDmarcConfig::get('api_key') ?? '',
             'base_url' => PowerDmarcConfig::baseUrl(),
+            'mssp_base_url' => PowerDmarcConfig::msspBaseUrl(),
         ]);
     }
 
@@ -148,6 +151,79 @@ class PowerDmarcClient
 
         throw new PowerDmarcClientException(
             "PowerDMARC returned more than {$maxPages} pages of domains and the scan was stopped at that safe limit, ".
+            'so this answer would be incomplete. Refusing rather than reporting a partial result.'
+        );
+    }
+
+    /**
+     * Every domain across every MSSP sub-account, from the MSSP tenant-portal
+     * surface (#801): GET {mssp_base_url}/api/v1/mssp/accounts/domains.
+     *
+     * SHAPE SOURCE for this endpoint: NOT the OpenAPI spec (the /api/v1/mssp/*
+     * family is absent from it) — the shape was MEASURED against the live
+     * tenant portal on 2026-08-28 under a real MSSP console PAT, and
+     * tests/Fixtures/powerdmarc/mssp_accounts_domains.json is authored from
+     * that measurement. Envelope is a Laravel paginator {data, links, meta};
+     * rows are {domain_name: string, domain_id: int, account: {account_name:
+     * string, id: int}} — note the row field names DIFFER from the end-user
+     * /api/v1/domains rows (domain_name/domain_id here vs name/id there), and
+     * the health booleans do not exist on this surface.
+     *
+     * Paging FOLLOWS links.next (measured guidance: per_page is pinned or
+     * ignored on the /mssp/* family, so offset-style page walking is not
+     * trustworthy here). links.next is server-supplied and every request
+     * carries the Bearer key, so a next URL that leaves the configured MSSP
+     * host is refused as drift rather than followed — same credential-
+     * exfiltration class as the base_url guard (#724/#763).
+     *
+     * Like allDomains(), hitting $maxPages with pages still outstanding THROWS
+     * rather than returning a partial list: a mapping screen missing domains
+     * it never fetched would read as "those domains are gone".
+     *
+     * @return array<int, array<string, mixed>> raw MSSP domain rows exactly as the vendor shapes them
+     */
+    public function allMsspDomains(int $maxPages = 20): array
+    {
+        $msspBase = rtrim(trim((string) ($this->config['mssp_base_url'] ?? '')), '/');
+
+        if ($msspBase === '') {
+            throw new PowerDmarcClientException(
+                'The PowerDMARC MSSP portal URL is not configured, so the MSSP domain listing cannot be fetched.'
+            );
+        }
+
+        $rows = [];
+        $url = $msspBase.'/api/v1/mssp/accounts/domains';
+
+        for ($page = 1; $page <= $maxPages; $page++) {
+            // An absolute URL overrides the Guzzle base_uri, so the same
+            // transport (and any injected test handler) serves both hosts.
+            $response = $this->getEnveloped($url);
+
+            foreach ((array) $response['data'] as $row) {
+                if (is_array($row)) {
+                    $rows[] = $row;
+                }
+            }
+
+            $next = $response['links']['next'] ?? null;
+            if (! is_string($next) || $next === '') {
+                return $rows;
+            }
+
+            if (! str_starts_with($next, $msspBase.'/') && $next !== $msspBase) {
+                throw new PowerDmarcClientException(
+                    'PowerDMARC MSSP paging returned a next-page URL on a different host than the configured '.
+                    'MSSP portal URL. Refusing to follow it: every request signs with the API key, and '.
+                    'following an off-host redirect would send the credential elsewhere.'
+                );
+            }
+
+            $url = $next;
+        }
+
+        throw new PowerDmarcClientException(
+            "PowerDMARC returned more than {$maxPages} pages of MSSP domains and the scan was stopped at that safe limit, ".
             'so this answer would be incomplete. Refusing rather than reporting a partial result.'
         );
     }
@@ -270,7 +346,10 @@ class PowerDmarcClient
      */
     private function getEnveloped(string $endpoint, array $params = []): array
     {
-        $response = $this->request('GET', $endpoint, ['query' => $params]);
+        // Guzzle's `query` option REPLACES the URI's query string even when the
+        // array is empty — which would strip the ?page= cursor off a followed
+        // MSSP links.next URL. Only set it when there are params to send.
+        $response = $this->request('GET', $endpoint, $params === [] ? [] : ['query' => $params]);
 
         if (! array_key_exists('data', $response)) {
             throw new PowerDmarcClientException(

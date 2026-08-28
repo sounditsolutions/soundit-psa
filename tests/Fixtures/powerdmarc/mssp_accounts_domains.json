@@ -1,0 +1,52 @@
+{
+    "data": [
+        {
+            "domain_name": "acme.com",
+            "domain_id": 101,
+            "account": {
+                "account_name": "Acme Co",
+                "id": 11
+            }
+        },
+        {
+            "domain_name": "branch-mail.com",
+            "domain_id": 102,
+            "account": {
+                "account_name": "Branch Mail LLC",
+                "id": 12
+            }
+        }
+    ],
+    "links": {
+        "first": "https://tenant.powerdmarc.com/api/v1/mssp/accounts/domains?page=1",
+        "last": "https://tenant.powerdmarc.com/api/v1/mssp/accounts/domains?page=1",
+        "prev": null,
+        "next": null
+    },
+    "meta": {
+        "current_page": 1,
+        "from": 1,
+        "last_page": 1,
+        "links": [
+            {
+                "url": null,
+                "label": "&laquo; Previous",
+                "active": false
+            },
+            {
+                "url": "https://tenant.powerdmarc.com/api/v1/mssp/accounts/domains?page=1",
+                "label": "1",
+                "active": true
+            },
+            {
+                "url": null,
+                "label": "Next &raquo;",
+                "active": false
+            }
+        ],
+        "path": "https://tenant.powerdmarc.com/api/v1/mssp/accounts/domains",
+        "per_page": 15,
+        "to": 2,
+        "total": 2
+    }
+}

@@ -2326,6 +2326,16 @@
                                    value="{{ $powerdmarcBaseUrl }}"
                                    placeholder="https://app.powerdmarc.com">
                         </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="powerdmarc_mssp_base_url" class="form-label">MSSP Portal URL <span class="text-muted">(MSSP accounts only)</span></label>
+                            <input type="url"
+                                   class="form-control"
+                                   id="powerdmarc_mssp_base_url"
+                                   name="mssp_base_url"
+                                   value="{{ $powerdmarcMsspBaseUrl }}"
+                                   placeholder="https://yourtenant.powerdmarc.com">
+                            <div class="form-text">When set, Domain Mapping lists domains from the MSSP portal (<code>/api/v1/mssp/…</code>) instead of the end-user API — required for MSSP console keys, which cannot list domains on the end-user surface. Leave blank for a direct PowerDMARC account.</div>
+                        </div>
                     </div>
 
                     <div class="d-flex gap-2">

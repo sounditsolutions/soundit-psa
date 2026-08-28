@@ -24,8 +24,23 @@ class PowerDmarcConfig
         return match ($key) {
             'api_key' => Setting::getEncrypted('powerdmarc_api_key'),
             'base_url' => Setting::getValue('powerdmarc_base_url', self::DEFAULT_BASE_URL),
+            'mssp_base_url' => Setting::getValue('powerdmarc_mssp_base_url', ''),
             default => null,
         };
+    }
+
+    /**
+     * MSSP tenant-portal host (#801), e.g. https://<tenant>.powerdmarc.com —
+     * a DIFFERENT host from base_url (the end-user platform). Null means the
+     * MSSP enumeration lane is OFF and domain enumeration uses the end-user
+     * /api/v1/domains listing as before. There is no default: the tenant host
+     * is account-specific and cannot be guessed.
+     */
+    public static function msspBaseUrl(): ?string
+    {
+        $configured = rtrim(trim((string) self::get('mssp_base_url')), '/');
+
+        return $configured !== '' ? $configured : null;
     }
 
     /**

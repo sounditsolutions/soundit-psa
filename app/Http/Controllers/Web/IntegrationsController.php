@@ -145,6 +145,8 @@ class IntegrationsController extends Controller
         $powerdmarcConnected = (bool) $fmtTs(Setting::getValue('powerdmarc_connected_at'));
         // Raw stored override (may be blank) — same placeholder convention as UniFi.
         $powerdmarcBaseUrl = Setting::getValue('powerdmarc_base_url', '');
+        // MSSP tenant-portal host (#801); blank = MSSP enumeration lane off.
+        $powerdmarcMsspBaseUrl = Setting::getValue('powerdmarc_mssp_base_url', '');
 
         // Servosity
         $servosityConfigured = ServosityConfig::isConfigured();
@@ -455,7 +457,7 @@ class IntegrationsController extends Controller
             'meshHasApiKey', 'meshBaseUrl', 'meshConnected', 'meshEnabled',
             'huntressConfigured', 'huntressConnected', 'huntressEnabled',
             'unifiConfigured', 'unifiConnected', 'unifiBaseUrl', 'unifiEnabled',
-            'powerdmarcConfigured', 'powerdmarcConnected', 'powerdmarcBaseUrl', 'powerdmarcEnabled',
+            'powerdmarcConfigured', 'powerdmarcConnected', 'powerdmarcBaseUrl', 'powerdmarcMsspBaseUrl', 'powerdmarcEnabled',
             'servosityConfigured', 'servosityConnected', 'servosityConnectedAt', 'servosityEnabled',
             'controldConfigured', 'controldConnected', 'controldEnabled',
             'zorusConfigured', 'zorusConnected', 'zorusEnabled',
@@ -1425,6 +1427,10 @@ class IntegrationsController extends Controller
         $validated = $request->validate([
             'api_key' => 'nullable|string|min:1|max:5000',
             'base_url' => ['nullable', 'string', 'max:255', new \App\Rules\SafeWebhookUrl('PowerDMARC base URL')],
+            // The MSSP portal URL (#801) is the same credential-exfiltration
+            // class as base_url: every MSSP enumeration request signs with the
+            // Bearer key against this host.
+            'mssp_base_url' => ['nullable', 'string', 'max:255', new \App\Rules\SafeWebhookUrl('PowerDMARC MSSP portal URL')],
         ]);
 
         if (! empty($validated['api_key'])) {
@@ -1435,6 +1441,10 @@ class IntegrationsController extends Controller
         // the override — PowerDmarcConfig::baseUrl() falls back to the default
         // cloud endpoint when the stored value is empty.
         Setting::setValue('powerdmarc_base_url', trim((string) ($validated['base_url'] ?? '')));
+
+        // Blank likewise CLEARS the MSSP portal URL, switching domain
+        // enumeration back to the end-user lane (#801).
+        Setting::setValue('powerdmarc_mssp_base_url', trim((string) ($validated['mssp_base_url'] ?? '')));
 
         return redirect()->route('settings.integrations')
             ->with('success', 'PowerDMARC settings saved.');

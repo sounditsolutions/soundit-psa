@@ -310,4 +310,151 @@ class PowerDmarcClientReadTest extends TestCase
 
         $client->allDomains(maxPages: 2);
     }
+
+    // ── allMsspDomains: the MSSP tenant-portal enumeration (#801) ──────────────
+    //
+    // Unlike everything above, this endpoint's shape is NOT in the OpenAPI spec
+    // (the /api/v1/mssp/* family is undocumented). The fixture
+    // mssp_accounts_domains.json is authored from a LIVE MEASUREMENT of the
+    // tenant portal on 2026-08-28 under a real MSSP console PAT — see the
+    // allMsspDomains() docblock. Facts a naive wrapper gets wrong: rows are
+    // {domain_name, domain_id, account:{account_name, id}} (NOT the end-user
+    // name/id fields), and paging follows links.next rather than page/perPage.
+
+    private const MSSP_BASE = 'https://tenant.powerdmarc.com';
+
+    /** @param array<int, Response|\Throwable> $queue */
+    private function msspClientReturning(array $queue): PowerDmarcClient
+    {
+        $this->history = [];
+        $stack = HandlerStack::create(new MockHandler($queue));
+        $stack->push(Middleware::history($this->history));
+
+        $http = new GuzzleClient([
+            'base_uri' => 'https://app.powerdmarc.com/',
+            'handler' => $stack,
+        ]);
+
+        return new PowerDmarcClient([
+            'api_key' => 'test-key',
+            'mssp_base_url' => self::MSSP_BASE,
+        ], $http);
+    }
+
+    /** @param array<int, array<string, mixed>> $rows */
+    private function msspPage(array $rows, ?string $next): Response
+    {
+        return new Response(200, ['Content-Type' => 'application/json'], json_encode([
+            'data' => $rows,
+            'links' => ['first' => 'x', 'last' => 'x', 'prev' => null, 'next' => $next],
+            'meta' => ['current_page' => 1, 'last_page' => $next === null ? 1 : 2, 'per_page' => 15, 'total' => count($rows)],
+        ]));
+    }
+
+    private function msspRow(int $domainId, string $domainName): array
+    {
+        return [
+            'domain_name' => $domainName,
+            'domain_id' => $domainId,
+            'account' => ['account_name' => ucfirst(strtok($domainName, '.')), 'id' => $domainId + 10],
+        ];
+    }
+
+    public function test_all_mssp_domains_hits_the_mssp_portal_host_not_the_end_user_base_url(): void
+    {
+        $client = $this->msspClientReturning([$this->fixture('mssp_accounts_domains')]);
+
+        $rows = $client->allMsspDomains();
+
+        // The request must go to the tenant-portal host ABSOLUTELY, overriding
+        // the end-user base_uri the transport was built with.
+        $uri = $this->lastRequest()->getUri();
+        $this->assertSame('tenant.powerdmarc.com', $uri->getHost());
+        $this->assertSame('/api/v1/mssp/accounts/domains', $uri->getPath());
+        $this->assertSame('Bearer test-key', $this->lastRequest()->getHeaderLine('Authorization'));
+
+        // Rows come back verbatim — measured field names, not the end-user ones.
+        $this->assertSame(['acme.com', 'branch-mail.com'], array_column($rows, 'domain_name'));
+        $this->assertSame([101, 102], array_column($rows, 'domain_id'));
+        $this->assertSame('Acme Co', $rows[0]['account']['account_name']);
+    }
+
+    public function test_all_mssp_domains_follows_links_next_and_preserves_its_query_string(): void
+    {
+        $client = $this->msspClientReturning([
+            $this->msspPage([$this->msspRow(101, 'a.com')], self::MSSP_BASE.'/api/v1/mssp/accounts/domains?page=2'),
+            $this->msspPage([$this->msspRow(102, 'b.com')], null),
+        ]);
+
+        $rows = $client->allMsspDomains();
+
+        $this->assertSame(['a.com', 'b.com'], array_column($rows, 'domain_name'));
+        $this->assertCount(2, $this->history, 'the walk must stop at links.next=null, not over-fetch');
+
+        // The follow-up request is the links.next URL VERBATIM — in particular
+        // its ?page= cursor must survive (an empty Guzzle `query` option would
+        // strip it and re-fetch page 1 forever).
+        parse_str($this->lastRequest()->getUri()->getQuery(), $query);
+        $this->assertSame('2', $query['page']);
+    }
+
+    public function test_all_mssp_domains_refuses_an_off_host_next_url_rather_than_resending_the_key(): void
+    {
+        // Every request signs with the Bearer key; a next URL pointing off the
+        // configured MSSP host would exfiltrate the credential (#724/#763 class).
+        $client = $this->msspClientReturning([
+            $this->msspPage([$this->msspRow(101, 'a.com')], 'https://attacker.example.com/api/v1/mssp/accounts/domains?page=2'),
+        ]);
+
+        try {
+            $client->allMsspDomains();
+            $this->fail('an off-host links.next must throw, not be followed');
+        } catch (PowerDmarcClientException $e) {
+            $this->assertStringContainsString('different host', $e->getMessage());
+        }
+
+        $this->assertCount(1, $this->history, 'no request may be sent to the off-host URL');
+    }
+
+    public function test_all_mssp_domains_throws_before_any_request_when_the_portal_url_is_not_configured(): void
+    {
+        // A client built without mssp_base_url (a direct, non-MSSP account).
+        $client = $this->clientReturning([]);
+
+        try {
+            $client->allMsspDomains();
+            $this->fail('an unconfigured MSSP portal URL must throw');
+        } catch (PowerDmarcClientException $e) {
+            $this->assertStringContainsString('not configured', $e->getMessage());
+        }
+
+        $this->assertCount(0, $this->history, 'no request may be spent without a configured portal URL');
+    }
+
+    public function test_all_mssp_domains_missing_data_envelope_is_not_silently_an_empty_list(): void
+    {
+        $client = $this->msspClientReturning([
+            new Response(200, ['Content-Type' => 'application/json'], json_encode(['message' => 'ok'])),
+        ]);
+
+        $this->expectException(PowerDmarcClientException::class);
+        $this->expectExceptionMessage('data');
+
+        $client->allMsspDomains();
+    }
+
+    public function test_all_mssp_domains_throws_on_cap_exhaustion_rather_than_returning_a_partial_list(): void
+    {
+        $next = self::MSSP_BASE.'/api/v1/mssp/accounts/domains?page=2';
+        $client = $this->msspClientReturning([
+            $this->msspPage([$this->msspRow(101, 'a.com')], $next),
+            $this->msspPage([$this->msspRow(102, 'b.com')], $next),
+            $this->msspPage([$this->msspRow(103, 'c.com')], $next),
+        ]);
+
+        $this->expectException(PowerDmarcClientException::class);
+        $this->expectExceptionMessage('incomplete');
+
+        $client->allMsspDomains(maxPages: 2);
+    }
 }
