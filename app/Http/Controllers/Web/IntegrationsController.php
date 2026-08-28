@@ -1417,8 +1417,10 @@ class IntegrationsController extends Controller
 
     public function updatePowerDmarc(Request $request)
     {
+        // PowerDMARC API keys are JWTs (~1300 chars today, vendor-controlled and
+        // free to grow); storage is a TEXT column, so the cap only guards abuse.
         $validated = $request->validate([
-            'api_key' => 'nullable|string|min:1|max:500',
+            'api_key' => 'nullable|string|min:1|max:5000',
             'base_url' => 'nullable|url|max:255',
         ]);
 

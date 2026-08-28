@@ -18,6 +18,22 @@
             </div>
         @endif
 
+        {{-- Most cards on this page sit inside tabs, so a per-field error under
+             a form in a non-default tab is invisible after the redirect back.
+             This page-level summary is what makes a validation bounce visible
+             at all (a PowerDMARC key bounce used to look like Save did nothing). --}}
+        @if ($errors->any())
+            <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                <strong>Settings not saved.</strong>
+                <ul class="mb-0 ps-3">
+                    @foreach ($errors->all() as $error)
+                        <li>{{ $error }}</li>
+                    @endforeach
+                </ul>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+        @endif
+
         <div class="alert alert-light border mb-4 d-flex align-items-center gap-3">
             <i class="bi bi-sliders fs-5 text-muted"></i>
             <div class="small">
@@ -2289,20 +2305,26 @@
                         <div class="col-md-6 mb-3">
                             <label for="powerdmarc_api_key" class="form-label">API Key</label>
                             <input type="password"
-                                   class="form-control"
+                                   class="form-control @error('api_key') is-invalid @enderror"
                                    id="powerdmarc_api_key"
                                    name="api_key"
                                    value=""
                                    placeholder="{{ ($powerdmarcConfigured ?? false) ? '••••••••' : 'Enter API key' }}">
+                            @error('api_key')
+                                <div class="invalid-feedback">{{ $message }}</div>
+                            @enderror
                         </div>
                         <div class="col-md-6 mb-3">
                             <label for="powerdmarc_base_url" class="form-label">Base URL <span class="text-muted">(optional override)</span></label>
                             <input type="url"
-                                   class="form-control"
+                                   class="form-control @error('base_url') is-invalid @enderror"
                                    id="powerdmarc_base_url"
                                    name="base_url"
                                    value="{{ $powerdmarcBaseUrl }}"
                                    placeholder="https://app.powerdmarc.com">
+                            @error('base_url')
+                                <div class="invalid-feedback">{{ $message }}</div>
+                            @enderror
                         </div>
                     </div>
 
