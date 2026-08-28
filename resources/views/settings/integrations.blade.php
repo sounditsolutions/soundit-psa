@@ -2304,27 +2304,27 @@
                     <div class="row">
                         <div class="col-md-6 mb-3">
                             <label for="powerdmarc_api_key" class="form-label">API Key</label>
+                            {{-- No field-level @error here: every vendor card on this page
+                                 posts its own form into the shared default error bag, which is
+                                 keyed by field name only. Marking this input invalid on a bare
+                                 'api_key' would paint PowerDMARC red with another card's message
+                                 (several cards validate the same generic name). The page-level
+                                 summary above is the bounce channel for this form. --}}
                             <input type="password"
-                                   class="form-control @error('api_key') is-invalid @enderror"
+                                   class="form-control"
                                    id="powerdmarc_api_key"
                                    name="api_key"
                                    value=""
                                    placeholder="{{ ($powerdmarcConfigured ?? false) ? '••••••••' : 'Enter API key' }}">
-                            @error('api_key')
-                                <div class="invalid-feedback">{{ $message }}</div>
-                            @enderror
                         </div>
                         <div class="col-md-6 mb-3">
                             <label for="powerdmarc_base_url" class="form-label">Base URL <span class="text-muted">(optional override)</span></label>
                             <input type="url"
-                                   class="form-control @error('base_url') is-invalid @enderror"
+                                   class="form-control"
                                    id="powerdmarc_base_url"
                                    name="base_url"
                                    value="{{ $powerdmarcBaseUrl }}"
                                    placeholder="https://app.powerdmarc.com">
-                            @error('base_url')
-                                <div class="invalid-feedback">{{ $message }}</div>
-                            @enderror
                         </div>
                     </div>
 
