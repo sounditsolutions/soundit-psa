@@ -423,6 +423,18 @@ Route::middleware('auth')->group(function () {
     // Auto-match WRITES pivot rows, so it is a POST under the web group's CSRF
     // middleware — a GET here is forgeable by an <img> tag or a link prefetcher.
     Route::post('/settings/integrations/powerdmarc/domains/auto-match', [\App\Http\Controllers\Web\PowerDmarcDomainController::class, 'autoMatch'])->name('settings.powerdmarc-domains.auto-match');
+    // Per-client API keys (ops 440/442). BOTH halves are credential operations,
+    // so both are admin-gated like powerdmarc.update below (#762 pattern). The
+    // test is not merely a read: it signs an outbound call with a stored
+    // credential, writes verified_at, and its replies say which clients hold a
+    // key and whether it is valid — an ungated oracle over credentials the
+    // caller may not manage. POST keeps both behind CSRF.
+    Route::post('/settings/integrations/powerdmarc/domains/keys', [\App\Http\Controllers\Web\PowerDmarcDomainController::class, 'updateKeys'])->middleware('admin')->name('settings.powerdmarc-domains.keys.update');
+    // withTrashed() on the binding: the mapping page deliberately lists a
+    // SOFT-DELETED client that still holds a key (its credential must stay
+    // revocable) and renders a Test button on that row — a soft-delete-scoped
+    // binding would 404 every one of those buttons.
+    Route::post('/settings/integrations/powerdmarc/domains/keys/{client}/test', [\App\Http\Controllers\Web\PowerDmarcDomainController::class, 'testKey'])->middleware('admin')->withTrashed()->name('settings.powerdmarc-domains.keys.test');
     // Credential write is admin-only (#762): repointing base_url ships the
     // stored Bearer key to the host it names (#724), so this is the write half
     // of that chain. First route on the UserRole 'admin' gate; widening the

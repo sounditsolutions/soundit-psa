@@ -35,6 +35,12 @@ use Illuminate\Support\Facades\Log;
  *    client's mapped domains — there is never an account-wide fallback, so a
  *    tool call can never read another client's domain by naming it.
  *
+ * CREDENTIALS (ops 440/442): mapped-domain reads sign with the caller client's
+ * own per-client API key when one is stored (see clientFor()), because an
+ * MSSP/partner account key is refused on the per-domain report routes; a client
+ * with no stored key falls back to the account-level key, which is the working
+ * mode for direct (non-MSSP) PowerDMARC accounts.
+ *
  * READ-ONLY. The spec also exposes hosted-record management (hosted DMARC /
  * MTA-STS / BIMI updates). It is deliberately absent here and from
  * PowerDmarcClient; hosted-side writes are a separate decision with their own
@@ -248,17 +254,17 @@ class PowerDmarcReadOnlyToolset
         // an error key replaces the data, so a gap can never look like a clean
         // "all healthy".
         try {
-            $score = $this->client()->getRecordsCurrentScore($mapping->powerdmarc_domain_id);
+            $score = $this->clientFor($client->id)->getRecordsCurrentScore($mapping->powerdmarc_domain_id);
             $out['records'] = $this->projectCurrentScore($score);
         } catch (\Throwable $e) {
-            $out['records'] = $this->apiError($e);
+            $out['records'] = $this->apiErrorForClientRead($e, $client->id);
         }
 
         try {
-            $health = $this->client()->getDomainHealth($mapping->powerdmarc_domain_id);
+            $health = $this->clientFor($client->id)->getDomainHealth($mapping->powerdmarc_domain_id);
             $out['health'] = $this->projectDomainHealth($health);
         } catch (\Throwable $e) {
-            $out['health'] = $this->apiError($e);
+            $out['health'] = $this->apiErrorForClientRead($e, $client->id);
         }
 
         return $out;
@@ -304,7 +310,7 @@ class PowerDmarcReadOnlyToolset
         $byStatus = [];
         try {
             foreach ($statuses as $wanted) {
-                $response = $this->client()->getAggregatePerSendingSource(
+                $response = $this->clientFor($client->id)->getAggregatePerSendingSource(
                     $mapping->powerdmarc_domain_id, $from, $to, $wanted,
                     page: $page, perPage: self::SOURCES_PER_PAGE,
                 );
@@ -341,7 +347,7 @@ class PowerDmarcReadOnlyToolset
             // One failed status query fails the whole read — a grouped answer
             // missing one group would present a partial picture wearing a
             // success shape.
-            return $this->apiError($e);
+            return $this->apiErrorForClientRead($e, $client->id);
         }
 
         $out = [
@@ -381,7 +387,7 @@ class PowerDmarcReadOnlyToolset
         $page = $this->positiveInt($input['page'] ?? null) ?? 1;
 
         try {
-            $response = $this->client()->getDnsChanges(
+            $response = $this->clientFor($client->id)->getDnsChanges(
                 $mapping->powerdmarc_domain_id,
                 type: trim((string) ($input['type'] ?? '')) ?: null,
                 startDate: trim((string) ($input['start_date'] ?? '')) ?: null,
@@ -390,7 +396,7 @@ class PowerDmarcReadOnlyToolset
                 perPage: self::DNS_CHANGES_PER_PAGE,
             );
         } catch (\Throwable $e) {
-            return $this->apiError($e);
+            return $this->apiErrorForClientRead($e, $client->id);
         }
 
         // SHAPE FACT (PowerDmarcClient fact 3): `data` is an OBJECT keyed by
@@ -575,6 +581,46 @@ class PowerDmarcReadOnlyToolset
     private function client(): PowerDmarcClient
     {
         return app(PowerDmarcClient::class);
+    }
+
+    /**
+     * Client for a MAPPED-DOMAIN read: the caller client's own per-client API
+     * key when one is stored (ops 440/442 — an MSSP account key is refused on
+     * the end-user platform routes these reads speak), else the account-level
+     * key. Fallback, not refusal: a DIRECT PowerDMARC account's key works
+     * account-wide, so keyless clients must keep working on such deployments.
+     * withApiKey() reuses the bound instance's transport, so this stays behind
+     * the same container seam.
+     */
+    private function clientFor(int $clientId): PowerDmarcClient
+    {
+        $perClientKey = PowerDmarcConfig::apiKeyForClient($clientId);
+
+        return $perClientKey === null
+            ? $this->client()
+            : $this->client()->withApiKey($perClientKey);
+    }
+
+    /**
+     * apiError() for a mapped-domain read, with the one hint that makes a 401/403
+     * actionable: WHICH credential signed the failing call decides the remedy
+     * (store a per-client key vs rotate the one that was refused). Matched on the
+     * status code Guzzle embeds in the exception text; other failures pass
+     * through untouched.
+     *
+     * @return array{error: string}
+     */
+    private function apiErrorForClientRead(\Throwable $e, int $clientId): array
+    {
+        $error = $this->apiError($e);
+
+        if (preg_match('/\b40[13]\b/', $e->getMessage()) === 1) {
+            $error['error'] .= PowerDmarcConfig::apiKeyForClient($clientId) === null
+                ? ' This call used the ACCOUNT-LEVEL PowerDMARC key — an MSSP/partner key is refused on per-domain report routes. An operator can store a per-client API key (a client-portal token) in Settings → Integrations → PowerDMARC → Domain Mapping.'
+                : ' This call used the stored PER-CLIENT PowerDMARC key and it was refused — it may be expired or not authorized for this domain. An operator can re-test or replace it in Settings → Integrations → PowerDMARC → Domain Mapping.';
+        }
+
+        return $error;
     }
 
     /**
