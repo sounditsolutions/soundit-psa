@@ -443,6 +443,23 @@ class PowerDmarcClientReadTest extends TestCase
         $client->allMsspDomains();
     }
 
+    public function test_all_mssp_domains_default_cap_is_not_a_three_hundred_domain_ceiling(): void
+    {
+        // per_page is pinned (~15) on the /mssp/* family, so the page cap IS the
+        // domain ceiling: a 20-page default stranded every MSSP over ~300
+        // domains on a permanent error banner. The default walk must go well
+        // past 20 pages.
+        $next = self::MSSP_BASE.'/api/v1/mssp/accounts/domains?page=2';
+        $queue = [];
+        for ($page = 1; $page <= 25; $page++) {
+            $queue[] = $this->msspPage([$this->msspRow(100 + $page, "d{$page}.com")], $page < 25 ? $next : null);
+        }
+
+        $rows = $this->msspClientReturning($queue)->allMsspDomains();
+
+        $this->assertCount(25, $rows, 'the default cap must not stop the walk at 20 pages');
+    }
+
     public function test_all_mssp_domains_throws_on_cap_exhaustion_rather_than_returning_a_partial_list(): void
     {
         $next = self::MSSP_BASE.'/api/v1/mssp/accounts/domains?page=2';

@@ -176,13 +176,22 @@ class PowerDmarcClient
      * host is refused as drift rather than followed — same credential-
      * exfiltration class as the base_url guard (#724/#763).
      *
+     * PAGE CAP: per_page is pinned (~15 rows) on the /mssp/* family and the
+     * client deliberately sends none, so $maxPages IS the domain ceiling — at
+     * a 20-page cap any MSSP over ~300 domains threw on every fetchDomains()
+     * path (index, update, autoMatch) with no in-product remedy, i.e. the
+     * feature failed for exactly the account class it exists for. The default
+     * is therefore sized as a runaway-loop backstop (a cycling or endless
+     * links.next), not as a supported account size: 400 pages x ~15 rows is
+     * ~6000 domains. Callers may pass a smaller cap.
+     *
      * Like allDomains(), hitting $maxPages with pages still outstanding THROWS
      * rather than returning a partial list: a mapping screen missing domains
      * it never fetched would read as "those domains are gone".
      *
      * @return array<int, array<string, mixed>> raw MSSP domain rows exactly as the vendor shapes them
      */
-    public function allMsspDomains(int $maxPages = 20): array
+    public function allMsspDomains(int $maxPages = 400): array
     {
         $msspBase = rtrim(trim((string) ($this->config['mssp_base_url'] ?? '')), '/');
 
@@ -223,8 +232,9 @@ class PowerDmarcClient
         }
 
         throw new PowerDmarcClientException(
-            "PowerDMARC returned more than {$maxPages} pages of MSSP domains and the scan was stopped at that safe limit, ".
-            'so this answer would be incomplete. Refusing rather than reporting a partial result.'
+            "PowerDMARC returned more than {$maxPages} pages of MSSP domains (~".($maxPages * 15).' domains at this '.
+            "surface's pinned page size) and the scan was stopped at that limit, so this answer would be incomplete. ".
+            'Refusing rather than reporting a partial result.'
         );
     }
 
