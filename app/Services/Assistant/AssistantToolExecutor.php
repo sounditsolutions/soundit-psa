@@ -467,19 +467,30 @@ class AssistantToolExecutor
         // loads the whole ancestor chain pathString() walks in one pass.
         $ticketQuery = Ticket::with(['client:id,name,stage', 'assignee:id,name', 'contact', 'categoryNode.parent.parent', 'assets']);
 
-        // Client fence, matching getAsset/getPerson. A bare id read is the one
-        // path where a caller can name a record it was never scoped to, and this
-        // read now carries the client/contact stubs and the linked devices
-        // (hostname/type, plus serial/os/last_user under expand: ["assets"]) — so
-        // an out-of-scope id here discloses another client's fleet, not just
-        // ticket text. Where the executor HAS a client context (client-facing
-        // assistant, ticket-context session, client_id-scoped MCP call) the
-        // ticket must belong to it. A null clientId is the deliberate
-        // cross-client staff surface — the same unscoped board search_all_tickets
-        // reads, and the only place a client_id IS NULL intake ticket is
-        // reachable — not a missing fence.
-        if ($this->clientId) {
+        // Two branches, and NEITHER is getAsset/getPerson parity — those refuse
+        // outright on a null client, which this read cannot do: the unscoped
+        // executor is the staff board (generalTools, McpStaffController injects
+        // no client_id), and it is the only place a client_id IS NULL
+        // UNRESOLVED-INTAKE ticket is reachable at all (psa-6usr). So:
+        //   scoped   — the ticket must belong to the client context, and an
+        //              out-of-scope id is not-found, never a partial read.
+        //   unscoped — the ticket text stays readable, but the psa-823 payload
+        //              does NOT: the linked devices (hostname/type, plus
+        //              serial/os/last_user under expand) and the client/contact
+        //              stubs are withheld below, because a bare id here is the
+        //              one path where a caller names a record it was never
+        //              scoped to, and that payload would hand it another
+        //              client's fleet. find_assets is the staff route to device
+        //              data — it is client_id-optional by design and already
+        //              publishes those columns cross-client.
+        $scoped = (bool) $this->clientId;
+
+        if ($scoped) {
             $ticketQuery->where('client_id', $this->clientId);
+        }
+
+        if (! $scoped && in_array('assets', $expand, true)) {
+            return ['error' => 'expand: ["assets"] needs a client-scoped read of this ticket — linked-device detail (serial, os, last_user) is client-fenced. Read the ticket from its client context, or use find_assets (client_id optional) for device data.'];
         }
 
         $ticket = $ticketQuery->find($ticketId);
@@ -577,6 +588,14 @@ class AssistantToolExecutor
             $out['expanded']['assets'] = $ticket->assets->map(fn (Asset $a) => self::assetDetailRow($a) + [
                 'is_primary' => (bool) $a->pivot->is_primary,
             ])->values()->toArray();
+        }
+
+        if (! $scoped) {
+            // Withheld, and it says so: an empty assets array would read as
+            // "this ticket has no devices" and a missing related block as "no
+            // client on file" — the T-22797 false clear, on the fenced side.
+            unset($out['assets'], $out['related']);
+            $out['client_scoped_detail'] = 'withheld — linked devices and related-record stubs are returned only on a client-scoped read of this ticket; use find_assets for device data on this surface';
         }
 
         return $out;
@@ -1102,9 +1121,15 @@ class AssistantToolExecutor
         // find_assets include_inactive lookup, not routine profile data.
         // assets_count is the UNCAPPED active total, so a capped list can never
         // read as complete when it is not.
+        // Same total order as find_assets over the same active-only set
+        // (hostname, then id). The descriptions tell callers to continue this
+        // capped block at find_assets offset=50; with NULL or duplicate
+        // hostnames an untied sort makes that walk skip rows and still finish
+        // has_more=false — a partial fleet reading as the whole fleet.
         $fleet = Asset::where('client_id', $this->client->id)
             ->active()
             ->orderBy('hostname')
+            ->orderBy('id')
             ->limit(self::CLIENT_ASSETS_CAP)
             ->get(['id', 'name', 'hostname', 'asset_type', 'is_active']);
         $fleetTotal = Asset::where('client_id', $this->client->id)->active()->count();
@@ -1532,7 +1557,9 @@ class AssistantToolExecutor
         $total = (clone $q)->count();
 
         // orderBy('id') last: hostname ties need a total order, or a paged walk
-        // can repeat one row and skip another.
+        // can repeat one row and skip another. get_client's fleet block sorts
+        // its active rows the same way (hostname, then id) so that a caller can
+        // continue that capped block here at offset=50 without losing rows.
         $assets = $q->orderByDesc('is_active')
             ->orderBy('hostname')
             ->orderBy('id')

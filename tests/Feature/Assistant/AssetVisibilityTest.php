@@ -22,7 +22,10 @@ use Tests\TestCase;
  *
  * Three-part fix, per Chet's build request (Charlie-approved op 452):
  *   1. get_ticket_detail and get_client each return a flat `assets` block
- *      (linked / owned devices) so the common read paths carry the fleet.
+ *      (linked / owned devices) so the common read paths carry the fleet. On
+ *      get_ticket_detail that block — and the related stubs — is client-scoped
+ *      only: the unscoped staff board still reads the ticket, but says the
+ *      device detail was withheld rather than returning an empty list.
  *   2. Entity gets return one shallow `related` layer of id+name stubs by
  *      default, with a strict allow-listed `expand` opt-in for deeper rows —
  *      never always-on deep nesting, and no invoice stubs on ticket reads.
@@ -66,7 +69,7 @@ class AssetVisibilityTest extends TestCase
         $ticket->assets()->attach($primary->id, ['is_primary' => true]);
         $ticket->assets()->attach($secondary->id, ['is_primary' => false]);
 
-        $result = (new AssistantToolExecutor)->execute('get_ticket_detail', ['ticket_id' => $ticket->id]);
+        $result = (new AssistantToolExecutor(clientId: $client->id))->execute('get_ticket_detail', ['ticket_id' => $ticket->id]);
 
         $this->assertArrayHasKey('assets', $result, 'a ticket read must carry its linked devices');
         $byId = collect($result['assets'])->keyBy('id');
@@ -86,9 +89,10 @@ class AssetVisibilityTest extends TestCase
 
     public function test_get_ticket_detail_assets_empty_when_none_linked(): void
     {
-        $ticket = Ticket::factory()->create(['client_id' => Client::factory()->create()->id]);
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $client->id]);
 
-        $result = (new AssistantToolExecutor)->execute('get_ticket_detail', ['ticket_id' => $ticket->id]);
+        $result = (new AssistantToolExecutor(clientId: $client->id))->execute('get_ticket_detail', ['ticket_id' => $ticket->id]);
 
         $this->assertSame([], $result['assets']);
         $this->assertArrayNotHasKey('expanded', $result, 'expanded is opt-in only');
@@ -120,9 +124,28 @@ class AssetVisibilityTest extends TestCase
         $own = Ticket::factory()->create(['client_id' => $mine->id]);
         $this->assertSame($own->id, $scoped->execute('get_ticket_detail', ['ticket_id' => $own->id])['id']);
 
-        // ...and the unscoped staff surface keeps its cross-client board read.
+        // ...and the unscoped staff surface keeps its cross-client board read
+        // (psa-6usr: client_id IS NULL intake tickets must stay reachable) —
+        // but WITHOUT the psa-823 device/related payload, which is the only
+        // part of this read that discloses another client's fleet.
         $general = (new AssistantToolExecutor)->execute('get_ticket_detail', ['ticket_id' => $foreign->id]);
         $this->assertSame($foreign->id, $general['id']);
+        $this->assertArrayNotHasKey('assets', $general);
+        $this->assertArrayNotHasKey('related', $general);
+        $this->assertStringNotContainsString('VIS-FOREIGNBOX', json_encode($general));
+        $this->assertStringNotContainsString($theirs->name, json_encode($general));
+
+        // Withheld out loud, never a clean empty list that reads as "no devices".
+        $this->assertArrayHasKey('client_scoped_detail', $general);
+        $this->assertStringContainsString('find_assets', $general['client_scoped_detail']);
+
+        // And the deeper rows are refused outright on that surface, not emptied.
+        $unscopedExpand = (new AssistantToolExecutor)->execute('get_ticket_detail', [
+            'ticket_id' => $foreign->id,
+            'expand' => ['assets'],
+        ]);
+        $this->assertArrayHasKey('error', $unscopedExpand);
+        $this->assertStringNotContainsString('SER-FOREIGN', json_encode($unscopedExpand));
     }
 
     // ── Part 2: related stubs + expand ───────────────────────────────────────
@@ -138,7 +161,7 @@ class AssetVisibilityTest extends TestCase
             'assignee_id' => $assignee->id,
         ]);
 
-        $result = (new AssistantToolExecutor)->execute('get_ticket_detail', ['ticket_id' => $ticket->id]);
+        $result = (new AssistantToolExecutor(clientId: $client->id))->execute('get_ticket_detail', ['ticket_id' => $ticket->id]);
 
         $this->assertSame($client->id, $result['related']['client']['id']);
         $this->assertSame($client->name, $result['related']['client']['name']);
@@ -153,7 +176,7 @@ class AssetVisibilityTest extends TestCase
         $asset = $this->asset($client->id, 'VIS-EXPAND', extra: ['serial_number' => 'SER-823', 'os' => 'Windows 11 Pro']);
         $ticket->assets()->attach($asset->id, ['is_primary' => true]);
 
-        $result = (new AssistantToolExecutor)->execute('get_ticket_detail', [
+        $result = (new AssistantToolExecutor(clientId: $client->id))->execute('get_ticket_detail', [
             'ticket_id' => $ticket->id,
             'expand' => ['assets'],
         ]);
@@ -249,6 +272,34 @@ class AssetVisibilityTest extends TestCase
         $this->assertContains($a2->id, $ids);
         $this->assertNotContains($gone->id, $ids, 'the profile fleet block is in-service devices only');
         $this->assertSame(2, $result['assets_count']);
+    }
+
+    public function test_get_client_fleet_block_hands_off_to_find_assets_offset_without_losing_rows(): void
+    {
+        // The descriptions document "continue the 50-row block at find_assets
+        // offset=50". That walk is only sound if both sides share a TOTAL
+        // order, so give every device the same hostname: with hostname alone
+        // the two sorts disagree, the handoff skips rows, and has_more=false
+        // reports the partial fleet as the whole fleet (T-22797).
+        $client = Client::factory()->create();
+        for ($i = 0; $i < 55; $i++) {
+            $this->asset($client->id, 'VIS-TIE');
+        }
+
+        $x = new AssistantToolExecutor(clientId: $client->id);
+
+        $profile = $x->execute('get_client', []);
+        $this->assertCount(50, $profile['assets']);
+        $this->assertSame(55, $profile['assets_count']);
+
+        $remainder = $x->execute('find_assets', ['offset' => 50, 'limit' => 25]);
+
+        $walked = array_merge(
+            array_column($profile['assets'], 'id'),
+            array_column($remainder['assets'], 'id'),
+        );
+        $this->assertCount(55, array_unique($walked), 'the documented offset=50 handoff must not skip or repeat a device');
+        $this->assertFalse($remainder['has_more']);
     }
 
     // ── Part 3: find_assets without query ────────────────────────────────────
