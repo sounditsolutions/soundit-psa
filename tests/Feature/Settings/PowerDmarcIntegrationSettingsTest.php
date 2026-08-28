@@ -18,6 +18,10 @@ use Tests\TestCase;
  * (encrypted, blank = keep), optional base-URL override (blank = clear), Test
  * Connection, and the master toggle whose confirmation names the MCP
  * tool-withdrawal consequence (OFF=OFF).
+ *
+ * Base-URL URLs in these tests use public IP literals, never hostnames:
+ * SafeWebhookUrl (#724) DNS-resolves hostnames and fails closed on NXDOMAIN,
+ * so a .test-TLD hostname would bounce for the wrong reason.
  */
 class PowerDmarcIntegrationSettingsTest extends TestCase
 {
@@ -30,6 +34,26 @@ class PowerDmarcIntegrationSettingsTest extends TestCase
         parent::setUp();
 
         $this->user = User::factory()->create();
+    }
+
+    /**
+     * A role the write gate (#762) must refuse. The UserRole enum landed
+     * without factory states, so take any case that is not the factory's
+     * default (Admin) instead of hard-coding a backing value here.
+     */
+    private function nonAdminRole(): mixed
+    {
+        $adminRole = User::factory()->make()->role;
+
+        if ($adminRole instanceof \BackedEnum) {
+            foreach ($adminRole::cases() as $case) {
+                if ($case !== $adminRole) {
+                    return $case;
+                }
+            }
+        }
+
+        return 'tech';
     }
 
     /** @param array<int, Response> $queue */
@@ -138,10 +162,11 @@ class PowerDmarcIntegrationSettingsTest extends TestCase
         $this->actingAs($this->user)
             ->post(route('settings.integrations.powerdmarc.update'), [
                 'api_key' => '',
-                'base_url' => 'https://powerdmarc-proxy.example.test',
-            ]);
+                'base_url' => 'https://93.184.216.34/pdmarc-proxy',
+            ])
+            ->assertSessionHasNoErrors();
 
-        $this->assertSame('https://powerdmarc-proxy.example.test', PowerDmarcConfig::baseUrl());
+        $this->assertSame('https://93.184.216.34/pdmarc-proxy', PowerDmarcConfig::baseUrl());
 
         $this->actingAs($this->user)
             ->post(route('settings.integrations.powerdmarc.update'), [
@@ -150,6 +175,73 @@ class PowerDmarcIntegrationSettingsTest extends TestCase
             ]);
 
         $this->assertSame(PowerDmarcConfig::DEFAULT_BASE_URL, PowerDmarcConfig::baseUrl(), 'a blank base URL must clear the override');
+    }
+
+    public function test_the_base_url_rejects_plain_http(): void
+    {
+        // #724: the client sends the Bearer key to whatever base_url names —
+        // an http:// override would ship the credential in cleartext.
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.powerdmarc.update'), [
+                'api_key' => '',
+                'base_url' => 'http://93.184.216.34/pdmarc-proxy',
+            ])
+            ->assertSessionHasErrors('base_url');
+
+        $this->assertSame(PowerDmarcConfig::DEFAULT_BASE_URL, PowerDmarcConfig::baseUrl(), 'a rejected override must not be stored');
+    }
+
+    public function test_the_base_url_rejects_private_and_metadata_targets(): void
+    {
+        foreach ([
+            'https://169.254.169.254/latest/meta-data',
+            'https://10.0.0.5/pdmarc',
+            'https://127.0.0.1/pdmarc',
+        ] as $url) {
+            $this->actingAs($this->user)
+                ->post(route('settings.integrations.powerdmarc.update'), [
+                    'api_key' => '',
+                    'base_url' => $url,
+                ])
+                ->assertSessionHasErrors('base_url');
+        }
+
+        $this->assertSame(PowerDmarcConfig::DEFAULT_BASE_URL, PowerDmarcConfig::baseUrl(), 'a rejected override must not be stored');
+    }
+
+    public function test_non_admin_users_cannot_write_powerdmarc_settings(): void
+    {
+        // #762: base_url decides where the stored key is sent (#724), so the
+        // write route is admin-gated. 403, and nothing may be stored.
+        $tech = User::factory()->create(['role' => $this->nonAdminRole()]);
+
+        $this->actingAs($tech)
+            ->post(route('settings.integrations.powerdmarc.update'), [
+                'api_key' => 'smuggled-key',
+                'base_url' => 'https://93.184.216.34/attacker',
+            ])
+            ->assertForbidden();
+
+        $this->assertNull(Setting::where('key', 'powerdmarc_api_key')->value('value'));
+        $this->assertSame(PowerDmarcConfig::DEFAULT_BASE_URL, PowerDmarcConfig::baseUrl());
+    }
+
+    public function test_an_explicit_admin_passes_the_write_gate(): void
+    {
+        // The factory already defaults role to Admin (every existing user was
+        // migrated there in #762), so no state is needed to sit on the allowed
+        // side of the gate.
+        $admin = User::factory()->create();
+
+        $this->actingAs($admin)
+            ->post(route('settings.integrations.powerdmarc.update'), [
+                'api_key' => 'admin-key',
+                'base_url' => '',
+            ])
+            ->assertRedirect(route('settings.integrations'))
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame('admin-key', PowerDmarcConfig::get('api_key'));
     }
 
     public function test_test_connection_reports_unconfigured_without_an_api_key(): void

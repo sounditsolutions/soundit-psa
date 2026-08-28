@@ -423,7 +423,11 @@ Route::middleware('auth')->group(function () {
     // Auto-match WRITES pivot rows, so it is a POST under the web group's CSRF
     // middleware — a GET here is forgeable by an <img> tag or a link prefetcher.
     Route::post('/settings/integrations/powerdmarc/domains/auto-match', [\App\Http\Controllers\Web\PowerDmarcDomainController::class, 'autoMatch'])->name('settings.powerdmarc-domains.auto-match');
-    Route::post('/settings/integrations/powerdmarc', [IntegrationsController::class, 'updatePowerDmarc'])->name('settings.integrations.powerdmarc.update');
+    // Credential write is admin-only (#762): repointing base_url ships the
+    // stored Bearer key to the host it names (#724), so this is the write half
+    // of that chain. First route on the UserRole 'admin' gate; widening the
+    // gate across the other integration credential writes is #762's follow-up.
+    Route::post('/settings/integrations/powerdmarc', [IntegrationsController::class, 'updatePowerDmarc'])->middleware('admin')->name('settings.integrations.powerdmarc.update');
     Route::post('/settings/integrations/powerdmarc/test', [IntegrationsController::class, 'testPowerDmarc'])->name('settings.integrations.powerdmarc.test');
 
     // Settings — Servosity
