@@ -496,4 +496,40 @@ class PowerDmarcClientReadTest extends TestCase
 
         $this->assertCount(1, $this->history, 'no page may be fetched once the budget is spent');
     }
+
+    public function test_the_walk_budget_comes_from_config_and_defaults_above_the_documented_ceiling(): void
+    {
+        // The budget must be a DIAL, not a baked-in constant. Reaching the
+        // ~6000-domain ceiling allMsspDomains() advertises costs 400 sequential
+        // round trips (~60-100s at 150-250ms each), and PowerDmarcDomainController
+        // passes no argument — so a default that cannot cover that walk, with no
+        // setting to raise it, re-breaks the exact account class the 400-page cap
+        // was raised to serve.
+        $this->assertGreaterThanOrEqual(
+            100,
+            \App\Support\PowerDmarcConfig::DEFAULT_MSSP_WALK_SECONDS,
+            'the default budget must cover a full 400-page walk at realistic round trips'
+        );
+
+        $this->history = [];
+        $stack = HandlerStack::create(new MockHandler([
+            $this->msspPage([$this->msspRow(101, 'a.com')], self::MSSP_BASE.'/api/v1/mssp/accounts/domains?page=2'),
+            $this->msspPage([$this->msspRow(102, 'b.com')], null),
+        ]));
+        $stack->push(Middleware::history($this->history));
+
+        // 0 is not a settable value (msspWalkSeconds() clamps to >= 10) — it is
+        // just the cheapest proof that the walk reads the CONFIGURED budget with
+        // no caller argument, which is exactly how fetchDomains() calls it.
+        $client = new PowerDmarcClient([
+            'api_key' => 'test-key',
+            'mssp_base_url' => self::MSSP_BASE,
+            'mssp_walk_seconds' => 0,
+        ], new GuzzleClient(['base_uri' => 'https://app.powerdmarc.com/', 'handler' => $stack]));
+
+        $this->expectException(PowerDmarcClientException::class);
+        $this->expectExceptionMessage('still paging');
+
+        $client->allMsspDomains();
+    }
 }

@@ -19,12 +19,35 @@ class PowerDmarcConfig
 {
     public const DEFAULT_BASE_URL = 'https://app.powerdmarc.com';
 
+    /**
+     * Default wall-clock budget for ONE MSSP page walk (#801), in seconds.
+     *
+     * Sized to the ceiling allMsspDomains() advertises, not to a round number:
+     * 400 pages x ~15 pinned rows is ~6000 domains, and reaching it costs 400
+     * SEQUENTIAL HTTPS round trips at ~150-250ms each against the tenant
+     * portal. A 20s budget covers only ~80-130 of those pages, so accounts well
+     * inside the documented ceiling would throw on every fetchDomains() path —
+     * the same 'the feature fails for exactly the account class it exists for'
+     * breakage the 400-page cap was raised to fix. 120s clears 400 pages at the
+     * slow end of that range.
+     *
+     * Note the budget is NOT sized under max_execution_time: on Unix php-fpm
+     * that timer excludes time spent waiting on sockets, so it was never the
+     * thing killing a network-bound walk. The budget exists so a THROTTLED or
+     * cycling portal fails loudly and inside the request instead of pinning a
+     * worker until the gateway gives up — which is why it stays settable:
+     * installs behind a shorter proxy timeout lower it, very large accounts on
+     * a slow portal raise it.
+     */
+    public const DEFAULT_MSSP_WALK_SECONDS = 120;
+
     public static function get(string $key): ?string
     {
         return match ($key) {
             'api_key' => Setting::getEncrypted('powerdmarc_api_key'),
             'base_url' => Setting::getValue('powerdmarc_base_url', self::DEFAULT_BASE_URL),
             'mssp_base_url' => Setting::getValue('powerdmarc_mssp_base_url', ''),
+            'mssp_walk_seconds' => Setting::getValue('powerdmarc_mssp_walk_seconds', ''),
             default => null,
         };
     }
@@ -41,6 +64,22 @@ class PowerDmarcConfig
         $configured = rtrim(trim((string) self::get('mssp_base_url')), '/');
 
         return $configured !== '' ? $configured : null;
+    }
+
+    /**
+     * Wall-clock budget for one MSSP page walk (#801). Blank/0 means the
+     * default; the bounds match the settings form so a hand-edited settings row
+     * cannot disable the deadline (0/negative) or make it unreachable.
+     */
+    public static function msspWalkSeconds(): int
+    {
+        $configured = (int) trim((string) self::get('mssp_walk_seconds'));
+
+        if ($configured <= 0) {
+            return self::DEFAULT_MSSP_WALK_SECONDS;
+        }
+
+        return max(10, min(600, $configured));
     }
 
     /**
