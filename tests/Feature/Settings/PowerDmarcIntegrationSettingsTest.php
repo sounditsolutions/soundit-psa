@@ -36,6 +36,26 @@ class PowerDmarcIntegrationSettingsTest extends TestCase
         $this->user = User::factory()->create();
     }
 
+    /**
+     * A role the write gate (#762) must refuse. The UserRole enum landed
+     * without factory states, so take any case that is not the factory's
+     * default (Admin) instead of hard-coding a backing value here.
+     */
+    private function nonAdminRole(): mixed
+    {
+        $adminRole = User::factory()->make()->role;
+
+        if ($adminRole instanceof \BackedEnum) {
+            foreach ($adminRole::cases() as $case) {
+                if ($case !== $adminRole) {
+                    return $case;
+                }
+            }
+        }
+
+        return 'tech';
+    }
+
     /** @param array<int, Response> $queue */
     private function bindClientReturning(array $queue): void
     {
@@ -193,7 +213,7 @@ class PowerDmarcIntegrationSettingsTest extends TestCase
     {
         // #762: base_url decides where the stored key is sent (#724), so the
         // write route is admin-gated. 403, and nothing may be stored.
-        $tech = User::factory()->tech()->create();
+        $tech = User::factory()->create(['role' => $this->nonAdminRole()]);
 
         $this->actingAs($tech)
             ->post(route('settings.integrations.powerdmarc.update'), [
@@ -208,7 +228,10 @@ class PowerDmarcIntegrationSettingsTest extends TestCase
 
     public function test_an_explicit_admin_passes_the_write_gate(): void
     {
-        $admin = User::factory()->admin()->create();
+        // The factory already defaults role to Admin (every existing user was
+        // migrated there in #762), so no state is needed to sit on the allowed
+        // side of the gate.
+        $admin = User::factory()->create();
 
         $this->actingAs($admin)
             ->post(route('settings.integrations.powerdmarc.update'), [

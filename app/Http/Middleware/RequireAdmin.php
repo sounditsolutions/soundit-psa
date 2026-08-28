@@ -22,9 +22,18 @@ class RequireAdmin
 {
     public function handle(Request $request, Closure $next): Response
     {
-        $user = $request->user();
+        // Read the role off the model rather than through a User helper: the
+        // UserRole enum (#762) landed with no accessors, and normalising here
+        // keeps the gate correct whether `role` is cast to the enum or still
+        // reads as its raw string. Anything that is not Admin — a guest, a
+        // null role, an unknown value — fails closed.
+        $role = $request->user()?->role;
 
-        if ($user === null || ! $user->isAdmin()) {
+        if ($role instanceof \BackedEnum) {
+            $role = $role->value;
+        }
+
+        if (! is_string($role) || strtolower($role) !== 'admin') {
             abort(403, 'Administrator access required.');
         }
 
