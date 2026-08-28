@@ -188,13 +188,18 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'get_ticket_detail',
-                'description' => 'Get details, recent notes, and a summary of any linked phone calls for a ticket by ID. Use to inspect a specific ticket. Ticket-level attachments and each note\'s attachments are listed as metadata refs (attachment_id, filename, mime_type, size_bytes, is_inline — inline means an image embedded in an email body); fetch bytes with get_ticket_attachment. Includes an applicable_sop block: the ticket\'s taxonomy category path and that category\'s FULL standard-operating-procedure text, with its authoring status (a hint only — draft SOPs are still served), last-updated time, and an edit deep-link. A gap marker (no_category / no_sop_text) means the ticket needs a category assigned or the SOP needs authoring — worth fixing as you work. For full call transcripts, follow up with get_ticket_calls.',
+                'description' => 'Get details, recent notes, and a summary of any linked phone calls for a ticket by ID. Use to inspect a specific ticket. Ticket-level attachments and each note\'s attachments are listed as metadata refs (attachment_id, filename, mime_type, size_bytes, is_inline — inline means an image embedded in an email body); fetch bytes with get_ticket_attachment. Includes an applicable_sop block: the ticket\'s taxonomy category path and that category\'s FULL standard-operating-procedure text, with its authoring status (a hint only — draft SOPs are still served), last-updated time, and an edit deep-link. A gap marker (no_category / no_sop_text) means the ticket needs a category assigned or the SOP needs authoring — worth fixing as you work. On a client-scoped read it also returns a flat assets array (the ticket\'s linked devices: id, hostname, type, is_active, is_primary) and a related block of id+name stubs for the client, contact, and assignee, so a single read orients you; pass expand: ["assets"] for fuller linked-device rows. On the unscoped cross-client staff read those two blocks are withheld, and so are the top-level client and contact name fields (the same names the stubs carry) — the response carries client_scoped_detail saying so rather than an empty device list — and expand: ["assets"] is refused; get that client\'s devices from find_assets instead. For full call transcripts, follow up with get_ticket_calls.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'ticket_id' => [
                             'type' => 'integer',
                             'description' => 'The ticket ID',
+                        ],
+                        'expand' => [
+                            'type' => 'array',
+                            'items' => ['type' => 'string', 'enum' => ['assets']],
+                            'description' => 'Opt-in deeper related data. Supported: "assets" (fuller rows for the linked devices, under expanded.assets).',
                         ],
                     ],
                     'required' => ['ticket_id'],
@@ -343,7 +348,7 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'get_client',
-                'description' => 'Get profile details for the current client, including free-form notes maintained by staff.',
+                'description' => 'Get profile details for the current client, including free-form notes maintained by staff. Also returns the client\'s in-service device fleet as a flat assets array (id, hostname, type, is_active; capped at 50 rows) with assets_count carrying the uncapped active total — if assets_count exceeds the rows shown, list the remainder with find_assets: omit query, leave include_inactive unset, and start at offset=50 — this block and that list share one order (active devices by hostname, then id), so offset=50 resumes exactly where these rows stop — then keep paging while has_more is true.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => (object) [],
@@ -351,7 +356,7 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'get_person',
-                'description' => 'Look up a contact at this client by id, email, or name (partial match). Returns only ACTIVE contacts by default — a deactivated/offboarded person is reported as "not found" unless you set include_inactive, so a routine lookup never surfaces a terminated employee for routing. Returns job title, department, emails, M365 enrichment, and any free-form notes.',
+                'description' => 'Look up a contact at this client by id, email, or name (partial match). Returns only ACTIVE contacts by default — a deactivated/offboarded person is reported as "not found" unless you set include_inactive, so a routine lookup never surfaces a terminated employee for routing. Returns job title, department, emails, M365 enrichment, and any free-form notes, plus a related block (client stub and the person\'s assigned devices as id+name stubs); pass expand: ["assets"] for fuller device rows.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -371,13 +376,18 @@ class AssistantToolDefinitions
                             'type' => 'boolean',
                             'description' => 'Resolve deactivated/offboarded contacts too. Defaults to false (active only).',
                         ],
+                        'expand' => [
+                            'type' => 'array',
+                            'items' => ['type' => 'string', 'enum' => ['assets']],
+                            'description' => 'Opt-in deeper related data. Supported: "assets" (fuller rows for the person\'s assigned devices, under expanded.assets).',
+                        ],
                     ],
                     'required' => [],
                 ],
             ],
             [
                 'name' => 'get_asset',
-                'description' => 'Look up a device (asset) at this client by id or hostname. Returns only ACTIVE (in-service) devices by default — a deactivated device is reported as "not found" unless you set include_inactive; retired/soft-deleted assets are never returned. Returns hardware, OS, warranty, RMM IDs, and free-form notes.',
+                'description' => 'Look up a device (asset) at this client by id or hostname. Returns only ACTIVE (in-service) devices by default — a deactivated device is reported as "not found" unless you set include_inactive; retired/soft-deleted assets are never returned. Returns hardware, OS, warranty, RMM IDs, and free-form notes, plus a related block (owning client stub, assigned users as id+name stubs, tickets_count, and the 5 most recent linked tickets as stubs); pass expand: ["tickets"] for up to 20 fuller linked-ticket rows.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -392,6 +402,11 @@ class AssistantToolDefinitions
                         'include_inactive' => [
                             'type' => 'boolean',
                             'description' => 'Resolve deactivated devices too. Defaults to false (active only). Retired/soft-deleted assets are never returned.',
+                        ],
+                        'expand' => [
+                            'type' => 'array',
+                            'items' => ['type' => 'string', 'enum' => ['tickets']],
+                            'description' => 'Opt-in deeper related data. Supported: "tickets" (up to 20 recent linked tickets with status/priority/dates, under expanded.tickets).',
                         ],
                     ],
                     'required' => [],
@@ -421,13 +436,13 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'find_assets',
-                'description' => 'Search assets/devices by hostname, name, or serial number (partial case-insensitive). If client_id is provided the search is scoped to that client; otherwise it searches across ALL clients and returns each match with its owning client_id and client_name. Returns only ACTIVE (in-service) assets by default; set include_inactive to true to ALSO include DEACTIVATED (is_active=false) assets — retired/soft-deleted assets are never returned by this tool (every result carries is_active either way). Use the cross-client form when you only have a serial number, hostname, or device descriptor and don\'t yet know what client owns it.',
+                'description' => 'Search assets/devices by hostname, name, or serial number (partial case-insensitive) — or OMIT query entirely to list assets outright (the way to answer "what devices does this client have"; never probe with a junk query, a zero-match search is indistinguishable from a client with no assets). If client_id is provided the search/list is scoped to that client; otherwise it runs across ALL clients and returns each match with its owning client_id and client_name. Returns only ACTIVE (in-service) assets by default; set include_inactive to true to ALSO include DEACTIVATED (is_active=false) assets — retired/soft-deleted assets are never returned by this tool (every result carries is_active either way). The response carries total (full matching count) and has_more — when has_more is true the list is truncated at your limit, not complete. Page with offset while has_more is true (offset=25 after a 25-row page, then 50, and so on) — this is the only way past a capped list, including get_client\'s 50-row fleet block, which this tool orders identically (active only, hostname then id): continue it with query omitted, include_inactive unset, and offset=50. Use the cross-client form when you only have a serial number, hostname, or device descriptor and don\'t yet know what client owns it.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'query' => [
                             'type' => 'string',
-                            'description' => 'Hostname / name / serial fragment.',
+                            'description' => 'Hostname / name / serial fragment. OPTIONAL: omit to list all assets in scope (capped at limit; check total/has_more).',
                         ],
                         'include_inactive' => [
                             'type' => 'boolean',
@@ -435,10 +450,14 @@ class AssistantToolDefinitions
                         ],
                         'limit' => [
                             'type' => 'integer',
-                            'description' => 'Max results (default 10, max 25).',
+                            'description' => 'Max results per page (default 10 for a search, 25 for a list-all; max 25).',
+                        ],
+                        'offset' => [
+                            'type' => 'integer',
+                            'description' => 'Results to skip for paging (default 0). When has_more is true, re-issue the same call with offset = offset + count to get the next page.',
                         ],
                     ],
-                    'required' => ['query'],
+                    'required' => [],
                 ],
             ],
         ];

@@ -458,10 +458,46 @@ class AssistantToolExecutor
             return ['error' => 'ticket_id is required'];
         }
 
+        $expand = self::requestedExpand($input, ['assets']);
+        if (isset($expand['error'])) {
+            return $expand;
+        }
+
         // categoryNode.parent.parent: the taxonomy tree is depth <= 3, so this
         // loads the whole ancestor chain pathString() walks in one pass.
-        $ticket = Ticket::with(['client:id,name,stage', 'assignee:id,name', 'contact', 'categoryNode.parent.parent'])->find($ticketId);
+        $ticketQuery = Ticket::with(['client:id,name,stage', 'assignee:id,name', 'contact', 'categoryNode.parent.parent', 'assets']);
+
+        // Two branches, and NEITHER is getAsset/getPerson parity — those refuse
+        // outright on a null client, which this read cannot do: the unscoped
+        // executor is the staff board (generalTools, McpStaffController injects
+        // no client_id), and it is the only place a client_id IS NULL
+        // UNRESOLVED-INTAKE ticket is reachable at all (psa-6usr). So:
+        //   scoped   — the ticket must belong to the client context, and an
+        //              out-of-scope id is not-found, never a partial read.
+        //   unscoped — the ticket text stays readable, but the psa-823 payload
+        //              does NOT: the linked devices (hostname/type, plus
+        //              serial/os/last_user under expand) and every client/
+        //              contact name — the related stubs AND the top-level
+        //              client/contact scalars, which carry those same two
+        //              names — are withheld below, because a bare id here is the
+        //              one path where a caller names a record it was never
+        //              scoped to, and that payload would hand it another
+        //              client's fleet. find_assets is the staff route to device
+        //              data — it is client_id-optional by design and already
+        //              publishes those columns cross-client.
+        $scoped = (bool) $this->clientId;
+
+        if ($scoped) {
+            $ticketQuery->where('client_id', $this->clientId);
+        }
+
+        if (! $scoped && in_array('assets', $expand, true)) {
+            return ['error' => 'expand: ["assets"] needs a client-scoped read of this ticket — linked-device detail (serial, os, last_user) is client-fenced. Read the ticket from its client context, or use find_assets (client_id optional) for device data.'];
+        }
+
+        $ticket = $ticketQuery->find($ticketId);
         if (! $ticket) {
+            // Existence is never confirmed: out-of-scope reads exactly like unknown.
             return ['error' => 'Ticket not found'];
         }
 
@@ -488,7 +524,7 @@ class AssistantToolExecutor
             PhoneCall::where('ticket_id', $ticketId)->max('started_at'),
         ])->filter()->map(fn ($t) => $t instanceof \Carbon\CarbonInterface ? $t : \Illuminate\Support\Carbon::parse($t))->max() ?? $ticket->created_at;
 
-        return [
+        $out = [
             'id' => $ticket->id,
             'display_id' => $ticket->display_id,
             'subject' => $ticket->subject,
@@ -505,6 +541,23 @@ class AssistantToolExecutor
             'last_activity_at' => $lastActivityAt?->toDateTimeString(),
             'resolved_at' => $ticket->resolved_at?->toDateTimeString(),
             'resolution' => $ticket->resolution,
+            // psa-823 (T-22797): the ticket's linked assets, flat — a ticket
+            // read must show the devices in play without a second call. EVERY
+            // linked asset appears, deactivated ones included (the link itself
+            // is the relevance signal; is_active flags them). Retired/
+            // soft-deleted assets stay out via the model's SoftDeletes scope.
+            'assets' => $ticket->assets->map(fn (Asset $a) => self::assetStubRow($a) + [
+                'is_primary' => (bool) $a->pivot->is_primary,
+            ])->values()->toArray(),
+            // One shallow layer of id+name stubs so a read orients the caller
+            // without guessing ids from names (psa-823 part 2). Stubs only —
+            // full records are a follow-up get_* call or an expand opt-in.
+            // Deliberately NO invoice/billing stubs on ticket reads.
+            'related' => [
+                'client' => $ticket->client ? ['id' => $ticket->client->id, 'name' => $ticket->client->name] : null,
+                'contact' => $ticket->contact ? ['id' => $ticket->contact->id, 'name' => $ticket->contact->fullName] : null,
+                'assignee' => $ticket->assignee ? ['id' => $ticket->assignee->id, 'name' => $ticket->assignee->name] : null,
+            ],
             'applicable_sop' => $this->applicableSopBlock($ticket),
             // Ticket-level attachments only; note-level ones ride on their note
             // below, preserving which message each file arrived with.
@@ -532,6 +585,25 @@ class AssistantToolExecutor
                 'has_transcript' => $c->isTranscribed() && ($c->cleaned_transcript || $c->transcription),
             ])->toArray(),
         ];
+
+        if (in_array('assets', $expand, true)) {
+            $out['expanded']['assets'] = $ticket->assets->map(fn (Asset $a) => self::assetDetailRow($a) + [
+                'is_primary' => (bool) $a->pivot->is_primary,
+            ])->values()->toArray();
+        }
+
+        if (! $scoped) {
+            // Withheld, and it says so: an empty assets array would read as
+            // "this ticket has no devices" and a missing related block as "no
+            // client on file" — the T-22797 false clear, on the fenced side.
+            // The top-level client/contact scalars go with the stubs: they hold
+            // the SAME two names, so dropping only the related block would keep
+            // disclosing the foreign client while the marker claims otherwise.
+            unset($out['assets'], $out['related'], $out['client'], $out['contact']);
+            $out['client_scoped_detail'] = 'withheld — the client and contact names, the linked devices, and the related-record stubs are returned only on a client-scoped read of this ticket; use find_assets for device data on this surface';
+        }
+
+        return $out;
     }
 
     /**
@@ -1039,11 +1111,33 @@ class AssistantToolExecutor
         }
     }
 
+    /** get_client asset-fleet block cap — assets_count carries the real total. */
+    private const CLIENT_ASSETS_CAP = 50;
+
     private function getClient(): array
     {
         if (! $this->client) {
             return ['error' => 'No client context'];
         }
+
+        // psa-823 (T-22797): the client's in-service device fleet, flat, on the
+        // profile read. ACTIVE assets only — this block answers "what devices
+        // does this client have"; decommissioned units are a deliberate
+        // find_assets include_inactive lookup, not routine profile data.
+        // assets_count is the UNCAPPED active total, so a capped list can never
+        // read as complete when it is not.
+        // Same total order as find_assets over the same active-only set
+        // (hostname, then id). The descriptions tell callers to continue this
+        // capped block at find_assets offset=50; with NULL or duplicate
+        // hostnames an untied sort makes that walk skip rows and still finish
+        // has_more=false — a partial fleet reading as the whole fleet.
+        $fleet = Asset::where('client_id', $this->client->id)
+            ->active()
+            ->orderBy('hostname')
+            ->orderBy('id')
+            ->limit(self::CLIENT_ASSETS_CAP)
+            ->get(['id', 'name', 'hostname', 'asset_type', 'is_active']);
+        $fleetTotal = Asset::where('client_id', $this->client->id)->active()->count();
 
         return [
             'id' => $this->client->id,
@@ -1060,6 +1154,8 @@ class AssistantToolExecutor
             ]))) ?: null,
             'notes' => $this->client->notes,
             'is_active' => $this->client->is_active,
+            'assets_count' => $fleetTotal,
+            'assets' => $fleet->map(fn (Asset $a) => self::assetStubRow($a))->values()->toArray(),
         ];
     }
 
@@ -1070,6 +1166,11 @@ class AssistantToolExecutor
         }
 
         $includeInactive = self::wantsInactive($input);
+
+        $expand = self::requestedExpand($input, ['assets']);
+        if (isset($expand['error'])) {
+            return $expand;
+        }
 
         $query = Person::where('client_id', $this->clientId);
 
@@ -1104,7 +1205,7 @@ class AssistantToolExecutor
             return ['error' => 'Person not found at this client'.$hint];
         }
 
-        return [
+        $out = [
             'id' => $person->id,
             'name' => $person->full_name,
             'email' => $person->email,
@@ -1119,7 +1220,22 @@ class AssistantToolExecutor
             'mfa_enabled' => $person->mfa_enabled,
             'm365_user_type' => $person->m365_user_type,
             'notes' => $person->notes,
+            // psa-823 part 2: one shallow orientation layer. Assets fenced
+            // active-only, same as every routine read on this surface.
+            'related' => [
+                'client' => $this->client ? ['id' => $this->client->id, 'name' => $this->client->name] : null,
+                'assets' => $person->assets()->active()
+                    ->get(['assets.id', 'assets.name', 'assets.hostname', 'assets.asset_type', 'assets.is_active'])
+                    ->map(fn (Asset $a) => self::assetStubRow($a))->values()->toArray(),
+            ],
         ];
+
+        if (in_array('assets', $expand, true)) {
+            $out['expanded']['assets'] = $person->assets()->active()->get()
+                ->map(fn (Asset $a) => self::assetDetailRow($a))->values()->toArray();
+        }
+
+        return $out;
     }
 
     private function getAsset(array $input): array
@@ -1129,6 +1245,11 @@ class AssistantToolExecutor
         }
 
         $includeInactive = self::wantsInactive($input);
+
+        $expand = self::requestedExpand($input, ['tickets']);
+        if (isset($expand['error'])) {
+            return $expand;
+        }
 
         $query = Asset::where('client_id', $this->clientId);
 
@@ -1155,7 +1276,7 @@ class AssistantToolExecutor
             return ['error' => 'Asset not found at this client'.$hint];
         }
 
-        return [
+        $out = [
             'id' => $asset->id,
             'name' => $asset->name,
             'hostname' => $asset->hostname,
@@ -1175,7 +1296,51 @@ class AssistantToolExecutor
             'level_id' => $asset->level_id,
             'tactical_asset_id' => $asset->tactical_asset_id,
             'notes' => $asset->notes,
+            // psa-823 part 2: one shallow orientation layer — owning client,
+            // assigned users (active only, house fence), and the most recent
+            // linked tickets as stubs. tickets_count is uncapped so the stub
+            // list can never read as the whole history.
+            'related' => [
+                'client' => $asset->client ? ['id' => $asset->client->id, 'name' => $asset->client->name] : null,
+                'users' => $asset->users()->active()
+                    ->get(['people.id', 'people.first_name', 'people.last_name'])
+                    ->map(fn (Person $p) => ['id' => $p->id, 'name' => trim("{$p->first_name} {$p->last_name}")])
+                    ->values()->toArray(),
+                'tickets_count' => $asset->tickets()->count(),
+                // halo_id rides along because display_id is an ACCESSOR over it
+                // ("#{halo_id}", else "T-{id}"): a column-restricted select that
+                // omits it silently renders every migrated ticket as T-{id}.
+                'recent_tickets' => $asset->tickets()
+                    ->orderByDesc('tickets.created_at')
+                    ->limit(5)
+                    ->get(['tickets.id', 'tickets.halo_id', 'tickets.subject', 'tickets.status'])
+                    ->map(fn (Ticket $t) => [
+                        'id' => $t->id,
+                        'display_id' => $t->display_id,
+                        'subject' => $t->subject,
+                        'status' => $t->status->value,
+                    ])->values()->toArray(),
+            ],
         ];
+
+        if (in_array('tickets', $expand, true)) {
+            $out['expanded']['tickets'] = $asset->tickets()
+                ->orderByDesc('tickets.created_at')
+                ->limit(20)
+                // halo_id: display_id is an accessor over it, same as above.
+                ->get(['tickets.id', 'tickets.halo_id', 'tickets.subject', 'tickets.status', 'tickets.priority', 'tickets.created_at', 'tickets.resolved_at'])
+                ->map(fn (Ticket $t) => [
+                    'id' => $t->id,
+                    'display_id' => $t->display_id,
+                    'subject' => $t->subject,
+                    'status' => $t->status->value,
+                    'priority' => $t->priority->value,
+                    'created_at' => $t->created_at?->toDateTimeString(),
+                    'resolved_at' => $t->resolved_at?->toDateTimeString(),
+                ])->values()->toArray();
+        }
+
+        return $out;
     }
 
     private function findClients(array $input): array
@@ -1222,6 +1387,72 @@ class AssistantToolExecutor
     private static function wantsInactive(array $input): bool
     {
         return ($input['include_inactive'] ?? false) === true;
+    }
+
+    /**
+     * Parse the expand opt-in on entity gets (psa-823 part 2). Same fail-closed
+     * posture as wantsInactive — these tools dispatch raw, unvalidated input, so
+     * anything that is not an array of KNOWN strings is refused with the
+     * supported values named. A typo'd expansion must never silently degrade to
+     * the shallow default: the caller asked for more and would read the shallow
+     * answer as complete.
+     *
+     * @param  array<string, mixed>  $input
+     * @param  list<string>  $supported
+     * @return list<string>|array{error: string}
+     */
+    private static function requestedExpand(array $input, array $supported): array
+    {
+        $raw = $input['expand'] ?? [];
+        if (! is_array($raw)) {
+            return ['error' => 'expand must be an array of strings; supported: '.implode(', ', $supported)];
+        }
+
+        foreach ($raw as $value) {
+            if (! is_string($value) || ! in_array($value, $supported, true)) {
+                return ['error' => 'Unsupported expand value; supported: '.implode(', ', $supported)];
+            }
+        }
+
+        return array_values(array_unique($raw));
+    }
+
+    /**
+     * The flat asset stub served on ticket/client/person reads (psa-823 part 1):
+     * just enough to see the device exists and follow up with get_asset.
+     *
+     * @return array<string, mixed>
+     */
+    private static function assetStubRow(Asset $a): array
+    {
+        return [
+            'id' => $a->id,
+            'name' => $a->name,
+            'hostname' => $a->hostname,
+            'type' => $a->asset_type,
+            'is_active' => $a->is_active,
+        ];
+    }
+
+    /**
+     * The fuller asset row served under an expand opt-in — a working subset of
+     * get_asset's own shape (RMM ids and notes stay on get_asset).
+     *
+     * @return array<string, mixed>
+     */
+    private static function assetDetailRow(Asset $a): array
+    {
+        return [
+            'id' => $a->id,
+            'name' => $a->name,
+            'hostname' => $a->hostname,
+            'type' => $a->asset_type,
+            'serial_number' => $a->serial_number,
+            'os' => $a->os,
+            'last_user' => $a->last_user,
+            'warranty_end' => $a->warranty_end?->toDateString(),
+            'is_active' => $a->is_active,
+        ];
     }
 
     private function findPersons(array $input): array
@@ -1280,20 +1511,36 @@ class AssistantToolExecutor
 
     private function findAssets(array $input): array
     {
+        // psa-823 part 3 (T-22797): query is OPTIONAL — omitting it lists the
+        // scoped asset set outright. The old hard requirement forced probe
+        // queries like "-", whose clean zero was byte-identical to a truly
+        // asset-less client, and a real device got written up as absent.
+        // total/has_more below are the other half of the same fix: a
+        // truncated or empty answer must say what it is.
         $query = trim((string) ($input['query'] ?? ''));
-        if ($query === '') {
-            return ['error' => 'query is required'];
-        }
+        $listAll = $query === '';
 
-        $limit = min((int) ($input['limit'] ?? 10), 25);
+        // max(1, …): Laravel's limit() treats a negative as "no limit". A
+        // list-all defaults to the cap — an orientation listing wants the
+        // fleet, not the first 10 by hostname.
+        $limit = max(1, min((int) ($input['limit'] ?? ($listAll ? 25 : 10)), 25));
+
+        // offset is the ONLY way past the cap on this surface. get_client's fleet
+        // block truncates at CLIENT_ASSETS_CAP and points here for the remainder,
+        // so without a cursor every asset past the limit was unreachable through
+        // the whole tool surface — the same "a partial answer reads as complete"
+        // failure total/has_more exist to prevent (T-22797).
+        $offset = max(0, (int) ($input['offset'] ?? 0));
         $includeInactive = self::wantsInactive($input);
 
-        $q = Asset::query()
-            ->with('client:id,name')
-            ->where(fn ($w) => $w
+        $q = Asset::query()->with('client:id,name');
+
+        if (! $listAll) {
+            $q->where(fn ($w) => $w
                 ->where('name', 'like', "%{$query}%")
                 ->orWhere('hostname', 'like', "%{$query}%")
                 ->orWhere('serial_number', 'like', "%{$query}%"));
+        }
 
         // Fence on the RECORD's own is_active via Asset::scopeActive (mirroring
         // AssetService::getAssetList's is_active default), NOT the client's — same
@@ -1310,15 +1557,31 @@ class AssistantToolExecutor
             $q->where('client_id', $this->clientId);
         }
 
+        // Counted before ordering/limit: total is the full matching set, so a
+        // capped page can never silently read as the whole answer (T-22797).
+        $total = (clone $q)->count();
+
+        // orderBy('id') last: hostname ties need a total order, or a paged walk
+        // can repeat one row and skip another. get_client's fleet block sorts
+        // its active rows the same way (hostname, then id) so that a caller can
+        // continue that capped block here at offset=50 without losing rows.
         $assets = $q->orderByDesc('is_active')
             ->orderBy('hostname')
+            ->orderBy('id')
+            ->offset($offset)
             ->limit($limit)
             ->get(['id', 'client_id', 'name', 'hostname', 'asset_type', 'serial_number', 'os', 'last_user', 'is_active']);
 
         return [
             'count' => $assets->count(),
+            'total' => $total,
+            'offset' => $offset,
+            // Measured from where this page STARTED — rows remaining beyond
+            // offset+count must still read as more, or paging stops a page early.
+            'has_more' => $total > $offset + $assets->count(),
             'scope' => ($this->clientId ? "client_id={$this->clientId}" : 'cross-client (no client_id provided)')
-                .($includeInactive ? '; including inactive' : '; active only'),
+                .($includeInactive ? '; including inactive' : '; active only')
+                .($listAll ? '; list-all (no query)' : ''),
             'assets' => $assets->map(fn ($a) => [
                 'id' => $a->id,
                 'client_id' => $a->client_id,
@@ -1495,8 +1758,8 @@ class AssistantToolExecutor
     }
 
     /**
-     * get_email_item — full email detail by id, cross-client (mirrors
-     * getTicketDetail's by-id-with-no-client-gating precedent). Includes the
+     * get_email_item — full email detail by id, cross-client (by id, with no
+     * client gating of its own). Includes the
      * full body_text; only the by-id read exposes it, never the list.
      *
      * @param  array<string, mixed>  $input
