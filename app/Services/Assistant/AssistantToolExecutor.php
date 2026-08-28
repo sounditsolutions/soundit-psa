@@ -465,8 +465,26 @@ class AssistantToolExecutor
 
         // categoryNode.parent.parent: the taxonomy tree is depth <= 3, so this
         // loads the whole ancestor chain pathString() walks in one pass.
-        $ticket = Ticket::with(['client:id,name,stage', 'assignee:id,name', 'contact', 'categoryNode.parent.parent', 'assets'])->find($ticketId);
+        $ticketQuery = Ticket::with(['client:id,name,stage', 'assignee:id,name', 'contact', 'categoryNode.parent.parent', 'assets']);
+
+        // Client fence, matching getAsset/getPerson. A bare id read is the one
+        // path where a caller can name a record it was never scoped to, and this
+        // read now carries the client/contact stubs and the linked devices
+        // (hostname/type, plus serial/os/last_user under expand: ["assets"]) — so
+        // an out-of-scope id here discloses another client's fleet, not just
+        // ticket text. Where the executor HAS a client context (client-facing
+        // assistant, ticket-context session, client_id-scoped MCP call) the
+        // ticket must belong to it. A null clientId is the deliberate
+        // cross-client staff surface — the same unscoped board search_all_tickets
+        // reads, and the only place a client_id IS NULL intake ticket is
+        // reachable — not a missing fence.
+        if ($this->clientId) {
+            $ticketQuery->where('client_id', $this->clientId);
+        }
+
+        $ticket = $ticketQuery->find($ticketId);
         if (! $ticket) {
+            // Existence is never confirmed: out-of-scope reads exactly like unknown.
             return ['error' => 'Ticket not found'];
         }
 
@@ -1259,10 +1277,13 @@ class AssistantToolExecutor
                     ->map(fn (Person $p) => ['id' => $p->id, 'name' => trim("{$p->first_name} {$p->last_name}")])
                     ->values()->toArray(),
                 'tickets_count' => $asset->tickets()->count(),
+                // halo_id rides along because display_id is an ACCESSOR over it
+                // ("#{halo_id}", else "T-{id}"): a column-restricted select that
+                // omits it silently renders every migrated ticket as T-{id}.
                 'recent_tickets' => $asset->tickets()
                     ->orderByDesc('tickets.created_at')
                     ->limit(5)
-                    ->get(['tickets.id', 'tickets.subject', 'tickets.status'])
+                    ->get(['tickets.id', 'tickets.halo_id', 'tickets.subject', 'tickets.status'])
                     ->map(fn (Ticket $t) => [
                         'id' => $t->id,
                         'display_id' => $t->display_id,
@@ -1276,7 +1297,8 @@ class AssistantToolExecutor
             $out['expanded']['tickets'] = $asset->tickets()
                 ->orderByDesc('tickets.created_at')
                 ->limit(20)
-                ->get(['tickets.id', 'tickets.subject', 'tickets.status', 'tickets.priority', 'tickets.created_at', 'tickets.resolved_at'])
+                // halo_id: display_id is an accessor over it, same as above.
+                ->get(['tickets.id', 'tickets.halo_id', 'tickets.subject', 'tickets.status', 'tickets.priority', 'tickets.created_at', 'tickets.resolved_at'])
                 ->map(fn (Ticket $t) => [
                     'id' => $t->id,
                     'display_id' => $t->display_id,
@@ -1472,6 +1494,13 @@ class AssistantToolExecutor
         // list-all defaults to the cap — an orientation listing wants the
         // fleet, not the first 10 by hostname.
         $limit = max(1, min((int) ($input['limit'] ?? ($listAll ? 25 : 10)), 25));
+
+        // offset is the ONLY way past the cap on this surface. get_client's fleet
+        // block truncates at CLIENT_ASSETS_CAP and points here for the remainder,
+        // so without a cursor every asset past the limit was unreachable through
+        // the whole tool surface — the same "a partial answer reads as complete"
+        // failure total/has_more exist to prevent (T-22797).
+        $offset = max(0, (int) ($input['offset'] ?? 0));
         $includeInactive = self::wantsInactive($input);
 
         $q = Asset::query()->with('client:id,name');
@@ -1502,15 +1531,22 @@ class AssistantToolExecutor
         // capped page can never silently read as the whole answer (T-22797).
         $total = (clone $q)->count();
 
+        // orderBy('id') last: hostname ties need a total order, or a paged walk
+        // can repeat one row and skip another.
         $assets = $q->orderByDesc('is_active')
             ->orderBy('hostname')
+            ->orderBy('id')
+            ->offset($offset)
             ->limit($limit)
             ->get(['id', 'client_id', 'name', 'hostname', 'asset_type', 'serial_number', 'os', 'last_user', 'is_active']);
 
         return [
             'count' => $assets->count(),
             'total' => $total,
-            'has_more' => $total > $assets->count(),
+            'offset' => $offset,
+            // Measured from where this page STARTED — rows remaining beyond
+            // offset+count must still read as more, or paging stops a page early.
+            'has_more' => $total > $offset + $assets->count(),
             'scope' => ($this->clientId ? "client_id={$this->clientId}" : 'cross-client (no client_id provided)')
                 .($includeInactive ? '; including inactive' : '; active only')
                 .($listAll ? '; list-all (no query)' : ''),
@@ -1690,8 +1726,8 @@ class AssistantToolExecutor
     }
 
     /**
-     * get_email_item — full email detail by id, cross-client (mirrors
-     * getTicketDetail's by-id-with-no-client-gating precedent). Includes the
+     * get_email_item — full email detail by id, cross-client (by id, with no
+     * client gating of its own). Includes the
      * full body_text; only the by-id read exposes it, never the list.
      *
      * @param  array<string, mixed>  $input

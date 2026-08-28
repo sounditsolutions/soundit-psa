@@ -94,6 +94,37 @@ class AssetVisibilityTest extends TestCase
         $this->assertArrayNotHasKey('expanded', $result, 'expanded is opt-in only');
     }
 
+    public function test_get_ticket_detail_is_fenced_to_the_client_context(): void
+    {
+        $mine = Client::factory()->create();
+        $theirs = Client::factory()->create();
+        $foreign = Ticket::factory()->create(['client_id' => $theirs->id]);
+        $device = $this->asset($theirs->id, 'VIS-FOREIGNBOX', extra: ['serial_number' => 'SER-FOREIGN']);
+        $foreign->assets()->attach($device->id, ['is_primary' => true]);
+
+        $scoped = new AssistantToolExecutor(clientId: $mine->id);
+        $refused = $scoped->execute('get_ticket_detail', [
+            'ticket_id' => $foreign->id,
+            'expand' => ['assets'],
+        ]);
+
+        // Not found — never a partial read, and never a confirmation that the id
+        // exists. No hostname, serial, or client stub crosses the fence.
+        $this->assertArrayHasKey('error', $refused);
+        $this->assertArrayNotHasKey('assets', $refused);
+        $this->assertStringNotContainsString('VIS-FOREIGNBOX', json_encode($refused));
+        $this->assertStringNotContainsString('SER-FOREIGN', json_encode($refused));
+        $this->assertStringNotContainsString($theirs->name, json_encode($refused));
+
+        // The same executor reads its own client's ticket unchanged...
+        $own = Ticket::factory()->create(['client_id' => $mine->id]);
+        $this->assertSame($own->id, $scoped->execute('get_ticket_detail', ['ticket_id' => $own->id])['id']);
+
+        // ...and the unscoped staff surface keeps its cross-client board read.
+        $general = (new AssistantToolExecutor)->execute('get_ticket_detail', ['ticket_id' => $foreign->id]);
+        $this->assertSame($foreign->id, $general['id']);
+    }
+
     // ── Part 2: related stubs + expand ───────────────────────────────────────
 
     public function test_get_ticket_detail_related_stubs_carry_ids(): void
@@ -286,5 +317,50 @@ class AssetVisibilityTest extends TestCase
         $this->assertContains($a1->id, $ids);
         $this->assertContains($a2->id, $ids);
         $this->assertStringContainsString('cross-client', $result['scope']);
+    }
+
+    public function test_find_assets_offset_pages_past_the_limit(): void
+    {
+        // get_client caps its fleet block and points at find_assets for the rest,
+        // so the remainder has to actually be reachable.
+        $client = Client::factory()->create();
+        foreach (['VIS-PG1', 'VIS-PG2', 'VIS-PG3'] as $h) {
+            $this->asset($client->id, $h);
+        }
+
+        $x = new AssistantToolExecutor(clientId: $client->id);
+
+        $page1 = $x->execute('find_assets', ['limit' => 2]);
+        $this->assertSame(2, $page1['count']);
+        $this->assertSame(0, $page1['offset']);
+        $this->assertTrue($page1['has_more']);
+
+        $page2 = $x->execute('find_assets', ['limit' => 2, 'offset' => 2]);
+        $this->assertSame(1, $page2['count']);
+        $this->assertSame(3, $page2['total']);
+        $this->assertFalse($page2['has_more'], 'the last page must not claim more rows follow');
+
+        $walked = array_merge(array_column($page1['assets'], 'id'), array_column($page2['assets'], 'id'));
+        $this->assertCount(3, array_unique($walked), 'paging must cover the fleet without repeats');
+    }
+
+    public function test_linked_ticket_rows_carry_the_real_display_id(): void
+    {
+        $client = Client::factory()->create();
+        $asset = $this->asset($client->id, 'VIS-DISPLAYID');
+        $native = Ticket::factory()->create(['client_id' => $client->id, 'halo_id' => null]);
+        $migrated = Ticket::factory()->create(['client_id' => $client->id, 'halo_id' => 8351]);
+        $native->assets()->attach($asset->id, ['is_primary' => true]);
+        $migrated->assets()->attach($asset->id, ['is_primary' => false]);
+
+        $x = new AssistantToolExecutor(clientId: $client->id);
+
+        $stubs = collect($x->execute('get_asset', ['asset_id' => $asset->id])['related']['recent_tickets'])->keyBy('id');
+        $this->assertSame("T-{$native->id}", $stubs[$native->id]['display_id']);
+        $this->assertSame('#8351', $stubs[$migrated->id]['display_id'], 'display_id reads halo_id — a restricted select must carry it');
+
+        $expanded = collect($x->execute('get_asset', ['asset_id' => $asset->id, 'expand' => ['tickets']])['expanded']['tickets'])->keyBy('id');
+        $this->assertSame("T-{$native->id}", $expanded[$native->id]['display_id']);
+        $this->assertSame('#8351', $expanded[$migrated->id]['display_id']);
     }
 }

@@ -348,7 +348,7 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'get_client',
-                'description' => 'Get profile details for the current client, including free-form notes maintained by staff. Also returns the client\'s in-service device fleet as a flat assets array (id, hostname, type, is_active; capped at 50 rows) with assets_count carrying the uncapped active total — if assets_count exceeds the rows shown, page the rest via find_assets.',
+                'description' => 'Get profile details for the current client, including free-form notes maintained by staff. Also returns the client\'s in-service device fleet as a flat assets array (id, hostname, type, is_active; capped at 50 rows) with assets_count carrying the uncapped active total — if assets_count exceeds the rows shown, list the remainder with find_assets (omit query to list this client\'s assets, then page with its offset parameter).',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => (object) [],
@@ -436,7 +436,7 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'find_assets',
-                'description' => 'Search assets/devices by hostname, name, or serial number (partial case-insensitive) — or OMIT query entirely to list assets outright (the way to answer "what devices does this client have"; never probe with a junk query, a zero-match search is indistinguishable from a client with no assets). If client_id is provided the search/list is scoped to that client; otherwise it runs across ALL clients and returns each match with its owning client_id and client_name. Returns only ACTIVE (in-service) assets by default; set include_inactive to true to ALSO include DEACTIVATED (is_active=false) assets — retired/soft-deleted assets are never returned by this tool (every result carries is_active either way). The response carries total (full matching count) and has_more — when has_more is true the list is truncated at your limit, not complete. Use the cross-client form when you only have a serial number, hostname, or device descriptor and don\'t yet know what client owns it.',
+                'description' => 'Search assets/devices by hostname, name, or serial number (partial case-insensitive) — or OMIT query entirely to list assets outright (the way to answer "what devices does this client have"; never probe with a junk query, a zero-match search is indistinguishable from a client with no assets). If client_id is provided the search/list is scoped to that client; otherwise it runs across ALL clients and returns each match with its owning client_id and client_name. Returns only ACTIVE (in-service) assets by default; set include_inactive to true to ALSO include DEACTIVATED (is_active=false) assets — retired/soft-deleted assets are never returned by this tool (every result carries is_active either way). The response carries total (full matching count) and has_more — when has_more is true the list is truncated at your limit, not complete. Page with offset while has_more is true (offset=25 after a 25-row page, then 50, and so on) — this is the only way past a capped list, including get_client\'s 50-row fleet block. Use the cross-client form when you only have a serial number, hostname, or device descriptor and don\'t yet know what client owns it.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -450,7 +450,11 @@ class AssistantToolDefinitions
                         ],
                         'limit' => [
                             'type' => 'integer',
-                            'description' => 'Max results (default 10 for a search, 25 for a list-all; max 25).',
+                            'description' => 'Max results per page (default 10 for a search, 25 for a list-all; max 25).',
+                        ],
+                        'offset' => [
+                            'type' => 'integer',
+                            'description' => 'Results to skip for paging (default 0). When has_more is true, re-issue the same call with offset = offset + count to get the next page.',
                         ],
                     ],
                     'required' => [],
