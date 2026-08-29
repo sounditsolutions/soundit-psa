@@ -7,6 +7,7 @@ use App\Services\Portal\PortalInstallService;
 use App\Support\PortalConfig;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Log;
 use Illuminate\View\View;
 
@@ -17,8 +18,14 @@ class PortalInstallController extends Controller
     /**
      * Public landing page for client self-service RMM installs.
      * Invalid tokens, missing RMM, or API failures all render the invalid page.
+     *
+     * #841: this page can carry InstallerInfo::$installScript, which holds a live
+     * --auth enrolment token. TacticalClient's contract for that value — hand it
+     * over, never persist it — is what the MCP surface honours with no-store, so
+     * this unauthenticated page is returned no-store too: no browser, proxy, or
+     * TLS-inspecting gateway may retain the credential.
      */
-    public function show(Request $request, string $token): View|RedirectResponse
+    public function show(Request $request, string $token): View|Response|RedirectResponse
     {
         $client = $this->service->findByToken($token);
         if (! $client) {
@@ -55,7 +62,10 @@ class PortalInstallController extends Controller
             'ip' => $request->ip(),
         ]);
 
-        return view('portal.install.show', compact('package'));
+        return response()
+            ->view('portal.install.show', compact('package'))
+            ->header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+            ->header('Pragma', 'no-cache');
     }
 
     /**

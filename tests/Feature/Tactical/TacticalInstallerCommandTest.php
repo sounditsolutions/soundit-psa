@@ -318,6 +318,32 @@ class TacticalInstallerCommandTest extends TestCase
         $response->assertSee(self::WINDOWS_CMD, escape: true);
     }
 
+    public function test_the_page_carrying_the_enrolment_token_is_not_cacheable(): void
+    {
+        $client = $this->tacticalClientWithPortalToken(self::WINDOWS_CMD);
+
+        // The page renders a live --auth enrolment credential on an unauthenticated
+        // route, so it carries the same no-store contract as the MCP surface: no
+        // browser, proxy, or TLS-inspecting gateway may retain it.
+        $response = $this->get('/setup/'.$client->portal_install_token);
+
+        $response->assertOk();
+        $this->assertStringContainsString('no-store', (string) $response->headers->get('Cache-Control'));
+    }
+
+    public function test_windows_instructions_do_not_send_the_user_to_powershell(): void
+    {
+        $this->configureTactical();
+
+        $info = $this->clientReturning(['cmd' => self::WINDOWS_CMD, 'url' => self::DOWNLOAD_URL])
+            ->getInstallerInfo('Acme|Main', 'windows');
+
+        $this->assertNotNull($info);
+        // The command is cmd.exe syntax; Windows PowerShell 5.1 rejects `&&`.
+        $this->assertStringContainsString('Command Prompt', (string) $info->instructions);
+        $this->assertStringContainsString('not PowerShell', (string) $info->instructions);
+    }
+
     public function test_auto_download_still_redirects_when_there_is_no_command_to_show(): void
     {
         $client = $this->tacticalClientWithPortalToken(null);

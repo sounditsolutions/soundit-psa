@@ -1269,9 +1269,17 @@ class TacticalClient
         }
 
         if ($tacticalPlatform === 'windows') {
-            return 'Two steps: download the installer below, then open an Administrator '
-                .'PowerShell or Command Prompt in the folder you saved it to and run the '
-                .'command shown. The download on its own does not register your device.';
+            // The TRMM command is cmd.exe syntax: `&&` chaining, a bare executable
+            // name resolved from the working directory, and a quoted path in command
+            // position. Windows PowerShell 5.1 — the default shell on Windows 10/11 —
+            // rejects `&&` outright, and PowerShell 7 would run the silent install
+            // while treating the quoted registering step as a string literal, leaving
+            // a downloaded-but-unenrolled agent. So name Command Prompt, and say
+            // plainly that PowerShell is not it.
+            return 'Two steps: download the installer below, then open Command Prompt as '
+                .'Administrator (not PowerShell — this command uses Command Prompt syntax) '
+                .'in the folder you saved it to and run the command shown. The download on '
+                .'its own does not register your device.';
         }
 
         return 'Open Terminal and run the command shown. It downloads and installs the '
