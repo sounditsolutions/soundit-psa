@@ -1047,7 +1047,7 @@ class TriageToolDefinitions
                     'type' => 'object',
                     'properties' => [
                         'hostname' => ['type' => 'string', 'description' => 'Device hostname'],
-                        'limit' => ['type' => 'integer', 'description' => 'Max physical_disks / wmi_disk rows to return (default 10, max 100). Volume rows keep their own fixed cap.'],
+                        'limit' => ['type' => 'integer', 'description' => 'Max rows per list (default 10, max 100). It bounds all three lists — volumes, physical_disks and wmi_disk — so raising it reaches volumes past the cut too.'],
                     ],
                     'required' => ['hostname'],
                 ],

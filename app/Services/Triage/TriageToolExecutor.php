@@ -1302,7 +1302,7 @@ class TriageToolExecutor
             'physical_disks_truncated' => $physical->count() > $limit,
             'wmi_disk_total' => $wmi->count(),
             'wmi_disk_truncated' => $wmi->count() > $limit,
-            'truncation_note' => $anyTruncated ? TacticalFieldMap::truncationNote('disks') : null,
+            'truncation_note' => $anyTruncated ? TacticalFieldMap::disksTruncationNote() : null,
             'physical_disks' => $physicalDisks,
             'wmi_disk' => $wmiDisks,
         ];

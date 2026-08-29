@@ -388,6 +388,24 @@ class TacticalFieldMap
     }
 
     /**
+     * psa-843: the disks read's own truncation dialect.
+     *
+     * The disks response is NOT a listEnvelope() — it carries three separate
+     * lists, each with its own pre-cut `*_total` and `*_truncated` flag, and
+     * no `total`/`count` key at all. Handing it the listEnvelope() note points
+     * the caller at fields the payload does not contain, which is the same
+     * class of wrong answer the note exists to prevent.
+     */
+    public static function disksTruncationNote(): string
+    {
+        return 'This disks read is TRUNCATED — each list carries its own real number counted before the cut '
+            .'(`volumes_total`, `physical_disks_total`, `wmi_disk_total`) and its own `*_truncated` flag; what is shown '
+            .'is the rows in `volumes`, `physical_disks` and `wmi_disk`. '
+            .'A disk or volume that does not appear here MAY STILL BE PRESENT: absence from a truncated list is NOT evidence of absence on the device. '
+            .'Raise `limit` (it bounds all three lists) and read again before reporting anything as missing.';
+    }
+
+    /**
      * Wrap mapped rows in the psa-843 truncation envelope.
      *
      * @param  array<int, array<string, mixed>>  $rows

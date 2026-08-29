@@ -1267,7 +1267,7 @@ class TacticalReadOnlyToolset
             'physical_disks_truncated' => $physical->count() > $limit,
             'wmi_disk_total' => $wmi->count(),
             'wmi_disk_truncated' => $wmi->count() > $limit,
-            'truncation_note' => $anyTruncated ? TacticalFieldMap::truncationNote('disks') : null,
+            'truncation_note' => $anyTruncated ? TacticalFieldMap::disksTruncationNote() : null,
             'physical_disks' => $physical->take($limit)->map(fn ($disk) => [
                 'model' => $disk['caption'] ?? $disk['model'] ?? null,
                 'size_gb' => isset($disk['size']) ? round($disk['size'] / 1073741824, 1) : null,
