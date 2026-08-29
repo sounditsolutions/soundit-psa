@@ -1170,14 +1170,21 @@ class TriageToolExecutor
         // The inventory rows arrive wrapped as {id, agent, software: [...]}.
         $software = TacticalFieldMap::softwareRows($payload);
 
-        // Sort alphabetically, limit to 50
         usort($software, fn ($a, $b) => strcasecmp($a['name'] ?? '', $b['name'] ?? ''));
 
-        return array_map(fn ($s) => [
+        // psa-843: the second verbatim copy of the unmarked 50-row cut. Sorted
+        // alphabetically first, so on a machine with >50 packages the list
+        // stopped mid-alphabet and a package below the cut read as NOT
+        // INSTALLED. Envelope shared with the Chet data surface so the two
+        // copies cannot drift apart again.
+        $total = count($software);
+        $limit = TacticalFieldMap::listLimit($input['limit'] ?? null, 50, 500);
+
+        return TacticalFieldMap::listEnvelope('software', array_map(fn ($s) => [
             'name' => $s['name'] ?? 'Unknown',
             'version' => $s['version'] ?? null,
             'publisher' => $s['publisher'] ?? null,
-        ], array_slice($software, 0, 50));
+        ], array_slice($software, 0, $limit)), $total, $limit, 'installed software');
     }
 
     private function tacticalGetDeviceServices(array $input): array
@@ -1219,12 +1226,18 @@ class TriageToolExecutor
             });
         }
 
-        return $services->take(50)->map(fn ($s) => [
+        // psa-843: total counted AFTER the filter (it describes the answer to
+        // the question asked) but BEFORE the slice.
+        $total = $services->count();
+        $limit = TacticalFieldMap::listLimit($input['limit'] ?? null, 50, 500);
+        $subject = ($filter === null || $filter === '') ? 'services' : "services matching '{$filter}'";
+
+        return TacticalFieldMap::listEnvelope('services', $services->take($limit)->map(fn ($s) => [
             'name' => $s['name'] ?? null,
             'display_name' => $s['display_name'] ?? null,
             'status' => $s['status'] ?? null,
             'start_type' => $s['start_type'] ?? null,
-        ])->values()->toArray();
+        ])->values()->toArray(), $total, $limit, $subject);
     }
 
     private function tacticalGetDeviceDisks(array $input): array
@@ -1250,26 +1263,46 @@ class TriageToolExecutor
         // Logical volumes — getAgent `disks` total/used/free are FORMATTED STRINGS
         // ("X.Y GB"/TB/MB) and percent is an INT (source v1.5.0 + live VM 105), so
         // parse the strings to GB; do NOT byte-divide.
-        $disks = $agent['disks'] ?? [];
-        $volumes = TacticalFieldMap::mapDiskVolumes(is_array($disks) ? $disks : [], includeFilesystemType: true);
+        $disks = is_array($agent['disks'] ?? null) ? $agent['disks'] : [];
 
-        // Physical disks
-        $physicalDisks = collect($agent['physical_disks'] ?? [])->take(10)->map(fn ($d) => [
+        // psa-843: three capped lists here, not the two the issue names — the
+        // VOLUME cap lives inside mapDiskVolumes. All three take the caller's
+        // limit and all three carry a pre-cut total; the mapper's default is
+        // untouched, so the UI panels that share it are unaffected.
+        $limit = TacticalFieldMap::listLimit($input['limit'] ?? null, 10, 100);
+        $physical = collect($agent['physical_disks'] ?? []);
+        $wmi = collect($agent['wmi_detail']['disk'] ?? []);
+
+        $physicalDisks = $physical->take($limit)->map(fn ($d) => [
             'model' => $d['caption'] ?? $d['model'] ?? null,
             'size_gb' => isset($d['size']) ? round($d['size'] / 1073741824, 1) : null,
             'interface' => $d['interface_type'] ?? null,
             'status' => $d['status'] ?? null,
-        ])->toArray();
+        ])->values()->toArray();
 
         // WMI disk detail if available
-        $wmiDisks = collect($agent['wmi_detail']['disk'] ?? [])->take(10)->map(fn ($d) => [
+        $wmiDisks = $wmi->take($limit)->map(fn ($d) => [
             'caption' => $d['Caption'] ?? null,
             'size_gb' => isset($d['Size']) ? round($d['Size'] / 1073741824, 1) : null,
             'free_gb' => isset($d['FreeSpace']) ? round($d['FreeSpace'] / 1073741824, 1) : null,
-        ])->toArray();
+        ])->values()->toArray();
+
+        $volumes = TacticalFieldMap::mapDiskVolumes($disks, includeFilesystemType: true, limit: $limit);
+
+        $anyTruncated = $physical->count() > $limit
+            || $wmi->count() > $limit
+            || count($disks) > $limit;
 
         return [
             'volumes' => $volumes,
+            'volumes_total' => count($disks),
+            'volumes_truncated' => count($disks) > $limit,
+            'limit' => $limit,
+            'physical_disks_total' => $physical->count(),
+            'physical_disks_truncated' => $physical->count() > $limit,
+            'wmi_disk_total' => $wmi->count(),
+            'wmi_disk_truncated' => $wmi->count() > $limit,
+            'truncation_note' => $anyTruncated ? TacticalFieldMap::disksTruncationNote() : null,
             'physical_disks' => $physicalDisks,
             'wmi_disk' => $wmiDisks,
         ];

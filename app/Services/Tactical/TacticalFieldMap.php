@@ -360,6 +360,101 @@ class TacticalFieldMap
         return array_values(array_filter($payload, 'is_array'));
     }
 
+    /**
+     * psa-843: the truncation dialect for the per-device list reads.
+     *
+     * These reads used to return a bare array cut at a fixed size with no
+     * marker and no total. The software read is the worst case because it
+     * sorts ALPHABETICALLY first: on a machine with more than 50 packages the
+     * list stops mid-alphabet, so a package below the cut is indistinguishable
+     * from a package that is not installed. That is a WRONG answer, not a
+     * short one — the same class of defect as a truncated check set
+     * misstating coverage (psa-0pb9m), and the reason getDeviceChecks()
+     * already counts over the full set before its slice.
+     *
+     * The contract every caller of listEnvelope() gets: `total` counted over
+     * the full set BEFORE the slice, `count` actually returned, an explicit
+     * `truncated`, the `limit` in force, a `truncation_note` in plain words
+     * when and only when rows were dropped, and the rows under their own key.
+     * Shared verbatim by TacticalReadOnlyToolset (the Chet data surface) and
+     * TriageToolExecutor (the triage loop) so the two copies cannot drift
+     * again — they were byte-identical duplicates when this was filed.
+     */
+    public static function truncationNote(string $subject): string
+    {
+        return "This list of {$subject} is TRUNCATED — `total` is the real number on the device and `count` is how many are shown. "
+            .'An entry that does not appear here MAY STILL BE PRESENT: absence from a truncated list is NOT evidence of absence on the device. '
+            .'Raise `limit` (or narrow the query) and read again before reporting anything as missing.';
+    }
+
+    /**
+     * psa-843: the disks read's own truncation dialect.
+     *
+     * The disks response is NOT a listEnvelope() — it carries three separate
+     * lists, each with its own pre-cut `*_total` and `*_truncated` flag, and
+     * no `total`/`count` key at all. Handing it the listEnvelope() note points
+     * the caller at fields the payload does not contain, which is the same
+     * class of wrong answer the note exists to prevent.
+     */
+    public static function disksTruncationNote(): string
+    {
+        return 'This disks read is TRUNCATED — each list carries its own real number counted before the cut '
+            .'(`volumes_total`, `physical_disks_total`, `wmi_disk_total`) and its own `*_truncated` flag; what is shown '
+            .'is the rows in `volumes`, `physical_disks` and `wmi_disk`. '
+            .'A disk or volume that does not appear here MAY STILL BE PRESENT: absence from a truncated list is NOT evidence of absence on the device. '
+            .'Raise `limit` (it bounds all three lists) and read again before reporting anything as missing.';
+    }
+
+    /**
+     * Wrap mapped rows in the psa-843 truncation envelope.
+     *
+     * @param  array<int, array<string, mixed>>  $rows
+     * @return array<string, mixed>
+     */
+    public static function listEnvelope(string $key, array $rows, int $total, int $limit, string $subject): array
+    {
+        $count = count($rows);
+
+        return [
+            'count' => $count,
+            'total' => $total,
+            'limit' => $limit,
+            'truncated' => $total > $count,
+            'truncation_note' => $total > $count ? self::truncationNote($subject) : null,
+            $key => $rows,
+        ];
+    }
+
+    /**
+     * psa-843: the caller-settable bound for the per-device list reads,
+     * clamped to [1, $max]. Semantics are deliberately IDENTICAL to
+     * TacticalReadOnlyToolset::limit() (the house idiom for that class's paged
+     * tools) — this is that function hoisted, not a second dialect. It lives
+     * here because the triage loop needs the same answer for the same input
+     * and the two device-read implementations were byte-identical duplicates
+     * when this was filed; a shared function is the only thing that keeps them
+     * from drifting.
+     *
+     * Absent / blank / non-numeric / zero / negative all fall back to
+     * $default. Notably 0 must NOT clamp up to 1 or down to an empty list: an
+     * empty list reads as "nothing installed", which is the exact wrong answer
+     * this issue exists to stop.
+     */
+    public static function listLimit(mixed $raw, int $default, int $max): int
+    {
+        $limit = null;
+
+        if ($raw !== null && $raw !== '') {
+            if (is_int($raw) && $raw > 0) {
+                $limit = $raw;
+            } elseif (is_numeric($raw) && (int) $raw > 0) {
+                $limit = (int) $raw;
+            }
+        }
+
+        return min($limit ?? $default, $max);
+    }
+
     /** Cap the per-agent mapped volume/adapter lists so a pathological agent can't blow the response. */
     public const DISK_VOLUME_LIMIT = 10;
 
@@ -372,12 +467,19 @@ class TacticalFieldMap
      * the single source of truth, consumed by TacticalInsightService (the lowDisk
      * flag) and TacticalPanelData (the storage panel).
      *
+     * psa-843: $limit is the caller-settable bound for the device READ surfaces,
+     * which must be able to hand back the rows past the cut — a volume the
+     * caller cannot reach is the same wrong answer as a package below the
+     * software cut. It defaults to DISK_VOLUME_LIMIT so the UI callers above
+     * keep the exact list they have always had; only the two MCP device reads
+     * pass anything else.
+     *
      * @param  array<int, array<string, mixed>>  $disks
      * @return array<int, array<string, mixed>>
      */
-    public static function mapDiskVolumes(array $disks, bool $includeFilesystemType = false): array
+    public static function mapDiskVolumes(array $disks, bool $includeFilesystemType = false, ?int $limit = null): array
     {
-        return collect($disks)->take(self::DISK_VOLUME_LIMIT)->map(function ($d) use ($includeFilesystemType) {
+        return collect($disks)->take($limit ?? self::DISK_VOLUME_LIMIT)->map(function ($d) use ($includeFilesystemType) {
             $volume = [
                 'drive' => is_array($d) ? ($d['device'] ?? null) : null,
                 'total_gb' => is_array($d) ? self::diskSizeToGb($d['total'] ?? null) : null,

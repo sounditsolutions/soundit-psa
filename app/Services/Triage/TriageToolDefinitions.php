@@ -1017,34 +1017,37 @@ class TriageToolDefinitions
             ],
             [
                 'name' => 'tactical_get_device_software',
-                'description' => 'Get list of installed software on a device with names, versions, and publishers.',
+                'description' => 'Get installed software on a device with names, versions, and publishers. Returns an envelope: total (the real number installed, counted before any cut), count (rows returned), truncated, limit, and software[]. Rows are sorted alphabetically, so a truncated list stops mid-alphabet — when truncated is true a package that does not appear here MAY STILL BE INSTALLED; raise limit and read again before reporting anything as absent.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'hostname' => ['type' => 'string', 'description' => 'Device hostname'],
+                        'limit' => ['type' => 'integer', 'description' => 'Max software rows to return (default 50, max 500).'],
                     ],
                     'required' => ['hostname'],
                 ],
             ],
             [
                 'name' => 'tactical_get_device_services',
-                'description' => 'Get Windows services on a device. Can filter by status (running/stopped) or search by name.',
+                'description' => 'Get Windows services on a device. Can filter by status (running/stopped) or search by name. Returns an envelope: total (services matching the filter, counted before any cut), count (rows returned), truncated, limit, and services[]. When truncated is true a service that does not appear here MAY STILL BE PRESENT; raise limit or narrow the filter before reporting anything as absent.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'hostname' => ['type' => 'string', 'description' => 'Device hostname'],
                         'filter' => ['type' => 'string', 'description' => 'Filter: "running", "stopped", or a search term'],
+                        'limit' => ['type' => 'integer', 'description' => 'Max service rows to return (default 50, max 500).'],
                     ],
                     'required' => ['hostname'],
                 ],
             ],
             [
                 'name' => 'tactical_get_device_disks',
-                'description' => 'Get physical disk details (model, size, health) and volume space (drive letter, total, free, percent used).',
+                'description' => 'Get physical disk details (model, size, health) and volume space (drive letter, total, free, percent used). Each of the three lists carries its own pre-cut total and truncated flag (volumes_total/volumes_truncated, physical_disks_total/physical_disks_truncated, wmi_disk_total/wmi_disk_truncated). When a truncated flag is true a disk or volume that does not appear here MAY STILL BE PRESENT; raise limit before reporting anything as absent.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'hostname' => ['type' => 'string', 'description' => 'Device hostname'],
+                        'limit' => ['type' => 'integer', 'description' => 'Max rows per list (default 10, max 100). It bounds all three lists — volumes, physical_disks and wmi_disk — so raising it reaches volumes past the cut too.'],
                     ],
                     'required' => ['hostname'],
                 ],
