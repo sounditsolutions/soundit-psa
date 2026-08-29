@@ -33,11 +33,17 @@ class PortalInstallController extends Controller
             ));
         }
 
-        // ?download=1 — auto-detect platform from UA and redirect to installer
+        // ?download=1 — auto-detect platform from UA and redirect to installer.
+        //
+        // #841: NOT when the installer also carries a script. For those RMMs the
+        // download is only half the install and the command that registers the
+        // device lives on the landing page; bouncing the user straight to the
+        // binary hands them the exact non-installing artifact #841 is about.
+        // Fall through and let them read both steps.
         if ($request->boolean('download')) {
             $platform = $this->detectPlatform($request->userAgent() ?? '');
             $info = $platform ? $package->for($platform) : null;
-            if ($info && $info->hasDownload()) {
+            if ($info && $info->hasDownload() && ! $info->hasScript()) {
                 return redirect()->away($info->downloadUrl);
             }
             // fall through to the landing page
@@ -54,8 +60,14 @@ class PortalInstallController extends Controller
 
     /**
      * Direct download redirect for the given platform.
-     * Only used when InstallerInfo has a download_url and no script.
-     * (Script and key-based installers are handled inline on the landing page.)
+     *
+     * Reached from the landing page's explicit "Download installer" button, which
+     * the view renders for ANY installer carrying a download_url — including the
+     * script shape, where it is offered under "Or download and run the installer
+     * manually" beside the command. So this deliberately does NOT refuse a script
+     * installer (an earlier version of this docblock claimed it did): the user has
+     * already seen both steps by the time they can click it. The bypass that
+     * mattered was the automatic ?download=1 redirect in show(), which is gated.
      */
     public function download(Request $request, string $token): RedirectResponse
     {

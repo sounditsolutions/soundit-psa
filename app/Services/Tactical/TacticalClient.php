@@ -1125,7 +1125,24 @@ class TacticalClient
      *   - installMethod "exe" returns a generated .exe (FileResponse) rather than JSON.
      *   - installMethod "bash" returns a generated .sh script (FileResponse).
      *   - We pick "manual" for Windows and "mac" for mac/linux so we always get JSON back.
-     *     Both return the same shape; the "cmd" differs by platform but we only consume "url".
+     *     Both return the same shape; the "cmd" differs by platform.
+     *
+     * #841: "url" ALONE DOES NOT INSTALL ANYTHING. It is TRMM's get_agent_url() —
+     * the bare agent binary. Running it opens a status dialog ("Agent: Not Installed")
+     * and exits. Registration lives entirely in "cmd", which this method used to
+     * discard while telling the user the download would self-register:
+     *   - windows ("manual"): the Inno silent-install invocation for the downloaded
+     *     file, then `ping 127.0.0.1 -n 7`, then the installed binary with
+     *     `-m install --api ... --client-id ... --site-id ... --agent-type ... --auth <token>`.
+     *     It assumes the file is already present in the working directory under the
+     *     name TRMM built it with, so the download is still step one of two.
+     *   - mac/linux ("mac"): self-contained — `curl -L -o <file> '<url>' && chmod +x
+     *     <file> && sudo ./<file> -m install ...` — so it carries its own download.
+     * We now return "cmd" as InstallerInfo::$installScript (shape 3 in that DTO) and
+     * describe the real two-step flow instead of promising self-registration.
+     *
+     * "cmd" CARRIES A LIVE ENROLMENT TOKEN (`--auth`). Treat it exactly like the
+     * signed URL: hand it to the caller once, never log it, never persist it.
      *
      * @param  string  $siteId  Format: "ClientName|SiteName" from clients.tactical_site_id
      * @param  string  $platform  One of: 'windows', 'mac', 'linux'
@@ -1198,10 +1215,67 @@ class TacticalClient
             return null;
         }
 
+        // Never log $command and never fold it into an error string: it holds --auth.
+        $command = $this->installerCommand($deployment['cmd'] ?? null);
+
         return new \App\Services\Portal\InstallerInfo(
             downloadUrl: $url,
-            instructions: 'Download the installer and run it. Your device will automatically register with our management system.',
+            installScript: $command,
+            instructions: self::installerInstructions($tacticalPlatform, $command !== null),
         );
+    }
+
+    /**
+     * Normalise TRMM's "cmd" for display. Returns null when the field is absent,
+     * not a string, blank, or carries anything a one-line command block cannot
+     * hold — a truncated or mangled install command is worse than no command,
+     * because the user runs it and it half-succeeds.
+     *
+     * Deliberately NOT length-capped downward: the Windows command is long by
+     * construction and silently trimming it would produce exactly the class of
+     * failure #841 is about. The upper bound only rejects an implausible payload.
+     */
+    private function installerCommand(mixed $raw): ?string
+    {
+        if (! is_string($raw)) {
+            return null;
+        }
+
+        $command = trim($raw);
+        if ($command === '' || mb_strlen($command) > 4000) {
+            return null;
+        }
+
+        // Control characters (including CR/LF) would break the copy-to-clipboard
+        // block into something the user pastes as several commands.
+        if (preg_match('/[\x00-\x1F\x7F]/', $command) === 1) {
+            return null;
+        }
+
+        return $command;
+    }
+
+    /**
+     * Platform-accurate instructions. The windows command needs the downloaded
+     * file beside it; the mac/linux command downloads for itself. When TRMM gave
+     * us no usable command we say plainly that the download is not enough,
+     * rather than repeating the old self-registration promise.
+     */
+    private static function installerInstructions(string $tacticalPlatform, bool $hasCommand): string
+    {
+        if (! $hasCommand) {
+            return 'Download the installer, then contact your IT support team to complete '
+                .'enrollment — this download does not register the device on its own.';
+        }
+
+        if ($tacticalPlatform === 'windows') {
+            return 'Two steps: download the installer below, then open an Administrator '
+                .'PowerShell or Command Prompt in the folder you saved it to and run the '
+                .'command shown. The download on its own does not register your device.';
+        }
+
+        return 'Open Terminal and run the command shown. It downloads and installs the '
+            .'agent, and will ask for your password.';
     }
 
     private function pathSegment(string $value): string
