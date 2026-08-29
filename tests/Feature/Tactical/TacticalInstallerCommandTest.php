@@ -4,9 +4,11 @@ namespace Tests\Feature\Tactical;
 
 use App\Models\Client;
 use App\Models\McpAuditLog;
+use App\Models\PortalInstallAudit;
 use App\Models\Setting;
 use App\Models\TechnicianActionLog;
 use App\Models\User;
+use App\Services\Level\LevelClient;
 use App\Services\Portal\InstallerInfo;
 use App\Services\Tactical\TacticalClient;
 use App\Support\McpConfig;
@@ -15,6 +17,7 @@ use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Testing\TestResponse;
 use Mockery;
 use Tests\TestCase;
@@ -49,6 +52,9 @@ class TacticalInstallerCommandTest extends TestCase
         .' --auth 3f9c1e7b-enrolment-token';
 
     private const DOWNLOAD_URL = 'https://downloads.example.test/agent.exe?token=signed-secret';
+
+    /** Level's composed account credential — static and permanently valid. */
+    private const LEVEL_KEY = 'level-account-token-secret:42';
 
     private function configureTactical(): void
     {
@@ -182,6 +188,44 @@ class TacticalInstallerCommandTest extends TestCase
         $this->assertNull($info);
     }
 
+    /** TacticalClient over a mock transport queued with ONLY the clients/ listing. */
+    private function availabilityOnlyClient(): TacticalClient
+    {
+        $clients = [[
+            'id' => 3,
+            'name' => 'Acme',
+            'sites' => [['id' => 5, 'name' => 'Main']],
+        ]];
+
+        $stack = HandlerStack::create(new MockHandler([
+            new Response(200, [], json_encode($clients)),
+        ]));
+
+        return new TacticalClient(new GuzzleClient([
+            'base_uri' => 'https://tactical.example.test/',
+            'handler' => $stack,
+            'allow_redirects' => false,
+            'headers' => ['X-API-KEY' => 'secret', 'Accept' => 'application/json'],
+        ]));
+    }
+
+    public function test_supports_install_answers_from_the_read_only_listing_alone(): void
+    {
+        $this->configureTactical();
+
+        // The transport holds a single queued response — the clients/ GET. If
+        // supportsInstall reached for the minting POST the empty queue would
+        // throw, so a true here proves the check is non-minting (#857).
+        $this->assertTrue($this->availabilityOnlyClient()->supportsInstall('Acme|Main', 'windows'));
+    }
+
+    public function test_supports_install_refuses_an_unknown_site_without_minting(): void
+    {
+        $this->configureTactical();
+
+        $this->assertFalse($this->availabilityOnlyClient()->supportsInstall('Acme|Warehouse', 'windows'));
+    }
+
     // ── 2. MCP surface ───────────────────────────────────────────────────────
 
     private function callTool(string $token, string $name, array $arguments = []): TestResponse
@@ -281,50 +325,136 @@ class TacticalInstallerCommandTest extends TestCase
         }
     }
 
-    // ── 3. Portal ────────────────────────────────────────────────────────────
+    // ── 3. Portal — #857 mint gate, #864 expiry, #860 signed download ────────
 
-    private function tacticalClientWithPortalToken(?string $cmd): Client
+    /**
+     * Client + Mockery TacticalClient bound into the container. supportsInstall
+     * answers true for every platform by default (the availability read);
+     * getInstallerInfo expectations — the MINT — are each test's to declare.
+     *
+     * @return array{0: Client, 1: Mockery\MockInterface&TacticalClient}
+     */
+    private function portalClient(array $attributes = []): array
     {
         $this->configureTactical();
 
-        $client = Client::factory()->create([
+        $client = Client::factory()->create(array_merge([
             'name' => 'Acme',
             'tactical_site_id' => 'Acme|Main',
             'portal_install_token' => 'abcdef0123456789abcdef',
             'portal_primary_rmm' => 'tactical',
-        ]);
+        ], $attributes));
 
         $tactical = Mockery::mock(TacticalClient::class);
-        $tactical->shouldReceive('getInstallerInfo')
-            ->andReturn(new InstallerInfo(
-                downloadUrl: self::DOWNLOAD_URL,
-                installScript: $cmd,
-                instructions: 'Two steps.',
-            ));
+        $tactical->shouldReceive('supportsInstall')->andReturn(true)->byDefault();
         $this->app->instance(TacticalClient::class, $tactical);
 
-        return $client;
+        return [$client, $tactical];
     }
 
-    public function test_auto_download_does_not_bypass_the_page_carrying_the_command(): void
+    private function mintedInfo(?string $cmd): InstallerInfo
     {
-        $client = $this->tacticalClientWithPortalToken(self::WINDOWS_CMD);
+        return new InstallerInfo(
+            downloadUrl: self::DOWNLOAD_URL,
+            installScript: $cmd,
+            instructions: 'Two steps.',
+        );
+    }
 
-        $response = $this->withHeaders(['User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'])
-            ->get('/setup/'.$client->portal_install_token.'?download=1');
+    private function signedDownloadUrl(Client $client, string $platform): string
+    {
+        return URL::temporarySignedRoute('portal.install.download', now()->addHour(), [
+            'token' => $client->portal_install_token,
+            'platform' => $platform,
+        ]);
+    }
 
-        // Before #841 this was a 302 straight to the non-installing binary.
+    public function test_the_bare_landing_page_never_mints_an_enrolment_credential(): void
+    {
+        [$client, $tactical] = $this->portalClient();
+        // #857: before this fix a single unauthenticated GET minted up to three
+        // live enrolment tokens upstream — one per platform panel.
+        $tactical->shouldReceive('getInstallerInfo')->never();
+
+        $response = $this->get('/setup/'.$client->portal_install_token);
+
+        $response->assertOk();
+        $response->assertDontSee(self::WINDOWS_CMD, escape: true);
+        $response->assertDontSee('--auth');
+        $response->assertSee('Show my install command');
+        // The honest two-step framing from #841 survives the gate: the page
+        // still explains that the download alone does not register the device.
+        $response->assertSee('does not register your device');
+    }
+
+    public function test_the_download_shortcut_no_longer_redirects_off_the_bare_page(): void
+    {
+        [$client, $tactical] = $this->portalClient();
+        $tactical->shouldReceive('getInstallerInfo')->never();
+
+        // Pre-#857 behaviour minted and 302'd on ?download=1 for script-less
+        // installers; the parameter is now inert because answering it honestly
+        // would require a mint on a bare GET.
+        $this->withHeaders(['User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'])
+            ->get('/setup/'.$client->portal_install_token.'?download=1')
+            ->assertOk();
+    }
+
+    public function test_the_command_post_is_the_only_mint_point_and_mints_one_platform(): void
+    {
+        [$client, $tactical] = $this->portalClient();
+        $tactical->shouldReceive('getInstallerInfo')
+            ->once()
+            ->with('Acme|Main', 'windows')
+            ->andReturn($this->mintedInfo(self::WINDOWS_CMD));
+
+        $response = $this->post('/setup/'.$client->portal_install_token.'/command', [
+            'platform' => 'windows',
+        ]);
+
         $response->assertOk();
         $response->assertSee(self::WINDOWS_CMD, escape: true);
+        // The credential-bearing response inherits #841's no-store contract.
+        $this->assertStringContainsString('no-store', (string) $response->headers->get('Cache-Control'));
     }
 
-    public function test_the_page_carrying_the_enrolment_token_is_not_cacheable(): void
+    public function test_an_unsupported_platform_value_is_bounced_without_minting(): void
     {
-        $client = $this->tacticalClientWithPortalToken(self::WINDOWS_CMD);
+        [$client, $tactical] = $this->portalClient();
+        $tactical->shouldReceive('getInstallerInfo')->never();
 
-        // The page renders a live --auth enrolment credential on an unauthenticated
-        // route, so it carries the same no-store contract as the MCP surface: no
-        // browser, proxy, or TLS-inspecting gateway may retain it.
+        $this->post('/setup/'.$client->portal_install_token.'/command', ['platform' => 'zorg'])
+            ->assertRedirect(route('portal.install.show', ['token' => $client->portal_install_token]));
+    }
+
+    public function test_the_mint_is_audited_as_a_fact_never_as_the_credential(): void
+    {
+        [$client, $tactical] = $this->portalClient();
+        $tactical->shouldReceive('getInstallerInfo')->andReturn($this->mintedInfo(self::WINDOWS_CMD));
+
+        $this->post('/setup/'.$client->portal_install_token.'/command', ['platform' => 'windows'])
+            ->assertOk();
+
+        $this->assertDatabaseHas('portal_install_audits', [
+            'client_id' => $client->id,
+            'rmm' => 'tactical',
+            'platform' => 'windows',
+        ]);
+
+        // Whole rows, not selected columns — same shape as the MCP audit test.
+        $auditJson = (string) json_encode(PortalInstallAudit::all()->toArray());
+        $this->assertStringNotContainsString('3f9c1e7b-enrolment-token', $auditJson);
+        $this->assertStringNotContainsString('-m install', $auditJson);
+        $this->assertStringNotContainsString('signed-secret', $auditJson);
+    }
+
+    public function test_the_landing_page_is_still_not_cacheable(): void
+    {
+        [$client, $tactical] = $this->portalClient();
+        $tactical->shouldReceive('getInstallerInfo')->never();
+
+        // No credential and no mint-on-access signed links on the bare page any
+        // more, but it still names the client and its RMM, so no-store stays.
         $response = $this->get('/setup/'.$client->portal_install_token);
 
         $response->assertOk();
@@ -344,22 +474,207 @@ class TacticalInstallerCommandTest extends TestCase
         $this->assertStringContainsString('not PowerShell', (string) $info->instructions);
     }
 
-    public function test_auto_download_still_redirects_when_there_is_no_command_to_show(): void
-    {
-        $client = $this->tacticalClientWithPortalToken(null);
+    // ── 3a. #860 — download only through a signed URL ────────────────────────
 
-        $this->withHeaders(['User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'])
-            ->get('/setup/'.$client->portal_install_token.'?download=1')
-            ->assertRedirect(self::DOWNLOAD_URL);
+    public function test_a_constructed_download_url_fails_the_signature_check(): void
+    {
+        [$client, $tactical] = $this->portalClient();
+        $tactical->shouldReceive('getInstallerInfo')->never();
+
+        // Pre-#860 this bare GET redirected straight to the vendor binary —
+        // token + platform were the only inputs, both guessable from a leaked
+        // page URL.
+        $this->get('/setup/'.$client->portal_install_token.'/download?platform=windows')
+            ->assertForbidden();
     }
 
-    public function test_the_explicit_download_button_still_works_for_a_script_installer(): void
+    public function test_a_signed_download_url_redirects_and_audits_the_mint(): void
     {
-        $client = $this->tacticalClientWithPortalToken(self::WINDOWS_CMD);
+        [$client, $tactical] = $this->portalClient();
+        $tactical->shouldReceive('getInstallerInfo')
+            ->once()
+            ->with('Acme|Main', 'windows')
+            ->andReturn($this->mintedInfo(self::WINDOWS_CMD));
 
-        // The landing page deliberately offers the binary under "Or download and
-        // run the installer manually" — gating that too would break the page.
-        $this->get('/setup/'.$client->portal_install_token.'/download?platform=windows')
+        $this->get($this->signedDownloadUrl($client, 'windows'))
             ->assertRedirect(self::DOWNLOAD_URL);
+
+        // For Tactical the vendor URL is itself minted, so the download is a
+        // mint and gets its audit row too.
+        $this->assertDatabaseHas('portal_install_audits', [
+            'client_id' => $client->id,
+            'platform' => 'windows',
+        ]);
+    }
+
+    public function test_the_route_guards_are_wired(): void
+    {
+        $routes = $this->app['router']->getRoutes();
+
+        $this->assertContains('throttle:5,1', $routes->getByName('portal.install.command')->gatherMiddleware());
+        $this->assertContains('signed', $routes->getByName('portal.install.download')->gatherMiddleware());
+    }
+
+    // ── 3b. #864 — the link itself expires ───────────────────────────────────
+
+    public function test_an_expired_link_is_indistinguishable_from_an_invalid_one(): void
+    {
+        [$client, $tactical] = $this->portalClient([
+            'portal_install_token_expires_at' => now()->subDay(),
+        ]);
+        $tactical->shouldReceive('getInstallerInfo')->never();
+
+        $this->get('/setup/'.$client->portal_install_token)
+            ->assertOk()
+            ->assertSee('This setup link is not valid');
+
+        $this->post('/setup/'.$client->portal_install_token.'/command', ['platform' => 'windows'])
+            ->assertOk()
+            ->assertSee('This setup link is not valid');
+
+        // Even a still-valid signature does not outlive the token it points at.
+        $this->get($this->signedDownloadUrl($client, 'windows'))
+            ->assertRedirect(route('portal.install.show', ['token' => $client->portal_install_token]));
+    }
+
+    public function test_a_future_expiry_and_a_null_expiry_both_admit(): void
+    {
+        [, $tactical] = $this->portalClient(['portal_install_token_expires_at' => now()->addDay()]);
+        $tactical->shouldReceive('getInstallerInfo')->never();
+        $this->get('/setup/abcdef0123456789abcdef')->assertOk()->assertSee('Show my install command');
+
+        // NULL is the deliberate per-row "no expiry" exception, set by hand on
+        // request — never the default for a new or backfilled link.
+        Client::where('portal_install_token', 'abcdef0123456789abcdef')
+            ->update(['portal_install_token_expires_at' => null]);
+        $this->get('/setup/abcdef0123456789abcdef')->assertOk()->assertSee('Show my install command');
+    }
+
+    public function test_generating_a_link_stamps_the_default_thirty_day_expiry(): void
+    {
+        $user = User::factory()->create();
+        $client = Client::factory()->create(['name' => 'Acme', 'tactical_site_id' => 'Acme|Main']);
+
+        $this->actingAs($user)->post(route('clients.install-link.generate', $client))->assertRedirect();
+
+        $client->refresh();
+        $this->assertNotNull($client->portal_install_token);
+        $this->assertNotNull($client->portal_install_token_expires_at);
+        $this->assertTrue($client->portal_install_token_expires_at->between(
+            now()->addDays(30)->subMinutes(5),
+            now()->addDays(30)->addMinutes(5),
+        ));
+    }
+
+    public function test_the_expiry_ttl_is_operator_tunable(): void
+    {
+        Setting::setValue('portal_install_token_ttl_days', '7');
+        $user = User::factory()->create();
+        $client = Client::factory()->create(['name' => 'Acme', 'tactical_site_id' => 'Acme|Main']);
+
+        $this->actingAs($user)->post(route('clients.install-link.generate', $client))->assertRedirect();
+
+        $this->assertTrue($client->refresh()->portal_install_token_expires_at->between(
+            now()->addDays(7)->subMinutes(5),
+            now()->addDays(7)->addMinutes(5),
+        ));
+    }
+
+    public function test_rotating_a_link_restamps_its_expiry(): void
+    {
+        $user = User::factory()->create();
+        $client = Client::factory()->create([
+            'name' => 'Acme',
+            'tactical_site_id' => 'Acme|Main',
+            'portal_install_token' => 'aboutToRotate0123456789',
+            'portal_install_token_expires_at' => now()->addDay(),
+        ]);
+
+        $this->actingAs($user)->post(route('clients.install-link.rotate', $client))->assertRedirect();
+
+        $client->refresh();
+        $this->assertNotSame('aboutToRotate0123456789', $client->portal_install_token);
+        $this->assertTrue($client->portal_install_token_expires_at->between(
+            now()->addDays(30)->subMinutes(5),
+            now()->addDays(30)->addMinutes(5),
+        ));
+    }
+
+    public function test_disabling_a_link_clears_the_expiry_with_the_token(): void
+    {
+        $user = User::factory()->create();
+        $client = Client::factory()->create([
+            'name' => 'Acme',
+            'tactical_site_id' => 'Acme|Main',
+            'portal_install_token' => 'aboutToDisable123456789',
+            'portal_install_token_expires_at' => now()->addDays(30),
+        ]);
+
+        $this->actingAs($user)->post(route('clients.install-link.disable', $client))->assertRedirect();
+
+        $client->refresh();
+        $this->assertNull($client->portal_install_token);
+        $this->assertNull($client->portal_install_token_expires_at);
+    }
+
+    // ── 3c. Level — the static account key stays behind the same gate ────────
+
+    /** @return array{0: Client, 1: Mockery\MockInterface&LevelClient} */
+    private function levelPortalClient(): array
+    {
+        $client = Client::factory()->create([
+            'name' => 'Acme',
+            'level_group_id' => 'R3JvdXA6NDI=',
+            'portal_install_token' => 'abcdef0123456789abcdef',
+            'portal_primary_rmm' => 'level',
+        ]);
+
+        $level = Mockery::mock(LevelClient::class);
+        $level->shouldReceive('supportsInstall')
+            ->andReturnUsing(fn ($groupId, $platform) => $platform === 'windows');
+        $this->app->instance(LevelClient::class, $level);
+
+        return [$client, $level];
+    }
+
+    public function test_levels_permanent_account_key_is_not_on_the_bare_page(): void
+    {
+        [$client, $level] = $this->levelPortalClient();
+        // Level "mints" by composing a PERMANENTLY valid account credential —
+        // worse to leak than Tactical's 7-day token, same gate.
+        $level->shouldReceive('getInstallerInfo')->never();
+
+        $this->get('/setup/'.$client->portal_install_token)
+            ->assertOk()
+            ->assertDontSee(self::LEVEL_KEY)
+            ->assertSee('Show my install command');
+    }
+
+    public function test_levels_key_appears_only_after_the_explicit_post_and_never_in_the_audit(): void
+    {
+        [$client, $level] = $this->levelPortalClient();
+        $level->shouldReceive('getInstallerInfo')
+            ->once()
+            ->with('R3JvdXA6NDI=', 'windows')
+            ->andReturn(new InstallerInfo(
+                downloadUrl: 'https://downloads.level.io/install_windows.ps1',
+                registrationKey: self::LEVEL_KEY,
+                installScript: "\$env:LEVEL_API_KEY = '".self::LEVEL_KEY."'; install",
+                instructions: 'Paste into PowerShell.',
+            ));
+
+        $this->post('/setup/'.$client->portal_install_token.'/command', ['platform' => 'windows'])
+            ->assertOk()
+            ->assertSee(self::LEVEL_KEY);
+
+        $this->assertDatabaseHas('portal_install_audits', [
+            'client_id' => $client->id,
+            'rmm' => 'level',
+            'platform' => 'windows',
+        ]);
+        $this->assertStringNotContainsString(
+            self::LEVEL_KEY,
+            (string) json_encode(PortalInstallAudit::all()->toArray()),
+        );
     }
 }

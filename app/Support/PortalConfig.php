@@ -31,6 +31,20 @@ class PortalConfig
         return Setting::getValue('portal_chatbot_enabled', '0') === '1';
     }
 
+    /**
+     * Lifetime, in days, stamped onto a self-service install link when it is
+     * generated or rotated (#864). Operator-tunable; the default keeps a link
+     * useful across the observed onboarding dawdle without leaving a
+     * forwarded copy valid forever. A stored value of 0 or garbage falls back
+     * to the default rather than minting an already-expired link.
+     */
+    public static function installTokenTtlDays(): int
+    {
+        $days = (int) Setting::getValue('portal_install_token_ttl_days', '30');
+
+        return $days > 0 ? $days : 30;
+    }
+
     public static function companyName(): string
     {
         return Setting::getValue('portal_company_name', config('app.name', 'Sound PSA'));

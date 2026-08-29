@@ -430,6 +430,22 @@
                                     </a>
                                 </div>
 
+                                @if($client->portal_install_token_expires_at)
+                                    <p class="small mb-3 {{ $client->portal_install_token_expires_at->isPast() ? 'text-danger' : 'text-muted' }}">
+                                        <i class="bi bi-clock me-1"></i>
+                                        @if($client->portal_install_token_expires_at->isPast())
+                                            Expired {{ $client->portal_install_token_expires_at->diffForHumans() }} — rotate to issue a fresh link.
+                                        @else
+                                            Expires {{ $client->portal_install_token_expires_at->format('M j, Y') }}
+                                            ({{ $client->portal_install_token_expires_at->diffForHumans() }})
+                                        @endif
+                                    </p>
+                                @else
+                                    <p class="small text-muted mb-3">
+                                        <i class="bi bi-clock me-1"></i>No expiry set — this link stays valid until rotated or disabled.
+                                    </p>
+                                @endif
+
                                 @if(count($availableRmms) > 1)
                                     <form method="POST" action="{{ route('clients.portal-primary-rmm.update', $client) }}" class="mb-3">
                                         @csrf @method('PATCH')
