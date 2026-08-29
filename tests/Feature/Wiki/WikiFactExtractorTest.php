@@ -88,4 +88,24 @@ class WikiFactExtractorTest extends TestCase
         $this->assertSame('wormhole', $result['discardedDetails'][0]['page']);
         $this->assertStringContainsString('not an allowed page', $result['discardedDetails'][0]['reason']);
     }
+
+    public function test_accepts_billing_anchors_and_salvages_combined_billing_page(): void
+    {
+        // Locks the billing page into the validation allowlist on both anchors, including
+        // the combined-pair salvage path — the three surfaces (TARGETS, SYSTEM_PROMPT,
+        // discardReason) must agree or every billing candidate dies here silently.
+        $this->mockAi(['facts' => [
+            ['page' => 'billing', 'anchor' => 'arrangements', 'subject_key' => 'billing:m365-direct',
+                'statement' => 'Client purchases M365 licenses directly from Microsoft; managed rate is reduced accordingly', 'volatility' => 'durable', 'confidence' => 0.9],
+            ['page' => 'billing/licensing', 'anchor' => 'quickbooks', 'subject_key' => 'billing:quickbooks-seats',
+                'statement' => 'QuickBooks Online seats are purchased by the client on their own Intuit account', 'volatility' => 'volatile', 'confidence' => 0.8],
+        ]]);
+
+        $result = app(WikiFactExtractor::class)->extract('CONTEXT');
+
+        $this->assertCount(2, $result['facts']);
+        $this->assertSame(0, $result['discarded']);
+        $this->assertSame('billing', $result['facts'][1]['page']);
+        $this->assertSame('licensing', $result['facts'][1]['anchor']);
+    }
 }

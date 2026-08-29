@@ -40,6 +40,8 @@ class WikiSkeletonService
                 'body' => "## Coverage\n\n"],
             'applications' => ['title' => 'Applications', 'kind' => WikiPageKind::Environment,
                 'body' => "## Line of business\n\n"],
+            'billing' => ['title' => 'Billing & licensing', 'kind' => WikiPageKind::Environment,
+                'body' => "## Arrangements\n\n".$factsBlock('arrangements')."\n\n## Licensing\n\n".$factsBlock('licensing')."\n"],
             'known-issues' => ['title' => 'Known issues', 'kind' => WikiPageKind::Environment,
                 'body' => "## Active\n\n## Resolved\n\n"],
             'history' => ['title' => 'History', 'kind' => WikiPageKind::Environment,

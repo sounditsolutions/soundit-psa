@@ -54,7 +54,7 @@ class WikiRoutesTest extends TestCase
         $response = $this->actingAs($this->user())->get("/clients/{$client->id}/wiki");
 
         $response->assertOk()->assertSee('Infrastructure');
-        $this->assertSame(10, WikiPage::forClient($client->id)->count());
+        $this->assertSame(11, WikiPage::forClient($client->id)->count());
     }
 
     public function test_show_renders_markdown_backlinks_and_fact_summary(): void

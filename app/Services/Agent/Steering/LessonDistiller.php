@@ -33,7 +33,7 @@ Decide on one of three types:
     policy that a technician would want to know months from now. Use the page/anchor table below.
     "page" and "anchor" are SEPARATE fields.
     - "page" is EXACTLY one of these values — a single word, no slashes, no other text:
-      network, infrastructure, m365, security, backup, applications, known-issues
+      network, infrastructure, m365, security, backup, applications, billing, known-issues
     - "anchor" is one of the anchors valid for the chosen page:
       network        -> "topology" or "equipment"
       infrastructure -> "assets"
@@ -41,6 +41,7 @@ Decide on one of three types:
       security       -> "tooling"
       backup         -> "coverage"
       applications   -> "line-of-business"
+      billing        -> "arrangements" or "licensing"
       known-issues   -> "active"
     - subject_key: stable lowercase identity for deduplication, e.g. "acme:no-auto-close", "network:edge-firewall".
     - statement: one atomic factual sentence, max 300 chars, plain prose. NEVER include passwords, keys,
