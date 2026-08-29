@@ -1157,11 +1157,22 @@ class TacticalReadOnlyToolset
 
         usort($software, fn ($a, $b) => strcasecmp($a['name'] ?? '', $b['name'] ?? ''));
 
-        return array_map(fn ($softwareRow) => [
+        // psa-843: this list used to be a bare array cut at 50 AFTER an
+        // alphabetical sort, with no marker and no total. On a machine with
+        // more than 50 packages it simply stopped mid-alphabet, so a package
+        // below the cut read as NOT INSTALLED — a wrong answer, not a short
+        // one. Same shape as getDeviceChecks() under psa-0pb9m: total counted
+        // over the FULL set BEFORE the slice, an explicit truncated flag, and
+        // a caller-settable limit so the rest is actually reachable.
+        $total = count($software);
+        $limit = TacticalFieldMap::listLimit($input['limit'] ?? null, 50, 500);
+        $rows = array_slice($software, 0, $limit);
+
+        return TacticalFieldMap::listEnvelope('software', array_map(fn ($softwareRow) => [
             'name' => $this->textSanitizer->sanitizeNullable('Tactical software name', $softwareRow['name'] ?? null, 200) ?? 'Unknown',
             'version' => $softwareRow['version'] ?? null,
             'publisher' => $this->textSanitizer->sanitizeNullable('Tactical software publisher', $softwareRow['publisher'] ?? null, 200),
-        ], array_slice($software, 0, 50));
+        ], $rows), $total, $limit, 'installed software');
     }
 
     private function getDeviceServices(array $input, int $clientId): array
@@ -1200,12 +1211,19 @@ class TacticalReadOnlyToolset
             });
         }
 
-        return $services->take(50)->map(fn ($service) => [
+        // psa-843: same unmarked hard cap as the software read. The total is
+        // counted AFTER the filter (it describes the answer to the question
+        // asked) but BEFORE the slice, so an absent service is never mistaken
+        // for a service that is not on the box.
+        $total = $services->count();
+        $limit = TacticalFieldMap::listLimit($input['limit'] ?? null, 50, 500);
+
+        return TacticalFieldMap::listEnvelope('services', $services->take($limit)->map(fn ($service) => [
             'name' => $this->textSanitizer->sanitizeNullable('Tactical service name', $service['name'] ?? null, 200),
             'display_name' => $this->textSanitizer->sanitizeNullable('Tactical service display name', $service['display_name'] ?? null, 200),
             'status' => $service['status'] ?? null,
             'start_type' => $service['start_type'] ?? null,
-        ])->values()->toArray();
+        ])->values()->toArray(), $total, $limit, $filter === '' ? 'services' : "services matching '{$filter}'");
     }
 
     private function getDeviceDisks(array $input, int $clientId): array
@@ -1225,22 +1243,42 @@ class TacticalReadOnlyToolset
             return ['error' => 'Tactical query failed: '.mb_substr($e->getMessage(), 0, 200)];
         }
 
+        // psa-843: physical_disks and wmi_disk carried the same unmarked cap
+        // (10). So does the VOLUME list, which the issue did not name — its cap
+        // lives inside TacticalFieldMap::mapDiskVolumes. All three are bounded
+        // by the caller's limit here and all three carry a pre-cut total, so a
+        // volume below the cut is neither silently dropped nor unreachable.
+        // The mapper's own default is unchanged, so the UI panels that share it
+        // keep the list they have always had.
+        $limit = TacticalFieldMap::listLimit($input['limit'] ?? null, 10, 100);
+        $physical = collect($agent['physical_disks'] ?? []);
+        $wmi = collect($agent['wmi_detail']['disk'] ?? []);
+        $rawVolumes = is_array($agent['disks'] ?? null) ? $agent['disks'] : [];
+        $anyTruncated = $physical->count() > $limit
+            || $wmi->count() > $limit
+            || count($rawVolumes) > $limit;
+
         return [
-            'volumes' => TacticalFieldMap::mapDiskVolumes(
-                is_array($agent['disks'] ?? null) ? $agent['disks'] : [],
-                includeFilesystemType: true,
-            ),
-            'physical_disks' => collect($agent['physical_disks'] ?? [])->take(10)->map(fn ($disk) => [
+            'volumes' => TacticalFieldMap::mapDiskVolumes($rawVolumes, includeFilesystemType: true, limit: $limit),
+            'volumes_total' => count($rawVolumes),
+            'volumes_truncated' => count($rawVolumes) > $limit,
+            'limit' => $limit,
+            'physical_disks_total' => $physical->count(),
+            'physical_disks_truncated' => $physical->count() > $limit,
+            'wmi_disk_total' => $wmi->count(),
+            'wmi_disk_truncated' => $wmi->count() > $limit,
+            'truncation_note' => $anyTruncated ? TacticalFieldMap::truncationNote('disks') : null,
+            'physical_disks' => $physical->take($limit)->map(fn ($disk) => [
                 'model' => $disk['caption'] ?? $disk['model'] ?? null,
                 'size_gb' => isset($disk['size']) ? round($disk['size'] / 1073741824, 1) : null,
                 'interface' => $disk['interface_type'] ?? null,
                 'status' => $disk['status'] ?? null,
-            ])->toArray(),
-            'wmi_disk' => collect($agent['wmi_detail']['disk'] ?? [])->take(10)->map(fn ($disk) => [
+            ])->values()->toArray(),
+            'wmi_disk' => $wmi->take($limit)->map(fn ($disk) => [
                 'caption' => $disk['Caption'] ?? null,
                 'size_gb' => isset($disk['Size']) ? round($disk['Size'] / 1073741824, 1) : null,
                 'free_gb' => isset($disk['FreeSpace']) ? round($disk['FreeSpace'] / 1073741824, 1) : null,
-            ])->toArray(),
+            ])->values()->toArray(),
         ];
     }
 }

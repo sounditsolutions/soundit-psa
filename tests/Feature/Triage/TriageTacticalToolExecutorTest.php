@@ -100,9 +100,18 @@ class TriageTacticalToolExecutorTest extends TestCase
             'hostname' => 'pc-01',
         ]);
 
+        // psa-843: envelope, not a bare list — total/count/truncated so a short
+        // read is distinguishable from a cut one.
         $this->assertSame([
-            ['name' => '7-Zip', 'version' => '24.07', 'publisher' => 'Igor Pavlov'],
-            ['name' => 'Mozilla Firefox', 'version' => '128.0.3', 'publisher' => 'Mozilla'],
+            'count' => 2,
+            'total' => 2,
+            'limit' => 50,
+            'truncated' => false,
+            'truncation_note' => null,
+            'software' => [
+                ['name' => '7-Zip', 'version' => '24.07', 'publisher' => 'Igor Pavlov'],
+                ['name' => 'Mozilla Firefox', 'version' => '128.0.3', 'publisher' => 'Mozilla'],
+            ],
         ], $result);
     }
 
