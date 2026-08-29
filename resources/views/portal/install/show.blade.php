@@ -153,13 +153,9 @@
                         </form>
                     </div>
 
-                    <hr class="my-4">
-                    <div class="mb-3">
-                        <p class="text-muted small mb-2">And download the installer itself:</p>
-                        <a href="{{ $downloadUrls[$platform] }}" class="btn btn-outline-secondary download-btn">
-                            <i class="bi bi-download me-1"></i>Download installer
-                        </a>
-                    </div>
+                    {{-- No download link here: that route mints too (#857), so a
+                         signed GET on the un-minted page is a prefetch-mint link.
+                         It appears with the command, after the explicit POST. --}}
                 @else
                     @if($info->hasScript())
                         <div class="mb-3">
@@ -174,7 +170,7 @@
                         </div>
                     @endif
 
-                    @if($info->hasDownload())
+                    @if($info->hasDownload() && isset($downloadUrls[$platform]))
                         <div class="mb-3">
                             @if($info->hasScript())
                                 <hr class="my-4">

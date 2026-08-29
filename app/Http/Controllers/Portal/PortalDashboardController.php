@@ -58,7 +58,14 @@ class PortalDashboardController extends Controller
             ->where(fn ($q) => $q->where('prepay_as_amount', false)->orWhereNull('prepay_as_amount'))
             ->exists();
 
+        // #864: install tokens expire, and PortalInstallService::findByToken()
+        // rejects an expired one with the same "not valid" copy an invalid
+        // token gets. Apply the same predicate here or the dashboard keeps
+        // advertising a link that dead-ends the moment the TTL lapses. A NULL
+        // expiry is the deliberate per-row "no expiry" exception.
         $installToken = \App\Models\Client::where('id', $clientId)
+            ->where(fn ($q) => $q->whereNull('portal_install_token_expires_at')
+                ->orWhere('portal_install_token_expires_at', '>', now()))
             ->value('portal_install_token');
 
         return view('portal.dashboard', compact(

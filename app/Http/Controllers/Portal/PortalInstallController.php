@@ -22,8 +22,11 @@ class PortalInstallController extends Controller
      * Public landing page for client self-service RMM installs. Invalid or
      * expired tokens, missing RMM, or API failures all render the invalid page.
      *
-     * #857: this GET mints NOTHING. It renders platform availability, both
-     * install steps, and a "Show my install command" button; the credential
+     * #857: this GET mints NOTHING — and hands out nothing that mints on
+     * access either. It renders platform availability and a "Show my install
+     * command" button, and NO signed download link: that route's handler mints
+     * too, so a link-following crawler or mail-security prefetch would walk
+     * one hop deeper into exactly the hole this gate closes. The credential
      * itself only exists after the explicit POST to command(). Before this,
      * every bare page load minted up to three live enrolment tokens upstream —
      * one per platform — for any crawler, link scanner, or mail-security
@@ -78,6 +81,14 @@ class PortalInstallController extends Controller
             return redirect()->route('portal.install.show', ['token' => $token]);
         }
 
+        // The mint happens INSIDE buildInstaller(): TacticalClient POSTs
+        // agents/installer/ (creating a live 168h enrolment token upstream)
+        // before it can return null for a payload with no usable url/cmd. So
+        // the audit row records the mint REQUEST, written before the outcome
+        // is known — auditing only the success branch would leave a real
+        // upstream credential with no row at all.
+        $this->auditMint($client, $platform, $request);
+
         $info = $this->service->buildInstaller($client, $platform);
         if (! $info) {
             return $this->invalidPage(sprintf(
@@ -85,8 +96,6 @@ class PortalInstallController extends Controller
                 PortalConfig::companyName(),
             ));
         }
-
-        $this->auditMint($client, $platform, $request);
 
         $platforms = array_fill_keys($supported, null);
         $platforms[$platform] = $info;
@@ -97,11 +106,13 @@ class PortalInstallController extends Controller
     /**
      * Direct download redirect for the given platform.
      *
-     * #860: reachable only through a short-lived signed URL issued by the
-     * pages this controller renders — a constructed URL fails the signature
-     * check with a 403 before this method runs. For Tactical the vendor
-     * download URL is itself minted (it carries a deployment token), so this
-     * resolves ONE platform, never the whole package, and audits the mint.
+     * #860: reachable only through a short-lived signed URL — a constructed
+     * URL fails the signature check with a 403 before this method runs. That
+     * URL is issued ONLY by the page that follows an explicit mint, never by
+     * the bare landing page (#857): for Tactical the vendor download URL is
+     * itself minted (it carries a deployment token), so a signed GET on the
+     * bare page would be a prefetch-mint link. Resolves ONE platform, never
+     * the whole package, and audits the mint.
      */
     public function download(Request $request, string $token): RedirectResponse
     {
@@ -115,6 +126,11 @@ class PortalInstallController extends Controller
             return redirect()->route('portal.install.show', ['token' => $token]);
         }
 
+        // Audited before the call for the same reason as command(): the mint
+        // happens inside buildInstaller(), so a null or download-less return is
+        // an outcome — not proof that nothing was minted upstream.
+        $this->auditMint($client, $platform, $request);
+
         $info = $this->service->buildInstaller($client, $platform);
         if (! $info || ! $info->hasDownload()) {
             return redirect()->route('portal.install.show', ['token' => $token]);
@@ -124,7 +140,6 @@ class PortalInstallController extends Controller
             'client_id' => $client->id,
             'platform' => $platform,
         ]);
-        $this->auditMint($client, $platform, $request);
 
         return redirect()->away($info->downloadUrl);
     }
@@ -136,12 +151,16 @@ class PortalInstallController extends Controller
     {
         $package = $this->service->package($client, $platforms);
 
+        // #857: the signed download route MINTS, so its URL is a credential-
+        // producing capability link and must never appear on a page any
+        // unauthenticated visitor (or crawler) can reach without asking. Only
+        // the platform the visitor just explicitly minted gets one.
         $downloadUrls = [];
-        foreach (array_keys($platforms) as $platform) {
-            $downloadUrls[$platform] = URL::temporarySignedRoute(
+        if ($mintedPlatform !== null) {
+            $downloadUrls[$mintedPlatform] = URL::temporarySignedRoute(
                 'portal.install.download',
                 now()->addHour(),
-                ['token' => $token, 'platform' => $platform],
+                ['token' => $token, 'platform' => $mintedPlatform],
             );
         }
 

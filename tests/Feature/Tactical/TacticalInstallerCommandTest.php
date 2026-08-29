@@ -453,8 +453,8 @@ class TacticalInstallerCommandTest extends TestCase
         [$client, $tactical] = $this->portalClient();
         $tactical->shouldReceive('getInstallerInfo')->never();
 
-        // No credential on the bare page any more, but it carries live signed
-        // download URLs (capability URLs), so no-store stays.
+        // No credential and no mint-on-access signed links on the bare page any
+        // more, but it still names the client and its RMM, so no-store stays.
         $response = $this->get('/setup/'.$client->portal_install_token);
 
         $response->assertOk();
