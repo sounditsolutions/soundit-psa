@@ -337,6 +337,15 @@ class NinjaClient
      * @param  int  $orgId  The Ninja org ID from clients.ninja_org_id
      * @param  string  $platform  One of: 'windows', 'mac', 'linux'
      */
+    /**
+     * Installer availability for the portal (#857). Ninja can't mint at all
+     * yet — see getInstallerInfo() — so no platform is ever available.
+     */
+    public function supportsInstall(int $orgId, string $platform): bool
+    {
+        return false;
+    }
+
     public function getInstallerInfo(int $orgId, string $platform): ?\App\Services\Portal\InstallerInfo
     {
         // NinjaRMM installer endpoints require a location_id which we don't

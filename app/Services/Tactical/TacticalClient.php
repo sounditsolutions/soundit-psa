@@ -1149,6 +1149,91 @@ class TacticalClient
      */
     public function getInstallerInfo(string $siteId, string $platform): ?\App\Services\Portal\InstallerInfo
     {
+        $target = $this->parseInstallTarget($siteId, $platform);
+        if ($target === null) {
+            return null;
+        }
+
+        try {
+            $ids = $this->lookupSiteIds($target['client'], $target['site']);
+            if ($ids === null) {
+                return null;
+            }
+
+            $installMethod = $target['plat'] === 'windows' ? 'manual' : 'mac';
+
+            $deployment = $this->post('agents/installer/', [
+                'installMethod' => $installMethod,
+                'client' => $ids['client'],
+                'site' => $ids['site'],
+                'expires' => 168,                // hours (7 days)
+                'agenttype' => 'workstation',
+                'power' => 0,
+                'ping' => 0,
+                'rdp' => 0,
+                'goarch' => 'amd64',
+                'api' => \App\Support\TacticalConfig::apiUrl(),
+                'plat' => $target['plat'],
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('[TacticalClient] installer fetch failed', [
+                'site_id' => $siteId,
+                'platform' => $platform,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        $url = $deployment['url'] ?? $deployment['download_url'] ?? null;
+        if (! $url) {
+            return null;
+        }
+
+        // Never log $command and never fold it into an error string: it holds --auth.
+        $command = $this->installerCommand($deployment['cmd'] ?? null);
+
+        return new \App\Services\Portal\InstallerInfo(
+            downloadUrl: $url,
+            installScript: $command,
+            instructions: self::installerInstructions($target['plat'], $command !== null),
+        );
+    }
+
+    /**
+     * Whether an installer could be minted for this site/platform, WITHOUT
+     * minting one (#857). Answers from the same read-only clients/ lookup
+     * getInstallerInfo() uses to resolve names to ids; the POST that creates
+     * a live enrolment credential never happens here.
+     */
+    public function supportsInstall(string $siteId, string $platform): bool
+    {
+        $target = $this->parseInstallTarget($siteId, $platform);
+        if ($target === null) {
+            return false;
+        }
+
+        try {
+            return $this->lookupSiteIds($target['client'], $target['site']) !== null;
+        } catch (\Throwable $e) {
+            Log::warning('[TacticalClient] installer availability check failed', [
+                'site_id' => $siteId,
+                'platform' => $platform,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
+     * Validate the "ClientName|SiteName" mapping and map our platform slug to
+     * TRMM's. Pure parsing — no network.
+     *
+     * @return array{client: string, site: string, plat: string}|null
+     */
+    private function parseInstallTarget(string $siteId, string $platform): ?array
+    {
         if (empty($siteId) || ! str_contains($siteId, '|')) {
             return null;
         }
@@ -1172,57 +1257,29 @@ class TacticalClient
             return null;
         }
 
-        // TRMM requires numeric client/site IDs; we only have names. Look them up.
-        try {
-            $clients = $this->getClients();
-            $tacticalClient = collect($clients)->firstWhere('name', $clientName);
-            if (! $tacticalClient || empty($tacticalClient['id'])) {
-                return null;
-            }
+        return ['client' => $clientName, 'site' => $siteName, 'plat' => $tacticalPlatform];
+    }
 
-            $site = collect($tacticalClient['sites'] ?? [])->firstWhere('name', $siteName);
-            if (! $site || empty($site['id'])) {
-                return null;
-            }
-
-            $installMethod = $tacticalPlatform === 'windows' ? 'manual' : 'mac';
-
-            $deployment = $this->post('agents/installer/', [
-                'installMethod' => $installMethod,
-                'client' => $tacticalClient['id'],
-                'site' => $site['id'],
-                'expires' => 168,                // hours (7 days)
-                'agenttype' => 'workstation',
-                'power' => 0,
-                'ping' => 0,
-                'rdp' => 0,
-                'goarch' => 'amd64',
-                'api' => \App\Support\TacticalConfig::apiUrl(),
-                'plat' => $tacticalPlatform,
-            ]);
-        } catch (\Throwable $e) {
-            Log::warning('[TacticalClient] installer fetch failed', [
-                'site_id' => $siteId,
-                'platform' => $platform,
-                'error' => $e->getMessage(),
-            ]);
-
+    /**
+     * TRMM requires numeric client/site IDs; we only store names. Resolve them
+     * off the read-only clients/ listing. Throws propagate to the caller.
+     *
+     * @return array{client: int, site: int}|null
+     */
+    private function lookupSiteIds(string $clientName, string $siteName): ?array
+    {
+        $clients = $this->getClients();
+        $tacticalClient = collect($clients)->firstWhere('name', $clientName);
+        if (! $tacticalClient || empty($tacticalClient['id'])) {
             return null;
         }
 
-        $url = $deployment['url'] ?? $deployment['download_url'] ?? null;
-        if (! $url) {
+        $site = collect($tacticalClient['sites'] ?? [])->firstWhere('name', $siteName);
+        if (! $site || empty($site['id'])) {
             return null;
         }
 
-        // Never log $command and never fold it into an error string: it holds --auth.
-        $command = $this->installerCommand($deployment['cmd'] ?? null);
-
-        return new \App\Services\Portal\InstallerInfo(
-            downloadUrl: $url,
-            installScript: $command,
-            instructions: self::installerInstructions($tacticalPlatform, $command !== null),
-        );
+        return ['client' => (int) $tacticalClient['id'], 'site' => (int) $site['id']];
     }
 
     /**

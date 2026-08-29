@@ -577,6 +577,7 @@ class ClientController extends Controller
         $available = $client->availableRmms();
         $client->update([
             'portal_install_token' => Str::random(32),
+            'portal_install_token_expires_at' => now()->addDays(\App\Support\PortalConfig::installTokenTtlDays()),
             'portal_primary_rmm' => count($available) === 1 ? $available[0] : $client->portal_primary_rmm,
         ]);
 
@@ -591,7 +592,10 @@ class ClientController extends Controller
                 ->with('error', 'No install link to rotate.');
         }
 
-        $client->update(['portal_install_token' => Str::random(32)]);
+        $client->update([
+            'portal_install_token' => Str::random(32),
+            'portal_install_token_expires_at' => now()->addDays(\App\Support\PortalConfig::installTokenTtlDays()),
+        ]);
 
         return redirect()->route('clients.show', $client)
             ->with('success', 'Install link rotated. The previous URL is no longer valid.');
@@ -601,6 +605,7 @@ class ClientController extends Controller
     {
         $client->update([
             'portal_install_token' => null,
+            'portal_install_token_expires_at' => null,
             'portal_primary_rmm' => null,
         ]);
 

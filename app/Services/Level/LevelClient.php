@@ -175,6 +175,27 @@ class LevelClient
      * @param  string  $groupId  base64-encoded Relay gid from clients.level_group_id
      * @param  string  $platform  One of: 'windows', 'mac', 'linux'
      */
+    /**
+     * Whether an installer is available for this group/platform, without
+     * composing the install key (#857). Mirrors getInstallerInfo()'s guards:
+     * Windows only, account token configured, numeric group id extractable.
+     * No network — Level's "mint" is a static composition, but the composed
+     * key is a permanently valid account credential and must not be built,
+     * held, or rendered anywhere availability alone is being asked.
+     */
+    public function supportsInstall(string $groupId, string $platform): bool
+    {
+        if (empty($groupId) || $platform !== 'windows') {
+            return false;
+        }
+
+        if (empty(\App\Support\LevelConfig::get('install_account_token'))) {
+            return false;
+        }
+
+        return self::extractNumericGroupId($groupId) !== null;
+    }
+
     public function getInstallerInfo(string $groupId, string $platform): ?\App\Services\Portal\InstallerInfo
     {
         if (empty($groupId)) {

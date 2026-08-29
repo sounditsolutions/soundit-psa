@@ -9,9 +9,10 @@ namespace App\Services\Portal;
 final class InstallerPackage
 {
     /**
-     * @param  array<string, InstallerInfo>  $platforms  Keyed by platform slug
-     *                                                   ('windows', 'mac', 'linux'). Missing keys mean the RMM doesn't
-     *                                                   support that platform.
+     * @param  array<string, InstallerInfo|null>  $platforms  Keyed by platform slug
+     *                                                        ('windows', 'mac', 'linux'). Missing keys mean the RMM doesn't
+     *                                                        support that platform; a null value means the platform is
+     *                                                        available but no credential has been minted this request (#857).
      */
     public function __construct(
         public readonly string $clientName,

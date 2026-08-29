@@ -135,49 +135,75 @@
         @foreach($package->platforms as $platform => $info)
             <div class="platform-panel" data-platform-panel="{{ $platform }}" style="display: none;">
 
-                @if($info->hasScript())
+                @if($info === null)
+                    {{-- Availability only — no credential exists yet (#857). Both steps
+                         stay visible; the command appears after an explicit request. --}}
                     <div class="mb-3">
-                        <strong>One-click install</strong>
+                        <strong>Get your install command</strong>
                         <p class="text-muted small mb-2">
-                            Copy the command below, then paste it into an administrator PowerShell window and press Enter.
+                            The installer does not register your device on its own — it needs
+                            a command we generate just for you.
                         </p>
-                        <div class="script-block" id="script-{{ $platform }}">{{ $info->installScript }}</div>
-                        <button type="button" class="btn btn-sm btn-outline-secondary mt-2" onclick="copyScript('{{ $platform }}')">
-                            <i class="bi bi-clipboard me-1"></i>Copy to clipboard
-                        </button>
+                        <form method="POST" action="{{ route('portal.install.command', ['token' => $token]) }}">
+                            @csrf
+                            <input type="hidden" name="platform" value="{{ $platform }}">
+                            <button type="submit" class="btn btn-accent">
+                                <i class="bi bi-key me-1"></i>Show my install command
+                            </button>
+                        </form>
                     </div>
-                @endif
 
-                @if($info->hasDownload())
+                    <hr class="my-4">
                     <div class="mb-3">
-                        @if($info->hasScript())
-                            <hr class="my-4">
-                            <p class="text-muted small mb-2">Or download and run the installer manually:</p>
-                        @endif
-                        <a href="{{ route('portal.install.download', ['token' => request()->route('token'), 'platform' => $platform]) }}"
-                           class="btn btn-accent download-btn">
+                        <p class="text-muted small mb-2">And download the installer itself:</p>
+                        <a href="{{ $downloadUrls[$platform] }}" class="btn btn-outline-secondary download-btn">
                             <i class="bi bi-download me-1"></i>Download installer
                         </a>
                     </div>
-                @endif
+                @else
+                    @if($info->hasScript())
+                        <div class="mb-3">
+                            <strong>One-click install</strong>
+                            <p class="text-muted small mb-2">
+                                Copy the command below, then paste it into an administrator PowerShell window and press Enter.
+                            </p>
+                            <div class="script-block" id="script-{{ $platform }}">{{ $info->installScript }}</div>
+                            <button type="button" class="btn btn-sm btn-outline-secondary mt-2" onclick="copyScript('{{ $platform }}')">
+                                <i class="bi bi-clipboard me-1"></i>Copy to clipboard
+                            </button>
+                        </div>
+                    @endif
 
-                @if($info->hasKey() && ! $info->hasScript())
-                    <div class="mb-3">
-                        <strong>Registration key</strong>
-                        <p class="text-muted small mb-2">
-                            When the installer asks for a key, copy and paste this:
-                        </p>
-                        <div class="key-block" id="key-{{ $platform }}">{{ $info->registrationKey }}</div>
-                        <button type="button" class="btn btn-sm btn-outline-secondary mt-2" onclick="copyKey('{{ $platform }}')">
-                            <i class="bi bi-clipboard me-1"></i>Copy key
-                        </button>
-                    </div>
-                @endif
+                    @if($info->hasDownload())
+                        <div class="mb-3">
+                            @if($info->hasScript())
+                                <hr class="my-4">
+                                <p class="text-muted small mb-2">Or download and run the installer manually:</p>
+                            @endif
+                            <a href="{{ $downloadUrls[$platform] }}" class="btn btn-accent download-btn">
+                                <i class="bi bi-download me-1"></i>Download installer
+                            </a>
+                        </div>
+                    @endif
 
-                @if($info->instructions)
-                    <div class="small text-muted mt-3">
-                        <i class="bi bi-info-circle me-1"></i>{{ $info->instructions }}
-                    </div>
+                    @if($info->hasKey() && ! $info->hasScript())
+                        <div class="mb-3">
+                            <strong>Registration key</strong>
+                            <p class="text-muted small mb-2">
+                                When the installer asks for a key, copy and paste this:
+                            </p>
+                            <div class="key-block" id="key-{{ $platform }}">{{ $info->registrationKey }}</div>
+                            <button type="button" class="btn btn-sm btn-outline-secondary mt-2" onclick="copyKey('{{ $platform }}')">
+                                <i class="bi bi-clipboard me-1"></i>Copy key
+                            </button>
+                        </div>
+                    @endif
+
+                    @if($info->instructions)
+                        <div class="small text-muted mt-3">
+                            <i class="bi bi-info-circle me-1"></i>{{ $info->instructions }}
+                        </div>
+                    @endif
                 @endif
             </div>
         @endforeach
@@ -208,7 +234,8 @@
         else if (platformString.includes('mac')) detected = 'mac';
         else if (platformString.includes('linux')) detected = 'linux';
 
-        var initial = available.includes(detected) ? detected : available[0];
+        var minted = @json($mintedPlatform);
+        var initial = minted || (available.includes(detected) ? detected : available[0]);
         if (initial) showPlatform(initial);
 
         document.querySelectorAll('[data-platform]').forEach(function (btn) {

@@ -53,14 +53,21 @@ use Illuminate\Support\Facades\Route;
 Route::get('/legal/eula', fn () => view('legal.eula'))->name('legal.eula');
 Route::get('/legal/privacy', fn () => view('legal.privacy'))->name('legal.privacy');
 
-// Public self-service RMM installer landing — no auth, no session required.
+// Public self-service RMM installer landing — no auth required. The bare GET
+// renders availability only (#857); the credential mint lives behind the
+// CSRF-protected POST below, and the download behind a signed URL (#860).
 Route::get('/setup/{token}', [\App\Http\Controllers\Portal\PortalInstallController::class, 'show'])
     ->middleware('throttle:60,1')
     ->name('portal.install.show')
     ->where('token', '[A-Za-z0-9]{16,64}');
 
+Route::post('/setup/{token}/command', [\App\Http\Controllers\Portal\PortalInstallController::class, 'command'])
+    ->middleware('throttle:5,1')
+    ->name('portal.install.command')
+    ->where('token', '[A-Za-z0-9]{16,64}');
+
 Route::get('/setup/{token}/download', [\App\Http\Controllers\Portal\PortalInstallController::class, 'download'])
-    ->middleware('throttle:60,1')
+    ->middleware(['signed', 'throttle:60,1'])
     ->name('portal.install.download')
     ->where('token', '[A-Za-z0-9]{16,64}');
 
