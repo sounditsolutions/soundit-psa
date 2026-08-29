@@ -246,6 +246,16 @@ class TacticalDeviceSyncService
 
         $seenAgentIds = [];
 
+        // Every agent_id the UPSTREAM payload carried, regardless of whether we
+        // could map it to an operational client or whether this run is scoped to
+        // one. getAgents() is a FULL fetch — $clientId filters in PHP below, it is
+        // not pushed to Tactical — so this set is the honest answer to "does this
+        // agent still exist upstream", which is the only question the not-seen
+        // sweep is entitled to ask. $seenAgentIds cannot answer it: an agent is
+        // dropped from that set by BOTH `continue`s below, so an unmapped site or
+        // a client-scoped run makes a live, reporting machine look absent.
+        $seenAllAgentIds = [];
+
         // Pre-sync status of agents that have queued offline actions, so an
         // offline→online flip in this run can dispatch their queue (bd psa-xr84)
         // without a per-agent lookup inside the loop.
@@ -275,6 +285,8 @@ class TacticalDeviceSyncService
             if (! $agentId) {
                 continue;
             }
+
+            $seenAllAgentIds[] = $agentId;
 
             // Map Tactical client+site to PSA client
             $siteKey = ($agent['client_name'] ?? '').'|'.($agent['site_name'] ?? '');
@@ -399,23 +411,78 @@ class TacticalDeviceSyncService
             }
         }
 
-        // Mark agents not seen in this sync as offline (only on full sync, not client-scoped)
-        if (! $clientId && $fetchSucceeded) {
-            $stale = TacticalAsset::whereNotIn('agent_id', $seenAgentIds)
+        // Mark agents ABSENT FROM THE UPSTREAM PAYLOAD offline. This now runs on a
+        // client-scoped sync too (#842). The sweep used to be gated `! $clientId`,
+        // and the only MCP caller — StaffTacticalAdminToolExecutor::syncDevices() —
+        // always passes a server-derived client id, so the sweep was structurally
+        // unreachable from the tool: `deactivated` was a hard 0 on every invocation
+        // and an offboarded device kept its last observed status indefinitely while
+        // the tool reported that zero as a finding.
+        //
+        // What made the gate necessary was the PREDICATE, not the scope.
+        // $seenAgentIds holds only the agents this run mapped AND kept in scope, so
+        // sweeping against it on a client-scoped run would have called every OTHER
+        // client's fleet offline. $seenAllAgentIds is the full upstream payload, so
+        // the predicate now means what the sweep always claimed it meant — "Tactical
+        // stopped telling us about this agent_id" — and the sweep needs BOUNDING
+        // rather than disabling.
+        //
+        // Widening the predicate also fixes the full sync, and this is a behaviour
+        // change worth stating: the note below lists "every agent whose siteKey no
+        // longer maps to an operational client" as a KNOWN member of the not-seen
+        // set. Those agents are present upstream. Calling them offline was asserting
+        // the opposite of something we did observe — the inverse of the psa-wedk
+        // principle this method cites twice. A site rename or a client leaving
+        // stage=Active no longer moves a live fleet to Offline.
+        $sweepSiteKeys = null;
+
+        if ($clientId) {
+            // Bound a client-scoped run's blast radius to that client's own rows,
+            // matched on the (client_name, site_name) pair the sync itself writes —
+            // the same siteKey $clientMap is keyed by. A row whose pair is unknown
+            // to the map is NOT swept on a scoped run: a scoped run has no standing
+            // to speak for it, and skipping is the safe failure (the full daily sync
+            // still reaches it). Likewise a client with no mapped site sweeps
+            // nothing rather than everything.
+            $sweepSiteKeys = array_keys(array_filter(
+                $clientMap,
+                static fn ($mappedId) => $mappedId === $clientId
+            ));
+        }
+
+        if ($fetchSucceeded && $sweepSiteKeys !== []) {
+            $stale = TacticalAsset::whereNotIn('agent_id', $seenAllAgentIds)
                 ->where('status', '!=', 'offline');
+
+            if ($sweepSiteKeys !== null) {
+                $stale->where(function ($q) use ($sweepSiteKeys) {
+                    foreach ($sweepSiteKeys as $siteKey) {
+                        [$clientName, $siteName] = array_pad(explode('|', (string) $siteKey, 2), 2, '');
+                        $q->orWhere(function ($w) use ($clientName, $siteName) {
+                            $w->where('client_name', $clientName)->where('site_name', $siteName);
+                        });
+                    }
+                });
+            }
 
             // The AGENT snapshot goes offline — that row is exactly "what
             // Tactical last told us about this agent_id", and Tactical stopped
             // telling us. The linked ASSET is deliberately left alone: "absent
             // from this run's payload" is UNKNOWN, not offline.
             //
-            // The not-seen set is much wider than "the machine is off". It also
-            // holds every agent whose siteKey no longer maps to an operational
-            // client (skipped above by `continue`, before $seenAgentIds is
-            // appended — a site rename in Tactical, or a client leaving
-            // stage=Active, silently moves a whole fleet into it), and the stale
-            // row an agent REINSTALL leaves behind once the new agent_id cannot
-            // claim the hostname. Those are live, reporting machines.
+            // The not-seen set is still wider than "the machine is off": it holds
+            // the stale row an agent REINSTALL leaves behind once the new agent_id
+            // cannot claim the hostname, which is a live, reporting machine under a
+            // different id. (It NO LONGER holds agents whose siteKey stopped mapping
+            // to an operational client — those are present in $seenAllAgentIds and
+            // are skipped. That was the site-rename / stage=Active fleet-wide false
+            // positive; it is fixed, not merely tolerated.)
+            //
+            // It also does NOT mean "confirmed gone upstream", and must not be read
+            // as that (#842): absent from the payload is still UNKNOWN. A device
+            // proved deleted at the vendor — a 404 on the per-device read — has no
+            // distinct state anywhere in this schema, and inventing one by widening
+            // 'offline' would destroy the distinction this block exists to keep.
             //
             // Writing rmm_online = false would state a flat operator-facing
             // "Offline" for them and charge AssetHealthService's offline penalty
@@ -460,7 +527,9 @@ class TacticalDeviceSyncService
 
             if ($staleCount > 0) {
                 $result->deactivated += $staleCount;
-                Log::info("[TacticalSync] Marked {$staleCount} agent(s) as offline (not seen in API response)");
+                Log::info("[TacticalSync] Marked {$staleCount} agent(s) as offline (not seen in API response)", [
+                    'scope' => $clientId ? "client:{$clientId}" : 'full',
+                ]);
             }
         }
 
