@@ -65,7 +65,8 @@ class WikiRedactor
 
     /**
      * Layer 3 + injection + marker guard: scan AI OUTPUT before storage.
-     * Any violation quarantines the run.
+     * Any 'injection' or 'marker' violation quarantines the run; a 'credential'
+     * violation drops only the offending candidate (see MineTicketKnowledge stage 3).
      *
      * @return array<int, array{class: string, pattern: string}>
      */

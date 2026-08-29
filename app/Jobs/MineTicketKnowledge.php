@@ -185,39 +185,77 @@ class MineTicketKnowledge implements ShouldQueue
 
             // ── Stage 3: Scan + quarantine (security H1 + H2) ────────────────
             // Scan BOTH statement AND subject_key for each candidate (H2).
+            // Quarantine is PER-CANDIDATE for CREDENTIAL-class hits ONLY. The redactor's
+            // credential corpus is deliberately broad (bare `token`, `license key` keyword
+            // forms) and the billing/licensing vocabulary sits right on top of it — "the
+            // Adobe license key is held by the office manager" trips the credential pattern
+            // on a statement the prompt's own contract invites. Failing the WHOLE run on the
+            // first hit discarded every other fact from that ticket AND left the content
+            // hash in a terminal state, so those facts were never re-mined. The offending
+            // candidate alone is dropped (never stored); the run continues.
+            // INJECTION and MARKER hits keep the ORIGINAL per-run contract. They are not a
+            // false-positive-prone keyword match on one statement — they are evidence the
+            // extraction itself absorbed attacker instructions from the untrusted ticket
+            // body, so every sibling candidate out of that same extraction is suspect. One
+            // such hit quarantines the WHOLE run: nothing is written, and the terminal
+            // Quarantined status puts the ticket in front of a human.
             // Quarantine payload records violation_classes and subject_key but
             // NEVER the raw statement text (H1 — prevents leaking the secret
             // even into the errors log that operators/admins can read).
+            $quarantinedCandidates = [];
+            $scanned = [];
+            $runQuarantining = false; // any non-credential class seen → quarantine the RUN
+
             foreach ($candidates as $candidate) {
                 $statementViolations = $redactor->scan($candidate['statement'] ?? '');
                 $subjectKeyViolations = $redactor->scan($candidate['subject_key'] ?? '');
                 $allViolations = array_merge($statementViolations, $subjectKeyViolations);
 
-                if (! empty($allViolations)) {
-                    $violationClasses = array_unique(array_column($allViolations, 'class'));
-                    $run->update([
-                        'status' => WikiRunStatus::Quarantined,
-                        'errors' => [[
-                            'stage' => 'scan',
-                            // H1: subject_key is stable metadata (not user-generated secret
-                            // content) and is safe to log. The STATEMENT is NEVER included.
-                            'subject_key' => $candidate['subject_key'] ?? null,
-                            'violation_classes' => $violationClasses,
-                            'message' => 'Candidate failed post-extraction secret/injection scan',
-                        ]],
-                        'stages_completed' => ['gather', 'extract'],
-                        'ai_tokens_used' => $extraction['tokens'],
-                    ]);
+                if (empty($allViolations)) {
+                    $scanned[] = $candidate;
 
-                    Log::warning('[MineTicketKnowledge] Quarantined — scan violation', [
-                        'ticket_id' => $ticket->id,
-                        'subject_key' => $candidate['subject_key'] ?? null,
-                        'violation_classes' => $violationClasses,
-                    ]);
-
-                    return;
+                    continue;
                 }
+
+                $violationClasses = array_values(array_unique(array_column($allViolations, 'class')));
+
+                // Anything other than 'credential' (injection, marker) is per-RUN.
+                if (array_diff($violationClasses, ['credential']) !== []) {
+                    $runQuarantining = true;
+                }
+
+                $quarantinedCandidates[] = [
+                    'stage' => 'scan',
+                    // H1: subject_key is stable metadata (not user-generated secret
+                    // content) and is safe to log. The STATEMENT is NEVER included.
+                    'subject_key' => $candidate['subject_key'] ?? null,
+                    'violation_classes' => $violationClasses,
+                    'message' => 'Candidate failed post-extraction secret/injection scan',
+                ];
+
+                Log::warning('[MineTicketKnowledge] Candidate quarantined — scan violation', [
+                    'ticket_id' => $ticket->id,
+                    'subject_key' => $candidate['subject_key'] ?? null,
+                    'violation_classes' => $violationClasses,
+                ]);
             }
+
+            // An injection/marker hit on ANY candidate, or nothing surviving the scan → the
+            // RUN is quarantined, exactly as before: a deliberate security terminal state,
+            // never silently re-attempted. Nothing was written, so nothing is lost by the
+            // content hash staying blocked.
+            if ($runQuarantining || ($scanned === [] && $quarantinedCandidates !== [])) {
+                $run->update([
+                    'status' => WikiRunStatus::Quarantined,
+                    'errors' => $quarantinedCandidates,
+                    'stages_completed' => ['gather', 'extract'],
+                    'ai_tokens_used' => $extraction['tokens'],
+                ]);
+
+                return;
+            }
+
+            $candidates = $scanned;
 
             // ── Stage 4: Merge — write facts into the wiki ────────────────────
             $skeleton->ensureForClient($ticket->client);
@@ -285,6 +323,11 @@ class MineTicketKnowledge implements ShouldQueue
                 'stage_results' => [
                     'facts_extracted' => count($candidates),
                     'facts_discarded_by_extractor' => $extraction['discarded'],
+                    // Per-candidate scan drops (H1: subject_key + violation classes only,
+                    // never the statement) — a partial quarantine must be visible in the
+                    // ledger, not hidden behind an otherwise-Completed run.
+                    'facts_quarantined_by_scan' => count($quarantinedCandidates),
+                    'quarantined_details' => $quarantinedCandidates,
                     // Per-candidate discard reasons (page/anchor/confidence/reason) so a
                     // zero-fact run is diagnosable from the ledger, not silent.
                     'discarded_details' => $extraction['discardedDetails'] ?? [],

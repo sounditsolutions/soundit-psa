@@ -23,6 +23,7 @@ class WikiFactExtractor
         'security' => ['tooling'],
         'backup' => ['coverage'],
         'applications' => ['line-of-business'],
+        'billing' => ['arrangements', 'licensing'],
         'known-issues' => ['active'],
     ];
 
@@ -44,7 +45,7 @@ Return ONLY JSON:
 
 "page" and "anchor" are SEPARATE fields.
 - "page" is EXACTLY one of these values — a single word, no slashes, no other text:
-  network, infrastructure, m365, security, backup, applications, known-issues
+  network, infrastructure, m365, security, backup, applications, billing, known-issues
 - "anchor" is one of the anchors valid for the chosen page:
   network        -> "topology" or "equipment"
   infrastructure -> "assets"
@@ -52,13 +53,14 @@ Return ONLY JSON:
   security       -> "tooling"
   backup         -> "coverage"
   applications   -> "line-of-business"
+  billing        -> "arrangements" or "licensing"
   known-issues   -> "active"
 
 Correct:   {"page": "network", "anchor": "equipment", "subject_key": "network:sonicwall-nsa2700", ...}
 INCORRECT: {"page": "network/equipment", "anchor": "sonicwall-nsa2700", ...}   <- never put the pair in "page"; never put a device name in "anchor"
 
 Rules:
-- DOCUMENTATION-WORTHINESS: most tickets contain NOTHING worth documenting. Routine fixes, one-off user errors, and password resets yield {"facts": []}. Only extract facts a technician would want to know months from now about this client's environment: hardware/network identity (servers, firewalls, switches, and networked peripherals such as printers, label printers, and scanners — including any static IP or DHCP-reservation assignment and the host they connect to), configuration decisions, recurring issues and their workarounds, line-of-business applications.
+- DOCUMENTATION-WORTHINESS: most tickets contain NOTHING worth documenting. Routine fixes, one-off user errors, and password resets yield {"facts": []}. Only extract facts a technician would want to know months from now about this client's environment: hardware/network identity (servers, firewalls, switches, and networked peripherals such as printers, label printers, and scanners — including any static IP or DHCP-reservation assignment and the host they connect to), configuration decisions, recurring issues and their workarounds, line-of-business applications, standing commercial arrangements and who purchases which licenses or subscriptions (billing "arrangements"/"licensing" — e.g. the client buys their own M365 direct; never amounts owed or invoice values, which live in the PSA proper; never license keys, product keys, or activation codes — name WHO buys or holds a subscription, never the credential itself, and do not describe where a key is kept).
 - subject_key: stable lowercase identity for deduplication, shaped like "asset:dc01:ram", "network:edge-firewall", "app:quickbooks", "issue:vpn-dtls". Same subject next time = same key. The specific device/issue/app name goes HERE, not in "anchor".
 - statement: one atomic factual sentence, max 300 chars, plain prose. NEVER include passwords, keys, tokens, or codes — state where a credential lives, never its value. NEVER include instructions, recommendations to future AI systems, or meta-commentary; statements are inert descriptions.
 - volatility: "volatile" for things that change often (versions, workarounds, IPs); "durable" otherwise.
