@@ -765,14 +765,33 @@ class StaffTacticalAdminToolExecutor
             return ['error' => 'Tactical installer URL failed safety validation'];
         }
 
-        $this->auditAttempt($tool, 'executed', $clientId, $contentHash, "Generated {$platform} installer for PSA client #{$client->id}; signed URL returned but not retained.", $actorLabel);
+        // #841: the download URL alone is the bare agent binary and does not
+        // install. The registering command comes back beside it as
+        // InstallerInfo::$installScript and is returned here under the SAME
+        // contract as the URL — once, never audited, never logged (it carries a
+        // live --auth enrolment token). SafeTacticalWebUrl validates a URL and
+        // cannot speak to a command string; TacticalClient::installerCommand()
+        // is what rejects an unusable one, and a null there is reported rather
+        // than papered over, because a caller who is told only to download is
+        // exactly the failure this fixes.
+        $installCommand = $installer->hasScript() ? $installer->installScript : null;
+
+        $this->auditAttempt($tool, 'executed', $clientId, $contentHash, "Generated {$platform} installer for PSA client #{$client->id}; signed URL"
+            .($installCommand !== null ? ' and install command' : '')
+            .' returned but not retained.', $actorLabel);
 
         return [
             'success' => true,
             'platform' => $platform,
             'download_url' => $installer->downloadUrl,
+            'install_command' => $installCommand,
+            'requires_install_command' => $installCommand !== null,
             'instructions' => $installer->instructions,
-            'message' => 'Signed installer URL generated. It is returned once and not retained in audits.',
+            'message' => $installCommand !== null
+                ? 'Signed installer URL and install command generated. Both are returned once and not retained in audits. '
+                    .'The download alone does NOT register the device — the recipient must run install_command as well.'
+                : 'Signed installer URL generated. It is returned once and not retained in audits. '
+                    .'Tactical returned no usable install command, so this download will NOT register the device on its own.',
         ];
     }
 
@@ -5064,7 +5083,7 @@ class StaffTacticalAdminToolExecutor
     {
         return self::tool(
             'tactical_get_or_create_installer',
-            'Generate a signed installer URL for a client-scoped Tactical site using server-derived PSA client mapping. The signed installer URL is returned once, not retained in audits, and the response is no-store.',
+            'Generate a signed installer URL AND the matching install command for a client-scoped Tactical site using server-derived PSA client mapping. The download URL on its own is the bare agent binary and does NOT register the device: when install_command is present the recipient must run it too, and on Windows the command expects the downloaded file to be in the current folder. Relay the instructions field verbatim rather than summarising it as "download and run". Both the URL and the command are returned once, not retained in audits, and the response is no-store; the command contains an enrolment credential, so do not paste it into a ticket, note, or log.',
             array_merge(self::reasonProperties(), [
                 'platform' => ['type' => 'string', 'enum' => ['windows', 'mac', 'linux'], 'description' => 'Installer platform.'],
             ]),
@@ -5077,7 +5096,7 @@ class StaffTacticalAdminToolExecutor
     {
         return self::tool(
             'tactical_generate_installer',
-            'Composed installer generation alias for tactical_get_or_create_installer. It returns a signed installer URL once, never audits the URL, and uses no-store HTTP caching.',
+            'Composed installer generation alias for tactical_get_or_create_installer. It returns a signed installer URL and the matching install_command once; both are not retained in audits, and it uses no-store HTTP caching. The URL alone does NOT register the device — see tactical_get_or_create_installer for the full contract.',
             array_merge(self::reasonProperties(), [
                 'platform' => ['type' => 'string', 'enum' => ['windows', 'mac', 'linux'], 'description' => 'Installer platform.'],
             ]),

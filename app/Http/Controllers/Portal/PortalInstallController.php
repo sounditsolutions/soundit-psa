@@ -7,6 +7,7 @@ use App\Services\Portal\PortalInstallService;
 use App\Support\PortalConfig;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Log;
 use Illuminate\View\View;
 
@@ -17,8 +18,14 @@ class PortalInstallController extends Controller
     /**
      * Public landing page for client self-service RMM installs.
      * Invalid tokens, missing RMM, or API failures all render the invalid page.
+     *
+     * #841: this page can carry InstallerInfo::$installScript, which holds a live
+     * --auth enrolment token. TacticalClient's contract for that value — hand it
+     * over, never persist it — is what the MCP surface honours with no-store, so
+     * this unauthenticated page is returned no-store too: no browser, proxy, or
+     * TLS-inspecting gateway may retain the credential.
      */
-    public function show(Request $request, string $token): View|RedirectResponse
+    public function show(Request $request, string $token): View|Response|RedirectResponse
     {
         $client = $this->service->findByToken($token);
         if (! $client) {
@@ -33,11 +40,17 @@ class PortalInstallController extends Controller
             ));
         }
 
-        // ?download=1 — auto-detect platform from UA and redirect to installer
+        // ?download=1 — auto-detect platform from UA and redirect to installer.
+        //
+        // #841: NOT when the installer also carries a script. For those RMMs the
+        // download is only half the install and the command that registers the
+        // device lives on the landing page; bouncing the user straight to the
+        // binary hands them the exact non-installing artifact #841 is about.
+        // Fall through and let them read both steps.
         if ($request->boolean('download')) {
             $platform = $this->detectPlatform($request->userAgent() ?? '');
             $info = $platform ? $package->for($platform) : null;
-            if ($info && $info->hasDownload()) {
+            if ($info && $info->hasDownload() && ! $info->hasScript()) {
                 return redirect()->away($info->downloadUrl);
             }
             // fall through to the landing page
@@ -49,13 +62,22 @@ class PortalInstallController extends Controller
             'ip' => $request->ip(),
         ]);
 
-        return view('portal.install.show', compact('package'));
+        return response()
+            ->view('portal.install.show', compact('package'))
+            ->header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+            ->header('Pragma', 'no-cache');
     }
 
     /**
      * Direct download redirect for the given platform.
-     * Only used when InstallerInfo has a download_url and no script.
-     * (Script and key-based installers are handled inline on the landing page.)
+     *
+     * Reached from the landing page's explicit "Download installer" button, which
+     * the view renders for ANY installer carrying a download_url — including the
+     * script shape, where it is offered under "Or download and run the installer
+     * manually" beside the command. So this deliberately does NOT refuse a script
+     * installer (an earlier version of this docblock claimed it did): the user has
+     * already seen both steps by the time they can click it. The bypass that
+     * mattered was the automatic ?download=1 redirect in show(), which is gated.
      */
     public function download(Request $request, string $token): RedirectResponse
     {
