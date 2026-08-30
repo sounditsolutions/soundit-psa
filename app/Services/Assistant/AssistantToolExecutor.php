@@ -29,6 +29,7 @@ use App\Services\Cipp\HandlesCippTools;
 use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
 use App\Services\Ninja\NinjaClient;
+use App\Services\Offboarding\DeviceAbsenceVerifier;
 use App\Services\Technician\Cockpit\CockpitQuery;
 use App\Services\TicketService;
 use App\Services\Wiki\HandlesWikiTools;
@@ -160,6 +161,7 @@ class AssistantToolExecutor
             'find_clients' => [ToolEffect::Read, static fn (self $x, array $in) => $x->findClients($in)],
             'find_persons' => [ToolEffect::Read, static fn (self $x, array $in) => $x->findPersons($in)],
             'find_assets' => [ToolEffect::Read, static fn (self $x, array $in) => $x->findAssets($in)],
+            'verify_device_absent' => [ToolEffect::Read, static fn (self $x, array $in) => $x->verifyDeviceAbsent($in)],
             'list_client_contracts' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listClientContracts($in)],
             'get_contract' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getContract($in)],
 
@@ -1205,6 +1207,14 @@ class AssistantToolExecutor
             return ['error' => 'Person not found at this client'.$hint];
         }
 
+        // One definition of the related-assets fence, used by the stub list, the
+        // count and the expansion, so the three can never drift apart — a count
+        // computed over a different fence than the list it explains is worse than
+        // no count at all.
+        $relatedAssetsQuery = fn () => $includeInactive
+            ? $person->assets()
+            : $person->assets()->active();
+
         $out = [
             'id' => $person->id,
             'name' => $person->full_name,
@@ -1221,17 +1231,28 @@ class AssistantToolExecutor
             'm365_user_type' => $person->m365_user_type,
             'notes' => $person->notes,
             // psa-823 part 2: one shallow orientation layer. Assets fenced
-            // active-only, same as every routine read on this surface.
+            // active-only by default, same as every routine read on this surface —
+            // but NOT silently (psa-826). The active-only fence is deliberate and
+            // stays; what was wrong was that a person whose only device had been
+            // deactivated in a swap returned `assets: []`, byte-identical to a
+            // person who has never been assigned hardware, and the assistant read
+            // it as "no hardware" (the T-22797 pattern on a different path).
+            // So the block now carries its own completeness signal — an uncapped
+            // assets_count over the SAME fence as the list, plus an explicit
+            // excluded tally — and include_inactive is threaded through here
+            // instead of resolving the subject and stopping.
             'related' => [
                 'client' => $this->client ? ['id' => $this->client->id, 'name' => $this->client->name] : null,
-                'assets' => $person->assets()->active()
+                'assets_count' => $relatedAssetsQuery()->count(),
+                'assets_inactive_excluded' => $includeInactive ? 0 : $person->assets()->where('assets.is_active', false)->count(),
+                'assets' => $relatedAssetsQuery()
                     ->get(['assets.id', 'assets.name', 'assets.hostname', 'assets.asset_type', 'assets.is_active'])
                     ->map(fn (Asset $a) => self::assetStubRow($a))->values()->toArray(),
             ],
         ];
 
         if (in_array('assets', $expand, true)) {
-            $out['expanded']['assets'] = $person->assets()->active()->get()
+            $out['expanded']['assets'] = $relatedAssetsQuery()->get()
                 ->map(fn (Asset $a) => self::assetDetailRow($a))->values()->toArray();
         }
 
@@ -1341,6 +1362,48 @@ class AssistantToolExecutor
         }
 
         return $out;
+    }
+
+    /**
+     * psa-842a: the offboarding read — "is this device really gone from every portal?"
+     *
+     * Deliberately resolves DEACTIVATED assets by default, unlike every sibling read on
+     * this surface. The subject of a teardown check has almost always been deactivated
+     * in the PSA already; an active-only fence here would refuse exactly the devices the
+     * tool exists for. Retired/soft-deleted assets stay out (SoftDeletes), same as
+     * everywhere else. include_inactive is still accepted, so a caller can narrow to
+     * active-only on purpose.
+     */
+    private function verifyDeviceAbsent(array $input): array
+    {
+        if (! $this->clientId) {
+            return ['error' => 'No client context — cannot verify device absence'];
+        }
+
+        $query = Asset::where('client_id', $this->clientId);
+
+        // Inverted default, so the opt-out is read strictly rather than via
+        // wantsInactive(): ONLY a literal boolean false narrows to active-only.
+        // Anything else — absent, null, a stray string — leaves the deactivated
+        // devices in scope, which is this tool's whole subject population.
+        if (($input['include_inactive'] ?? null) === false) {
+            $query->active();
+        }
+
+        if (! empty($input['asset_id'])) {
+            $query->where('id', (int) $input['asset_id']);
+        } elseif (! empty($input['hostname'])) {
+            $query->whereRaw('LOWER(hostname) = ?', [strtolower($input['hostname'])]);
+        } else {
+            return ['error' => 'Provide one of: asset_id or hostname'];
+        }
+
+        $asset = $query->first();
+        if (! $asset) {
+            return ['error' => 'Asset not found at this client (retired/soft-deleted assets are never returned)'];
+        }
+
+        return app(DeviceAbsenceVerifier::class)->verify($asset);
     }
 
     private function findClients(array $input): array

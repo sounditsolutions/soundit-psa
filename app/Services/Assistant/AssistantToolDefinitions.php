@@ -356,7 +356,7 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'get_person',
-                'description' => 'Look up a contact at this client by id, email, or name (partial match). Returns only ACTIVE contacts by default — a deactivated/offboarded person is reported as "not found" unless you set include_inactive, so a routine lookup never surfaces a terminated employee for routing. Returns job title, department, emails, M365 enrichment, and any free-form notes, plus a related block (client stub and the person\'s assigned devices as id+name stubs); pass expand: ["assets"] for fuller device rows.',
+                'description' => 'Look up a contact at this client by id, email, or name (partial match). Returns only ACTIVE contacts by default — a deactivated/offboarded person is reported as "not found" unless you set include_inactive, so a routine lookup never surfaces a terminated employee for routing. Returns job title, department, emails, M365 enrichment, and any free-form notes, plus a related block (client stub and the person\'s assigned devices as id+name stubs). The related device list is ACTIVE-ONLY unless you set include_inactive, which is threaded through to it — read related.assets_count (uncapped, over the same fence as the list) and related.assets_inactive_excluded before concluding a person has no hardware: an empty list with assets_inactive_excluded above zero means their devices were DEACTIVATED, not that they were never assigned any. pass expand: ["assets"] for fuller device rows.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -455,6 +455,28 @@ class AssistantToolDefinitions
                         'offset' => [
                             'type' => 'integer',
                             'description' => 'Results to skip for paging (default 0). When has_more is true, re-issue the same call with offset = offset + count to get the next page.',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+            ],
+            [
+                'name' => 'verify_device_absent',
+                'description' => 'Offboarding check: ask every integration LIVE whether a device is really gone, instead of reading our own synced rows. Use this to confirm a teardown — "did this machine actually get removed from the portals?" — never the snapshot-backed zorus_*/screenconnect_* reads, which cannot tell a deleted device from an unsynced one. Each integration returns one of FOUR verdicts: present (a live read found it upstream), absent (a live read proved it gone), cannot_determine (the vendor could NOT be asked), or not_applicable (integration off, or this client/asset carries no link into it). Every arm also states its method — live or snapshot — plus a reason and evidence. cannot_determine is a real answer, not a soft absent: ScreenConnect ALWAYS returns it because that integration is webhook-receive-only here with no outbound API, so a session deleted in the portal is byte-identical to one that merely stopped emitting webhooks; its snapshot fields are returned for context only and must never be read as presence. The overall verdict is absent ONLY when every applicable integration answered absent live — one cannot_determine anywhere makes the whole reading cannot_determine, because a partial sweep does not prove a teardown. Resolves DEACTIVATED devices by default (unlike get_asset), since an offboarded device is normally already deactivated in the PSA; retired/soft-deleted assets are never returned.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'asset_id' => [
+                            'type' => 'integer',
+                            'description' => 'The asset ID (preferred if known).',
+                        ],
+                        'hostname' => [
+                            'type' => 'string',
+                            'description' => 'Hostname to look up (case-insensitive exact match).',
+                        ],
+                        'include_inactive' => [
+                            'type' => 'boolean',
+                            'description' => 'Defaults to TRUE for this tool — deactivated devices are in scope, because they are what a teardown check is about. Pass false to deliberately narrow to active devices only.',
                         ],
                     ],
                     'required' => [],

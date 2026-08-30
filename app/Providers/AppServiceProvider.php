@@ -32,12 +32,14 @@ use App\Services\Servosity\ServosityClient;
 use App\Services\Stripe\StripeClient;
 use App\Services\Tactical\TacticalClient;
 use App\Services\Unifi\UnifiClient;
+use App\Services\Zorus\ZorusClient;
 use App\Support\AppTimezone;
 use App\Support\CippConfig;
 use App\Support\HuntressConfig;
 use App\Support\MeshConfig;
 use App\Support\ServosityConfig;
 use App\Support\StripeConfig;
+use App\Support\ZorusConfig;
 use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
@@ -165,6 +167,16 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(ServosityClient::class, fn () => new ServosityClient([
             'api_token' => ServosityConfig::get('api_token'),
             'base_url' => ServosityConfig::get('base_url'),
+        ]));
+
+        // ZorusClient's constructor takes an unbound array too (same trap the
+        // UnifiClient note above records). Until psa-842a it was only ever built by
+        // hand in ZorusSyncDevices, so nothing resolved it from the container and the
+        // gap was invisible; DeviceAbsenceVerifier's live endpoint sweep does resolve
+        // it, and without this binding that sweep would fail before reaching Zorus —
+        // reported as cannot_determine, which is safe but permanently useless.
+        $this->app->singleton(ZorusClient::class, fn () => new ZorusClient([
+            'api_key' => ZorusConfig::get('api_key'),
         ]));
 
         $this->app->singleton(CippClient::class, function ($app) {
