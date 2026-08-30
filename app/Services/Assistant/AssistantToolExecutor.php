@@ -1403,7 +1403,14 @@ class AssistantToolExecutor
                 ->whereRaw('LOWER(hostname) = ?', [strtolower($input['hostname'])])
                 ->orderBy('id')
                 ->limit(11)
-                ->get(['id', 'hostname', 'is_active']);
+                // FULL rows, deliberately no column list: a single match is handed
+                // straight to DeviceAbsenceVerifier, which reads zorus_endpoint_id,
+                // screenconnect_session_id, name and the client / tacticalAsset relations
+                // (so their foreign keys too). A partially-hydrated model answers null for
+                // every one of them, and each arm then reports "the PSA holds no link"
+                // about a row that carries one — a confident, wrong cannot_determine on
+                // every hostname-addressed device the asset_id path answers correctly.
+                ->get();
 
             if ($matches->count() > 1) {
                 return [

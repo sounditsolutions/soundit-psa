@@ -486,6 +486,29 @@ class DeviceAbsenceVerificationTest extends TestCase
 
     // ── 3. Tactical: 404 is the only absence signal ──────────────────────────
 
+    public function test_zorus_stale_uuid_with_no_customer_mapping_is_cannot_determine_not_absent(): void
+    {
+        $this->enableZorus();
+        // The client mapping was never backfilled, so the hostname pass is structurally
+        // skipped and only the exact-uuid comparison ever runs. The machine below was
+        // reimaged and re-enrolled under a NEW uuid — it is still filtering.
+        $client = Client::factory()->create(['zorus_customer_id' => null]);
+        $asset = $this->asset($client, ['zorus_endpoint_id' => 'ep-OLD', 'hostname' => 'OFFBOARD-01']);
+
+        $this->fakeZorus([
+            ['uuid' => 'ep-NEW', 'name' => 'offboard-01.ourdomain.test', 'customerUuid' => 'cust-uuid-2'],
+        ]);
+
+        $arm = app(DeviceAbsenceVerifier::class)->verify($asset)['integrations']['zorus'];
+
+        $this->assertSame(
+            DeviceAbsenceVerifier::CANNOT_DETERMINE,
+            $arm['verdict'],
+            'a stale uuid missing from the list is not absence when the hostname pass never ran — that is a false teardown proof for a reinstalled device',
+        );
+        $this->assertFalse($arm['evidence']['hostname_pass_ran']);
+    }
+
     public function test_tactical_404_is_absent(): void
     {
         $this->enableTactical();
@@ -640,6 +663,40 @@ class DeviceAbsenceVerificationTest extends TestCase
             array_column($result['candidates'], 'id'),
             'the caller must be told which rows collided so it can re-ask with asset_id',
         );
+    }
+
+    public function test_a_single_hostname_match_is_verified_with_a_fully_hydrated_row(): void
+    {
+        $this->enableTactical();
+        $this->enableZorus();
+        $this->enableScreenConnect();
+        $client = $this->client();
+        $asset = $this->asset($client, [
+            'zorus_endpoint_id' => 'ep-1',
+            'screenconnect_session_id' => 'sess-1',
+        ], agentId: 'agent-1');
+
+        $this->fakeTacticalError($this->httpError(404));
+        $this->fakeZorus([['uuid' => 'ep-1', 'name' => 'OFFBOARD-01', 'customerUuid' => self::ZORUS_CUSTOMER]]);
+
+        $result = (new AssistantToolExecutor(clientId: $client->id))
+            ->execute('verify_device_absent', ['hostname' => 'OFFBOARD-01']);
+
+        // The hostname path must reach the vendors with the SAME row the asset_id path
+        // does. A few-column model answers null for every link, and each arm then reports
+        // "the PSA holds no id" about a device that carries one — factually false about
+        // the row, and it silently skips the live Zorus sweep entirely.
+        $this->assertSame(
+            DeviceAbsenceVerifier::PRESENT,
+            $result['integrations']['zorus']['verdict'],
+            'the hostname path must carry zorus_endpoint_id into the live sweep instead of a null',
+        );
+        $this->assertSame(
+            'snapshot',
+            $result['integrations']['screenconnect']['method'],
+            'a hydrated row carries screenconnect_session_id — method "none" here means the column was never selected',
+        );
+        $this->assertSame('OFFBOARD-01', $result['asset']['name'], 'the asset block must not report a null name for a row that has one');
     }
 
     public function test_tool_resolves_deactivated_devices_by_default(): void

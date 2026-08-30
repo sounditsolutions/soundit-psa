@@ -246,7 +246,10 @@ class DeviceAbsenceVerifier
      * asset's own zorus_endpoint_id, never as a gate in front of it: the uuid match is
      * customer-independent, so a uuid-linked asset is answerable even for a client whose
      * mapping was never backfilled or was cleared on its way out of the Active stage.
-     * Only the hostname pass needs the customer uuid, and it is skipped without one.
+     * Only the hostname pass needs the customer uuid, and it is skipped without one — and
+     * because it is skipped, a uuid MISS with no customer uuid is reported as
+     * cannot_determine, never as absent: the reinstall case (dead recorded uuid, same
+     * hostname, still enrolled) was never ruled out, so absence there is unproven.
      *
      * @return array<string, mixed>
      */
@@ -323,6 +326,32 @@ class DeviceAbsenceVerifier
                     'endpoint_uuid' => $match['uuid'],
                     'endpoint_name' => $ownEndpoint ? $match['name'] : null,
                     'endpoint_is_under_this_client' => $ownEndpoint,
+                ],
+            ];
+        }
+
+        // Nothing matched — but did we actually run both passes? Reaching here with a
+        // blank hostname or a blank customer uuid means $endpointUuid is filled (the guard
+        // above returned otherwise) and matchZorusEndpoint ran the uuid comparison ONLY:
+        // the hostname pass is structurally skipped without a customer to scope it to. An
+        // agent REINSTALL mints a new uuid, so a stale recorded uuid missing from the list
+        // is exactly what a still-filtering device looks like. That is ignorance, not
+        // evidence — and claiming `absent` here is the false teardown proof this arm exists
+        // to prevent, on precisely the unmapped-client population it exists to serve.
+        if (blank($hostname) || blank($customerUuid)) {
+            return [
+                'verdict' => self::CANNOT_DETERMINE,
+                'method' => 'live',
+                'reason' => 'Live read: the recorded zorus_endpoint_id was not found anywhere in the current Zorus endpoint list, and the hostname pass could NOT be run — '
+                    .(blank($hostname)
+                        ? 'this asset carries no hostname.'
+                        : 'its client carries no zorus_customer_id, and an unscoped hostname hit would be a different customer\'s identically-named machine.')
+                    .' A reinstalled agent keeps the hostname and mints a new uuid, so a stale uuid alone does not prove this device is gone from Zorus.',
+                'evidence' => [
+                    'looked_for_endpoint_uuid' => $endpointUuid,
+                    'looked_for_hostname' => $hostname,
+                    'customer_uuid' => $customerUuid,
+                    'hostname_pass_ran' => false,
                 ],
             ];
         }
