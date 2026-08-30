@@ -26,15 +26,25 @@ use Illuminate\Support\Facades\Log;
  *   present            — LIVE evidence the device exists upstream, right now.
  *   absent             — LIVE evidence it does not.
  *   cannot_determine   — we could not ask the vendor. A snapshot-only integration lands
- *                        here ALWAYS, however fresh its rows look. This is never
- *                        downgraded to a boolean and never rounded to `absent`.
- *   not_applicable     — the integration is off/unconfigured, or this client carries no
- *                        mapping into it. Distinct from cannot_determine so that a shop
- *                        which simply does not use Zorus is not told "unknown" forever.
+ *                        here ALWAYS, however fresh its rows look — and so does a MISSING
+ *                        LINK: holding no id for this asset means the vendor was never
+ *                        asked, which is ignorance, not evidence. Never rounded to
+ *                        `absent`.
+ *   not_applicable     — the integration ITSELF is off/unconfigured on this PSA, so there
+ *                        is no vendor to ask. This is the only state dropped from the
+ *                        roll-up, so a shop which does not run Zorus at all is not told
+ *                        "unknown" forever. "We hold no link" is NOT this — that arm was
+ *                        not asked, and dropping it would let a device still enrolled
+ *                        upstream sit under an overall `absent`.
  *
  * `method` states HOW each verdict was reached (`live` / `snapshot` / `none`) so the
  * caller can never mistake a stale row for a vendor answer, and the overall roll-up
  * refuses `absent` unless EVERY applicable arm answered `absent` live.
+ *
+ * SCOPE, and it is stated in the payload rather than implied: this verifier knows THREE
+ * integrations. The PSA carries other device-bearing lanes it cannot ask, so every
+ * reading publishes `overall.not_checked` naming them, and `absent` never claims to be a
+ * whole-estate teardown proof.
  */
 class DeviceAbsenceVerifier
 {
@@ -45,6 +55,15 @@ class DeviceAbsenceVerifier
     public const CANNOT_DETERMINE = 'cannot_determine';
 
     public const NOT_APPLICABLE = 'not_applicable';
+
+    /**
+     * Device-bearing integrations this PSA runs that this verifier CANNOT ask, published
+     * on every reading. The tool's authority is exactly as wide as its arms: a device
+     * torn down from Tactical and Zorus while a NinjaOne or Level agent keeps running is
+     * still a live machine, and a roll-up that named only what it swept would read as a
+     * completed teardown. Add an arm and remove its name here in the same change.
+     */
+    private const NOT_CHECKED = ['ninja', 'level', 'controld', 'm365_intune', 'comet'];
 
     /**
      * Page size for the Zorus endpoint sweep. Matches ZorusDeviceSyncService so the two
@@ -115,6 +134,9 @@ class DeviceAbsenceVerifier
             'absent_from' => array_keys(array_filter($applicable, fn ($r) => $r['verdict'] === self::ABSENT)),
             'undetermined' => array_keys(array_filter($applicable, fn ($r) => $r['verdict'] === self::CANNOT_DETERMINE)),
             'not_applicable' => array_keys(array_diff_key($integrations, $applicable)),
+            // Scope disclosure, on every reading and on every verdict: the arms above are
+            // the ONLY integrations this verifier knows how to ask.
+            'not_checked' => self::NOT_CHECKED,
             'summary' => $this->summaryLine($overall, $applicable),
         ];
     }
@@ -128,7 +150,7 @@ class DeviceAbsenceVerifier
             self::NOT_APPLICABLE => 'No integration on this surface is configured for this client — nothing was asked of any vendor, and this is NOT evidence the device is gone.',
             self::PRESENT => 'Device is STILL PRESENT upstream — a live read found it. Not safe to call the teardown complete.',
             self::CANNOT_DETERMINE => 'CANNOT DETERMINE. At least one integration could not be asked, so absence is unproven — do not record this device as removed on the strength of this reading. Check `undetermined` for which arm, and its `reason`.',
-            default => 'Absent from every integration that could be asked live ('.implode(', ', array_keys($applicable)).').',
+            default => 'Absent from the integrations this tool can ask live ('.implode(', ', array_keys($applicable)).'). This is NOT a whole-estate teardown proof: `not_checked` names the device-bearing integrations this PSA runs that the tool cannot ask ('.implode(', ', self::NOT_CHECKED).') — verify those in their own portals before recording the teardown.',
         };
     }
 
@@ -157,7 +179,16 @@ class DeviceAbsenceVerifier
         // collect a 404: a false `absent` on every device the PSA has linked.
         $agentId = $asset->tacticalAsset?->agent_id;
         if (blank($agentId)) {
-            return $this->notApplicable('This asset has no linked Tactical agent row — the PSA holds no link into Tactical for it.');
+            // NOT not_applicable: Tactical is ON, we simply hold no agent id to ask
+            // about — a sync gap, or a link stripped mid-offboard. The vendor was not
+            // asked, so this arm stays in the roll-up as cannot_determine; dropping it
+            // would let a live agent with remote-shell access sit under an `absent`.
+            return [
+                'verdict' => self::CANNOT_DETERMINE,
+                'method' => 'none',
+                'reason' => 'This asset has no linked Tactical agent row — the PSA holds no agent id, so Tactical was NOT asked about this device. A machine still enrolled in Tactical whose tactical_assets row was never synced looks exactly like this.',
+                'evidence' => [],
+            ];
         }
 
         try {
@@ -211,7 +242,11 @@ class DeviceAbsenceVerifier
      * Deliberately NOT scoped with Client::operational(): the Zorus sync only sweeps
      * operational clients, but a client being offboarded has usually left the Active
      * stage — that population is named in #842(b) as a false-positive source. The
-     * customer id is read straight off this asset's own client.
+     * customer id is read straight off this asset's own client — and it is read AFTER the
+     * asset's own zorus_endpoint_id, never as a gate in front of it: the uuid match is
+     * customer-independent, so a uuid-linked asset is answerable even for a client whose
+     * mapping was never backfilled or was cleared on its way out of the Active stage.
+     * Only the hostname pass needs the customer uuid, and it is skipped without one.
      *
      * @return array<string, mixed>
      */
@@ -221,19 +256,25 @@ class DeviceAbsenceVerifier
             return $this->notApplicable('Zorus is not enabled/configured on this PSA.');
         }
 
-        $customerUuid = $asset->client?->zorus_customer_id;
-        if (blank($customerUuid)) {
-            return $this->notApplicable('This asset\'s client carries no zorus_customer_id — the client is not mapped into Zorus.');
-        }
-
+        // The asset's OWN link is read FIRST, the client mapping second: the uuid match
+        // is exact and customer-independent, so a uuid-linked device can be answered live
+        // without it. Gating on the mapping dropped still-enrolled devices out of the
+        // quorum for exactly the unmapped clients this arm exists to serve.
         $endpointUuid = $asset->zorus_endpoint_id;
         $hostname = $asset->hostname;
+        $customerUuid = $asset->client?->zorus_customer_id;
 
-        if (blank($endpointUuid) && blank($hostname)) {
+        // No uuid link and no usable hostname pass: the vendor cannot be asked ABOUT THIS
+        // DEVICE. cannot_determine, not not_applicable — Zorus is on, we just hold no
+        // link, and a link never synced (or stripped mid-offboard) must not leave the
+        // roll-up as though the integration did not apply.
+        if (blank($endpointUuid) && (blank($hostname) || blank($customerUuid))) {
             return [
                 'verdict' => self::CANNOT_DETERMINE,
                 'method' => 'none',
-                'reason' => 'No zorus_endpoint_id and no hostname on this asset — there is nothing to match a live Zorus endpoint against.',
+                'reason' => blank($hostname)
+                    ? 'No zorus_endpoint_id and no hostname on this asset — there is nothing to match a live Zorus endpoint against, so Zorus was NOT asked about this device.'
+                    : 'No zorus_endpoint_id on this asset, and its client carries no zorus_customer_id — the hostname pass has no customer to scope itself to, and an unscoped hostname hit would be a different customer\'s identically-named machine. Zorus was NOT asked about this device.',
                 'evidence' => [],
             ];
         }
@@ -266,6 +307,13 @@ class DeviceAbsenceVerifier
         $match = $this->matchZorusEndpoint($endpoints, $customerUuid, $endpointUuid, $hostname);
 
         if ($match !== null) {
+            // Cross-tenant fence. This tool is reachable from the CLIENT-scoped surface,
+            // and the uuid match is deliberately customer-independent — so the row it hit
+            // may belong to another Zorus customer. The VERDICT still crosses (the device
+            // is present upstream, which is the honest teardown answer); that customer's
+            // endpoint name and customer uuid do not.
+            $ownEndpoint = filled($customerUuid) && $match['customer_uuid'] === $customerUuid;
+
             return [
                 'verdict' => self::PRESENT,
                 'method' => 'live',
@@ -273,9 +321,8 @@ class DeviceAbsenceVerifier
                 'evidence' => [
                     'matched_on' => $match['matched_on'],
                     'endpoint_uuid' => $match['uuid'],
-                    'endpoint_name' => $match['name'],
-                    'customer_uuid' => $match['customer_uuid'],
-                    'endpoints_scanned' => count($endpoints),
+                    'endpoint_name' => $ownEndpoint ? $match['name'] : null,
+                    'endpoint_is_under_this_client' => $ownEndpoint,
                 ],
             ];
         }
@@ -283,13 +330,23 @@ class DeviceAbsenceVerifier
         return [
             'verdict' => self::ABSENT,
             'method' => 'live',
-            'reason' => 'Live read: the whole current Zorus endpoint list was scanned and this device is not in it'
-                .(blank($endpointUuid) ? ' (matched by hostname — the PSA holds no zorus_endpoint_id for it).' : '.'),
+            'reason' => 'Live read: the whole current Zorus endpoint list was scanned and this device is not in it — '
+                .(blank($endpointUuid)
+                    ? 'no hostname match within this client\'s customer (the PSA holds no zorus_endpoint_id for it).'
+                    : 'neither its recorded endpoint uuid anywhere in the list, nor its hostname within this client\'s customer.'),
             'evidence' => [
                 'looked_for_endpoint_uuid' => $endpointUuid,
                 'looked_for_hostname' => $hostname,
                 'customer_uuid' => $customerUuid,
-                'endpoints_scanned' => count($endpoints),
+                // The whole-estate count is other customers' business and this tool
+                // answers client-scoped callers, so only this client's own slice of the
+                // swept list is published back.
+                'endpoints_scanned_for_this_customer' => filled($customerUuid)
+                    ? count(array_filter(
+                        $endpoints,
+                        fn ($endpoint): bool => is_array($endpoint) && ($endpoint['customerUuid'] ?? null) === $customerUuid,
+                    ))
+                    : null,
             ],
         ];
     }
@@ -330,17 +387,25 @@ class DeviceAbsenceVerifier
      *
      * uuid match is exact and customer-independent (a uuid is unique; if the device
      * moved customer it is still PRESENT in Zorus, which is the honest answer for a
-     * teardown check). The hostname fallback IS scoped to this client's customer uuid —
+     * teardown check). The hostname pass IS scoped to this client's customer uuid —
      * hostnames are not unique across customers, and an unscoped hostname hit would
-     * report a different customer's identically-named machine as this one.
+     * report a different customer's identically-named machine as this one — so it is
+     * skipped entirely when the client carries no customer uuid.
+     *
+     * The hostname pass runs even when a uuid link exists but missed: an agent
+     * REINSTALL mints a new uuid, so a machine that is still actively filtering under
+     * this customer can have a dead recorded uuid. Answering `absent` there is a false
+     * teardown proof — the exact failure this tool exists to prevent.
      *
      * @param  array<int, array<string, mixed>>  $endpoints
      * @return array<string, mixed>|null
      */
-    private function matchZorusEndpoint(array $endpoints, string $customerUuid, ?string $endpointUuid, ?string $hostname): ?array
+    private function matchZorusEndpoint(array $endpoints, ?string $customerUuid, ?string $endpointUuid, ?string $hostname): ?array
     {
         $lowerHost = filled($hostname) ? mb_strtolower((string) $hostname) : null;
         $shortHost = $lowerHost !== null ? mb_strtolower(explode('.', (string) $hostname)[0]) : null;
+
+        $hostnameHit = null;
 
         foreach ($endpoints as $endpoint) {
             if (! is_array($endpoint)) {
@@ -355,17 +420,26 @@ class DeviceAbsenceVerifier
                 return ['matched_on' => 'endpoint uuid', 'uuid' => $uuid, 'name' => $name, 'customer_uuid' => $endpointCustomer];
             }
 
-            if (blank($endpointUuid) && $lowerHost !== null && $name !== null && $endpointCustomer === $customerUuid) {
+            if ($hostnameHit === null && $lowerHost !== null && $name !== null && $customerUuid !== null && $endpointCustomer === $customerUuid) {
                 $lowerName = mb_strtolower($name);
                 $shortName = mb_strtolower(explode('.', $name)[0]);
 
                 if ($lowerName === $lowerHost || $shortName === $lowerHost || $lowerName === $shortHost || $shortName === $shortHost) {
-                    return ['matched_on' => 'hostname (no uuid link recorded)', 'uuid' => $uuid, 'name' => $name, 'customer_uuid' => $endpointCustomer];
+                    // Not returned yet: a uuid hit later in the list is the stronger
+                    // identity and must win over a name collision.
+                    $hostnameHit = [
+                        'matched_on' => filled($endpointUuid)
+                            ? 'hostname (recorded endpoint uuid is NOT in the live list — the agent was likely reinstalled under a new uuid)'
+                            : 'hostname (no uuid link recorded)',
+                        'uuid' => $uuid,
+                        'name' => $name,
+                        'customer_uuid' => $endpointCustomer,
+                    ];
                 }
             }
         }
 
-        return null;
+        return $hostnameHit;
     }
 
     /**
@@ -392,7 +466,15 @@ class DeviceAbsenceVerifier
         }
 
         if (blank($asset->screenconnect_session_id)) {
-            return $this->notApplicable('This asset carries no screenconnect_session_id — the PSA holds no link into ScreenConnect for it.');
+            // Same rule as the other arms: ScreenConnect is ON and we hold no session id,
+            // so nothing was asked — and here nothing COULD be asked even with one. That
+            // is cannot_determine, and it stays in the roll-up.
+            return [
+                'verdict' => self::CANNOT_DETERMINE,
+                'method' => 'none',
+                'reason' => 'This asset carries no screenconnect_session_id — the PSA holds no link into ScreenConnect for it, and there is no outbound API to ask instead. ScreenConnect was NOT asked about this device.',
+                'evidence' => [],
+            ];
         }
 
         return [

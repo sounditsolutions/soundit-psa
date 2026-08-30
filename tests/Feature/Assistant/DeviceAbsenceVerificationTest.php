@@ -253,7 +253,16 @@ class DeviceAbsenceVerificationTest extends TestCase
 
         $this->assertSame(DeviceAbsenceVerifier::ABSENT, $arm['verdict']);
         $this->assertSame('live', $arm['method']);
-        $this->assertSame(2, $arm['evidence']['endpoints_scanned'], 'the whole list must be scanned, not a vendor-filtered slice');
+        $this->assertSame(
+            1,
+            $arm['evidence']['endpoints_scanned_for_this_customer'],
+            'the whole list must be scanned, but only this client\'s own slice of it may be published back',
+        );
+        $this->assertArrayNotHasKey(
+            'endpoints_scanned',
+            $arm['evidence'],
+            'the MSP-wide endpoint count is other customers\' business and must never reach a client-scoped caller',
+        );
     }
 
     public function test_zorus_hostname_fallback_is_scoped_to_this_clients_customer(): void
@@ -291,6 +300,131 @@ class DeviceAbsenceVerificationTest extends TestCase
         $this->assertSame('hostname (no uuid link recorded)', $arm['evidence']['matched_on']);
     }
 
+    public function test_zorus_reinstalled_agent_is_present_even_though_the_recorded_uuid_is_gone(): void
+    {
+        $this->enableZorus();
+        $client = $this->client();
+        // The PSA remembers the OLD agent's uuid; a reinstall minted a new one.
+        $asset = $this->asset($client, ['zorus_endpoint_id' => 'ep-OLD', 'hostname' => 'OFFBOARD-01']);
+
+        $this->fakeZorus([
+            ['uuid' => 'ep-NEW', 'name' => 'offboard-01.ourdomain.test', 'customerUuid' => self::ZORUS_CUSTOMER],
+        ]);
+
+        $arm = app(DeviceAbsenceVerifier::class)->verify($asset)['integrations']['zorus'];
+
+        $this->assertSame(
+            DeviceAbsenceVerifier::PRESENT,
+            $arm['verdict'],
+            'a machine still filtering under this customer must not read as absent just because its recorded uuid went stale — that is a false teardown proof',
+        );
+        $this->assertSame('ep-NEW', $arm['evidence']['endpoint_uuid']);
+        $this->assertStringContainsString('reinstalled', $arm['evidence']['matched_on']);
+    }
+
+    public function test_zorus_stale_uuid_hostname_pass_is_still_scoped_to_this_customer(): void
+    {
+        $this->enableZorus();
+        $client = $this->client();
+        $asset = $this->asset($client, ['zorus_endpoint_id' => 'ep-OLD', 'hostname' => 'OFFBOARD-01']);
+
+        // Same hostname exists live — but under ANOTHER customer. The reinstall
+        // heuristic must not widen the customer scope the plain fallback honours.
+        $this->fakeZorus([
+            ['uuid' => 'ep-THEIRS', 'name' => 'offboard-01.theirdomain.test', 'customerUuid' => 'cust-uuid-2'],
+        ]);
+
+        $arm = app(DeviceAbsenceVerifier::class)->verify($asset)['integrations']['zorus'];
+
+        $this->assertSame(DeviceAbsenceVerifier::ABSENT, $arm['verdict']);
+    }
+
+    public function test_zorus_uuid_match_wins_over_an_earlier_hostname_collision(): void
+    {
+        $this->enableZorus();
+        $client = $this->client();
+        $asset = $this->asset($client, ['zorus_endpoint_id' => 'ep-MINE', 'hostname' => 'OFFBOARD-01']);
+
+        // An identically-named machine appears FIRST in the list; the real linked
+        // endpoint appears later. The uuid is the identity — evidence must name it,
+        // not the name-collision row.
+        $this->fakeZorus([
+            ['uuid' => 'ep-TWIN', 'name' => 'OFFBOARD-01', 'customerUuid' => self::ZORUS_CUSTOMER],
+            ['uuid' => 'ep-MINE', 'name' => 'offboard-01.ourdomain.test', 'customerUuid' => self::ZORUS_CUSTOMER],
+        ]);
+
+        $arm = app(DeviceAbsenceVerifier::class)->verify($asset)['integrations']['zorus'];
+
+        $this->assertSame(DeviceAbsenceVerifier::PRESENT, $arm['verdict']);
+        $this->assertSame('endpoint uuid', $arm['evidence']['matched_on']);
+        $this->assertSame('ep-MINE', $arm['evidence']['endpoint_uuid']);
+    }
+
+    public function test_zorus_sweep_reads_past_the_first_page(): void
+    {
+        $this->enableZorus();
+        $client = $this->client();
+        $asset = $this->asset($client, ['zorus_endpoint_id' => 'ep-1']);
+
+        // A full first page of strangers, the device on page two. A sweep that
+        // stopped at page one would answer a confident, wrong `absent`.
+        $pageOne = array_map(
+            fn (int $i) => ['uuid' => "ep-filler-{$i}", 'name' => "FILLER-{$i}", 'customerUuid' => 'cust-uuid-2'],
+            range(1, 500),
+        );
+        $zorus = Mockery::mock(ZorusClient::class);
+        $zorus->shouldReceive('searchEndpoints')->with([], 1, 500)->once()->andReturn($pageOne);
+        $zorus->shouldReceive('searchEndpoints')->with([], 2, 500)->once()
+            ->andReturn([['uuid' => 'ep-1', 'name' => 'OFFBOARD-01', 'customerUuid' => self::ZORUS_CUSTOMER]]);
+        $this->app->instance(ZorusClient::class, $zorus);
+
+        $arm = app(DeviceAbsenceVerifier::class)->verify($asset)['integrations']['zorus'];
+
+        $this->assertSame(DeviceAbsenceVerifier::PRESENT, $arm['verdict']);
+        $this->assertSame(
+            'ep-1',
+            $arm['evidence']['endpoint_uuid'],
+            'the device only appears on page two — a sweep that stopped at page one would have answered a confident, wrong absent',
+        );
+    }
+
+    public function test_zorus_page_ceiling_is_cannot_determine_not_absent(): void
+    {
+        $this->enableZorus();
+        $client = $this->client();
+        $asset = $this->asset($client, ['zorus_endpoint_id' => 'ep-1']);
+
+        // Every page comes back full — the list never ends. A truncated sweep
+        // cannot prove the device is missing from the part it did not read.
+        $full = array_map(
+            fn (int $i) => ['uuid' => "ep-filler-{$i}", 'name' => "FILLER-{$i}", 'customerUuid' => 'cust-uuid-2'],
+            range(1, 500),
+        );
+        $zorus = Mockery::mock(ZorusClient::class);
+        $zorus->shouldReceive('searchEndpoints')->andReturn($full);
+        $this->app->instance(ZorusClient::class, $zorus);
+
+        $arm = app(DeviceAbsenceVerifier::class)->verify($asset)['integrations']['zorus'];
+
+        $this->assertSame(DeviceAbsenceVerifier::CANNOT_DETERMINE, $arm['verdict']);
+        $this->assertSame(40, $arm['evidence']['pages_capped_at']);
+    }
+
+    public function test_zorus_client_resolves_from_the_real_container(): void
+    {
+        // Every other Zorus test here binds a mock, which is exactly how the
+        // missing UnifiClient binding stayed invisible (AppServiceProvider's own
+        // note records it). This one resolves the REAL binding: ZorusClient's
+        // constructor takes an unbound array, so without the psa-842a singleton
+        // this throws before any HTTP could happen.
+        $this->enableZorus();
+
+        $resolved = app(ZorusClient::class);
+
+        $this->assertInstanceOf(ZorusClient::class, $resolved);
+        $this->assertSame($resolved, app(ZorusClient::class), 'bound as a singleton, matching every sibling client');
+    }
+
     public function test_zorus_sweep_failure_is_cannot_determine_not_absent(): void
     {
         $this->enableZorus();
@@ -310,15 +444,44 @@ class DeviceAbsenceVerificationTest extends TestCase
         );
     }
 
-    public function test_zorus_is_not_applicable_when_the_client_is_not_mapped(): void
+    public function test_zorus_is_cannot_determine_when_neither_the_client_nor_the_asset_carries_a_link(): void
     {
         $this->enableZorus();
         $client = Client::factory()->create(['zorus_customer_id' => null]);
-        $asset = $this->asset($client);
+        $asset = $this->asset($client, ['zorus_endpoint_id' => null]);
 
         $arm = app(DeviceAbsenceVerifier::class)->verify($asset)['integrations']['zorus'];
 
-        $this->assertSame(DeviceAbsenceVerifier::NOT_APPLICABLE, $arm['verdict']);
+        $this->assertSame(
+            DeviceAbsenceVerifier::CANNOT_DETERMINE,
+            $arm['verdict'],
+            'Zorus is ON and we simply hold no link — the vendor was NOT asked, and that must stay in the roll-up instead of being dropped as not_applicable',
+        );
+        $this->assertSame('none', $arm['method']);
+    }
+
+    public function test_zorus_answers_live_for_a_uuid_linked_asset_whose_client_lost_its_mapping(): void
+    {
+        $this->enableZorus();
+        // The client mapping was never backfilled, or was cleared when the client left
+        // the Active stage — the very population this arm exists for. The uuid match is
+        // customer-independent, so the vendor CAN still be asked about this device.
+        $client = Client::factory()->create(['zorus_customer_id' => null]);
+        $asset = $this->asset($client, ['zorus_endpoint_id' => 'ep-1']);
+
+        $this->fakeZorus([['uuid' => 'ep-1', 'name' => 'SOMEONE-ELSES-HOST-01', 'customerUuid' => 'cust-uuid-2']]);
+
+        $arm = app(DeviceAbsenceVerifier::class)->verify($asset)['integrations']['zorus'];
+
+        $this->assertSame(
+            DeviceAbsenceVerifier::PRESENT,
+            $arm['verdict'],
+            'a still-enrolled uuid-linked device must not be dropped from the quorum because its client mapping is missing',
+        );
+        // The verdict crosses; the other customer's data does not.
+        $this->assertNull($arm['evidence']['endpoint_name'], 'the matched row belongs to another customer — its hostname must not reach this client');
+        $this->assertFalse($arm['evidence']['endpoint_is_under_this_client']);
+        $this->assertArrayNotHasKey('customer_uuid', $arm['evidence']);
     }
 
     // ── 3. Tactical: 404 is the only absence signal ──────────────────────────
@@ -407,7 +570,77 @@ class DeviceAbsenceVerificationTest extends TestCase
         $this->assertSame('agent-1', $arm['evidence']['agent_id'], 'the evidence must name the id actually asked about');
     }
 
+    public function test_a_missing_local_link_is_cannot_determine_and_stays_in_the_roll_up(): void
+    {
+        $this->enableTactical();
+        $this->enableZorus();
+        $client = $this->client();
+        // Enrolled in Tactical, but the tactical_assets row was never synced, so the PSA
+        // holds no agent id and the vendor CANNOT be asked. Dropping that arm as
+        // not_applicable would let Zorus's live absence carry the whole verdict, and the
+        // operator would record a teardown with a live remote-shell agent still running.
+        $asset = $this->asset($client, ['zorus_endpoint_id' => 'ep-1']);
+        $this->fakeZorus([]);
+
+        $result = app(DeviceAbsenceVerifier::class)->verify($asset);
+
+        $this->assertSame(DeviceAbsenceVerifier::CANNOT_DETERMINE, $result['integrations']['tactical']['verdict']);
+        $this->assertSame('none', $result['integrations']['tactical']['method']);
+        $this->assertSame(DeviceAbsenceVerifier::ABSENT, $result['integrations']['zorus']['verdict']);
+        $this->assertSame(
+            DeviceAbsenceVerifier::CANNOT_DETERMINE,
+            $result['overall']['verdict'],
+            'a vendor we hold no link into was NOT asked — filtering it out of the quorum manufactures a teardown proof',
+        );
+        $this->assertContains('tactical', $result['overall']['undetermined']);
+        $this->assertNotContains('tactical', $result['overall']['not_applicable']);
+    }
+
+    public function test_every_reading_discloses_the_integrations_it_could_not_sweep(): void
+    {
+        $this->enableTactical();
+        $client = $this->client();
+        $asset = $this->asset($client, [], agentId: 'agent-1');
+        $this->fakeTacticalError($this->httpError(404));
+
+        $result = app(DeviceAbsenceVerifier::class)->verify($asset);
+
+        $this->assertSame(DeviceAbsenceVerifier::ABSENT, $result['overall']['verdict']);
+        $this->assertContains(
+            'ninja',
+            $result['overall']['not_checked'],
+            'this PSA runs device-bearing lanes this tool cannot ask — an absent that hides them carries the tool\'s authority for portals it never opened',
+        );
+        $this->assertStringContainsString('not_checked', $result['overall']['summary']);
+    }
+
     // ── The tool wrapper ─────────────────────────────────────────────────────
+
+    public function test_tool_refuses_an_ambiguous_hostname_instead_of_picking_a_row(): void
+    {
+        $this->enableTactical();
+        $client = $this->client();
+        // The offboarded row and its replacement share a hostname — the normal state of
+        // this tool's population, because the include_inactive default deliberately keeps
+        // deactivated rows in scope.
+        $old = $this->asset($client, ['hostname' => 'OFFBOARD-01', 'is_active' => false]);
+        $replacement = $this->asset($client, ['hostname' => 'OFFBOARD-01', 'is_active' => true, 'name' => 'OFFBOARD-01 (replacement)']);
+
+        $result = (new AssistantToolExecutor(clientId: $client->id))
+            ->execute('verify_device_absent', ['hostname' => 'OFFBOARD-01']);
+
+        $this->assertArrayHasKey(
+            'error',
+            $result,
+            'answering for an arbitrary one of the colliding rows is a confident verdict about the wrong device',
+        );
+        $this->assertStringContainsString('Ambiguous hostname', $result['error']);
+        $this->assertEqualsCanonicalizing(
+            [$old->id, $replacement->id],
+            array_column($result['candidates'], 'id'),
+            'the caller must be told which rows collided so it can re-ask with asset_id',
+        );
+    }
 
     public function test_tool_resolves_deactivated_devices_by_default(): void
     {
@@ -437,6 +670,23 @@ class DeviceAbsenceVerificationTest extends TestCase
             ->execute('verify_device_absent', ['asset_id' => $asset->id, 'include_inactive' => false]);
 
         $this->assertArrayHasKey('error', $result);
+    }
+
+    public function test_tool_refuses_an_asset_belonging_to_another_client(): void
+    {
+        $this->enableTactical();
+        $mine = $this->client();
+        $theirs = Client::factory()->create();
+        $theirAsset = $this->asset($theirs, [], agentId: 'agent-1');
+
+        $result = (new AssistantToolExecutor(clientId: $mine->id))
+            ->execute('verify_device_absent', ['asset_id' => $theirAsset->id]);
+
+        $this->assertArrayHasKey(
+            'error',
+            $result,
+            'client_id scoping is the data boundary on this surface — the widened lifecycle default must not widen it',
+        );
     }
 
     public function test_tool_is_advertised_with_its_four_verdicts_named(): void

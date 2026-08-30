@@ -1391,14 +1391,36 @@ class AssistantToolExecutor
         }
 
         if (! empty($input['asset_id'])) {
-            $query->where('id', (int) $input['asset_id']);
+            $asset = $query->where('id', (int) $input['asset_id'])->first();
         } elseif (! empty($input['hostname'])) {
-            $query->whereRaw('LOWER(hostname) = ?', [strtolower($input['hostname'])]);
+            // Ambiguity is an ERROR here, never a silent pick. The inverted
+            // include_inactive default deliberately keeps deactivated rows in scope,
+            // and that is exactly where duplicate hostnames accumulate (reimage,
+            // replacement, re-enrolment): first() would answer with full confidence
+            // about an arbitrary one of them, and a teardown verdict for the wrong
+            // machine is worse than no verdict at all.
+            $matches = $query
+                ->whereRaw('LOWER(hostname) = ?', [strtolower($input['hostname'])])
+                ->orderBy('id')
+                ->limit(11)
+                ->get(['id', 'hostname', 'is_active']);
+
+            if ($matches->count() > 1) {
+                return [
+                    'error' => 'Ambiguous hostname — more than one asset at this client carries it (an offboarded row and its replacement look exactly like this). Re-issue with asset_id: choosing which device the verdict is about is the caller\'s call, not this tool\'s.',
+                    'candidates' => $matches->map(fn (Asset $a) => [
+                        'id' => $a->id,
+                        'hostname' => $a->hostname,
+                        'is_active' => $a->is_active,
+                    ])->values()->toArray(),
+                ];
+            }
+
+            $asset = $matches->first();
         } else {
             return ['error' => 'Provide one of: asset_id or hostname'];
         }
 
-        $asset = $query->first();
         if (! $asset) {
             return ['error' => 'Asset not found at this client (retired/soft-deleted assets are never returned)'];
         }
