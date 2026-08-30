@@ -460,6 +460,9 @@ class AssistantEnabledGateTest extends TestCase
             'get_ticket_attachment',
             'get_ticket_notes',
             'search_tickets',
+            // psa-842a. A pure read: it queries vendor APIs and writes nothing,
+            // so it stays out of WRITE_TOOLS.
+            'verify_device_absent',
         ];
         sort($names);
         sort($expectedPsaTools);
