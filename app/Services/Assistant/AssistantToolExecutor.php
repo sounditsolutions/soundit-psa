@@ -723,7 +723,24 @@ class AssistantToolExecutor
             return ['error' => 'ticket_id is required'];
         }
 
-        $ticket = Ticket::with('client:id,stage')->find($ticketId);
+        // psa-838: the same fence get_ticket_detail carries, for the same
+        // reason and by the same rule. get_ticket_detail's description routes
+        // the caller here for transcripts, so an unfenced by-id read on this
+        // verb hands a scoped executor the display_id (confirming the id
+        // exists), the contact's full name, both phone numbers and up to
+        // 10000 chars of transcript for a ticket its own fence just refused.
+        //   scoped   — the ticket must belong to the client context; an
+        //              out-of-scope id is not-found, never a partial read.
+        //   unscoped — the staff board keeps its cross-client read, including
+        //              the client_id IS NULL unresolved-intake tickets that
+        //              are reachable nowhere else (psa-6usr).
+        $ticketQuery = Ticket::with('client:id,stage');
+
+        if ($this->clientId) {
+            $ticketQuery->where('client_id', $this->clientId);
+        }
+
+        $ticket = $ticketQuery->find($ticketId);
         if (! $ticket) {
             return ['error' => 'Ticket not found'];
         }
