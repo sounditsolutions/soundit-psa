@@ -2491,10 +2491,17 @@ class AssistantToolExecutor
             // tier rows have gone — reaches here, and on a sweep it must stay a
             // finding about ONE profile rather than a 500 that costs the caller the
             // other 200 due profiles the night before the run.
-            Log::warning("[MCP] preview_recurring_invoice: profile {$profile->id} could not be priced: ".$e->getMessage());
+            // Bound the vendor/driver text at 200 chars, as every other \Throwable
+            // arm in this executor does: a QueryException message carries the failing
+            // SQL and its bound parameters, and on a sweep this string is returned
+            // once PER PROFILE into the tool result, the agent's context and the
+            // audit log.
+            $reason = mb_substr($e->getMessage(), 0, 200);
+
+            Log::warning("[MCP] preview_recurring_invoice: profile {$profile->id} could not be priced: ".$reason);
 
             return array_merge($header, [
-                'error' => "Profile {$profile->id} could not be priced: ".$e->getMessage(),
+                'error' => "Profile {$profile->id} could not be priced: ".$reason,
             ]);
         }
 
