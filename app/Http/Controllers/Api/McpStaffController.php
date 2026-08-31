@@ -317,6 +317,20 @@ class McpStaffController extends Controller
      */
     private const SCOPE_WIDENING_READ_TOOLS = [
         'list_mislinked_assets',
+
+        // The recurring-profile reads (2026-08-31). Same fleet-capable shape:
+        // client_id is an OPTIONAL filter, so a collapsed-to-null malformed value
+        // widens rather than narrows. get_recurring_profile is here too even
+        // though it publishes no client_id in its schema — client_id is lifted
+        // out of the arguments regardless of schema, and the executor honours it
+        // as a real fence, so a malformed one silently drops that fence.
+        //
+        // Adding these does NOT widen the boundary contract the comment above
+        // reserves for a separate scope call: these three are new in this branch
+        // and have no callers to change, and the entry only ever ADDS a refusal.
+        'list_recurring_profiles',
+        'get_recurring_profile',
+        'preview_recurring_invoice',
     ];
 
     /**

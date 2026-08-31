@@ -11,6 +11,7 @@ use App\Support\McpConfig;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -571,5 +572,101 @@ class PsaRecurringProfileReadToolsTest extends TestCase
 
         $allowed = $this->callTool($token, 'list_recurring_profiles', []);
         $this->assertFalse($allowed->json('result.isError'));
+    }
+
+    // ── malformed scope must not silently widen the sweep ──────────────────
+    //
+    // The controller collapses a malformed client_id (0, negative, non-numeric,
+    // null, "07") to null before dispatch. For almost every tool on this surface
+    // that collapse is SAFE, because null means global-only — strictly LESS reach
+    // than the scope the caller fumbled. It INVERTS for a fleet-capable read: null
+    // here means every client, so a typo turns "one client" into a cross-tenant
+    // read. That is why SCOPE_WIDENING_READ_TOOLS exists (Chet found the class on
+    // list_mislinked_assets, 2026-07-31), and all three of these reads are in it.
+    //
+    // ALL THREE, including get_recurring_profile: it is addressed by profile_id
+    // and publishes no client_id in its schema, but the controller lifts client_id
+    // out of the arguments regardless of schema and findScopedRecurringProfile
+    // honours it as a real fence. A malformed one therefore drops that fence.
+    //
+    // Do NOT "fix" the asymmetry: an ABSENT client_id is still a deliberate
+    // fleet-wide sweep. Supplying a broken scope is the caller error; omitting one
+    // is a documented choice.
+
+    /** @return array<string, array<int, mixed>> */
+    public static function malformedClientIdProvider(): array
+    {
+        return [
+            'zero' => [0],
+            'negative' => [-1],
+            'leading zero string' => ['07'],
+            'numeric prefix garbage' => ['42abc'],
+            'empty string' => [''],
+            'explicit null' => [null],
+            'boolean true' => [true],
+            'array' => [[7]],
+        ];
+    }
+
+    #[DataProvider('malformedClientIdProvider')]
+    public function test_a_malformed_client_id_is_refused_rather_than_widened_to_every_client(mixed $malformed): void
+    {
+        $clientA = Client::factory()->create(['name' => 'Alpha Industries']);
+        $clientB = Client::factory()->create(['name' => 'Beta Holdings']);
+        $profileA = $this->profile($this->contract($clientA), ['name' => 'Alpha Monthly']);
+        $profileB = $this->profile($this->contract($clientB), ['name' => 'Beta Monthly']);
+
+        $token = $this->token(self::TOOLS);
+
+        $calls = [
+            'list_recurring_profiles' => ['client_id' => $malformed],
+            'preview_recurring_invoice' => ['client_id' => $malformed, 'due_only' => true],
+            'get_recurring_profile' => ['client_id' => $malformed, 'profile_id' => $profileB->id],
+        ];
+
+        foreach ($calls as $tool => $arguments) {
+            $response = $this->callTool($token, $tool, $arguments);
+            $response->assertOk();
+
+            $text = (string) $response->json('result.content.0.text');
+            $this->assertTrue(
+                (bool) $response->json('result.isError'),
+                "{$tool} must refuse a malformed client_id rather than collapse it to a cross-client read: ".$text
+            );
+            $this->assertStringContainsString('is not a positive integer', $text);
+
+            // A refusal printed beside the fleet is not a refusal. No client's
+            // rows may ride along with the error.
+            $this->assertStringNotContainsString('Alpha', $text);
+            $this->assertStringNotContainsString('Beta', $text);
+
+            // Structural, not a substring hunt for the id: a single-digit id is a
+            // substring of the echoed rejected value itself ('-1' contains '1'),
+            // which would make an id search pass or fail for the wrong reason.
+            $this->assertSame([], $this->decodedResult($response), "{$tool} returned a payload beside the refusal");
+        }
+    }
+
+    /**
+     * The other half of the asymmetry, pinned so a later reader cannot "restore
+     * symmetry" by making an omitted client_id an error too: omitting it is the
+     * documented way to ask for the whole billing run, which is the entire point
+     * of the due-only sweep.
+     */
+    public function test_an_omitted_client_id_is_still_a_deliberate_fleet_wide_sweep(): void
+    {
+        $clientA = Client::factory()->create();
+        $clientB = Client::factory()->create();
+        $profileA = $this->profile($this->contract($clientA));
+        $profileB = $this->profile($this->contract($clientB));
+
+        $token = $this->token(self::TOOLS);
+
+        $response = $this->callTool($token, 'list_recurring_profiles', []);
+        $this->assertFalse((bool) $response->json('result.isError'));
+
+        $ids = collect($this->decodedResult($response)['profiles'])->pluck('id')->all();
+        $this->assertContains($profileA->id, $ids);
+        $this->assertContains($profileB->id, $ids);
     }
 }
