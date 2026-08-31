@@ -275,6 +275,15 @@ class McpStaffController extends Controller
         // expose internal cost/margin — Charlie's explicit ruling, 2026-07-20.
         'list_invoices',
         'get_invoice',
+        // Recurring billing profile reads (Chet, 2026-08-31). Cross-client like the
+        // invoice pair above, client_id an optional filter. get_recurring_profile
+        // exposes unit_cost_override and the pricing_tiers rate cards — internal
+        // cost data, same boundary as list_invoices/get_invoice and the opposite of
+        // the contract reads. preview_recurring_invoice runs the generator's own
+        // pricing path READ-ONLY: it persists nothing and advances no run date.
+        'list_recurring_profiles',
+        'get_recurring_profile',
+        'preview_recurring_invoice',
         // psa-gq7by: staged/held action visibility. Cross-client like the pairs
         // above, client_id an optional filter. Metadata only — never the drafted
         // body, which stays in the cockpit approval UI.

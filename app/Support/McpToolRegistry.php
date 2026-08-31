@@ -1214,6 +1214,9 @@ class McpToolRegistry
             self::getPhoneCallTool(),
             self::listInvoicesTool(),
             self::getInvoiceTool(),
+            self::listRecurringProfilesTool(),
+            self::getRecurringProfileTool(),
+            self::previewRecurringInvoiceTool(),
             self::getStagedActionStatusTool(),
             self::listMislinkedAssetsTool(),
         ];
@@ -1440,6 +1443,77 @@ class McpToolRegistry
                     'invoice_id' => ['type' => 'integer', 'description' => 'The invoice ID to read.'],
                 ],
                 'required' => ['invoice_id'],
+            ],
+        ];
+    }
+
+    /**
+     * Recurring billing profile reads (Chet's request, 2026-08-31, behind Charlie's
+     * ask to review every profile ahead of the automatic billing run). Thin reads
+     * over the EXISTING BillingService/RecurringInvoiceProfile layer — no new
+     * billing logic — filling a gap where the MCP catalog reached invoices but
+     * nothing that generates them.
+     *
+     * STAFF-CLASS AND CROSS-CLIENT, mirroring list_invoices/get_invoice rather than
+     * the client-scoped contract reads, for two reasons that are not a matter of
+     * taste: the due-run sweep is inherently cross-client (a client_id-fenced tool
+     * cannot answer "what bills tomorrow"), and unit_cost_override is internal cost
+     * data whose exposure to a client is the defect, not the feature.
+     *
+     * WRITES ARE DELIBERATELY NOT HERE. An edit verb changes what a client is
+     * billed; it is staged-only from the start and specs separately.
+     *
+     * @return array<string, mixed>
+     */
+    public static function listRecurringProfilesTool(): array
+    {
+        return [
+            'name' => 'list_recurring_profiles',
+            'description' => 'List recurring billing profiles — the templates that billing:generate turns into invoices (id, name, contract, client, is_active, billing_period, billing_day, payment_terms_days, next_run_date, last_run_date, skip_zero_invoices, auto_push_mode, line count). Staff-class, cross-client — omit client_id to sweep every client, or pass it to scope to one. Filter with due_only (exactly the profiles the next run will pick up) and active_only. EDIT VISIBILITY: each row carries updated_at for the profile AND lines_updated_at for the newest change to any of its lines — a line edited after last_run_date has not billed yet, and a line edit does NOT move the profile\'s own updated_at, so compare BOTH against last_run_date. skip_zero_invoices is null when the profile inherits the system setting; effective_skip_zero_invoices is the value the run will actually use. Read-only. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'client_id' => ['type' => 'integer', 'description' => 'Optional: scope to one client. Omit for a cross-client view.'],
+                    'due_only' => ['type' => 'boolean', 'description' => 'Only profiles the next billing run would pick up (active, next_run_date on/before today, on an active PSA-billed contract).'],
+                    'active_only' => ['type' => 'boolean', 'description' => 'Only profiles with is_active true, whether or not they are due.'],
+                    'limit' => ['type' => 'integer', 'description' => 'Max rows (default 50, cap 200). matching_total and truncated report what the filter actually matched.'],
+                ],
+                'required' => [],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function getRecurringProfileTool(): array
+    {
+        return [
+            'name' => 'get_recurring_profile',
+            'description' => 'Get one recurring billing profile in full: the header (contract, client, cadence, next/last run date, skip-zero and auto-push settings, notes) plus every line in billing order with description, sku, quantity_type, fixed_quantity, the license-type ids, included_per_base_unit, overage_divisor, unit_price, normalized pricing_tiers, prepaid_time_override, is_taxable and per-line updated_at. Staff-class, cross-client — addressed by profile_id, not scoped to a client_id. INTERNAL COST DATA: returns unit_cost_override and the pricing_tiers rate cards, which are never shown to clients. Read-only — it never edits a profile or generates an invoice. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'profile_id' => ['type' => 'integer', 'description' => 'The recurring profile ID to read.'],
+                ],
+                'required' => ['profile_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function previewRecurringInvoiceTool(): array
+    {
+        return [
+            'name' => 'preview_recurring_invoice',
+            'description' => 'Render what a recurring profile WILL bill, before it bills — the same pricing path billing:generate uses, run read-only, persisting nothing and advancing no run date. TWO SHAPES, PASS EXACTLY ONE: profile_id previews that single profile (due or not); due_only=true previews EVERY due profile in one call, the equivalent of billing:generate --dry-run, and is how a whole run is reviewed before it fires. Each preview returns invoice_date, due_date, subtotal, total_prepaid_minutes, would_skip, and every line with quantity, unit_price, amount, prepaid minutes and quantity_source. quantity_source is the AUDIT RECORD naming which rate card priced the line — a graduated line is split into one row per band, so several rows may share a description at different unit prices; that is correct, not duplication. would_skip TRUE means the profile produces NO invoice on the run even though its lines render here. On a sweep, billable_subtotal EXCLUDES would_skip profiles, due_total is the real number due, and truncated plus a warning fire if limit cut the sweep short — never read a truncated billable_subtotal as the run total. Staff-class, cross-client. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'client_id' => ['type' => 'integer', 'description' => 'Optional: scope to one client. Omit for a cross-client view.'],
+                    'profile_id' => ['type' => 'integer', 'description' => 'Preview this one profile. Mutually exclusive with due_only.'],
+                    'due_only' => ['type' => 'boolean', 'description' => 'Preview every profile the next run would pick up (the billing:generate --dry-run sweep). Mutually exclusive with profile_id.'],
+                    'limit' => ['type' => 'integer', 'description' => 'Sweep only: max profiles previewed (default 100, cap 250).'],
+                ],
+                'required' => [],
             ],
         ];
     }
