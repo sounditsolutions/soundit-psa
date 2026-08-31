@@ -2378,12 +2378,17 @@ class AssistantToolExecutor
         $previews = [];
         $billableSubtotal = 0.0;
         $skippedCount = 0;
+        $errorCount = 0;
 
         foreach ($profiles as $profile) {
             $preview = $this->previewOneRecurringProfile($profile);
             $previews[] = $preview;
 
             if (isset($preview['error'])) {
+                // Neither billable nor would_skip. Counted on its own so the
+                // categories still reconcile against previewed.
+                $errorCount++;
+
                 continue;
             }
 
@@ -2404,18 +2409,37 @@ class AssistantToolExecutor
             'due_total' => $dueTotal,
             'previewed' => count($previews),
             'truncated' => $truncated,
+            // THREE categories, counted separately so none has to be told apart by
+            // subtraction, and so they reconcile against previewed:
+            //   previewed = would_skip_count + error_count + the profiles behind
+            //   billable_subtotal.
             // would_skip profiles are excluded from the billable total on purpose —
-            // this is the figure the run will actually invoice — and counted
-            // separately so the two never have to be told apart by subtraction.
+            // that is the figure the run will actually invoice. An errored profile
+            // is excluded too, but it is NOT a would_skip: folding the two together
+            // (or dropping errors entirely) makes an understated subtotal read as a
+            // complete run total.
             'would_skip_count' => $skippedCount,
+            'error_count' => $errorCount,
             'billable_subtotal' => round($billableSubtotal, 2),
             'previews' => $previews,
         ];
 
+        $warnings = [];
+
         if ($truncated) {
-            $result['warning'] = 'Only '.count($previews)." of {$dueTotal} due profiles were previewed (limit {$limit}). "
+            $warnings[] = 'Only '.count($previews)." of {$dueTotal} due profiles were previewed (limit {$limit}). "
                 .'billable_subtotal covers the previewed profiles ONLY and is NOT the total of the billing run. '
                 .'Raise limit, or scope with client_id, before reading this as a whole-run figure.';
+        }
+
+        if ($errorCount > 0) {
+            $warnings[] = $errorCount.' of the '.count($previews).' previewed profiles could not be priced (each carries an error). '
+                .'They are counted in error_count, NOT in would_skip_count, and contribute nothing to billable_subtotal — '
+                .'so billable_subtotal understates the run by whatever those profiles would have billed.';
+        }
+
+        if ($warnings !== []) {
+            $result['warning'] = implode(' ', $warnings);
         }
 
         return $result;
@@ -2430,6 +2454,10 @@ class AssistantToolExecutor
      * deleted contract turns a read into a 500. Refuse it by name instead: a
      * profile that cannot be priced is a real finding for a pre-run review, and it
      * must not take the rest of a sweep down with it.
+     *
+     * That guarantee is the whole method, not just the orphan case, so the pricing
+     * call itself is wrapped too — ANY throw comes back as this profile's 'error'
+     * key, never as a failed sweep.
      *
      * @return array<string, mixed>
      */
@@ -2454,7 +2482,21 @@ class AssistantToolExecutor
             ]);
         }
 
-        $preview = app(BillingService::class)->previewInvoice($profile);
+        try {
+            $preview = app(BillingService::class)->previewInvoice($profile);
+        } catch (\Throwable $e) {
+            // The null-contract check above is only the failure this method knows by
+            // name. Every other unpriceable state the due() scope admits — a zero
+            // overage_divisor, a line pointing at a deleted license type, a sku whose
+            // tier rows have gone — reaches here, and on a sweep it must stay a
+            // finding about ONE profile rather than a 500 that costs the caller the
+            // other 200 due profiles the night before the run.
+            Log::warning("[MCP] preview_recurring_invoice: profile {$profile->id} could not be priced: ".$e->getMessage());
+
+            return array_merge($header, [
+                'error' => "Profile {$profile->id} could not be priced: ".$e->getMessage(),
+            ]);
+        }
 
         return array_merge($header, [
             'invoice_date' => $preview['invoice_date'],
