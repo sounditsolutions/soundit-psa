@@ -275,6 +275,15 @@ class McpStaffController extends Controller
         // expose internal cost/margin — Charlie's explicit ruling, 2026-07-20.
         'list_invoices',
         'get_invoice',
+        // Recurring billing profile reads (Chet, 2026-08-31). Cross-client like the
+        // invoice pair above, client_id an optional filter. get_recurring_profile
+        // exposes unit_cost_override and the pricing_tiers rate cards — internal
+        // cost data, same boundary as list_invoices/get_invoice and the opposite of
+        // the contract reads. preview_recurring_invoice runs the generator's own
+        // pricing path READ-ONLY: it persists nothing and advances no run date.
+        'list_recurring_profiles',
+        'get_recurring_profile',
+        'preview_recurring_invoice',
         // psa-gq7by: staged/held action visibility. Cross-client like the pairs
         // above, client_id an optional filter. Metadata only — never the drafted
         // body, which stays in the cockpit approval UI.
@@ -308,6 +317,20 @@ class McpStaffController extends Controller
      */
     private const SCOPE_WIDENING_READ_TOOLS = [
         'list_mislinked_assets',
+
+        // The recurring-profile reads (2026-08-31). Same fleet-capable shape:
+        // client_id is an OPTIONAL filter, so a collapsed-to-null malformed value
+        // widens rather than narrows. get_recurring_profile is here too even
+        // though it publishes no client_id in its schema — client_id is lifted
+        // out of the arguments regardless of schema, and the executor honours it
+        // as a real fence, so a malformed one silently drops that fence.
+        //
+        // Adding these does NOT widen the boundary contract the comment above
+        // reserves for a separate scope call: these three are new in this branch
+        // and have no callers to change, and the entry only ever ADDS a refusal.
+        'list_recurring_profiles',
+        'get_recurring_profile',
+        'preview_recurring_invoice',
     ];
 
     /**

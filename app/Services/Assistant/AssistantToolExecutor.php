@@ -18,12 +18,15 @@ use App\Models\Invoice;
 use App\Models\InvoiceLine;
 use App\Models\Person;
 use App\Models\PhoneCall;
+use App\Models\RecurringInvoiceProfile;
+use App\Models\RecurringInvoiceProfileLine;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketCategory;
 use App\Models\TicketNote;
 use App\Services\Agent\ProposeCloseTool;
 use App\Services\AttachmentService;
+use App\Services\BillingService;
 use App\Services\Cipp\CippMcpToolRelay;
 use App\Services\Cipp\HandlesCippTools;
 use App\Services\Level\LevelClient;
@@ -172,6 +175,9 @@ class AssistantToolExecutor
             'get_phone_call' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getPhoneCall($in)],
             'list_invoices' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listInvoices($in)],
             'get_invoice' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getInvoice($in)],
+            'list_recurring_profiles' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listRecurringProfiles($in)],
+            'get_recurring_profile' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getRecurringProfile($in)],
+            'preview_recurring_invoice' => [ToolEffect::Read, static fn (self $x, array $in) => $x->previewRecurringInvoice($in)],
             'get_staged_action_status' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getStagedActionStatus($in)],
             'list_mislinked_assets' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listMislinkedAssets($in)],
 
@@ -2184,6 +2190,462 @@ class AssistantToolExecutor
                 'quantity_source' => $line->quantity_source,
             ])->toArray(),
         ];
+    }
+
+    // ── Recurring billing profile reads (psa-recurring-reads) ──
+
+    /**
+     * Cross-client staff-class reads over the recurring billing profiles that feed
+     * `billing:generate`. Requested by Chet 2026-08-31 behind Charlie's ask to review
+     * every profile before the automatic run; no MCP tool reached
+     * RecurringInvoiceProfile at all before this.
+     *
+     * *** SCOPE NOTE, same shape as listInvoices(): client_id is NOT read from
+     * $input. *** The MCP boundary lifts it out of the raw arguments into this
+     * executor's constructor scope before dispatch (McpStaffController::callTool),
+     * so reading $input['client_id'] here would be both dead and a scope-bypass
+     * shape. A profile has no client_id column of its own — it hangs off
+     * contract.client_id — so every scope filter here goes through the contract.
+     *
+     * *** THE DUE PREDICATE IS BORROWED, NEVER RE-DERIVED. *** Everything that
+     * answers "what bills next" runs RecurringInvoiceProfile::due() — the exact
+     * scope GenerateRecurringInvoices uses. A second, hand-written copy of
+     * "active + next_run_date <= today + active PSA-billed contract" is how a
+     * review tool starts disagreeing with the generator it exists to preview.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function listRecurringProfiles(array $input): array
+    {
+        // max(1, …) guards the lower bound: Laravel's limit() reads a negative
+        // value as "no limit", which would dump every client's billing cadence.
+        $limit = max(1, min((int) ($input['limit'] ?? 50), 200));
+
+        $query = RecurringInvoiceProfile::query()
+            ->with(['contract:id,name,client_id,status,billing_source', 'contract.client:id,name'])
+            ->withCount('lines');
+
+        $this->scopeRecurringProfilesToClient($query);
+
+        if ($this->boolArgument($input, 'due_only')) {
+            $query->due();
+        }
+
+        if ($this->boolArgument($input, 'active_only')) {
+            $query->where('is_active', true);
+        }
+
+        // Counted BEFORE the limit, from its own query, so "there are more than you
+        // are looking at" is a measurement rather than an inference off the row
+        // count we happened to return.
+        $matching = (clone $query)->count();
+
+        $profiles = $query->orderBy('next_run_date')->orderBy('id')->limit($limit)->get();
+
+        // The due set is resolved once, under the same client scope, so is_due on a
+        // row means exactly what the generator means by it.
+        $dueIds = array_flip($this->dueProfileIds());
+
+        return [
+            'count' => $profiles->count(),
+            'matching_total' => $matching,
+            'truncated' => $matching > $profiles->count(),
+            'client_id' => $this->clientId,
+            'today' => today()->toDateString(),
+            'profiles' => $profiles->map(fn (RecurringInvoiceProfile $p) => array_merge(
+                $this->shapeRecurringProfile($p),
+                [
+                    'line_count' => (int) ($p->lines_count ?? 0),
+                    'is_due' => isset($dueIds[$p->id]),
+                ],
+            ))->toArray(),
+        ];
+    }
+
+    /**
+     * get_recurring_profile — one profile with every line, in billing order.
+     *
+     * *** THIS IS THE TOOL THAT CARRIES INTERNAL COST DATA. *** unit_cost_override
+     * and pricing_tiers are the rate cards behind a line; they are never shown to a
+     * client. The tool description names them outright for the same reason
+     * get_invoice names cost and margin — a granter has to be able to see what the
+     * grant hands over.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function getRecurringProfile(array $input): array
+    {
+        $profile = $this->findScopedRecurringProfile($input, ['contract.client', 'lines.sku:id,name,prepaid_time_minutes']);
+
+        if (is_array($profile)) {
+            return $profile;
+        }
+
+        return array_merge($this->shapeRecurringProfile($profile), [
+            'notes' => $profile->notes,
+            'line_count' => $profile->lines->count(),
+            'is_due' => in_array($profile->id, $this->dueProfileIds(), true),
+            'lines' => $profile->lines->map(fn (RecurringInvoiceProfileLine $line) => [
+                'id' => $line->id,
+                'sort_order' => $line->sort_order,
+                'description' => $line->description,
+                'sku_id' => $line->sku_id,
+                'sku_name' => $line->sku?->name,
+                'quantity_type' => $line->quantity_type?->value,
+                'quantity_type_label' => $line->quantity_type?->label(),
+                'fixed_quantity' => $line->fixed_quantity,
+                'license_type_id' => $line->license_type_id,
+                'usage_license_type_id' => $line->usage_license_type_id,
+                'base_license_type_id' => $line->base_license_type_id,
+                'included_per_base_unit' => $line->included_per_base_unit,
+                'overage_divisor' => $line->overage_divisor,
+                'unit_price' => $line->unit_price,
+                // The NORMALIZED tiers, not the raw column: TieredPricing::normalize
+                // is what priceLineSegments() actually prices against, so a reviewer
+                // reading this sees the bands that will be applied rather than
+                // whatever shape happens to be stored.
+                'pricing_tiers' => $line->pricingTiers(),
+                'is_tiered' => $line->isTiered(),
+                // Internal — never client-visible. Named in the tool description.
+                'unit_cost_override' => $line->unit_cost_override,
+                'prepaid_time_override' => $line->prepaid_time_override,
+                'is_taxable' => (bool) $line->is_taxable,
+                'updated_at' => $line->updated_at?->toIso8601String(),
+            ])->toArray(),
+        ]);
+    }
+
+    /**
+     * preview_recurring_invoice — what a profile WILL bill, before it bills.
+     *
+     * Two shapes, and exactly one must be chosen:
+     *  - profile_id: one profile, whether or not it is due.
+     *  - due_only=true: the whole run, mirroring `billing:generate --dry-run` —
+     *    the piece that turns a per-profile check into a whole-run review
+     *    (Chet's framing, and the highest-value shape of the request).
+     *
+     * Neither is defaulted. Defaulting to the sweep would let a caller who
+     * fat-fingered profile_id get a cross-client render of the entire billing run;
+     * defaulting to nothing would answer a whole-run question with one profile.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function previewRecurringInvoice(array $input): array
+    {
+        $dueOnly = $this->boolArgument($input, 'due_only');
+        $hasProfileId = array_key_exists('profile_id', $input)
+            && $input['profile_id'] !== null
+            && $input['profile_id'] !== '';
+
+        if ($dueOnly && $hasProfileId) {
+            return ['error' => 'Pass either profile_id (one profile) or due_only=true (the whole due run), not both.'];
+        }
+
+        if (! $dueOnly && ! $hasProfileId) {
+            return ['error' => 'Pass profile_id to preview one profile, or due_only=true to preview every due profile (the billing:generate --dry-run sweep).'];
+        }
+
+        if ($hasProfileId) {
+            $profile = $this->findScopedRecurringProfile($input, ['contract.client', 'lines.sku.backupStorageTiers']);
+
+            if (is_array($profile)) {
+                return $profile;
+            }
+
+            $preview = $this->previewOneRecurringProfile($profile);
+
+            return array_merge(['today' => today()->toDateString()], $preview);
+        }
+
+        // max(1, …) as above; the cap is deliberately generous because a truncated
+        // billing-run preview is a wrong answer to "what bills tomorrow", not a
+        // shorter one — and truncation is reported loudly below rather than left
+        // for the caller to notice.
+        $limit = max(1, min((int) ($input['limit'] ?? 100), 250));
+
+        $query = RecurringInvoiceProfile::query()
+            ->due()
+            ->with(['contract.client', 'lines.sku.backupStorageTiers']);
+
+        $this->scopeRecurringProfilesToClient($query);
+
+        $dueTotal = (clone $query)->count();
+        $profiles = $query->orderBy('next_run_date')->orderBy('id')->limit($limit)->get();
+
+        $previews = [];
+        $billableSubtotal = 0.0;
+        $skippedCount = 0;
+        $errorCount = 0;
+
+        foreach ($profiles as $profile) {
+            $preview = $this->previewOneRecurringProfile($profile);
+            $previews[] = $preview;
+
+            if (isset($preview['error'])) {
+                // Neither billable nor would_skip. Counted on its own so the
+                // categories still reconcile against previewed.
+                $errorCount++;
+
+                continue;
+            }
+
+            if ($preview['would_skip']) {
+                $skippedCount++;
+
+                continue;
+            }
+
+            $billableSubtotal += (float) $preview['subtotal'];
+        }
+
+        $truncated = $dueTotal > count($previews);
+
+        $result = [
+            'today' => today()->toDateString(),
+            'client_id' => $this->clientId,
+            'due_total' => $dueTotal,
+            'previewed' => count($previews),
+            'truncated' => $truncated,
+            // THREE categories, counted separately so none has to be told apart by
+            // subtraction, and so they reconcile against previewed:
+            //   previewed = would_skip_count + error_count + the profiles behind
+            //   billable_subtotal.
+            // would_skip profiles are excluded from the billable total on purpose —
+            // that is the figure the run will actually invoice. An errored profile
+            // is excluded too, but it is NOT a would_skip: folding the two together
+            // (or dropping errors entirely) makes an understated subtotal read as a
+            // complete run total.
+            'would_skip_count' => $skippedCount,
+            'error_count' => $errorCount,
+            'billable_subtotal' => round($billableSubtotal, 2),
+            'previews' => $previews,
+        ];
+
+        $warnings = [];
+
+        if ($truncated) {
+            $warnings[] = 'Only '.count($previews)." of {$dueTotal} due profiles were previewed (limit {$limit}). "
+                .'billable_subtotal covers the previewed profiles ONLY and is NOT the total of the billing run. '
+                .'Raise limit, or scope with client_id, before reading this as a whole-run figure.';
+        }
+
+        if ($errorCount > 0) {
+            $warnings[] = $errorCount.' of the '.count($previews).' previewed profiles could not be priced (each carries an error). '
+                .'They are counted in error_count, NOT in would_skip_count, and contribute nothing to billable_subtotal — '
+                .'so billable_subtotal understates the run by whatever those profiles would have billed.';
+        }
+
+        if ($warnings !== []) {
+            $result['warning'] = implode(' ', $warnings);
+        }
+
+        return $result;
+    }
+
+    /**
+     * One profile through BillingService::previewInvoice, with the link that
+     * previewInvoice itself assumes checked first.
+     *
+     * previewInvoice() dereferences $profile->contract->client unguarded. Contract
+     * and Client are both soft-deleting models, so a profile left behind by a
+     * deleted contract turns a read into a 500. Refuse it by name instead: a
+     * profile that cannot be priced is a real finding for a pre-run review, and it
+     * must not take the rest of a sweep down with it.
+     *
+     * That guarantee is the whole method, not just the orphan case, so the pricing
+     * call itself is wrapped too — ANY throw comes back as this profile's 'error'
+     * key, never as a failed sweep.
+     *
+     * @return array<string, mixed>
+     */
+    private function previewOneRecurringProfile(RecurringInvoiceProfile $profile): array
+    {
+        $header = [
+            'profile_id' => $profile->id,
+            'profile_name' => $profile->name,
+            'contract_id' => $profile->contract_id,
+            'client_id' => $profile->contract?->client_id,
+            'client_name' => $profile->contract?->client?->name,
+            'is_active' => (bool) $profile->is_active,
+            'next_run_date' => $profile->next_run_date?->toDateString(),
+            'last_run_date' => $profile->last_run_date?->toDateString(),
+        ];
+
+        if ($profile->contract === null || $profile->contract->client === null) {
+            return array_merge($header, [
+                'error' => $profile->contract === null
+                    ? "Profile {$profile->id} has no contract (deleted); it cannot be priced."
+                    : "Profile {$profile->id}'s contract {$profile->contract_id} has no client (deleted); it cannot be priced.",
+            ]);
+        }
+
+        try {
+            $preview = app(BillingService::class)->previewInvoice($profile);
+        } catch (\Throwable $e) {
+            // The null-contract check above is only the failure this method knows by
+            // name. Every other unpriceable state the due() scope admits — a zero
+            // overage_divisor, a line pointing at a deleted license type, a sku whose
+            // tier rows have gone — reaches here, and on a sweep it must stay a
+            // finding about ONE profile rather than a 500 that costs the caller the
+            // other 200 due profiles the night before the run.
+            // Bound the vendor/driver text at 200 chars, as every other \Throwable
+            // arm in this executor does: a QueryException message carries the failing
+            // SQL and its bound parameters, and on a sweep this string is returned
+            // once PER PROFILE into the tool result, the agent's context and the
+            // audit log.
+            $reason = mb_substr($e->getMessage(), 0, 200);
+
+            Log::warning("[MCP] preview_recurring_invoice: profile {$profile->id} could not be priced: ".$reason);
+
+            return array_merge($header, [
+                'error' => "Profile {$profile->id} could not be priced: ".$reason,
+            ]);
+        }
+
+        return array_merge($header, [
+            'invoice_date' => $preview['invoice_date'],
+            'due_date' => $preview['due_date'],
+            'subtotal' => $preview['subtotal'],
+            'total_prepaid_minutes' => $preview['total_prepaid_minutes'],
+            // TRUE means this profile produces NO invoice on the run. A would_skip
+            // profile still renders its lines here — that is the point of a preview
+            // — so never read a populated lines array as "this will bill".
+            'would_skip' => (bool) $preview['would_skip'],
+            'effective_skip_zero_invoices' => $profile->shouldSkipZeroInvoices(),
+            // quantity_source is the audit record naming which rate card priced the
+            // line, and a graduated line arrives as ONE ROW PER BAND — several rows
+            // legitimately share a description at different unit prices. Same shape
+            // as get_invoice, because it comes from the same pricing path.
+            'lines' => $preview['lines'],
+        ]);
+    }
+
+    /**
+     * The profile header shared by the list and detail reads.
+     *
+     * updated_at is carried on the profile AND as the newest updated_at across its
+     * lines (lines_updated_at), because that pair is the point of the request: an
+     * edit made after the last run — including one that only touched a LINE, which
+     * never moves the profile's own timestamp — is otherwise invisible until it
+     * bills.
+     *
+     * @return array<string, mixed>
+     */
+    private function shapeRecurringProfile(RecurringInvoiceProfile $profile): array
+    {
+        $linesUpdatedAt = $profile->relationLoaded('lines')
+            ? $profile->lines->max('updated_at')
+            : $profile->lines()->max('updated_at');
+
+        return [
+            'id' => $profile->id,
+            'name' => $profile->name,
+            'contract_id' => $profile->contract_id,
+            'contract_name' => $profile->contract?->name,
+            'contract_status' => $profile->contract?->status?->value,
+            'contract_billing_source' => $profile->contract?->billing_source?->value,
+            'client_id' => $profile->contract?->client_id,
+            'client_name' => $profile->contract?->client?->name,
+            'is_active' => (bool) $profile->is_active,
+            'billing_period' => $profile->billing_period?->value,
+            'billing_day' => $profile->billing_day,
+            'payment_terms_days' => $profile->payment_terms_days,
+            'next_run_date' => $profile->next_run_date?->toDateString(),
+            'last_run_date' => $profile->last_run_date?->toDateString(),
+            // Raw NULL means "inherit the billing_skip_zero_invoices setting", which
+            // is not the same answer as false. Both are returned so a reviewer never
+            // has to guess which one the run will use.
+            'skip_zero_invoices' => $profile->skip_zero_invoices === null
+                ? null
+                : (bool) $profile->skip_zero_invoices,
+            'effective_skip_zero_invoices' => $profile->shouldSkipZeroInvoices(),
+            'auto_push_mode' => $profile->auto_push_mode?->value,
+            'updated_at' => $profile->updated_at?->toIso8601String(),
+            'lines_updated_at' => $linesUpdatedAt
+                ? \Carbon\Carbon::parse($linesUpdatedAt)->toIso8601String()
+                : null,
+        ];
+    }
+
+    /**
+     * Resolve profile_id under the caller's scope.
+     *
+     * Returns the model, or an error array ready to hand back. A profile outside
+     * the caller's client scope answers 'not found' — the same wording as one that
+     * does not exist — so a fenced caller cannot probe for other clients' profile
+     * ids by telling the two apart. Mirrors getInvoice().
+     *
+     * @param  array<string, mixed>  $input
+     * @param  array<int, string>  $with
+     * @return RecurringInvoiceProfile|array<string, mixed>
+     */
+    private function findScopedRecurringProfile(array $input, array $with): RecurringInvoiceProfile|array
+    {
+        $id = (int) ($input['profile_id'] ?? 0);
+
+        if ($id <= 0) {
+            return ['error' => 'profile_id must be a positive integer'];
+        }
+
+        $profile = RecurringInvoiceProfile::with($with)->find($id);
+
+        if (! $profile) {
+            return ['error' => 'Recurring profile not found'];
+        }
+
+        if ($this->clientId && $profile->contract?->client_id !== $this->clientId) {
+            return ['error' => 'Recurring profile not found'];
+        }
+
+        return $profile;
+    }
+
+    /**
+     * The ids the generator would pick up right now, under the caller's scope.
+     *
+     * @return array<int, int>
+     */
+    private function dueProfileIds(): array
+    {
+        $query = RecurringInvoiceProfile::query()->due();
+        $this->scopeRecurringProfilesToClient($query);
+
+        return $query->pluck('id')->map(fn ($id) => (int) $id)->all();
+    }
+
+    /**
+     * A profile carries no client_id of its own; the scope lives on its contract.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder<RecurringInvoiceProfile>  $query
+     */
+    private function scopeRecurringProfilesToClient($query): void
+    {
+        if ($this->clientId) {
+            $query->whereHas('contract', fn ($q) => $q->where('client_id', $this->clientId));
+        }
+    }
+
+    /**
+     * A boolean flag from MCP arguments, which arrive as JSON but also, from some
+     * clients, as the strings "true"/"false". "false" is the one that matters:
+     * PHP's (bool) cast reads the non-empty string "false" as TRUE, which on
+     * due_only would silently turn a one-profile question into a whole-run
+     * cross-client sweep.
+     *
+     * @param  array<string, mixed>  $input
+     */
+    private function boolArgument(array $input, string $key): bool
+    {
+        $raw = $input[$key] ?? false;
+
+        if (is_string($raw)) {
+            return in_array(mb_strtolower(trim($raw)), ['1', 'true', 'yes', 'on'], true);
+        }
+
+        return (bool) $raw;
     }
 
     /**
