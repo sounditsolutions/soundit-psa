@@ -72,15 +72,29 @@
                     </thead>
                     <tbody>
                         @foreach($contract->assets as $asset)
-                            <tr>
+                            @php
+                                // Rule evaluation only ever detaches assignment_source='rule' rows
+                                // (ContractAssignmentService::evaluateRules), and every asset rule
+                                // already filters is_active. So a manual row on an inactive asset is
+                                // the one pairing nothing will ever clean up on its own. (#972)
+                                $strandedManual = ! $asset->is_active && $asset->pivot->assignment_source === 'manual';
+                            @endphp
+                            <tr class="{{ $strandedManual ? 'table-warning' : '' }}">
                                 <td>
                                     <x-asset-badge :asset="$asset" />
+                                    @if(! $asset->is_active)
+                                        <span class="badge bg-secondary ms-1" style="font-size: 0.6rem;">Inactive</span>
+                                    @endif
                                 </td>
                                 <td class="d-none d-md-table-cell small text-muted">{{ $asset->asset_type }}</td>
                                 <td class="d-none d-md-table-cell">
                                     <span class="badge {{ $asset->pivot->assignment_source === 'rule' ? 'bg-info' : 'bg-light text-dark' }}">
                                         {{ ucfirst($asset->pivot->assignment_source) }}
                                     </span>
+                                    @if($strandedManual)
+                                        <i class="bi bi-exclamation-triangle text-warning ms-1"
+                                           title="Manual assignment on an inactive asset. Rule evaluation never detaches manual rows, so this stays on the contract until it is unassigned here."></i>
+                                    @endif
                                 </td>
                                 <td>
                                     <form method="POST" action="{{ route('contracts.unassign-asset', [$contract, $asset]) }}" class="d-inline">
