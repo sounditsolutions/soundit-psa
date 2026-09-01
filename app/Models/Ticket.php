@@ -109,8 +109,10 @@ class Ticket extends Model
      * rewrite would leave a stale rendering behind.
      *
      * Not set by hydration: Eloquent fills a model from the database through
-     * setRawAttributes(), which bypasses mutators. The observer resets it once
-     * the save it describes has been built.
+     * setRawAttributes(), which bypasses mutators. TicketObserver::saved()
+     * resets it at the end of EVERY save the model completes — including a
+     * non-dirty save, which never fires updating() at all — so the flag cannot
+     * outlive the write it describes and latch onto the next one.
      */
     protected bool $descriptionHtmlSupplied = false;
 

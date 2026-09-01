@@ -38,11 +38,6 @@ class TicketObserver
         if (filled($ticket->category_id)) {
             $ticket->category_source = TicketCategoryChangeLog::attributionSource();
         }
-
-        // This INSERT has consumed whatever description_html it carried, so the
-        // next save on this same instance is judged on its own payload alone
-        // (see updating()).
-        $ticket->forgetSuppliedDescriptionHtml();
     }
 
     /**
@@ -157,8 +152,30 @@ class TicketObserver
             $ticket->description_html = null;
         }
 
-        // This save has consumed the flag — including the assignment the clear
-        // above just made — so the next one is judged on its own payload.
+        // The flag is deliberately NOT reset here. updating() fires only from
+        // Model::performUpdate(), which save() skips outright when nothing is
+        // dirty — and a writer re-supplying its existing rendering
+        // byte-for-byte with no other change (the idempotent re-import this
+        // exemption exists to protect) is exactly that non-dirty save. Resetting
+        // here would leave the flag latched on the instance, and the NEXT save —
+        // a markdown-only edit — would read that stale true and skip the clear:
+        // the #992 silent no-op, reinstated on a legal save sequence. saved()
+        // owns the reset instead.
+    }
+
+    /**
+     * End of the save the description_html assignment flag describes.
+     * Model::finishSave() runs for every save Eloquent completes — insert,
+     * update, AND the non-dirty update that never reaches performUpdate() (so
+     * never fires updating()) — which is why the reset lives here rather than
+     * in creating()/updating(): it is the one hook a save cannot skip, so the
+     * flag can never outlive the write it describes. A save that was HALTED (an
+     * event returning false) never reaches finishSave and keeps the flag, which
+     * is correct: the assignment it describes is still sitting unsaved on the
+     * model, waiting for the retry.
+     */
+    public function saved(Ticket $ticket): void
+    {
         $ticket->forgetSuppliedDescriptionHtml();
     }
 

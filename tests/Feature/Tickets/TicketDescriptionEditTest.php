@@ -144,6 +144,30 @@ class TicketDescriptionEditTest extends TestCase
         $this->assertSame('<p>Original body</p>', $ticket->fresh()->description_html);
     }
 
+    public function test_a_no_op_html_re_supply_does_not_latch_the_flag_onto_a_later_edit(): void
+    {
+        // Model::save() skips performUpdate() — and so updating() — when nothing
+        // is dirty, which is precisely what re-supplying the same rendering with
+        // no other change is. If updating() owned the reset, the supplied flag
+        // would latch on the instance and the NEXT markdown-only edit would skip
+        // the clear. The reset lives in saved(), which that save still fires.
+        $ticket = Ticket::factory()->create([
+            'description' => 'Original body naming ACME Corp',
+            'description_html' => '<p>Original body naming ACME Corp</p>',
+        ]);
+
+        // No-op save: same HTML, no other field touched.
+        $ticket->update(['description_html' => '<p>Original body naming ACME Corp</p>']);
+
+        // Markdown-only edit on the SAME instance — supplies no rendering.
+        $ticket->update(['description' => 'Corrected body']);
+
+        $ticket->refresh();
+
+        $this->assertNull($ticket->description_html);
+        $this->assertStringNotContainsString('ACME Corp', (string) $ticket->rendered_description);
+    }
+
     public function test_a_markdown_only_write_with_no_auth_context_still_clears_the_rendering(): void
     {
         // The staff MCP surface is bearer-token authenticated — no user is ever
