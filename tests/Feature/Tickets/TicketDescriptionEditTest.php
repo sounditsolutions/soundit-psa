@@ -144,21 +144,28 @@ class TicketDescriptionEditTest extends TestCase
         $this->assertSame('<p>Original body</p>', $ticket->fresh()->description_html);
     }
 
-    public function test_a_system_markdown_only_write_leaves_the_existing_rendering_alone(): void
+    public function test_a_markdown_only_write_with_no_auth_context_still_clears_the_rendering(): void
     {
-        // The accepted direction of the trade: a non-interactive writer that
-        // rewrites the markdown without supplying replacement HTML keeps the old
-        // rendering — stale, but repairable by any staff edit of the field —
-        // because the only rule that would clear it here also destroys HTML a
-        // dual-writer deliberately re-supplied, and that is not repairable.
+        // The staff MCP surface is bearer-token authenticated — no user is ever
+        // logged in — so its update_ticket write has System attribution, and it
+        // is the surface Charlie's live incident was remediated through. Keying
+        // the clear on Staff attribution silently reinstated the no-op there.
+        // The clear is keyed on whether the write SUPPLIED a rendering, which a
+        // markdown-only writer never does, whatever its auth context.
         $ticket = Ticket::factory()->create([
-            'description' => 'Original body',
-            'description_html' => '<p>Original body</p>',
+            'description' => 'Original body naming ACME Corp',
+            'description_html' => '<p>Original body naming ACME Corp</p>',
         ]);
 
-        $ticket->update(['description' => 'rewritten by a job']);
+        $this->assertFalse(auth()->check());
 
-        $this->assertSame('<p>Original body</p>', $ticket->fresh()->description_html);
+        app(TicketService::class)->updateTicket($ticket, ['description' => 'Corrected body']);
+
+        $ticket->refresh();
+
+        $this->assertNull($ticket->description_html);
+        $this->assertStringContainsString('Corrected body', (string) $ticket->rendered_description);
+        $this->assertStringNotContainsString('ACME Corp', (string) $ticket->rendered_description);
     }
 
     public function test_a_ticket_info_save_that_omits_description_does_not_clear_it(): void
@@ -242,7 +249,7 @@ class TicketDescriptionEditTest extends TestCase
     {
         // The clear in updating() makes description_html dirty in the SAME save;
         // keying the log on `description` alone is what stops it double-firing.
-        // Authenticated, because the clear now fires on a Staff write.
+        // Auth context is irrelevant here: the clear is keyed on the payload.
         $ticket = Ticket::factory()->create([
             'description' => 'before',
             'description_html' => '<p>before</p>',

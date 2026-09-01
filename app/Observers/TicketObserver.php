@@ -2,7 +2,6 @@
 
 namespace App\Observers;
 
-use App\Enums\TicketDescriptionChangeSource;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
 use App\Jobs\GenerateTicketResolution;
@@ -39,6 +38,11 @@ class TicketObserver
         if (filled($ticket->category_id)) {
             $ticket->category_source = TicketCategoryChangeLog::attributionSource();
         }
+
+        // This INSERT has consumed whatever description_html it carried, so the
+        // next save on this same instance is judged on its own payload alone
+        // (see updating()).
+        $ticket->forgetSuppliedDescriptionHtml();
     }
 
     /**
@@ -120,45 +124,42 @@ class TicketObserver
         //
         // Nulling it here rather than in a controller or service is the same
         // choice as the category_source stamp above: updating() fires
-        // pre-persist, so this rides the ONE atomic UPDATE, and every staff
-        // surface (web form, MCP update_ticket) is covered without opting in.
+        // pre-persist, so this rides the ONE atomic UPDATE, and EVERY surface
+        // that rewrites a description — web form, MCP update_ticket, queued
+        // jobs, imports — is covered without opting in.
         //
-        // Guarded on the WRITE'S EXECUTION CONTEXT, not on
-        // isDirty('description_html'): isDirty() is value comparison, not
-        // assignment tracking, so a writer that re-supplies its existing
-        // rendering byte-for-byte in the same save — an idempotent re-import —
-        // reads as NOT dirty, and the old guard nulled the HTML that writer had
-        // just written, destroying the live rendering and its inline images on
-        // exactly the input the exemption exists to protect. Attribution
-        // context is decidable and unforgeable where "did you mean to write
-        // that value" is not: a Staff write arrives from a surface that cannot
-        // post description_html at all (the web form posts `description` alone;
-        // the MCP allow-list is subject/description/priority/type/category_id),
-        // so its markdown is now the only rendering source. Every writer that
-        // OWNS a rendering — the email ingest, importers, queued jobs, seeders
-        // — is System, and its HTML is left exactly as it wrote it. The dirty
-        // check stays as well, so a Staff write that does carry a replacement
-        // rendering keeps it.
+        // Guarded on whether THIS WRITE SUPPLIED a rendering
+        // (Ticket::descriptionHtmlWasSupplied(), set by the description_html
+        // mutator), which is neither isDirty() nor attribution. isDirty() is a
+        // value comparison, not assignment tracking, so a writer that
+        // re-supplies its existing rendering byte-for-byte in the same save —
+        // an idempotent re-import — reads as NOT dirty, and nulling there
+        // destroys the live rendering and its inline images on exactly the
+        // input the exemption exists to protect. Attribution is not a
+        // substitute: the staff MCP surface is bearer-token authenticated with
+        // no logged-in user, so its update_ticket write attributes System, and
+        // keying the clear on Staff silently restored the #992 no-op on the
+        // very surface the incident was remediated through. Assignment answers
+        // the question actually being asked, from any surface and any auth
+        // context: a writer that OWNS a rendering (the email ingest,
+        // importers, seeders) assigns the column and keeps its HTML; a writer
+        // that rewrites the markdown ALONE has left nothing behind but a
+        // rendering of the superseded text, so it is cleared.
         //
-        // Two costs, both accepted deliberately. An edited email-sourced
+        // The cost is accepted deliberately: an edited email-sourced
         // description loses the original rich rendering, including any inline
-        // images, and renders from the staff-supplied markdown instead — that
-        // is the point of the edit, and the log row keeps a full copy of the
-        // replaced HTML (previous_description_html), so the clear is a
-        // supersession with provenance rather than an unrecorded destruction
-        // (non-inline attachments are a separate relation and are unaffected).
-        // And a System writer that rewrites the markdown WITHOUT supplying
-        // replacement HTML leaves the stale rendering on the page. That
-        // direction is repairable — any later staff edit of the same field
-        // clears the column — whereas nulling a rendering a dual-writer
-        // deliberately supplied is not.
-        if (
-            $ticket->isDirty('description')
-            && ! $ticket->isDirty('description_html')
-            && TicketDescriptionChangeLog::attributionSource() === TicketDescriptionChangeSource::Staff
-        ) {
+        // images, and renders from the supplied markdown instead — that is the
+        // point of the edit, and the log row keeps a full copy of the replaced
+        // HTML (previous_description_html), so the clear is a supersession with
+        // provenance rather than an unrecorded destruction (non-inline
+        // attachments are a separate relation and are unaffected).
+        if ($ticket->isDirty('description') && ! $ticket->descriptionHtmlWasSupplied()) {
             $ticket->description_html = null;
         }
+
+        // This save has consumed the flag — including the assignment the clear
+        // above just made — so the next one is judged on its own payload.
+        $ticket->forgetSuppliedDescriptionHtml();
     }
 
     public function updated(Ticket $ticket): void
