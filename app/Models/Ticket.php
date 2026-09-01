@@ -95,6 +95,43 @@ class Ticket extends Model
         $this->attributes['priority_order'] = $enum?->sortOrder() ?? 3;
     }
 
+    /**
+     * Assignment tracking for description_html (#992): did THIS write supply a
+     * rendering? Neither of the two things that look like an answer is one.
+     * isDirty() compares VALUES, so an idempotent re-import writing back its
+     * own HTML byte-for-byte reads as not dirty. Auth context is worse: the
+     * staff MCP surface is bearer-token authenticated with no logged-in user,
+     * so it attributes System, and keying on Staff exempts the very surface
+     * the incident was remediated through. Only the mutator can see the
+     * assignment itself, and it is writer-agnostic — a writer that OWNS a
+     * rendering supplies the column from any surface and any auth context.
+     * TicketObserver::updating() reads this to decide whether a description
+     * rewrite would leave a stale rendering behind.
+     *
+     * Not set by hydration: Eloquent fills a model from the database through
+     * setRawAttributes(), which bypasses mutators. TicketObserver::saved()
+     * resets it at the end of EVERY save the model completes — including a
+     * non-dirty save, which never fires updating() at all — so the flag cannot
+     * outlive the write it describes and latch onto the next one.
+     */
+    protected bool $descriptionHtmlSupplied = false;
+
+    public function setDescriptionHtmlAttribute($value): void
+    {
+        $this->descriptionHtmlSupplied = true;
+        $this->attributes['description_html'] = $value;
+    }
+
+    public function descriptionHtmlWasSupplied(): bool
+    {
+        return $this->descriptionHtmlSupplied;
+    }
+
+    public function forgetSuppliedDescriptionHtml(): void
+    {
+        $this->descriptionHtmlSupplied = false;
+    }
+
     // ── Relations ──
 
     public function client(): BelongsTo

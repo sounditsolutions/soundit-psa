@@ -12,6 +12,7 @@ use App\Jobs\SendT2TCallback;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketCategoryChangeLog;
+use App\Models\TicketDescriptionChangeLog;
 use App\Services\NotificationService;
 use App\Services\Signals\SignalHub;
 use App\Support\T2TConfig;
@@ -107,6 +108,75 @@ class TicketObserver
         if ($ticket->isDirty('category_id')) {
             $ticket->category_source = TicketCategoryChangeLog::attributionSource();
         }
+
+        // #992: a description rewrite must also drop the pre-rendered HTML the
+        // email ingest stored (EmailService sets tickets.description_html), or
+        // the edit is a SILENT NO-OP on exactly the tickets most likely to need
+        // one. getRenderedDescriptionAttribute() prefers description_html
+        // whenever it is non-null and only falls back to rendering the
+        // description markdown when it is null — so leaving the column set
+        // means the page, and the client, keep seeing the old text.
+        //
+        // Nulling it here rather than in a controller or service is the same
+        // choice as the category_source stamp above: updating() fires
+        // pre-persist, so this rides the ONE atomic UPDATE, and EVERY surface
+        // that rewrites a description — web form, MCP update_ticket, queued
+        // jobs, imports — is covered without opting in.
+        //
+        // Guarded on whether THIS WRITE SUPPLIED a rendering
+        // (Ticket::descriptionHtmlWasSupplied(), set by the description_html
+        // mutator), which is neither isDirty() nor attribution. isDirty() is a
+        // value comparison, not assignment tracking, so a writer that
+        // re-supplies its existing rendering byte-for-byte in the same save —
+        // an idempotent re-import — reads as NOT dirty, and nulling there
+        // destroys the live rendering and its inline images on exactly the
+        // input the exemption exists to protect. Attribution is not a
+        // substitute: the staff MCP surface is bearer-token authenticated with
+        // no logged-in user, so its update_ticket write attributes System, and
+        // keying the clear on Staff silently restored the #992 no-op on the
+        // very surface the incident was remediated through. Assignment answers
+        // the question actually being asked, from any surface and any auth
+        // context: a writer that OWNS a rendering (the email ingest,
+        // importers, seeders) assigns the column and keeps its HTML; a writer
+        // that rewrites the markdown ALONE has left nothing behind but a
+        // rendering of the superseded text, so it is cleared.
+        //
+        // The cost is accepted deliberately: an edited email-sourced
+        // description loses the original rich rendering, including any inline
+        // images, and renders from the supplied markdown instead — that is the
+        // point of the edit, and the log row keeps a full copy of the replaced
+        // HTML (previous_description_html), so the clear is a supersession with
+        // provenance rather than an unrecorded destruction (non-inline
+        // attachments are a separate relation and are unaffected).
+        if ($ticket->isDirty('description') && ! $ticket->descriptionHtmlWasSupplied()) {
+            $ticket->description_html = null;
+        }
+
+        // The flag is deliberately NOT reset here. updating() fires only from
+        // Model::performUpdate(), which save() skips outright when nothing is
+        // dirty — and a writer re-supplying its existing rendering
+        // byte-for-byte with no other change (the idempotent re-import this
+        // exemption exists to protect) is exactly that non-dirty save. Resetting
+        // here would leave the flag latched on the instance, and the NEXT save —
+        // a markdown-only edit — would read that stale true and skip the clear:
+        // the #992 silent no-op, reinstated on a legal save sequence. saved()
+        // owns the reset instead.
+    }
+
+    /**
+     * End of the save the description_html assignment flag describes.
+     * Model::finishSave() runs for every save Eloquent completes — insert,
+     * update, AND the non-dirty update that never reaches performUpdate() (so
+     * never fires updating()) — which is why the reset lives here rather than
+     * in creating()/updating(): it is the one hook a save cannot skip, so the
+     * flag can never outlive the write it describes. A save that was HALTED (an
+     * event returning false) never reaches finishSave and keeps the flag, which
+     * is correct: the assignment it describes is still sitting unsaved on the
+     * model, waiting for the retry.
+     */
+    public function saved(Ticket $ticket): void
+    {
+        $ticket->forgetSuppliedDescriptionHtml();
     }
 
     public function updated(Ticket $ticket): void
@@ -124,6 +194,28 @@ class TicketObserver
                 TicketCategoryChangeLog::recordFor($ticket);
             } catch (\Throwable $e) {
                 Log::error('[TicketObserver] Failed to record category change log', [
+                    'ticket_id' => $ticket->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        // Description audit (#992, Jeeves's audit-seam ruling 2026-09-01): a
+        // client-visible field rewrite must leave an equivalent record from
+        // EVERY surface, so it is logged at the model seam rather than in the
+        // web controller — the MCP path's technician_action_logs row stays as
+        // it is and answers a different question ("what did the AI technician
+        // do") than this one ("how did this field change").
+        //
+        // Keyed on description ALONE, so the description_html null written in
+        // updating() cannot double-fire this: one edit, one row. AUDIT-ONLY and
+        // never lets a broken log write take the ticket save down with it, but
+        // screams.
+        if ($ticket->wasChanged('description')) {
+            try {
+                TicketDescriptionChangeLog::recordFor($ticket);
+            } catch (\Throwable $e) {
+                Log::error('[TicketObserver] Failed to record description change log', [
                     'ticket_id' => $ticket->id,
                     'error' => $e->getMessage(),
                 ]);
