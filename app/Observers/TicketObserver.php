@@ -2,6 +2,7 @@
 
 namespace App\Observers;
 
+use App\Enums\TicketDescriptionChangeSource;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
 use App\Jobs\GenerateTicketResolution;
@@ -119,20 +120,43 @@ class TicketObserver
         //
         // Nulling it here rather than in a controller or service is the same
         // choice as the category_source stamp above: updating() fires
-        // pre-persist, so this rides the ONE atomic UPDATE, and every writer
-        // (web form, MCP update_ticket, jobs) is covered without opting in.
+        // pre-persist, so this rides the ONE atomic UPDATE, and every staff
+        // surface (web form, MCP update_ticket) is covered without opting in.
         //
-        // Guarded on description_html NOT being dirty so a writer that
-        // deliberately supplies both — the email pipeline, an importer — keeps
-        // the HTML it just set. Cost, accepted deliberately: an edited
-        // email-sourced description loses the original rich rendering,
-        // including any inline images, and renders from the staff-supplied
-        // markdown instead. That is the point of the edit; the log row keeps a
-        // full copy of the replaced HTML (previous_description_html), so the
-        // clear is a supersession with provenance rather than an unrecorded
-        // destruction, and non-inline attachments are stored separately and
-        // are unaffected.
-        if ($ticket->isDirty('description') && ! $ticket->isDirty('description_html')) {
+        // Guarded on the WRITE'S EXECUTION CONTEXT, not on
+        // isDirty('description_html'): isDirty() is value comparison, not
+        // assignment tracking, so a writer that re-supplies its existing
+        // rendering byte-for-byte in the same save — an idempotent re-import —
+        // reads as NOT dirty, and the old guard nulled the HTML that writer had
+        // just written, destroying the live rendering and its inline images on
+        // exactly the input the exemption exists to protect. Attribution
+        // context is decidable and unforgeable where "did you mean to write
+        // that value" is not: a Staff write arrives from a surface that cannot
+        // post description_html at all (the web form posts `description` alone;
+        // the MCP allow-list is subject/description/priority/type/category_id),
+        // so its markdown is now the only rendering source. Every writer that
+        // OWNS a rendering — the email ingest, importers, queued jobs, seeders
+        // — is System, and its HTML is left exactly as it wrote it. The dirty
+        // check stays as well, so a Staff write that does carry a replacement
+        // rendering keeps it.
+        //
+        // Two costs, both accepted deliberately. An edited email-sourced
+        // description loses the original rich rendering, including any inline
+        // images, and renders from the staff-supplied markdown instead — that
+        // is the point of the edit, and the log row keeps a full copy of the
+        // replaced HTML (previous_description_html), so the clear is a
+        // supersession with provenance rather than an unrecorded destruction
+        // (non-inline attachments are a separate relation and are unaffected).
+        // And a System writer that rewrites the markdown WITHOUT supplying
+        // replacement HTML leaves the stale rendering on the page. That
+        // direction is repairable — any later staff edit of the same field
+        // clears the column — whereas nulling a rendering a dual-writer
+        // deliberately supplied is not.
+        if (
+            $ticket->isDirty('description')
+            && ! $ticket->isDirty('description_html')
+            && TicketDescriptionChangeLog::attributionSource() === TicketDescriptionChangeSource::Staff
+        ) {
             $ticket->description_html = null;
         }
     }

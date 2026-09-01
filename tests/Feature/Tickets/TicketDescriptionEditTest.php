@@ -124,6 +124,43 @@ class TicketDescriptionEditTest extends TestCase
         $this->assertSame('<p><em>new body</em></p>', $ticket->fresh()->description_html);
     }
 
+    public function test_a_writer_that_re_supplies_its_identical_html_keeps_it(): void
+    {
+        // isDirty() is a value comparison, so an idempotent re-import — one that
+        // writes back the SAME description_html it wrote last run alongside a
+        // changed description — is not dirty on that attribute. Keying the clear
+        // on write attribution instead of dirtiness is what stops the observer
+        // nulling a rendering (inline images and all) the writer just supplied.
+        $ticket = Ticket::factory()->create([
+            'description' => 'Original body',
+            'description_html' => '<p>Original body</p>',
+        ]);
+
+        $ticket->update([
+            'description' => 'normalised body',
+            'description_html' => '<p>Original body</p>',
+        ]);
+
+        $this->assertSame('<p>Original body</p>', $ticket->fresh()->description_html);
+    }
+
+    public function test_a_system_markdown_only_write_leaves_the_existing_rendering_alone(): void
+    {
+        // The accepted direction of the trade: a non-interactive writer that
+        // rewrites the markdown without supplying replacement HTML keeps the old
+        // rendering — stale, but repairable by any staff edit of the field —
+        // because the only rule that would clear it here also destroys HTML a
+        // dual-writer deliberately re-supplied, and that is not repairable.
+        $ticket = Ticket::factory()->create([
+            'description' => 'Original body',
+            'description_html' => '<p>Original body</p>',
+        ]);
+
+        $ticket->update(['description' => 'rewritten by a job']);
+
+        $this->assertSame('<p>Original body</p>', $ticket->fresh()->description_html);
+    }
+
     public function test_a_ticket_info_save_that_omits_description_does_not_clear_it(): void
     {
         // TicketUpdateRequest rules description as `nullable`, NOT `sometimes`,
@@ -205,12 +242,17 @@ class TicketDescriptionEditTest extends TestCase
     {
         // The clear in updating() makes description_html dirty in the SAME save;
         // keying the log on `description` alone is what stops it double-firing.
+        // Authenticated, because the clear now fires on a Staff write.
         $ticket = Ticket::factory()->create([
             'description' => 'before',
             'description_html' => '<p>before</p>',
         ]);
 
+        $this->actingAs(User::factory()->create());
+
         $ticket->update(['description' => 'after']);
+
+        $this->assertNull($ticket->fresh()->description_html);
 
         $this->assertSame(1, TicketDescriptionChangeLog::where('ticket_id', $ticket->id)->count());
     }
