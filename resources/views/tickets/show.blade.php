@@ -43,23 +43,75 @@
             <span class="badge bg-warning text-dark badge-prospect mb-3">Prospect</span>
         @endif
 
-        @if($ticket->rendered_description)
-            <div class="card card-static shadow-sm mb-3">
-                <div class="card-body">
-                    <div class="note-body">{!! $ticket->rendered_description !!}</div>
+        {{-- Description (#992). The card is now UNCONDITIONAL: it used to render
+             only when a description existed, which left staff no way to ADD one
+             to a ticket that had none (phone/manual tickets routinely start
+             empty). Editing happens here, where the field is read, rather than
+             in the Ticket Info form below — see the form comment for why that
+             separation is load-bearing and not cosmetic. --}}
+        @php $descriptionEditOpen = $errors->has('description'); @endphp
+        <div class="card card-static shadow-sm mb-3">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                    <label class="form-label small text-muted mb-0">Description</label>
+                    <button type="button" class="btn btn-link btn-sm p-0" id="editDescriptionBtn"
+                            title="Edit description">
+                        <i class="bi bi-pencil me-1"></i>Edit
+                    </button>
                 </div>
-                @if($ticket->attachments->where('is_inline', false)->isNotEmpty())
-                    <div class="card-footer bg-transparent pt-0">
-                        @foreach($ticket->attachments->where('is_inline', false) as $att)
-                            <a href="{{ $att->url }}" class="badge bg-light text-dark border me-1" target="_blank">
-                                <i class="bi bi-paperclip me-1"></i>{{ $att->original_filename }}
-                                <span class="text-muted">({{ number_format($att->size_bytes / 1024, 0) }} KB)</span>
-                            </a>
-                        @endforeach
+
+                <div id="descriptionView" class="{{ $descriptionEditOpen ? 'd-none' : '' }}">
+                    @if($ticket->rendered_description)
+                        <div class="note-body">{!! $ticket->rendered_description !!}</div>
+                    @else
+                        <p class="text-muted small fst-italic mb-0">No description.</p>
+                    @endif
+                </div>
+
+                {{-- Description-ONLY form, and that is a correctness constraint, not
+                     tidiness: TicketUpdateRequest rules `description` as `nullable`
+                     (NOT `sometimes`), and the convert-empty-strings middleware turns
+                     a blank field into null. Any form that posts `description`
+                     alongside other fields therefore blank-clears the description on
+                     every unrelated save where the textarea is not populated. Keeping
+                     this form to the one field means the payload is `description` or
+                     nothing, and the Ticket Info form (subject/category/subcategory/
+                     category_id) never carries the key at all — so a category save
+                     cannot wipe a description.
+                     The editor is loaded with the RAW markdown ($ticket->description),
+                     never rendered_description: round-tripping rendered HTML back
+                     through the markdown column would corrupt the stored source. --}}
+                <form method="POST" action="{{ route('tickets.update', $ticket) }}"
+                      id="descriptionEditForm" class="{{ $descriptionEditOpen ? '' : 'd-none' }}">
+                    @csrf
+                    @method('PATCH')
+                    <textarea name="description" id="descriptionInput" rows="10"
+                              class="form-control form-control-sm @error('description') is-invalid @enderror"
+                              >{{ old('description', $ticket->description) }}</textarea>
+                    @error('description')
+                        <div class="invalid-feedback">{{ $message }}</div>
+                    @enderror
+                    <div class="form-text mb-2">
+                        Markdown. <strong>Visible to the client.</strong> Saving replaces the
+                        description everywhere it is shown, including on email-originated
+                        tickets, whose original formatting and inline images are not kept.
                     </div>
-                @endif
+                    <button type="submit" class="btn btn-primary btn-sm">Save description</button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm"
+                            id="cancelDescriptionBtn">Cancel</button>
+                </form>
             </div>
-        @endif
+            @if($ticket->attachments->where('is_inline', false)->isNotEmpty())
+                <div class="card-footer bg-transparent pt-0">
+                    @foreach($ticket->attachments->where('is_inline', false) as $att)
+                        <a href="{{ $att->url }}" class="badge bg-light text-dark border me-1" target="_blank">
+                            <i class="bi bi-paperclip me-1"></i>{{ $att->original_filename }}
+                            <span class="text-muted">({{ number_format($att->size_bytes / 1024, 0) }} KB)</span>
+                        </a>
+                    @endforeach
+                </div>
+            @endif
+        </div>
 
         @if($ticket->resolution)
             <div class="card card-static shadow-sm mb-3 border-start border-3 {{ $ticket->status->isOpen() ? 'border-secondary' : 'border-success' }}">
@@ -1420,6 +1472,38 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     wireDraftResolution('draftResolutionBtn', 'resolveResolution', 'draftResolutionError');
     wireDraftResolution('draftCloseResolutionBtn', 'closeResolution', 'draftCloseResolutionError');
+
+    // Description edit toggle (#992)
+    const editDescriptionBtn = document.getElementById('editDescriptionBtn');
+    const descriptionView = document.getElementById('descriptionView');
+    const descriptionEditForm = document.getElementById('descriptionEditForm');
+    const descriptionInput = document.getElementById('descriptionInput');
+    const cancelDescriptionBtn = document.getElementById('cancelDescriptionBtn');
+
+    if (editDescriptionBtn && descriptionEditForm && descriptionView) {
+        // Snapshot the value the page was served with, so Cancel restores the
+        // SAVED description rather than leaving unsent edits in the textarea to
+        // be mistaken for stored text on a later open.
+        const descriptionOriginal = descriptionInput ? descriptionInput.value : '';
+
+        editDescriptionBtn.addEventListener('click', function() {
+            descriptionEditForm.classList.toggle('d-none');
+            descriptionView.classList.toggle('d-none');
+            if (!descriptionEditForm.classList.contains('d-none') && descriptionInput) {
+                descriptionInput.focus();
+            }
+        });
+
+        if (cancelDescriptionBtn) {
+            cancelDescriptionBtn.addEventListener('click', function() {
+                if (descriptionInput) {
+                    descriptionInput.value = descriptionOriginal;
+                }
+                descriptionEditForm.classList.add('d-none');
+                descriptionView.classList.remove('d-none');
+            });
+        }
+    }
 
     // Move ticket panel
     const moveBtn = document.getElementById('moveTicketBtn');

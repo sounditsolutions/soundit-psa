@@ -12,6 +12,7 @@ use App\Jobs\SendT2TCallback;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketCategoryChangeLog;
+use App\Models\TicketDescriptionChangeLog;
 use App\Services\NotificationService;
 use App\Services\Signals\SignalHub;
 use App\Support\T2TConfig;
@@ -107,6 +108,31 @@ class TicketObserver
         if ($ticket->isDirty('category_id')) {
             $ticket->category_source = TicketCategoryChangeLog::attributionSource();
         }
+
+        // #992: a description rewrite must also drop the pre-rendered HTML the
+        // email ingest stored (EmailService sets tickets.description_html), or
+        // the edit is a SILENT NO-OP on exactly the tickets most likely to need
+        // one. getRenderedDescriptionAttribute() prefers description_html
+        // whenever it is non-null and only falls back to rendering the
+        // description markdown when it is null — so leaving the column set
+        // means the page, and the client, keep seeing the old text.
+        //
+        // Nulling it here rather than in a controller or service is the same
+        // choice as the category_source stamp above: updating() fires
+        // pre-persist, so this rides the ONE atomic UPDATE, and every writer
+        // (web form, MCP update_ticket, jobs) is covered without opting in.
+        //
+        // Guarded on description_html NOT being dirty so a writer that
+        // deliberately supplies both — the email pipeline, an importer — keeps
+        // the HTML it just set. Cost, accepted deliberately: an edited
+        // email-sourced description loses the original rich rendering,
+        // including any inline images, and renders from the staff-supplied
+        // markdown instead. That is the point of the edit; the log row records
+        // that the replaced rendering was HTML (previous_had_rendered_html),
+        // and non-inline attachments are stored separately and are unaffected.
+        if ($ticket->isDirty('description') && ! $ticket->isDirty('description_html')) {
+            $ticket->description_html = null;
+        }
     }
 
     public function updated(Ticket $ticket): void
@@ -124,6 +150,28 @@ class TicketObserver
                 TicketCategoryChangeLog::recordFor($ticket);
             } catch (\Throwable $e) {
                 Log::error('[TicketObserver] Failed to record category change log', [
+                    'ticket_id' => $ticket->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        // Description audit (#992, Jeeves's audit-seam ruling 2026-09-01): a
+        // client-visible field rewrite must leave an equivalent record from
+        // EVERY surface, so it is logged at the model seam rather than in the
+        // web controller — the MCP path's technician_action_logs row stays as
+        // it is and answers a different question ("what did the AI technician
+        // do") than this one ("how did this field change").
+        //
+        // Keyed on description ALONE, so the description_html null written in
+        // updating() cannot double-fire this: one edit, one row. AUDIT-ONLY and
+        // never lets a broken log write take the ticket save down with it, but
+        // screams.
+        if ($ticket->wasChanged('description')) {
+            try {
+                TicketDescriptionChangeLog::recordFor($ticket);
+            } catch (\Throwable $e) {
+                Log::error('[TicketObserver] Failed to record description change log', [
                     'ticket_id' => $ticket->id,
                     'error' => $e->getMessage(),
                 ]);
