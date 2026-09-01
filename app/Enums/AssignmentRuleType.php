@@ -12,7 +12,7 @@ enum AssignmentRuleType: string
     public function label(): string
     {
         return match ($this) {
-            self::AllAssets => 'All Assets',
+            self::AllAssets => 'All Active Assets',
             self::AssetsByType => 'Assets by Type',
             self::AllPeople => 'All People',
             self::AllActivePeople => 'All Active People',
