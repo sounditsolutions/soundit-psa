@@ -8,8 +8,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
  * One tickets.description rewrite: who changed it, what it said before, what
- * it says now, and whether the rendering it replaced was pre-rendered email
- * HTML. Written solely by TicketObserver on a description change, so every
+ * it says now, and — when the replaced rendering was pre-rendered email HTML —
+ * that HTML itself. Written solely by TicketObserver on a description change, so every
  * writer — the staff web UI, the MCP update_ticket verb, the email pipeline,
  * queued jobs — is captured without opting in (#992 audit-seam ruling,
  * 2026-09-01).
@@ -35,7 +35,7 @@ class TicketDescriptionChangeLog extends Model
         'ticket_id',
         'previous_description',
         'new_description',
-        'previous_had_rendered_html',
+        'previous_description_html',
         'source',
         'changed_by',
     ];
@@ -44,7 +44,6 @@ class TicketDescriptionChangeLog extends Model
     {
         return [
             'source' => TicketDescriptionChangeSource::class,
-            'previous_had_rendered_html' => 'boolean',
             'created_at' => 'datetime',
         ];
     }
@@ -91,9 +90,11 @@ class TicketDescriptionChangeLog extends Model
             'previous_description' => $ticket->getOriginal('description'),
             'new_description' => $ticket->description,
             // getOriginal, not the current value: updating() has already nulled
-            // description_html by the time this runs, so the live column no
-            // longer says whether the replaced rendering was email HTML.
-            'previous_had_rendered_html' => filled($ticket->getOriginal('description_html')),
+            // (or a dual-writer overwritten) description_html by the time this
+            // runs, so this copy is the only place the destroyed rendering —
+            // the thing the client had actually been seeing — survives. Null
+            // when the replaced row carried no HTML.
+            'previous_description_html' => $ticket->getOriginal('description_html'),
             'source' => $source,
             'changed_by' => $source === TicketDescriptionChangeSource::Staff ? auth()->id() : null,
         ]);

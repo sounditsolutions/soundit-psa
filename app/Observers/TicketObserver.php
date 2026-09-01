@@ -127,9 +127,11 @@ class TicketObserver
         // the HTML it just set. Cost, accepted deliberately: an edited
         // email-sourced description loses the original rich rendering,
         // including any inline images, and renders from the staff-supplied
-        // markdown instead. That is the point of the edit; the log row records
-        // that the replaced rendering was HTML (previous_had_rendered_html),
-        // and non-inline attachments are stored separately and are unaffected.
+        // markdown instead. That is the point of the edit; the log row keeps a
+        // full copy of the replaced HTML (previous_description_html), so the
+        // clear is a supersession with provenance rather than an unrecorded
+        // destruction, and non-inline attachments are stored separately and
+        // are unaffected.
         if ($ticket->isDirty('description') && ! $ticket->isDirty('description_html')) {
             $ticket->description_html = null;
         }

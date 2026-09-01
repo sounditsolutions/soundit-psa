@@ -161,9 +161,11 @@ class TicketDescriptionEditTest extends TestCase
         $this->assertSame(TicketDescriptionChangeSource::Staff, $log->source);
         $this->assertSame($user->id, $log->changed_by);
         // The clear in updating() has already run by the time the row is
-        // written, so this flag is the only surviving evidence that the
-        // replaced rendering was email HTML.
-        $this->assertTrue($log->previous_had_rendered_html);
+        // written, so this copy is the only place the replaced email rendering
+        // survives — byte-for-byte, or the "record what you destroy" guarantee
+        // is hollow.
+        $this->assertSame('<p>before text</p>', $log->previous_description_html);
+        $this->assertNull($ticket->refresh()->description_html);
     }
 
     public function test_a_non_interactive_writer_is_recorded_as_system_not_skipped(): void
@@ -178,7 +180,9 @@ class TicketDescriptionEditTest extends TestCase
 
         $this->assertSame(TicketDescriptionChangeSource::System, $log->source);
         $this->assertNull($log->changed_by);
-        $this->assertFalse($log->previous_had_rendered_html);
+        // No HTML existed to destroy, so none is recorded — the null doubles
+        // as the "prior rendering was not email HTML" signal.
+        $this->assertNull($log->previous_description_html);
     }
 
     public function test_the_audit_row_is_written_at_the_model_seam_so_every_surface_is_covered(): void

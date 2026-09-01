@@ -17,8 +17,8 @@ use Illuminate\Support\Facades\Schema;
  * Before AND after text are stored in full: the whole reason the log exists is
  * that an edit destroys the prior value, so a diff that only names the fields
  * changed would not answer "what did it say before". Columns mirror
- * tickets.description (text) exactly so the log can never truncate what the
- * ticket itself could hold.
+ * tickets.description / tickets.description_html (both longText) exactly so
+ * the log can never truncate what the ticket itself could hold.
  */
 return new class extends Migration
 {
@@ -27,14 +27,17 @@ return new class extends Migration
         Schema::create('ticket_description_change_logs', function (Blueprint $table) {
             $table->id();
             $table->foreignId('ticket_id')->constrained()->cascadeOnDelete();
-            $table->text('previous_description')->nullable();
-            $table->text('new_description')->nullable();
-            // True when the row this edit replaced was carrying pre-rendered
-            // HTML (an email-ingested description). That HTML is cleared by the
-            // edit — see TicketObserver::updating() — so this flag is the only
-            // surviving evidence that the visible rendering changed shape, not
-            // just text.
-            $table->boolean('previous_had_rendered_html')->default(false);
+            $table->longText('previous_description')->nullable();
+            $table->longText('new_description')->nullable();
+            // The pre-rendered HTML the replaced row was carrying (an
+            // email-ingested description, inline images and all). The edit
+            // clears or overwrites that column — see TicketObserver::updating()
+            // — so this copy is the only surviving one; without it the clear is
+            // an unrecorded destruction of exactly the rendering the client had
+            // been seeing (Jeeves, PR #993 review note, 2026-09-01). Null when
+            // the replaced row carried no HTML, which doubles as the "was the
+            // prior rendering email HTML" flag.
+            $table->longText('previous_description_html')->nullable();
             $table->string('source', 20); // staff | system
             $table->foreignId('changed_by')->nullable()->constrained('users')->nullOnDelete();
             $table->timestamp('created_at')->useCurrent();
