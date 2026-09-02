@@ -449,13 +449,16 @@ class MeshAddAllowRuleTest extends TestCase
 
         // Reaped, so liveAllowRule() no longer covers it: the audit dedup is
         // the only thing left standing between a re-stage and a new proposal.
-        MeshAllowRule::sole()->update(['state' => MeshAllowRule::STATE_REAPED, 'reaped_at' => now()]);
+        $record = MeshAllowRule::sole();
+        $record->update(['state' => MeshAllowRule::STATE_REAPED, 'reaped_at' => now()]);
 
         $second = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
 
-        $this->assertTrue($second['idempotent']);
-        $this->assertSame($run->id, (int) $second['run_id']);
-        $this->assertStringContainsString('already created recently', $second['message']);
+        // The base-hash match is what is under test, and the refusal below is
+        // only reachable through it: without it this call falls past the dedup
+        // branch entirely and stages a second proposal.
+        $this->assertStringContainsString('#'.$record->id, $second['error']);
+        $this->assertStringContainsString('proved it absent upstream', $second['error']);
         $this->assertSame(1, TechnicianRun::count());
     }
 
@@ -518,7 +521,10 @@ class MeshAddAllowRuleTest extends TestCase
 
         $this->assertTrue($retry['idempotent']);
         $this->assertSame($second['run_id'], $retry['run_id']);
-        $this->assertSame('Already staged; awaiting approval.', $retry['message']);
+        // The executor returns exactly this string; McpStaffController prepends
+        // the staged-downgrade notice for a staged-only token, as it does for
+        // every other message in this file.
+        $this->assertStringContainsString('Already staged; awaiting approval.', $retry['message']);
         $this->assertSame(2, TechnicianRun::count());
     }
 
@@ -542,7 +548,7 @@ class MeshAddAllowRuleTest extends TestCase
         $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('success');
 
         $record = MeshAllowRule::sole();
-        $record->update(['state' => MeshAllowRule::STATE_REAPED, 'reaped_at' => now()]);
+        $this->assertSame(MeshAllowRule::STATE_ACTIVE, $record->state);
 
         $second = $this->decodedResult($this->callTool(
             $this->token(['mesh_add_allow_rule:staged']),
@@ -554,11 +560,56 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertStringContainsString('already created recently', $second['message']);
         $this->assertStringContainsString('#'.$record->id, $second['message']);
         $this->assertStringContainsString('set to expire', $second['message']);
-        $this->assertStringContainsString("state 'reaped'", $second['message']);
-        $this->assertStringContainsString('no allow is in force for this sender', $second['message']);
+        $this->assertStringContainsString("state 'active'", $second['message']);
         $this->assertStringContainsString('NOT applied', $second['message']);
         $this->assertNotSame('never', $second['expires_at'], 'the answer reports the lifetime in force, never the one just asked for');
         $this->assertSame(1, TechnicianRun::count());
+    }
+
+    /**
+     * The reaper writes STATE_REAPED only after a detail GET returned 404, so
+     * this is the one branch where the PSA has PROVED no allow is in force.
+     * Answering it success:true/idempotent:true put that certainty on the
+     * machine-readable channel as an effect that does not exist, while only the
+     * prose said otherwise — and the strictly LESS certain case (no PSA row at
+     * all) was already refused. The certain case cannot be the greener one.
+     */
+    public function test_a_proved_absent_rule_is_refused_not_answered_as_an_idempotent_success(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $run = $this->stagedRun($fixture);
+
+        $write->shouldReceive('createAllowRule')->once()->andReturn(['added_for' => [self::TENANT]]);
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'r1']);
+        $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('success');
+
+        $record = MeshAllowRule::sole();
+        $record->update(['state' => MeshAllowRule::STATE_REAPED, 'reaped_at' => now()]);
+
+        $second = $this->decodedResult($this->callTool(
+            $this->token(['mesh_add_allow_rule:staged']),
+            'mesh_add_allow_rule',
+            $this->stageArgs($fixture, ['expires_at' => 'never']),
+        ));
+
+        // The machine-readable channel, which is the whole finding: no success,
+        // no idempotent, and an error naming what is actually true.
+        $this->assertArrayNotHasKey('success', $second);
+        $this->assertArrayNotHasKey('idempotent', $second);
+        $this->assertStringContainsString('#'.$record->id, $second['error']);
+        $this->assertStringContainsString("state 'reaped'", $second['error']);
+        $this->assertStringContainsString('NO allow is in force for this sender', $second['error']);
+        $this->assertStringContainsString('nothing was staged', $second['error']);
+
+        // Nothing staged, and the refusal is on the audit trail as a refusal.
+        $this->assertSame(1, TechnicianRun::count());
+        $this->assertSame(1, TechnicianActionLog::query()
+            ->where('action_type', 'mesh_stage_add_allow_rule')
+            ->where('result_status', 'blocked')
+            ->count());
     }
 
     // ---- approval → execution -------------------------------------------------

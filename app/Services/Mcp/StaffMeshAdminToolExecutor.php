@@ -327,6 +327,29 @@ class StaffMeshAdminToolExecutor
                 return ['error' => $message];
             }
 
+            if ($created->state === MeshAllowRule::STATE_REAPED) {
+                // PROVED ABSENT IS NOT AN IDEMPOTENT SUCCESS. The reaper only
+                // writes STATE_REAPED after a detail GET returned 404, so this
+                // is the one branch where the PSA KNOWS no allow is in force.
+                // Answering it success:true/idempotent:true asserted an effect
+                // that does not exist on the machine-readable channel while
+                // only the prose said otherwise — and a caller that branches on
+                // that channel (approveStagedRun does, for idempotent outcomes)
+                // would record the sender as handled. The strictly LESS certain
+                // case above — no PSA row at all — is already refused; the
+                // certain one cannot be greener than the unknown one.
+                //
+                // Refused rather than re-staged deliberately: staging is a
+                // WEAKENING write, and whether a proved-absent sender should be
+                // re-stageable inside the 24-hour post-execution window is a
+                // design choice to take on its own evidence, not a side effect
+                // of fixing this classification.
+                $message = "An allow rule for '{$target['sender']}' was created for this client recently as PSA record #{$created->id}, but the PSA has since proved it absent upstream (state '{$created->state}'), so NO allow is in force for this sender and nothing was staged now. Wait for the 24-hour post-execution dedup window to elapse and stage it again, or create the rule by hand in the Mesh portal.";
+                $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $baseHash, $message, $actorLabel);
+
+                return ['error' => $message];
+            }
+
             return [
                 'success' => true,
                 'idempotent' => true,
@@ -340,9 +363,6 @@ class StaffMeshAdminToolExecutor
                         ? 'PERMANENT (it has no expiry and the PSA will never remove it)'
                         : 'set to expire '.$created->expires_at->toDayDateTimeString().' UTC')
                     .", state '{$created->state}'"
-                    .($created->state === MeshAllowRule::STATE_REAPED
-                        ? ' — that rule has been proved absent upstream, so no allow is in force for this sender'
-                        : '')
                     .'. No new proposal was staged and the lifetime asked for here was NOT applied.',
             ];
         }
