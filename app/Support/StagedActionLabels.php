@@ -101,6 +101,7 @@ class StagedActionLabels
 
         // Mesh Email Security
         'mesh_stage_add_allow_rule' => 'Mesh allow rule',
+        'mesh_stage_remove_allow_rule' => 'Mesh allow rule removal',
     ];
 
     /**

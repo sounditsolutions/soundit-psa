@@ -270,6 +270,49 @@ class MeshWriteClient
     }
 
     /**
+     * ONE rule on ONE tenant, by upstream rule id — or null if this tenant has
+     * no such rule (#1134).
+     *
+     * The scope check is the WHOLE point of this method, and it is why the
+     * remove verb does not simply GET `RULE_ENDPOINT/{id}/`. That detail read
+     * is not tenant-scoped: it answers for any rule id the key can see, across
+     * every tenant in the partnership, so a caller who mistyped an id — or who
+     * pasted one from another customer's ticket — would get a readable row and
+     * a successful delete on somebody else's mail filtering. Resolving through
+     * listCustomerRules() means the id can only ever match a row already
+     * proved to belong to $customerId; a foreign id is simply absent.
+     *
+     * The cost is a paged partner-wide read per lookup (LIST_PAGE_SIZE x up to
+     * LIST_PAGE_CEILING), which is the same cost findRuleByComment() already
+     * pays and is unavoidable while `customer_id` is ignored as a query filter
+     * on this route (measured 2026-09-01).
+     *
+     * Comparison is a trimmed string compare, NOT case-insensitive: rule ids
+     * are uuids the vendor generates and echoes back verbatim, and loosening
+     * the match here would be widening an identity check on a delete lane for
+     * no measured need.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findRuleById(string $customerId, string $ruleId): ?array
+    {
+        $ruleId = trim($ruleId);
+        if ($ruleId === '') {
+            return null;
+        }
+
+        foreach ($this->listCustomerRules($customerId) as $row) {
+            $rowId = is_scalar($row['id'] ?? null) ? trim((string) $row['id']) : '';
+
+            if ($rowId !== '' && $rowId === $ruleId) {
+                return $row;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * DELETE one rule by id. Returns nothing useful — the 200 body is not
      * evidence, which is why the reaper follows it with ruleAbsent().
      *
