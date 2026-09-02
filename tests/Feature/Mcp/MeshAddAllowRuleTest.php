@@ -1376,6 +1376,51 @@ class MeshAddAllowRuleTest extends TestCase
         $this->artisan('mesh:reap-allow-rules')->assertFailed();
     }
 
+    /**
+     * A permanent row is unsettled for one of two different reasons, and only
+     * one of them is unfixable. A create whose 201 PROVED scope and whose id
+     * merely could not be re-read is missing nothing else, so recovering the id
+     * settles it — and the duplicate brake stops refusing that sender. Keeping
+     * such a row unresolved wedges the sender forever, with no PSA verb able to
+     * clear it.
+     */
+    public function test_a_scope_proved_permanent_row_settles_once_its_id_is_recovered(): void
+    {
+        $this->configureMesh();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $record = $this->record([
+            'client_id' => $fixture['client']->id,
+            'expires_at' => null,
+            'mesh_rule_id' => null,
+            'state' => MeshAllowRule::STATE_UNRESOLVED,
+            'scope_proved' => true,
+        ]);
+        $write = $this->mockWrite();
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'late-id']);
+        // Permanent means permanent: settling is identification, never removal.
+        $write->shouldNotReceive('deleteRule');
+
+        $counts = app(MeshAllowRuleReaper::class)->reap();
+
+        $this->assertSame('late-id', $record->fresh()->mesh_rule_id);
+        $this->assertSame(MeshAllowRule::STATE_ACTIVE, $record->fresh()->state);
+        $this->assertNull($record->fresh()->last_error);
+        $this->assertNull($record->fresh()->reaped_at);
+
+        // Nothing is left outstanding for a human, so the daily command must
+        // not keep reporting a fault that has been resolved.
+        $this->assertSame(0, $counts['unresolved']);
+        $this->artisan('mesh:reap-allow-rules')->assertSuccessful();
+
+        // ...and the sender is no longer wedged: the next proposal is answered
+        // by the live-record brake as a duplicate, not refused forever.
+        $result = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+        $this->assertTrue($result['idempotent']);
+        $this->assertStringContainsString('already allowed for this client PERMANENTLY', $result['message']);
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
     public function test_reaper_does_nothing_when_mesh_is_unconfigured(): void
     {
         $record = $this->record();

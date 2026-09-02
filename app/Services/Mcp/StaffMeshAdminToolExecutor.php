@@ -634,12 +634,20 @@ class StaffMeshAdminToolExecutor
                 .') may still be live upstream and has not been proved absent, so a second rule was not created. '
                 // #1133: a permanent record has no expiry to wait for, so
                 // "until its expiry passes" would promise a resolution that is
-                // never coming. What the expiry job does for such a record is
-                // IDENTIFY it (MeshAllowRuleReaper::settlePermanent), which is
-                // what clears this brake — it never removes the rule.
+                // never coming. What the expiry job can do for such a record
+                // depends on what its create actually proved
+                // (MeshAllowRuleReaper::settlePermanent): a scope-proved row
+                // was only ever missing its id, so identifying it settles the
+                // row and lifts this block. A row whose scope was never proved
+                // is NOT settled by an id, so nothing in the PSA will clear it
+                // — and this text must not send the approver away to wait for a
+                // change that is never coming.
                 .($unsettled->isPermanent()
-                    ? 'That record is PERMANENT (no expiry), so nothing in the PSA will ever remove it; the expiry job only keeps trying to IDENTIFY it, '
-                        .'and this block clears when it does. Until then, '
+                    ? ($unsettled->scope_proved
+                        ? 'That record is PERMANENT (no expiry), so nothing in the PSA will ever remove it; its scope WAS confirmed when it was created, so the expiry job only has to IDENTIFY it, '
+                            .'and this block clears when it does. Until then, '
+                        : 'That record is PERMANENT (no expiry) and Mesh never confirmed its scope, so nothing in the PSA will remove it and nothing in the PSA will clear this block — recovering its id is not scope evidence. '
+                            .'Someone has to check that rule in the Mesh portal AND clear the PSA record by hand; checking the portal alone changes nothing here. In the meantime, ')
                     : 'The PSA cannot settle that record until its expiry ('.$unsettled->expires_at->toIso8601String()
                         .') passes and the expiry job examines it; until then, ')
                 .'allow this sender directly in the Mesh portal '
@@ -750,6 +758,12 @@ class StaffMeshAdminToolExecutor
             'mesh_rule_id' => null,
             'expires_at' => $expiresAt,
             'state' => MeshAllowRule::STATE_UNRESOLVED,
+            // The 201's `added_for` verdict, recorded at the only moment it can
+            // be measured — no later read-back can prove scope. It is what lets
+            // the expiry job tell a row that is missing only its id from one
+            // that is missing the proof itself
+            // (MeshAllowRuleReaper::settlePermanent).
+            'scope_proved' => $scopeProved,
             'created_by_actor' => $actorLabel,
             'approver_user_id' => $approverId,
         ]);
@@ -927,6 +941,10 @@ class StaffMeshAdminToolExecutor
             // retry for up to the full lifetime. The id (when we have one) is
             // still stored, which is all the reaper needs.
             'state' => MeshAllowRule::STATE_UNRESOLVED,
+            // There was no create response at all, so `added_for` never spoke:
+            // scope is UNPROVED here by definition, and the expiry job must
+            // never settle this row on a recovered id.
+            'scope_proved' => false,
             'created_by_actor' => $actorLabel,
             'approver_user_id' => $approverId,
             'upstream_created_by' => is_scalar($match['created_by'] ?? null) ? (string) $match['created_by'] : null,

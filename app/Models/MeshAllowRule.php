@@ -17,7 +17,12 @@ class MeshAllowRule extends Model
 {
     public const STATE_ACTIVE = 'active';
 
-    /** Created and scope-proved, but the upstream rule id is not yet known. */
+    /**
+     * Created (or possibly created) and not settled: something the PSA needed
+     * is missing. WHICH thing is missing is recorded on `scope_proved`, not on
+     * this state — a row here may be missing only its upstream rule id, or it
+     * may be missing the scope proof that only the create response could give.
+     */
     public const STATE_UNRESOLVED = 'unresolved';
 
     /** Deleted AND proved absent by a 404 on the detail read. */
@@ -45,6 +50,7 @@ class MeshAllowRule extends Model
         'mesh_rule_id',
         'expires_at',
         'state',
+        'scope_proved',
         'created_by_actor',
         'approver_user_id',
         'upstream_created_by',
@@ -55,6 +61,7 @@ class MeshAllowRule extends Model
     protected $casts = [
         'expires_at' => 'datetime',
         'reaped_at' => 'datetime',
+        'scope_proved' => 'boolean',
     ];
 
     public function client(): BelongsTo
@@ -113,10 +120,12 @@ class MeshAllowRule extends Model
      * Such a row is never reaped (it has no expiry to reach) but it is not
      * inert: while it sits unsettled the brake refuses every later allow rule
      * for its sender, and no expiry is ever coming to clear it. The reaper
-     * records whatever upstream id it can recover for such a row and keeps it
-     * counted as unresolved — identify only, never delete, and never promote
-     * to active: the row is unsettled because its scope was never proved, and
-     * an id is not that proof. Only a human can clear it.
+     * records whatever upstream id it can recover for such a row — identify
+     * only, never delete — and what that settles depends on `scope_proved`: a
+     * row whose 201 proved scope was missing nothing but its id, so it goes
+     * active once the id is known; a row whose scope was never proved is not
+     * settled by an id, stays counted as unresolved, and only a human can
+     * clear it.
      * See MeshAllowRuleReaper::settlePermanent().
      */
     public function scopeUnsettledPermanent(Builder $query): Builder
