@@ -19,6 +19,7 @@ use App\Support\McpToolModes;
 use App\Support\McpToolRegistry;
 use App\Support\StagedActionLabels;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Testing\TestResponse;
 use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -166,6 +167,16 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertStringContainsString('WEAKENS', $definition['description']);
         $this->assertStringContainsString('STAGED ONLY', $definition['description']);
 
+        // #1133: expiry is caller-chosen and OPTIONAL — advertised, never required.
+        $this->assertArrayHasKey('expires_at', $definition['inputSchema']['properties']);
+        $this->assertNotContains('expires_at', $definition['inputSchema']['required']);
+        $this->assertStringContainsString('never', $definition['inputSchema']['properties']['expires_at']['description']);
+        $this->assertStringNotContainsString(
+            'expires after '.MeshAllowRule::DEFAULT_LIFETIME_DAYS.' days',
+            $definition['description'],
+            'the description must not still promise a fixed lifetime',
+        );
+
         $this->assertNotContains('mesh_stage_add_allow_rule', $scoped->keys()->all(), 'the staged alias is dispatch-only, never advertised');
         $this->assertSame(['mesh_add_allow_rule', McpToolModes::MODE_STAGED], McpToolModes::parseGrantEntry('mesh_add_allow_rule:staged'));
         $this->assertSame(McpToolModes::MODE_STAGED, McpToolModes::defaultMode('mesh_add_allow_rule'));
@@ -228,7 +239,25 @@ class MeshAddAllowRuleTest extends TestCase
             'customers[] refused by name' => [['customers' => ['x']], 'customers (partner-wide'],
             'ab refused by name' => [['ab' => false], 'ab (this verb only ever creates ALLOW'],
             'organization_level refused by name' => [['organization_level' => true], 'organization_level (scope is fixed'],
-            'date_expiry refused by name' => [['date_expiry' => '2099-01-01'], 'date_expiry (the lifetime is PSA-enforced'],
+            'date_expiry refused by name' => [['date_expiry' => '2099-01-01'], 'date_expiry (expiry is set with expires_at'],
+            // #1133: refuse, never default. Each of these used to become a
+            // silent 90 days.
+            'unreadable expiry refused' => [['expires_at' => 'whenever'], "expires_at ('whenever') is not a date this system can read"],
+            'past expiry refused' => [['expires_at' => '2020-01-01'], "expires_at ('2020-01-01') reads as Wed, Jan 1, 2020 12:00 AM UTC, which is in the past"],
+            // A mistyped year is not rejected by PHP, it is REINTERPRETED:
+            // '99999-01-01' parses as 2009-01-01. It is refused as past, and
+            // the refusal says what it actually read, or the caller cannot see
+            // what happened to their year.
+            'mistyped year is reinterpreted and refused' => [['expires_at' => '99999-01-01'], "expires_at ('99999-01-01') reads as Thu, Jan 1, 2009 12:00 AM UTC, which is in the past"],
+            // Whitespace-only reaches the executor as null: TrimStrings and
+            // ConvertEmptyStringsToNull run first. It must still refuse as
+            // empty, and must NOT be mistaken for the parameter being absent.
+            'empty expiry refused, not treated as absent' => [['expires_at' => '   '], 'expires_at was empty'],
+            'explicit null expiry refused, not treated as absent' => [['expires_at' => null], 'expires_at was empty'],
+            'non-string expiry refused' => [['expires_at' => 90], 'expires_at must be an ISO-8601 date or datetime'],
+            // Reachable only through a relative expression — Carbon accepts
+            // these and this one parses to a real year 102026.
+            'out-of-range expiry refused' => [['expires_at' => '+100000 years'], 'further away than this system can record'],
             'comment refused by name' => [['comment' => 'ticket 123'], 'comment (the comment is PSA-generated'],
             'unknown key refused' => [['spf_bypass' => true], 'spf_bypass (not a parameter of this tool)'],
             'reason missing' => [['reason' => ''], 'reason is required'],
@@ -398,6 +427,189 @@ class MeshAddAllowRuleTest extends TestCase
 
         $this->assertArrayNotHasKey('idempotent', $result);
         $this->assertSame(1, TechnicianRun::count());
+    }
+
+    /**
+     * #1133: the staging hash carries the caller's expiry, but the 'executed'
+     * audit row is written under the expiry-free base hash. Asking the
+     * post-execution dedup question with the lifetime-bearing hash could never
+     * be answered yes for any input — the 24-hour window would be gone.
+     */
+    public function test_a_restage_inside_the_dedup_window_still_matches_the_executed_write(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $run = $this->stagedRun($fixture);
+
+        $write->shouldReceive('createAllowRule')->once()->andReturn(['added_for' => [self::TENANT]]);
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'r1']);
+        $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('success');
+
+        // Reaped, so liveAllowRule() no longer covers it: the audit dedup is
+        // the only thing left standing between a re-stage and a new proposal.
+        $record = MeshAllowRule::sole();
+        $record->update(['state' => MeshAllowRule::STATE_REAPED, 'reaped_at' => now()]);
+
+        $second = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+
+        // The base-hash match is what is under test, and the refusal below is
+        // only reachable through it: without it this call falls past the dedup
+        // branch entirely and stages a second proposal.
+        $this->assertStringContainsString('#'.$record->id, $second['error']);
+        $this->assertStringContainsString('proved it absent upstream', $second['error']);
+        $this->assertSame(1, TechnicianRun::count());
+    }
+
+    /**
+     * Two awaiting cards for one sender with different lifetimes would both be
+     * approvable, and the loser would create nothing while its approver read a
+     * lifetime that was never applied.
+     */
+    public function test_a_second_proposal_for_the_same_sender_with_another_lifetime_is_refused(): void
+    {
+        $this->configureMesh();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWrite();
+
+        $first = $this->decodedResult($this->callTool(
+            $this->token(['mesh_add_allow_rule:staged']),
+            'mesh_add_allow_rule',
+            $this->stageArgs($fixture, ['expires_at' => 'never']),
+        ));
+
+        $response = $this->callTool(
+            $this->token(['mesh_add_allow_rule:staged']),
+            'mesh_add_allow_rule',
+            $this->stageArgs($fixture, ['expires_at' => now()->addDay()->toIso8601String()]),
+        );
+
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('already awaiting approval on this ticket with a different lifetime', $text);
+        $this->assertStringContainsString('PERMANENT', $text);
+        $this->assertStringContainsString('#'.$first['run_id'], $text);
+        $this->assertSame(1, TechnicianRun::count());
+    }
+
+    /**
+     * A deny leaves generation 0 spent, so the next identical proposal lands on
+     * generation 1 — and an MCP retry of that same call must still be answered
+     * "already staged", never refused with a lifetime difference that does not
+     * exist. The lifetime here is byte-identical on every call.
+     */
+    public function test_an_identical_restage_on_a_later_generation_is_idempotent_not_a_lifetime_refusal(): void
+    {
+        $this->configureMesh();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWrite();
+
+        $first = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+        TechnicianRun::whereKey($first['run_id'])->update(['state' => TechnicianRunState::Denied->value]);
+
+        // Past the staging cooldown, so the re-stage is answered by the dedup
+        // branches under test rather than by the burst damper.
+        $this->travel(6)->minutes();
+
+        $second = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+        $this->assertNotSame($first['run_id'], $second['run_id'], 'a denied run is never revived; the proposal takes the next generation');
+
+        $retry = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+
+        $this->assertTrue($retry['idempotent']);
+        $this->assertSame($second['run_id'], $retry['run_id']);
+        // The executor returns exactly this string; McpStaffController prepends
+        // the staged-downgrade notice for a staged-only token, as it does for
+        // every other message in this file.
+        $this->assertStringContainsString('Already staged; awaiting approval.', $retry['message']);
+        $this->assertSame(2, TechnicianRun::count());
+    }
+
+    /**
+     * The post-execution dedup key excludes the expiry deliberately, so this
+     * answer is always given against somebody else's lifetime. It must name
+     * that lifetime and the record's state, or a technician staging 'never' is
+     * told "already created" about a rule that is dated — and, here, already
+     * reaped, so no allow is in force at all.
+     */
+    public function test_the_dedup_answer_names_the_lifetime_and_state_actually_in_force(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $run = $this->stagedRun($fixture);
+
+        $write->shouldReceive('createAllowRule')->once()->andReturn(['added_for' => [self::TENANT]]);
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'r1']);
+        $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('success');
+
+        $record = MeshAllowRule::sole();
+        $this->assertSame(MeshAllowRule::STATE_ACTIVE, $record->state);
+
+        $second = $this->decodedResult($this->callTool(
+            $this->token(['mesh_add_allow_rule:staged']),
+            'mesh_add_allow_rule',
+            $this->stageArgs($fixture, ['expires_at' => 'never']),
+        ));
+
+        $this->assertTrue($second['idempotent']);
+        $this->assertStringContainsString('already created recently', $second['message']);
+        $this->assertStringContainsString('#'.$record->id, $second['message']);
+        $this->assertStringContainsString('set to expire', $second['message']);
+        $this->assertStringContainsString("state 'active'", $second['message']);
+        $this->assertStringContainsString('NOT applied', $second['message']);
+        $this->assertNotSame('never', $second['expires_at'], 'the answer reports the lifetime in force, never the one just asked for');
+        $this->assertSame(1, TechnicianRun::count());
+    }
+
+    /**
+     * The reaper writes STATE_REAPED only after a detail GET returned 404, so
+     * this is the one branch where the PSA has PROVED no allow is in force.
+     * Answering it success:true/idempotent:true put that certainty on the
+     * machine-readable channel as an effect that does not exist, while only the
+     * prose said otherwise — and the strictly LESS certain case (no PSA row at
+     * all) was already refused. The certain case cannot be the greener one.
+     */
+    public function test_a_proved_absent_rule_is_refused_not_answered_as_an_idempotent_success(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $run = $this->stagedRun($fixture);
+
+        $write->shouldReceive('createAllowRule')->once()->andReturn(['added_for' => [self::TENANT]]);
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'r1']);
+        $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('success');
+
+        $record = MeshAllowRule::sole();
+        $record->update(['state' => MeshAllowRule::STATE_REAPED, 'reaped_at' => now()]);
+
+        $second = $this->decodedResult($this->callTool(
+            $this->token(['mesh_add_allow_rule:staged']),
+            'mesh_add_allow_rule',
+            $this->stageArgs($fixture, ['expires_at' => 'never']),
+        ));
+
+        // The machine-readable channel, which is the whole finding: no success,
+        // no idempotent, and an error naming what is actually true.
+        $this->assertArrayNotHasKey('success', $second);
+        $this->assertArrayNotHasKey('idempotent', $second);
+        $this->assertStringContainsString('#'.$record->id, $second['error']);
+        $this->assertStringContainsString("state 'reaped'", $second['error']);
+        $this->assertStringContainsString('NO allow is in force for this sender', $second['error']);
+        $this->assertStringContainsString('nothing was staged', $second['error']);
+
+        // Nothing staged, and the refusal is on the audit trail as a refusal.
+        $this->assertSame(1, TechnicianRun::count());
+        $this->assertSame(1, TechnicianActionLog::query()
+            ->where('action_type', 'mesh_stage_add_allow_rule')
+            ->where('result_status', 'blocked')
+            ->count());
     }
 
     // ---- approval → execution -------------------------------------------------
@@ -725,6 +937,201 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
     }
 
+    // ---- #1133: caller-chosen expiry, including permanent ---------------------
+
+    public function test_an_omitted_expiry_still_means_the_default_lifetime(): void
+    {
+        $this->configureMesh();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWrite();
+
+        $result = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+        $run = TechnicianRun::findOrFail($result['run_id']);
+
+        $expected = now()->addDays(MeshAllowRule::DEFAULT_LIFETIME_DAYS);
+        $this->assertEqualsWithDelta($expected->timestamp, Carbon::parse($result['expires_at'])->timestamp, 5);
+        $this->assertStringContainsString('until the PSA removes the rule on '.$expected->toDayDateTimeString(), $run->proposed_content);
+        $this->assertStringNotContainsString('PERMANENT', $run->proposed_content);
+    }
+
+    public function test_an_explicit_expiry_is_carried_from_the_proposal_to_the_rule_and_upstream(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+
+        $chosen = now()->addDays(3)->startOfSecond();
+        $result = $this->decodedResult($this->callTool(
+            $this->token(['mesh_add_allow_rule:staged']),
+            'mesh_add_allow_rule',
+            $this->stageArgs($fixture, ['expires_at' => $chosen->toIso8601String()]),
+        ));
+        $run = TechnicianRun::findOrFail($result['run_id']);
+        $comment = $this->committedComment($run);
+
+        // The approver reads the date THEY were given, not a 90-day default.
+        $this->assertSame($chosen->toIso8601String(), $result['expires_at']);
+        $this->assertStringContainsString('until the PSA removes the rule on '.$chosen->toDayDateTimeString(), $run->proposed_content);
+        $this->assertSame($chosen->toIso8601String(), $run->proposed_meta['redacted_params']['expires_at']);
+
+        // ...and the same instant is what Mesh is told to display.
+        $write->shouldReceive('createAllowRule')->once()
+            ->with(self::TENANT, 'billing@vendor.example', $comment, $chosen->toIso8601String())
+            ->andReturn(['detail' => 'ok', 'added_for' => [self::TENANT]]);
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'rule-dated', 'created_by' => 'owner@soundit.example']);
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('success');
+
+        $record = MeshAllowRule::sole();
+        $this->assertSame($chosen->timestamp, $record->expires_at->timestamp);
+        $this->assertFalse($record->isPermanent());
+    }
+
+    public function test_never_creates_a_permanent_rule_that_says_so_everywhere_and_sends_no_date_upstream(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+
+        $result = $this->decodedResult($this->callTool(
+            $this->token(['mesh_add_allow_rule:staged']),
+            'mesh_add_allow_rule',
+            $this->stageArgs($fixture, ['expires_at' => 'Never']),
+        ));
+        $run = TechnicianRun::findOrFail($result['run_id']);
+        $comment = $this->committedComment($run);
+
+        // Criterion 5: the approver is told PERMANENT in words, not shown a
+        // blank where a date would be.
+        $this->assertSame('never', $result['expires_at']);
+        $this->assertStringContainsString('PERMANENTLY', $run->proposed_content);
+        $this->assertStringContainsString('NO EXPIRY', $run->proposed_content);
+        $this->assertStringContainsString('NEVER remove it', $run->proposed_content);
+        $this->assertSame('never', $run->proposed_meta['redacted_params']['expires_at']);
+        $this->assertStringContainsString('PERMANENT', $run->proposed_meta['redacted_params']['expiry_note']);
+
+        // Criterion 6: null omits `date_expiry` from the Mesh body entirely.
+        $write->shouldReceive('createAllowRule')->once()
+            ->with(self::TENANT, 'billing@vendor.example', $comment, null)
+            ->andReturn(['detail' => 'ok', 'added_for' => [self::TENANT]]);
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'rule-forever', 'created_by' => 'owner@soundit.example']);
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('success');
+
+        $record = MeshAllowRule::sole();
+        $this->assertNull($record->expires_at, 'permanent is a NULL expiry, never a sentinel date');
+        $this->assertTrue($record->isPermanent());
+        $this->assertSame(MeshAllowRule::STATE_ACTIVE, $record->state);
+
+        $log = TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed')->sole();
+        $this->assertStringContainsString('PERMANENT', $log->summary);
+    }
+
+    public function test_a_permanent_record_blocks_a_duplicate_proposal_and_names_it_permanent(): void
+    {
+        $this->configureMesh();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWrite();
+
+        // `expires_at > now()` is NULL for this row, not true — without the
+        // null arm in liveAllowRule() the strongest duplicate brake stops
+        // seeing exactly the rules that never go away.
+        $existing = MeshAllowRule::create([
+            'client_id' => $fixture['client']->id,
+            'mesh_customer_id' => self::TENANT,
+            'sender' => 'billing@vendor.example',
+            'comment' => 'PSA allow AAAAAAAAAA',
+            'mesh_rule_id' => 'rule-forever',
+            'expires_at' => null,
+            'state' => MeshAllowRule::STATE_ACTIVE,
+            'created_by_actor' => 'test',
+        ]);
+
+        $result = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+
+        $this->assertTrue($result['idempotent']);
+        $this->assertSame('never', $result['expires_at']);
+        $this->assertStringContainsString('already allowed for this client PERMANENTLY', $result['message']);
+        $this->assertStringContainsString('#'.$existing->id, $result['message']);
+        $this->assertStringNotContainsString('an unrecorded date', $result['message']);
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_an_expiry_that_passed_while_awaiting_approval_is_refused_before_any_upstream_call(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+
+        $run = null;
+        $this->travelTo(now()->subDays(10), function () use ($fixture, &$run) {
+            $result = $this->decodedResult($this->callTool(
+                $this->token(['mesh_add_allow_rule:staged']),
+                'mesh_add_allow_rule',
+                $this->stageArgs($fixture, ['expires_at' => now()->addDay()->toIso8601String()]),
+            ));
+            $run = TechnicianRun::findOrFail($result['run_id']);
+        });
+
+        // A rule born already expired is a hole that stays open until the
+        // daily reaper happens to run. Nothing is created.
+        $write->shouldNotReceive('createAllowRule');
+
+        $response = $this->actingAs($actor)->post(route('cockpit.approve', $run));
+
+        // And the approver reads WHY. A message-less gate_declined renders
+        // "the Technician declined (it may be paused). Try again." — a false
+        // account of the refusal that sends them clicking the same button
+        // instead of re-staging with a date that means something.
+        $response->assertSessionHas('error');
+        $this->assertStringContainsString('is in the past', (string) session('error'));
+        $this->assertStringContainsString('stage a new proposal with a valid expiry', (string) session('error'));
+
+        $this->assertSame(0, MeshAllowRule::count());
+        $log = TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'rejected')->sole();
+        $this->assertStringContainsString('is in the past', $log->summary);
+        $this->assertStringContainsString('No upstream call was made', $log->summary);
+    }
+
+    public function test_an_approval_that_wrote_nothing_is_never_reported_as_a_clean_execution(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $run = $this->stagedRun($fixture);
+
+        // Whatever this card says, the rule that exists is PERMANENT and the
+        // PSA will never remove it. The approver must be told that, on the
+        // error channel — not shown a green 'executed'.
+        MeshAllowRule::create([
+            'client_id' => $fixture['client']->id,
+            'mesh_customer_id' => self::TENANT,
+            'sender' => 'billing@vendor.example',
+            'comment' => 'PSA allow AAAAAAAAAA',
+            'mesh_rule_id' => 'rule-forever',
+            'expires_at' => null,
+            'state' => MeshAllowRule::STATE_ACTIVE,
+            'created_by_actor' => 'test',
+        ]);
+
+        $write->shouldNotReceive('createAllowRule');
+
+        $response = $this->actingAs($actor)->post(route('cockpit.approve', $run));
+        $response->assertSessionHas('error');
+        $this->assertStringContainsString('PERMANENTLY', (string) session('error'));
+        $this->assertStringContainsString('was NOT applied', (string) session('error'));
+
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertSame(1, MeshAllowRule::count());
+        $this->assertSame(0, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed')->count());
+    }
+
     // ---- the reaper -----------------------------------------------------------
 
     /** @return array<string, mixed> */
@@ -846,6 +1253,172 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertSame(0, $counts['examined']);
 
         $this->artisan('mesh:reap-allow-rules')->assertSuccessful();
+    }
+
+    public function test_reaper_never_selects_a_permanent_row(): void
+    {
+        $this->configureMesh();
+
+        // Permanent, and long past the date a 90-day rule created at the same
+        // moment would have died on: age is not what makes a row reapable.
+        $permanent = $this->record(['expires_at' => null, 'mesh_rule_id' => 'rule-forever']);
+        $permanent->forceFill(['created_at' => now()->subYears(2)])->save();
+
+        // A second, ordinary expired row proves the reaper is running at all —
+        // otherwise "examined: 0" would pass for the wrong reason.
+        $expired = $this->record(['sender' => 'other@vendor.example', 'mesh_rule_id' => 'rule-expired']);
+
+        $write = $this->mockWrite();
+        $write->shouldReceive('deleteRule')->once()->with('rule-expired');
+        $write->shouldReceive('ruleAbsent')->once()->with('rule-expired')->andReturn(true);
+
+        $counts = app(MeshAllowRuleReaper::class)->reap();
+
+        $this->assertSame(['examined' => 1, 'reaped' => 1, 'unresolved' => 0, 'failed' => 0], $counts);
+        $this->assertSame(MeshAllowRule::STATE_REAPED, $expired->fresh()->state);
+        $this->assertSame(MeshAllowRule::STATE_ACTIVE, $permanent->fresh()->state);
+        $this->assertNull($permanent->fresh()->reaped_at);
+        $this->assertNotContains($permanent->id, MeshAllowRule::reapable()->pluck('id')->all());
+    }
+
+    public function test_a_permanent_row_is_not_reapable_in_any_workable_state(): void
+    {
+        $this->configureMesh();
+
+        foreach ([MeshAllowRule::STATE_ACTIVE, MeshAllowRule::STATE_UNRESOLVED, MeshAllowRule::STATE_REAP_FAILED] as $i => $state) {
+            $this->record(['expires_at' => null, 'state' => $state, 'sender' => "s{$i}@vendor.example"]);
+        }
+
+        $this->assertSame(0, MeshAllowRule::reapable()->count());
+
+        $write = $this->mockWrite();
+        $write->shouldNotReceive('deleteRule');
+
+        $counts = app(MeshAllowRuleReaper::class)->reap();
+        $this->assertSame(0, $counts['examined']);
+        // The two unsettled rows are identified and left unresolved — their
+        // scope was never proved, so they stay counted and the command stays
+        // loud. Only the row that was already active is silent.
+        $this->assertSame(2, $counts['unresolved']);
+        $this->artisan('mesh:reap-allow-rules')->assertFailed();
+    }
+
+    public function test_a_permanent_row_stuck_unresolved_is_identified_but_never_promoted_to_active(): void
+    {
+        $this->configureMesh();
+        $record = $this->record(['expires_at' => null, 'mesh_rule_id' => null, 'state' => MeshAllowRule::STATE_UNRESOLVED]);
+        $write = $this->mockWrite();
+        // Called once: the second run reads the id off the row, not upstream.
+        $write->shouldReceive('findRuleByComment')->once()->with(self::TENANT, 'billing@vendor.example', 'PSA allow ABCDEFGHIJ')->andReturn(['id' => 'late-id']);
+        // The caller asked for permanent. Identifying it is the whole point;
+        // deleting it would be the PSA revoking a decision it was told to keep.
+        $write->shouldNotReceive('deleteRule');
+
+        $counts = app(MeshAllowRuleReaper::class)->reap();
+
+        // Nothing was reaped and nothing was examined for reaping — settling is
+        // not a reap, and the command's expired-rule counts must not say it is.
+        $this->assertSame(0, $counts['examined']);
+        $this->assertSame(0, $counts['reaped']);
+        $this->assertSame(0, $counts['failed']);
+        $this->assertSame('late-id', $record->fresh()->mesh_rule_id);
+        $this->assertNull($record->fresh()->reaped_at);
+
+        // The id is recovered; scope is NOT. ACTIVE is the record
+        // liveAllowRule() answers "already allowed for this client" from, and
+        // this row was never scope-proved — promoting it would refuse the
+        // corrected retry for this sender forever.
+        $this->assertSame(MeshAllowRule::STATE_UNRESOLVED, $record->fresh()->state);
+        $this->assertStringContainsString('not scope evidence', (string) $record->fresh()->last_error);
+        $this->assertSame(1, $counts['unresolved']);
+
+        // A permanent rule whose scope was never proved must not go quiet.
+        $this->artisan('mesh:reap-allow-rules')->assertFailed();
+    }
+
+    /**
+     * The scope-fault and never-answered-create paths write the reason a row
+     * never settled into last_error, and it is the only record that scope was
+     * never proved. The daily identify pass must not overwrite it.
+     */
+    public function test_settling_a_permanent_row_never_overwrites_the_recorded_fault(): void
+    {
+        $this->configureMesh();
+        $record = $this->record(['expires_at' => null, 'mesh_rule_id' => null, 'state' => MeshAllowRule::STATE_UNRESOLVED]);
+        $record->forceFill(['last_error' => 'Mesh reported this rule was added for another tenant; check the Mesh portal and remove it by hand if the scope is wrong.'])->save();
+
+        $write = $this->mockWrite();
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'late-id']);
+        $write->shouldNotReceive('deleteRule');
+
+        app(MeshAllowRuleReaper::class)->reap();
+
+        $this->assertSame('late-id', $record->fresh()->mesh_rule_id);
+        $this->assertSame(MeshAllowRule::STATE_UNRESOLVED, $record->fresh()->state);
+        $this->assertStringContainsString('another tenant', (string) $record->fresh()->last_error);
+    }
+
+    public function test_a_permanent_row_that_cannot_be_identified_stays_unresolved_and_loud(): void
+    {
+        $this->configureMesh();
+        $record = $this->record(['expires_at' => null, 'mesh_rule_id' => null, 'state' => MeshAllowRule::STATE_UNRESOLVED]);
+        $write = $this->mockWrite();
+        $write->shouldReceive('findRuleByComment')->twice()->andReturn(null);
+        $write->shouldNotReceive('deleteRule');
+
+        $counts = app(MeshAllowRuleReaper::class)->reap();
+
+        $this->assertSame(1, $counts['unresolved']);
+        $this->assertSame(MeshAllowRule::STATE_UNRESOLVED, $record->fresh()->state);
+        $this->assertStringContainsString('PERMANENT', (string) $record->fresh()->last_error);
+
+        // A rule that may be live and cannot be named must not go quiet.
+        $this->artisan('mesh:reap-allow-rules')->assertFailed();
+    }
+
+    /**
+     * A permanent row is unsettled for one of two different reasons, and only
+     * one of them is unfixable. A create whose 201 PROVED scope and whose id
+     * merely could not be re-read is missing nothing else, so recovering the id
+     * settles it — and the duplicate brake stops refusing that sender. Keeping
+     * such a row unresolved wedges the sender forever, with no PSA verb able to
+     * clear it.
+     */
+    public function test_a_scope_proved_permanent_row_settles_once_its_id_is_recovered(): void
+    {
+        $this->configureMesh();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $record = $this->record([
+            'client_id' => $fixture['client']->id,
+            'expires_at' => null,
+            'mesh_rule_id' => null,
+            'state' => MeshAllowRule::STATE_UNRESOLVED,
+            'scope_proved' => true,
+        ]);
+        $write = $this->mockWrite();
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'late-id']);
+        // Permanent means permanent: settling is identification, never removal.
+        $write->shouldNotReceive('deleteRule');
+
+        $counts = app(MeshAllowRuleReaper::class)->reap();
+
+        $this->assertSame('late-id', $record->fresh()->mesh_rule_id);
+        $this->assertSame(MeshAllowRule::STATE_ACTIVE, $record->fresh()->state);
+        $this->assertNull($record->fresh()->last_error);
+        $this->assertNull($record->fresh()->reaped_at);
+
+        // Nothing is left outstanding for a human, so the daily command must
+        // not keep reporting a fault that has been resolved.
+        $this->assertSame(0, $counts['unresolved']);
+        $this->artisan('mesh:reap-allow-rules')->assertSuccessful();
+
+        // ...and the sender is no longer wedged: the next proposal is answered
+        // by the live-record brake as a duplicate, not refused forever.
+        $result = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+        $this->assertTrue($result['idempotent']);
+        $this->assertStringContainsString('already allowed for this client PERMANENTLY', $result['message']);
+        $this->assertSame(0, TechnicianRun::count());
     }
 
     public function test_reaper_does_nothing_when_mesh_is_unconfigured(): void
