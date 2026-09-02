@@ -261,6 +261,33 @@ class StaffMeshAdminToolExecutor
             return ['error' => $target['error']];
         }
 
+        // #1133: the caller's expiry is validated HERE, before a proposal
+        // exists and before any dedup answer is given. A refusal at approval
+        // time would be a refusal in front of a human holding a button,
+        // minutes or days after the mistake was made.
+        $expiry = $this->requestedExpiry($arguments);
+        if (isset($expiry['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, $expiry['error'], $actorLabel);
+
+            return ['error' => $expiry['error']];
+        }
+        $expiresAt = $expiry['expires_at'];
+
+        // The lifetime is part of what the write DOES to a customer's mail
+        // filtering, so it is part of the identity of the write: without it,
+        // re-staging the same sender with a different expiry (or with 'never')
+        // is answered "already staged" against somebody else's lifetime, which
+        // is the silent lifetime substitution #1133 exists to delete.
+        //
+        // Hashed as the caller's own vocabulary, with 'default' standing for an
+        // omitted key: the resolved default instant is now()+90d and moves every
+        // second, so hashing THAT would give two identical requests different
+        // hashes and defeat dedup entirely.
+        $contentHash = $this->contentHash($tool, $clientId, 'allow-rule-'.($target['sender'] ?? 'unresolved'), [
+            'mesh_customer_id' => $target['mesh_customer_id'] ?? null,
+            'expires_at' => array_key_exists('expires_at', $arguments) ? self::expiryValue($expiresAt) : 'default',
+        ]);
+
         if ($this->alreadyExecuted('mesh_add_allow_rule', $clientId, $contentHash)) {
             return [
                 'success' => true,
@@ -318,17 +345,6 @@ class StaffMeshAdminToolExecutor
         // carry, and a retried execution re-uses the same match key instead of
         // creating a second rule the first one's re-read would then find.
         $comment = $this->generateComment();
-
-        // #1133: the caller's expiry is validated HERE, before a proposal
-        // exists. A refusal at approval time would be a refusal in front of a
-        // human holding a button, minutes or days after the mistake was made.
-        $expiry = $this->requestedExpiry($arguments);
-        if (isset($expiry['error'])) {
-            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, $expiry['error'], $actorLabel);
-
-            return ['error' => $expiry['error']];
-        }
-        $expiresAt = $expiry['expires_at'];
 
         $proposedContent = "Allow mail from '{$target['sender']}' through Mesh Email Security for {$target['client_name']}.\n"
             .$target['scope_note']."\n"
@@ -832,7 +848,17 @@ class StaffMeshAdminToolExecutor
                 .'There was no create response, so its scope was never confirmed — check it in the Mesh portal.'
             : 'Mesh never answered the create ('.$error->getMessage()."), and a re-read of this client's tenant did not find the rule"
                 .($rereadError !== null ? ' (that read failed too: '.$rereadError.')' : '')
-                .'. Whether the rule was created is UNMEASURED, so it is recorded unresolved (PSA record #'.$record->id.') and the expiry job keeps trying to identify and remove it. Check the Mesh portal before allowing this sender again.';
+                .'. Whether the rule was created is UNMEASURED, so it is recorded unresolved (PSA record #'.$record->id.') and '
+                .($expiresAt === null
+                    // #1133: this row is PERMANENT (NULL expires_at), and
+                    // scopeReapable()'s whereNotNull excludes it in EVERY state.
+                    // The expiry job is not coming for it, so it will never
+                    // resolve the id and never remove it — saying otherwise
+                    // would be a false statement of system behaviour on the
+                    // worst path this method has. A human is the only exit.
+                    ? 'it is PERMANENT — nothing in the PSA will ever identify or remove it. Look for a rule with the comment '.$comment." on this client's Mesh tenant and remove it by hand."
+                    : 'the expiry job keeps trying to identify and remove it.')
+                .' Check the Mesh portal before allowing this sender again.';
 
         $record->forceFill(['last_error' => $message])->save();
         // Deliberately NOT 'executed': an unmeasured write must not satisfy the
@@ -1288,7 +1314,15 @@ class StaffMeshAdminToolExecutor
         }
 
         try {
-            $parsed = \Illuminate\Support\Carbon::parse($value);
+            // Normalised to UTC ONCE, here. An offset-bearing ISO-8601 value is
+            // valid input ('2026-12-01T09:00:00+09:00' — the schema text invites
+            // it) and Carbon::parse KEEPS that offset. Everything downstream
+            // then reads the value as if it were UTC: the approval card and
+            // expiryPhrase() append a literal ' UTC' to a wall-clock in the
+            // input's own zone, and the `datetime` cast stores that same
+            // wall-clock, so the reaper ends the hole by the offset. The instant
+            // the caller named must be the instant every consumer sees.
+            $parsed = \Illuminate\Support\Carbon::parse($value)->utc();
         } catch (\Throwable) {
             return ['error' => "expires_at ('{$value}') is not a date this system can read; give an ISO-8601 date or datetime (e.g. 2026-12-01 or 2026-12-01T17:00:00Z), or the word \"never\""];
         }
