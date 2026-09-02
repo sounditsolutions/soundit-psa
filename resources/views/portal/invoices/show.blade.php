@@ -28,6 +28,7 @@
                         </a>
                     </div>
                 @endif
+                @include('portal.invoices.partials.qbo-balance-note')
             </div>
         </div>
     </div>

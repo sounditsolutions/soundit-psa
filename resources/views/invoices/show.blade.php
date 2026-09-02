@@ -455,6 +455,64 @@
         </div>
     </div>
 </div>
+
+{{-- #1173 / T-22802 — status history.
+
+     Until this existed, nothing on an invoice recorded what had set its
+     status: nine invoices sat Paid-in-PSA / open-in-QBO for six months and the
+     provenance had to be reconstructed from which columns happened to be null.
+     This is the panel a technician opens when a client disputes what they are
+     shown as owing. --}}
+<div class="card mt-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h6 class="mb-0"><i class="bi bi-clock-history me-1"></i>Status History</h6>
+        <span class="text-muted small">Recorded since this invoice's first status change after Sep 2026</span>
+    </div>
+    <div class="card-body p-0">
+        @if($invoice->statusChangeLogs->isEmpty())
+            <p class="text-muted small p-3 mb-0">
+                No status changes recorded. An invoice created before the status log existed, or one whose
+                status has not moved since, has no rows here — that is not evidence its status was never changed.
+            </p>
+        @else
+            <div class="table-responsive">
+                <table class="table table-sm mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>When</th>
+                            <th>Change</th>
+                            <th>Source</th>
+                            <th class="text-end">QBO Balance</th>
+                            <th>Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach($invoice->statusChangeLogs as $log)
+                            <tr>
+                                <td class="text-muted small text-nowrap">{{ $log->created_at->format('M j, Y H:i') }}</td>
+                                <td class="small">
+                                    {{ $log->previous_status ?? '—' }}
+                                    <i class="bi bi-arrow-right mx-1"></i>
+                                    <strong>{{ $log->new_status }}</strong>
+                                </td>
+                                <td class="small">
+                                    {{ $log->source->label() }}
+                                    @if($log->changedBy)
+                                        <span class="text-muted">({{ $log->changedBy->name }})</span>
+                                    @endif
+                                </td>
+                                <td class="text-end small">
+                                    {{ $log->qbo_balance === null ? '—' : '$'.number_format($log->qbo_balance, 2) }}
+                                </td>
+                                <td class="text-muted small">{{ $log->reason ?? '—' }}</td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+        @endif
+    </div>
+</div>
 @endsection
 
 @push('scripts')

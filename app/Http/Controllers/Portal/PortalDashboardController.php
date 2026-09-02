@@ -36,6 +36,9 @@ class PortalDashboardController extends Controller
 
         $unpaidInvoices = Invoice::where('client_id', $clientId)
             ->whereIn('status', [InvoiceStatus::Posted, InvoiceStatus::Synced])
+            // #1173: each row's "partially paid" note reads the last
+            // QBO-sourced status change.
+            ->with('latestQboStatusChange')
             ->orderByDesc('due_date')
             ->limit(5)
             ->get();
