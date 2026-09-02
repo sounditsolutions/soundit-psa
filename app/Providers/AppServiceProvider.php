@@ -26,6 +26,7 @@ use App\Services\Huntress\HuntressClient;
 use App\Services\Huntress\HuntressWriteClient;
 use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
+use App\Services\Mesh\MeshWriteClient;
 use App\Services\Ninja\NinjaClient;
 use App\Services\PowerDmarc\PowerDmarcClient;
 use App\Services\Servosity\ServosityClient;
@@ -124,6 +125,17 @@ class AppServiceProvider extends ServiceProvider
 
         $this->app->singleton(MeshClient::class, function () {
             return new MeshClient([
+                'api_key' => MeshConfig::get('api_key'),
+                'base_url' => MeshConfig::get('base_url'),
+            ]);
+        });
+
+        // The Mesh WRITE lane is a separate class on the same API key: the key
+        // was measured to carry these routes, so there is no second credential
+        // to fall back from. The separation is structural — MeshClient is
+        // GET-only and cannot be made to write by any argument (#1018).
+        $this->app->singleton(MeshWriteClient::class, function () {
+            return new MeshWriteClient([
                 'api_key' => MeshConfig::get('api_key'),
                 'base_url' => MeshConfig::get('base_url'),
             ]);

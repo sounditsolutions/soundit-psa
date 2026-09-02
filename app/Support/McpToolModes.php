@@ -5,6 +5,7 @@ namespace App\Support;
 use App\Services\Mcp\StaffCalendarToolExecutor;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Services\Mcp\StaffHuntressActionToolExecutor;
+use App\Services\Mcp\StaffMeshAdminToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
 use App\Services\Mcp\StaffTacticalAdminToolExecutor;
 
@@ -68,6 +69,7 @@ class McpToolModes
             StaffCippWriteToolExecutor::stagedToDirectMap(),
             StaffCalendarToolExecutor::stagedToDirectMap(),
             StaffHuntressActionToolExecutor::stagedToDirectMap(),
+            StaffMeshAdminToolExecutor::stagedToDirectMap(),
         );
     }
 
@@ -106,6 +108,12 @@ class McpToolModes
         // today either way; this entry keeps the default honest if that group is
         // ever widened, and is the second lock behind the refusal in the executor.
         'tactical_remove_agent',
+        // mesh_add_allow_rule likewise has no immediate implementation
+        // (StaffMeshAdminToolExecutor::immediateAllowRuleRefused). An allow rule
+        // is a hole in a customer's mail filtering, so the entry keeps the
+        // full-surface default honest and is the second lock behind the
+        // refusal in the executor.
+        'mesh_add_allow_rule',
     ];
 
     /**

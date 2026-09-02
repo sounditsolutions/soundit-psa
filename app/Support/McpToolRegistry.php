@@ -11,6 +11,7 @@ use App\Services\Mcp\StaffCalendarToolExecutor;
 use App\Services\Mcp\StaffCippAdminToolExecutor;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Services\Mcp\StaffHuntressActionToolExecutor;
+use App\Services\Mcp\StaffMeshAdminToolExecutor;
 use App\Services\Mcp\StaffPsaTaxonomyToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
 use App\Services\Mcp\StaffTacticalAdminToolExecutor;
@@ -92,6 +93,7 @@ class McpToolRegistry
             $tacticalActions = self::shape(self::withoutStagedAliases(self::tacticalActionTools()));
             $tacticalAdmin = self::shape(self::withoutStagedAliases(self::tacticalAdminTools()));
             $huntressActions = self::shape(self::withoutStagedAliases(self::huntressActionTools()));
+            $meshAdmin = self::shape(self::withoutStagedAliases(self::meshAdminTools()));
             $psaRecords = self::shape(self::psaRecordsTools());
             $psaRead = self::shape(self::psaReadTools());
             $intakeManage = self::shape(self::intakeManageTools());
@@ -114,6 +116,7 @@ class McpToolRegistry
                 'tactical_action' => ['label' => 'Tactical endpoint actions (sensitive)', 'sensitive' => true, 'tools' => $tacticalActions],
                 'tactical_admin' => ['label' => 'Tactical admin/provisioning (sensitive)', 'sensitive' => true, 'tools' => $tacticalAdmin],
                 'huntress_action' => ['label' => 'Huntress SOC escalation actions (sensitive)', 'sensitive' => true, 'tools' => $huntressActions],
+                'mesh_admin' => ['label' => 'Mesh Email Security allow-list writes (sensitive)', 'sensitive' => true, 'tools' => $meshAdmin],
                 'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
                 'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],
                 'psa_records' => ['label' => 'PSA records — clients, people, assets (sensitive)', 'sensitive' => true, 'tools' => $psaRecords],
@@ -180,6 +183,11 @@ class McpToolRegistry
                 'tactical_action' => ['tactical', 'actions', 'Endpoint actions', 2],
                 'tactical_admin' => ['tactical', 'admin', 'Admin & provisioning', 3],
                 'huntress_action' => ['huntress', 'actions', 'SOC escalation actions', 2],
+                // Its own tier under its own integration, not a line in "Other integrations":
+                // an allow rule weakens a customer's mail filtering, and a sensitive write shown
+                // under a bucket labelled for read-only odds and ends is the mislabelled-tier
+                // hazard psa-lulgh names — the operator grants it believing it is something else.
+                'mesh_admin' => ['mesh', 'write', 'Allow-list writes', 2],
                 'wiki_write' => ['wiki', 'write', 'Write', 2],
                 'bridge' => ['teams', 'bridge', 'Operator bridge', 2],
             ];
@@ -269,6 +277,7 @@ class McpToolRegistry
             'cipp' => ['label' => 'CIPP · Microsoft 365', 'blurb' => 'Multi-tenant M365 management relay', 'icon' => 'bi-microsoft', 'accent' => '#2563eb'],
             'ninja' => ['label' => 'NinjaOne RMM', 'blurb' => 'Endpoint inventory & health', 'icon' => 'bi-hdd-stack', 'accent' => '#059669'],
             'huntress' => ['label' => 'Huntress', 'blurb' => 'EDR / ITDR incident & escalation visibility', 'icon' => 'bi-shield-check', 'accent' => '#f43f5e'],
+            'mesh' => ['label' => 'Mesh Email Security', 'blurb' => 'Mail security logs, events & customer allow-list writes', 'icon' => 'bi-envelope-exclamation', 'accent' => '#0d9488'],
             'unifi' => ['label' => 'UniFi', 'blurb' => 'Network, WAN/ISP & device telemetry (read-only)', 'icon' => 'bi-router', 'accent' => '#0559c9'],
             'powerdmarc' => ['label' => 'PowerDMARC', 'blurb' => 'Hosted SPF/DKIM/DMARC email-auth visibility (read-only)', 'icon' => 'bi-envelope-check', 'accent' => '#b91c1c'],
             'screenconnect' => ['label' => 'ScreenConnect', 'blurb' => 'Remote-access session & online state (read-only)', 'icon' => 'bi-display', 'accent' => '#ea580c'],
@@ -296,7 +305,7 @@ class McpToolRegistry
             str_starts_with($name, 'screenconnect_') => 'screenconnect',
             str_starts_with($name, 'wiki_') => 'wiki',
             str_starts_with($name, 'calendar_') => 'calendar',
-            str_starts_with($name, 'mesh_'),
+            str_starts_with($name, 'mesh_') => 'mesh',
             str_starts_with($name, 'comet_'),
             str_starts_with($name, 'servosity_'),
             str_starts_with($name, 'controld_'),
@@ -383,6 +392,12 @@ class McpToolRegistry
     public static function huntressActionTools(): array
     {
         return StaffHuntressActionToolExecutor::definitions();
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public static function meshAdminTools(): array
+    {
+        return StaffMeshAdminToolExecutor::definitions();
     }
 
     /** @return array<int, array<string, mixed>> */

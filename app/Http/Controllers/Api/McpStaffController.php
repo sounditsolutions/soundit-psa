@@ -23,6 +23,7 @@ use App\Services\Mcp\StaffCalendarToolExecutor;
 use App\Services\Mcp\StaffCippAdminToolExecutor;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Services\Mcp\StaffHuntressActionToolExecutor;
+use App\Services\Mcp\StaffMeshAdminToolExecutor;
 use App\Services\Mcp\StaffPsaActionToolExecutor;
 use App\Services\Mcp\StaffPsaTaxonomyToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
@@ -914,6 +915,20 @@ class McpStaffController extends Controller
             ]);
         }
 
+        if ($this->isMeshAdminTool((string) $name) && $clientId === null) {
+            $message = "client_id is required for {$name}.";
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
+
         if ($this->isHuntressActionTool((string) $name) && $clientId === null) {
             $message = "client_id is required for {$name}.";
             $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
@@ -1066,6 +1081,13 @@ class McpStaffController extends Controller
                 );
             } elseif ($this->isHuntressActionTool((string) $name)) {
                 $result = app(StaffHuntressActionToolExecutor::class)->execute(
+                    (string) $name,
+                    $arguments,
+                    (int) $clientId,
+                    $this->actorLabel($request),
+                );
+            } elseif ($this->isMeshAdminTool((string) $name)) {
+                $result = app(StaffMeshAdminToolExecutor::class)->execute(
                     (string) $name,
                     $arguments,
                     (int) $clientId,
@@ -2429,6 +2451,14 @@ class McpStaffController extends Controller
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 
+        // Mesh allow-list writes: EXPLICIT-GRANT-ONLY, never inherited by the
+        // legacy full-surface token. An allow rule weakens a customer's mail
+        // filtering and there is no immediate lane at all, so the operator's
+        // per-tool grant is the decision point. Mirrors the Huntress gate.
+        if ($this->isMeshAdminTool($toolName)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
         if (CippMcpTool::handles($toolName)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
@@ -2618,6 +2648,11 @@ class McpStaffController extends Controller
     private function isHuntressActionTool(string $toolName): bool
     {
         return StaffHuntressActionToolExecutor::handles($toolName);
+    }
+
+    private function isMeshAdminTool(string $toolName): bool
+    {
+        return StaffMeshAdminToolExecutor::handles($toolName);
     }
 
     private function isTacticalAdminTool(string $toolName): bool
