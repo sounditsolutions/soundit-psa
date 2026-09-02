@@ -85,10 +85,24 @@ class PrepayService
     }
 
     /**
-     * Reverse a prepay deposit when its invoice is voided.
+     * Reverse a prepay deposit when its invoice stops being a paid invoice —
+     * voided, or (#1173) reverted to open because QuickBooks reports it is
+     * still owed. $description names which, so the prepay ledger does not tell
+     * a technician an invoice was voided when it was not; absent, it keeps the
+     * original void wording.
+     *
+     * IDEMPOTENT ONCE, BY DESIGN. A second reversal is refused because a
+     * second deposit is also refused: depositFromInvoice() skips when a
+     * deposit row already exists. So an invoice cycling paid → open → paid →
+     * open deposits once and reverses once, and the contract balance ends
+     * where the money says it should rather than drifting one deposit per
+     * cycle.
      */
-    public function reverseDepositForInvoice(Invoice $invoice, Contract $contract): ?PrepayTransaction
-    {
+    public function reverseDepositForInvoice(
+        Invoice $invoice,
+        Contract $contract,
+        ?string $description = null,
+    ): ?PrepayTransaction {
         // Find the original deposit
         $deposit = PrepayTransaction::where('invoice_id', $invoice->id)
             ->where('source', PrepayTransactionSource::InvoiceDeposit)
@@ -119,7 +133,7 @@ class PrepayService
             'invoice_id' => $invoice->id,
             'date' => now(),
             'hours' => -$hours,
-            'description' => "Reversal — invoice {$invoice->invoice_number} voided",
+            'description' => $description ?? "Reversal — invoice {$invoice->invoice_number} voided",
             'invoice_number' => $invoice->invoice_number,
             'invoice_date' => $invoice->invoice_date,
         ]);

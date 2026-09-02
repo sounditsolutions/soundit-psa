@@ -3,17 +3,31 @@
 namespace App\Models;
 
 use App\Enums\InvoiceStatus;
+use App\Enums\InvoiceStatusChangeSource;
 use App\Enums\PushRecordOutcome;
+use App\Support\InvoiceStatusChangeContext;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Facades\DB;
 
 class Invoice extends Model
 {
     use SoftDeletes;
+
+    /**
+     * What the writer about to save this instance wants recorded about the
+     * status move it is making (#1173). Set immediately before the save;
+     * InvoiceObserver consumes it and clears it, so it cannot leak onto a
+     * later, unrelated write of the same instance.
+     *
+     * NOT persisted and deliberately not $fillable — it is execution context,
+     * not an attribute, and must never be settable from request input.
+     */
+    public ?InvoiceStatusChangeContext $statusChangeContext = null;
 
     protected $fillable = [
         'halo_id',
@@ -86,6 +100,25 @@ class Invoice extends Model
     public function lines(): HasMany
     {
         return $this->hasMany(InvoiceLine::class)->orderBy('sort_order');
+    }
+
+    /** Every recorded status move on this invoice, newest first (#1173). */
+    public function statusChangeLogs(): HasMany
+    {
+        return $this->hasMany(InvoiceStatusChangeLog::class)->latest('created_at');
+    }
+
+    /**
+     * The most recent status move QuickBooks caused (#1173).
+     *
+     * Eager-load this wherever qboOwedBalance() is read across a collection —
+     * the portal invoice list does — or it is one query per row.
+     */
+    public function latestQboStatusChange(): HasOne
+    {
+        return $this->hasOne(InvoiceStatusChangeLog::class)
+            ->where('source', InvoiceStatusChangeSource::QboPull)
+            ->latestOfMany();
     }
 
     // ── Scopes ──
@@ -243,6 +276,40 @@ class Invoice extends Model
     }
 
     /**
+     * The audit row proving QuickBooks says LESS than this invoice's total is
+     * still owed — i.e. a part payment QBO has recorded and the PSA has no
+     * column for (#1173, T-22802).
+     *
+     * The PSA stores no balance/amount-paid on invoices (whether it should is
+     * Charlie's call, deferred on T-22802), so the last QBO-sourced status
+     * move is the only place that number exists. Returning the LOG ROW rather
+     * than a bare float is deliberate: the balance is as-of that row's
+     * created_at and can be up to one pull cycle stale, so any surface showing
+     * the amount can — and the portal does — show the date beside it. A number
+     * with no date would read as current when it is not.
+     *
+     * Null unless the invoice is still payable (a re-paid or voided invoice
+     * has no outstanding partial to report), the row carries a balance, and
+     * that balance is a genuine partial: above zero and below the total.
+     */
+    public function qboPartialBalanceLog(): ?InvoiceStatusChangeLog
+    {
+        if (! $this->status->isClientPayable()) {
+            return null;
+        }
+
+        $log = $this->latestQboStatusChange;
+
+        if ($log === null || $log->qbo_balance === null) {
+            return null;
+        }
+
+        $balance = (float) $log->qbo_balance;
+
+        return ($balance > 0 && $balance < (float) $this->total) ? $log : null;
+    }
+
+    /**
      * Atomically record a billing-backend push result at the invoice row.
      *
      * The single guarded write-point every push writer funnels through — QBO
@@ -364,14 +431,24 @@ class Invoice extends Model
      * converged nothing, so it must not erase a divergence error a concurrent
      * void propagation recorded.
      *
+     * $context (#1173) is what the caller wants the resulting
+     * invoice_status_change_logs row to say — the QBO balance that justified a
+     * revert, in particular. It is attached to the LOCKED instance, not to
+     * $this, because the locked instance is the one whose save fires
+     * InvoiceObserver; and it is attached inside the transaction, so the audit
+     * row and the status write commit together or not at all. On a Void row the
+     * status write is dropped, no status change fires, and no log row is
+     * written — correctly: nothing moved.
+     *
      * @param  array<string, mixed>  $attributes  Read-back money/status/provenance to persist.
      * @return bool true if the locked row was Void — money and status were dropped,
      *              and the caller MUST skip any dependent line-amount write.
      */
-    public function recordStatusPullResult(array $attributes): bool
+    public function recordStatusPullResult(array $attributes, ?InvoiceStatusChangeContext $context = null): bool
     {
-        return DB::transaction(function () use ($attributes) {
+        return DB::transaction(function () use ($attributes, $context) {
             $locked = static::whereKey($this->getKey())->lockForUpdate()->first();
+            $locked->statusChangeContext = $context;
 
             $isVoid = $locked->status === InvoiceStatus::Void;
 
