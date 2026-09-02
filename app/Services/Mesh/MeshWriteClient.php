@@ -76,15 +76,23 @@ class MeshWriteClient
     /**
      * curl errnos decided BEFORE any request byte reaches Mesh: 5/6 proxy and
      * host resolution, 7 connection refused, 35/51/60 TLS handshake and
-     * certificate verification. A ConnectException carrying one of these is a
+     * certificate verification. A failure carrying one of these is a
      * DETERMINATE "nothing was sent" and is reported as such, because the
      * create path's may-have-committed question keys on that phrase and a PSA
      * row for a rule that never existed is a phantom the reaper can never
      * retire.
      *
-     * CURLE_OPERATION_TIMEDOUT (28) and CURLE_GOT_NOTHING (52) are also
-     * ConnectExceptions and are deliberately NOT here: those can follow a
-     * request Mesh already committed, so they must stay unknown and fail closed.
+     * The EXCEPTION CLASS does not decide this — the errno does. Guzzle's
+     * CurlFactory promotes only its own $connectionErrors set (28, 6, 7, 35,
+     * 52) to ConnectException; 5, 51 and 60 arrive as a plain RequestException
+     * with a NULL response. Keying on ConnectException alone would therefore
+     * have covered half this list and let an expired or untrusted certificate
+     * write the phantom row anyway. request() reads the errno out of the
+     * handler context of either shape.
+     *
+     * CURLE_OPERATION_TIMEDOUT (28) and CURLE_GOT_NOTHING (52) are deliberately
+     * NOT here: those can follow a request Mesh already committed, so they must
+     * stay unknown and fail closed.
      *
      * @var array<int, int>
      */
@@ -344,15 +352,26 @@ class MeshWriteClient
 
             // A connect-PHASE failure never put the request on the wire, so it
             // cannot be sitting on top of a committed rule — and saying so is
-            // load-bearing. ConnectException is not a RequestException, so it
-            // would otherwise arrive at the caller as bare status 0, the same
-            // code a mid-flight timeout carries, and be reconciled into an
-            // UNRESOLVED mesh_allow_rules row for a rule that does not exist.
+            // load-bearing: otherwise it arrives at the caller as bare status 0,
+            // the same code a mid-flight timeout carries, and is reconciled into
+            // an UNRESOLVED mesh_allow_rules row for a rule that does not exist.
+            //
+            // The test is the ERRNO, not the exception class. Guzzle promotes
+            // only its own $connectionErrors set (28, 6, 7, 35, 52) to
+            // ConnectException and wraps every other errno — including proxy
+            // resolution (5) and certificate verification (51, 60) — in a plain
+            // RequestException whose getResponse() is null. Both shapes carry
+            // the errno in the handler context, so both are read here; the null
+            // response is what keeps a server that actually ANSWERED out.
             // Only the errnos measured to be decided before the request bytes
             // are sent qualify (see NEVER_SENT_CURL_ERRNOS); everything else
             // stays unknown and fails closed.
-            if ($e instanceof ConnectException
-                && in_array((int) ($e->getHandlerContext()['errno'] ?? 0), self::NEVER_SENT_CURL_ERRNOS, true)) {
+            $neverSentErrno = $e instanceof ConnectException || $e instanceof RequestException
+                ? (int) ($e->getHandlerContext()['errno'] ?? 0)
+                : 0;
+
+            if ($httpResponse === null
+                && in_array($neverSentErrno, self::NEVER_SENT_CURL_ERRNOS, true)) {
                 Log::error("[MeshWriteClient] {$method} {$endpoint} could not connect: {$e->getMessage()}");
 
                 throw new MeshClientException("Mesh API unreachable: {$e->getMessage()}; nothing was sent.", 0);

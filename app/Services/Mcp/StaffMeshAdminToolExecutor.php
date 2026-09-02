@@ -1265,7 +1265,35 @@ class StaffMeshAdminToolExecutor
             : $query->where('client_id', $clientId);
     }
 
-    private function auditAttempt(
+    /**
+     * Audit an attempt. NEVER throws.
+     *
+     * Same rule as recordCreatedRule(), for the same reason and on the same
+     * failure: the `record_unwritable` fault paths call this immediately after
+     * recordCreatedRule() returned null, i.e. precisely when the DB is
+     * unavailable, so a bare TechnicianActionLog::create() here would throw on
+     * the very trigger those branches exist for. That exception escapes into
+     * approveStagedRun's catch, which calls releaseClaim() and returns the run
+     * to AwaitingApproval — and with neither an audit row nor a
+     * mesh_allow_rules row written, none of the brakes (alreadyExecuted,
+     * liveAllowRule, unsettledAllowRule, approveCooldownActive) can see the
+     * write that landed, so the next Approve click opens a SECOND hole in the
+     * customer's mail filtering. A lost audit line is a fault to log; it is
+     * never a reason to make a landed write look un-done. Mirrors
+     * McpStaffController::audit(), which guards the identical write.
+     */
+    private function auditAttempt(...$arguments)
+    {
+        try {
+            return $this->writeAuditAttempt(...$arguments);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('[Mesh] Allow-rule audit row could not be written: '.$e->getMessage());
+
+            return null;
+        }
+    }
+
+    private function writeAuditAttempt(
         string $actionType,
         string $resultStatus,
         ?int $clientId,
