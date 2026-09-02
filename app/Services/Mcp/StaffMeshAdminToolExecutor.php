@@ -540,14 +540,19 @@ class StaffMeshAdminToolExecutor
         // `added_for` names it among others (the rule really is there); when it
         // does not, the first tenant named is the only pointer that exists. An
         // empty `added_for` attests nothing, so the targeted tenant stands.
+        // Truncated to the column width when it is the SERVER's value: our own
+        // tenant is length-checked in allowRuleTarget, but `added_for[0]` is an
+        // unbounded server-supplied string, and an over-length insert under a
+        // strict driver would leave the rule live with NO row at all — strictly
+        // worse than a truncated pointer carried alongside the fault text.
         $attestedTenant = $addedFor === [] || in_array($target['mesh_customer_id'], $addedFor, true)
             ? $target['mesh_customer_id']
-            : $addedFor[0];
+            : mb_substr($addedFor[0], 0, 64);
 
         // Recorded BEFORE the scope verdict is acted on: if the scope is
         // wrong, a rule still exists upstream and the PSA row is the only
         // thing that will ever chase it down.
-        $record = MeshAllowRule::create([
+        $record = $this->recordCreatedRule([
             'client_id' => $clientId,
             'ticket_id' => $run?->ticket_id,
             'technician_run_id' => $run?->id,
@@ -560,6 +565,29 @@ class StaffMeshAdminToolExecutor
             'created_by_actor' => $actorLabel,
             'approver_user_id' => $approverId,
         ]);
+
+        if ($record === null) {
+            // The rule IS live upstream and the row that would reap it could
+            // not be written. This is a FAULT, never an error: an error
+            // releases the claim and puts the proposal back in front of the
+            // approver, whose next click walks past all three brakes (no
+            // 'executed' audit row, no live record, no unsettled record) and
+            // opens a SECOND hole in the customer's mail filtering. The
+            // proposal is spent and the outcome is stated in full so a human
+            // can remove the rule by hand.
+            $message = "Mesh created the allow rule for '{$target['sender']}' on tenant '{$attestedTenant}' (Mesh comment: {$comment}), "
+                .'but the PSA record that would remove it could not be written, so nothing will ever expire it. '
+                .'Delete this rule in the Mesh portal — it is live now and the PSA is not tracking it.';
+            $this->auditAttempt($tool, 'executed_with_fault', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return [
+                'success' => false,
+                'fault' => 'record_unwritable',
+                'sender' => $target['sender'],
+                'expires_at' => $expiresAt->toIso8601String(),
+                'message' => $message,
+            ];
+        }
 
         if (! $scopeProved) {
             $message = 'Mesh did not confirm the rule was scoped to this client only. The rule exists upstream and has been recorded for removal (PSA record #'
@@ -673,7 +701,7 @@ class StaffMeshAdminToolExecutor
 
         $ruleId = is_scalar($match['id'] ?? null) && (string) $match['id'] !== '' ? (string) $match['id'] : null;
 
-        $record = MeshAllowRule::create([
+        $record = $this->recordCreatedRule([
             'client_id' => $clientId,
             'ticket_id' => $run?->ticket_id,
             'technician_run_id' => $run?->id,
@@ -696,6 +724,25 @@ class StaffMeshAdminToolExecutor
             'approver_user_id' => $approverId,
             'upstream_created_by' => is_scalar($match['created_by'] ?? null) ? (string) $match['created_by'] : null,
         ]);
+
+        if ($record === null) {
+            // Same rule as the create path: a row we could not write must not
+            // be reported as an error, because an error hands the approver a
+            // button that writes a second rule for the same sender. Spent,
+            // loud, and handed to a human with the match key.
+            $message = 'Mesh never answered the create ('.$error->getMessage()."), and the PSA record for '{$target['sender']}' could not be written"
+                .($ruleId !== null ? " (a re-read found the rule live upstream as '{$ruleId}')" : '')
+                .'. Nothing will expire it. Look for a rule with the comment '.$comment." on this client's Mesh tenant and remove it by hand.";
+            $this->auditAttempt($tool, 'executed_with_fault', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return [
+                'success' => false,
+                'fault' => 'record_unwritable',
+                'sender' => $target['sender'],
+                'expires_at' => $expiresAt->toIso8601String(),
+                'message' => $message,
+            ];
+        }
 
         $message = $ruleId !== null
             ? 'Mesh never answered the create ('.$error->getMessage()."), but a re-read of this client's tenant found the rule live for '{$target['sender']}'. "
@@ -840,6 +887,14 @@ class StaffMeshAdminToolExecutor
             return ['error' => "{$client->name} has no Mesh customer mapping; link the client to its Mesh tenant before creating allow rules."];
         }
 
+        // mesh_allow_rules.mesh_customer_id is a 64-char column. A value that
+        // will not fit is refused HERE, before anything reaches upstream: an
+        // insert that fails AFTER the 201 leaves a live rule with no row to
+        // reap it, which is the one outcome this verb must never produce.
+        if (mb_strlen($tenant) > 64) {
+            return ['error' => "{$client->name}'s Mesh customer mapping is not a usable Mesh tenant id (longer than 64 characters); fix the mapping before creating allow rules."];
+        }
+
         $sender = $this->requiredString($arguments, 'sender');
         if ($sender === null) {
             return ['error' => 'sender is required'];
@@ -849,6 +904,14 @@ class StaffMeshAdminToolExecutor
         $domain = $this->senderDomain($sender);
         if ($domain === null) {
             return ['error' => 'sender must be a single email address or a single domain. Wildcards, lists and partial domains are refused.'];
+        }
+
+        // Same reason as the tenant check above: senders that pass the shape
+        // rules can still exceed the 255-char sender column (64 local part +
+        // 253 domain), and the sender is the reaper's match key, so it cannot
+        // be truncated. Refuse before the upstream call, not after it.
+        if (mb_strlen($sender) > 255) {
+            return ['error' => 'sender is too long to record against this rule (max 255 characters); no allow rule was created.'];
         }
 
         // Criterion 5: the typed confirmation is on the DOMAIN, because the
@@ -1051,6 +1114,35 @@ class StaffMeshAdminToolExecutor
             ->whereIn('state', [MeshAllowRule::STATE_UNRESOLVED, MeshAllowRule::STATE_REAP_FAILED])
             ->latest('id')
             ->first();
+    }
+
+    /**
+     * Persist the PSA row for a rule that IS (or may be) live upstream.
+     *
+     * Returns null instead of throwing. The upstream create has already
+     * committed by the time this runs, and an exception here would escape into
+     * approveStagedRun's catch, which calls releaseClaim() and returns the run
+     * to AwaitingApproval — so the next Approve click would create a SECOND
+     * rule for the same sender with neither one recorded for reaping. A row we
+     * could not write is a fault the caller reports; it is never a reason to
+     * make a landed write look un-done.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    private function recordCreatedRule(array $attributes): ?MeshAllowRule
+    {
+        try {
+            return MeshAllowRule::create($attributes);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('[Mesh] Allow rule is live upstream but its PSA record could not be written: '.$e->getMessage(), [
+                'client_id' => $attributes['client_id'] ?? null,
+                'mesh_customer_id' => $attributes['mesh_customer_id'] ?? null,
+                'sender' => $attributes['sender'] ?? null,
+                'comment' => $attributes['comment'] ?? null,
+            ]);
+
+            return null;
+        }
     }
 
     private function parsedExpiry(mixed $value): \Illuminate\Support\Carbon

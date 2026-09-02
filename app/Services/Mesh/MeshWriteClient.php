@@ -3,6 +3,7 @@
 namespace App\Services\Mesh;
 
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Facades\Log;
@@ -71,6 +72,23 @@ class MeshWriteClient
      * synchronous approval request.
      */
     public const LIST_PAGE_CEILING = 50;
+
+    /**
+     * curl errnos decided BEFORE any request byte reaches Mesh: 5/6 proxy and
+     * host resolution, 7 connection refused, 35/51/60 TLS handshake and
+     * certificate verification. A ConnectException carrying one of these is a
+     * DETERMINATE "nothing was sent" and is reported as such, because the
+     * create path's may-have-committed question keys on that phrase and a PSA
+     * row for a rule that never existed is a phantom the reaper can never
+     * retire.
+     *
+     * CURLE_OPERATION_TIMEDOUT (28) and CURLE_GOT_NOTHING (52) are also
+     * ConnectExceptions and are deliberately NOT here: those can follow a
+     * request Mesh already committed, so they must stay unknown and fail closed.
+     *
+     * @var array<int, int>
+     */
+    private const NEVER_SENT_CURL_ERRNOS = [5, 6, 7, 35, 51, 60];
 
     private Client $http;
 
@@ -323,6 +341,22 @@ class MeshWriteClient
         } catch (GuzzleException $e) {
             $httpResponse = $e instanceof RequestException ? $e->getResponse() : null;
             $status = $httpResponse?->getStatusCode() ?? 0;
+
+            // A connect-PHASE failure never put the request on the wire, so it
+            // cannot be sitting on top of a committed rule — and saying so is
+            // load-bearing. ConnectException is not a RequestException, so it
+            // would otherwise arrive at the caller as bare status 0, the same
+            // code a mid-flight timeout carries, and be reconciled into an
+            // UNRESOLVED mesh_allow_rules row for a rule that does not exist.
+            // Only the errnos measured to be decided before the request bytes
+            // are sent qualify (see NEVER_SENT_CURL_ERRNOS); everything else
+            // stays unknown and fails closed.
+            if ($e instanceof ConnectException
+                && in_array((int) ($e->getHandlerContext()['errno'] ?? 0), self::NEVER_SENT_CURL_ERRNOS, true)) {
+                Log::error("[MeshWriteClient] {$method} {$endpoint} could not connect: {$e->getMessage()}");
+
+                throw new MeshClientException("Mesh API unreachable: {$e->getMessage()}; nothing was sent.", 0);
+            }
 
             if ($status === 400) {
                 $vendorBody = json_decode((string) $httpResponse?->getBody(), true);

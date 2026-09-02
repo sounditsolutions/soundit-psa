@@ -36,7 +36,14 @@ return new class extends Migration
             $table->id();
 
             // The PSA client whose Mesh tenant the rule was written against.
-            $table->foreignId('client_id')->constrained()->cascadeOnDelete();
+            // nullOnDelete, NOT cascade — the same reasoning as ticket_id and
+            // technician_run_id below, and for the same reason: offboarding a
+            // client is an ordinary operation, and deleting this row would
+            // destroy the ONLY record that can ever reap a live upstream rule.
+            // The reaper works from the stored mesh_customer_id, sender and
+            // comment, so an orphaned row still reaps; a deleted one leaves a
+            // permanent, untracked hole in that tenant's mail filtering.
+            $table->foreignId('client_id')->nullable()->constrained()->nullOnDelete();
 
             // The originating ticket. nullOnDelete, NOT cascade: deleting a
             // ticket must never delete the row that remembers a live upstream
@@ -62,7 +69,17 @@ return new class extends Migration
             // sender + comment. Null means state = unresolved.
             $table->string('mesh_rule_id', 64)->nullable();
 
-            $table->timestamp('expires_at');
+            // dateTime, NOT timestamp. On MariaDB with
+            // explicit_defaults_for_timestamp off (its default before 10.10),
+            // the FIRST NOT NULL TIMESTAMP column with no explicit default
+            // silently acquires DEFAULT CURRENT_TIMESTAMP ON UPDATE
+            // CURRENT_TIMESTAMP — and both the executor and the reaper update
+            // this row after insert, so the promised 90-day expiry would be
+            // reset to now and the rule reaped within the hour while the
+            // vendor portal still displayed the date_expiry we sent. CI is
+            // sqlite-only and cannot observe that, so the schema must not
+            // depend on a server flag.
+            $table->dateTime('expires_at');
 
             $table->string('state', 20)->default('active');
 
