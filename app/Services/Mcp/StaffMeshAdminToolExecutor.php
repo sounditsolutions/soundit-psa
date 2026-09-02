@@ -40,15 +40,24 @@ use Illuminate\Support\Str;
  *    evidence is `added_for` in the 201 body, and it must equal exactly the
  *    tenant we targeted (criterion 1). Anything else is recorded as a fault.
  *  - THE ARGUMENT SET IS CLOSED. Only sender / confirm_domain / reason /
- *    ticket_id reach this executor; `edge`, `customers`, `ab`,
+ *    ticket_id / expires_at reach this executor; `edge`, `customers`, `ab`,
  *    `organization_level`, `date_expiry` and friends are refused BY NAME so a
  *    caller trying to widen the rule gets told no rather than silently
  *    ignored. MeshWriteClient assembles the body itself, so even a bug here
  *    cannot smuggle them upstream.
- *  - IT EXPIRES. Mesh does not expire rules (measured 2026-09-01), so every
- *    created rule gets a mesh_allow_rules row and MeshAllowRuleReaper deletes
- *    it. A rule whose id could not be recovered is surfaced as a fault, never
- *    left quietly unreapable (criterion 8).
+ *  - THE CALLER CHOOSES THE LIFETIME, AND MAY CHOOSE NONE (#1133). The owner's
+ *    ruling: a hard-set 90 days is "a landmine disguised as constraint". So
+ *    `expires_at` takes an ISO-8601 date/datetime or the literal `never`, and
+ *    an omitted value still means DEFAULT_LIFETIME_DAYS. A value that cannot
+ *    be read, or that has already passed, is REFUSED — never quietly turned
+ *    into 90 days, which would be the same landmine pointing the other way.
+ *  - IT EXPIRES, UNLESS ASKED NOT TO. Mesh does not expire rules (measured
+ *    2026-09-01), so every created rule gets a mesh_allow_rules row and
+ *    MeshAllowRuleReaper deletes it. A rule whose id could not be recovered is
+ *    surfaced as a fault, never left quietly unreapable (criterion 8). A rule
+ *    the caller made permanent has a NULL expiry, is never reaped, and says so
+ *    in those words on the approval card — a permanent hole must read as
+ *    permanent to the human releasing it, not as a missing date.
  *  - THE PARTNER-WIDE LIST NEVER ESCAPES. Rule identity is recovered inside
  *    MeshWriteClient, which returns only this tenant's rows; nothing here
  *    puts a rule list into a return value, a log line or an error body
@@ -93,7 +102,7 @@ class StaffMeshAdminToolExecutor
      *
      * @var array<int, string>
      */
-    private const ALLOWED_ARGUMENT_KEYS = ['sender', 'confirm_domain', 'reason', 'ticket_id', 'staged'];
+    private const ALLOWED_ARGUMENT_KEYS = ['sender', 'confirm_domain', 'reason', 'ticket_id', 'expires_at', 'staged'];
 
     /**
      * Keys that are refused with a REASON rather than as generic noise,
@@ -104,7 +113,9 @@ class StaffMeshAdminToolExecutor
      *   customers          — the partner-wide (every tenant) form.
      *   customer_id        — the tenant is derived from the PSA client, never typed.
      *   organization_level — the tenant-wide toggle.
-     *   date_expiry        — lifetime is PSA-enforced, not caller-chosen.
+     *   date_expiry        — the vendor's field name; the caller sets the
+     *                        lifetime with `expires_at` (#1133), and what goes
+     *                        upstream is derived from it, never typed here.
      *   active             — a rule that is created must be live or not created.
      *   comment            — PSA-generated; it is the reaper's match key.
      *   domains / users    — bulk forms of the same hole.
@@ -117,7 +128,7 @@ class StaffMeshAdminToolExecutor
         'customers' => 'partner-wide rules are never created from the PSA',
         'customer_id' => 'the Mesh tenant is derived from the PSA client, never supplied',
         'organization_level' => 'scope is fixed to the resolved customer',
-        'date_expiry' => 'the lifetime is PSA-enforced and fixed',
+        'date_expiry' => 'expiry is set with expires_at, not the Mesh field name',
         'active' => 'created rules are always active',
         'comment' => 'the comment is PSA-generated and is the expiry match key',
         'domains' => 'bulk domain allow-lists are not created from the PSA',
@@ -141,6 +152,15 @@ class StaffMeshAdminToolExecutor
      * comment is visible in a vendor portal shared across tenants, and `#`
      * would fail validation anyway.
      */
+    /**
+     * The literal a caller sends as `expires_at` to ask for a rule the PSA
+     * will never reap (#1133). A word, not a magic date: the owner's ruling
+     * asked for "no expiration" to be sayable, and every alternative encoding
+     * (null, 0, an empty string, 9999-12-31) is one a caller could arrive at
+     * by accident rather than on purpose.
+     */
+    public const EXPIRY_NEVER = 'never';
+
     private const COMMENT_PREFIX = 'PSA allow';
 
     private const COMMENT_TOKEN_LENGTH = 10;
@@ -264,9 +284,14 @@ class StaffMeshAdminToolExecutor
                 'ticket_id' => $ticket->id,
                 'ticket_display_id' => $ticket->display_id,
                 'sender' => $target['sender'],
-                'expires_at' => $live->expires_at?->toIso8601String(),
-                'message' => "'{$target['sender']}' is already allowed for this client until "
-                    .($live->expires_at?->toDayDateTimeString() ?? 'an unrecorded date').'; no proposal was staged.',
+                'expires_at' => self::expiryValue($live->expires_at),
+                // #1133: a permanent rule has no date, and "until an
+                // unrecorded date" would read as a PSA bookkeeping gap rather
+                // than as the deliberate answer it is. Say permanent.
+                'message' => $live->isPermanent()
+                    ? "'{$target['sender']}' is already allowed for this client PERMANENTLY (PSA record #{$live->id}; it has no expiry and the PSA will never remove it); no proposal was staged."
+                    : "'{$target['sender']}' is already allowed for this client until "
+                        .$live->expires_at->toDayDateTimeString().'; no proposal was staged.',
             ];
         }
 
@@ -293,11 +318,27 @@ class StaffMeshAdminToolExecutor
         // carry, and a retried execution re-uses the same match key instead of
         // creating a second rule the first one's re-read would then find.
         $comment = $this->generateComment();
-        $expiresAt = now()->addDays(MeshAllowRule::DEFAULT_LIFETIME_DAYS);
+
+        // #1133: the caller's expiry is validated HERE, before a proposal
+        // exists. A refusal at approval time would be a refusal in front of a
+        // human holding a button, minutes or days after the mistake was made.
+        $expiry = $this->requestedExpiry($arguments);
+        if (isset($expiry['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, $expiry['error'], $actorLabel);
+
+            return ['error' => $expiry['error']];
+        }
+        $expiresAt = $expiry['expires_at'];
 
         $proposedContent = "Allow mail from '{$target['sender']}' through Mesh Email Security for {$target['client_name']}.\n"
             .$target['scope_note']."\n"
-            .'This weakens filtering for that sender until the PSA removes the rule on '.$expiresAt->toDayDateTimeString()." UTC.\n"
+            .($expiresAt === null
+                // Criterion 5: the permanent case must read as permanent. It is
+                // the one lifetime nothing in the PSA will ever end, so it is
+                // stated in words and in capitals rather than left to an absent
+                // date the approver has to notice.
+                ? "This weakens filtering for that sender PERMANENTLY: the rule has NO EXPIRY and the PSA will NEVER remove it. Undoing it means deleting the rule by hand in the Mesh portal.\n"
+                : 'This weakens filtering for that sender until the PSA removes the rule on '.$expiresAt->toDayDateTimeString()." UTC.\n")
             // Criterion 6: the vendor audit trail does NOT record the approver.
             // Mesh attributes every rule to the identity that owns the API key —
             // a person's account, not a service account — so the approver is
@@ -313,7 +354,11 @@ class StaffMeshAdminToolExecutor
             'redacted_params' => [
                 'sender' => $target['sender'],
                 'client' => $target['client_name'],
-                'expires_at' => $expiresAt->toIso8601String(),
+                // 'never' rather than a null: the card renders these values,
+                // and an absent field reads as "not recorded" where the whole
+                // point is that permanence was chosen deliberately (#1133).
+                'expires_at' => self::expiryValue($expiresAt),
+                'expiry_note' => self::expiryPhrase($expiresAt),
                 'comment' => $comment,
                 'upstream_attribution' => $this->upstreamIdentityLabel(),
             ],
@@ -330,7 +375,12 @@ class StaffMeshAdminToolExecutor
                     'sender' => $target['sender'],
                     'confirm_domain' => $target['domain'],
                     'comment' => $comment,
-                    'expires_at' => $expiresAt->toIso8601String(),
+                    // Carried as the caller's own vocabulary — an ISO string or
+                    // the literal 'never' — so approval re-resolves it through
+                    // exactly the same validator the proposal passed. An
+                    // omitted key would silently mean 90 days on the way back
+                    // in, which is the fall-through #1133 exists to delete.
+                    'expires_at' => self::expiryValue($expiresAt),
                     'reason' => $guard['reason'],
                 ],
             ], JSON_THROW_ON_ERROR)),
@@ -395,8 +445,8 @@ class StaffMeshAdminToolExecutor
             'ticket_display_id' => $ticket->display_id,
             'run_id' => $run->id,
             'sender' => $target['sender'],
-            'expires_at' => $expiresAt->toIso8601String(),
-            'message' => 'Staged for cockpit approval.',
+            'expires_at' => self::expiryValue($expiresAt),
+            'message' => 'Staged for cockpit approval ('.self::expiryPhrase($expiresAt).').',
         ];
     }
 
@@ -470,8 +520,15 @@ class StaffMeshAdminToolExecutor
         if ($unsettled !== null) {
             $message = "An earlier allow rule for '{$target['sender']}' on this client (PSA record #".$unsettled->id
                 .') may still be live upstream and has not been proved absent, so a second rule was not created. '
-                .'The PSA cannot settle that record until its expiry ('.$unsettled->expires_at?->toIso8601String()
-                .') passes and the expiry job examines it; until then, allow this sender directly in the Mesh portal '
+                // #1133: a permanent record has no expiry to wait for, so
+                // "until its expiry passes" would promise a resolution that is
+                // never coming. Say what actually has to happen instead.
+                .($unsettled->isPermanent()
+                    ? 'That record is PERMANENT (no expiry), so the expiry job will never examine it and the PSA will not settle it on its own; '
+                        .'resolve it in the Mesh portal by hand. '
+                    : 'The PSA cannot settle that record until its expiry ('.$unsettled->expires_at->toIso8601String()
+                        .') passes and the expiry job examines it; until then, ')
+                .'allow this sender directly in the Mesh portal '
                 .'if it is needed now. No upstream call was made.';
             $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
 
@@ -479,14 +536,31 @@ class StaffMeshAdminToolExecutor
         }
 
         $comment = $this->requiredString($arguments, 'comment') ?? $this->generateComment();
-        $expiresAt = $this->parsedExpiry($arguments['expires_at'] ?? null);
+
+        // Re-validated at approval, not carried as a parsed value: the same
+        // rule as the tenant and the domain confirmation above. A proposal
+        // whose date has passed while it sat awaiting approval is refused
+        // HERE, before any upstream call — creating a rule that is already
+        // expired would open a hole and leave it open until the daily reaper
+        // next ran. Nothing is created; the technician re-stages with a date
+        // that means something.
+        $expiry = $this->requestedExpiry($arguments);
+        if (isset($expiry['error'])) {
+            $message = $expiry['error'].' No upstream call was made; stage a new proposal with a valid expiry.';
+            $this->auditAttempt($tool, 'rejected', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $message];
+        }
+        $expiresAt = $expiry['expires_at'];
 
         try {
             $created = $this->client->createAllowRule(
                 $target['mesh_customer_id'],
                 $target['sender'],
                 $comment,
-                $expiresAt->toIso8601String(),
+                // null omits `date_expiry` upstream — a permanent rule shows no
+                // expiry in the portal, which is the truth about it.
+                $expiresAt?->toIso8601String(),
             );
         } catch (MeshWriteRejectedException $e) {
             // Criterion 9: Mesh's own validation text IS the useful reason —
@@ -584,7 +658,7 @@ class StaffMeshAdminToolExecutor
                 'success' => false,
                 'fault' => 'record_unwritable',
                 'sender' => $target['sender'],
-                'expires_at' => $expiresAt->toIso8601String(),
+                'expires_at' => self::expiryValue($expiresAt),
                 'message' => $message,
             ];
         }
@@ -634,7 +708,7 @@ class StaffMeshAdminToolExecutor
                 'fault' => 'rule_id_unresolved',
                 'sender' => $target['sender'],
                 'psa_record_id' => $record->id,
-                'expires_at' => $expiresAt->toIso8601String(),
+                'expires_at' => self::expiryValue($expiresAt),
                 'message' => $message,
             ];
         }
@@ -646,8 +720,11 @@ class StaffMeshAdminToolExecutor
             'last_error' => null,
         ])->save();
 
-        $summary = "Created Mesh allow rule for '{$target['sender']}' scoped to this client; expires "
-            .$expiresAt->toDateString().'.';
+        // The audit row is the durable statement of what was created, so the
+        // lifetime goes in it in words: a permanent rule and a 90-day one must
+        // not read the same six months later (#1133).
+        $summary = "Created Mesh allow rule for '{$target['sender']}' scoped to this client; "
+            .($expiresAt === null ? 'PERMANENT — no expiry, the PSA will never remove it.' : 'expires '.$expiresAt->toDateString().'.');
         $this->auditAttempt($tool, 'executed', $clientId, null, $contentHash, $summary.' Mesh rule id '.$ruleId.'.', $actorLabel, $run?->id, $approverId);
 
         return [
@@ -655,10 +732,12 @@ class StaffMeshAdminToolExecutor
             'sender' => $target['sender'],
             'mesh_rule_id' => $ruleId,
             'psa_record_id' => $record->id,
-            'expires_at' => $expiresAt->toIso8601String(),
+            'expires_at' => self::expiryValue($expiresAt),
             'scope_confirmed' => true,
             'upstream_created_by' => $upstreamCreatedBy,
-            'message' => $summary.' The PSA will delete it at expiry — Mesh does not expire rules on its own.',
+            'message' => $summary.($expiresAt === null
+                ? ' Nothing in the PSA will ever delete it, and Mesh does not expire rules on its own; removing it means deleting it by hand in the Mesh portal.'
+                : ' The PSA will delete it at expiry — Mesh does not expire rules on its own.'),
         ];
     }
 
@@ -682,7 +761,7 @@ class StaffMeshAdminToolExecutor
         MeshClientException $error,
         array $target,
         string $comment,
-        \Illuminate\Support\Carbon $expiresAt,
+        ?\Illuminate\Support\Carbon $expiresAt,
         int $clientId,
         string $contentHash,
         string $actorLabel,
@@ -739,14 +818,18 @@ class StaffMeshAdminToolExecutor
                 'success' => false,
                 'fault' => 'record_unwritable',
                 'sender' => $target['sender'],
-                'expires_at' => $expiresAt->toIso8601String(),
+                'expires_at' => self::expiryValue($expiresAt),
                 'message' => $message,
             ];
         }
 
         $message = $ruleId !== null
             ? 'Mesh never answered the create ('.$error->getMessage()."), but a re-read of this client's tenant found the rule live for '{$target['sender']}'. "
-                .'It is recorded (PSA record #'.$record->id.') and the PSA will remove it at expiry. There was no create response, so its scope was never confirmed — check it in the Mesh portal.'
+                .'It is recorded (PSA record #'.$record->id.') and '
+                .($expiresAt === null
+                    ? 'it is PERMANENT — the PSA will never remove it. '
+                    : 'the PSA will remove it at expiry. ')
+                .'There was no create response, so its scope was never confirmed — check it in the Mesh portal.'
             : 'Mesh never answered the create ('.$error->getMessage()."), and a re-read of this client's tenant did not find the rule"
                 .($rereadError !== null ? ' (that read failed too: '.$rereadError.')' : '')
                 .'. Whether the rule was created is UNMEASURED, so it is recorded unresolved (PSA record #'.$record->id.') and the expiry job keeps trying to identify and remove it. Check the Mesh portal before allowing this sender again.';
@@ -761,7 +844,7 @@ class StaffMeshAdminToolExecutor
             'fault' => $ruleId !== null ? 'create_unacknowledged' : 'create_outcome_unmeasured',
             'sender' => $target['sender'],
             'psa_record_id' => $record->id,
-            'expires_at' => $expiresAt->toIso8601String(),
+            'expires_at' => self::expiryValue($expiresAt),
             'message' => $message,
         ];
     }
@@ -1088,7 +1171,13 @@ class StaffMeshAdminToolExecutor
             ->where('client_id', $clientId)
             ->where('sender', $sender)
             ->where('state', MeshAllowRule::STATE_ACTIVE)
-            ->where('expires_at', '>', now())
+            // #1133: a permanent rule (NULL expiry) is the MOST live row this
+            // query can find, and `expires_at > now()` evaluates to NULL for
+            // it — not true. Without the null arm the strongest duplicate
+            // brake in the verb would silently stop seeing exactly the rules
+            // that never go away, and a second permanent hole could be opened
+            // for the same sender.
+            ->where(fn ($q) => $q->whereNull('expires_at')->orWhere('expires_at', '>', now()))
             ->latest('id')
             ->first();
     }
@@ -1145,18 +1234,91 @@ class StaffMeshAdminToolExecutor
         }
     }
 
-    private function parsedExpiry(mixed $value): \Illuminate\Support\Carbon
+    /**
+     * The lifetime the caller asked for (#1133), or a refusal.
+     *
+     * Three answers, and they are deliberately distinguishable:
+     *   key absent            -> DEFAULT_LIFETIME_DAYS, the previous behaviour,
+     *                            preserved for every caller that never asks.
+     *   the literal `never`   -> null, i.e. permanent. An explicit sentinel,
+     *                            because "permanent" must be something a
+     *                            caller SAYS, never something it falls into.
+     *   an ISO-8601 date/time -> that instant.
+     *
+     * Anything else is REFUSED. This method used to fall through to 90 days on
+     * an unparseable value, on the reasoning that an unreadable expiry must not
+     * become "no expiry" — true, but the remedy was wrong: it turned a typo
+     * into a lifetime nobody chose and told nobody. Now the caller is told. A
+     * past date is refused for the same reason and one more: the rule would be
+     * born reapable, so it would open a hole and hold it until the daily reaper
+     * happened to run.
+     *
+     * @param  array<string, mixed>  $arguments
+     * @return array{expires_at: \Illuminate\Support\Carbon|null}|array{error: string}
+     */
+    private function requestedExpiry(array $arguments): array
     {
-        if (is_string($value) && trim($value) !== '') {
-            try {
-                return \Illuminate\Support\Carbon::parse($value);
-            } catch (\Throwable) {
-                // Fall through to the default: an unparseable expiry must not
-                // become "no expiry".
-            }
+        if (! array_key_exists('expires_at', $arguments)) {
+            return ['expires_at' => now()->addDays(MeshAllowRule::DEFAULT_LIFETIME_DAYS)];
         }
 
-        return now()->addDays(MeshAllowRule::DEFAULT_LIFETIME_DAYS);
+        $value = $arguments['expires_at'];
+
+        if (! is_string($value)) {
+            return ['error' => 'expires_at must be an ISO-8601 date or datetime, or the word "never" for a rule that never expires'];
+        }
+
+        $value = trim($value);
+
+        if ($value === '') {
+            // NOT treated as absent. The key was sent, so something was meant
+            // by it, and guessing which of the three answers it was is the
+            // class of guess this whole method exists to stop.
+            return ['error' => 'expires_at was empty; give an ISO-8601 date or datetime, or the word "never" for a rule that never expires. Omit the parameter entirely for the default '.MeshAllowRule::DEFAULT_LIFETIME_DAYS.'-day lifetime'];
+        }
+
+        if (strcasecmp($value, self::EXPIRY_NEVER) === 0) {
+            return ['expires_at' => null];
+        }
+
+        try {
+            $parsed = \Illuminate\Support\Carbon::parse($value);
+        } catch (\Throwable) {
+            return ['error' => "expires_at ('{$value}') is not a date this system can read; give an ISO-8601 date or datetime (e.g. 2026-12-01 or 2026-12-01T17:00:00Z), or the word \"never\""];
+        }
+
+        if ($parsed->lessThanOrEqualTo(now())) {
+            return ['error' => "expires_at ('{$value}') is in the past; an allow rule cannot be created already expired. Give a future date, or the word \"never\""];
+        }
+
+        if ($parsed->year > 9999) {
+            // Beyond what a datetime column can hold. Refusing here beats
+            // failing on the INSERT, which happens AFTER the rule is live
+            // upstream and is reported as record_unwritable — a live,
+            // untracked hole created by a typo in a year.
+            return ['error' => "expires_at ('{$value}') is further away than this system can record; use the word \"never\" for a rule that never expires"];
+        }
+
+        return ['expires_at' => $parsed];
+    }
+
+    /**
+     * The wire/return form of a lifetime: an ISO-8601 instant, or the same
+     * literal the caller uses to ask for permanence. Never a bare null — a
+     * missing field reads as "not recorded" where the point is that permanence
+     * was chosen on purpose.
+     */
+    private static function expiryValue(?\Illuminate\Support\Carbon $expiresAt): string
+    {
+        return $expiresAt?->toIso8601String() ?? self::EXPIRY_NEVER;
+    }
+
+    /** The same fact in words, for a human reading an approval card (#1133 criterion 5). */
+    private static function expiryPhrase(?\Illuminate\Support\Carbon $expiresAt): string
+    {
+        return $expiresAt === null
+            ? 'PERMANENT — never reaped by the PSA'
+            : 'expires '.$expiresAt->toDayDateTimeString().' UTC';
     }
 
     private function alreadyExecuted(string $tool, ?int $clientId, string $contentHash): bool
@@ -1393,10 +1555,12 @@ class StaffMeshAdminToolExecutor
             'mesh_add_allow_rule',
             'Allow mail from one sender (a single address, or a whole domain) through Mesh Email Security for ONE customer tenant, resolved server-side from the PSA client. '
             .'STAGED ONLY: every call is held as a cockpit approval proposal. There is no immediate implementation — a bare (immediate) grant is refused with a pointer to `mesh_add_allow_rule:staged`. '
-            .'This WEAKENS the customer’s mail filtering for that sender. It is allow-only, never partner-wide, never connection-level (`edge`), and expires after '
-            .MeshAllowRule::DEFAULT_LIFETIME_DAYS.' days — enforced by the PSA, because Mesh does not expire its own rules. '
+            .'This WEAKENS the customer’s mail filtering for that sender. It is allow-only, never partner-wide, never connection-level (`edge`). '
+            .'The lifetime is yours to choose with `expires_at` and the PSA enforces it, because Mesh does not expire its own rules: give an ISO-8601 date, '
+            .'or "'.self::EXPIRY_NEVER.'" for a rule that is NEVER removed, or omit it for the '.MeshAllowRule::DEFAULT_LIFETIME_DAYS.'-day default. '
+            .'An expiry that cannot be read, or one already in the past, is refused rather than defaulted. '
             .'Scope is confirmed from Mesh’s create response, not from a read-back. Requires reason, ticket_id and a typed domain confirmation; '
-            .'sender, ab, edge, customer scope, comment and expiry parameters beyond those are refused.',
+            .'sender, ab, edge, customer scope, comment and vendor-side expiry parameters beyond those are refused.',
             self::allowRuleProperties(),
             ['sender', 'confirm_domain', 'reason', 'ticket_id'],
         );
@@ -1408,8 +1572,9 @@ class StaffMeshAdminToolExecutor
         return self::tool(
             'mesh_stage_add_allow_rule',
             'Stage a Mesh Email Security allow rule for cockpit approval. STAGED ONLY — this is the only lane the verb has: approval re-resolves the client’s Mesh tenant and re-checks the sender and typed domain confirmation against LIVE state before the rule is created. '
-            .'This WEAKENS the customer’s mail filtering for that sender (allow-only, never partner-wide, never `edge`) until the PSA removes the rule after '.MeshAllowRule::DEFAULT_LIFETIME_DAYS.' days. '
-            .'The proposal names the sender, the scope width (single address vs whole domain), the expiry date, and whose identity Mesh will record as the rule’s creator. '
+            .'This WEAKENS the customer’s mail filtering for that sender (allow-only, never partner-wide, never `edge`) until the PSA removes the rule — after the lifetime `expires_at` asks for, '
+            .'or the '.MeshAllowRule::DEFAULT_LIFETIME_DAYS.'-day default if it is omitted, or NEVER if it is "'.self::EXPIRY_NEVER.'". '
+            .'The proposal names the sender, the scope width (single address vs whole domain), the chosen lifetime in words (including PERMANENT when there is no expiry), and whose identity Mesh will record as the rule’s creator. '
             .'Requires a ticket, reason, typed domain confirmation, explicit grant, kill-switch, dedup and cooldown.',
             self::allowRuleProperties(),
             ['sender', 'confirm_domain', 'reason', 'ticket_id'],
@@ -1435,6 +1600,13 @@ class StaffMeshAdminToolExecutor
             'ticket_id' => [
                 'type' => 'integer',
                 'description' => 'PSA ticket this allow belongs to. The proposal is staged against it and the ticket reference is recorded in the PSA audit row (never in the Mesh comment).',
+            ],
+            'expires_at' => [
+                'type' => 'string',
+                'description' => 'Optional. When this allow rule should stop applying: an ISO-8601 date or datetime (e.g. 2026-12-01 or 2026-12-01T17:00:00Z), '
+                    .'or the word "'.self::EXPIRY_NEVER.'" for a rule that NEVER expires and that nothing in the PSA will ever remove. '
+                    .'Omit it for the default '.MeshAllowRule::DEFAULT_LIFETIME_DAYS.'-day lifetime. A value that cannot be read, or a date already in the past, is refused — it is never rounded to the default. '
+                    .'Choose "'.self::EXPIRY_NEVER.'" deliberately: it leaves a permanent hole in this customer’s mail filtering, and the approver is shown it as PERMANENT.',
             ],
         ];
     }

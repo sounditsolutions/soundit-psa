@@ -31,8 +31,9 @@ use Illuminate\Support\Facades\Log;
  *    createAllowRule(): the SERVER rewrites it, so the flag we sent proves
  *    nothing afterwards and is not what the caller asserts on.
  *  - `ab` is pinned to the ALLOW_RULE constant. There is no block lane here.
- * Callers pass a tenant id, a sender, a comment and an expiry; there is no
- * code path by which any other field reaches the HTTP body.
+ * Callers pass a tenant id, a sender, a comment and an expiry (or null for a
+ * permanent rule, which omits `date_expiry`); there is no code path by which
+ * any other field reaches the HTTP body.
  *
  * CREDENTIAL: the same `API-KEY` the read client uses — measured reachable
  * for these routes with the existing production key, so this lane does NOT
@@ -152,7 +153,20 @@ class MeshWriteClient
      * @throws MeshWriteRejectedException upstream 400 (sender or comment validation)
      * @throws MeshClientException credential missing, or any other upstream failure
      */
-    public function createAllowRule(string $customerId, string $sender, string $comment, string $dateExpiry): array
+    /**
+     * @param  string|null  $dateExpiry  The expiry to DISPLAY upstream, or null
+     *                                   for a rule the PSA will never reap
+     *                                   (#1133). Null omits `date_expiry` from
+     *                                   the body entirely rather than sending
+     *                                   an empty string or a sentinel date:
+     *                                   the field is display-only (measured
+     *                                   2026-09-01), and a portal showing no
+     *                                   expiry for a rule that has none is the
+     *                                   honest reading. It is NOT what makes
+     *                                   the rule permanent — the absent
+     *                                   mesh_allow_rules expiry is.
+     */
+    public function createAllowRule(string $customerId, string $sender, string $comment, ?string $dateExpiry): array
     {
         $this->assertConfigured();
 
@@ -173,8 +187,11 @@ class MeshWriteClient
             'ab' => self::ALLOW_RULE,
             'customer_id' => $customerId,
             'organization_level' => false,
-            'date_expiry' => $dateExpiry,
         ];
+
+        if ($dateExpiry !== null) {
+            $body['date_expiry'] = $dateExpiry;
+        }
 
         return $this->request('POST', self::RULE_ENDPOINT, ['json' => $body]);
     }

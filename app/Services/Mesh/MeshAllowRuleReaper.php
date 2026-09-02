@@ -19,6 +19,12 @@ use Illuminate\Support\Facades\Log;
  * not a clean 404) is not a pass either: those rows go to reap_failed and are
  * retried, because "we could not tell" and "it is gone" are different answers
  * and only one of them means a customer's mail filtering is back to normal.
+ *
+ * #1133: a rule the caller asked to be permanent has a NULL `expires_at` and
+ * is never selected here (see MeshAllowRule::scopeReapable). That is the whole
+ * mechanism for "permanent" — there is no flag and no far-future sentinel — so
+ * for such a rule this class is not the exit. Nothing in the PSA is yet;
+ * removal is by hand in the Mesh portal until mesh_remove_allow_rule exists.
  */
 class MeshAllowRuleReaper
 {

@@ -19,7 +19,9 @@ use Tests\TestCase;
  *
  * The load-bearing facts under test:
  *   1. The create body is assembled by the client from four arguments; `edge`,
- *      `customers` and a false `ab` are structurally unreachable.
+ *      `customers` and a false `ab` are structurally unreachable. The fourth,
+ *      the expiry, is the caller's and may be null for a permanent rule (#1133),
+ *      in which case no date_expiry is sent.
  *   2. A scoped read pages the partner-wide list and returns ONLY the target
  *      tenant's rows — the raw list cannot escape (#1018 criterion 7).
  *   3. A 400 becomes MeshWriteRejectedException carrying the vendor's own text
@@ -99,6 +101,7 @@ class MeshWriteClientTest extends TestCase
         $this->assertFalse($body['organization_level']);
         $this->assertSame('sender@example.test', $body['sender']);
         $this->assertSame('PSA allow ABCDE12345', $body['comment']);
+        $this->assertSame('2026-12-01T00:00:00+00:00', $body['date_expiry'], 'the caller\'s expiry is sent verbatim (#1133)');
         $this->assertTrue($body['active']);
         $this->assertSame([], $body['users']);
         $this->assertSame([], $body['domains']);
@@ -118,6 +121,35 @@ class MeshWriteClientTest extends TestCase
         $client->createAllowRule('tenant-1', 'a@example.test', 'PSA allow AAAAAAAAAA', '2026-12-01T00:00:00+00:00');
 
         $this->assertStringNotContainsString('global-allow-block-rules', (string) $this->lastRequest()->getUri());
+    }
+
+    /**
+     * #1133 — a permanent rule sends NO date_expiry at all.
+     *
+     * Not an empty string, not a null literal, not a far-future date: the key
+     * is absent from the body. Mesh's own date_expiry is display-only (measured
+     * 2026-09-01, nothing upstream reaps on it), so what this field says is a
+     * statement to whoever reads the portal. For a rule the PSA will never
+     * remove, the honest statement is silence, not a date that will pass.
+     */
+    public function test_create_sends_no_date_expiry_for_a_permanent_rule(): void
+    {
+        $client = $this->clientReturning([
+            new Response(201, [], json_encode(['detail' => 'Allow/Block Rules added', 'added_for' => ['tenant-1']])),
+        ]);
+
+        $client->createAllowRule('tenant-1', 'forever@example.test', 'PSA allow BBBBBBBBBB', null);
+
+        $body = $this->lastBody();
+        $this->assertArrayNotHasKey('date_expiry', $body, 'a permanent rule must send no expiry field whatsoever');
+
+        // The rest of the body is unchanged by permanence — same narrow scope.
+        $this->assertSame(MeshWriteClient::ALLOW_RULE, $body['ab']);
+        $this->assertSame('tenant-1', $body['customer_id']);
+        $this->assertFalse($body['organization_level']);
+        $this->assertSame('forever@example.test', $body['sender']);
+        $this->assertArrayNotHasKey('edge', $body);
+        $this->assertArrayNotHasKey('customers', $body);
     }
 
     public function test_create_without_a_key_fails_closed_before_any_http(): void
