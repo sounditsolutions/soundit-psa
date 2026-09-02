@@ -89,12 +89,15 @@ class StaffMeshAdminToolExecutor
      */
     private const STAGED_TO_DIRECT = [
         'mesh_stage_add_allow_rule' => 'mesh_add_allow_rule',
+        'mesh_stage_remove_allow_rule' => 'mesh_remove_allow_rule',
     ];
 
     /** @var array<int, string> */
     private const CLIENT_SCOPED_TOOLS = [
         'mesh_add_allow_rule',
         'mesh_stage_add_allow_rule',
+        'mesh_remove_allow_rule',
+        'mesh_stage_remove_allow_rule',
     ];
 
     /**
@@ -102,7 +105,15 @@ class StaffMeshAdminToolExecutor
      *
      * @var array<int, string>
      */
-    private const ALLOWED_ARGUMENT_KEYS = ['sender', 'confirm_domain', 'reason', 'ticket_id', 'expires_at', 'staged'];
+    private const ALLOWED_ARGUMENT_KEYS = [
+        'mesh_add_allow_rule' => ['sender', 'confirm_domain', 'reason', 'ticket_id', 'expires_at', 'staged'],
+        // #1134: no `sender` and no `expires_at`. The sender is a property of
+        // the rule being removed, read from the tenant's own list, not typed by
+        // the caller — `confirm_sender` is the typed confirmation and is
+        // checked AGAINST that read. And removal is immediate: a scheduled
+        // removal is what an allow rule's expiry already is.
+        'mesh_remove_allow_rule' => ['rule_id', 'confirm_sender', 'reason', 'ticket_id', 'staged'],
+    ];
 
     /**
      * Keys that are refused with a REASON rather than as generic noise,
@@ -120,9 +131,16 @@ class StaffMeshAdminToolExecutor
      *   comment            — PSA-generated; it is the reaper's match key.
      *   domains / users    — bulk forms of the same hole.
      *
-     * @var array<string, string>
+     * Keyed by verb, because the same key is refused for different reasons on
+     * either side of the lane and a reason that is true of the create verb is
+     * not automatically true of the remove verb. A shared map would put
+     * "expiry is set with expires_at" in front of a caller of a verb that has
+     * no expiry at all, which is worse than the generic refusal.
+     *
+     * @var array<string, array<string, string>>
      */
     private const REFUSED_ARGUMENT_KEYS = [
+        'mesh_add_allow_rule' => [
         'ab' => 'this verb only ever creates ALLOW rules',
         'edge' => 'connection-level application is never enabled from the PSA',
         'customers' => 'partner-wide rules are never created from the PSA',
@@ -135,6 +153,32 @@ class StaffMeshAdminToolExecutor
         'users' => 'bulk user allow-lists are not created from the PSA',
         'partner_id' => 'partner-scoped writes are never made from the PSA',
         'global' => 'global rules are never created from the PSA',
+        ],
+        /**
+         * #1134. The remove lane's widening moves are different from the
+         * create lane's: not "make this rule bigger" but "remove more than the
+         * one rule the approver was shown", and "remove something that is not
+         * an allow rule at all".
+         */
+        'mesh_remove_allow_rule' => [
+            'ab' => 'this verb only ever removes ALLOW rules; removing a block rule is a different power and is not available from the PSA',
+            'sender' => 'the sender is read from the rule itself, never typed; confirm_sender is the typed confirmation and is checked against what Mesh holds',
+            'comment' => 'the rule is identified by its Mesh rule id, not by its comment',
+            'rule_ids' => 'one rule per proposal; a bulk removal is not something an approver can read',
+            'all' => 'this verb never removes more than the single rule named by rule_id',
+            'force' => 'there is no force lane; a removal whose absence cannot be proved is reported as a fault, never forced through',
+            'edge' => 'connection-level rules are never touched from the PSA',
+            'customers' => 'partner-wide rules are never removed from the PSA',
+            'customer_id' => 'the Mesh tenant is derived from the PSA client, never supplied',
+            'organization_level' => 'scope is fixed to the resolved customer',
+            'expires_at' => 'removal is immediate; a scheduled removal is what an allow rule expiry already is',
+            'date_expiry' => 'removal is immediate; the vendor expiry field is never written by this verb',
+            'active' => 'this verb removes rules, it does not deactivate them',
+            'domains' => 'bulk domain removals are not made from the PSA',
+            'users' => 'bulk user removals are not made from the PSA',
+            'partner_id' => 'partner-scoped writes are never made from the PSA',
+            'global' => 'global rules are never removed from the PSA',
+        ],
     ];
 
     /**
@@ -176,6 +220,8 @@ class StaffMeshAdminToolExecutor
         return [
             self::addAllowRuleTool(),
             self::stageAddAllowRuleTool(),
+            self::removeAllowRuleTool(),
+            self::stageRemoveAllowRuleTool(),
         ];
     }
 
@@ -215,17 +261,27 @@ class StaffMeshAdminToolExecutor
 
         return match ($name) {
             'mesh_stage_add_allow_rule' => $this->stageAllowRule($arguments, (int) $clientId, $actorLabel),
-            'mesh_add_allow_rule' => $this->immediateAllowRuleRefused($arguments, $clientId, $actorLabel),
+            'mesh_add_allow_rule' => $this->immediateRefused('mesh_add_allow_rule', 'mesh_stage_add_allow_rule', $arguments, $clientId, $actorLabel),
+            'mesh_stage_remove_allow_rule' => $this->stageRemoveAllowRule($arguments, (int) $clientId, $actorLabel),
+            'mesh_remove_allow_rule' => $this->immediateRefused('mesh_remove_allow_rule', 'mesh_stage_remove_allow_rule', $arguments, $clientId, $actorLabel),
             default => ['error' => "Unknown Mesh admin tool: {$name}"],
         };
     }
 
-    /** @return array<string, mixed> */
-    private function immediateAllowRuleRefused(array $arguments, ?int $clientId, string $actorLabel): array
+    /**
+     * Both canonical verbs are staged-only BY CONSTRUCTION: they are
+     * advertised and grantable, and neither has an immediate implementation.
+     * The refusal names the staged grant rather than saying "not permitted",
+     * because the caller is not doing anything wrong — the grant is the wrong
+     * shape, and only the refusal text can say which shape is right.
+     *
+     * @return array<string, mixed>
+     */
+    private function immediateRefused(string $directTool, string $stagedTool, array $arguments, ?int $clientId, string $actorLabel): array
     {
-        $message = 'mesh_add_allow_rule is staged-only: it always requires cockpit approval. '
-            .'Re-grant it as `mesh_add_allow_rule:staged` (or call `mesh_stage_add_allow_rule`) and pass a ticket_id. No upstream call was made.';
-        $this->auditAttempt('mesh_add_allow_rule', 'rejected', $clientId, null, $this->contentHash('mesh_add_allow_rule', $clientId, 'immediate-refused', $arguments), $message, $actorLabel);
+        $message = "{$directTool} is staged-only: it always requires cockpit approval. "
+            ."Re-grant it as `{$directTool}:staged` (or call `{$stagedTool}`) and pass a ticket_id. No upstream call was made.";
+        $this->auditAttempt($directTool, 'rejected', $clientId, null, $this->contentHash($directTool, $clientId, 'immediate-refused', $arguments), $message, $actorLabel);
 
         return ['error' => $message];
     }
@@ -1079,6 +1135,7 @@ class StaffMeshAdminToolExecutor
             $arguments = is_array($payload['arguments'] ?? null) ? $payload['arguments'] : [];
             $result = match ($directTool) {
                 'mesh_add_allow_rule' => $this->executeAllowRule($arguments, (int) $run->client_id, $this->approverLabel($approverId), $run, $approverId),
+                'mesh_remove_allow_rule' => $this->executeRemoveAllowRule($arguments, (int) $run->client_id, $this->approverLabel($approverId), $run, $approverId),
                 default => ['error' => 'Unsupported Mesh staged admin action.'],
             };
 
@@ -1260,8 +1317,10 @@ class StaffMeshAdminToolExecutor
      */
     private function baseGuard(string $tool, array $arguments, ?int $clientId, string $actorLabel): array
     {
-        if ($refused = $this->refusedArgumentKeys($arguments)) {
-            $message = 'These parameters are not accepted by mesh_add_allow_rule: '.implode('; ', $refused).'.';
+        $directTool = self::STAGED_TO_DIRECT[$tool] ?? $tool;
+
+        if ($refused = $this->refusedArgumentKeys($directTool, $arguments)) {
+            $message = "These parameters are not accepted by {$directTool}: ".implode('; ', $refused).'.';
             $this->auditAttempt($tool, 'rejected', $clientId, null, $this->contentHash($tool, $clientId, 'guard', $arguments), $message, $actorLabel);
 
             return ['error' => $message];
@@ -1296,18 +1355,21 @@ class StaffMeshAdminToolExecutor
      *
      * @return array<int, string>
      */
-    private function refusedArgumentKeys(array $arguments): array
+    private function refusedArgumentKeys(string $directTool, array $arguments): array
     {
+        $allowed = self::ALLOWED_ARGUMENT_KEYS[$directTool] ?? [];
+        $reasons = self::REFUSED_ARGUMENT_KEYS[$directTool] ?? [];
+
         $refused = [];
 
         foreach (array_keys($arguments) as $key) {
             $key = (string) $key;
-            if (in_array($key, self::ALLOWED_ARGUMENT_KEYS, true)) {
+            if (in_array($key, $allowed, true)) {
                 continue;
             }
 
-            $refused[] = isset(self::REFUSED_ARGUMENT_KEYS[$key])
-                ? "{$key} (".self::REFUSED_ARGUMENT_KEYS[$key].')'
+            $refused[] = isset($reasons[$key])
+                ? "{$key} (".$reasons[$key].')'
                 : "{$key} (not a parameter of this tool)";
         }
 
@@ -1803,6 +1865,442 @@ class StaffMeshAdminToolExecutor
         return null;
     }
 
+    /**
+     * Resolve and validate everything the REMOVAL depends on, against LIVE
+     * upstream state (#1134).
+     *
+     * Called at staging AND again at approval, deliberately. The card an
+     * approver reads is a snapshot; between it and the button the rule can be
+     * deleted in the portal, re-created for a different sender under the same
+     * id (it cannot, but nothing here depends on believing that), or the
+     * client's Mesh mapping can be re-pointed at another tenant. Re-resolving
+     * means the scope check is made against the state the delete will actually
+     * hit, not the state that justified staging it.
+     *
+     * The rule is looked up through MeshWriteClient::findRuleById(), which
+     * resolves ONLY within this tenant. A rule id belonging to another
+     * customer is therefore not "refused" here — it is absent, and the caller
+     * is told exactly that. Saying "that rule belongs to another customer"
+     * would confirm the existence of a row on a tenant this client has no
+     * business knowing about.
+     *
+     * @return array{rule_id?: string, sender?: string, comment?: string, mesh_customer_id?: string, client_name?: string, scope_note?: string, expiry_note?: string, created_by?: string|null, record?: MeshAllowRule|null, tracked_note?: string, error?: string}
+     */
+    private function removeAllowRuleTarget(array $arguments, int $clientId): array
+    {
+        $client = Client::find($clientId);
+        if (! $client) {
+            return ['error' => 'Client not found'];
+        }
+
+        $tenant = trim((string) ($client->mesh_customer_id ?? ''));
+        if ($tenant === '') {
+            return ['error' => "{$client->name} has no Mesh customer mapping; link the client to its Mesh tenant before removing allow rules."];
+        }
+
+        $ruleId = $this->requiredString($arguments, 'rule_id');
+        if ($ruleId === null) {
+            return ['error' => 'rule_id is required'];
+        }
+
+        // Bounded before it is used in a URL path segment or a log line. The
+        // id is a vendor uuid; anything of this length is a caller mistake and
+        // refusing it here keeps an unbounded string out of every downstream
+        // string we build.
+        if (mb_strlen($ruleId) > 255) {
+            return ['error' => 'rule_id is not a Mesh rule id (longer than 255 characters); nothing was removed.'];
+        }
+
+        try {
+            $row = $this->client->findRuleById($tenant, $ruleId);
+        } catch (MeshClientException $e) {
+            // Fail closed. An unreadable list is not an empty list, and the
+            // difference matters in both directions: refusing wrongly costs a
+            // retry, deleting on an unverified scope cannot be undone.
+            return ['error' => "The rule could not be read from Mesh, so its scope could not be checked and nothing was removed: {$e->getMessage()}"];
+        }
+
+        if ($row === null) {
+            return ['error' => "No allow rule with id '{$ruleId}' belongs to {$client->name}'s Mesh tenant. Nothing was removed. "
+                .'Check the id against this client\'s own rules — an id from another customer, or from the partner-wide list, will not resolve here.'];
+        }
+
+        // ALLOW-ONLY, and unknown is a refusal. `ab` is the allow/block flag
+        // (MeshWriteClient::ALLOW_RULE documents how its meaning was measured).
+        // Removing a BLOCK rule un-blocks a sender the customer chose to block
+        // — the same shape of weakening this whole lane exists to gate, and it
+        // is not what an approver reading "remove allow rule" consented to. A
+        // row whose `ab` is absent or is not a boolean is not proved to be an
+        // allow rule, so it is refused too rather than assumed.
+        $ab = $row['ab'] ?? null;
+        if (! is_bool($ab)) {
+            return ['error' => "Mesh did not state whether rule '{$ruleId}' is an allow rule or a block rule, so it was not removed. This verb only ever removes rules Mesh confirms are ALLOW rules."];
+        }
+        if ($ab !== MeshWriteClient::ALLOW_RULE) {
+            return ['error' => "Rule '{$ruleId}' is a BLOCK rule, not an allow rule. Removing it would un-block a sender this customer chose to block, which is a different power and is not available from the PSA. Nothing was removed."];
+        }
+
+        $sender = is_scalar($row['sender'] ?? null) ? mb_strtolower(trim((string) $row['sender'])) : '';
+        if ($sender === '') {
+            return ['error' => "Mesh returned no sender for rule '{$ruleId}', so the typed confirmation cannot be checked and nothing was removed."];
+        }
+
+        // The typed confirmation is on the SENDER here, not the domain. The
+        // create verb confirms the domain because the domain is what an allow
+        // widens; a removal is identified by an opaque uuid, and the thing the
+        // approver must prove they know is WHICH rule that id is. Typing the
+        // sender back is the only check that can catch a pasted id that
+        // resolves to a real rule other than the intended one.
+        $confirm = $this->requiredString($arguments, 'confirm_sender');
+        if ($confirm === null || mb_strtolower(trim($confirm)) !== $sender) {
+            return ['error' => "confirm_sender must exactly match the sender on rule '{$ruleId}' to remove it. Read the rule first and type its sender back."];
+        }
+
+        $comment = is_scalar($row['comment'] ?? null) ? trim((string) $row['comment']) : '';
+        $createdBy = is_scalar($row['created_by'] ?? null) && trim((string) $row['created_by']) !== ''
+            ? trim((string) $row['created_by'])
+            : null;
+
+        // Is this a rule the PSA itself wrote and is tracking? The join is on
+        // the upstream id, scoped to this client — a rule id is unique
+        // upstream, and scoping the lookup keeps a row belonging to another
+        // client from ever being mutated by this client's removal.
+        $record = MeshAllowRule::query()
+            ->where('client_id', $clientId)
+            ->where('mesh_rule_id', $ruleId)
+            ->latest('id')
+            ->first();
+
+        return [
+            'rule_id' => $ruleId,
+            'sender' => $sender,
+            'comment' => $comment,
+            'mesh_customer_id' => $tenant,
+            'client_name' => (string) $client->name,
+            'created_by' => $createdBy,
+            'record' => $record,
+            'scope_note' => str_contains($sender, '@')
+                ? "Scope: this rule allows the single address '{$sender}'. Removing it stops that address bypassing filtering."
+                : "Scope: this rule allows EVERY sender at '{$sender}'. Removing it restores filtering for that whole domain.",
+            // Criterion 3 on #1134: foreign is ALLOWED, and it is LABELLED. A
+            // rule the PSA never wrote was put there by a human for a reason
+            // this system cannot see — the Huntress SAT phishing-server allows
+            // are the standing example — so the approver is told plainly that
+            // removing it may break something somebody set up on purpose.
+            'tracked_note' => $record !== null
+                ? "This rule is PSA-TRACKED (record #{$record->id}"
+                    .($record->isPermanent()
+                        ? ', PERMANENT — it has no expiry and nothing in the PSA would ever have removed it'
+                        : ', due to expire '.$record->expires_at->toDayDateTimeString().' UTC')
+                    ."), so removing it now ends it early and the PSA record is closed with it."
+                : 'This rule is FOREIGN: the PSA did not create it and holds no record of it. Somebody set it up outside this system, '
+                    .'possibly deliberately and possibly for a reason this system cannot see — removing it may break mail delivery that is working today.',
+            'expiry_note' => is_scalar($row['date_expiry'] ?? null) && trim((string) $row['date_expiry']) !== ''
+                ? 'Mesh displays an expiry of '.trim((string) $row['date_expiry']).' on this rule (display only — Mesh does not act on it).'
+                : 'Mesh displays no expiry on this rule.',
+        ];
+    }
+
+    /**
+     * Stage a removal for cockpit approval. There is no immediate lane.
+     *
+     * @return array<string, mixed>
+     */
+    private function stageRemoveAllowRule(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $tool = 'mesh_stage_remove_allow_rule';
+
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $ticket = $this->ticketForClient($arguments['ticket_id'] ?? null, $clientId);
+        if (is_array($ticket)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, $this->contentHash($tool, $clientId, 'guard', $arguments), $ticket['error'], $actorLabel);
+
+            return ['error' => $ticket['error']];
+        }
+
+        $ruleIdForHash = is_scalar($arguments['rule_id'] ?? null) ? trim((string) $arguments['rule_id']) : 'unresolved';
+        // ONE key for this write, and it is derivable before the target
+        // resolves: the rule id IS the identity of a removal. Unlike the create
+        // verb there is no second, lifetime-bearing hash — a removal has no
+        // parameter that changes what it does, so the proposal and the write
+        // are the same thing and dedup on the same key.
+        $contentHash = $this->contentHash($tool, $clientId, 'remove-allow-rule-'.$ruleIdForHash, []);
+
+        $target = $this->removeAllowRuleTarget($arguments, $clientId);
+        if (isset($target['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, $target['error'], $actorLabel);
+
+            return ['error' => $target['error']];
+        }
+
+        // Already removed within the dedup window. Unlike the create verb this
+        // is a genuinely idempotent answer and is reported as success: the
+        // requested end state (that rule gone) is the state that holds, and
+        // there is no lifetime for a second caller to be silently deprived of.
+        if ($this->alreadyExecuted('mesh_remove_allow_rule', $clientId, $contentHash)) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $this->executedRunId('mesh_remove_allow_rule', $clientId, $contentHash),
+                'rule_id' => $target['rule_id'],
+                'message' => "Rule '{$target['rule_id']}' was already removed for this client recently; no proposal was staged.",
+            ];
+        }
+
+        $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
+        if ($liveAwaitingRun !== null) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $liveAwaitingRun->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        if ($this->cooldownActive($tool, $clientId)) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $contentHash, 'Mesh allow-rule removal proposal cooldown active.', $actorLabel);
+
+            return ['error' => 'mesh_remove_allow_rule cooldown active for this client; no proposal was staged.'];
+        }
+
+        $proposedContent = "Remove the Mesh Email Security allow rule '{$target['rule_id']}' for {$target['client_name']}.\n"
+            ."Sender allowed by this rule: {$target['sender']}\n"
+            .$target['scope_note']."\n"
+            .$target['tracked_note']."\n"
+            .$target['expiry_note']."\n"
+            .'Mesh comment on the rule: '.($target['comment'] !== '' ? $target['comment'] : '(none)')."\n"
+            .'Recorded upstream as created by: '.($target['created_by'] ?? 'not stated by Mesh')."\n"
+            ."Removal is immediate and is proved by re-reading the rule: if it is still readable afterwards the removal is reported as a fault, never as done.\n"
+            .'Reason: '.$guard['reason'];
+
+        $meta = [
+            'drafted_by' => $actorLabel,
+            'reasons' => [$guard['reason']],
+            'direct_tool' => self::STAGED_TO_DIRECT[$tool],
+            'redacted_params' => [
+                'rule_id' => $target['rule_id'],
+                'sender' => $target['sender'],
+                'client' => $target['client_name'],
+                'psa_tracked' => $target['record'] !== null ? 'yes' : 'no (foreign rule)',
+                'upstream_created_by' => $target['created_by'] ?? 'not stated by Mesh',
+            ],
+            'encrypted_payload' => Crypt::encryptString(json_encode([
+                'direct_tool' => self::STAGED_TO_DIRECT[$tool],
+                'client_id' => $clientId,
+                'ticket_id' => $ticket->id,
+                'arguments' => [
+                    // Only the id and the confirmation are carried. The tenant,
+                    // the sender, the allow/block flag and the PSA record are
+                    // ALL re-resolved at approval against live state — carrying
+                    // them would be carrying the very facts the second scope
+                    // check exists to re-measure.
+                    'rule_id' => $target['rule_id'],
+                    'confirm_sender' => $target['sender'],
+                    'reason' => $guard['reason'],
+                ],
+            ], JSON_THROW_ON_ERROR)),
+        ];
+
+        $slot = $this->stagedRunSlot($ticket->id, $tool, $contentHash);
+        if (isset($slot['error'])) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $contentHash, $slot['error'], $actorLabel);
+
+            return ['error' => $slot['error']];
+        }
+        $contentHash = $slot['content_hash'];
+
+        $run = TechnicianRun::firstOrCreate(
+            [
+                'ticket_id' => $ticket->id,
+                'action_type' => $tool,
+                'content_hash' => $contentHash,
+            ],
+            [
+                'client_id' => $clientId,
+                'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ],
+        );
+
+        if (! $run->wasRecentlyCreated) {
+            if ($run->state !== TechnicianRunState::AwaitingApproval) {
+                $message = 'Another proposal for this removal is already in flight on this ticket; no proposal was staged.';
+                $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $contentHash, $message, $actorLabel, $run->id);
+
+                return ['error' => $message];
+            }
+
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        $this->auditAttempt($tool, 'awaiting_approval', $clientId, $ticket, $contentHash, "MCP staged removal of Mesh allow rule '{$target['rule_id']}' (sender '{$target['sender']}').", $actorLabel, $run->id);
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'run_id' => $run->id,
+            'rule_id' => $target['rule_id'],
+            'sender' => $target['sender'],
+            'psa_tracked' => $target['record'] !== null,
+            'message' => 'Staged for cockpit approval.',
+        ];
+    }
+
+    /**
+     * Execute an approved removal. Only reachable through approveStagedRun().
+     *
+     * The shape that matters here is criterion 4: SUCCESS IS THE
+     * POST-CONDITION, NOT THE DELETE'S RESPONSE. `ruleAbsent()` — the reaper's
+     * own detail-GET-must-404 — is the only thing that decides the outcome,
+     * and it is measured even when the DELETE itself threw, because a DELETE
+     * that timed out may well have committed.
+     *
+     * @return array<string, mixed>
+     */
+    private function executeRemoveAllowRule(
+        array $arguments,
+        int $clientId,
+        string $actorLabel,
+        ?TechnicianRun $run = null,
+        ?int $approverId = null,
+    ): array {
+        $tool = 'mesh_remove_allow_rule';
+
+        $ruleIdForHash = is_scalar($arguments['rule_id'] ?? null) ? trim((string) $arguments['rule_id']) : 'unresolved';
+        // Re-derived from the arguments, NEVER $run->content_hash: a second
+        // proposal for the same removal takes the next generation of the run
+        // key (stagedRunSlot), so keying the duplicate guard on the run's own
+        // hash would let a sibling proposal walk past a brake the first
+        // approval already satisfied. Same rule, same reason, as the create
+        // verb.
+        $contentHash = $this->contentHash('mesh_stage_remove_allow_rule', $clientId, 'remove-allow-rule-'.$ruleIdForHash, []);
+
+        // The scope check runs AGAIN, against live state. This is the check
+        // that makes the removal safe, not the one at staging: the card may
+        // have waited days, and the client's Mesh mapping can be re-pointed in
+        // that time.
+        $target = $this->removeAllowRuleTarget($arguments, $clientId);
+        if (isset($target['error'])) {
+            $message = $target['error'].' (re-checked at approval; nothing was removed)';
+            $this->auditAttempt($tool, 'rejected', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $message];
+        }
+
+        if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+            $message = "Rule '{$target['rule_id']}' was already removed for this client recently; no upstream call was made.";
+            $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['success' => true, 'idempotent' => true, 'message' => $message];
+        }
+
+        $record = $target['record'] instanceof MeshAllowRule ? $target['record'] : null;
+        $deleteError = null;
+
+        try {
+            $this->client->deleteRule($target['rule_id']);
+        } catch (MeshClientException $e) {
+            // NOT returned as an error, and this is the whole design of the
+            // method. Mesh commits before it answers, so a timeout or a reset
+            // connection can sit on top of a rule that IS gone. Declaring
+            // failure here would put the proposal back in front of the
+            // approver for a removal that already happened; declaring success
+            // would assert one that may not have. The post-condition below
+            // answers it, and it is the only thing that does.
+            $deleteError = $e->getMessage();
+        }
+
+        $absent = $this->client->ruleAbsent($target['rule_id']);
+
+        if ($absent === true) {
+            $summary = "Removed Mesh allow rule '{$target['rule_id']}' (sender '{$target['sender']}') for this client; absence proved by detail read."
+                .($deleteError !== null ? ' The DELETE call itself did not answer cleanly ('.$deleteError.'), but the rule is gone.' : '')
+                .($record !== null ? " PSA record #{$record->id} closed." : ' The rule was foreign — the PSA held no record of it.');
+
+            if ($record !== null) {
+                // Recorded as an operator removal, not as a reaping: see the
+                // migration. STATE_REMOVED is outside scopeReapable(), so the
+                // row leaves the reaper's queue by construction.
+                $record->forceFill([
+                    'state' => MeshAllowRule::STATE_REMOVED,
+                    'removed_at' => now(),
+                    'last_error' => null,
+                ])->save();
+            }
+
+            $this->auditAttempt($tool, 'executed', $clientId, null, $contentHash, $summary, $actorLabel, $run?->id, $approverId);
+
+            return [
+                'success' => true,
+                'rule_id' => $target['rule_id'],
+                'sender' => $target['sender'],
+                'psa_record_id' => $record?->id,
+                'removal_proved' => true,
+                'message' => $summary,
+            ];
+        }
+
+        // Everything below is a FAULT, never an error. An error releases the
+        // claim and puts the card back in front of the approver, whose next
+        // click would re-run a DELETE against a rule whose state we already
+        // could not measure. The proposal is spent and the outcome is stated
+        // in full instead.
+        //
+        // false = still readable, the delete did not take.
+        // null  = unmeasurable, which is NOT a pass (MeshWriteClient::ruleAbsent).
+        $fault = $absent === false ? 'removal_unproved' : 'removal_unmeasurable';
+        $message = $absent === false
+            ? "Mesh still returns allow rule '{$target['rule_id']}' (sender '{$target['sender']}') after the delete, so it was NOT removed and that sender is still bypassing filtering."
+            : "Whether allow rule '{$target['rule_id']}' (sender '{$target['sender']}') was removed could NOT be measured — the confirming read did not answer. Treat the rule as still live until it is checked.";
+        $message .= ($deleteError !== null ? ' The DELETE call reported: '.$deleteError.'.' : '')
+            .' Check it in the Mesh portal and remove it by hand if it is still there.';
+
+        if ($record !== null) {
+            // STATE_REAP_FAILED, deliberately, and this is why there is no
+            // `remove_failed` state: the rule may still be live and it still
+            // carries whatever expiry this row holds, so it must stay in a
+            // state the reaper still works (scopeReapable lists this one).
+            // Marking it removed would retire a live hole from the only queue
+            // that would ever have closed it.
+            $record->forceFill([
+                'state' => MeshAllowRule::STATE_REAP_FAILED,
+                'last_error' => $message,
+            ])->save();
+            $message .= " PSA record #{$record->id} is left in the expiry job's queue so it keeps being retried.";
+        }
+
+        $this->auditAttempt($tool, 'executed_with_fault', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+        return [
+            'success' => false,
+            'fault' => $fault,
+            'rule_id' => $target['rule_id'],
+            'sender' => $target['sender'],
+            'psa_record_id' => $record?->id,
+            'removal_proved' => false,
+            'message' => $message,
+        ];
+    }
+
     /** @return array<string, mixed> */
     private static function addAllowRuleTool(): array
     {
@@ -1862,6 +2360,62 @@ class StaffMeshAdminToolExecutor
                     .'or the word "'.self::EXPIRY_NEVER.'" for a rule that NEVER expires and that nothing in the PSA will ever remove. '
                     .'Omit it for the default '.MeshAllowRule::DEFAULT_LIFETIME_DAYS.'-day lifetime. A value that cannot be read, or a date already in the past, is refused — it is never rounded to the default. '
                     .'Choose "'.self::EXPIRY_NEVER.'" deliberately: it leaves a permanent hole in this customer’s mail filtering, and the approver is shown it as PERMANENT.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function removeAllowRuleTool(): array
+    {
+        return self::tool(
+            'mesh_remove_allow_rule',
+            'Remove ONE Mesh Email Security allow rule from a customer tenant, resolved server-side from the PSA client. This RESTORES filtering for the sender the rule was allowing. '
+            .'STAGED ONLY: every call is held as a cockpit approval proposal. There is no immediate implementation — a bare (immediate) grant is refused with a pointer to `mesh_remove_allow_rule:staged`. '
+            .'The rule is resolved only within this client’s own tenant, so an id belonging to another customer simply does not resolve. '
+            .'ALLOW-ONLY: a rule Mesh reports as a BLOCK rule is refused, and so is one whose type Mesh does not state. '
+            .'It removes rules the PSA created AND rules it did not; a rule the PSA never wrote is labelled FOREIGN on the approval card, because removing it may break something a human set up on purpose. '
+            .'Success is proved by re-reading the rule and requiring a 404 — a rule still readable afterwards, or one whose absence cannot be measured, is reported as a fault and never as done. '
+            .'Requires reason, ticket_id, and the rule’s sender typed back as confirmation.',
+            self::removeAllowRuleProperties(),
+            ['rule_id', 'confirm_sender', 'reason', 'ticket_id'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageRemoveAllowRuleTool(): array
+    {
+        return self::tool(
+            'mesh_stage_remove_allow_rule',
+            'Stage the removal of a Mesh Email Security allow rule for cockpit approval. STAGED ONLY — this is the only lane the verb has: approval re-resolves the client’s Mesh tenant and re-checks the rule’s ownership, its allow/block type and the typed sender confirmation against LIVE state before anything is deleted. '
+            .'The proposal names the sender the rule allows, how wide it is (one address vs a whole domain), whether the rule is PSA-TRACKED or FOREIGN, the expiry Mesh displays, the Mesh comment, and who Mesh records as its creator. '
+            .'Removing an allow rule STRENGTHENS filtering for that sender — but a FOREIGN rule was put there by someone outside this system, and removing it can break mail that is being delivered today. '
+            .'Requires a ticket, reason, the sender typed back, explicit grant, kill-switch, dedup and cooldown.',
+            self::removeAllowRuleProperties(),
+            ['rule_id', 'confirm_sender', 'reason', 'ticket_id'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function removeAllowRuleProperties(): array
+    {
+        return [
+            'rule_id' => [
+                'type' => 'string',
+                'description' => 'The Mesh rule id to remove. Read it from this client’s own allow rules (or from a PSA mesh_allow_rules record). '
+                    .'An id that does not belong to this client’s Mesh tenant will not resolve, and no partner-wide or global rule is reachable.',
+            ],
+            'confirm_sender' => [
+                'type' => 'string',
+                'description' => 'Typed confirmation of the sender this rule allows. Must match exactly (case-insensitive) what Mesh holds for the rule, or the removal is refused. '
+                    .'This is the check that catches a valid id pasted for the wrong rule — read the rule before you type it.',
+            ],
+            'reason' => [
+                'type' => 'string',
+                'description' => 'Specific operational reason for removing this allow rule.',
+            ],
+            'ticket_id' => [
+                'type' => 'integer',
+                'description' => 'PSA ticket this removal belongs to. The proposal is staged against it and the ticket reference is recorded in the PSA audit row.',
             ],
         ];
     }

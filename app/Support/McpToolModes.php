@@ -109,11 +109,19 @@ class McpToolModes
         // ever widened, and is the second lock behind the refusal in the executor.
         'tactical_remove_agent',
         // mesh_add_allow_rule likewise has no immediate implementation
-        // (StaffMeshAdminToolExecutor::immediateAllowRuleRefused). An allow rule
+        // (StaffMeshAdminToolExecutor::immediateRefused). An allow rule
         // is a hole in a customer's mail filtering, so the entry keeps the
         // full-surface default honest and is the second lock behind the
         // refusal in the executor.
         'mesh_add_allow_rule',
+        // mesh_remove_allow_rule (#1134), same construction and same second
+        // lock. Removing an allow rule usually STRENGTHENS filtering, so the
+        // reason it is here is the other case: the verb can also remove a rule
+        // the PSA never created, which somebody outside this system put there
+        // on purpose. That is a change to live mail delivery made on a
+        // customer's tenant, and it is not something a full-surface token
+        // should reach without a human releasing it.
+        'mesh_remove_allow_rule',
     ];
 
     /**
