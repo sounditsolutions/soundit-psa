@@ -491,6 +491,76 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertSame(1, TechnicianRun::count());
     }
 
+    /**
+     * A deny leaves generation 0 spent, so the next identical proposal lands on
+     * generation 1 — and an MCP retry of that same call must still be answered
+     * "already staged", never refused with a lifetime difference that does not
+     * exist. The lifetime here is byte-identical on every call.
+     */
+    public function test_an_identical_restage_on_a_later_generation_is_idempotent_not_a_lifetime_refusal(): void
+    {
+        $this->configureMesh();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWrite();
+
+        $first = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+        TechnicianRun::whereKey($first['run_id'])->update(['state' => TechnicianRunState::Denied->value]);
+
+        // Past the staging cooldown, so the re-stage is answered by the dedup
+        // branches under test rather than by the burst damper.
+        $this->travel(6)->minutes();
+
+        $second = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+        $this->assertNotSame($first['run_id'], $second['run_id'], 'a denied run is never revived; the proposal takes the next generation');
+
+        $retry = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+
+        $this->assertTrue($retry['idempotent']);
+        $this->assertSame($second['run_id'], $retry['run_id']);
+        $this->assertSame('Already staged; awaiting approval.', $retry['message']);
+        $this->assertSame(2, TechnicianRun::count());
+    }
+
+    /**
+     * The post-execution dedup key excludes the expiry deliberately, so this
+     * answer is always given against somebody else's lifetime. It must name
+     * that lifetime and the record's state, or a technician staging 'never' is
+     * told "already created" about a rule that is dated — and, here, already
+     * reaped, so no allow is in force at all.
+     */
+    public function test_the_dedup_answer_names_the_lifetime_and_state_actually_in_force(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $run = $this->stagedRun($fixture);
+
+        $write->shouldReceive('createAllowRule')->once()->andReturn(['added_for' => [self::TENANT]]);
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'r1']);
+        $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('success');
+
+        $record = MeshAllowRule::sole();
+        $record->update(['state' => MeshAllowRule::STATE_REAPED, 'reaped_at' => now()]);
+
+        $second = $this->decodedResult($this->callTool(
+            $this->token(['mesh_add_allow_rule:staged']),
+            'mesh_add_allow_rule',
+            $this->stageArgs($fixture, ['expires_at' => 'never']),
+        ));
+
+        $this->assertTrue($second['idempotent']);
+        $this->assertStringContainsString('already created recently', $second['message']);
+        $this->assertStringContainsString('#'.$record->id, $second['message']);
+        $this->assertStringContainsString('set to expire', $second['message']);
+        $this->assertStringContainsString("state 'reaped'", $second['message']);
+        $this->assertStringContainsString('no allow is in force for this sender', $second['message']);
+        $this->assertStringContainsString('NOT applied', $second['message']);
+        $this->assertNotSame('never', $second['expires_at'], 'the answer reports the lifetime in force, never the one just asked for');
+        $this->assertSame(1, TechnicianRun::count());
+    }
+
     // ---- approval → execution -------------------------------------------------
 
     public function test_approval_creates_the_rule_proves_scope_recovers_the_id_and_records_it(): void

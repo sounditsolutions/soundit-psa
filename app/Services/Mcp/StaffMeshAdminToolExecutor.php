@@ -305,13 +305,45 @@ class StaffMeshAdminToolExecutor
         // answered yes for ANY input, which would silently delete the 24-hour
         // post-execution dedup window from the staging path.
         if ($this->alreadyExecuted('mesh_add_allow_rule', $clientId, $baseHash)) {
+            // #1133: this answer is given against the lifetime of whichever
+            // proposal actually landed, NOT the one being staged now — the key
+            // above excludes the expiry deliberately. Saying only "already
+            // created recently" is therefore the silent lifetime substitution
+            // in its purest form: a technician re-staging this sender as
+            // permanent is told the allow exists and nothing tells them it is
+            // dated, or that it has already been reaped and no allow is in
+            // force at all. The in-force lifetime and the record's state are
+            // named here for the same reason the two branches below name
+            // theirs.
+            $created = $this->latestAllowRule($clientId, $target['sender']);
+            if ($created === null) {
+                // Unknown is a refusal. A write was audited as executed but no
+                // PSA row carries its lifetime, so nothing here can state what
+                // is in force — and an idempotent "already created" would be a
+                // pass on exactly that unknown.
+                $message = "An allow rule for '{$target['sender']}' was created for this client recently, but the PSA holds no record of it, so its lifetime cannot be stated and nothing in the PSA will ever remove it. Resolve it in the Mesh portal by hand; no proposal was staged.";
+                $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $baseHash, $message, $actorLabel);
+
+                return ['error' => $message];
+            }
+
             return [
                 'success' => true,
                 'idempotent' => true,
                 'ticket_id' => $ticket->id,
                 'ticket_display_id' => $ticket->display_id,
                 'run_id' => $this->executedRunId('mesh_add_allow_rule', $clientId, $baseHash),
-                'message' => 'This allow rule was already created recently; no new proposal was staged.',
+                'sender' => $target['sender'],
+                'expires_at' => self::expiryValue($created->expires_at),
+                'message' => 'This allow rule was already created recently: PSA record #'.$created->id.' is '
+                    .($created->isPermanent()
+                        ? 'PERMANENT (it has no expiry and the PSA will never remove it)'
+                        : 'set to expire '.$created->expires_at->toDayDateTimeString().' UTC')
+                    .", state '{$created->state}'"
+                    .($created->state === MeshAllowRule::STATE_REAPED
+                        ? ' — that rule has been proved absent upstream, so no allow is in force for this sender'
+                        : '')
+                    .'. No new proposal was staged and the lifetime asked for here was NOT applied.',
             ];
         }
 
@@ -1261,6 +1293,25 @@ class StaffMeshAdminToolExecutor
     }
 
     /**
+     * The most recent PSA row for this sender on this client, in ANY state.
+     *
+     * The post-execution dedup answer is given against whatever lifetime the
+     * proposal that actually landed carried — the key it matches on excludes
+     * the expiry deliberately — so naming that lifetime needs the row itself,
+     * a `reaped` one included: "already created recently" said over a reaped
+     * row is a statement about a rule that no longer exists, and the caller
+     * cannot tell unless the state is said out loud (#1133).
+     */
+    private function latestAllowRule(int $clientId, string $sender): ?MeshAllowRule
+    {
+        return MeshAllowRule::query()
+            ->where('client_id', $clientId)
+            ->where('sender', $sender)
+            ->latest('id')
+            ->first();
+    }
+
+    /**
      * A row for this sender whose upstream existence was never settled either
      * way: the fault paths write `unresolved`, and the reaper writes
      * `reap_failed` when it could not prove absence. Both mean "a rule may be
@@ -1444,13 +1495,28 @@ class StaffMeshAdminToolExecutor
      * "Is there a live staged run awaiting approval right now" comes from the
      * runs table, NEVER the immutable audit log — a stale awaiting_approval
      * audit row survives an operator deny by design (bd psa-k4s0 Root B).
+     *
+     * Asked over the WHOLE generation series of the base hash, never just
+     * generation 0. stagedRunSlot() moves a proposal onto
+     * hash($baseHash.':'.$generation) whenever an earlier generation is held by
+     * a spent run, so after one deny the awaiting proposal for an identical
+     * request sits on a hash generation 0 alone would never look at — and that
+     * identical re-stage would fall through to the sender-keyed guard and be
+     * refused with a message asserting a lifetime difference that does not
+     * exist, where it used to be answered "Already staged; awaiting approval."
+     * What stagedRunSlot() can hand out, this must be able to find.
      */
-    private function liveAwaitingRun(int $ticketId, string $tool, string $contentHash): ?TechnicianRun
+    private function liveAwaitingRun(int $ticketId, string $tool, string $baseHash): ?TechnicianRun
     {
+        $hashes = [$baseHash];
+        for ($generation = 1; $generation < self::MAX_RUN_GENERATIONS; $generation++) {
+            $hashes[] = hash('sha256', $baseHash.':'.$generation);
+        }
+
         return TechnicianRun::query()
             ->where('ticket_id', $ticketId)
             ->where('action_type', $tool)
-            ->where('content_hash', $contentHash)
+            ->whereIn('content_hash', $hashes)
             ->where('state', TechnicianRunState::AwaitingApproval->value)
             ->first();
     }
@@ -1459,9 +1525,11 @@ class StaffMeshAdminToolExecutor
      * An AwaitingApproval proposal on this ticket for the SAME SENDER, on any
      * lifetime.
      *
-     * liveAwaitingRun() is keyed on the content hash, and that hash carries the
-     * caller's expiry (#1133), so it cannot see a proposal for this sender that
-     * asks for a different one. This one is keyed on the sender itself, read
+     * liveAwaitingRun() is keyed on the content hash — over every generation of
+     * it, so an identical re-stage is already answered idempotently there and
+     * what reaches here genuinely asks a DIFFERENT lifetime — and that hash
+     * carries the caller's expiry (#1133), so it cannot see a proposal for this
+     * sender that asks for another one. This one is keyed on the sender itself, read
      * from the plaintext redacted_params the approval card renders: the sender
      * is not recoverable from a hash, and the encrypted payload is not
      * queryable. Bounded by MAX_RUN_GENERATIONS proposals per ticket.
