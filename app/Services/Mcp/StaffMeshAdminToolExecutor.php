@@ -1881,6 +1881,41 @@ class StaffMeshAdminToolExecutor
     }
 
     /**
+     * The sender carried by the removal this client ALREADY executed on this
+     * content hash, lower-cased — or null if it cannot be re-read.
+     *
+     * The rule is proved absent, so findRuleById() cannot answer this and the
+     * un-scoped detail route is never an option. Two local sources can, both
+     * scoped to this client so neither can speak about a row on another
+     * tenant: the executed proposal's plaintext `redacted_params.sender` (the
+     * same field the approval card rendered), and, for a rule the PSA
+     * tracked, the row that removal closed.
+     *
+     * Null is UNKNOWN, not "no sender", and the caller refuses on it — a
+     * confirmation that cannot be checked is not a confirmation that passed.
+     */
+    private function executedRemovalSender(int $clientId, string $contentHash, string $ruleId): ?string
+    {
+        $runId = $this->executedRunId('mesh_remove_allow_rule', $clientId, $contentHash);
+        if ($runId !== null) {
+            $sender = data_get(TechnicianRun::find($runId)?->proposed_meta, 'redacted_params.sender');
+            if (is_scalar($sender) && trim((string) $sender) !== '') {
+                return mb_strtolower(trim((string) $sender));
+            }
+        }
+
+        $record = MeshAllowRule::query()
+            ->where('client_id', $clientId)
+            ->where('mesh_rule_id', $ruleId)
+            ->latest('id')
+            ->first();
+
+        return $record !== null && trim((string) $record->sender) !== ''
+            ? mb_strtolower(trim((string) $record->sender))
+            : null;
+    }
+
+    /**
      * Resolve and validate everything the REMOVAL depends on, against LIVE
      * upstream state (#1134).
      *
@@ -2064,6 +2099,32 @@ class StaffMeshAdminToolExecutor
         // silently deprived of. The id is echoed from the caller's own
         // argument — there is no live row left to read it back from.
         if ($this->alreadyExecuted('mesh_remove_allow_rule', $clientId, $contentHash)) {
+            // The typed confirmation is compared HERE as well, and it has to
+            // be: this branch runs before removeAllowRuleTarget(), which is
+            // the only other place `confirm_sender` is read. Without it the
+            // one guard against a valid id pasted for the WRONG rule would be
+            // skipped in exactly the case where the pasted id matches a recent
+            // removal, and the caller would be told `success` while the rule
+            // it meant to remove stayed live. The rule is proved absent so
+            // upstream cannot answer for it; the sender is re-read from local,
+            // client-scoped state instead, and unknown is a refusal.
+            $removedSender = $this->executedRemovalSender($clientId, $contentHash, $ruleIdForHash);
+
+            if ($removedSender === null) {
+                $message = "Rule '{$ruleIdForHash}' was already removed for this client recently, but the sender that removal carried could not be re-read, so confirm_sender could not be checked and no proposal was staged.";
+                $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, $message, $actorLabel);
+
+                return ['error' => $message];
+            }
+
+            $confirm = $this->requiredString($arguments, 'confirm_sender');
+            if ($confirm === null || mb_strtolower(trim($confirm)) !== $removedSender) {
+                $message = "confirm_sender must exactly match the sender on rule '{$ruleIdForHash}' to remove it. Read the rule first and type its sender back.";
+                $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, $message, $actorLabel);
+
+                return ['error' => $message];
+            }
+
             return [
                 'success' => true,
                 'idempotent' => true,

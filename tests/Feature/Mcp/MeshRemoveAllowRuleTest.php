@@ -820,6 +820,45 @@ class MeshRemoveAllowRuleTest extends TestCase
     }
 
     /**
+     * The idempotent answer is keyed on the rule id ALONE, and the id is
+     * exactly what a caller pastes from the wrong ticket. The typed
+     * confirmation is still checked before that answer is given: otherwise a
+     * mis-pasted id reads as handled while the rule the caller meant to remove
+     * stays live, with nothing staged and nothing rejected to notice.
+     */
+    public function test_a_repeat_removal_whose_typed_sender_does_not_match_is_refused_not_answered_idempotently(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $write->shouldReceive('findRuleById')->twice()->andReturn($this->upstreamRow());
+        $run = $this->stagedRun($fixture);
+
+        $write->shouldReceive('deleteRule')->once();
+        $write->shouldReceive('ruleAbsent')->once()->andReturn(true);
+        $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('success');
+
+        // The rule is gone, so the sender is re-read from the executed
+        // proposal's own record rather than from upstream.
+        $write->shouldNotReceive('findRuleById');
+
+        $second = $this->decodedResult($this->callTool(
+            $this->token(['mesh_remove_allow_rule:staged']),
+            'mesh_remove_allow_rule',
+            $this->removeArgs($fixture, ['confirm_sender' => 'someone-else@vendor.example']),
+        ));
+
+        $this->assertArrayNotHasKey('success', $second);
+        $this->assertStringContainsString('confirm_sender must exactly match the sender', $second['error']);
+        $this->assertSame(1, TechnicianRun::count(), 'no second proposal may be staged');
+        $this->assertSame(1, TechnicianActionLog::query()
+            ->where('action_type', 'mesh_stage_remove_allow_rule')
+            ->where('result_status', 'rejected')
+            ->count(), 'a refused confirmation must leave a rejected audit row');
+    }
+
+    /**
      * The same answer at APPROVAL. Two cards for one rule can exist — the run
      * slot is per ticket — and the second is approved after the first has
      * already proved the rule absent, so its id no longer resolves. It must
