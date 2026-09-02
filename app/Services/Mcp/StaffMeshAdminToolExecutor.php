@@ -90,6 +90,7 @@ class StaffMeshAdminToolExecutor
     private const STAGED_TO_DIRECT = [
         'mesh_stage_add_allow_rule' => 'mesh_add_allow_rule',
         'mesh_stage_remove_allow_rule' => 'mesh_remove_allow_rule',
+        'mesh_stage_edit_allow_rule' => 'mesh_edit_allow_rule',
     ];
 
     /** @var array<int, string> */
@@ -98,6 +99,8 @@ class StaffMeshAdminToolExecutor
         'mesh_stage_add_allow_rule',
         'mesh_remove_allow_rule',
         'mesh_stage_remove_allow_rule',
+        'mesh_edit_allow_rule',
+        'mesh_stage_edit_allow_rule',
     ];
 
     /**
@@ -113,6 +116,12 @@ class StaffMeshAdminToolExecutor
         // checked AGAINST that read. And removal is immediate: a scheduled
         // removal is what an allow rule's expiry already is.
         'mesh_remove_allow_rule' => ['rule_id', 'confirm_sender', 'reason', 'ticket_id', 'staged'],
+        // #1135: ONE editable field. `expires_at` is the PSA's own lifetime
+        // (the reaper enforces it; Mesh's `date_expiry` is display-only), so
+        // the edit is authoritative locally and the upstream PATCH only makes
+        // the portal agree. The comment is the reaper's fallback identity for
+        // the rule and is never edited.
+        'mesh_edit_allow_rule' => ['rule_id', 'confirm_sender', 'expires_at', 'reason', 'ticket_id', 'staged'],
     ];
 
     /**
@@ -179,6 +188,31 @@ class StaffMeshAdminToolExecutor
             'partner_id' => 'partner-scoped writes are never made from the PSA',
             'global' => 'global rules are never removed from the PSA',
         ],
+        /**
+         * #1135. The edit lane's widening moves are "change something other
+         * than the lifetime": the comment (which is how the reaper finds a
+         * rule whose id has gone stale — editing it strands the rule outside
+         * the only queue that would close it), the sender or the allow/block
+         * flag (a different rule, not an edit), and the scope fields.
+         */
+        'mesh_edit_allow_rule' => [
+            'comment' => 'the comment is the reaper\'s identity for the rule and is never edited; only expires_at can change',
+            'sender' => 'the sender is what the rule IS; changing it is a different rule, not an edit — confirm_sender is the typed confirmation and is checked against what Mesh holds',
+            'ab' => 'this verb only ever edits ALLOW rules and never flips one to a block rule',
+            'active' => 'this verb does not enable or disable rules; remove the rule instead',
+            'date_expiry' => 'expiry is set with expires_at, not the Mesh field name',
+            'rule_ids' => 'one rule per proposal; a bulk edit is not something an approver can read',
+            'all' => 'this verb never edits more than the single rule named by rule_id',
+            'force' => 'there is no force lane; an edit whose upstream display cannot be confirmed is reported as a fault, never forced through',
+            'edge' => 'connection-level rules are never touched from the PSA',
+            'customers' => 'partner-wide rules are never edited from the PSA',
+            'customer_id' => 'the Mesh tenant is derived from the PSA client, never supplied',
+            'organization_level' => 'scope is fixed to the resolved customer',
+            'domains' => 'bulk domain edits are not made from the PSA',
+            'users' => 'bulk user edits are not made from the PSA',
+            'partner_id' => 'partner-scoped writes are never made from the PSA',
+            'global' => 'global rules are never edited from the PSA',
+        ],
     ];
 
     /**
@@ -222,6 +256,8 @@ class StaffMeshAdminToolExecutor
             self::stageAddAllowRuleTool(),
             self::removeAllowRuleTool(),
             self::stageRemoveAllowRuleTool(),
+            self::editAllowRuleTool(),
+            self::stageEditAllowRuleTool(),
         ];
     }
 
@@ -264,6 +300,8 @@ class StaffMeshAdminToolExecutor
             'mesh_add_allow_rule' => $this->immediateRefused('mesh_add_allow_rule', 'mesh_stage_add_allow_rule', $arguments, $clientId, $actorLabel),
             'mesh_stage_remove_allow_rule' => $this->stageRemoveAllowRule($arguments, (int) $clientId, $actorLabel),
             'mesh_remove_allow_rule' => $this->immediateRefused('mesh_remove_allow_rule', 'mesh_stage_remove_allow_rule', $arguments, $clientId, $actorLabel),
+            'mesh_stage_edit_allow_rule' => $this->stageEditAllowRule($arguments, (int) $clientId, $actorLabel),
+            'mesh_edit_allow_rule' => $this->immediateRefused('mesh_edit_allow_rule', 'mesh_stage_edit_allow_rule', $arguments, $clientId, $actorLabel),
             default => ['error' => "Unknown Mesh admin tool: {$name}"],
         };
     }
@@ -1136,6 +1174,7 @@ class StaffMeshAdminToolExecutor
             $result = match ($directTool) {
                 'mesh_add_allow_rule' => $this->executeAllowRule($arguments, (int) $run->client_id, $this->approverLabel($approverId), $run, $approverId),
                 'mesh_remove_allow_rule' => $this->executeRemoveAllowRule($arguments, (int) $run->client_id, $this->approverLabel($approverId), $run, $approverId),
+                'mesh_edit_allow_rule' => $this->executeEditAllowRule($arguments, (int) $run->client_id, $this->approverLabel($approverId), $run, $approverId),
                 default => ['error' => 'Unsupported Mesh staged admin action.'],
             };
 
@@ -2399,6 +2438,555 @@ class StaffMeshAdminToolExecutor
         ];
     }
 
+    /**
+     * Resolve and validate everything the EDIT depends on, against LIVE
+     * upstream state AND the PSA's own record (#1135).
+     *
+     * Same shape and same reasons as removeAllowRuleTarget() — called at
+     * staging and again at approval, resolved only within this client's
+     * tenant, allow-only, sender typed back — with one requirement the remove
+     * verb does not have: THE RULE MUST BE PSA-TRACKED. The only expiry that
+     * does anything is the PSA's own (`mesh_allow_rules.expires_at`, which the
+     * reaper enforces); Mesh's `date_expiry` is display-only. A rule the PSA
+     * never wrote has no row for that expiry to live on, so "editing" its
+     * expiry would change a portal column and nothing else — a no-op dressed
+     * as a change. It is refused, and the refusal says why. Adopting foreign
+     * rules into the reaper's queue is a product decision, not an edit path.
+     *
+     * @return array{rule_id?: string, sender?: string, comment?: string, mesh_customer_id?: string, client_name?: string, record?: MeshAllowRule, scope_note?: string, current_note?: string, error?: string}
+     */
+    private function editAllowRuleTarget(array $arguments, int $clientId): array
+    {
+        $client = Client::find($clientId);
+        if (! $client) {
+            return ['error' => 'Client not found'];
+        }
+
+        $tenant = trim((string) ($client->mesh_customer_id ?? ''));
+        if ($tenant === '') {
+            return ['error' => "{$client->name} has no Mesh customer mapping; link the client to its Mesh tenant before editing allow rules."];
+        }
+
+        $ruleId = $this->requiredString($arguments, 'rule_id');
+        if ($ruleId === null) {
+            return ['error' => 'rule_id is required'];
+        }
+
+        if (mb_strlen($ruleId) > 255) {
+            return ['error' => 'rule_id is not a Mesh rule id (longer than 255 characters); nothing was changed.'];
+        }
+
+        try {
+            $row = $this->client->findRuleById($tenant, $ruleId);
+        } catch (MeshClientException $e) {
+            return ['error' => "The rule could not be read from Mesh, so its scope could not be checked and nothing was changed: {$e->getMessage()}"];
+        }
+
+        if ($row === null) {
+            return ['error' => "No allow rule with id '{$ruleId}' belongs to {$client->name}'s Mesh tenant. Nothing was changed. "
+                .'Check the id against this client\'s own rules — an id from another customer, or from the partner-wide list, will not resolve here.'];
+        }
+
+        $ab = $row['ab'] ?? null;
+        if (! is_bool($ab)) {
+            return ['error' => "Mesh did not state whether rule '{$ruleId}' is an allow rule or a block rule, so it was not changed. This verb only ever edits rules Mesh confirms are ALLOW rules."];
+        }
+        if ($ab !== MeshWriteClient::ALLOW_RULE) {
+            return ['error' => "Rule '{$ruleId}' is a BLOCK rule, not an allow rule. Block rules are never edited from the PSA. Nothing was changed."];
+        }
+
+        $sender = is_scalar($row['sender'] ?? null) ? mb_strtolower(trim((string) $row['sender'])) : '';
+        if ($sender === '') {
+            return ['error' => "Mesh returned no sender for rule '{$ruleId}', so the typed confirmation cannot be checked and nothing was changed."];
+        }
+
+        $confirm = $this->requiredString($arguments, 'confirm_sender');
+        if ($confirm === null || mb_strtolower(trim($confirm)) !== $sender) {
+            return ['error' => "confirm_sender must exactly match the sender on rule '{$ruleId}' to edit it. Read the rule first and type its sender back."];
+        }
+
+        $record = MeshAllowRule::query()
+            ->where('client_id', $clientId)
+            ->where('mesh_rule_id', $ruleId)
+            ->latest('id')
+            ->first();
+
+        if ($record === null) {
+            return ['error' => "Rule '{$ruleId}' (sender '{$sender}') is FOREIGN: the PSA did not create it and holds no record of it for {$client->name}. "
+                .'Its expiry cannot be edited from here, because the only expiry that is enforced is the PSA\'s own — Mesh displays an expiry but does not act on one — '
+                .'and a rule with no PSA record has nothing to enforce it. Nothing was changed. '
+                .'Bringing rules created outside the PSA under its expiry job is a product decision, not something this verb can do; until then, foreign rules are managed in the Mesh portal.'];
+        }
+
+        // A closed row is not an editable one. STATE_REMOVED and STATE_REAPED
+        // are terminal and outside scopeReapable(), so a new expiry written
+        // onto either would never be enforced — the same no-op the foreign
+        // refusal above exists to stop, reached from the other side.
+        if (in_array($record->state, [MeshAllowRule::STATE_REMOVED, MeshAllowRule::STATE_REAPED], true)) {
+            return ['error' => "The PSA record for rule '{$ruleId}' (#{$record->id}) is already closed ({$record->state}), so its expiry is no longer enforced and cannot be edited. "
+                .'If the rule is still live in Mesh, it is now foreign to the PSA and is managed in the portal. Nothing was changed.'];
+        }
+
+        return [
+            'rule_id' => $ruleId,
+            'sender' => $sender,
+            'comment' => is_scalar($row['comment'] ?? null) ? trim((string) $row['comment']) : '',
+            'mesh_customer_id' => $tenant,
+            'client_name' => (string) $client->name,
+            'record' => $record,
+            'scope_note' => str_contains($sender, '@')
+                ? "Scope: this rule allows the single address '{$sender}'. The scope is not changed by this edit."
+                : "Scope: this rule allows EVERY sender at '{$sender}'. The scope is not changed by this edit.",
+            'current_note' => "PSA-TRACKED (record #{$record->id}, state {$record->state}): currently ".self::expiryPhrase($record->expires_at).'.',
+        ];
+    }
+
+    /**
+     * Stage an expiry edit for cockpit approval. There is no immediate lane.
+     *
+     * @return array<string, mixed>
+     */
+    private function stageEditAllowRule(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $tool = 'mesh_stage_edit_allow_rule';
+
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $ticket = $this->ticketForClient($arguments['ticket_id'] ?? null, $clientId);
+        if (is_array($ticket)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, $this->contentHash($tool, $clientId, 'guard', $arguments), $ticket['error'], $actorLabel);
+
+            return ['error' => $ticket['error']];
+        }
+
+        // REQUIRED here, where the create verb makes it optional, and checked
+        // before requestedExpiry() is consulted: that method answers an ABSENT
+        // key with the 90-day default, which is the right answer for a rule
+        // being born and the wrong one for a rule being edited. An edit with
+        // nothing to edit is a mistake, and defaulting it would quietly
+        // rewrite a lifetime somebody chose.
+        if (! array_key_exists('expires_at', $arguments)) {
+            $message = 'expires_at is required: it is the only thing this verb changes. Give an ISO-8601 date or datetime, or the word "'.self::EXPIRY_NEVER.'" for a rule that never expires.';
+            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $this->contentHash($tool, $clientId, 'guard', $arguments), $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $expiry = $this->requestedExpiry($arguments);
+        if (isset($expiry['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $this->contentHash($tool, $clientId, 'guard', $arguments), $expiry['error'], $actorLabel);
+
+            return ['error' => $expiry['error']];
+        }
+        $expiresAt = $expiry['expires_at'];
+
+        $ruleIdForHash = is_scalar($arguments['rule_id'] ?? null) ? trim((string) $arguments['rule_id']) : 'unresolved';
+        // ONE key, and the new lifetime is part of it. Unlike the create verb
+        // there is no split between the proposal's identity and the write's:
+        // the lifetime IS the write here, so two proposals for the same rule
+        // with different dates are two different writes, and the same date
+        // twice is the same one. Hashed as expiryValue(), which is stable for
+        // one input, never as the parsed instant's default.
+        $contentHash = $this->contentHash($tool, $clientId, 'edit-allow-rule-'.$ruleIdForHash, [
+            'expires_at' => self::expiryValue($expiresAt),
+        ]);
+
+        $target = $this->editAllowRuleTarget($arguments, $clientId);
+        if (isset($target['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, $target['error'], $actorLabel);
+
+            return ['error' => $target['error']];
+        }
+
+        $record = $target['record'];
+
+        // A rule the PSA already holds at exactly this expiry has nothing to
+        // change, and the row itself is the evidence — unlike the remove verb,
+        // whose target is gone once it has succeeded, an edit leaves a local
+        // record to compare against, so the duplicate question is answered
+        // from STATE and not from a 24-hour window over the audit log. A
+        // window would answer "already done" for a request the state no
+        // longer satisfies (edited to X, then to Y, then X asked again) and
+        // stop answering it after a day for one it still does.
+        if (self::sameInstant($record->expires_at, $expiresAt)) {
+            // A retry of an edit that landed recently is a satisfied request
+            // and is answered as one, with the run that did it.
+            if ($this->alreadyExecuted('mesh_edit_allow_rule', $clientId, $contentHash)) {
+                return [
+                    'success' => true,
+                    'idempotent' => true,
+                    'ticket_id' => $ticket->id,
+                    'ticket_display_id' => $ticket->display_id,
+                    'run_id' => $this->executedRunId('mesh_edit_allow_rule', $clientId, $contentHash),
+                    'rule_id' => $target['rule_id'],
+                    'expires_at' => self::expiryValue($expiresAt),
+                    'message' => "Rule '{$target['rule_id']}' was already set to ".self::expiryPhrase($expiresAt).' for this client recently; no proposal was staged.',
+                ];
+            }
+
+            // Otherwise it is a request for no change. Refused rather than
+            // staged, because a card whose approval does nothing is a card
+            // that teaches approvers not to read cards.
+            $message = "Rule '{$target['rule_id']}' (sender '{$target['sender']}') already ".self::expiryPhrase($record->expires_at).' in the PSA; there is nothing to change and no proposal was staged.';
+            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
+        if ($liveAwaitingRun !== null) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $liveAwaitingRun->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        if ($this->cooldownActive($tool, $clientId)) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $contentHash, 'Mesh allow-rule edit proposal cooldown active.', $actorLabel);
+
+            return ['error' => 'mesh_edit_allow_rule cooldown active for this client; no proposal was staged.'];
+        }
+
+        $proposedContent = "Change the expiry of the Mesh Email Security allow rule '{$target['rule_id']}' for {$target['client_name']}.\n"
+            ."Sender allowed by this rule: {$target['sender']}\n"
+            .$target['scope_note']."\n"
+            .$target['current_note']."\n"
+            .'New expiry: '.self::expiryPhrase($expiresAt)."\n"
+            .($expiresAt === null
+                ? "This makes the rule PERMANENT: nothing in the PSA will ever remove it, and the hole in this customer's mail filtering stays open until a human closes it in the Mesh portal.\n"
+                : "The PSA enforces this: its expiry job removes the rule once that date has passed.\n")
+            ."Mesh's own Expires column is display only — Mesh does not act on it. The PSA will ask Mesh to show the new date; "
+            ."if Mesh does not accept or does not keep it, Mesh will keep showing the old date while the PSA enforces the new one, and that is reported on this card's outcome rather than retried.\n"
+            .'Mesh comment on the rule (unchanged — it is how the PSA identifies the rule): '.($target['comment'] !== '' ? $target['comment'] : '(none)')."\n"
+            .'Reason: '.$guard['reason'];
+
+        $meta = [
+            'drafted_by' => $actorLabel,
+            'reasons' => [$guard['reason']],
+            'direct_tool' => self::STAGED_TO_DIRECT[$tool],
+            'redacted_params' => [
+                'rule_id' => $target['rule_id'],
+                'sender' => $target['sender'],
+                'client' => $target['client_name'],
+                'psa_record_id' => $record->id,
+                'current_expires_at' => self::expiryValue($record->expires_at),
+                'expires_at' => self::expiryValue($expiresAt),
+                'expiry_note' => self::expiryPhrase($expiresAt),
+            ],
+            'encrypted_payload' => Crypt::encryptString(json_encode([
+                'direct_tool' => self::STAGED_TO_DIRECT[$tool],
+                'client_id' => $clientId,
+                'ticket_id' => $ticket->id,
+                'arguments' => [
+                    // The id, the confirmation and the requested lifetime.
+                    // The tenant, the sender, the allow/block flag and the PSA
+                    // record are re-resolved at approval; the lifetime is
+                    // re-validated there too, so a date that passes while the
+                    // card waits is refused rather than applied.
+                    'rule_id' => $target['rule_id'],
+                    'confirm_sender' => $target['sender'],
+                    'expires_at' => self::expiryValue($expiresAt),
+                    'reason' => $guard['reason'],
+                ],
+            ], JSON_THROW_ON_ERROR)),
+        ];
+
+        $slot = $this->stagedRunSlot($ticket->id, $tool, $contentHash);
+        if (isset($slot['error'])) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $contentHash, $slot['error'], $actorLabel);
+
+            return ['error' => $slot['error']];
+        }
+        $contentHash = $slot['content_hash'];
+
+        $run = TechnicianRun::firstOrCreate(
+            [
+                'ticket_id' => $ticket->id,
+                'action_type' => $tool,
+                'content_hash' => $contentHash,
+            ],
+            [
+                'client_id' => $clientId,
+                'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ],
+        );
+
+        if (! $run->wasRecentlyCreated) {
+            if ($run->state !== TechnicianRunState::AwaitingApproval) {
+                $message = 'Another proposal for this edit is already in flight on this ticket; no proposal was staged.';
+                $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $contentHash, $message, $actorLabel, $run->id);
+
+                return ['error' => $message];
+            }
+
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        $this->auditAttempt($tool, 'awaiting_approval', $clientId, $ticket, $contentHash, "MCP staged expiry edit of Mesh allow rule '{$target['rule_id']}' (sender '{$target['sender']}'): ".self::expiryPhrase($record->expires_at).' -> '.self::expiryPhrase($expiresAt).'.', $actorLabel, $run->id);
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'run_id' => $run->id,
+            'rule_id' => $target['rule_id'],
+            'sender' => $target['sender'],
+            'current_expires_at' => self::expiryValue($record->expires_at),
+            'expires_at' => self::expiryValue($expiresAt),
+            'message' => 'Staged for cockpit approval ('.self::expiryPhrase($expiresAt).').',
+        ];
+    }
+
+    /**
+     * Execute an approved expiry edit. Only reachable through approveStagedRun().
+     *
+     * Two writes, in a fixed order, and only the first is the change:
+     *
+     *   1. `mesh_allow_rules.expires_at` — AUTHORITATIVE. The reaper reads this
+     *      and nothing else; once it is saved the new lifetime is enforced.
+     *   2. PATCH `date_expiry` upstream — DISPLAY. Mesh does not act on the
+     *      field; the call exists so the portal's Expires column agrees with
+     *      what the PSA will do.
+     *
+     * The post-condition is a tenant-scoped re-read of the SAME id: the row
+     * must still resolve under it and must show the new date. If it does not
+     * — the PATCH was refused, threw, did not stick, or Mesh answered with a
+     * different id — the upstream side is NOT retried and NOT undone. The
+     * authoritative change stands, the card is spent, and the outcome says in
+     * words that Mesh may keep showing the old date while the PSA enforces the
+     * new one. A second PATCH cannot make that truer, and a remove-plus-re-add
+     * of a live allow rule is not an edit.
+     *
+     * @return array<string, mixed>
+     */
+    private function executeEditAllowRule(
+        array $arguments,
+        int $clientId,
+        string $actorLabel,
+        ?TechnicianRun $run = null,
+        ?int $approverId = null,
+    ): array {
+        $tool = 'mesh_edit_allow_rule';
+
+        $ruleIdForHash = is_scalar($arguments['rule_id'] ?? null) ? trim((string) $arguments['rule_id']) : 'unresolved';
+        $requestedValue = is_scalar($arguments['expires_at'] ?? null) ? trim((string) $arguments['expires_at']) : 'unresolved';
+        // Re-derived from the arguments, NEVER $run->content_hash — same rule
+        // and same reason as the other two verbs (stagedRunSlot generations).
+        $contentHash = $this->contentHash('mesh_stage_edit_allow_rule', $clientId, 'edit-allow-rule-'.$ruleIdForHash, [
+            'expires_at' => $requestedValue,
+        ]);
+
+        if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+            $message = "Rule '{$ruleIdForHash}' was already set to this expiry for this client recently; no upstream call was made.";
+            $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['success' => true, 'idempotent' => true, 'message' => $message];
+        }
+
+        // The lifetime is re-validated against NOW, not carried as a parsed
+        // value: a date that was in the future when the card was staged and is
+        // in the past when the button is pressed would make the rule reapable
+        // on the spot, and the approver did not consent to an immediate
+        // removal.
+        if (! array_key_exists('expires_at', $arguments)) {
+            $message = 'The approved proposal carries no expires_at; nothing was changed. Stage a new proposal.';
+            $this->auditAttempt($tool, 'rejected', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $message];
+        }
+        $expiry = $this->requestedExpiry($arguments);
+        if (isset($expiry['error'])) {
+            $message = $expiry['error'].' No upstream call was made and nothing was changed; stage a new proposal with a valid expiry.';
+            $this->auditAttempt($tool, 'rejected', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $message];
+        }
+        $expiresAt = $expiry['expires_at'];
+
+        $target = $this->editAllowRuleTarget($arguments, $clientId);
+        if (isset($target['error'])) {
+            $message = $target['error'].' (re-checked at approval; nothing was changed)';
+            $this->auditAttempt($tool, 'rejected', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $message];
+        }
+
+        $record = $target['record'];
+        $previous = $record->expires_at;
+
+        // Answered from the row, not only from the dedup window above: a
+        // duplicate card approved after that window has closed would otherwise
+        // send a second PATCH for a lifetime the PSA already holds. Nothing to
+        // enforce differently means nothing to send.
+        if (self::sameInstant($previous, $expiresAt)) {
+            $message = "Rule '{$target['rule_id']}' (sender '{$target['sender']}') already ".self::expiryPhrase($previous).' in the PSA; this proposal changes nothing and no upstream call was made.';
+            $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['success' => true, 'idempotent' => true, 'message' => $message];
+        }
+
+        $transition = self::expiryPhrase($previous).' -> '.self::expiryPhrase($expiresAt);
+
+        // THE change. Saved before anything is sent upstream, so that a PATCH
+        // that hangs, throws or is refused cannot leave the approver with a
+        // card that says "changed" over a lifetime the reaper never saw.
+        $record->forceFill(['expires_at' => $expiresAt])->save();
+
+        $patchError = null;
+        try {
+            // Null is sent EXPLICITLY here (patchRule keeps the key): on a
+            // partial update an omitted field is "leave unchanged", and a rule
+            // made permanent must stop displaying a date it no longer has.
+            $this->client->patchRule($target['rule_id'], ['date_expiry' => $expiresAt?->toIso8601String()]);
+        } catch (MeshClientException $e) {
+            $patchError = $e->getMessage();
+        }
+
+        $readError = null;
+        $after = null;
+        try {
+            $after = $this->client->findRuleById($target['mesh_customer_id'], $target['rule_id']);
+        } catch (MeshClientException $e) {
+            $readError = $e->getMessage();
+        }
+
+        $displayAgrees = $after !== null && self::displayAgrees($after, $expiresAt);
+
+        if ($displayAgrees) {
+            $summary = "Changed the expiry of Mesh allow rule '{$target['rule_id']}' (sender '{$target['sender']}') for this client: {$transition}. "
+                ."PSA record #{$record->id} now carries the new expiry and the PSA enforces it; Mesh re-read under the same id and displays it."
+                .($patchError !== null ? ' The PATCH call itself did not answer cleanly ('.$patchError.'), but the re-read shows the new date.' : '');
+
+            $this->auditAttempt($tool, 'executed', $clientId, null, $contentHash, $summary, $actorLabel, $run?->id, $approverId);
+
+            return [
+                'success' => true,
+                'rule_id' => $target['rule_id'],
+                'sender' => $target['sender'],
+                'psa_record_id' => $record->id,
+                'previous_expires_at' => self::expiryValue($previous),
+                'expires_at' => self::expiryValue($expiresAt),
+                'display_synced' => true,
+                'message' => $summary,
+            ];
+        }
+
+        // Everything below is a FAULT on the DISPLAY side only. The
+        // authoritative change is already saved and is not undone: an error
+        // would release the claim and invite a second PATCH, which is the one
+        // thing this path must never do.
+        if ($after === null && $readError === null) {
+            // The id no longer resolves on this tenant after the PATCH. Either
+            // Mesh re-keyed the rule or the rule is gone; both look the same
+            // from here, and neither is measured further. The recorded id is
+            // CLEARED so the reaper falls back to the sender+comment lookup
+            // when the new expiry comes due — a stale id would 404 on its
+            // DELETE, be read as absent, and retire a rule that may still be
+            // live under another id. The comment is why that fallback works,
+            // and why this verb never edits it.
+            $fault = 'display_id_lost';
+            $record->forceFill(['mesh_rule_id' => null])->save();
+            $message = "The PSA now enforces the new expiry for allow rule '{$target['rule_id']}' (sender '{$target['sender']}'): {$transition}. "
+                ."But after the update Mesh no longer returns a rule under id '{$target['rule_id']}' on this tenant, so whether the portal shows the new date could not be confirmed and the upstream side was NOT retried. "
+                .'Mesh may keep showing the old expiry while the PSA enforces the new one. '
+                ."PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared so the expiry job re-identifies the rule by sender and comment when it is due. "
+                .'Check the rule in the Mesh portal.';
+        } elseif ($after === null) {
+            $fault = 'display_unmeasured';
+            $message = "The PSA now enforces the new expiry for allow rule '{$target['rule_id']}' (sender '{$target['sender']}'): {$transition}. "
+                ."Whether Mesh displays it could NOT be measured — the confirming read did not answer ({$readError}) — and the upstream side was NOT retried. "
+                .'Mesh may keep showing the old expiry while the PSA enforces the new one. Check the rule in the Mesh portal.';
+        } else {
+            $fault = 'display_unsynced';
+            $shown = self::upstreamExpiry($after);
+            $message = "The PSA now enforces the new expiry for allow rule '{$target['rule_id']}' (sender '{$target['sender']}'): {$transition}. "
+                .'But Mesh did not take the display update: re-read under the same id, it still shows '
+                .($shown === null ? 'no expiry' : 'an expiry of '.$shown->toDayDateTimeString().' UTC')
+                .', and the upstream side was NOT retried. Mesh will keep showing the old date while the PSA enforces the new one.';
+        }
+        $message .= ($patchError !== null ? ' The PATCH call reported: '.$patchError.'.' : '');
+
+        $this->auditAttempt($tool, 'executed_with_fault', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+        return [
+            'success' => true,
+            'fault' => $fault,
+            'rule_id' => $target['rule_id'],
+            'sender' => $target['sender'],
+            'psa_record_id' => $record->id,
+            'previous_expires_at' => self::expiryValue($previous),
+            'expires_at' => self::expiryValue($expiresAt),
+            'display_synced' => false,
+            'message' => $message,
+        ];
+    }
+
+    /**
+     * The expiry Mesh displays on a rule row, as an instant — or null when it
+     * shows none, or shows something this system cannot read (which is not
+     * agreement with anything).
+     */
+    private static function upstreamExpiry(array $row): ?\Illuminate\Support\Carbon
+    {
+        $value = $row['date_expiry'] ?? null;
+        if (! is_scalar($value) || trim((string) $value) === '') {
+            return null;
+        }
+
+        try {
+            return \Illuminate\Support\Carbon::parse(trim((string) $value))->utc();
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /** Two lifetimes are the same when both are permanent or both name the same instant. */
+    private static function sameInstant(?\Illuminate\Support\Carbon $a, ?\Illuminate\Support\Carbon $b): bool
+    {
+        if ($a === null || $b === null) {
+            return $a === null && $b === null;
+        }
+
+        return $a->equalTo($b);
+    }
+
+    /**
+     * Does the row Mesh returns after the PATCH display the lifetime that was
+     * asked for? Permanent must read back as no expiry. A dated lifetime is
+     * matched to the DAY, not the second: the field is display-only, the
+     * precision Mesh stores and echoes is not measured, and a portal column
+     * showing the right day is what the PATCH exists to achieve. A different
+     * day, or a date where none was asked for, is the fault.
+     */
+    private static function displayAgrees(array $row, ?\Illuminate\Support\Carbon $expiresAt): bool
+    {
+        $shown = self::upstreamExpiry($row);
+
+        if ($expiresAt === null || $shown === null) {
+            return $expiresAt === null && $shown === null;
+        }
+
+        return $shown->isSameDay($expiresAt);
+    }
+
     /** @return array<string, mixed> */
     private static function addAllowRuleTool(): array
     {
@@ -2514,6 +3102,71 @@ class StaffMeshAdminToolExecutor
             'ticket_id' => [
                 'type' => 'integer',
                 'description' => 'PSA ticket this removal belongs to. The proposal is staged against it and the ticket reference is recorded in the PSA audit row.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function editAllowRuleTool(): array
+    {
+        return self::tool(
+            'mesh_edit_allow_rule',
+            'Change the expiry of ONE Mesh Email Security allow rule the PSA created, for a customer tenant resolved server-side from the PSA client. '
+            .'STAGED ONLY: every call is held as a cockpit approval proposal. There is no immediate implementation — a bare (immediate) grant is refused with a pointer to `mesh_edit_allow_rule:staged`. '
+            .'ONE FIELD: `expires_at` (an ISO-8601 date or datetime, or "'.self::EXPIRY_NEVER.'" for a rule that is never removed) is the only thing this verb changes, and it is required. '
+            .'The PSA enforces the expiry — Mesh only displays one — so the change is made to the PSA record first and Mesh is then asked to show the same date; if Mesh does not keep it, the outcome says so and the PSA still enforces the new date. '
+            .'PSA-TRACKED RULES ONLY: a rule the PSA did not create (FOREIGN) has no enforced expiry to edit and is refused with the reason. '
+            .'The sender, the comment (which is how the PSA identifies the rule), the allow/block type and the scope are never changed; changing the sender is a removal plus a new rule. '
+            .'Requires reason, ticket_id, and the rule’s sender typed back as confirmation.',
+            self::editAllowRuleProperties(),
+            ['rule_id', 'confirm_sender', 'expires_at', 'reason', 'ticket_id'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageEditAllowRuleTool(): array
+    {
+        return self::tool(
+            'mesh_stage_edit_allow_rule',
+            'Stage an expiry change for a PSA-created Mesh Email Security allow rule for cockpit approval. STAGED ONLY — this is the only lane the verb has: approval re-resolves the client’s Mesh tenant, re-checks the rule’s ownership, its allow/block type, the typed sender confirmation and the PSA record against LIVE state, and re-validates the date, before anything is written. '
+            .'ONE FIELD: `expires_at` is the only thing this verb changes — the sender, the comment (which is how the PSA identifies the rule), the allow/block type and the scope are never touched. '
+            .'The proposal names the sender the rule allows, how wide it is, the expiry the PSA currently enforces, the new expiry in words (including PERMANENT when there is no expiry), and that Mesh’s own Expires column is display only. '
+            .'Extending or removing an expiry LENGTHENS the hole in this customer’s mail filtering. '
+            .'PSA-TRACKED RULES ONLY: a FOREIGN rule (one the PSA did not create) has no PSA-enforced expiry to change and is refused with the reason. '
+            .'Requires a ticket, reason, the sender typed back, an explicit expires_at, explicit grant, kill-switch, dedup and cooldown.',
+            self::editAllowRuleProperties(),
+            ['rule_id', 'confirm_sender', 'expires_at', 'reason', 'ticket_id'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function editAllowRuleProperties(): array
+    {
+        return [
+            'rule_id' => [
+                'type' => 'string',
+                'description' => 'The Mesh rule id to edit. Read it from this client’s own allow rules (or from a PSA mesh_allow_rules record). '
+                    .'An id that does not belong to this client’s Mesh tenant will not resolve, and no partner-wide or global rule is reachable.',
+            ],
+            'confirm_sender' => [
+                'type' => 'string',
+                'description' => 'Typed confirmation of the sender this rule allows. Must match exactly (case-insensitive) what Mesh holds for the rule, or the edit is refused. '
+                    .'This is the check that catches a valid id pasted for the wrong rule — read the rule before you type it.',
+            ],
+            'expires_at' => [
+                'type' => 'string',
+                'description' => 'Required. The new expiry: an ISO-8601 date or datetime (e.g. 2026-12-01 or 2026-12-01T17:00:00Z), '
+                    .'or the word "'.self::EXPIRY_NEVER.'" for a rule that NEVER expires and that nothing in the PSA will ever remove. '
+                    .'A value that cannot be read, or a date already in the past, is refused. There is no default — an edit must say what it changes the expiry to. '
+                    .'Choose "'.self::EXPIRY_NEVER.'" deliberately: it leaves a permanent hole in this customer’s mail filtering, and the approver is shown it as PERMANENT.',
+            ],
+            'reason' => [
+                'type' => 'string',
+                'description' => 'Specific operational reason for changing when this allow rule stops applying.',
+            ],
+            'ticket_id' => [
+                'type' => 'integer',
+                'description' => 'PSA ticket this edit belongs to. The proposal is staged against it and the ticket reference is recorded in the PSA audit row.',
             ],
         ];
     }

@@ -334,9 +334,15 @@ class MeshWriteClient
      * `sender` required on PUT, so a PUT would have to reintroduce exactly the
      * field the verb refuses.
      *
+     * `comment` is absent too, and for a different reason: it is not a label
+     * but the reaper's fallback IDENTITY for a rule. When a row's
+     * `mesh_rule_id` is missing or stale, MeshAllowRuleReaper::resolveRuleId()
+     * recovers it through findRuleByComment(); an edited comment would leave a
+     * live allow rule that the only queue able to close it can no longer find.
+     *
      * @var array<int, string>
      */
-    private const PATCHABLE_FIELDS = ['date_expiry', 'comment'];
+    private const PATCHABLE_FIELDS = ['date_expiry'];
 
     /**
      * Update ONE rule in place by id, with a body restricted to

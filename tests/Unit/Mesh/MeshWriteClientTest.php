@@ -350,15 +350,15 @@ class MeshWriteClientTest extends TestCase
 
     public function test_patch_targets_the_detail_route_with_the_partial_method(): void
     {
-        $client = $this->clientReturning([new Response(200, [], json_encode(['id' => 'rule-1', 'comment' => 'PSA allow BBBBBBBBBB']))]);
+        $client = $this->clientReturning([new Response(200, [], json_encode(['id' => 'rule-1', 'date_expiry' => '2026-12-01T00:00:00+00:00']))]);
 
-        $client->patchRule('rule-1', ['comment' => 'PSA allow BBBBBBBBBB']);
+        $client->patchRule('rule-1', ['date_expiry' => '2026-12-01T00:00:00+00:00']);
 
         // PATCH, never PUT: the schema marks `sender` required on PUT, and
         // sending a sender is the one thing an "edit" must never do.
         $this->assertSame('PATCH', $this->lastRequest()->getMethod());
         $this->assertSame('/api/rule-allows-blocks/rule-1/', $this->lastRequest()->getUri()->getPath());
-        $this->assertSame(['comment' => 'PSA allow BBBBBBBBBB'], $this->lastBody());
+        $this->assertSame(['date_expiry' => '2026-12-01T00:00:00+00:00'], $this->lastBody());
     }
 
     public function test_patch_sends_an_explicit_null_to_clear_an_expiry(): void
@@ -392,7 +392,10 @@ class MeshWriteClientTest extends TestCase
             ['edge' => true],
             ['active' => false],
             ['sender' => 'attacker@example.test'],
-            ['comment' => 'ok', 'edge' => true],
+            // The comment is the reaper's fallback identity for the rule
+            // (findRuleByComment), so it is not a label this lane may rewrite.
+            ['comment' => 'PSA allow BBBBBBBBBB'],
+            ['date_expiry' => null, 'edge' => true],
         ] as $fields) {
             // Empty queue: reaching the transport at all fails the MockHandler.
             $client = $this->clientReturning([]);
@@ -417,20 +420,20 @@ class MeshWriteClientTest extends TestCase
     {
         $this->expectException(MeshClientException::class);
 
-        $this->clientReturning([])->patchRule('   ', ['comment' => 'x']);
+        $this->clientReturning([])->patchRule('   ', ['date_expiry' => null]);
     }
 
     public function test_patch_reports_a_vendor_400_as_a_rejection_with_its_own_text(): void
     {
         $client = $this->clientReturning([
-            new Response(400, [], json_encode(['comment' => ['String invalid']])),
+            new Response(400, [], json_encode(['date_expiry' => ['Datetime has wrong format.']])),
         ]);
 
         try {
-            $client->patchRule('rule-1', ['comment' => 'bad#comment']);
+            $client->patchRule('rule-1', ['date_expiry' => 'not-a-date']);
             $this->fail('a 400 must surface as a vendor rejection');
         } catch (MeshWriteRejectedException $e) {
-            $this->assertStringContainsString('String invalid', $e->getMessage());
+            $this->assertStringContainsString('Datetime has wrong format', $e->getMessage());
         }
     }
 }

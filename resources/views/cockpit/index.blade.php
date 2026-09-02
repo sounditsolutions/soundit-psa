@@ -68,6 +68,7 @@
             'huntress_stage_resolve_escalation' => ['bg-danger text-white', 'Huntress escalation resolve', 'bi-shield-check'],
             'mesh_stage_add_allow_rule' => ['bg-danger text-white', 'Mesh allow rule', 'bi-envelope-exclamation'],
             'mesh_stage_remove_allow_rule' => ['bg-danger text-white', 'Mesh allow rule removal', 'bi-envelope-slash'],
+            'mesh_stage_edit_allow_rule' => ['bg-danger text-white', 'Mesh allow rule expiry edit', 'bi-envelope-paper'],
             'calendar_stage_create_event' => ['bg-info-subtle text-info-emphasis border border-info-subtle', 'Calendar event create', 'bi-calendar-plus'],
             'calendar_stage_update_event' => ['bg-info-subtle text-info-emphasis border border-info-subtle', 'Calendar event update', 'bi-calendar-event'],
             'calendar_stage_cancel_event' => ['bg-warning-subtle text-warning-emphasis border border-warning-subtle', 'Calendar event cancel', 'bi-calendar-x'],
