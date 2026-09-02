@@ -243,10 +243,21 @@ class MeshAddAllowRuleTest extends TestCase
             // #1133: refuse, never default. Each of these used to become a
             // silent 90 days.
             'unreadable expiry refused' => [['expires_at' => 'whenever'], "expires_at ('whenever') is not a date this system can read"],
-            'past expiry refused' => [['expires_at' => '2020-01-01'], "expires_at ('2020-01-01') is in the past"],
+            'past expiry refused' => [['expires_at' => '2020-01-01'], "expires_at ('2020-01-01') reads as Wed, Jan 1, 2020 12:00 AM UTC, which is in the past"],
+            // A mistyped year is not rejected by PHP, it is REINTERPRETED:
+            // '99999-01-01' parses as 2009-01-01. It is refused as past, and
+            // the refusal says what it actually read, or the caller cannot see
+            // what happened to their year.
+            'mistyped year is reinterpreted and refused' => [['expires_at' => '99999-01-01'], "expires_at ('99999-01-01') reads as Thu, Jan 1, 2009 12:00 AM UTC, which is in the past"],
+            // Whitespace-only reaches the executor as null: TrimStrings and
+            // ConvertEmptyStringsToNull run first. It must still refuse as
+            // empty, and must NOT be mistaken for the parameter being absent.
             'empty expiry refused, not treated as absent' => [['expires_at' => '   '], 'expires_at was empty'],
+            'explicit null expiry refused, not treated as absent' => [['expires_at' => null], 'expires_at was empty'],
             'non-string expiry refused' => [['expires_at' => 90], 'expires_at must be an ISO-8601 date or datetime'],
-            'out-of-range expiry refused' => [['expires_at' => '99999-01-01'], 'further away than this system can record'],
+            // Reachable only through a relative expression — Carbon accepts
+            // these and this one parses to a real year 102026.
+            'out-of-range expiry refused' => [['expires_at' => '+100000 years'], 'further away than this system can record'],
             'comment refused by name' => [['comment' => 'ticket 123'], 'comment (the comment is PSA-generated'],
             'unknown key refused' => [['spf_bypass' => true], 'spf_bypass (not a parameter of this tool)'],
             'reason missing' => [['reason' => ''], 'reason is required'],

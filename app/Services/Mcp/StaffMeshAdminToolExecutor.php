@@ -1264,18 +1264,24 @@ class StaffMeshAdminToolExecutor
 
         $value = $arguments['expires_at'];
 
+        // Empty, whitespace-only, and an explicit null are all the SAME case,
+        // and none of them is the absent case. Over HTTP the first two arrive
+        // here as the third: Laravel's global TrimStrings and
+        // ConvertEmptyStringsToNull middleware run before the MCP controller,
+        // so '   ' has already become null by the time the executor sees it
+        // (measured 2026-09-02 — the '' branch alone was unreachable over the
+        // wire). The key was still SENT, so something was meant by it, and
+        // guessing which of the three answers it was is exactly the class of
+        // guess this method exists to stop.
+        if ($value === null || (is_string($value) && trim($value) === '')) {
+            return ['error' => 'expires_at was empty; give an ISO-8601 date or datetime, or the word "never" for a rule that never expires. Omit the parameter entirely for the default '.MeshAllowRule::DEFAULT_LIFETIME_DAYS.'-day lifetime'];
+        }
+
         if (! is_string($value)) {
             return ['error' => 'expires_at must be an ISO-8601 date or datetime, or the word "never" for a rule that never expires'];
         }
 
         $value = trim($value);
-
-        if ($value === '') {
-            // NOT treated as absent. The key was sent, so something was meant
-            // by it, and guessing which of the three answers it was is the
-            // class of guess this whole method exists to stop.
-            return ['error' => 'expires_at was empty; give an ISO-8601 date or datetime, or the word "never" for a rule that never expires. Omit the parameter entirely for the default '.MeshAllowRule::DEFAULT_LIFETIME_DAYS.'-day lifetime'];
-        }
 
         if (strcasecmp($value, self::EXPIRY_NEVER) === 0) {
             return ['expires_at' => null];
@@ -1288,14 +1294,22 @@ class StaffMeshAdminToolExecutor
         }
 
         if ($parsed->lessThanOrEqualTo(now())) {
-            return ['error' => "expires_at ('{$value}') is in the past; an allow rule cannot be created already expired. Give a future date, or the word \"never\""];
+            // The parsed date is echoed back, not just the input, because PHP
+            // silently REINTERPRETS a mistyped year rather than rejecting it:
+            // '99999-01-01' parses as 2009-01-01 and '20261-01-01' as
+            // 2001-01-01T20:26 (measured 2026-09-02). Both land in the past and
+            // are caught here, but a caller told only "that is in the past"
+            // about a date they typed as the year 99999 would have no idea why.
+            return ['error' => "expires_at ('{$value}') reads as ".$parsed->toDayDateTimeString().' UTC, which is in the past; an allow rule cannot be created already expired. Give a future ISO-8601 date, or the word "never"'];
         }
 
         if ($parsed->year > 9999) {
-            // Beyond what a datetime column can hold. Refusing here beats
-            // failing on the INSERT, which happens AFTER the rule is live
-            // upstream and is reported as record_unwritable — a live,
-            // untracked hole created by a typo in a year.
+            // Beyond what a datetime column can hold — reachable through a
+            // relative expression such as '+100000 years', which Carbon accepts
+            // and which parses to a real, far-future date rather than failing.
+            // Refusing here beats failing on the INSERT, which happens AFTER
+            // the rule is live upstream and is reported as record_unwritable —
+            // a live, untracked hole created by a typo in a year.
             return ['error' => "expires_at ('{$value}') is further away than this system can record; use the word \"never\" for a rule that never expires"];
         }
 
