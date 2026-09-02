@@ -58,6 +58,14 @@ class StaffMeshAdminToolExecutor
 {
     private const DIRECT_DEDUP_HOURS = 24;
 
+    /**
+     * How many proposals for the same write may exist on one ticket. A spent
+     * run is never rewritten, so a repeat request takes the next generation of
+     * its idempotency key; this is where that stops being served rather than
+     * growing without bound.
+     */
+    private const MAX_RUN_GENERATIONS = 20;
+
     private const COOLDOWN_SECONDS = 300;
 
     private const REASON_MAX = 500;
@@ -328,6 +336,20 @@ class StaffMeshAdminToolExecutor
             ], JSON_THROW_ON_ERROR)),
         ];
 
+        // A spent run is a record, not a scratchpad. Reviving one would
+        // overwrite the encrypted payload and committed comment of a run a
+        // mesh_allow_rules row still points at, turn an operator's deny back
+        // into an approvable proposal, and reset an Executing row so a second
+        // claimForExecution() could succeed. The proposal moves to a free slot
+        // instead; the hash it lands on is the one everything downstream uses.
+        $slot = $this->stagedRunSlot($ticket->id, $tool, $contentHash);
+        if (isset($slot['error'])) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $contentHash, $slot['error'], $actorLabel);
+
+            return ['error' => $slot['error']];
+        }
+        $contentHash = $slot['content_hash'];
+
         $run = TechnicianRun::firstOrCreate(
             [
                 'ticket_id' => $ticket->id,
@@ -344,15 +366,17 @@ class StaffMeshAdminToolExecutor
             ],
         );
 
-        if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
-            $run->update([
-                'state' => TechnicianRunState::AwaitingApproval->value,
-                'proposed_content' => $proposedContent,
-                'proposed_meta' => $meta,
-                'confidence' => null,
-                'tokens_used' => 0,
-            ]);
-        } elseif (! $run->wasRecentlyCreated) {
+        if (! $run->wasRecentlyCreated) {
+            // The slot was free when it was chosen; a row on it now means a
+            // concurrent staging call won the insert. Awaiting is the
+            // idempotent answer — anything else is spent and is NOT rewritten.
+            if ($run->state !== TechnicianRunState::AwaitingApproval) {
+                $message = 'Another proposal for this write is already in flight on this ticket; no proposal was staged.';
+                $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $contentHash, $message, $actorLabel, $run->id);
+
+                return ['error' => $message];
+            }
+
             return [
                 'success' => true,
                 'idempotent' => true,
@@ -430,10 +454,13 @@ class StaffMeshAdminToolExecutor
 
             return ['error' => $message];
         } catch (MeshClientException $e) {
-            $message = 'Mesh allow rule failed: '.$e->getMessage();
-            $this->auditAttempt($tool, 'error', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
-
-            return ['error' => $message];
+            // NOT a failed create. Mesh commits the rule before it answers, so
+            // a read timeout, a reset connection or an edge 502 can sit on top
+            // of a rule that is already live; declaring failure here is exactly
+            // what leaves a hole in mail filtering with no row to reap it, and
+            // invites a second rule when the approver retries. The
+            // post-condition is MEASURED before anything is declared.
+            return $this->reconcileUnacknowledgedCreate($e, $target, $comment, $expiresAt, $clientId, $contentHash, $actorLabel, $run, $approverId);
         }
 
         // CRITERION 1. `added_for` is the ONLY scope evidence this API gives:
@@ -446,6 +473,18 @@ class StaffMeshAdminToolExecutor
         ), static fn (string $v): bool => $v !== '')) : [];
         $scopeProved = $addedFor === [$target['mesh_customer_id']];
 
+        // The column records what the SERVER attested (see the migration), not
+        // what we asked for — and on a scope fault those differ. The reaper's
+        // only way back to the rule is a list read filtered on THIS stored
+        // tenant, so storing the tenant we targeted would send it hunting a
+        // tenant the rule is not on, forever. Our own tenant wins when
+        // `added_for` names it among others (the rule really is there); when it
+        // does not, the first tenant named is the only pointer that exists. An
+        // empty `added_for` attests nothing, so the targeted tenant stands.
+        $attestedTenant = $addedFor === [] || in_array($target['mesh_customer_id'], $addedFor, true)
+            ? $target['mesh_customer_id']
+            : $addedFor[0];
+
         // Recorded BEFORE the scope verdict is acted on: if the scope is
         // wrong, a rule still exists upstream and the PSA row is the only
         // thing that will ever chase it down.
@@ -453,7 +492,7 @@ class StaffMeshAdminToolExecutor
             'client_id' => $clientId,
             'ticket_id' => $run?->ticket_id,
             'technician_run_id' => $run?->id,
-            'mesh_customer_id' => $target['mesh_customer_id'],
+            'mesh_customer_id' => $attestedTenant,
             'sender' => $target['sender'],
             'comment' => $comment,
             'mesh_rule_id' => null,
@@ -533,6 +572,82 @@ class StaffMeshAdminToolExecutor
             'scope_confirmed' => true,
             'upstream_created_by' => $upstreamCreatedBy,
             'message' => $summary.' The PSA will delete it at expiry — Mesh does not expire rules on its own.',
+        ];
+    }
+
+    /**
+     * A create whose OUTCOME was never measured — the request went out and no
+     * usable response came back. "We could not tell" is not "it did not
+     * happen": the proposal's comment is a random per-proposal token, so one
+     * re-read of this client's tenant answers the question directly.
+     *
+     * Either answer ends in a row. A found rule is recorded ACTIVE with its id
+     * and reaps normally; an unfound (or unreadable) one is recorded UNRESOLVED
+     * so the reaper keeps trying to name it. Never audited as 'executed' —
+     * there was no 201, so scope was never proved and a corrected retry must
+     * stay possible — and never returned as an `error`, because that would
+     * release the claim and let a second approval write a second rule.
+     *
+     * @param  array<string, string>  $target
+     * @return array<string, mixed>
+     */
+    private function reconcileUnacknowledgedCreate(
+        MeshClientException $error,
+        array $target,
+        string $comment,
+        \Illuminate\Support\Carbon $expiresAt,
+        int $clientId,
+        string $contentHash,
+        string $actorLabel,
+        ?TechnicianRun $run,
+        ?int $approverId,
+    ): array {
+        $tool = 'mesh_add_allow_rule';
+
+        $match = null;
+        $rereadError = null;
+        try {
+            $match = $this->client->findRuleByComment($target['mesh_customer_id'], $target['sender'], $comment);
+        } catch (MeshClientException $e) {
+            $rereadError = $e->getMessage();
+        }
+
+        $ruleId = is_scalar($match['id'] ?? null) && (string) $match['id'] !== '' ? (string) $match['id'] : null;
+
+        $record = MeshAllowRule::create([
+            'client_id' => $clientId,
+            'ticket_id' => $run?->ticket_id,
+            'technician_run_id' => $run?->id,
+            'mesh_customer_id' => $target['mesh_customer_id'],
+            'sender' => $target['sender'],
+            'comment' => $comment,
+            'mesh_rule_id' => $ruleId,
+            'expires_at' => $expiresAt,
+            'state' => $ruleId !== null ? MeshAllowRule::STATE_ACTIVE : MeshAllowRule::STATE_UNRESOLVED,
+            'created_by_actor' => $actorLabel,
+            'approver_user_id' => $approverId,
+            'upstream_created_by' => is_scalar($match['created_by'] ?? null) ? (string) $match['created_by'] : null,
+        ]);
+
+        $message = $ruleId !== null
+            ? 'Mesh never answered the create ('.$error->getMessage()."), but a re-read of this client's tenant found the rule live for '{$target['sender']}'. "
+                .'It is recorded (PSA record #'.$record->id.') and the PSA will remove it at expiry. There was no create response, so its scope was never confirmed — check it in the Mesh portal.'
+            : 'Mesh never answered the create ('.$error->getMessage()."), and a re-read of this client's tenant did not find the rule"
+                .($rereadError !== null ? ' (that read failed too: '.$rereadError.')' : '')
+                .'. Whether the rule was created is UNMEASURED, so it is recorded unresolved (PSA record #'.$record->id.') and the expiry job keeps trying to identify and remove it. Check the Mesh portal before allowing this sender again.';
+
+        $record->forceFill(['last_error' => $message])->save();
+        // Deliberately NOT 'executed': an unmeasured write must not satisfy the
+        // dedup check that would suppress a corrected retry.
+        $this->auditAttempt($tool, 'executed_with_fault', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+        return [
+            'success' => false,
+            'fault' => $ruleId !== null ? 'create_unacknowledged' : 'create_outcome_unmeasured',
+            'sender' => $target['sender'],
+            'psa_record_id' => $record->id,
+            'expires_at' => $expiresAt->toIso8601String(),
+            'message' => $message,
         ];
     }
 
@@ -800,13 +915,23 @@ class StaffMeshAdminToolExecutor
         return $ticket;
     }
 
-    /** The live PSA record for this sender on this client, if one exists. */
+    /**
+     * The MEASURED live PSA record for this sender on this client, if one
+     * exists — active rows only.
+     *
+     * An `unresolved` row is what the scope-fault and id-unrecoverable paths
+     * write: a rule whose existence or scope was never proved. Answering
+     * "already allowed until ..." from one would assert a protection nobody
+     * measured and would suppress the corrected retry, mid-remediation, which
+     * is the one thing a technician needs to be able to do. Unknown is a
+     * refusal to claim, not a pass.
+     */
     private function liveAllowRule(int $clientId, string $sender): ?MeshAllowRule
     {
         return MeshAllowRule::query()
             ->where('client_id', $clientId)
             ->where('sender', $sender)
-            ->whereIn('state', [MeshAllowRule::STATE_ACTIVE, MeshAllowRule::STATE_UNRESOLVED])
+            ->where('state', MeshAllowRule::STATE_ACTIVE)
             ->where('expires_at', '>', now())
             ->latest('id')
             ->first();
@@ -858,6 +983,39 @@ class StaffMeshAdminToolExecutor
             ->where('content_hash', $contentHash)
             ->where('state', TechnicianRunState::AwaitingApproval->value)
             ->first();
+    }
+
+    /**
+     * The (ticket, action, content_hash) slot this proposal may occupy.
+     *
+     * `technician_runs_idempotency` makes ticket_id + action_type +
+     * content_hash UNIQUE, so a repeat request cannot insert a second row on
+     * the same hash — and it must not rewrite the first: a Done run is the
+     * record of a rule that exists upstream (mesh_allow_rules.technician_run_id
+     * points at it), a Denied run is an operator's decision, and an Executing
+     * run is holding the exactly-once claim. So a hash is usable only while it
+     * is free or still awaiting approval; otherwise the proposal takes the next
+     * generation of that key. Generations are exhausted, never reused.
+     *
+     * @return array{content_hash: string}|array{error: string}
+     */
+    private function stagedRunSlot(int $ticketId, string $tool, string $baseHash): array
+    {
+        for ($generation = 0; $generation < self::MAX_RUN_GENERATIONS; $generation++) {
+            $hash = $generation === 0 ? $baseHash : hash('sha256', $baseHash.':'.$generation);
+
+            $existing = TechnicianRun::query()
+                ->where('ticket_id', $ticketId)
+                ->where('action_type', $tool)
+                ->where('content_hash', $hash)
+                ->first();
+
+            if ($existing === null || $existing->state === TechnicianRunState::AwaitingApproval) {
+                return ['content_hash' => $hash];
+            }
+        }
+
+        return ['error' => 'This ticket already carries '.self::MAX_RUN_GENERATIONS.' Mesh allow-rule proposals for this sender; no proposal was staged. Raise a new ticket for a further allow rule.'];
     }
 
     private function cooldownActive(string $tool, ?int $clientId): bool

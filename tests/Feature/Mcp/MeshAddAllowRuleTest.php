@@ -373,6 +373,32 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertSame(0, TechnicianRun::count());
     }
 
+    public function test_an_unresolved_record_does_not_answer_already_allowed(): void
+    {
+        $this->configureMesh();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWrite();
+
+        // What the scope-fault and id-unrecoverable paths write: the rule was
+        // never measured, so it must not suppress a corrected retry.
+        MeshAllowRule::create([
+            'client_id' => $fixture['client']->id,
+            'mesh_customer_id' => self::TENANT,
+            'sender' => 'billing@vendor.example',
+            'comment' => 'PSA allow ABCDEFGHIJ',
+            'mesh_rule_id' => null,
+            'expires_at' => now()->addDays(10),
+            'state' => MeshAllowRule::STATE_UNRESOLVED,
+            'created_by_actor' => 'test',
+        ]);
+
+        $result = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+
+        $this->assertArrayNotHasKey('idempotent', $result);
+        $this->assertSame(1, TechnicianRun::count());
+    }
+
     // ---- approval → execution -------------------------------------------------
 
     public function test_approval_creates_the_rule_proves_scope_recovers_the_id_and_records_it(): void
@@ -460,6 +486,28 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
     }
 
+    public function test_the_recorded_tenant_is_the_one_the_server_attested_not_the_one_we_asked_for(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $run = $this->stagedRun($fixture);
+
+        // `added_for` is the only scope evidence there is, and it names a
+        // tenant that is not ours: the rule is on THAT tenant, so that is the
+        // only tenant the reaper's list read can ever find it on.
+        $write->shouldReceive('createAllowRule')->once()
+            ->andReturn(['detail' => 'Allow/Block Rules added', 'added_for' => ['tenant-elsewhere']]);
+        $write->shouldNotReceive('findRuleByComment');
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('error');
+
+        $record = MeshAllowRule::sole();
+        $this->assertSame('tenant-elsewhere', $record->mesh_customer_id);
+        $this->assertSame(MeshAllowRule::STATE_UNRESOLVED, $record->state);
+    }
+
     public function test_a_400_from_mesh_is_passed_through_as_the_refusal_reason(): void
     {
         $this->configureMesh();
@@ -479,7 +527,40 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertStringContainsString('reserved domain', $log->summary);
     }
 
-    public function test_a_transport_failure_creates_no_record_and_releases_the_claim(): void
+    public function test_a_lost_create_response_is_reconciled_by_re_read_and_the_landed_rule_is_recorded(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $run = $this->stagedRun($fixture);
+        $comment = $this->committedComment($run);
+
+        // Mesh commits before it answers, so a lost response is not a failed
+        // write. The proposal's comment is the match key that makes the
+        // outcome measurable instead of assumed.
+        $write->shouldReceive('createAllowRule')->once()->andThrow(new MeshClientException('Mesh API error: timeout', 0));
+        $write->shouldReceive('findRuleByComment')->once()
+            ->with(self::TENANT, 'billing@vendor.example', $comment)
+            ->andReturn(['id' => 'rule-landed', 'created_by' => 'owner@soundit.example']);
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('error');
+
+        $record = MeshAllowRule::sole();
+        $this->assertSame(MeshAllowRule::STATE_ACTIVE, $record->state);
+        $this->assertSame('rule-landed', $record->mesh_rule_id);
+        $this->assertSame($comment, $record->comment);
+        $this->assertSame($run->id, (int) $record->technician_run_id);
+        $this->assertNotNull($record->last_error);
+
+        // The proposal is spent: re-approving it must not write a second rule,
+        // and an unmeasured write is never audited as a clean execution.
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertSame(0, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed')->count());
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed_with_fault')->count());
+    }
+
+    public function test_a_create_whose_outcome_cannot_be_measured_is_still_recorded_for_the_reaper(): void
     {
         $this->configureMesh();
         $actor = $this->configureAiActor();
@@ -487,12 +568,17 @@ class MeshAddAllowRuleTest extends TestCase
         $write = $this->mockWrite();
         $run = $this->stagedRun($fixture);
 
-        $write->shouldReceive('createAllowRule')->once()->andThrow(new MeshClientException('Mesh API error: timeout', 0));
+        $write->shouldReceive('createAllowRule')->once()->andThrow(new MeshClientException('Mesh API error: 502', 502));
+        $write->shouldReceive('findRuleByComment')->once()->andThrow(new MeshClientException('Mesh API error: timeout', 0));
 
-        $this->actingAs($actor)->post(route('cockpit.approve', $run));
+        $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('error');
+        $this->assertStringContainsString('UNMEASURED', (string) session('error'));
 
-        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
-        $this->assertSame(0, MeshAllowRule::count());
+        $record = MeshAllowRule::sole();
+        $this->assertSame(MeshAllowRule::STATE_UNRESOLVED, $record->state);
+        $this->assertNull($record->mesh_rule_id);
+        $this->assertNotNull($record->last_error);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
     }
 
     public function test_approval_refuses_when_the_mesh_mapping_was_removed_after_staging(): void
@@ -528,6 +614,39 @@ class MeshAddAllowRuleTest extends TestCase
 
         $this->actingAs($actor)->post(route('cockpit.approve', $run));
         $this->assertSame($moved, MeshAllowRule::sole()->mesh_customer_id);
+    }
+
+    public function test_a_later_proposal_gets_its_own_run_and_never_rewrites_a_spent_one(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $run = $this->stagedRun($fixture);
+        $comment = $this->committedComment($run);
+        $proposed = $run->proposed_content;
+
+        $write->shouldReceive('createAllowRule')->once()->andReturn(['added_for' => [self::TENANT]]);
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'r1']);
+        $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('success');
+
+        // The rule ran its life — reaped, dedup and cooldown windows past.
+        MeshAllowRule::sole()->update(['state' => MeshAllowRule::STATE_REAPED, 'reaped_at' => now()]);
+        TechnicianActionLog::query()->update(['created_at' => now()->subDays(2)]);
+
+        $second = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+
+        $this->assertTrue($second['success']);
+        $this->assertNotSame($run->id, $second['run_id']);
+        $this->assertSame(2, TechnicianRun::count());
+
+        // The spent run is the record of a rule that existed upstream, and
+        // mesh_allow_rules still points at it: it keeps its own content.
+        $done = $run->fresh();
+        $this->assertSame(TechnicianRunState::Done, $done->state);
+        $this->assertSame($proposed, $done->proposed_content);
+        $this->assertSame($comment, $this->committedComment($done));
+        $this->assertSame($run->id, (int) MeshAllowRule::sole()->technician_run_id);
     }
 
     public function test_approving_the_same_proposal_twice_makes_only_one_upstream_call(): void
