@@ -56,6 +56,8 @@ class StaffTacticalAdminToolExecutor
         'tactical_delete_patch_policy',
         'tactical_reset_patch_policies',
         'tactical_stage_reset_patch_policies',
+        'tactical_remove_agent',
+        'tactical_stage_remove_agent',
     ];
 
     /** @var array<int, string> */
@@ -140,6 +142,8 @@ class StaffTacticalAdminToolExecutor
         'tactical_run_policy_task_on_agent' => 300,
         'tactical_run_policy_task_all' => 900,
         'tactical_stage_run_policy_task_all' => 900,
+        'tactical_remove_agent' => 600,
+        'tactical_stage_remove_agent' => 600,
     ];
 
     /** @var array<string, int> */
@@ -155,6 +159,16 @@ class StaffTacticalAdminToolExecutor
     private const STAGED_TO_DIRECT = [
         'tactical_stage_reset_patch_policies' => 'tactical_reset_patch_policies',
         'tactical_stage_run_policy_task_all' => 'tactical_run_policy_task_all',
+        // tactical_remove_agent is STAGED-ONLY BY CONSTRUCTION. It is advertised
+        // and granted under its canonical name like any other stageable verb, but
+        // the canonical name has NO immediate implementation: execute() answers it
+        // with a refusal that names the staged grant, so there is no code path from
+        // an immediate grant to deleteAgent(). It is also listed in
+        // McpToolModes::IMMEDIATE_REQUIRES_EXPLICIT_GRANT so a legacy full-surface
+        // token resolves it to staged rather than inheriting immediate trust.
+        // Upstream this call UNINSTALLS the RMM agent from the machine; re-enrolment
+        // mints a new agent id and nothing about it is undoable from the API side.
+        'tactical_stage_remove_agent' => 'tactical_remove_agent',
     ];
 
     /** @var array<int, string> */
@@ -240,6 +254,8 @@ class StaffTacticalAdminToolExecutor
             self::deletePatchPolicyTool(),
             self::resetPatchPoliciesTool(),
             self::stageResetPatchPoliciesTool(),
+            self::removeAgentTool(),
+            self::stageRemoveAgentTool(),
         ];
     }
 
@@ -281,6 +297,7 @@ class StaffTacticalAdminToolExecutor
             return match ($name) {
                 'tactical_stage_reset_patch_policies' => $this->stagePatchPolicyReset($arguments, (int) $clientId, $actorLabel),
                 'tactical_stage_run_policy_task_all' => $this->stagePolicyTaskRunAll($arguments, (int) $clientId, $actorLabel),
+                'tactical_stage_remove_agent' => $this->stageAgentRemoval($arguments, (int) $clientId, $actorLabel),
                 default => ['error' => "Unknown Tactical staged admin tool: {$name}"],
             };
         }
@@ -324,6 +341,7 @@ class StaffTacticalAdminToolExecutor
             'tactical_update_patch_policy' => $this->updatePatchPolicy($arguments, (int) $clientId, $actorLabel),
             'tactical_delete_patch_policy' => $this->deletePatchPolicy($arguments, (int) $clientId, $actorLabel),
             'tactical_reset_patch_policies' => $this->resetPatchPolicies($arguments, (int) $clientId, $actorLabel),
+            'tactical_remove_agent' => $this->immediateAgentRemovalRefused($arguments, $clientId, $actorLabel),
             default => ['error' => "Unknown Tactical admin tool: {$name}"],
         };
     }
@@ -2721,6 +2739,373 @@ class StaffTacticalAdminToolExecutor
         ];
     }
 
+    /**
+     * Window, in hours, within which a Tactical-reported sighting of the agent
+     * refuses the removal. "Deactivated in the PSA" is a PSA fact and is not
+     * evidence that the machine is off; upstream this call UNINSTALLS the agent
+     * from whatever machine is still listening on NATS.
+     */
+    private const AGENT_REMOVAL_QUIET_HOURS = 24;
+
+    /**
+     * The immediate lane for tactical_remove_agent, which deliberately does not
+     * exist. Reaching it means a token holds the bare (`:immediate`) grant and
+     * called without staged=true; the answer is a refusal that names the grant
+     * that works, never an upstream call.
+     *
+     * @return array<string, mixed>
+     */
+    private function immediateAgentRemovalRefused(array $arguments, ?int $clientId, string $actorLabel): array
+    {
+        $message = 'tactical_remove_agent is staged-only: it always requires cockpit approval. '
+            .'Re-grant it as `tactical_remove_agent:staged` (or call `tactical_stage_remove_agent`) and pass a ticket_id. No upstream call was made.';
+        $this->auditAttempt('tactical_remove_agent', 'rejected', $clientId, $this->contentHash('tactical_remove_agent', $clientId, 'immediate-refused', $arguments), $message, $actorLabel);
+
+        return ['error' => $message];
+    }
+
+    /**
+     * Stage a Tactical agent removal for cockpit approval. There is no immediate
+     * lane: see the STAGED_TO_DIRECT note.
+     *
+     * @return array<string, mixed>
+     */
+    private function stageAgentRemoval(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $tool = 'tactical_stage_remove_agent';
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $ticket = $this->ticketForClient(
+            $arguments['ticket_id'] ?? null,
+            $clientId,
+            'ticket_id is required for a staged Tactical agent removal',
+        );
+        if (is_array($ticket)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $this->contentHash($tool, $clientId, 'agent-removal', $arguments), $ticket['error'], $actorLabel);
+
+            return ['error' => $ticket['error']];
+        }
+
+        $target = $this->agentRemovalTarget($arguments, $clientId);
+        $contentHash = $this->contentHash($tool, $clientId, 'agent-removal-'.($target['agent_id'] ?? 'unresolved'), [
+            'asset_id' => $target['asset_id'] ?? null,
+        ]);
+        if (isset($target['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $target['error'], $actorLabel);
+
+            return ['error' => $target['error']];
+        }
+
+        if ($this->alreadyExecuted('tactical_remove_agent', $clientId, $contentHash)) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $this->executedRunId('tactical_remove_agent', $clientId, $contentHash),
+                'message' => 'This Tactical agent removal already executed recently; no new proposal was staged.',
+            ];
+        }
+
+        // "Still awaiting approval" comes from the LIVE runs table only, never
+        // from the immutable audit log — a stale awaiting_approval row survives
+        // an operator deny by design (bd psa-k4s0 Root B).
+        $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
+        if ($liveAwaitingRun !== null) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $liveAwaitingRun->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+        if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Tactical agent removal proposal cooldown active.', $actorLabel);
+
+            return ['error' => 'tactical_remove_agent cooldown active for this client; no proposal was staged.'];
+        }
+
+        $proposedContent = "Remove the Tactical agent for '{$target['hostname']}' (PSA asset #{$target['asset_id']}).\n"
+            ."Upstream this UNINSTALLS the RMM agent from the machine and cannot be undone; re-enrolment mints a new agent id.\n"
+            ."Last seen per Tactical: {$target['last_seen_label']}.\n"
+            .'Reason: '.$guard['reason'];
+        $meta = [
+            'drafted_by' => $actorLabel,
+            'reasons' => [$guard['reason']],
+            'direct_tool' => self::STAGED_TO_DIRECT[$tool],
+            'redacted_params' => [
+                'hostname' => $target['hostname'],
+                'asset_id' => $target['asset_id'],
+                'last_seen' => $target['last_seen_label'],
+            ],
+            'encrypted_payload' => Crypt::encryptString(json_encode([
+                'direct_tool' => self::STAGED_TO_DIRECT[$tool],
+                'client_id' => $clientId,
+                'ticket_id' => $ticket->id,
+                'arguments' => [
+                    // The ASSET is carried, never the upstream agent id: the
+                    // approval path re-resolves and re-checks every precondition
+                    // against live state, because the machine can come back
+                    // between staging and approval.
+                    'asset_id' => $target['asset_id'],
+                    'confirm_hostname' => $target['hostname'],
+                    'reason' => $guard['reason'],
+                ],
+            ], JSON_THROW_ON_ERROR)),
+        ];
+
+        $run = TechnicianRun::firstOrCreate(
+            [
+                'ticket_id' => $ticket->id,
+                'action_type' => $tool,
+                'content_hash' => $contentHash,
+            ],
+            [
+                'client_id' => $clientId,
+                'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ],
+        );
+
+        if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
+            $run->update([
+                'state' => TechnicianRunState::AwaitingApproval->value,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ]);
+        } elseif (! $run->wasRecentlyCreated) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        $this->auditAttempt($tool, 'awaiting_approval', $clientId, $contentHash, "MCP staged Tactical agent removal for '{$target['hostname']}'.", $actorLabel, $run->id);
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'run_id' => $run->id,
+            'hostname' => $target['hostname'],
+            'message' => 'Staged for cockpit approval.',
+        ];
+    }
+
+    /**
+     * Execute an approved Tactical agent removal. Only reachable through
+     * approveStagedRun(); `tactical_remove_agent_execute` is not a tool.
+     *
+     * @return array<string, mixed>
+     */
+    private function executeAgentRemoval(
+        array $arguments,
+        int $clientId,
+        string $actorLabel,
+        ?TechnicianRun $run = null,
+        ?int $approverId = null,
+    ): array {
+        $tool = 'tactical_remove_agent';
+
+        // Every precondition is re-measured here against LIVE state. The staged
+        // proposal proves what was true when it was drafted, not what is true
+        // when a human clicks approve: the asset can be reactivated and the
+        // machine can come back online in that window.
+        $target = $this->agentRemovalTarget($arguments, $clientId);
+        $contentHash = $run?->content_hash ?? $this->contentHash('tactical_stage_remove_agent', $clientId, 'agent-removal-'.($target['agent_id'] ?? 'unresolved'), [
+            'asset_id' => $target['asset_id'] ?? null,
+        ]);
+        if (isset($target['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $target['error'], $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $target['error']];
+        }
+
+        if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Duplicate Tactical agent removal suppressed before upstream call.', $actorLabel, $run?->id, $approverId);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already removed this Tactical agent recently; no upstream call was made.'];
+        }
+
+        try {
+            $raw = $this->client->deleteAgent($target['agent_id']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical agent removal');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $message];
+        }
+
+        // The DELETE response is a plain sentence with no structured status, so
+        // it is not evidence. A 404 on the per-agent read is the only proof.
+        $verified = $this->agentRemovalVerified($target['agent_id']);
+
+        if ($verified === true) {
+            // The TacticalAsset row is "what Tactical last told us about this
+            // agent_id". With the agent proved gone upstream, the row's subject
+            // no longer exists, and the schema has NO "confirmed gone" state to
+            // move it to — TacticalDeviceSyncService would sweep it to 'offline',
+            // which is exactly the reading #842 forbids ("absent from the payload
+            // is UNKNOWN"). Removing the row is the only honest representation,
+            // and it is taken ONLY on the verified branch. The linked ASSET is
+            // untouched; it was already deactivated before this could stage.
+            $target['asset']->tacticalAsset?->delete();
+        }
+
+        $summary = $verified === true
+            ? "Removed Tactical agent for '{$target['hostname']}'; verified absent upstream (404)."
+            : "Sent Tactical agent removal for '{$target['hostname']}'; upstream absence NOT verified.";
+        // An unmeasured post-condition is NOT an execution, and it must not be
+        // audited as one: alreadyExecuted() reads 'executed' for
+        // DIRECT_DEDUP_HOURS, so recording it there would answer the re-check
+        // this very result asks for with "already removed" — closing the only
+        // remediation path with the opposite of what was measured.
+        $this->auditAttempt($tool, $verified === true ? 'executed' : 'executed_unverified', $clientId, $contentHash, $summary, $actorLabel, $run?->id, $approverId);
+
+        return [
+            'success' => $verified === true,
+            // Not an 'error': the irreversible uninstall DID leave here, so the
+            // caller must not read this as "nothing was sent". It is a landed
+            // write with an unmet post-condition, which approveStagedRun()
+            // surfaces through the executed_with_fault channel.
+            'fault' => $verified === true ? null : 'removal_unverified',
+            'hostname' => $target['hostname'],
+            'verified_removed' => $verified === true,
+            // The MeshCentral half of Tactical's delete is best-effort and its
+            // failure never reaches the caller, so an orphan mesh node is always
+            // possible. Say so rather than implying a clean removal.
+            'mesh_removal_verified' => false,
+            'upstream_message' => is_scalar($raw) ? (string) $raw : null,
+            'message' => $verified === true
+                ? 'Tactical agent removed and verified absent (404 on the per-agent read). MeshCentral node removal is best-effort upstream and is NOT verified.'
+                : 'Tactical accepted the removal but the agent is still readable upstream, so removal is UNVERIFIED. The PSA device record was left in place. Re-check before assuming it is gone.',
+        ];
+    }
+
+    /**
+     * Measure the post-condition: GET agents/{agent_id}/ must 404.
+     *
+     * true = proved absent. false = still readable. null = could not be
+     * measured (transport failure, or any other HTTP status), which is NOT a
+     * pass — an unmeasurable post-condition is reported as unverified.
+     */
+    private function agentRemovalVerified(string $agentId): ?bool
+    {
+        try {
+            $this->client->getAgent($agentId);
+        } catch (TacticalClientException $e) {
+            return $e->statusCode() === 404 ? true : null;
+        }
+
+        return false;
+    }
+
+    /**
+     * Resolve and fully guard the removal target. Fails CLOSED: anything it
+     * cannot measure is a refusal, never a pass.
+     *
+     * @return array{asset?: Asset, asset_id?: int, agent_id?: string, hostname?: string, last_seen_label?: string, error?: string}
+     */
+    private function agentRemovalTarget(array $arguments, int $clientId): array
+    {
+        $asset = $this->resolveAsset($arguments, $clientId);
+        if (is_array($asset)) {
+            return ['error' => $asset['error']];
+        }
+
+        // Precondition 1: the removal may only FOLLOW a PSA deactivation.
+        if ($asset->is_active) {
+            return ['error' => 'Device is still active in the PSA. Deactivate the asset first; this verb only removes the Tactical agent for a device already retired.'];
+        }
+
+        // Precondition 3: nothing to remove, and never guess by hostname across clients.
+        if (($linkedError = $this->linkedAgentError($asset)) !== null) {
+            return ['error' => $linkedError.'; there is nothing to remove.'];
+        }
+
+        $agentId = (string) $asset->tacticalAsset->agent_id;
+        $hostname = $this->targetHostname($asset);
+        if ($hostname === '') {
+            return ['error' => 'Device has no hostname, so the typed confirmation cannot be verified; removal refused.'];
+        }
+
+        $typed = trim((string) ($arguments['confirm_hostname'] ?? ''));
+        if (strcasecmp($typed, $hostname) !== 0) {
+            return ['error' => 'The typed hostname does not match this device.'];
+        }
+
+        // Precondition 2, and the one that matters most: a PSA deactivation is
+        // not proof the machine is off. Measured against Tactical LIVE, because
+        // the local row is only as fresh as the last sync.
+        try {
+            $upstream = $this->client->getAgent($agentId);
+        } catch (TacticalClientException $e) {
+            if ($e->statusCode() === 404) {
+                return ['error' => "Tactical has no agent {$hostname} to remove (404); nothing was sent."];
+            }
+
+            // Fail closed on unknown: unable-to-assess is a refusal, never a pass.
+            return ['error' => 'Could not read the agent from Tactical to confirm it is quiet, so the removal was refused rather than sent blind.'];
+        }
+
+        $status = mb_strtolower(trim((string) ($upstream['status'] ?? '')));
+        if ($status === 'online') {
+            return ['error' => "Tactical reports {$hostname} ONLINE. This call uninstalls the agent from a running machine; removal refused."];
+        }
+
+        $lastSeen = $this->agentLastSeen($upstream);
+        if ($lastSeen === null) {
+            return ['error' => "Tactical reports no usable last-seen time for {$hostname}, so the ".self::AGENT_REMOVAL_QUIET_HOURS.'h quiet window cannot be measured; removal refused.'];
+        }
+        if ($lastSeen->greaterThan(now()->subHours(self::AGENT_REMOVAL_QUIET_HOURS))) {
+            return ['error' => "Tactical last saw {$hostname} at {$lastSeen->toDateTimeString()} UTC, inside the ".self::AGENT_REMOVAL_QUIET_HOURS.'h quiet window; removal refused.'];
+        }
+
+        return [
+            'asset' => $asset,
+            'asset_id' => (int) $asset->id,
+            'agent_id' => $agentId,
+            'hostname' => $hostname,
+            'last_seen_label' => $lastSeen->toDateTimeString().' UTC',
+        ];
+    }
+
+    /**
+     * The agent's last sighting from a Tactical agent payload. Returns null when
+     * no field parses — which the caller treats as a refusal, not as "old".
+     */
+    private function agentLastSeen(array $upstream): ?\Illuminate\Support\Carbon
+    {
+        foreach (['last_seen', 'last_seen_at', 'checkin_time'] as $key) {
+            $value = $upstream[$key] ?? null;
+            if (! is_string($value) || trim($value) === '') {
+                continue;
+            }
+
+            try {
+                return \Illuminate\Support\Carbon::parse($value);
+            } catch (\Throwable) {
+                continue;
+            }
+        }
+
+        return null;
+    }
+
     public function approveStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
     {
         if (! self::isStagedActionType($run->action_type) || ! $run->claimForExecution()) {
@@ -2762,6 +3147,7 @@ class StaffTacticalAdminToolExecutor
             $result = match ($directTool) {
                 'tactical_reset_patch_policies' => $this->executePatchPolicyReset($run->action_type, $arguments, $client, $this->approverLabel($approverId), $run, $approverId),
                 'tactical_run_policy_task_all' => $this->executePolicyTaskRunAll($directTool, $arguments, (int) $run->client_id, $this->approverLabel($approverId), $run, $approverId),
+                'tactical_remove_agent' => $this->executeAgentRemoval($arguments, (int) $run->client_id, $this->approverLabel($approverId), $run, $approverId),
                 default => ['error' => 'Unsupported Tactical staged admin action.'],
             };
             if (isset($result['error'])) {
@@ -2771,6 +3157,24 @@ class StaffTacticalAdminToolExecutor
             }
 
             $run->advanceTo(TechnicianRunState::Done);
+
+            // The upstream write landed but its post-condition could not be
+            // measured. The proposal is spent either way — nothing here is
+            // undoable — but the outcome goes out through the fault channel
+            // TechnicianApprovalResult defines for exactly this case, never as
+            // a clean execution the cockpit renders green.
+            if (isset($result['fault'])) {
+                // The message IS the payload of this channel: TechnicianApprovalResult
+                // defines executed_with_fault as "the cockpit must render $message on the
+                // ERROR channel", and the executor already composed the specific text
+                // (hostname, PSA device record left in place, re-check before assuming it
+                // is gone). Dropping it leaves the operator with the generic fallback
+                // banner, which names neither the machine nor the remediation.
+                return new TechnicianApprovalResult(
+                    'executed_with_fault',
+                    message: is_string($result['message'] ?? null) ? $result['message'] : null,
+                );
+            }
 
             return new TechnicianApprovalResult('executed');
         } catch (\Throwable $e) {
@@ -4467,11 +4871,11 @@ class StaffTacticalAdminToolExecutor
     }
 
     /** @return Ticket|array{error: string} */
-    private function ticketForClient(mixed $ticketIdValue, int $clientId): Ticket|array
+    private function ticketForClient(mixed $ticketIdValue, int $clientId, string $missingMessage = 'ticket_id is required for staged Tactical patch-policy reset'): Ticket|array
     {
         $ticketId = $this->positiveInteger($ticketIdValue);
         if ($ticketId === null) {
-            return ['error' => 'ticket_id is required for staged Tactical patch-policy reset'];
+            return ['error' => $missingMessage];
         }
 
         $ticket = Ticket::find($ticketId);
@@ -5212,6 +5616,45 @@ class StaffTacticalAdminToolExecutor
             array_merge(self::reasonProperties(), self::scriptSelectorProperties(), self::scriptBodyProperties()),
             ['reason'],
         );
+    }
+
+    /** @return array<string, mixed> */
+    private static function removeAgentTool(): array
+    {
+        return self::tool(
+            'tactical_remove_agent',
+            'Remove the Tactical RMM agent for a PSA device that is already deactivated, using DELETE agents/{agent_id}/ after resolving the agent from the PSA asset. '
+            .'STAGED ONLY: every call is held as a cockpit approval proposal. There is no immediate implementation — a bare (immediate) grant is refused with a pointer to `tactical_remove_agent:staged`. '
+            .'Upstream this is not a record delete — Tactical sends an UNINSTALL command to the agent, so it removes the RMM agent from whatever machine is still listening. It cannot be undone; re-enrolment mints a new agent id. '
+            .'Refused unless the PSA asset is already inactive, the device has a linked Tactical agent, the typed hostname matches, and Tactical reports the agent not online and unseen for '
+            .self::AGENT_REMOVAL_QUIET_HOURS.'h. An unreadable agent is a refusal, not a pass. '
+            .'Removal is verified by a 404 on the per-agent read; the MeshCentral half of the upstream delete is best-effort and is never verified. '
+            .'Requires reason, ticket_id, typed hostname confirmation, kill-switch, dedup, and cooldown.',
+            self::removeAgentProperties(),
+            ['reason', 'ticket_id', 'confirm_hostname'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageRemoveAgentTool(): array
+    {
+        return self::tool(
+            'tactical_stage_remove_agent',
+            'Stage the Tactical agent removal for cockpit approval. This is the only lane the verb has: approval re-measures every precondition against LIVE Tactical state before DELETE agents/{agent_id}/, because the machine can come back between staging and approval. '
+            .'Upstream this UNINSTALLS the RMM agent from the machine and cannot be undone. Requires a ticket, reason, typed hostname confirmation, an already-inactive PSA asset, an agent Tactical reports not online and unseen for '
+            .self::AGENT_REMOVAL_QUIET_HOURS.'h, explicit grant, kill-switch, dedup, and cooldown.',
+            self::removeAgentProperties(),
+            ['reason', 'ticket_id', 'confirm_hostname'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function removeAgentProperties(): array
+    {
+        return array_merge(self::reasonProperties(), self::endpointSelectorProperties(), [
+            'ticket_id' => ['type' => 'integer', 'description' => 'PSA ticket this offboarding belongs to. The proposal is staged against it for approval.'],
+            'confirm_hostname' => ['type' => 'string', 'description' => 'Typed device hostname. Must match the resolved device hostname (case-insensitive).'],
+        ]);
     }
 
     /** @return array<string, mixed> */

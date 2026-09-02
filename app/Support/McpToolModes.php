@@ -100,6 +100,12 @@ class McpToolModes
     private const IMMEDIATE_REQUIRES_EXPLICIT_GRANT = [
         'merge_ticket',
         'merge_asset',
+        // tactical_remove_agent has no immediate implementation at all
+        // (StaffTacticalAdminToolExecutor::immediateAgentRemovalRefused). It is a
+        // sensitive tactical_admin tool, so a full-surface token cannot reach it
+        // today either way; this entry keeps the default honest if that group is
+        // ever widened, and is the second lock behind the refusal in the executor.
+        'tactical_remove_agent',
     ];
 
     /**

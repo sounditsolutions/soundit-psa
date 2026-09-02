@@ -414,6 +414,22 @@ class TacticalClient
     }
 
     /**
+     * Remove one agent via DELETE agents/{agent_id}/.
+     *
+     * This is NOT a record delete upstream. Tactical's GetUpdateDeleteAgent::delete()
+     * sends an `uninstall` command to the agent over NATS fire-and-forget (wait=False),
+     * deletes its own row, then removes the MeshCentral node BEST-EFFORT — a mesh
+     * failure is only written to Tactical's DebugLog and never reaches this response.
+     * The body is a plain string ("{hostname} will now be uninstalled."); it carries no
+     * structured status, so success is not observable here and MUST be measured
+     * separately with getAgent() (a 404 is the only proof).
+     */
+    public function deleteAgent(string $agentId): mixed
+    {
+        return $this->delete("agents/{$agentId}/");
+    }
+
+    /**
      * List all automation policies (used as workstation/server policy options
      * during client creation).
      */
