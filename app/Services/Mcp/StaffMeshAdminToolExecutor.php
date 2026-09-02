@@ -141,18 +141,18 @@ class StaffMeshAdminToolExecutor
      */
     private const REFUSED_ARGUMENT_KEYS = [
         'mesh_add_allow_rule' => [
-        'ab' => 'this verb only ever creates ALLOW rules',
-        'edge' => 'connection-level application is never enabled from the PSA',
-        'customers' => 'partner-wide rules are never created from the PSA',
-        'customer_id' => 'the Mesh tenant is derived from the PSA client, never supplied',
-        'organization_level' => 'scope is fixed to the resolved customer',
-        'date_expiry' => 'expiry is set with expires_at, not the Mesh field name',
-        'active' => 'created rules are always active',
-        'comment' => 'the comment is PSA-generated and is the expiry match key',
-        'domains' => 'bulk domain allow-lists are not created from the PSA',
-        'users' => 'bulk user allow-lists are not created from the PSA',
-        'partner_id' => 'partner-scoped writes are never made from the PSA',
-        'global' => 'global rules are never created from the PSA',
+            'ab' => 'this verb only ever creates ALLOW rules',
+            'edge' => 'connection-level application is never enabled from the PSA',
+            'customers' => 'partner-wide rules are never created from the PSA',
+            'customer_id' => 'the Mesh tenant is derived from the PSA client, never supplied',
+            'organization_level' => 'scope is fixed to the resolved customer',
+            'date_expiry' => 'expiry is set with expires_at, not the Mesh field name',
+            'active' => 'created rules are always active',
+            'comment' => 'the comment is PSA-generated and is the expiry match key',
+            'domains' => 'bulk domain allow-lists are not created from the PSA',
+            'users' => 'bulk user allow-lists are not created from the PSA',
+            'partner_id' => 'partner-scoped writes are never made from the PSA',
+            'global' => 'global rules are never created from the PSA',
         ],
         /**
          * #1134. The remove lane's widening moves are different from the
@@ -1125,7 +1125,7 @@ class StaffMeshAdminToolExecutor
                 return new TechnicianApprovalResult('gate_declined');
             }
 
-            if ($this->approveCooldownActive((int) $run->client_id)) {
+            if ($this->approveCooldownActive($directTool, (int) $run->client_id)) {
                 $this->auditAttempt($run->action_type, 'blocked', (int) $run->client_id, $ticket, $run->content_hash, 'Mesh allow-rule cooldown active; approval refused before upstream call.', $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
@@ -1725,19 +1725,34 @@ class StaffMeshAdminToolExecutor
      * counting only clean executions left the fault outcomes, the ones where a
      * rule is live and unaccounted for, with no cooldown at all.
      */
-    private function approveCooldownActive(int $clientId): bool
+    private function approveCooldownActive(string $directTool, int $clientId): bool
     {
-        return $this->actionLogQuery('mesh_add_allow_rule', $clientId)
+        return $this->actionLogQuery($directTool, $clientId)
             ->where('created_at', '>=', now()->subSeconds(self::COOLDOWN_SECONDS))
             ->whereIn('result_status', ['executed', 'executed_with_fault'])
             ->exists();
     }
 
-    /** The staged and direct names share a cooldown and dedup window; they are one action. */
+    /**
+     * The staged and direct names of ONE verb share a cooldown and dedup
+     * window; they are one action.
+     *
+     * The pair is derived from $tool rather than listed, and that is
+     * load-bearing now that there is more than one verb (#1134). While
+     * mesh_add_allow_rule was the only one, hardcoding its two names was
+     * indistinguishable from honouring the argument — with a second verb it
+     * would mean the removal verb deduping against the create verb's log
+     * (so a repeat removal is never caught) and each verb's cooldown being
+     * spent by the other. They are opposite-signed writes: an allow that just
+     * landed is not a reason to refuse the removal of a different rule.
+     */
     private function actionLogQuery(string $tool, ?int $clientId)
     {
+        $direct = self::STAGED_TO_DIRECT[$tool] ?? $tool;
+        $staged = array_search($direct, self::STAGED_TO_DIRECT, true);
+
         $query = TechnicianActionLog::query()
-            ->whereIn('action_type', ['mesh_add_allow_rule', 'mesh_stage_add_allow_rule']);
+            ->whereIn('action_type', $staged === false ? [$direct] : [$direct, $staged]);
 
         return $clientId === null
             ? $query->whereNull('client_id')
@@ -1992,7 +2007,7 @@ class StaffMeshAdminToolExecutor
                     .($record->isPermanent()
                         ? ', PERMANENT — it has no expiry and nothing in the PSA would ever have removed it'
                         : ', due to expire '.$record->expires_at->toDayDateTimeString().' UTC')
-                    ."), so removing it now ends it early and the PSA record is closed with it."
+                    .'), so removing it now ends it early and the PSA record is closed with it.'
                 : 'This rule is FOREIGN: the PSA did not create it and holds no record of it. Somebody set it up outside this system, '
                     .'possibly deliberately and possibly for a reason this system cannot see — removing it may break mail delivery that is working today.',
             'expiry_note' => is_scalar($row['date_expiry'] ?? null) && trim((string) $row['date_expiry']) !== ''

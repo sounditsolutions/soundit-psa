@@ -285,4 +285,64 @@ class MeshWriteClientTest extends TestCase
         $this->assertNull($this->clientReturning([new Response(403)])->ruleAbsent('rule-1'));
         $this->assertNull($this->clientReturning([], ['api_key' => null])->ruleAbsent('rule-1'));
     }
+
+    // ---- #1134: find-by-id is a SCOPE check, not a lookup ---------------------
+
+    public function test_find_by_id_returns_this_tenants_rule(): void
+    {
+        $client = $this->clientReturning([
+            new Response(200, [], json_encode(['results' => [
+                $this->rule('r1', 'tenant-1', 'a@example.test', 'PSA allow AAAAAAAAAA'),
+                $this->rule('r2', 'tenant-1', 'b@example.test', 'PSA allow BBBBBBBBBB'),
+            ]])),
+        ]);
+
+        $match = $client->findRuleById('tenant-1', 'r2');
+
+        $this->assertSame('r2', $match['id']);
+        $this->assertSame('b@example.test', $match['sender']);
+    }
+
+    /**
+     * THE red-check for the scope guard. A rule id that exists — and that the
+     * API key can read perfectly well on the un-scoped detail route — must be
+     * ABSENT when it belongs to another customer. An implementation that
+     * dropped the rowBelongsTo() filter (or that resolved the id by GETting
+     * `api/rule-allows-blocks/{id}/` directly) would return this row, and the
+     * remove verb would then delete another customer's mail filtering.
+     */
+    public function test_find_by_id_does_not_resolve_a_rule_belonging_to_another_tenant(): void
+    {
+        $client = $this->clientReturning([
+            new Response(200, [], json_encode(['results' => [
+                $this->rule('mine', 'tenant-1', 'a@example.test', 'PSA allow AAAAAAAAAA'),
+                $this->rule('theirs', 'tenant-OTHER', 'b@example.test', 'someone else'),
+            ]])),
+        ]);
+
+        $this->assertNull($client->findRuleById('tenant-1', 'theirs'));
+
+        // And the read that answered it was the SCOPED list route, never the
+        // un-scoped detail route the id would have resolved on.
+        $this->assertSame('GET', $this->lastRequest()->getMethod());
+        $this->assertSame('/api/rule-allows-blocks/', $this->lastRequest()->getUri()->getPath());
+    }
+
+    public function test_find_by_id_matches_the_id_exactly_and_never_on_case_or_whitespace_alone(): void
+    {
+        $rows = json_encode(['results' => [$this->rule('Rule-ABC', 'tenant-1', 'a@example.test', 'x')]]);
+
+        // Trimmed, so a pasted id with surrounding whitespace still resolves.
+        $this->assertSame('Rule-ABC', $this->clientReturning([new Response(200, [], $rows)])->findRuleById('tenant-1', '  Rule-ABC ')['id']);
+
+        // But NOT case-folded: ids are vendor uuids echoed back verbatim, and
+        // widening an identity check on a delete lane needs a measured reason.
+        $this->assertNull($this->clientReturning([new Response(200, [], $rows)])->findRuleById('tenant-1', 'rule-abc'));
+    }
+
+    public function test_find_by_id_refuses_an_empty_id_without_reading_anything(): void
+    {
+        // Empty queue: any HTTP call at all would raise from the MockHandler.
+        $this->assertNull($this->clientReturning([])->findRuleById('tenant-1', '   '));
+    }
 }
