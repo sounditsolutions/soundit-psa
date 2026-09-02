@@ -2969,10 +2969,20 @@ class StaffTacticalAdminToolExecutor
         $summary = $verified === true
             ? "Removed Tactical agent for '{$target['hostname']}'; verified absent upstream (404)."
             : "Sent Tactical agent removal for '{$target['hostname']}'; upstream absence NOT verified.";
-        $this->auditAttempt($tool, 'executed', $clientId, $contentHash, $summary, $actorLabel, $run?->id, $approverId);
+        // An unmeasured post-condition is NOT an execution, and it must not be
+        // audited as one: alreadyExecuted() reads 'executed' for
+        // DIRECT_DEDUP_HOURS, so recording it there would answer the re-check
+        // this very result asks for with "already removed" — closing the only
+        // remediation path with the opposite of what was measured.
+        $this->auditAttempt($tool, $verified === true ? 'executed' : 'executed_unverified', $clientId, $contentHash, $summary, $actorLabel, $run?->id, $approverId);
 
         return [
-            'success' => true,
+            'success' => $verified === true,
+            // Not an 'error': the irreversible uninstall DID leave here, so the
+            // caller must not read this as "nothing was sent". It is a landed
+            // write with an unmet post-condition, which approveStagedRun()
+            // surfaces through the executed_with_fault channel.
+            'fault' => $verified === true ? null : 'removal_unverified',
             'hostname' => $target['hostname'],
             'verified_removed' => $verified === true,
             // The MeshCentral half of Tactical's delete is best-effort and its
@@ -3147,6 +3157,15 @@ class StaffTacticalAdminToolExecutor
             }
 
             $run->advanceTo(TechnicianRunState::Done);
+
+            // The upstream write landed but its post-condition could not be
+            // measured. The proposal is spent either way — nothing here is
+            // undoable — but the outcome goes out through the fault channel
+            // TechnicianApprovalResult defines for exactly this case, never as
+            // a clean execution the cockpit renders green.
+            if (isset($result['fault'])) {
+                return new TechnicianApprovalResult('executed_with_fault');
+            }
 
             return new TechnicianApprovalResult('executed');
         } catch (\Throwable $e) {
