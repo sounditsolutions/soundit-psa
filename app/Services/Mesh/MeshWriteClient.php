@@ -313,6 +313,105 @@ class MeshWriteClient
     }
 
     /**
+     * The ONLY fields this client will ever send in an update body (#1135).
+     *
+     * The detail route's own `actions.PUT` schema (measured 2026-09-02 via
+     * `OPTIONS api/rule-allows-blocks/{id}/`, which answered
+     * `Allow: GET, PUT, PATCH, DELETE, HEAD, OPTIONS`) advertises `ab`,
+     * `organization_level`, `customer_id`, `partner_id`, `global_id`, `edge`
+     * and `active` as writable as well. Every one of those either widens the
+     * rule's scope, moves it to another tenant, or converts it to the
+     * partner-wide lane — i.e. each is a change the approver of an "edit the
+     * expiry" card did not agree to. They are refused HERE, in the client,
+     * rather than only in the executor, so that a future call site cannot
+     * reach them by constructing its own field array (defence in depth,
+     * #1135 build-shape item 2).
+     *
+     * `sender` is absent deliberately and is not an oversight: changing the
+     * sender IS a scope change, and the product ruling is that it happens as
+     * remove (#1134) + add (#1018), never under a verb named "edit". Its
+     * absence is also why this lane is PATCH and never PUT — the schema marks
+     * `sender` required on PUT, so a PUT would have to reintroduce exactly the
+     * field the verb refuses.
+     *
+     * `comment` is absent too, and for a different reason: it is not a label
+     * but the reaper's fallback IDENTITY for a rule. When a row's
+     * `mesh_rule_id` is missing or stale, MeshAllowRuleReaper::resolveRuleId()
+     * recovers it through findRuleByComment(); an edited comment would leave a
+     * live allow rule that the only queue able to close it can no longer find.
+     *
+     * @var array<int, string>
+     */
+    private const PATCHABLE_FIELDS = ['date_expiry'];
+
+    /**
+     * Update ONE rule in place by id, with a body restricted to
+     * PATCHABLE_FIELDS, and return the decoded response body.
+     *
+     * SCOPE IS NOT PROVED HERE. The detail route answers for any rule id the
+     * key can see across the whole partnership — the same property documented
+     * on findRuleById() — so this method is unsafe to call on a caller-supplied
+     * id that has not already been resolved through listCustomerRules(). The
+     * executor resolves it that way at staging AND again at approval; this
+     * method deliberately does not re-implement that check, because a scope
+     * proof made from an unscoped read would be a false one.
+     *
+     * `date_expiry` semantics differ from createAllowRule() and the difference
+     * is load-bearing: on the create path a null expiry OMITS the field, but
+     * on a partial update an omitted field means "leave unchanged", so
+     * clearing an expiry requires sending an explicit null. Passing
+     * `['date_expiry' => null]` therefore sends `{"date_expiry": null}` and is
+     * the only way to express "make this rule permanent" upstream. UNMEASURED
+     * as of 2026-09-02: whether Mesh accepts a null there, or answers 400. The
+     * caller must treat a MeshWriteRejectedException on that body as the
+     * vendor declining to clear the display expiry, NOT as the PSA-side
+     * lifetime failing to change — the PSA row is what actually governs
+     * reaping (measured 2026-09-01: date_expiry is display-only upstream).
+     *
+     * Also unmeasured, and the reason every caller must re-read afterwards:
+     * whether a PATCH preserves the rule id. The `OPTIONS` schema marks `id`
+     * read-only, which is the API asserting it, not us observing it. Callers
+     * assert on a scoped re-read, never on this return value.
+     *
+     * @param  array<string, mixed>  $fields  Subset of PATCHABLE_FIELDS. May carry
+     *                                        a null `date_expiry`; may not be empty.
+     * @return array<string, mixed>
+     *
+     * @throws MeshClientException credential missing, empty or unknown field set,
+     *                             or any non-400 upstream failure
+     * @throws MeshWriteRejectedException upstream 400, carrying the vendor's own text
+     */
+    public function patchRule(string $ruleId, array $fields): array
+    {
+        $this->assertConfigured();
+
+        if (trim($ruleId) === '') {
+            throw new MeshClientException('Mesh rule id is required; nothing was sent.');
+        }
+
+        // Refuse the whole call on ANY unknown key rather than filtering it
+        // out silently. A silent filter would let a call site believe it had
+        // changed `active` or `ab` and read a success back; a refusal is the
+        // only outcome that cannot be mistaken for the write the caller asked
+        // for. Same reasoning as refusing the whole body on the Huntress
+        // resolution lane rather than allow-listing params one at a time.
+        $unknown = array_values(array_diff(array_keys($fields), self::PATCHABLE_FIELDS));
+        if ($unknown !== []) {
+            throw new MeshClientException(
+                'Mesh rule update refused: field(s) '.implode(', ', $unknown)
+                .' are not updatable by this client (only '.implode(', ', self::PATCHABLE_FIELDS)
+                .' are); nothing was sent.'
+            );
+        }
+
+        if ($fields === []) {
+            throw new MeshClientException('Mesh rule update needs at least one field; nothing was sent.');
+        }
+
+        return $this->request('PATCH', self::RULE_ENDPOINT.rawurlencode($ruleId).'/', ['json' => $fields]);
+    }
+
+    /**
      * DELETE one rule by id. Returns nothing useful — the 200 body is not
      * evidence, which is why the reaper follows it with ruleAbsent().
      *

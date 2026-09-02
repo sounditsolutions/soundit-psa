@@ -123,7 +123,8 @@ class TechnicianCockpitController extends Controller
             'calendar_stage_respond_event' => $service->approveStagedCalendarAction($run, (int) auth()->id()),
             'huntress_stage_resolve_escalation' => $service->approveStagedHuntressAction($run, (int) auth()->id()),
             'mesh_stage_add_allow_rule',
-            'mesh_stage_remove_allow_rule' => $service->approveStagedMeshAdminAction($run, (int) auth()->id()),
+            'mesh_stage_remove_allow_rule',
+            'mesh_stage_edit_allow_rule' => $service->approveStagedMeshAdminAction($run, (int) auth()->id()),
             // Body is required only on the reply/resolution path, validated inside this arm.
             'send_reply', 'propose_resolution' => $service->approveAndSend(
                 $run,

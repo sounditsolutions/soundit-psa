@@ -345,4 +345,95 @@ class MeshWriteClientTest extends TestCase
         // Empty queue: any HTTP call at all would raise from the MockHandler.
         $this->assertNull($this->clientReturning([])->findRuleById('tenant-1', '   '));
     }
+
+    // ---- #1135: the update lane's allow-list lives in the CLIENT -------------
+
+    public function test_patch_targets_the_detail_route_with_the_partial_method(): void
+    {
+        $client = $this->clientReturning([new Response(200, [], json_encode(['id' => 'rule-1', 'date_expiry' => '2026-12-01T00:00:00+00:00']))]);
+
+        $client->patchRule('rule-1', ['date_expiry' => '2026-12-01T00:00:00+00:00']);
+
+        // PATCH, never PUT: the schema marks `sender` required on PUT, and
+        // sending a sender is the one thing an "edit" must never do.
+        $this->assertSame('PATCH', $this->lastRequest()->getMethod());
+        $this->assertSame('/api/rule-allows-blocks/rule-1/', $this->lastRequest()->getUri()->getPath());
+        $this->assertSame(['date_expiry' => '2026-12-01T00:00:00+00:00'], $this->lastBody());
+    }
+
+    public function test_patch_sends_an_explicit_null_to_clear_an_expiry(): void
+    {
+        $client = $this->clientReturning([new Response(200, [], json_encode(['id' => 'rule-1']))]);
+
+        $client->patchRule('rule-1', ['date_expiry' => null]);
+
+        // Deliberately UNLIKE createAllowRule(), where a null expiry omits the
+        // field. On a partial update an omitted field means "leave unchanged",
+        // so clearing one requires the key to be present and null.
+        $this->assertArrayHasKey('date_expiry', $this->lastBody());
+        $this->assertNull($this->lastBody()['date_expiry']);
+    }
+
+    /**
+     * THE red-check for the client-side allow-list, and the mutant is the one
+     * named in #1135 build-shape item 7: a call site that tries to send `ab`.
+     * Each of these fields is writable on the route per its own OPTIONS
+     * schema, so nothing upstream would stop them — the refusal has to be ours
+     * and it has to happen before any byte is sent.
+     */
+    public function test_patch_refuses_every_scope_widening_field_without_sending_anything(): void
+    {
+        foreach ([
+            ['ab' => false],
+            ['organization_level' => true],
+            ['customer_id' => 'tenant-OTHER'],
+            ['partner_id' => 'partner-1'],
+            ['global_id' => 'g-1'],
+            ['edge' => true],
+            ['active' => false],
+            ['sender' => 'attacker@example.test'],
+            // The comment is the reaper's fallback identity for the rule
+            // (findRuleByComment), so it is not a label this lane may rewrite.
+            ['comment' => 'PSA allow BBBBBBBBBB'],
+            ['date_expiry' => null, 'edge' => true],
+        ] as $fields) {
+            // Empty queue: reaching the transport at all fails the MockHandler.
+            $client = $this->clientReturning([]);
+
+            try {
+                $client->patchRule('rule-1', $fields);
+                $this->fail('patchRule accepted '.implode(', ', array_keys($fields)));
+            } catch (MeshClientException $e) {
+                $this->assertStringContainsString('nothing was sent', $e->getMessage());
+            }
+        }
+    }
+
+    public function test_patch_refuses_an_empty_field_set(): void
+    {
+        $this->expectException(MeshClientException::class);
+
+        $this->clientReturning([])->patchRule('rule-1', []);
+    }
+
+    public function test_patch_refuses_an_empty_rule_id(): void
+    {
+        $this->expectException(MeshClientException::class);
+
+        $this->clientReturning([])->patchRule('   ', ['date_expiry' => null]);
+    }
+
+    public function test_patch_reports_a_vendor_400_as_a_rejection_with_its_own_text(): void
+    {
+        $client = $this->clientReturning([
+            new Response(400, [], json_encode(['date_expiry' => ['Datetime has wrong format.']])),
+        ]);
+
+        try {
+            $client->patchRule('rule-1', ['date_expiry' => 'not-a-date']);
+            $this->fail('a 400 must surface as a vendor rejection');
+        } catch (MeshWriteRejectedException $e) {
+            $this->assertStringContainsString('Datetime has wrong format', $e->getMessage());
+        }
+    }
 }

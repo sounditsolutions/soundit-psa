@@ -122,6 +122,10 @@ class McpToolModes
         // customer's tenant, and it is not something a full-surface token
         // should reach without a human releasing it.
         'mesh_remove_allow_rule',
+        // mesh_edit_allow_rule (#1135), same construction. Extending or
+        // clearing an expiry LENGTHENS a hole in a customer's mail filtering,
+        // which is the create verb's reason for being here, reached later.
+        'mesh_edit_allow_rule',
     ];
 
     /**
