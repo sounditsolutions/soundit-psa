@@ -314,7 +314,8 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertMatchesRegularExpression('/^PSA allow [A-Z0-9]{10}$/', $comment);
         $this->assertStringContainsString("Mesh comment: {$comment}", $run->proposed_content);
         $this->assertStringNotContainsString('#', $comment);
-        $this->assertStringNotContainsString((string) $fixture['ticket']->id, $comment);
+        $this->assertStringNotContainsStringIgnoringCase('ticket', $comment);
+        $this->assertStringNotContainsString("#{$fixture['ticket']->id}", $run->proposed_meta['redacted_params']['comment']);
 
         $this->assertSame(0, MeshAllowRule::count());
         $this->assertSame(1, TechnicianActionLog::where('action_type', 'mesh_stage_add_allow_rule')->where('result_status', 'awaiting_approval')->count());

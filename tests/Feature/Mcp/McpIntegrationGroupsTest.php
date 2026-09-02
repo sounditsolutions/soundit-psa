@@ -83,7 +83,8 @@ class McpIntegrationGroupsTest extends TestCase
         $this->assertSame('Read', $psa['tiers'][0]['label']);
 
         // integrationForToolName covers every vendor prefix (spot check).
-        $this->assertSame('other', McpToolRegistry::integrationForToolName('mesh_search_email_logs'));
+        $this->assertSame('mesh', McpToolRegistry::integrationForToolName('mesh_search_email_logs'));
+        $this->assertSame('mesh', McpToolRegistry::integrationForToolName('mesh_add_allow_rule'));
         $this->assertSame('other', McpToolRegistry::integrationForToolName('level_get_device'));
         $this->assertSame('psa', McpToolRegistry::integrationForToolName('get_queue_stats'));
     }

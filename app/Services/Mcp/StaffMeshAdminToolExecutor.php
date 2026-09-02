@@ -465,15 +465,14 @@ class StaffMeshAdminToolExecutor
         // a rule that IS live upstream. Without this check a sibling proposal
         // for the same sender (a re-stage while the first was Executing, gen 1
         // via stagedRunSlot) walks past both brakes and opens a SECOND hole in
-        // the customer's mail filtering. Unknown is a refusal, never a pass:
-        // the proposal stays approvable and becomes executable again once the
-        // reaper proves that record absent, which is the only measurement that
-        // can settle it.
+        // the customer's mail filtering. Unknown is a refusal, never a pass.
         $unsettled = $this->unsettledAllowRule($clientId, $target['sender']);
         if ($unsettled !== null) {
             $message = "An earlier allow rule for '{$target['sender']}' on this client (PSA record #".$unsettled->id
                 .') may still be live upstream and has not been proved absent, so a second rule was not created. '
-                .'Resolve or reap that record first, then approve this again; no upstream call was made.';
+                .'The PSA cannot settle that record until its expiry ('.$unsettled->expires_at?->toIso8601String()
+                .') passes and the expiry job examines it; until then, allow this sender directly in the Mesh portal '
+                .'if it is needed now. No upstream call was made.';
             $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
 
             return ['error' => $message];
