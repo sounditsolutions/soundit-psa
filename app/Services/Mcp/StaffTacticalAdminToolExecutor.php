@@ -3164,7 +3164,16 @@ class StaffTacticalAdminToolExecutor
             // TechnicianApprovalResult defines for exactly this case, never as
             // a clean execution the cockpit renders green.
             if (isset($result['fault'])) {
-                return new TechnicianApprovalResult('executed_with_fault');
+                // The message IS the payload of this channel: TechnicianApprovalResult
+                // defines executed_with_fault as "the cockpit must render $message on the
+                // ERROR channel", and the executor already composed the specific text
+                // (hostname, PSA device record left in place, re-check before assuming it
+                // is gone). Dropping it leaves the operator with the generic fallback
+                // banner, which names neither the machine nor the remediation.
+                return new TechnicianApprovalResult(
+                    'executed_with_fault',
+                    message: is_string($result['message'] ?? null) ? $result['message'] : null,
+                );
             }
 
             return new TechnicianApprovalResult('executed');
