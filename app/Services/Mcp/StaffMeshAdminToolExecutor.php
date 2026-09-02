@@ -457,6 +457,28 @@ class StaffMeshAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => $message];
         }
 
+        // ...and the brake above only sees rows that were MEASURED live. Every
+        // fault path (scope unconfirmed, id unrecoverable, create
+        // unacknowledged) writes a NON-active row and audits
+        // 'executed_with_fault', which alreadyExecuted() does not match either
+        // — and those are precisely the outcomes that can be sitting on top of
+        // a rule that IS live upstream. Without this check a sibling proposal
+        // for the same sender (a re-stage while the first was Executing, gen 1
+        // via stagedRunSlot) walks past both brakes and opens a SECOND hole in
+        // the customer's mail filtering. Unknown is a refusal, never a pass:
+        // the proposal stays approvable and becomes executable again once the
+        // reaper proves that record absent, which is the only measurement that
+        // can settle it.
+        $unsettled = $this->unsettledAllowRule($clientId, $target['sender']);
+        if ($unsettled !== null) {
+            $message = "An earlier allow rule for '{$target['sender']}' on this client (PSA record #".$unsettled->id
+                .') may still be live upstream and has not been proved absent, so a second rule was not created. '
+                .'Resolve or reap that record first, then approve this again; no upstream call was made.';
+            $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $message];
+        }
+
         $comment = $this->requiredString($arguments, 'comment') ?? $this->generateComment();
         $expiresAt = $this->parsedExpiry($arguments['expires_at'] ?? null);
 
@@ -1009,6 +1031,29 @@ class StaffMeshAdminToolExecutor
             ->first();
     }
 
+    /**
+     * A row for this sender whose upstream existence was never settled either
+     * way: the fault paths write `unresolved`, and the reaper writes
+     * `reap_failed` when it could not prove absence. Both mean "a rule may be
+     * live for this sender right now", so a second create is refused.
+     *
+     * EXECUTE-TIME ONLY. At staging an unresolved row deliberately does not
+     * answer "already allowed" — a corrected proposal must still be stageable;
+     * it is the upstream write, not the proposal, that must fail closed.
+     *
+     * Not filtered on expiry: Mesh expires nothing (measured 2026-09-01), so an
+     * expired row that was never reaped is exactly as live as an unexpired one.
+     */
+    private function unsettledAllowRule(int $clientId, string $sender): ?MeshAllowRule
+    {
+        return MeshAllowRule::query()
+            ->where('client_id', $clientId)
+            ->where('sender', $sender)
+            ->whereIn('state', [MeshAllowRule::STATE_UNRESOLVED, MeshAllowRule::STATE_REAP_FAILED])
+            ->latest('id')
+            ->first();
+    }
+
     private function parsedExpiry(mixed $value): \Illuminate\Support\Carbon
     {
         if (is_string($value) && trim($value) !== '') {
@@ -1099,16 +1144,22 @@ class StaffMeshAdminToolExecutor
     }
 
     /**
-     * APPROVE-TIME cooldown: EXECUTED rows only. The staging call leaves an
-     * awaiting_approval row for this same client, and counting it would make
-     * every proposal decline its own approval inside the cooldown window.
-     * Runaway staging is the stage-time check's question, not this one's.
+     * APPROVE-TIME cooldown: rows for attempts that REACHED UPSTREAM. The
+     * staging call leaves an awaiting_approval row for this same client, and
+     * counting it would make every proposal decline its own approval inside
+     * the cooldown window. Runaway staging is the stage-time check's question,
+     * not this one's.
+     *
+     * 'executed_with_fault' counts: the write landed (or may have), so a second
+     * approval seconds later is the same burst this window exists to damp —
+     * counting only clean executions left the fault outcomes, the ones where a
+     * rule is live and unaccounted for, with no cooldown at all.
      */
     private function approveCooldownActive(int $clientId): bool
     {
         return $this->actionLogQuery('mesh_add_allow_rule', $clientId)
             ->where('created_at', '>=', now()->subSeconds(self::COOLDOWN_SECONDS))
-            ->where('result_status', 'executed')
+            ->whereIn('result_status', ['executed', 'executed_with_fault'])
             ->exists();
     }
 
