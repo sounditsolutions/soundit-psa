@@ -1293,15 +1293,22 @@ class MeshAddAllowRuleTest extends TestCase
 
         $write = $this->mockWrite();
         $write->shouldNotReceive('deleteRule');
-        $this->assertSame(0, app(MeshAllowRuleReaper::class)->reap()['examined']);
-        $this->artisan('mesh:reap-allow-rules')->assertSuccessful();
+
+        $counts = app(MeshAllowRuleReaper::class)->reap();
+        $this->assertSame(0, $counts['examined']);
+        // The two unsettled rows are identified and left unresolved — their
+        // scope was never proved, so they stay counted and the command stays
+        // loud. Only the row that was already active is silent.
+        $this->assertSame(2, $counts['unresolved']);
+        $this->artisan('mesh:reap-allow-rules')->assertFailed();
     }
 
-    public function test_a_permanent_row_stuck_unresolved_is_identified_and_settled_without_being_deleted(): void
+    public function test_a_permanent_row_stuck_unresolved_is_identified_but_never_promoted_to_active(): void
     {
         $this->configureMesh();
         $record = $this->record(['expires_at' => null, 'mesh_rule_id' => null, 'state' => MeshAllowRule::STATE_UNRESOLVED]);
         $write = $this->mockWrite();
+        // Called once: the second run reads the id off the row, not upstream.
         $write->shouldReceive('findRuleByComment')->once()->with(self::TENANT, 'billing@vendor.example', 'PSA allow ABCDEFGHIJ')->andReturn(['id' => 'late-id']);
         // The caller asked for permanent. Identifying it is the whole point;
         // deleting it would be the PSA revoking a decision it was told to keep.
@@ -1311,12 +1318,44 @@ class MeshAddAllowRuleTest extends TestCase
 
         // Nothing was reaped and nothing was examined for reaping — settling is
         // not a reap, and the command's expired-rule counts must not say it is.
-        $this->assertSame(['examined' => 0, 'reaped' => 0, 'unresolved' => 0, 'failed' => 0], $counts);
+        $this->assertSame(0, $counts['examined']);
+        $this->assertSame(0, $counts['reaped']);
+        $this->assertSame(0, $counts['failed']);
         $this->assertSame('late-id', $record->fresh()->mesh_rule_id);
-        $this->assertSame(MeshAllowRule::STATE_ACTIVE, $record->fresh()->state);
         $this->assertNull($record->fresh()->reaped_at);
 
-        $this->artisan('mesh:reap-allow-rules')->assertSuccessful();
+        // The id is recovered; scope is NOT. ACTIVE is the record
+        // liveAllowRule() answers "already allowed for this client" from, and
+        // this row was never scope-proved — promoting it would refuse the
+        // corrected retry for this sender forever.
+        $this->assertSame(MeshAllowRule::STATE_UNRESOLVED, $record->fresh()->state);
+        $this->assertStringContainsString('not scope evidence', (string) $record->fresh()->last_error);
+        $this->assertSame(1, $counts['unresolved']);
+
+        // A permanent rule whose scope was never proved must not go quiet.
+        $this->artisan('mesh:reap-allow-rules')->assertFailed();
+    }
+
+    /**
+     * The scope-fault and never-answered-create paths write the reason a row
+     * never settled into last_error, and it is the only record that scope was
+     * never proved. The daily identify pass must not overwrite it.
+     */
+    public function test_settling_a_permanent_row_never_overwrites_the_recorded_fault(): void
+    {
+        $this->configureMesh();
+        $record = $this->record(['expires_at' => null, 'mesh_rule_id' => null, 'state' => MeshAllowRule::STATE_UNRESOLVED]);
+        $record->forceFill(['last_error' => 'Mesh reported this rule was added for another tenant; check the Mesh portal and remove it by hand if the scope is wrong.'])->save();
+
+        $write = $this->mockWrite();
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'late-id']);
+        $write->shouldNotReceive('deleteRule');
+
+        app(MeshAllowRuleReaper::class)->reap();
+
+        $this->assertSame('late-id', $record->fresh()->mesh_rule_id);
+        $this->assertSame(MeshAllowRule::STATE_UNRESOLVED, $record->fresh()->state);
+        $this->assertStringContainsString('another tenant', (string) $record->fresh()->last_error);
     }
 
     public function test_a_permanent_row_that_cannot_be_identified_stays_unresolved_and_loud(): void

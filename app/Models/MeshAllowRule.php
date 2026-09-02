@@ -113,7 +113,10 @@ class MeshAllowRule extends Model
      * Such a row is never reaped (it has no expiry to reach) but it is not
      * inert: while it sits unsettled the brake refuses every later allow rule
      * for its sender, and no expiry is ever coming to clear it. The reaper
-     * resolves its upstream id and settles it — identify only, never delete.
+     * records whatever upstream id it can recover for such a row and keeps it
+     * counted as unresolved — identify only, never delete, and never promote
+     * to active: the row is unsettled because its scope was never proved, and
+     * an id is not that proof. Only a human can clear it.
      * See MeshAllowRuleReaper::settlePermanent().
      */
     public function scopeUnsettledPermanent(Builder $query): Builder
