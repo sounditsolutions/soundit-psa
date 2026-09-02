@@ -546,8 +546,12 @@ class MeshAddAllowRuleTest extends TestCase
 
         $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('error');
 
+        // The read-back recovered the id, but a read-back is NOT scope
+        // evidence (the server normalises every stored row), and there was no
+        // create response to prove scope from — so the row is unresolved, and
+        // a corrected re-stage for this sender is not suppressed by it.
         $record = MeshAllowRule::sole();
-        $this->assertSame(MeshAllowRule::STATE_ACTIVE, $record->state);
+        $this->assertSame(MeshAllowRule::STATE_UNRESOLVED, $record->state);
         $this->assertSame('rule-landed', $record->mesh_rule_id);
         $this->assertSame($comment, $record->comment);
         $this->assertSame($run->id, (int) $record->technician_run_id);
@@ -579,6 +583,29 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertNull($record->mesh_rule_id);
         $this->assertNotNull($record->last_error);
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+    }
+
+    public function test_a_determinate_rejection_records_no_phantom_rule(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $run = $this->stagedRun($fixture);
+
+        // A rotated API key: Mesh answered and did not act, so nothing was
+        // committed and there is nothing to reconcile. A row here would be a
+        // phantom the reaper can never retire, and a burned approval.
+        $write->shouldReceive('createAllowRule')->once()
+            ->andThrow(new MeshClientException('Mesh API error: 401 Unauthorized', 401));
+        $write->shouldNotReceive('findRuleByComment');
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run));
+
+        $this->assertSame(0, MeshAllowRule::count());
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, 'a determinate rejection leaves the proposal approvable after correction');
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'rejected')->count());
+        $this->assertSame(0, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed_with_fault')->count());
     }
 
     public function test_approval_refuses_when_the_mesh_mapping_was_removed_after_staging(): void

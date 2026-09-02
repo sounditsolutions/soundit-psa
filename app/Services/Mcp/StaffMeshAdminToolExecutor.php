@@ -419,7 +419,17 @@ class StaffMeshAdminToolExecutor
         // Mesh mapping, the sender shape and the typed domain confirmation are
         // all re-derived here rather than trusted from the proposal.
         $target = $this->allowRuleTarget($arguments, $clientId);
-        $contentHash = $run?->content_hash ?? $this->contentHash('mesh_stage_add_allow_rule', $clientId, 'allow-rule-'.($target['sender'] ?? 'unresolved'), [
+        // The BASE hash for this write, re-derived from live state — NEVER
+        // $run->content_hash. stagedRunSlot() hands a second proposal for the
+        // same write the next generation of the key, so a generation>=1 run
+        // carries a hash no other run shares; keying the only pre-upstream
+        // duplicate guard on it would let a sibling proposal (a re-stage while
+        // the first was Executing, or a denied run put back by the cockpit
+        // undo) walk straight past a guard the first approval already
+        // satisfied and open a SECOND hole in the customer's mail filtering.
+        // Every proposal for one write therefore dedups on one key; run_id on
+        // the audit row is what ties each row back to its own proposal.
+        $contentHash = $this->contentHash('mesh_stage_add_allow_rule', $clientId, 'allow-rule-'.($target['sender'] ?? 'unresolved'), [
             'mesh_customer_id' => $target['mesh_customer_id'] ?? null,
         ]);
         if (isset($target['error'])) {
@@ -432,6 +442,19 @@ class StaffMeshAdminToolExecutor
             $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, 'Duplicate Mesh allow rule suppressed before upstream call.', $actorLabel, $run?->id, $approverId);
 
             return ['success' => true, 'idempotent' => true, 'message' => 'This allow rule was already created recently; no upstream call was made.'];
+        }
+
+        // A live PSA record is the MEASURED statement that this write already
+        // landed upstream, and unlike the audit dedup window it does not age
+        // out. It is the second brake on two approvable proposals for one
+        // write: whichever is approved first, the other must not create a
+        // duplicate rule the reaper cannot tell apart by sender alone.
+        $live = $this->liveAllowRule($clientId, $target['sender']);
+        if ($live !== null) {
+            $message = "'{$target['sender']}' is already allowed for this client by PSA record #".$live->id.'; no upstream call was made.';
+            $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['success' => true, 'idempotent' => true, 'message' => $message];
         }
 
         $comment = $this->requiredString($arguments, 'comment') ?? $this->generateComment();
@@ -454,13 +477,28 @@ class StaffMeshAdminToolExecutor
 
             return ['error' => $message];
         } catch (MeshClientException $e) {
-            // NOT a failed create. Mesh commits the rule before it answers, so
-            // a read timeout, a reset connection or an edge 502 can sit on top
-            // of a rule that is already live; declaring failure here is exactly
-            // what leaves a hole in mail filtering with no row to reap it, and
-            // invites a second rule when the approver retries. The
-            // post-condition is MEASURED before anything is declared.
-            return $this->reconcileUnacknowledgedCreate($e, $target, $comment, $expiresAt, $clientId, $contentHash, $actorLabel, $run, $approverId);
+            // NOT a failed create — but only for the failures that can sit on
+            // top of a committed rule. Mesh commits before it answers, so a
+            // read timeout, a reset connection or an edge 502 can leave a rule
+            // live; declaring failure there is exactly what leaves a hole in
+            // mail filtering with no row to reap it, and invites a second rule
+            // when the approver retries. The post-condition is MEASURED before
+            // anything is declared.
+            if ($this->createMayHaveCommitted($e)) {
+                return $this->reconcileUnacknowledgedCreate($e, $target, $comment, $expiresAt, $clientId, $contentHash, $actorLabel, $run, $approverId);
+            }
+
+            // A DETERMINATE rejection: Mesh answered and did not act (or the
+            // client never sent anything). There is no rule to record and
+            // nothing to reconcile — a mesh_allow_rules row here would be a
+            // phantom the reaper can never retire, keeping
+            // mesh:reap-allow-rules red forever for a rule that never existed.
+            // The proposal stays approvable once the cause is fixed, exactly
+            // as a 400 does.
+            $message = 'Mesh refused the allow rule before it was created: '.$e->getMessage();
+            $this->auditAttempt($tool, 'rejected', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $message];
         }
 
         // CRITERION 1. `added_for` is the ONLY scope evidence this API gives:
@@ -623,7 +661,16 @@ class StaffMeshAdminToolExecutor
             'comment' => $comment,
             'mesh_rule_id' => $ruleId,
             'expires_at' => $expiresAt,
-            'state' => $ruleId !== null ? MeshAllowRule::STATE_ACTIVE : MeshAllowRule::STATE_UNRESOLVED,
+            // NEVER active, even with an id in hand. ACTIVE is the MEASURED
+            // record liveAllowRule() answers "already allowed for this client"
+            // from, and a read-back is not scope evidence — the server
+            // normalises every stored row to organization_level:true /
+            // customer_id:null, so it cannot tell a tenant rule from a
+            // partner-wide one. There was no create response here, so scope
+            // was never proved; recording ACTIVE would suppress the corrected
+            // retry for up to the full lifetime. The id (when we have one) is
+            // still stored, which is all the reaper needs.
+            'state' => MeshAllowRule::STATE_UNRESOLVED,
             'created_by_actor' => $actorLabel,
             'approver_user_id' => $approverId,
             'upstream_created_by' => is_scalar($match['created_by'] ?? null) ? (string) $match['created_by'] : null,
@@ -649,6 +696,31 @@ class StaffMeshAdminToolExecutor
             'expires_at' => $expiresAt->toIso8601String(),
             'message' => $message,
         ];
+    }
+
+    /**
+     * Could this failure be sitting on top of a rule Mesh already committed?
+     *
+     * Only two shapes can: a request that reached Mesh and got no readable
+     * answer (status 0 — read timeout, reset connection, transport failure
+     * mid-flight) and a 5xx from a server that may have committed before it
+     * fell over. Everything else is a server that ANSWERED without acting —
+     * 401/403 (credential), 404 (route), 429 — and MeshWriteClient's own
+     * pre-flight guards ('… nothing was sent') never put a request on the
+     * wire at all. Reconciling those would create a mesh_allow_rules row for a
+     * rule that does not exist: reapOne() has no terminal state for it, so it
+     * would burn a BATCH_LIMIT slot and force mesh:reap-allow-rules to exit
+     * FAILURE on every run, forever.
+     */
+    private function createMayHaveCommitted(MeshClientException $error): bool
+    {
+        if (str_contains($error->getMessage(), 'nothing was sent')) {
+            return false;
+        }
+
+        $status = (int) $error->getCode();
+
+        return $status === 0 || $status >= 500;
     }
 
     public function approveStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
