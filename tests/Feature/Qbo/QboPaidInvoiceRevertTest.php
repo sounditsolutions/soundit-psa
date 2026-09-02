@@ -194,6 +194,21 @@ class QboPaidInvoiceRevertTest extends TestCase
         $this->assertSame(InvoiceStatus::Paid, $invoice->fresh()->status);
     }
 
+    public function test_a_non_numeric_balance_does_not_mark_an_open_invoice_paid(): void
+    {
+        // The mirror of the test above, and the more dangerous half: 'unknown'
+        // casts to 0.0, which reads as settled in full. An invoice nobody has
+        // paid must not acquire a Paid status from a payload QBO never filled
+        // in — that is exactly the state the nine rows were found in.
+        $invoice = $this->makeInvoice(['status' => InvoiceStatus::Posted]);
+        $this->mockQboGets([$this->qboPayload(null, 500.0, ['Balance' => 'unknown'])]);
+
+        app(QboSyncService::class)->syncInvoiceStatusFromQbo($invoice);
+
+        $this->assertSame(InvoiceStatus::Posted, $invoice->fresh()->status);
+        $this->assertSame(0, InvoiceStatusChangeLog::where('invoice_id', $invoice->id)->count());
+    }
+
     public function test_a_qbo_side_void_takes_the_void_path_not_the_revert_path(): void
     {
         // qboInvoiceIsVoided() returns before the balance branch, so "not

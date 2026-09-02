@@ -470,8 +470,17 @@ class QboSyncService
         // Paid) and now is not: it would revert a Paid invoice on a malformed
         // payload. So the revert arm requires Balance to have actually been
         // present. Absent, nothing moves and the row is left as it was.
+        //
+        // The cast is deliberately NOT applied to an unreported balance. A
+        // present-but-non-numeric Balance — 'unknown', null, a nested object
+        // from an API change — casts to 0.0, which the forward arm reads as
+        // "settled in full" and writes Paid onto an invoice nobody has paid.
+        // That is how a row acquires a Paid status with nothing behind it,
+        // which is the defect this issue exists to close; closing it in one
+        // direction only would leave the other open. Unreported falls back to
+        // the local total, which is what the ?? was always reaching for.
         $balanceReported = array_key_exists('Balance', $qboInvoice) && is_numeric($qboInvoice['Balance']);
-        $balance = (float) ($qboInvoice['Balance'] ?? $invoice->total);
+        $balance = $balanceReported ? (float) $qboInvoice['Balance'] : (float) $invoice->total;
 
         $context = null;
 
