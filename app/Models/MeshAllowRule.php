@@ -31,6 +31,23 @@ class MeshAllowRule extends Model
     public const STATE_REAP_FAILED = 'reap_failed';
 
     /**
+     * Deleted on purpose by an approved mesh_remove_allow_rule (#1134), and
+     * proved absent by the same 404 detail read the reaper uses. A separate
+     * state from STATE_REAPED, not a synonym: reaped means the PSA honoured a
+     * lifetime it set itself, removed means a named approver ended the rule
+     * early against a ticket. Both are terminal and neither is in
+     * scopeReapable(), so a removed row is out of the reaper's queue by
+     * construction.
+     *
+     * There is deliberately NO `remove_failed` twin. A removal whose
+     * post-condition did not hold leaves the rule LIVE upstream and still
+     * subject to whatever expiry the row carries, so the row must stay in a
+     * state the reaper still works — it goes to STATE_REAP_FAILED, which is
+     * exactly that queue, and the fault is surfaced to the approver.
+     */
+    public const STATE_REMOVED = 'removed';
+
+    /**
      * Lifetime applied when the caller does not ask for one. It is a DEFAULT,
      * not a ceiling: #1133 made expiry caller-chosen, so this value only
      * decides what an omitted `expires_at` means. It is still what the PSA
@@ -55,12 +72,14 @@ class MeshAllowRule extends Model
         'approver_user_id',
         'upstream_created_by',
         'reaped_at',
+        'removed_at',
         'last_error',
     ];
 
     protected $casts = [
         'expires_at' => 'datetime',
         'reaped_at' => 'datetime',
+        'removed_at' => 'datetime',
         'scope_proved' => 'boolean',
     ];
 
