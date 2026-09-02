@@ -573,7 +573,7 @@ class StaffMeshAdminToolExecutor
                 return new TechnicianApprovalResult('gate_declined');
             }
 
-            if ($this->cooldownActive($directTool, (int) $run->client_id)) {
+            if ($this->approveCooldownActive((int) $run->client_id)) {
                 $this->auditAttempt($run->action_type, 'blocked', (int) $run->client_id, $ticket, $run->content_hash, 'Mesh allow-rule cooldown active; approval refused before upstream call.', $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
@@ -868,6 +868,20 @@ class StaffMeshAdminToolExecutor
             ->exists();
     }
 
+    /**
+     * APPROVE-TIME cooldown: EXECUTED rows only. The staging call leaves an
+     * awaiting_approval row for this same client, and counting it would make
+     * every proposal decline its own approval inside the cooldown window.
+     * Runaway staging is the stage-time check's question, not this one's.
+     */
+    private function approveCooldownActive(int $clientId): bool
+    {
+        return $this->actionLogQuery('mesh_add_allow_rule', $clientId)
+            ->where('created_at', '>=', now()->subSeconds(self::COOLDOWN_SECONDS))
+            ->where('result_status', 'executed')
+            ->exists();
+    }
+
     /** The staged and direct names share a cooldown and dedup window; they are one action. */
     private function actionLogQuery(string $tool, ?int $clientId)
     {
@@ -993,7 +1007,8 @@ class StaffMeshAdminToolExecutor
     {
         return self::tool(
             'mesh_stage_add_allow_rule',
-            'Stage a Mesh Email Security allow rule for cockpit approval. This is the only lane the verb has: approval re-resolves the client’s Mesh tenant and re-checks the sender and typed domain confirmation against LIVE state before the rule is created. '
+            'Stage a Mesh Email Security allow rule for cockpit approval. STAGED ONLY — this is the only lane the verb has: approval re-resolves the client’s Mesh tenant and re-checks the sender and typed domain confirmation against LIVE state before the rule is created. '
+            .'This WEAKENS the customer’s mail filtering for that sender (allow-only, never partner-wide, never `edge`) until the PSA removes the rule after '.MeshAllowRule::DEFAULT_LIFETIME_DAYS.' days. '
             .'The proposal names the sender, the scope width (single address vs whole domain), the expiry date, and whose identity Mesh will record as the rule’s creator. '
             .'Requires a ticket, reason, typed domain confirmation, explicit grant, kill-switch, dedup and cooldown.',
             self::allowRuleProperties(),
