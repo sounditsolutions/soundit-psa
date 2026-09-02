@@ -2045,17 +2045,24 @@ class StaffMeshAdminToolExecutor
         // are the same thing and dedup on the same key.
         $contentHash = $this->contentHash($tool, $clientId, 'remove-allow-rule-'.$ruleIdForHash, []);
 
-        $target = $this->removeAllowRuleTarget($arguments, $clientId);
-        if (isset($target['error'])) {
-            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, $target['error'], $actorLabel);
-
-            return ['error' => $target['error']];
-        }
-
-        // Already removed within the dedup window. Unlike the create verb this
-        // is a genuinely idempotent answer and is reported as success: the
-        // requested end state (that rule gone) is the state that holds, and
-        // there is no lifetime for a second caller to be silently deprived of.
+        // Asked BEFORE the target is resolved, and that order is load-bearing.
+        // A removal that landed is PROVED absent, so findRuleById() no longer
+        // resolves the id and removeAllowRuleTarget() would refuse the retry
+        // with "No allow rule with id ... belongs to" — a tenant-scope error
+        // for a scope problem that does not exist, handed to the one caller
+        // whose request has already been satisfied. Resolved-first, the
+        // idempotent answer below was unreachable by construction.
+        //
+        // Asking it here is not a leak: the key is client-scoped and carries
+        // the rule id, so it can only ever answer for a removal THIS client
+        // already executed, and it confirms nothing about a row on any other
+        // tenant.
+        //
+        // Unlike the create verb this is a genuinely idempotent answer and is
+        // reported as success: the requested end state (that rule gone) is the
+        // state that holds, and there is no lifetime for a second caller to be
+        // silently deprived of. The id is echoed from the caller's own
+        // argument — there is no live row left to read it back from.
         if ($this->alreadyExecuted('mesh_remove_allow_rule', $clientId, $contentHash)) {
             return [
                 'success' => true,
@@ -2063,9 +2070,16 @@ class StaffMeshAdminToolExecutor
                 'ticket_id' => $ticket->id,
                 'ticket_display_id' => $ticket->display_id,
                 'run_id' => $this->executedRunId('mesh_remove_allow_rule', $clientId, $contentHash),
-                'rule_id' => $target['rule_id'],
-                'message' => "Rule '{$target['rule_id']}' was already removed for this client recently; no proposal was staged.",
+                'rule_id' => $ruleIdForHash,
+                'message' => "Rule '{$ruleIdForHash}' was already removed for this client recently; no proposal was staged.",
             ];
+        }
+
+        $target = $this->removeAllowRuleTarget($arguments, $clientId);
+        if (isset($target['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, $target['error'], $actorLabel);
+
+            return ['error' => $target['error']];
         }
 
         $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
@@ -2209,6 +2223,21 @@ class StaffMeshAdminToolExecutor
         // verb.
         $contentHash = $this->contentHash('mesh_stage_remove_allow_rule', $clientId, 'remove-allow-rule-'.$ruleIdForHash, []);
 
+        // Asked BEFORE the scope re-check, for the reason stageRemoveAllowRule
+        // records: the removal this key matches is PROVED absent, so the id no
+        // longer resolves and the re-check below would refuse a duplicate card
+        // with a tenant-scope error, release the claim, and leave that card
+        // AwaitingApproval forever with nothing that could ever settle it.
+        // Client-scoped and keyed on the rule id, so it can only answer for a
+        // removal THIS client executed. The id is echoed from the approved
+        // arguments — there is no live row left to read it back from.
+        if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+            $message = "Rule '{$ruleIdForHash}' was already removed for this client recently; no upstream call was made.";
+            $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['success' => true, 'idempotent' => true, 'message' => $message];
+        }
+
         // The scope check runs AGAIN, against live state. This is the check
         // that makes the removal safe, not the one at staging: the card may
         // have waited days, and the client's Mesh mapping can be re-pointed in
@@ -2219,13 +2248,6 @@ class StaffMeshAdminToolExecutor
             $this->auditAttempt($tool, 'rejected', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
 
             return ['error' => $message];
-        }
-
-        if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
-            $message = "Rule '{$target['rule_id']}' was already removed for this client recently; no upstream call was made.";
-            $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
-
-            return ['success' => true, 'idempotent' => true, 'message' => $message];
         }
 
         $record = $target['record'] instanceof MeshAllowRule ? $target['record'] : null;

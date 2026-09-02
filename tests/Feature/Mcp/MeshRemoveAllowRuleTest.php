@@ -790,12 +790,21 @@ class MeshRemoveAllowRuleTest extends TestCase
         $actor = $this->configureAiActor();
         $fixture = $this->fixture();
         $write = $this->mockWrite();
-        $write->shouldReceive('findRuleById')->andReturn($this->upstreamRow());
+        // Twice and no more: staging the card, and the approval's own scope
+        // re-check. After that the rule is gone.
+        $write->shouldReceive('findRuleById')->twice()->andReturn($this->upstreamRow());
         $run = $this->stagedRun($fixture);
 
         $write->shouldReceive('deleteRule')->once();
         $write->shouldReceive('ruleAbsent')->once()->andReturn(true);
         $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('success');
+
+        // The rule has just been PROVED absent, so the scoped list can no
+        // longer resolve its id. A mock that kept handing the row back would be
+        // asserting a state this test itself disproved, and would make the
+        // idempotent answer reachable only in the mock — so the retry must be
+        // answered WITHOUT resolving the target at all.
+        $write->shouldNotReceive('findRuleById');
 
         $second = $this->decodedResult($this->callTool(
             $this->token(['mesh_remove_allow_rule:staged']),
@@ -806,7 +815,59 @@ class MeshRemoveAllowRuleTest extends TestCase
         $this->assertTrue($second['success']);
         $this->assertTrue($second['idempotent']);
         $this->assertStringContainsString('already removed', $second['message']);
+        $this->assertStringNotContainsString('belongs to', $second['message'], 'a satisfied retry must not be answered with a tenant-scope error');
         $this->assertSame(1, TechnicianRun::count(), 'no second proposal may be staged');
+    }
+
+    /**
+     * The same answer at APPROVAL. Two cards for one rule can exist — the run
+     * slot is per ticket — and the second is approved after the first has
+     * already proved the rule absent, so its id no longer resolves. It must
+     * close as an idempotent no-op: refusing it with a tenant-scope error
+     * releases the claim and strands the card AwaitingApproval forever, while
+     * telling the approver to check an id that was never wrong.
+     */
+    public function test_a_duplicate_card_approved_after_the_removal_landed_closes_as_idempotent(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $secondTicket = Ticket::factory()->for($fixture['client'])->create(['subject' => 'Same allow, raised twice']);
+        $write = $this->mockWrite();
+        // Three resolutions and no more: staging each card, and the FIRST
+        // approval's scope re-check.
+        $write->shouldReceive('findRuleById')->times(3)->andReturn($this->upstreamRow());
+
+        $first = $this->stagedRun($fixture);
+
+        // Past the staging cooldown, and on another ticket, so this is a
+        // genuinely second card rather than the live proposal handed back.
+        $this->travel(6)->minutes();
+        $this->callTool(
+            $this->token(['mesh_remove_allow_rule:staged']),
+            'mesh_remove_allow_rule',
+            $this->removeArgs($fixture, ['ticket_id' => $secondTicket->id]),
+        )->assertOk();
+        $duplicate = TechnicianRun::where('ticket_id', $secondTicket->id)->sole();
+
+        $write->shouldReceive('deleteRule')->once();
+        $write->shouldReceive('ruleAbsent')->once()->andReturn(true);
+        $this->actingAs($actor)->post(route('cockpit.approve', $first))->assertSessionHas('success');
+
+        // The rule is gone and proved gone: nothing resolves it now, and no
+        // second DELETE may be sent for it.
+        $write->shouldNotReceive('findRuleById');
+        $write->shouldNotReceive('deleteRule');
+        $this->travel(6)->minutes();
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $duplicate))->assertSessionHas('error');
+        $this->assertStringContainsString('was already removed for this client recently', (string) session('error'));
+        $this->assertStringNotContainsString('belongs to', (string) session('error'));
+
+        // Terminal, not stranded: the card is spent, and the idempotent outcome
+        // rides the fault channel rather than reading as a fresh removal.
+        $this->assertSame(TechnicianRunState::Done, $duplicate->fresh()->state);
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'mesh_remove_allow_rule')->where('result_status', 'executed')->count());
     }
 
     /**
