@@ -1082,7 +1082,15 @@ class MeshAddAllowRuleTest extends TestCase
         // daily reaper happens to run. Nothing is created.
         $write->shouldNotReceive('createAllowRule');
 
-        $this->actingAs($actor)->post(route('cockpit.approve', $run));
+        $response = $this->actingAs($actor)->post(route('cockpit.approve', $run));
+
+        // And the approver reads WHY. A message-less gate_declined renders
+        // "the Technician declined (it may be paused). Try again." — a false
+        // account of the refusal that sends them clicking the same button
+        // instead of re-staging with a date that means something.
+        $response->assertSessionHas('error');
+        $this->assertStringContainsString('is in the past', (string) session('error'));
+        $this->assertStringContainsString('stage a new proposal with a valid expiry', (string) session('error'));
 
         $this->assertSame(0, MeshAllowRule::count());
         $log = TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'rejected')->sole();
@@ -1287,6 +1295,46 @@ class MeshAddAllowRuleTest extends TestCase
         $write->shouldNotReceive('deleteRule');
         $this->assertSame(0, app(MeshAllowRuleReaper::class)->reap()['examined']);
         $this->artisan('mesh:reap-allow-rules')->assertSuccessful();
+    }
+
+    public function test_a_permanent_row_stuck_unresolved_is_identified_and_settled_without_being_deleted(): void
+    {
+        $this->configureMesh();
+        $record = $this->record(['expires_at' => null, 'mesh_rule_id' => null, 'state' => MeshAllowRule::STATE_UNRESOLVED]);
+        $write = $this->mockWrite();
+        $write->shouldReceive('findRuleByComment')->once()->with(self::TENANT, 'billing@vendor.example', 'PSA allow ABCDEFGHIJ')->andReturn(['id' => 'late-id']);
+        // The caller asked for permanent. Identifying it is the whole point;
+        // deleting it would be the PSA revoking a decision it was told to keep.
+        $write->shouldNotReceive('deleteRule');
+
+        $counts = app(MeshAllowRuleReaper::class)->reap();
+
+        // Nothing was reaped and nothing was examined for reaping — settling is
+        // not a reap, and the command's expired-rule counts must not say it is.
+        $this->assertSame(['examined' => 0, 'reaped' => 0, 'unresolved' => 0, 'failed' => 0], $counts);
+        $this->assertSame('late-id', $record->fresh()->mesh_rule_id);
+        $this->assertSame(MeshAllowRule::STATE_ACTIVE, $record->fresh()->state);
+        $this->assertNull($record->fresh()->reaped_at);
+
+        $this->artisan('mesh:reap-allow-rules')->assertSuccessful();
+    }
+
+    public function test_a_permanent_row_that_cannot_be_identified_stays_unresolved_and_loud(): void
+    {
+        $this->configureMesh();
+        $record = $this->record(['expires_at' => null, 'mesh_rule_id' => null, 'state' => MeshAllowRule::STATE_UNRESOLVED]);
+        $write = $this->mockWrite();
+        $write->shouldReceive('findRuleByComment')->twice()->andReturn(null);
+        $write->shouldNotReceive('deleteRule');
+
+        $counts = app(MeshAllowRuleReaper::class)->reap();
+
+        $this->assertSame(1, $counts['unresolved']);
+        $this->assertSame(MeshAllowRule::STATE_UNRESOLVED, $record->fresh()->state);
+        $this->assertStringContainsString('PERMANENT', (string) $record->fresh()->last_error);
+
+        // A rule that may be live and cannot be named must not go quiet.
+        $this->artisan('mesh:reap-allow-rules')->assertFailed();
     }
 
     public function test_reaper_does_nothing_when_mesh_is_unconfigured(): void

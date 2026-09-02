@@ -634,10 +634,12 @@ class StaffMeshAdminToolExecutor
                 .') may still be live upstream and has not been proved absent, so a second rule was not created. '
                 // #1133: a permanent record has no expiry to wait for, so
                 // "until its expiry passes" would promise a resolution that is
-                // never coming. Say what actually has to happen instead.
+                // never coming. What the expiry job does for such a record is
+                // IDENTIFY it (MeshAllowRuleReaper::settlePermanent), which is
+                // what clears this brake — it never removes the rule.
                 .($unsettled->isPermanent()
-                    ? 'That record is PERMANENT (no expiry), so the expiry job will never examine it and the PSA will not settle it on its own; '
-                        .'resolve it in the Mesh portal by hand. '
+                    ? 'That record is PERMANENT (no expiry), so nothing in the PSA will ever remove it; the expiry job only keeps trying to IDENTIFY it, '
+                        .'and this block clears when it does. Until then, '
                     : 'The PSA cannot settle that record until its expiry ('.$unsettled->expires_at->toIso8601String()
                         .') passes and the expiry job examines it; until then, ')
                 .'allow this sender directly in the Mesh portal '
@@ -776,8 +778,16 @@ class StaffMeshAdminToolExecutor
         }
 
         if (! $scopeProved) {
-            $message = 'Mesh did not confirm the rule was scoped to this client only. The rule exists upstream and has been recorded for removal (PSA record #'
-                .$record->id.'); check it in the Mesh portal before relying on it.';
+            // #1133: "recorded for removal" is only true of a rule with an
+            // expiry. A permanent rule is recorded and never removed — the
+            // reaper excludes it by design — so promising removal here would
+            // misstate what is coming for a hole in a customer's mail
+            // filtering whose scope we could not confirm.
+            $message = 'Mesh did not confirm the rule was scoped to this client only. The rule exists upstream and has been recorded (PSA record #'
+                .$record->id.'); '
+                .($expiresAt === null
+                    ? 'it is PERMANENT, so nothing in the PSA will ever remove it — check it in the Mesh portal and remove it by hand if the scope is wrong.'
+                    : 'the expiry job will remove it at expiry. Check it in the Mesh portal before relying on it.');
             $record->forceFill(['last_error' => $message])->save();
             // NOT audited as 'executed': a wrongly-scoped rule must not
             // satisfy the dedup check that would suppress a corrected retry.
@@ -809,9 +819,15 @@ class StaffMeshAdminToolExecutor
         if ($ruleId === null) {
             // Criterion 8: an unresolvable id is a FAULT. The rule is live and
             // the reaper cannot delete what it cannot name; the row stays
-            // unresolved so the reaper retries the match and keeps saying so.
+            // unresolved so the expiry job retries the match and keeps saying
+            // so. #1133: for a PERMANENT row that retry is an IDENTIFY pass
+            // only (MeshAllowRuleReaper::settlePermanent) — resolving the id
+            // never leads to a removal, so this must not imply that it does.
             $message = "Allow rule created for '{$target['sender']}', but its Mesh rule id could not be recovered by re-read. "
-                .'It is recorded (PSA record #'.$record->id.') and the expiry job will retry resolving it; it cannot be removed automatically until it resolves.';
+                .'It is recorded (PSA record #'.$record->id.') and the expiry job will retry resolving it; '
+                .($expiresAt === null
+                    ? 'it is PERMANENT, so even once resolved nothing in the PSA will remove it — remove it in the Mesh portal when it is no longer needed.'
+                    : 'it cannot be removed automatically until it resolves.');
             $record->forceFill(['upstream_created_by' => $upstreamCreatedBy, 'last_error' => $message])->save();
             $this->auditAttempt($tool, 'executed_with_fault', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
 
@@ -946,13 +962,15 @@ class StaffMeshAdminToolExecutor
                 .($rereadError !== null ? ' (that read failed too: '.$rereadError.')' : '')
                 .'. Whether the rule was created is UNMEASURED, so it is recorded unresolved (PSA record #'.$record->id.') and '
                 .($expiresAt === null
-                    // #1133: this row is PERMANENT (NULL expires_at), and
-                    // scopeReapable()'s whereNotNull excludes it in EVERY state.
-                    // The expiry job is not coming for it, so it will never
-                    // resolve the id and never remove it — saying otherwise
-                    // would be a false statement of system behaviour on the
-                    // worst path this method has. A human is the only exit.
-                    ? 'it is PERMANENT — nothing in the PSA will ever identify or remove it. Look for a rule with the comment '.$comment." on this client's Mesh tenant and remove it by hand."
+                    // #1133: this row is PERMANENT (NULL expires_at), so
+                    // scopeReapable()'s whereNotNull excludes it in EVERY
+                    // state and nothing here will ever DELETE it. The expiry
+                    // job does keep trying to IDENTIFY it
+                    // (MeshAllowRuleReaper::settlePermanent), so say that much
+                    // and no more: on the worst path this method has, removal
+                    // is a human's job and claiming otherwise is a false
+                    // statement of system behaviour.
+                    ? 'it is PERMANENT — the expiry job keeps trying to identify it, but nothing in the PSA will ever remove it. Look for a rule with the comment '.$comment." on this client's Mesh tenant and remove it by hand."
                     : 'the expiry job keeps trying to identify and remove it.')
                 .' Check the Mesh portal before allowing this sender again.';
 
@@ -1046,10 +1064,20 @@ class StaffMeshAdminToolExecutor
                 default => ['error' => 'Unsupported Mesh staged admin action.'],
             };
 
+            // The refusal text IS the outcome here — an expiry that passed
+            // while the card waited, a duplicate brake, a tenant that no longer
+            // matches. A message-less gate_declined renders the cockpit's
+            // generic "the Technician declined (it may be paused). Try again.",
+            // which is not what happened and tells the approver to do the one
+            // thing that cannot work; the specific reason names the re-stage
+            // they actually need.
             if (isset($result['error'])) {
                 $run->releaseClaim();
 
-                return new TechnicianApprovalResult('gate_declined');
+                return new TechnicianApprovalResult(
+                    'gate_declined',
+                    message: is_string($result['error']) ? $result['error'] : null,
+                );
             }
 
             $run->advanceTo(TechnicianRunState::Done);

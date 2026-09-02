@@ -92,6 +92,10 @@ class MeshAllowRule extends Model
      * reaper is the one thing standing between this table and a customer's
      * mail filtering: the exclusion of permanent rows must be something the
      * query SAYS, not something a NULL-comparison rule happens to give us.
+     *
+     * Excluded from reaping is not abandoned (#1133): a permanent row that
+     * never settled is picked up by scopeUnsettledPermanent() below, which
+     * identifies it and never deletes it.
      */
     public function scopeReapable(Builder $query): Builder
     {
@@ -99,5 +103,23 @@ class MeshAllowRule extends Model
             ->whereIn('state', [self::STATE_ACTIVE, self::STATE_UNRESOLVED, self::STATE_REAP_FAILED])
             ->whereNotNull('expires_at')
             ->where('expires_at', '<=', now());
+    }
+
+    /**
+     * Permanent rows the PSA has not settled — the same two states the
+     * duplicate brake in StaffMeshAdminToolExecutor::unsettledAllowRule()
+     * matches, restricted to rows with no expiry.
+     *
+     * Such a row is never reaped (it has no expiry to reach) but it is not
+     * inert: while it sits unsettled the brake refuses every later allow rule
+     * for its sender, and no expiry is ever coming to clear it. The reaper
+     * resolves its upstream id and settles it — identify only, never delete.
+     * See MeshAllowRuleReaper::settlePermanent().
+     */
+    public function scopeUnsettledPermanent(Builder $query): Builder
+    {
+        return $query
+            ->whereNull('expires_at')
+            ->whereIn('state', [self::STATE_UNRESOLVED, self::STATE_REAP_FAILED]);
     }
 }

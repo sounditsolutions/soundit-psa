@@ -21,10 +21,17 @@ use Illuminate\Support\Facades\Log;
  * and only one of them means a customer's mail filtering is back to normal.
  *
  * #1133: a rule the caller asked to be permanent has a NULL `expires_at` and
- * is never selected here (see MeshAllowRule::scopeReapable). That is the whole
- * mechanism for "permanent" — there is no flag and no far-future sentinel — so
- * for such a rule this class is not the exit. Nothing in the PSA is yet;
- * removal is by hand in the Mesh portal until mesh_remove_allow_rule exists.
+ * is never selected for reaping (see MeshAllowRule::scopeReapable). That is
+ * the whole mechanism for "permanent" — there is no flag and no far-future
+ * sentinel — so this class NEVER deletes such a rule; removal is by hand in
+ * the Mesh portal until mesh_remove_allow_rule exists.
+ *
+ * Excluded from reaping is not abandoned, though. A permanent row that landed
+ * unresolved (or reap_failed) is still identified here, by settlePermanent():
+ * an unsettled row makes StaffMeshAdminToolExecutor refuse every later allow
+ * rule for that sender, it has no expiry for anything else to wait on, and
+ * there is no PSA verb to clear it — so without that pass the sender is wedged
+ * for good and the daily command goes quiet about a rule that may be live.
  */
 class MeshAllowRuleReaper
 {
@@ -53,12 +60,72 @@ class MeshAllowRuleReaper
             return $counts;
         }
 
+        $counts = $this->settlePermanent($counts);
+
         $due = MeshAllowRule::reapable()->orderBy('expires_at')->limit(self::BATCH_LIMIT)->get();
 
         foreach ($due as $rule) {
             $counts['examined']++;
             $outcome = $this->reapOne($rule);
             $counts[$outcome]++;
+        }
+
+        return $counts;
+    }
+
+    /**
+     * Identify — never delete — permanent rules the PSA never settled.
+     *
+     * The id is re-resolved the same way the create path recovers it. On
+     * success the row goes ACTIVE: identified, recorded, and deliberately left
+     * live upstream, which is what "permanent" asked for. That also clears the
+     * unsettled brake, so the sender is no longer wedged.
+     *
+     * A row that still cannot be named stays UNRESOLVED and counts as
+     * unresolved, so mesh:reap-allow-rules keeps exiting FAILURE — a rule we
+     * cannot name may be live, and that must not go quiet. It is NOT marked
+     * reap_failed: no reap was attempted here and none ever will be.
+     *
+     * `examined` is untouched — these rows were not examined for reaping — so
+     * the counts keep meaning what the command prints about expired rules.
+     *
+     * @param  array{examined: int, reaped: int, unresolved: int, failed: int}  $counts
+     * @return array{examined: int, reaped: int, unresolved: int, failed: int}
+     */
+    private function settlePermanent(array $counts): array
+    {
+        $stuck = MeshAllowRule::unsettledPermanent()->orderBy('id')->limit(self::BATCH_LIMIT)->get();
+
+        foreach ($stuck as $rule) {
+            $ruleId = null;
+            $error = 'Upstream rule id unresolved: no rule on this tenant matches the recorded sender and comment. This rule is PERMANENT, so it is never reaped — but until it is identified the PSA refuses new allow rules for this sender.';
+
+            try {
+                $ruleId = $rule->mesh_rule_id ?: $this->resolveRuleId($rule);
+            } catch (MeshClientException $e) {
+                $error = "Could not read the tenant's rule list to resolve the upstream id of this PERMANENT rule: {$e->getMessage()}";
+            }
+
+            if ($ruleId === null) {
+                $rule->forceFill([
+                    'state' => MeshAllowRule::STATE_UNRESOLVED,
+                    'last_error' => mb_substr($error, 0, 1000),
+                ])->save();
+
+                Log::warning("[MeshAllowRuleReaper] mesh_allow_rules#{$rule->id} is permanent and still unidentified upstream; it may be live and it blocks new allow rules for this sender.");
+
+                $counts['unresolved']++;
+
+                continue;
+            }
+
+            $rule->forceFill([
+                'mesh_rule_id' => $ruleId,
+                'state' => MeshAllowRule::STATE_ACTIVE,
+                'last_error' => 'Upstream rule id resolved by re-read. This rule is PERMANENT: the PSA records it and will never remove it.',
+            ])->save();
+
+            Log::info("[MeshAllowRuleReaper] mesh_allow_rules#{$rule->id} is permanent and now identified upstream as '{$ruleId}'; recorded active and left in place.");
         }
 
         return $counts;
