@@ -2919,7 +2919,9 @@ class StaffMeshAdminToolExecutor
             $shown = self::upstreamExpiry($after);
             $message = "The PSA now enforces the new expiry for allow rule '{$target['rule_id']}' (sender '{$target['sender']}'): {$transition}. "
                 .'But Mesh did not take the display update: re-read under the same id, it still shows '
-                .($shown === null ? 'no expiry' : 'an expiry of '.$shown->toDayDateTimeString().' UTC')
+                .(self::upstreamExpiryUnreadable($after)
+                    ? 'an expiry this system cannot read'
+                    : ($shown === null ? 'no expiry' : 'an expiry of '.$shown->toDayDateTimeString().' UTC'))
                 .', and the upstream side was NOT retried. Mesh will keep showing the old date while the PSA enforces the new one.';
         }
         $message .= ($patchError !== null ? ' The PATCH call reported: '.$patchError.'.' : '');
@@ -2958,6 +2960,42 @@ class StaffMeshAdminToolExecutor
         }
     }
 
+    /**
+     * Is the expiry Mesh displays PRESENT but unreadable — a value this system
+     * cannot turn into an instant (an unparseable string, or a shape that is
+     * not a scalar at all)?
+     *
+     * upstreamExpiry() answers null for both "Mesh shows no date" and "Mesh
+     * shows something we cannot read", and those are not the same fact: the
+     * first is a measurement, the second is the absence of one. Collapsed
+     * together, an unreadable value would read as agreement with a PERMANENT
+     * edit — the one edit that leaves the hole open forever — so the two are
+     * separated here and unable-to-assess fails closed.
+     *
+     * @param  array<string, mixed>  $row
+     */
+    private static function upstreamExpiryUnreadable(array $row): bool
+    {
+        $value = $row['date_expiry'] ?? null;
+
+        if ($value === null) {
+            return false;
+        }
+
+        // A nested object or list where a date belongs is not a date we failed
+        // to parse; it is a shape we cannot read at all.
+        if (! is_scalar($value)) {
+            return true;
+        }
+
+        // An empty string is Mesh stating no expiry, the same as an absent key.
+        if (trim((string) $value) === '') {
+            return false;
+        }
+
+        return self::upstreamExpiry($row) === null;
+    }
+
     /** Two lifetimes are the same when both are permanent or both name the same instant. */
     private static function sameInstant(?\Illuminate\Support\Carbon $a, ?\Illuminate\Support\Carbon $b): bool
     {
@@ -2978,6 +3016,13 @@ class StaffMeshAdminToolExecutor
      */
     private static function displayAgrees(array $row, ?\Illuminate\Support\Carbon $expiresAt): bool
     {
+        // Unable-to-assess is a refusal, never a pass: a value we cannot read
+        // is not evidence that Mesh displays the lifetime that was asked for,
+        // and it is emphatically not agreement with a PERMANENT edit.
+        if (self::upstreamExpiryUnreadable($row)) {
+            return false;
+        }
+
         $shown = self::upstreamExpiry($row);
 
         if ($expiresAt === null || $shown === null) {

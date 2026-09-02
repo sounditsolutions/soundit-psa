@@ -845,6 +845,56 @@ class MeshEditAllowRuleTest extends TestCase
     }
 
     /**
+     * A re-read carrying a value this system cannot READ is not a measurement,
+     * and it is not agreement with PERMANENT. Absent and unreadable collapsed
+     * together would report display_synced over a portal that may still show
+     * the old date, on exactly the edit that never expires.
+     */
+    public function test_a_permanent_edit_whose_display_is_unreadable_is_a_fault_not_agreement(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $record = $this->tracked($fixture);
+        $write = $this->mockWrite();
+        $write->shouldReceive('findRuleById')->twice()->andReturn($this->upstreamRow());
+        $run = $this->stagedRun($fixture, ['expires_at' => 'never']);
+
+        $write->shouldReceive('patchRule')->once()->andReturn([]);
+        $write->shouldReceive('findRuleById')->once()->andReturn($this->upstreamRow(['date_expiry' => 'whenever']));
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('error');
+        $error = (string) session('error');
+        $this->assertStringContainsString('Mesh did not take the display update', $error);
+        $this->assertStringContainsString('an expiry this system cannot read', $error);
+
+        $this->assertNull($record->fresh()->expires_at, 'the authoritative change stands; only the display failed');
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'mesh_edit_allow_rule')->where('result_status', 'executed_with_fault')->count());
+        $this->assertSame(0, TechnicianActionLog::where('action_type', 'mesh_edit_allow_rule')->where('result_status', 'executed')->count());
+    }
+
+    /** A date-shaped hole that is not a scalar at all is unreadable too, not absent. */
+    public function test_a_permanent_edit_whose_display_is_a_shape_we_cannot_read_is_a_fault(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $record = $this->tracked($fixture);
+        $write = $this->mockWrite();
+        $write->shouldReceive('findRuleById')->twice()->andReturn($this->upstreamRow());
+        $run = $this->stagedRun($fixture, ['expires_at' => 'never']);
+
+        $write->shouldReceive('patchRule')->once()->andReturn([]);
+        $write->shouldReceive('findRuleById')->once()->andReturn($this->upstreamRow(['date_expiry' => ['value' => '2026-12-01']]));
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('error');
+        $this->assertStringContainsString('an expiry this system cannot read', (string) session('error'));
+
+        $this->assertNull($record->fresh()->expires_at);
+        $this->assertSame(0, TechnicianActionLog::where('action_type', 'mesh_edit_allow_rule')->where('result_status', 'executed')->count());
+    }
+
+    /**
      * The PATCH threw, but the re-read shows the new date: Mesh commits before
      * it answers, and the post-condition — not the exception — decides.
      */
