@@ -429,6 +429,68 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertSame(1, TechnicianRun::count());
     }
 
+    /**
+     * #1133: the staging hash carries the caller's expiry, but the 'executed'
+     * audit row is written under the expiry-free base hash. Asking the
+     * post-execution dedup question with the lifetime-bearing hash could never
+     * be answered yes for any input — the 24-hour window would be gone.
+     */
+    public function test_a_restage_inside_the_dedup_window_still_matches_the_executed_write(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $run = $this->stagedRun($fixture);
+
+        $write->shouldReceive('createAllowRule')->once()->andReturn(['added_for' => [self::TENANT]]);
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'r1']);
+        $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('success');
+
+        // Reaped, so liveAllowRule() no longer covers it: the audit dedup is
+        // the only thing left standing between a re-stage and a new proposal.
+        MeshAllowRule::sole()->update(['state' => MeshAllowRule::STATE_REAPED, 'reaped_at' => now()]);
+
+        $second = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+
+        $this->assertTrue($second['idempotent']);
+        $this->assertSame($run->id, (int) $second['run_id']);
+        $this->assertStringContainsString('already created recently', $second['message']);
+        $this->assertSame(1, TechnicianRun::count());
+    }
+
+    /**
+     * Two awaiting cards for one sender with different lifetimes would both be
+     * approvable, and the loser would create nothing while its approver read a
+     * lifetime that was never applied.
+     */
+    public function test_a_second_proposal_for_the_same_sender_with_another_lifetime_is_refused(): void
+    {
+        $this->configureMesh();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWrite();
+
+        $first = $this->decodedResult($this->callTool(
+            $this->token(['mesh_add_allow_rule:staged']),
+            'mesh_add_allow_rule',
+            $this->stageArgs($fixture, ['expires_at' => 'never']),
+        ));
+
+        $response = $this->callTool(
+            $this->token(['mesh_add_allow_rule:staged']),
+            'mesh_add_allow_rule',
+            $this->stageArgs($fixture, ['expires_at' => now()->addDay()->toIso8601String()]),
+        );
+
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('already awaiting approval on this ticket with a different lifetime', $text);
+        $this->assertStringContainsString('PERMANENT', $text);
+        $this->assertStringContainsString('#'.$first['run_id'], $text);
+        $this->assertSame(1, TechnicianRun::count());
+    }
+
     // ---- approval → execution -------------------------------------------------
 
     public function test_approval_creates_the_rule_proves_scope_recovers_the_id_and_records_it(): void
@@ -905,6 +967,40 @@ class MeshAddAllowRuleTest extends TestCase
         $log = TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'rejected')->sole();
         $this->assertStringContainsString('is in the past', $log->summary);
         $this->assertStringContainsString('No upstream call was made', $log->summary);
+    }
+
+    public function test_an_approval_that_wrote_nothing_is_never_reported_as_a_clean_execution(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $run = $this->stagedRun($fixture);
+
+        // Whatever this card says, the rule that exists is PERMANENT and the
+        // PSA will never remove it. The approver must be told that, on the
+        // error channel — not shown a green 'executed'.
+        MeshAllowRule::create([
+            'client_id' => $fixture['client']->id,
+            'mesh_customer_id' => self::TENANT,
+            'sender' => 'billing@vendor.example',
+            'comment' => 'PSA allow AAAAAAAAAA',
+            'mesh_rule_id' => 'rule-forever',
+            'expires_at' => null,
+            'state' => MeshAllowRule::STATE_ACTIVE,
+            'created_by_actor' => 'test',
+        ]);
+
+        $write->shouldNotReceive('createAllowRule');
+
+        $response = $this->actingAs($actor)->post(route('cockpit.approve', $run));
+        $response->assertSessionHas('error');
+        $this->assertStringContainsString('PERMANENTLY', (string) session('error'));
+        $this->assertStringContainsString('was NOT applied', (string) session('error'));
+
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertSame(1, MeshAllowRule::count());
+        $this->assertSame(0, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed')->count());
     }
 
     // ---- the reaper -----------------------------------------------------------

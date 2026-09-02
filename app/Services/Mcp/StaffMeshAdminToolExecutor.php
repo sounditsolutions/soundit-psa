@@ -252,11 +252,16 @@ class StaffMeshAdminToolExecutor
         }
 
         $target = $this->allowRuleTarget($arguments, $clientId);
-        $contentHash = $this->contentHash($tool, $clientId, 'allow-rule-'.($target['sender'] ?? 'unresolved'), [
+        // The BASE key for this write: tenant + sender, no expiry. It is the
+        // key executeAllowRule() re-derives and audits its 'executed' row
+        // under, so it is the ONLY key the post-execution dedup below can ever
+        // match on. The lifetime-bearing hash built once the expiry is
+        // validated identifies the PROPOSAL, not the write.
+        $baseHash = $this->contentHash($tool, $clientId, 'allow-rule-'.($target['sender'] ?? 'unresolved'), [
             'mesh_customer_id' => $target['mesh_customer_id'] ?? null,
         ]);
         if (isset($target['error'])) {
-            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, $target['error'], $actorLabel);
+            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $baseHash, $target['error'], $actorLabel);
 
             return ['error' => $target['error']];
         }
@@ -267,17 +272,24 @@ class StaffMeshAdminToolExecutor
         // minutes or days after the mistake was made.
         $expiry = $this->requestedExpiry($arguments);
         if (isset($expiry['error'])) {
-            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, $expiry['error'], $actorLabel);
+            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $baseHash, $expiry['error'], $actorLabel);
 
             return ['error' => $expiry['error']];
         }
         $expiresAt = $expiry['expires_at'];
 
         // The lifetime is part of what the write DOES to a customer's mail
-        // filtering, so it is part of the identity of the write: without it,
+        // filtering, so it is part of the identity of the PROPOSAL: without it,
         // re-staging the same sender with a different expiry (or with 'never')
         // is answered "already staged" against somebody else's lifetime, which
         // is the silent lifetime substitution #1133 exists to delete.
+        //
+        // It is NOT the identity of the WRITE. executeAllowRule() derives and
+        // audits under the expiry-free $baseHash deliberately — every proposal
+        // for one write must dedup on one key, or a sibling proposal walks past
+        // a brake the first approval already satisfied. So this hash names the
+        // proposal (its run slot, its awaiting-approval answer) and $baseHash
+        // names the write (the post-execution dedup immediately below).
         //
         // Hashed as the caller's own vocabulary, with 'default' standing for an
         // omitted key: the resolved default instant is now()+90d and moves every
@@ -288,13 +300,17 @@ class StaffMeshAdminToolExecutor
             'expires_at' => array_key_exists('expires_at', $arguments) ? self::expiryValue($expiresAt) : 'default',
         ]);
 
-        if ($this->alreadyExecuted('mesh_add_allow_rule', $clientId, $contentHash)) {
+        // Asked with $baseHash, the key the 'executed' audit row was written
+        // under. Asking it with the lifetime-bearing hash could never be
+        // answered yes for ANY input, which would silently delete the 24-hour
+        // post-execution dedup window from the staging path.
+        if ($this->alreadyExecuted('mesh_add_allow_rule', $clientId, $baseHash)) {
             return [
                 'success' => true,
                 'idempotent' => true,
                 'ticket_id' => $ticket->id,
                 'ticket_display_id' => $ticket->display_id,
-                'run_id' => $this->executedRunId('mesh_add_allow_rule', $clientId, $contentHash),
+                'run_id' => $this->executedRunId('mesh_add_allow_rule', $clientId, $baseHash),
                 'message' => 'This allow rule was already created recently; no new proposal was staged.',
             ];
         }
@@ -332,6 +348,25 @@ class StaffMeshAdminToolExecutor
                 'run_id' => $liveAwaitingRun->id,
                 'message' => 'Already staged; awaiting approval.',
             ];
+        }
+
+        // The hash above carries the caller's lifetime, so an awaiting proposal
+        // for this SENDER asking a DIFFERENT lifetime is invisible to it. Both
+        // cards would then be approvable, and whichever is released second
+        // creates nothing — executeAllowRule's duplicate brakes stop it — while
+        // its approver read a lifetime that was never applied. That is the
+        // silent lifetime substitution #1133 exists to delete, moved from
+        // staging to approval. One awaiting lifetime per sender per ticket: the
+        // second staging is refused here, and it names the proposal to settle.
+        $awaitingForSender = $this->awaitingRunForSender($ticket->id, $tool, $target['sender']);
+        if ($awaitingForSender !== null) {
+            $awaitingNote = data_get($awaitingForSender->proposed_meta, 'redacted_params.expiry_note');
+            $message = "A proposal to allow '{$target['sender']}' for this client is already awaiting approval on this ticket with a different lifetime"
+                .(is_string($awaitingNote) ? " ({$awaitingNote})" : '')
+                .'; approve or deny run #'.$awaitingForSender->id.' before staging another for this sender. No proposal was staged.';
+            $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $contentHash, $message, $actorLabel, $awaitingForSender->id);
+
+            return ['error' => $message];
         }
 
         if ($this->cooldownActive($tool, $clientId)) {
@@ -517,7 +552,16 @@ class StaffMeshAdminToolExecutor
         // duplicate rule the reaper cannot tell apart by sender alone.
         $live = $this->liveAllowRule($clientId, $target['sender']);
         if ($live !== null) {
-            $message = "'{$target['sender']}' is already allowed for this client by PSA record #".$live->id.'; no upstream call was made.';
+            // #1133: the rule that exists carries the lifetime of whichever
+            // proposal created it, NOT the one on the card being approved. This
+            // text is what that approver reads, so it names the lifetime
+            // actually in force and says plainly that theirs was not applied —
+            // 'already allowed' alone leaves them believing their date holds.
+            $message = "'{$target['sender']}' is already allowed for this client by PSA record #".$live->id
+                .($live->isPermanent()
+                    ? ' PERMANENTLY (that record has no expiry and the PSA will never remove it)'
+                    : ' until '.$live->expires_at->toDayDateTimeString().' UTC')
+                .'; no upstream call was made and the lifetime on this proposal was NOT applied.';
             $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
 
             return ['success' => true, 'idempotent' => true, 'message' => $message];
@@ -958,12 +1002,20 @@ class StaffMeshAdminToolExecutor
 
             $run->advanceTo(TechnicianRunState::Done);
 
-            // The rule landed upstream but a post-condition did not hold
-            // (wrong scope, or an id we cannot name). The proposal is spent —
-            // the write is not undoable from here — so the outcome goes out on
-            // the fault channel with the specific text, never as a clean
-            // execution the cockpit renders green.
-            if (isset($result['fault'])) {
+            // Two outcomes that are terminal but are NOT the write this
+            // approver released:
+            //   fault     — the rule landed upstream and a post-condition did
+            //               not hold (wrong scope, or an id we cannot name);
+            //               the write is not undoable from here.
+            //   idempotent — a duplicate brake fired and NOTHING was written by
+            //               this run. The rule that exists belongs to another
+            //               proposal and carries ITS lifetime, not this card's
+            //               (#1133).
+            // Both go out on the fault channel with the specific text, never as
+            // a clean execution the cockpit renders green: a green 'executed'
+            // over an idempotent no-op is exactly how an approver comes to
+            // believe a lifetime was applied that nothing will ever enforce.
+            if (isset($result['fault']) || ($result['idempotent'] ?? false)) {
                 return new TechnicianApprovalResult(
                     'executed_with_fault',
                     message: is_string($result['message'] ?? null) ? $result['message'] : null,
@@ -1401,6 +1453,27 @@ class StaffMeshAdminToolExecutor
             ->where('content_hash', $contentHash)
             ->where('state', TechnicianRunState::AwaitingApproval->value)
             ->first();
+    }
+
+    /**
+     * An AwaitingApproval proposal on this ticket for the SAME SENDER, on any
+     * lifetime.
+     *
+     * liveAwaitingRun() is keyed on the content hash, and that hash carries the
+     * caller's expiry (#1133), so it cannot see a proposal for this sender that
+     * asks for a different one. This one is keyed on the sender itself, read
+     * from the plaintext redacted_params the approval card renders: the sender
+     * is not recoverable from a hash, and the encrypted payload is not
+     * queryable. Bounded by MAX_RUN_GENERATIONS proposals per ticket.
+     */
+    private function awaitingRunForSender(int $ticketId, string $tool, string $sender): ?TechnicianRun
+    {
+        return TechnicianRun::query()
+            ->where('ticket_id', $ticketId)
+            ->where('action_type', $tool)
+            ->where('state', TechnicianRunState::AwaitingApproval->value)
+            ->get()
+            ->first(static fn (TechnicianRun $awaiting): bool => mb_strtolower((string) data_get($awaiting->proposed_meta, 'redacted_params.sender')) === $sender);
     }
 
     /**
