@@ -19,6 +19,7 @@ use App\Services\EmailService;
 use App\Services\Mcp\StaffCalendarToolExecutor;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Services\Mcp\StaffHuntressActionToolExecutor;
+use App\Services\Mcp\StaffMeshAdminToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
 use App\Services\Mcp\StaffTacticalAdminToolExecutor;
 use App\Services\TicketService;
@@ -545,6 +546,11 @@ class TechnicianApprovalService
     public function approveStagedHuntressAction(TechnicianRun $run, int $approverId): TechnicianApprovalResult
     {
         return app(StaffHuntressActionToolExecutor::class)->approveStagedRun($run, $approverId);
+    }
+
+    public function approveStagedMeshAdminAction(TechnicianRun $run, int $approverId): TechnicianApprovalResult
+    {
+        return app(StaffMeshAdminToolExecutor::class)->approveStagedRun($run, $approverId);
     }
 
     public function deny(TechnicianRun $run): bool

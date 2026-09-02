@@ -98,6 +98,9 @@ class StagedActionLabels
 
         // Huntress SOC
         'huntress_stage_resolve_escalation' => 'Huntress escalation resolve',
+
+        // Mesh Email Security
+        'mesh_stage_add_allow_rule' => 'Mesh allow rule',
     ];
 
     /**
@@ -117,7 +120,7 @@ class StagedActionLabels
      *
      * @var array<int, string>
      */
-    private const VENDOR_SIDE_EFFECT_PREFIXES = ['tactical_stage_', 'cipp_stage_', 'calendar_stage_', 'huntress_stage_'];
+    private const VENDOR_SIDE_EFFECT_PREFIXES = ['tactical_stage_', 'cipp_stage_', 'calendar_stage_', 'huntress_stage_', 'mesh_stage_'];
 
     /**
      * Whether a staged action_type is an externally side-effecting vendor write —

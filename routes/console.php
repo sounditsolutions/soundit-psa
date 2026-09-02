@@ -30,6 +30,17 @@ Schedule::command('mesh:sync-licenses')
     ->withoutOverlapping()
     ->runInBackground();
 
+// Mesh allow-rule expiry — hourly. #1018: Mesh does NOT expire its own rules
+// (measured 2026-09-01 — `date_expiry` is display only), so this job is the only
+// thing that closes an allow rule the PSA opened. Hourly rather than daily
+// because the window between "expired" and "actually removed" is a window in
+// which a customer's mail filtering is still weakened.
+Schedule::command('mesh:reap-allow-rules')
+    ->hourly()
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->when(fn () => \App\Support\MeshConfig::isEnabled() && \App\Support\MeshConfig::isConfigured());
+
 // CIPP M365 license sync — daily
 Schedule::command('cipp:sync-licenses')
     ->dailyAt('04:45')

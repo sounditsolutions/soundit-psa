@@ -148,6 +148,11 @@ class McpToolSurface
             HuntressConfig::isEnabled() && HuntressConfig::isConfigured() && HuntressConfig::isWriteConfigured()
                 ? McpToolRegistry::huntressActionTools()
                 : [],
+            // Mesh allow-list writes: gated on exactly the predicate
+            // StaffMeshAdminToolExecutor refuses on (psa-wzjzz).
+            MeshConfig::isEnabled() && MeshConfig::isConfigured()
+                ? McpToolRegistry::meshAdminTools()
+                : [],
         );
     }
 
