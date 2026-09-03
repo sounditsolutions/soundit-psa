@@ -165,6 +165,62 @@ class InvoiceStatusChangeLogTest extends TestCase
         $this->assertNull($log->changed_by);
     }
 
+    public function test_a_portal_actor_is_recorded_as_system_and_never_stamped_into_changed_by(): void
+    {
+        // changed_by is a foreign key into `users`; the portal guard
+        // authenticates a Person, from a different table. Attribution that
+        // reads the DEFAULT guard calls that client Staff and writes their
+        // Person id into the users key — a constraint violation on the one
+        // path that exists so an audit row is never lost. A portal client is
+        // not staff, and this table has no name for them: System, no actor.
+        $client = Client::create(['name' => 'Portal Corp']);
+        $person = Person::create([
+            'client_id' => $client->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Portal',
+            'last_name' => 'User',
+            'email' => 'portal-guard-1173@example.test',
+            'is_active' => true,
+            'portal_enabled' => true,
+            'company_wide_access' => false,
+        ]);
+        $invoice = $this->makeInvoice(['client_id' => $client->id]);
+
+        $this->actingAs($person, 'portal');
+        $invoice->update(['status' => InvoiceStatus::Paid]);
+
+        $log = InvoiceStatusChangeLog::where('invoice_id', $invoice->id)->sole();
+        $this->assertSame(InvoiceStatusChangeSource::System, $log->source);
+        $this->assertNull($log->changed_by);
+    }
+
+    public function test_a_status_move_under_a_portal_actor_still_completes(): void
+    {
+        // The observer fails closed inside a transaction: a write it cannot
+        // record is rolled back with the status move it describes. So a
+        // mis-attributed actor does not merely spoil the audit row, it takes
+        // the void (or any other status move) down with it.
+        $client = Client::create(['name' => 'Portal Corp']);
+        $person = Person::create([
+            'client_id' => $client->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Portal',
+            'last_name' => 'User',
+            'email' => 'portal-guard-1173b@example.test',
+            'is_active' => true,
+            'portal_enabled' => true,
+            'company_wide_access' => false,
+        ]);
+        $invoice = $this->makeInvoice(['client_id' => $client->id]);
+
+        $this->actingAs($person, 'portal');
+        app(InvoiceVoidService::class)->void($invoice);
+
+        $this->assertSame(InvoiceStatus::Void, $invoice->fresh()->status);
+        $this->assertSame('void', InvoiceStatusChangeLog::where('invoice_id', $invoice->id)
+            ->sole()->new_status);
+    }
+
     // ── prepay ───────────────────────────────────────────────────────────────
 
     private function makeContractInvoiceWithPrepaidTime(): Invoice

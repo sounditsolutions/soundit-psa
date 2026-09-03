@@ -73,10 +73,19 @@ class InvoiceStatusChangeLog extends Model
      * recorded fact rather than a skipped row (#992's ruling: "that context
      * touching descriptions is precisely a thing the record should show, not
      * skip"). Same reasoning, same answer, for statuses.
+     *
+     * The `web` guard is named EXPLICITLY, never the default one. Staff are the
+     * only actors this log can name: changed_by is a foreign key into `users`,
+     * and the portal guard authenticates a Person from a different table
+     * entirely. A bare auth()->check() answers for whichever guard happens to
+     * be the default at that instant, so a portal-authenticated client would be
+     * read as Staff and have their Person id stamped into a users FK — a
+     * constraint violation on a path whose whole purpose is not to lose the
+     * row. Portal actors are System here, which is what they are to this table.
      */
     public static function attributionSource(): InvoiceStatusChangeSource
     {
-        return auth()->check()
+        return auth('web')->check()
             ? InvoiceStatusChangeSource::Staff
             : InvoiceStatusChangeSource::System;
     }
@@ -98,7 +107,7 @@ class InvoiceStatusChangeLog extends Model
         // a staff request — a technician hitting the per-invoice Sync button —
         // and stamping that user as the one who moved the status would credit
         // QuickBooks's decision to a person who only asked for a refresh.
-        $isStaffActor = $source === InvoiceStatusChangeSource::Staff && auth()->check();
+        $isStaffActor = $source === InvoiceStatusChangeSource::Staff && auth('web')->check();
 
         return self::create([
             'invoice_id' => $invoice->id,
@@ -110,7 +119,7 @@ class InvoiceStatusChangeLog extends Model
             'source' => $source,
             'reason' => $context?->reason,
             'qbo_balance' => $context?->qboBalance,
-            'changed_by' => $isStaffActor ? auth()->id() : null,
+            'changed_by' => $isStaffActor ? auth('web')->id() : null,
         ]);
     }
 }
