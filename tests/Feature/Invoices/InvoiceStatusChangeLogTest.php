@@ -324,6 +324,34 @@ class InvoiceStatusChangeLogTest extends TestCase
         $this->assertLessThanOrEqual(2, abs((int) $original->diffInDays($restored)));
     }
 
+    public function test_a_lot_bought_without_an_expiry_is_restored_without_one(): void
+    {
+        // The lot was written while the contract had no expiry policy, so it
+        // never expires and the sweep never looks at it. A policy the contract
+        // acquires later must not reach back through a revert/re-pay cycle and
+        // stamp a forfeitable date onto hours sold without one.
+        $invoice = $this->makeContractInvoiceWithPrepaidTime();
+        $invoice->update(['status' => InvoiceStatus::Paid]);
+
+        $this->assertNull(PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', 'invoice_deposit')->sole()->expiry_date);
+
+        $contract = $invoice->contract;
+        $contract->prepay_expiry_months = 6;
+        $contract->save();
+
+        $invoice->update(['status' => InvoiceStatus::Posted]);
+        $invoice->update(['status' => InvoiceStatus::Paid]);
+
+        $redeposit = PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', 'invoice_deposit')->latest('id')->first();
+
+        $this->assertNull(
+            $redeposit->expiry_date,
+            'a never-expiring lot must be restored never-expiring, whatever policy the contract has since acquired',
+        );
+    }
+
     public function test_a_second_reversal_with_nothing_deposited_takes_nothing(): void
     {
         // The revert already took the hours back; a further reversal (a void

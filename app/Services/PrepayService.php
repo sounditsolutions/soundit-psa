@@ -739,12 +739,17 @@ class PrepayService
         // number of revert/re-pay cycles — so a second cycle measured against
         // the original date would discard the life the first restoration
         // granted and let the next expiration sweep forfeit hours the client
-        // paid for. The policy date is the fallback only for a lot written
-        // before an expiry policy existed on the contract.
+        // paid for. A live lot whose expiry_date is NULL never expires; its
+        // restoration keeps that, whatever policy the contract has since
+        // acquired.
         $deposit = PrepayTransaction::where('invoice_id', $invoice->id)
             ->where('source', PrepayTransactionSource::InvoiceDeposit)
             ->latest('id')
             ->first();
+
+        if ($deposit !== null && $deposit->expiry_date === null) {
+            return null;
+        }
 
         $liveExpiry = $deposit?->expiry_date
             ? Carbon::parse($deposit->expiry_date)
