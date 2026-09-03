@@ -733,13 +733,30 @@ class PrepayService
 
         $restoredAt = now();
 
+        // Measure against the LIVE lot's own expiry, not the original
+        // invoice-date policy date. Each restoration writes a new expiry that
+        // already carries the paused remainder, and the guard permits any
+        // number of revert/re-pay cycles — so a second cycle measured against
+        // the original date would discard the life the first restoration
+        // granted and let the next expiration sweep forfeit hours the client
+        // paid for. The policy date is the fallback only for a lot written
+        // before an expiry policy existed on the contract.
+        $deposit = PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', PrepayTransactionSource::InvoiceDeposit)
+            ->latest('id')
+            ->first();
+
+        $liveExpiry = $deposit?->expiry_date
+            ? Carbon::parse($deposit->expiry_date)
+            : $policyExpiry;
+
         $reversal = PrepayTransaction::where('invoice_id', $invoice->id)
             ->where('source', PrepayTransactionSource::InvoiceReversal)
             ->latest('id')
             ->first();
 
         $remainingDays = $reversal?->date
-            ? (int) Carbon::parse($reversal->date)->diffInDays($policyExpiry, false)
+            ? (int) Carbon::parse($reversal->date)->diffInDays($liveExpiry, false)
             : 0;
 
         return $remainingDays > 0
