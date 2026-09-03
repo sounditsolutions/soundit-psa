@@ -7,6 +7,7 @@ use App\Jobs\PushInvoiceToBilling;
 use App\Models\Invoice;
 use App\Models\InvoiceStatusChangeLog;
 use App\Services\PrepayService;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class InvoiceObserver
@@ -42,17 +43,29 @@ class InvoiceObserver
         try {
             InvoiceStatusChangeLog::recordFor($invoice, $context);
         } catch (\Throwable $e) {
-            // The status write has already committed on the non-transactional
-            // paths; throwing here would surface as a failed save for a change
-            // that in fact happened. Losing the audit row is bad — silently
-            // reporting the write as failed is worse, and the log line keeps
-            // the loss visible.
             Log::error('[InvoiceStatus] Failed to record status change', [
                 'invoice_id' => $invoice->id,
                 'from' => $invoice->getRawOriginal('status'),
                 'to' => $invoice->status?->value,
                 'error' => $e->getMessage(),
             ]);
+
+            // Inside a transaction the status write has NOT committed yet, and
+            // the QBO pull (Invoice::recordStatusPullResult) is exactly that
+            // case. Swallowing here would let a money-visible status move
+            // commit with nothing on the row recording what made it — the
+            // T-22802 state this change exists to close, and a direct
+            // contradiction of "the log and the status commit together or not
+            // at all". Rethrow so the transaction rolls the pair back.
+            if (DB::transactionLevel() > 0) {
+                throw $e;
+            }
+
+            // Outside a transaction the status write has already committed;
+            // throwing there would surface as a failed save for a change that
+            // in fact happened. Losing the audit row is bad — silently
+            // reporting the write as failed is worse, and the log line above
+            // keeps the loss visible.
         }
 
         if (! $invoice->contract_id) {

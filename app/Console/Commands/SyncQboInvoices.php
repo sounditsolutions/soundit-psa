@@ -74,6 +74,12 @@ class SyncQboInvoices extends Command
                     $this->info("  Checked: {$result['checked']}, Reverted to open: {$result['reverted']}, Errors: {$result['errors']}");
                     $this->info("  Paid invoices QBO has never been asked about, remaining: {$result['never_checked']}");
 
+                    if ($result['failing'] > 0) {
+                        // A remaining count that stops falling is otherwise
+                        // indistinguishable from a backlog not yet reached.
+                        $this->warn("  {$result['failing']} of those carry a sync error from a failed attempt and are checked last.");
+                    }
+
                     if ($result['reverted'] > 0) {
                         // Loud on purpose: a revert changes what a client is
                         // shown as owing. The per-invoice detail is in the log

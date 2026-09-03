@@ -49,7 +49,15 @@ return new class extends Migration
             // balance the invoice itself could carry.
             $table->decimal('qbo_balance', 10, 2)->nullable();
             $table->foreignId('changed_by')->nullable()->constrained('users')->nullOnDelete();
-            $table->timestamp('created_at')->useCurrent();
+            // dateTime, not timestamp: prod is MariaDB, where TIMESTAMP is held
+            // as UTC and converted on read using the session time_zone (and is
+            // bounded at 2038). This column is the "as of" date the portal
+            // prints beside a still-owed balance and the one the Status History
+            // timeline orders on — a date shifted by a session or replica
+            // offset is the same class of defect as showing no date at all. CI
+            // is sqlite, where the two types are indistinguishable, so no test
+            // here can observe the difference.
+            $table->dateTime('created_at')->useCurrent();
 
             $table->index(['invoice_id', 'created_at']);
         });

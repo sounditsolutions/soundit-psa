@@ -483,6 +483,21 @@ class Invoice extends Model
 
             $locked->update($attributes);
 
+            // #1173: a pull that reports a CHANGED balance without moving the
+            // status still has to leave a record. InvoiceObserver fires on a
+            // status change only, so once an invoice has been reverted to
+            // Posted nothing else would ever refresh the number the portal
+            // prints as "still owed per QuickBooks" — it would be frozen at the
+            // revert-time figure for ever. Written here, inside the same
+            // transaction as the write it describes, so the pair still commits
+            // together or not at all. Dropped on a Void row for the same reason
+            // the status write is: nothing moved.
+            if ($context !== null && ! $isVoid && ! $locked->wasChanged('status')) {
+                InvoiceStatusChangeLog::recordFor($locked, $context);
+                // The observer never ran, so nothing consumed the context.
+                $locked->statusChangeContext = null;
+            }
+
             // Keep the caller's in-memory model consistent with the committed row.
             $this->setRawAttributes($locked->getAttributes(), true);
             $this->syncOriginal();
