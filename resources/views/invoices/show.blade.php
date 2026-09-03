@@ -489,7 +489,9 @@
                     <tbody>
                         @foreach($invoice->statusChangeLogs as $log)
                             <tr>
-                                <td class="text-muted small text-nowrap">{{ $log->created_at->format('M j, Y H:i') }}</td>
+                                {{-- toAppTz(): the timeline must read in the same clock as every
+                                     other timestamp the technician sees. --}}
+                                <td class="text-muted small text-nowrap">{{ $log->created_at->toAppTz()->format('M j, Y H:i') }}</td>
                                 <td class="small">
                                     {{ $log->previous_status ?? '—' }}
                                     <i class="bi bi-arrow-right mx-1"></i>

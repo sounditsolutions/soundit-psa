@@ -522,7 +522,8 @@ class InvoiceStatusChangeLogTest extends TestCase
             ->assertSee('$120.50')
             // The figure is as-of the last QBO pull and can be a cycle old;
             // showing it undated would present stale money as current.
-            ->assertSee($invoice->fresh()->latestQboStatusChange->created_at->format('M j, Y'));
+            // ...in the APP timezone, as every other datetime in a Blade view is.
+            ->assertSee($invoice->fresh()->latestQboStatusChange->created_at->toAppTz()->format('M j, Y'));
     }
 
     public function test_the_portal_says_nothing_when_there_is_no_partial(): void

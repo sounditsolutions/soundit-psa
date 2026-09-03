@@ -18,7 +18,9 @@
 @if($qboBalanceLog)
     <div class="small text-muted mt-1">
         <i class="bi bi-info-circle me-1"></i>Partially paid — ${{ number_format($qboBalanceLog->qbo_balance, 2) }}
-        still owed per QuickBooks as of {{ $qboBalanceLog->created_at->format('M j, Y') }}.
+        {{-- toAppTz(): created_at is stored UTC, and an as-of date the client
+             reads a day out is the same quiet lie as no date at all. --}}
+        still owed per QuickBooks as of {{ $qboBalanceLog->created_at->toAppTz()->format('M j, Y') }}.
         @if($invoice->stripe_invoice_url && $invoice->status->isClientPayable())
             {{-- Pay Online is a hosted payment page created for the FULL
                  invoice amount; nothing here can re-price it. Saying so beside
