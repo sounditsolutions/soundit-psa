@@ -241,16 +241,52 @@ class InvoiceStatusChangeLogTest extends TestCase
         $this->assertStringContainsString('voided', $reversal->description);
     }
 
-    public function test_a_paid_open_paid_open_cycle_deposits_once_and_reverses_once(): void
+    public function test_a_paid_open_paid_open_cycle_ends_with_the_hours_taken_back(): void
     {
+        // One deposit per Paid, one reversal per revert. The ledger keeps every
+        // move — the pairing, not a once-ever guard, is what keeps the balance
+        // right at the end of the cycle.
         $invoice = $this->makeContractInvoiceWithPrepaidTime();
         $invoice->update(['status' => InvoiceStatus::Paid]);
         $invoice->update(['status' => InvoiceStatus::Posted]);
         $invoice->update(['status' => InvoiceStatus::Paid]);
         $invoice->update(['status' => InvoiceStatus::Posted]);
 
-        $this->assertSame(1, PrepayTransaction::where('invoice_id', $invoice->id)
+        $this->assertSame(2, PrepayTransaction::where('invoice_id', $invoice->id)
             ->where('source', 'invoice_deposit')->count());
+        $this->assertSame(2, PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', 'invoice_reversal')->count());
+        $this->assertSame(0.0, (float) $invoice->contract->fresh()->prepay_balance);
+    }
+
+    public function test_a_cycle_ending_paid_leaves_the_client_the_hours_they_paid_for(): void
+    {
+        // A QBO payment unapplied and then re-applied is an ordinary sequence
+        // for the two-way pull. If the second Paid could not re-deposit, the
+        // invoice would read Paid, the client would have been charged, and the
+        // purchased hours would be gone with no error anywhere.
+        $invoice = $this->makeContractInvoiceWithPrepaidTime();
+        $invoice->update(['status' => InvoiceStatus::Paid]);
+        $invoice->update(['status' => InvoiceStatus::Posted]);
+        $invoice->update(['status' => InvoiceStatus::Paid]);
+
+        $this->assertSame(10.0, (float) $invoice->contract->fresh()->prepay_balance);
+        $this->assertSame(2, PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', 'invoice_deposit')->count());
+    }
+
+    public function test_a_second_reversal_with_nothing_deposited_takes_nothing(): void
+    {
+        // The revert already took the hours back; a further reversal (a void
+        // arriving after one) must be inert. Balanced deposit/reversal counts
+        // are what refuses it.
+        $invoice = $this->makeContractInvoiceWithPrepaidTime();
+        $invoice->update(['status' => InvoiceStatus::Paid]);
+        $invoice->update(['status' => InvoiceStatus::Posted]);
+
+        app(\App\Services\PrepayService::class)
+            ->reverseDepositForInvoice($invoice->fresh(), $invoice->contract);
+
         $this->assertSame(1, PrepayTransaction::where('invoice_id', $invoice->id)
             ->where('source', 'invoice_reversal')->count());
         $this->assertSame(0.0, (float) $invoice->contract->fresh()->prepay_balance);
@@ -295,6 +331,37 @@ class InvoiceStatusChangeLogTest extends TestCase
         $invoice->fresh()->update(['status' => InvoiceStatus::Paid]);
 
         $this->assertNull($invoice->fresh()->qboPartialBalanceLog());
+    }
+
+    public function test_a_later_non_qbo_status_change_does_not_hide_the_partial_balance(): void
+    {
+        // The relation must be "the newest QBO-sourced row", not "the newest
+        // row, if it happens to be QBO". Any later write — staff, a push job,
+        // the Stripe pull — would otherwise blank the note and bill the client
+        // the full total with a Pay Online button beside it.
+        $invoice = $this->makeInvoice(['status' => InvoiceStatus::Paid]);
+        $this->partiallyRevert($invoice, 120.50);
+
+        $invoice->fresh()->update(['status' => InvoiceStatus::Synced]);
+
+        $log = $invoice->fresh()->qboPartialBalanceLog();
+        $this->assertNotNull($log, 'the last QBO-sourced row still carries the balance');
+        $this->assertSame(InvoiceStatusChangeSource::QboPull, $log->source);
+        $this->assertSame('120.50', $log->qbo_balance);
+    }
+
+    public function test_the_eager_loaded_relation_agrees_with_the_lazy_one(): void
+    {
+        // The portal list eager-loads this relation; the sub-query it builds
+        // has to pick the same row the lazy read does.
+        $invoice = $this->makeInvoice(['status' => InvoiceStatus::Paid]);
+        $this->partiallyRevert($invoice, 120.50);
+        $invoice->fresh()->update(['status' => InvoiceStatus::Synced]);
+
+        $loaded = Invoice::with('latestQboStatusChange')->findOrFail($invoice->id);
+
+        $this->assertNotNull($loaded->latestQboStatusChange);
+        $this->assertSame('120.50', $loaded->latestQboStatusChange->qbo_balance);
     }
 
     public function test_the_portal_invoice_page_shows_the_partial_balance_and_its_date(): void

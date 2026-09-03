@@ -116,9 +116,18 @@ class Invoice extends Model
      */
     public function latestQboStatusChange(): HasOne
     {
-        return $this->hasOne(InvoiceStatusChangeLog::class)
-            ->where('source', InvoiceStatusChangeSource::QboPull)
-            ->latestOfMany();
+        // The source filter MUST live inside ofMany()'s closure, not on the
+        // relation. Laravel builds the MAX(id) sub-query from a fresh query on
+        // the related model, so a where() applied outside it never reaches the
+        // sub-select: the aggregate would pick the newest row of ANY source and
+        // the outer filter would then drop it, resolving this relation to null
+        // the moment a staff write, a push job or the Stripe pull logs a status
+        // after a QBO pull — silently removing the client's partial-balance note
+        // while the invoice is still payable and billing them the full total.
+        return $this->hasOne(InvoiceStatusChangeLog::class)->ofMany(
+            ['id' => 'max'],
+            fn (Builder $query) => $query->where('source', InvoiceStatusChangeSource::QboPull),
+        );
     }
 
     // ── Scopes ──

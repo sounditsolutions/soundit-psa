@@ -34,12 +34,22 @@ class PrepayService
             return null;
         }
 
-        // Idempotency: skip if deposit already exists for this invoice
-        $existing = PrepayTransaction::where('invoice_id', $invoice->id)
+        // Idempotency: at most ONE unmatched deposit at a time. Counted
+        // against the reversals rather than tested for existence, because a
+        // reversal is a compensating -hours row, not a delete: an existence
+        // test would refuse for ever once an invoice had been reverted once,
+        // so a QBO payment unapplied and then re-applied would leave the
+        // invoice Paid, the client charged, and the hours they bought gone
+        // (#1173). Balanced counts mean nothing is deposited right now.
+        $deposits = PrepayTransaction::where('invoice_id', $invoice->id)
             ->where('source', PrepayTransactionSource::InvoiceDeposit)
-            ->exists();
+            ->count();
 
-        if ($existing) {
+        $reversals = PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', PrepayTransactionSource::InvoiceReversal)
+            ->count();
+
+        if ($deposits > $reversals) {
             Log::debug('[Prepay] Deposit already exists for invoice', [
                 'invoice_id' => $invoice->id,
             ]);
@@ -91,33 +101,43 @@ class PrepayService
      * a technician an invoice was voided when it was not; absent, it keeps the
      * original void wording.
      *
-     * IDEMPOTENT ONCE, BY DESIGN. A second reversal is refused because a
-     * second deposit is also refused: depositFromInvoice() skips when a
-     * deposit row already exists. So an invoice cycling paid → open → paid →
-     * open deposits once and reverses once, and the contract balance ends
-     * where the money says it should rather than drifting one deposit per
-     * cycle.
+     * PAIRED WITH THE DEPOSIT, NOT ONCE PER INVOICE. The reversal is a
+     * compensating -hours row, not a delete, so "has this invoice ever been
+     * reversed?" is the wrong question: answering it that way would make the
+     * hours unrecoverable the moment a reverted invoice was paid again, which
+     * on the two-way QBO pull (#1173) is an ordinary sequence — a payment
+     * unapplied and re-applied. A reversal is refused only when every deposit
+     * already carries one, so a repeat reversal (a void following a revert) is
+     * still inert, an invoice holds the hours exactly while it is paid, and the
+     * contract balance cannot drift. depositFromInvoice() counts the same pair.
      */
     public function reverseDepositForInvoice(
         Invoice $invoice,
         Contract $contract,
         ?string $description = null,
     ): ?PrepayTransaction {
-        // Find the original deposit
+        // The LATEST deposit, not the first: an invoice may have been
+        // deposited, reversed and deposited again across paid/open cycles, and
+        // the live one is the last.
         $deposit = PrepayTransaction::where('invoice_id', $invoice->id)
             ->where('source', PrepayTransactionSource::InvoiceDeposit)
+            ->latest('id')
             ->first();
 
         if (! $deposit) {
             return null;
         }
 
-        // Idempotency: skip if reversal already exists
-        $existingReversal = PrepayTransaction::where('invoice_id', $invoice->id)
-            ->where('source', PrepayTransactionSource::InvoiceReversal)
-            ->exists();
+        // Idempotency: refuse only when every deposit already has a reversal.
+        $deposits = PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', PrepayTransactionSource::InvoiceDeposit)
+            ->count();
 
-        if ($existingReversal) {
+        $reversals = PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', PrepayTransactionSource::InvoiceReversal)
+            ->count();
+
+        if ($reversals >= $deposits) {
             Log::debug('[Prepay] Reversal already exists for invoice', [
                 'invoice_id' => $invoice->id,
             ]);
