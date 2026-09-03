@@ -275,6 +275,55 @@ class InvoiceStatusChangeLogTest extends TestCase
             ->where('source', 'invoice_deposit')->count());
     }
 
+    public function test_restored_hours_are_not_created_already_expired(): void
+    {
+        // The re-deposit is a NEW lot and PrepayExpirationService forfeits by
+        // expiry_date. Based on the original invoice date it can be born past
+        // its expiry, and the next sweep takes back what the client paid for.
+        $invoice = $this->makeContractInvoiceWithPrepaidTime();
+        $contract = $invoice->contract;
+        $contract->prepay_expiry_months = 6;
+        $contract->save();
+
+        $invoice->update(['invoice_date' => now()->subMonths(9)]);
+
+        $invoice->update(['status' => InvoiceStatus::Paid]);
+        $invoice->update(['status' => InvoiceStatus::Posted]);
+        $invoice->update(['status' => InvoiceStatus::Paid]);
+
+        $redeposit = PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', 'invoice_deposit')->latest('id')->first();
+
+        $this->assertTrue(
+            \Illuminate\Support\Carbon::parse($redeposit->expiry_date)->isFuture(),
+            'restored hours must have life left to run, or the next sweep forfeits them',
+        );
+    }
+
+    public function test_a_restored_lot_carries_its_remaining_life_and_no_more(): void
+    {
+        // Inside the window the remainder is carried, so a payment unapplied and
+        // re-applied neither shortens the lot nor mints fresh months for it.
+        $invoice = $this->makeContractInvoiceWithPrepaidTime();
+        $contract = $invoice->contract;
+        $contract->prepay_expiry_months = 6;
+        $contract->save();
+
+        $invoice->update(['invoice_date' => now()->subMonths(5)]);
+
+        $invoice->update(['status' => InvoiceStatus::Paid]);
+        $invoice->update(['status' => InvoiceStatus::Posted]);
+        $invoice->update(['status' => InvoiceStatus::Paid]);
+
+        $deposits = PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', 'invoice_deposit')->orderBy('id')->get();
+
+        $original = \Illuminate\Support\Carbon::parse($deposits[0]->expiry_date);
+        $restored = \Illuminate\Support\Carbon::parse($deposits[1]->expiry_date);
+
+        $this->assertLessThanOrEqual(2, abs((int) $original->diffInDays($restored)));
+    }
+
     public function test_a_second_reversal_with_nothing_deposited_takes_nothing(): void
     {
         // The revert already took the hours back; a further reversal (a void

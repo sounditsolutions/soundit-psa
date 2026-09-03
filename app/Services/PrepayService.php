@@ -77,7 +77,12 @@ class PrepayService
             'description' => "Auto-deposit from {$invoice->invoice_number} ({$totalMinutes} min)",
             'invoice_number' => $invoice->invoice_number,
             'invoice_date' => $invoice->invoice_date,
-            'expiry_date' => $this->expiryForCredit($contract, $invoice->invoice_date),
+            // A RE-deposit is a new lot restored after a reversal, so its life
+            // cannot be measured from the original invoice date — see
+            // restoredExpiry(). The first deposit is unchanged.
+            'expiry_date' => $deposits > 0
+                ? $this->restoredExpiry($contract, $invoice)
+                : $this->expiryForCredit($contract, $invoice->invoice_date),
         ]);
 
         // Update denormalized balance on contract
@@ -696,6 +701,50 @@ class PrepayService
             'expired' => $expired,
             'balance' => round($credits - $debits, 4),
         ]);
+    }
+
+    /**
+     * Expiry for a RE-deposit — prepaid hours restored to an invoice that was
+     * reverted and then paid again (#1173).
+     *
+     * A second deposit only became reachable when the idempotency guard started
+     * counting deposits against reversals, and the row it writes is a NEW lot:
+     * PrepayExpirationService forfeits by expiry_date, so a lot created with an
+     * expiry already in the past is swept away on the next run and the client
+     * loses hours they were charged for — the same money-visible loss the
+     * two-way pull exists to close, hidden behind a forfeiture row.
+     *
+     * The credit's life is therefore PAUSED while the invoice is not paid, not
+     * spent: whatever was left of it when the reversal took the hours back runs
+     * again from the moment they are restored. A paid → open → paid cycle inside
+     * the window is neither shortened (the days the hours were not the client's
+     * to use are given back) nor extended (only the unused remainder is carried,
+     * so cycling a payment cannot mint life). A lot whose window had already run
+     * out has no remainder to carry and is re-based on the restoration date
+     * rather than created dead.
+     */
+    private function restoredExpiry(Contract $contract, Invoice $invoice): ?CarbonInterface
+    {
+        $policyExpiry = $this->expiryForCredit($contract, $invoice->invoice_date);
+
+        if ($policyExpiry === null) {
+            return null;
+        }
+
+        $restoredAt = now();
+
+        $reversal = PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', PrepayTransactionSource::InvoiceReversal)
+            ->latest('id')
+            ->first();
+
+        $remainingDays = $reversal?->date
+            ? (int) Carbon::parse($reversal->date)->diffInDays($policyExpiry, false)
+            : 0;
+
+        return $remainingDays > 0
+            ? $restoredAt->copy()->addDays($remainingDays)
+            : $this->expiryForCredit($contract, $restoredAt);
     }
 
     /**
