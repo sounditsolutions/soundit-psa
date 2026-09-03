@@ -720,7 +720,9 @@ class QboSyncService
      * caps each run; never-synced rows are taken first (they are exactly the
      * imported-and-never-verified class), then least-recently-synced. A backlog
      * therefore drains over consecutive runs, oldest-doubt-first, instead of
-     * all at once.
+     * all at once. A fixed minority share of each run is reserved for rows
+     * whose last attempt failed, so a transient QBO error costs an invoice one
+     * cycle of priority rather than removing it from the re-check for ever.
      *
      * REPORTED. The return carries the counts the operator needs to see the
      * drain finish — including `remaining`, measured AFTER the pass, which is
@@ -741,25 +743,43 @@ class QboSyncService
             ->whereNotNull('qbo_invoice_id')
             ->whereNull('stripe_invoice_id');
 
-        $invoices = $query()
-            // Rows already carrying a sync error go LAST. A failed GET leaves
-            // qbo_synced_at NULL, so without this a permanently failing row —
-            // an imported qbo_invoice_id QBO now 404s on, exactly the class this
-            // pass targets — sorts to the head of every run for ever: enough of
-            // them and each run burns its whole budget on the same prefix while
-            // the ~2.2k never-checked backlog never drains. A transient failure
-            // only loses priority; it is retried once the clean rows are done,
-            // and a successful sync clears the error.
-            ->orderByRaw('CASE WHEN qbo_sync_error IS NULL THEN 0 ELSE 1 END')
-            // Never-synced first, then oldest sync. Written as an explicit CASE
-            // rather than relying on where NULLs sort: MySQL and sqlite put them
-            // first on an ASC order and Postgres puts them last, and this must
-            // not depend on which engine an installation runs.
+        // Never-synced first, then oldest sync. Written as an explicit CASE
+        // rather than relying on where NULLs sort: MySQL and sqlite put them
+        // first on an ASC order and Postgres puts them last, and this must not
+        // depend on which engine an installation runs.
+        $orderWithin = fn ($q) => $q
             ->orderByRaw('CASE WHEN qbo_synced_at IS NULL THEN 0 ELSE 1 END')
             ->orderBy('qbo_synced_at')
-            ->orderBy('id')
-            ->limit($limit)
+            ->orderBy('id');
+
+        // Rows already carrying a sync error get a RESERVED SLICE of the run,
+        // NOT a place behind every clean row. Sorting them last reads like a
+        // demotion and is in fact an exile: the clean bucket is the whole Paid
+        // ledger (2,550 rows here against a 250-row budget) and this pass
+        // re-cycles it for ever by least-recently-synced, so a row sorted
+        // behind it is never selected again — one transient 503, expired token
+        // or rate-limit answer and the invoice drops out of the very re-check
+        // this pass exists to perform, still wrongly Paid, still hidden from
+        // the client's owed total. A bounded share instead caps what a
+        // permanently failing row (an imported qbo_invoice_id QBO now 404s on)
+        // can consume — it cannot burn the whole budget on the same prefix
+        // while the ~2.2k never-checked backlog waits — while guaranteeing a
+        // transient failure is retried on the very next run. A successful sync
+        // clears the error and the row rejoins the ordinary rotation.
+        $retrySlice = min($limit, max(1, intdiv($limit, 5)));
+
+        $retries = $orderWithin($query()->whereNotNull('qbo_sync_error'))
+            ->limit($retrySlice)
             ->get();
+
+        // Whatever the retry slice does not use returns to the clean rows, so a
+        // ledger with nothing failing still spends the full budget on the
+        // backlog. Retries run last: a first pass still leads with the
+        // never-verified rows.
+        $invoices = $orderWithin($query()->whereNull('qbo_sync_error'))
+            ->limit(max(0, $limit - $retries->count()))
+            ->get()
+            ->concat($retries);
 
         $results = ['checked' => 0, 'reverted' => 0, 'errors' => 0, 'never_checked' => 0, 'failing' => 0];
 
@@ -792,12 +812,15 @@ class QboSyncService
         // the pass keeps cycling by least-recently-synced from then on.
         $results['never_checked'] = $query()->whereNull('qbo_synced_at')->count();
 
-        // The part of that backlog QuickBooks has been asked about and refused:
-        // still never synced, but carrying an error from a failed attempt.
-        // Without it, a never_checked that stops falling looks identical to one
+        // Every candidate whose last attempt failed, whether or not QuickBooks
+        // has ever answered about it. Deliberately NOT narrowed to the
+        // never-synced backlog: a row that synced successfully once and then
+        // started failing keeps its qbo_synced_at, so the narrower count would
+        // report zero while that invoice was being re-checked only out of the
+        // reserved slice — the operator has to be able to see both. Without
+        // this, a never_checked that stops falling also looks identical to one
         // the pass simply has not reached yet.
         $results['failing'] = $query()
-            ->whereNull('qbo_synced_at')
             ->whereNotNull('qbo_sync_error')
             ->count();
 

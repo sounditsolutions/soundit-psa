@@ -76,8 +76,11 @@ class SyncQboInvoices extends Command
 
                     if ($result['failing'] > 0) {
                         // A remaining count that stops falling is otherwise
-                        // indistinguishable from a backlog not yet reached.
-                        $this->warn("  {$result['failing']} of those carry a sync error from a failed attempt and are checked last.");
+                        // indistinguishable from a backlog not yet reached — and
+                        // a row that synced once before it started failing is
+                        // not in that remaining count at all, so it is reported
+                        // here or nowhere.
+                        $this->warn("  {$result['failing']} paid invoice(s) carry a sync error from a failed attempt; a reserved share of each run retries them.");
                     }
 
                     if ($result['reverted'] > 0) {
