@@ -103,7 +103,9 @@ class InvoiceController extends Controller
 
     public function show(Invoice $invoice)
     {
-        $invoice->load(['client', 'contract', 'profile', 'lines']);
+        // statusChangeLogs.changedBy: the Status History panel names the staff
+        // member on every staff-sourced row (#1173).
+        $invoice->load(['client', 'contract', 'profile', 'lines', 'statusChangeLogs.changedBy']);
 
         $qboViewUrl = null;
         if ($invoice->qbo_invoice_id) {

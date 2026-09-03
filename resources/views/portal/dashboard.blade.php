@@ -147,7 +147,10 @@
                                     <tr>
                                         <td><a href="{{ route('portal.invoices.show', $invoice) }}">{{ $invoice->invoice_number ?: '#' . $invoice->id }}</a></td>
                                         <td class="text-muted small">{{ $invoice->due_date?->format('M j') ?? '—' }}</td>
-                                        <td class="text-end">${{ number_format($invoice->total, 2) }}</td>
+                                        <td class="text-end">
+                                            ${{ number_format($invoice->total, 2) }}
+                                            @include('portal.invoices.partials.qbo-balance-note')
+                                        </td>
                                         <td class="text-end">
                                             @if($invoice->stripe_invoice_url && $invoice->status->isClientPayable())
                                                 <a href="{{ $invoice->stripe_invoice_url }}" target="_blank" class="btn btn-sm btn-accent">Pay Online</a>

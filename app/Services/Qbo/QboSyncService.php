@@ -3,6 +3,7 @@
 namespace App\Services\Qbo;
 
 use App\Enums\InvoiceStatus;
+use App\Enums\InvoiceStatusChangeSource;
 use App\Models\Client;
 use App\Models\Invoice;
 use App\Models\QboBankAccount;
@@ -10,6 +11,7 @@ use App\Models\QboExpense;
 use App\Models\Setting;
 use App\Models\Sku;
 use App\Services\InvoiceVoidService;
+use App\Support\InvoiceStatusChangeContext;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -461,17 +463,105 @@ class QboSyncService
             'qbo_sync_error' => null,
         ];
 
-        // QBO wins for payment status: Balance = 0 → paid
-        $balance = (float) ($qboInvoice['Balance'] ?? $invoice->total);
+        // QBO wins for payment status, in BOTH directions (#1173).
+        //
+        // The default when QBO sends no Balance at all is the invoice total,
+        // i.e. "fully owed" — which used to be inert (it only failed to set
+        // Paid) and now is not: it would revert a Paid invoice on a malformed
+        // payload. So the revert arm requires Balance to have actually been
+        // present. Absent, nothing moves and the row is left as it was.
+        //
+        // The cast is deliberately NOT applied to an unreported balance. A
+        // present-but-non-numeric Balance — 'unknown', null, a nested object
+        // from an API change — casts to 0.0, which the forward arm reads as
+        // "settled in full" and writes Paid onto an invoice nobody has paid.
+        // That is how a row acquires a Paid status with nothing behind it,
+        // which is the defect this issue exists to close; closing it in one
+        // direction only would leave the other open. Unreported falls back to
+        // the local total, which is what the ?? was always reaching for.
+        $balanceReported = array_key_exists('Balance', $qboInvoice) && is_numeric($qboInvoice['Balance']);
+        $balance = $balanceReported ? (float) $qboInvoice['Balance'] : (float) $invoice->total;
+
+        $context = null;
+
         if ($balance == 0 && $invoice->status !== InvoiceStatus::Paid) {
             $updates['status'] = InvoiceStatus::Paid;
+            $context = new InvoiceStatusChangeContext(
+                source: InvoiceStatusChangeSource::QboPull,
+                reason: 'QuickBooks reports the balance settled in full.',
+                qboBalance: 0.0,
+            );
+        } elseif ($balanceReported && $balance > 0 && $invoice->status === InvoiceStatus::Paid
+            && $invoice->stripe_invoice_id === null) {
+            // A Stripe-backed invoice is never reverted, on the same rule
+            // Invoice::canMarkPaid() already applies: when Stripe holds the
+            // payment, Stripe is the authority for it. Nothing receipts a
+            // Stripe payment into QBO, so QBO's untouched balance is not
+            // evidence the client has not paid — reverting on it would re-offer
+            // Pay Online for the FULL amount on an invoice already settled
+            // (a second charge), and flap back to Paid on the next Stripe pull.
+            //
+            // T-22802: the pull was one-way, so an invoice that reached Paid
+            // wrongly — by a payment reversal in QBO, or (the nine that started
+            // this) by an import that asserted Paid and was never checked —
+            // stayed Paid for ever, hidden from the client's owed total with no
+            // record of what had set it.
+            //
+            // A QBO-side VOID cannot reach here: qboInvoiceIsVoided() above
+            // returns first, so "not voided" is structural, not a second test.
+            //
+            // Posted, not Synced, is the target. Both are payable, but only
+            // Posted is reachable by Invoice::scopeOverdue() — an invoice that
+            // is open and past due has to be able to say so, and reverting to
+            // Synced would hide it from the overdue list for ever.
+            $updates['status'] = InvoiceStatus::Posted;
+            $context = new InvoiceStatusChangeContext(
+                source: InvoiceStatusChangeSource::QboPull,
+                // QBO's total from THIS read, not the stale local one — the
+                // partial-vs-full wording has to describe the same invoice the
+                // balance came from, and $updates['total'] is what is about to
+                // be written to the row.
+                reason: $this->revertReason($balance, (float) $updates['total']),
+                qboBalance: $balance,
+            );
+
+            Log::warning('[QboSync] Paid invoice reverted to open — QBO reports a balance', [
+                'invoice_id' => $invoice->id,
+                'invoice_number' => $invoice->invoice_number,
+                'client_id' => $invoice->client_id,
+                'qbo_balance' => $balance,
+                'invoice_total' => (float) $invoice->total,
+                'previously_synced_at' => $invoice->qbo_synced_at?->toIso8601String(),
+            ]);
+        } elseif ($balanceReported && $balance > 0 && $invoice->status->isClientPayable()) {
+            // A balance-only REFRESH — no status move (#1173).
+            //
+            // The revert arm above can only fire while the invoice is Paid, so
+            // after the first revert nothing would ever record a new balance:
+            // an invoice reverted at 450.00 owed keeps telling the client
+            // "450.00 still owed as of <that day>" after they pay another 200,
+            // and qboPartialBalanceLog()'s "up to one pull cycle stale" would
+            // be false. Only invoices QuickBooks has already spoken about are
+            // refreshed — there is a QBO-sourced row whose figure is now wrong —
+            // and only when the number actually moved, so an ordinary open
+            // invoice gets no rows and an unchanged cycle writes nothing.
+            $lastQboLog = $invoice->latestQboStatusChange()->first();
+
+            if ($lastQboLog !== null && (float) $lastQboLog->qbo_balance !== $balance) {
+                $context = new InvoiceStatusChangeContext(
+                    source: InvoiceStatusChangeSource::QboPull,
+                    reason: $this->revertReason($balance, (float) $updates['total']),
+                    qboBalance: $balance,
+                );
+            }
         }
 
         // Route the final write through the locked guard: a local void that
         // committed during the GET above must not be re-inflated by this stale
         // read-back tax/total or flipped to Paid (psa-qfhc5). Mirrors the
-        // push-path guard (recordPushResult).
-        $wasVoid = $invoice->recordStatusPullResult($updates);
+        // push-path guard (recordPushResult). The context rides with it so the
+        // audit row is written inside the same transaction as the status.
+        $wasVoid = $invoice->recordStatusPullResult($updates, $context);
 
         // Line-item detail sync (description, quantity, unit_price, amount) —
         // skipped when the guarded write found the row Void, so a mid-round-trip
@@ -592,6 +682,151 @@ class QboSyncService
             'qbo_synced_at' => now(),
             'qbo_sync_error' => null,
         ]);
+    }
+
+    /**
+     * How the revert should read to whoever finds it — a technician on the
+     * phone, or the client reading the portal line built from it (#1173).
+     *
+     * A partial and a full reversal are different facts and must not share a
+     * sentence: "still owed" understates a full reversal and overstates a
+     * part-paid invoice.
+     */
+    private function revertReason(float $balance, float $total): string
+    {
+        $amount = number_format($balance, 2);
+
+        return $balance < $total
+            ? "QuickBooks reports {$amount} of ".number_format($total, 2).' still owed — the payment was partial or partly reversed.'
+            : "QuickBooks reports the full {$amount} still owed — the payment was reversed or never applied.";
+    }
+
+    /**
+     * Re-check invoices the PSA already believes are Paid against QuickBooks
+     * (#1173, T-22802).
+     *
+     * syncAllUnpaidInvoices() below walks Invoice::unpaid(), which excludes
+     * Paid by definition, so before this existed a Paid row was never looked at
+     * again — the defect that let nine invoices sit Paid-in-PSA/open-in-QBO for
+     * six months. This is a SEPARATE pass rather than a widening of that scope
+     * on purpose: it is the expensive one (on Sound IT's own ledger it is 2,550
+     * rows against 52), it needs its own bound, and keeping the unpaid walk
+     * byte-identical keeps its behaviour out of this change.
+     *
+     * BOUNDED. One GET per invoice, so an unbounded first pass would be
+     * thousands of sequential QBO calls inside a scheduler slot that holds a
+     * 10-minute overlap lock — it would run past the lock, collide with the
+     * next tick, and stand a fair chance of hitting QBO's rate limit. $limit
+     * caps each run; never-synced rows are taken first (they are exactly the
+     * imported-and-never-verified class), then least-recently-synced. A backlog
+     * therefore drains over consecutive runs, oldest-doubt-first, instead of
+     * all at once. A fixed minority share of each run is reserved for rows
+     * whose last attempt failed, so a transient QBO error costs an invoice one
+     * cycle of priority rather than removing it from the re-check for ever.
+     *
+     * REPORTED. The return carries the counts the operator needs to see the
+     * drain finish — including `remaining`, measured AFTER the pass, which is
+     * how anyone knows a first run of 2,550 is 250 done and 2,300 to go rather
+     * than complete. Every individual revert is logged at warning level by
+     * syncInvoiceStatusFromQbo().
+     *
+     * @return array{checked:int, reverted:int, errors:int, never_checked:int, failing:int}
+     */
+    public function syncPaidInvoicesFromQbo(int $limit = 250): array
+    {
+        // Stripe-backed invoices are not candidates at all: Stripe holds their
+        // payment and nothing receipts it into QBO, so a QBO balance says
+        // nothing about whether the client has paid. Same rule
+        // Invoice::canMarkPaid() already applies. Excluded from the counts too,
+        // so the reported backlog is only rows this pass will actually check.
+        $query = fn () => Invoice::paid()
+            ->whereNotNull('qbo_invoice_id')
+            ->whereNull('stripe_invoice_id');
+
+        // Never-synced first, then oldest sync. Written as an explicit CASE
+        // rather than relying on where NULLs sort: MySQL and sqlite put them
+        // first on an ASC order and Postgres puts them last, and this must not
+        // depend on which engine an installation runs.
+        $orderWithin = fn ($q) => $q
+            ->orderByRaw('CASE WHEN qbo_synced_at IS NULL THEN 0 ELSE 1 END')
+            ->orderBy('qbo_synced_at')
+            ->orderBy('id');
+
+        // Rows already carrying a sync error get a RESERVED SLICE of the run,
+        // NOT a place behind every clean row. Sorting them last reads like a
+        // demotion and is in fact an exile: the clean bucket is the whole Paid
+        // ledger (2,550 rows here against a 250-row budget) and this pass
+        // re-cycles it for ever by least-recently-synced, so a row sorted
+        // behind it is never selected again — one transient 503, expired token
+        // or rate-limit answer and the invoice drops out of the very re-check
+        // this pass exists to perform, still wrongly Paid, still hidden from
+        // the client's owed total. A bounded share instead caps what a
+        // permanently failing row (an imported qbo_invoice_id QBO now 404s on)
+        // can consume — it cannot burn the whole budget on the same prefix
+        // while the ~2.2k never-checked backlog waits — while guaranteeing a
+        // transient failure is retried on the very next run. A successful sync
+        // clears the error and the row rejoins the ordinary rotation.
+        $retrySlice = min($limit, max(1, intdiv($limit, 5)));
+
+        $retries = $orderWithin($query()->whereNotNull('qbo_sync_error'))
+            ->limit($retrySlice)
+            ->get();
+
+        // Whatever the retry slice does not use returns to the clean rows, so a
+        // ledger with nothing failing still spends the full budget on the
+        // backlog. Retries run last: a first pass still leads with the
+        // never-verified rows.
+        $invoices = $orderWithin($query()->whereNull('qbo_sync_error'))
+            ->limit(max(0, $limit - $retries->count()))
+            ->get()
+            ->concat($retries);
+
+        $results = ['checked' => 0, 'reverted' => 0, 'errors' => 0, 'never_checked' => 0, 'failing' => 0];
+
+        foreach ($invoices as $invoice) {
+            try {
+                $this->syncInvoiceStatusFromQbo($invoice);
+                $results['checked']++;
+
+                // Read the row the guarded write refreshed in place, not a
+                // second query: this is what actually committed. Counted on
+                // Posted specifically, not on "no longer Paid" — a QBO-side
+                // void also leaves Paid, and calling that a revert would report
+                // a cancelled invoice as a newly-owed one.
+                if ($invoice->status === InvoiceStatus::Posted) {
+                    $results['reverted']++;
+                }
+            } catch (\Throwable $e) {
+                Log::error("[QboSync] Failed to re-check paid invoice {$invoice->invoice_number}", [
+                    'invoice_id' => $invoice->id,
+                    'error' => $e->getMessage(),
+                ]);
+                $results['errors']++;
+            }
+        }
+
+        // Counted AFTER the pass so it reflects the rows this run just
+        // stamped. This is the backlog that matters — Paid invoices QuickBooks
+        // has never once been asked about — and it reaching zero is how an
+        // operator knows the first drain is done. It stays at zero afterwards;
+        // the pass keeps cycling by least-recently-synced from then on.
+        $results['never_checked'] = $query()->whereNull('qbo_synced_at')->count();
+
+        // Every candidate whose last attempt failed, whether or not QuickBooks
+        // has ever answered about it. Deliberately NOT narrowed to the
+        // never-synced backlog: a row that synced successfully once and then
+        // started failing keeps its qbo_synced_at, so the narrower count would
+        // report zero while that invoice was being re-checked only out of the
+        // reserved slice — the operator has to be able to see both. Without
+        // this, a never_checked that stops falling also looks identical to one
+        // the pass simply has not reached yet.
+        $results['failing'] = $query()
+            ->whereNotNull('qbo_sync_error')
+            ->count();
+
+        Log::info('[QboSync] Paid-invoice re-check pass complete', $results);
+
+        return $results;
     }
 
     public function syncAllUnpaidInvoices(): int

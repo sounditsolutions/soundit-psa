@@ -34,12 +34,22 @@ class PrepayService
             return null;
         }
 
-        // Idempotency: skip if deposit already exists for this invoice
-        $existing = PrepayTransaction::where('invoice_id', $invoice->id)
+        // Idempotency: at most ONE unmatched deposit at a time. Counted
+        // against the reversals rather than tested for existence, because a
+        // reversal is a compensating -hours row, not a delete: an existence
+        // test would refuse for ever once an invoice had been reverted once,
+        // so a QBO payment unapplied and then re-applied would leave the
+        // invoice Paid, the client charged, and the hours they bought gone
+        // (#1173). Balanced counts mean nothing is deposited right now.
+        $deposits = PrepayTransaction::where('invoice_id', $invoice->id)
             ->where('source', PrepayTransactionSource::InvoiceDeposit)
-            ->exists();
+            ->count();
 
-        if ($existing) {
+        $reversals = PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', PrepayTransactionSource::InvoiceReversal)
+            ->count();
+
+        if ($deposits > $reversals) {
             Log::debug('[Prepay] Deposit already exists for invoice', [
                 'invoice_id' => $invoice->id,
             ]);
@@ -67,7 +77,12 @@ class PrepayService
             'description' => "Auto-deposit from {$invoice->invoice_number} ({$totalMinutes} min)",
             'invoice_number' => $invoice->invoice_number,
             'invoice_date' => $invoice->invoice_date,
-            'expiry_date' => $this->expiryForCredit($contract, $invoice->invoice_date),
+            // A RE-deposit is a new lot restored after a reversal, so its life
+            // cannot be measured from the original invoice date — see
+            // restoredExpiry(). The first deposit is unchanged.
+            'expiry_date' => $deposits > 0
+                ? $this->restoredExpiry($contract, $invoice)
+                : $this->expiryForCredit($contract, $invoice->invoice_date),
         ]);
 
         // Update denormalized balance on contract
@@ -85,25 +100,49 @@ class PrepayService
     }
 
     /**
-     * Reverse a prepay deposit when its invoice is voided.
+     * Reverse a prepay deposit when its invoice stops being a paid invoice —
+     * voided, or (#1173) reverted to open because QuickBooks reports it is
+     * still owed. $description names which, so the prepay ledger does not tell
+     * a technician an invoice was voided when it was not; absent, it keeps the
+     * original void wording.
+     *
+     * PAIRED WITH THE DEPOSIT, NOT ONCE PER INVOICE. The reversal is a
+     * compensating -hours row, not a delete, so "has this invoice ever been
+     * reversed?" is the wrong question: answering it that way would make the
+     * hours unrecoverable the moment a reverted invoice was paid again, which
+     * on the two-way QBO pull (#1173) is an ordinary sequence — a payment
+     * unapplied and re-applied. A reversal is refused only when every deposit
+     * already carries one, so a repeat reversal (a void following a revert) is
+     * still inert, an invoice holds the hours exactly while it is paid, and the
+     * contract balance cannot drift. depositFromInvoice() counts the same pair.
      */
-    public function reverseDepositForInvoice(Invoice $invoice, Contract $contract): ?PrepayTransaction
-    {
-        // Find the original deposit
+    public function reverseDepositForInvoice(
+        Invoice $invoice,
+        Contract $contract,
+        ?string $description = null,
+    ): ?PrepayTransaction {
+        // The LATEST deposit, not the first: an invoice may have been
+        // deposited, reversed and deposited again across paid/open cycles, and
+        // the live one is the last.
         $deposit = PrepayTransaction::where('invoice_id', $invoice->id)
             ->where('source', PrepayTransactionSource::InvoiceDeposit)
+            ->latest('id')
             ->first();
 
         if (! $deposit) {
             return null;
         }
 
-        // Idempotency: skip if reversal already exists
-        $existingReversal = PrepayTransaction::where('invoice_id', $invoice->id)
-            ->where('source', PrepayTransactionSource::InvoiceReversal)
-            ->exists();
+        // Idempotency: refuse only when every deposit already has a reversal.
+        $deposits = PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', PrepayTransactionSource::InvoiceDeposit)
+            ->count();
 
-        if ($existingReversal) {
+        $reversals = PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', PrepayTransactionSource::InvoiceReversal)
+            ->count();
+
+        if ($reversals >= $deposits) {
             Log::debug('[Prepay] Reversal already exists for invoice', [
                 'invoice_id' => $invoice->id,
             ]);
@@ -119,7 +158,7 @@ class PrepayService
             'invoice_id' => $invoice->id,
             'date' => now(),
             'hours' => -$hours,
-            'description' => "Reversal — invoice {$invoice->invoice_number} voided",
+            'description' => $description ?? "Reversal — invoice {$invoice->invoice_number} voided",
             'invoice_number' => $invoice->invoice_number,
             'invoice_date' => $invoice->invoice_date,
         ]);
@@ -662,6 +701,72 @@ class PrepayService
             'expired' => $expired,
             'balance' => round($credits - $debits, 4),
         ]);
+    }
+
+    /**
+     * Expiry for a RE-deposit — prepaid hours restored to an invoice that was
+     * reverted and then paid again (#1173).
+     *
+     * A second deposit only became reachable when the idempotency guard started
+     * counting deposits against reversals, and the row it writes is a NEW lot:
+     * PrepayExpirationService forfeits by expiry_date, so a lot created with an
+     * expiry already in the past is swept away on the next run and the client
+     * loses hours they were charged for — the same money-visible loss the
+     * two-way pull exists to close, hidden behind a forfeiture row.
+     *
+     * The credit's life is therefore PAUSED while the invoice is not paid, not
+     * spent: whatever was left of it when the reversal took the hours back runs
+     * again from the moment they are restored. A paid → open → paid cycle inside
+     * the window is neither shortened (the days the hours were not the client's
+     * to use are given back) nor extended (only the unused remainder is carried,
+     * so cycling a payment cannot mint life). A lot whose window had already run
+     * out has no remainder to carry and is re-based on the restoration date
+     * rather than created dead.
+     */
+    private function restoredExpiry(Contract $contract, Invoice $invoice): ?CarbonInterface
+    {
+        $policyExpiry = $this->expiryForCredit($contract, $invoice->invoice_date);
+
+        if ($policyExpiry === null) {
+            return null;
+        }
+
+        $restoredAt = now();
+
+        // Measure against the LIVE lot's own expiry, not the original
+        // invoice-date policy date. Each restoration writes a new expiry that
+        // already carries the paused remainder, and the guard permits any
+        // number of revert/re-pay cycles — so a second cycle measured against
+        // the original date would discard the life the first restoration
+        // granted and let the next expiration sweep forfeit hours the client
+        // paid for. A live lot whose expiry_date is NULL never expires; its
+        // restoration keeps that, whatever policy the contract has since
+        // acquired.
+        $deposit = PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', PrepayTransactionSource::InvoiceDeposit)
+            ->latest('id')
+            ->first();
+
+        if ($deposit !== null && $deposit->expiry_date === null) {
+            return null;
+        }
+
+        $liveExpiry = $deposit?->expiry_date
+            ? Carbon::parse($deposit->expiry_date)
+            : $policyExpiry;
+
+        $reversal = PrepayTransaction::where('invoice_id', $invoice->id)
+            ->where('source', PrepayTransactionSource::InvoiceReversal)
+            ->latest('id')
+            ->first();
+
+        $remainingDays = $reversal?->date
+            ? (int) Carbon::parse($reversal->date)->diffInDays($liveExpiry, false)
+            : 0;
+
+        return $remainingDays > 0
+            ? $restoredAt->copy()->addDays($remainingDays)
+            : $this->expiryForCredit($contract, $restoredAt);
     }
 
     /**

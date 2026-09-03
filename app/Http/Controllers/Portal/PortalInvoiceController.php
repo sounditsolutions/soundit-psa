@@ -23,6 +23,10 @@ class PortalInvoiceController extends Controller
 
         $invoices = Invoice::where('client_id', $clientId)
             ->whereIn('status', self::PORTAL_STATUSES)
+            // #1173: the row's "partially paid" note reads the last
+            // QBO-sourced status change. Without this it is one query per
+            // invoice on every page of the list.
+            ->with('latestQboStatusChange')
             ->orderByDesc('invoice_date')
             ->paginate(25);
 
@@ -41,7 +45,7 @@ class PortalInvoiceController extends Controller
             abort(404);
         }
 
-        $invoice->load('lines');
+        $invoice->load(['lines', 'latestQboStatusChange']);
 
         return view('portal.invoices.show', compact('invoice'));
     }
