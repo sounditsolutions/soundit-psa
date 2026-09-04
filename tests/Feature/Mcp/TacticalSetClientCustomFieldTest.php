@@ -21,6 +21,7 @@ use App\Support\McpConfig;
 use App\Support\McpToolModes;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Testing\TestResponse;
 use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -314,8 +315,10 @@ class TacticalSetClientCustomFieldTest extends TestCase
         // Upstream Client.name is unique=True, but PostgreSQL uniqueness is
         // CASE-SENSITIVE, so these two rows coexist happily and one
         // case-insensitive match hits both. First-match would pick by list order.
+        // NEITHER reproduces the stored 'Acme' exactly, so the #1291 exact-case
+        // preference cannot break the tie and the ambiguity refusal stands.
         $client = $this->mockTactical();
-        $client->shouldReceive('getClients')->andReturn($this->upstreamClients(['Acme', 'ACME']));
+        $client->shouldReceive('getClients')->andReturn($this->upstreamClients(['ACME', 'acme']));
         $client->shouldNotReceive('setClientCustomField');
 
         $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture));
@@ -323,9 +326,32 @@ class TacticalSetClientCustomFieldTest extends TestCase
         $this->assertTrue((bool) $response->json('result.isError'));
         $text = (string) $response->json('result.content.0.text');
         $this->assertStringContainsString('ambiguous', $text);
-        $this->assertStringContainsString("'Acme' (#7)", $text);
-        $this->assertStringContainsString("'ACME' (#8)", $text);
+        $this->assertStringContainsString("'ACME' (#7)", $text);
+        $this->assertStringContainsString("'acme' (#8)", $text);
         $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_an_exact_case_match_wins_over_a_case_differing_sibling(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+
+        // #1291(b): an MSP legitimately running both 'Acme' and 'ACME' used to be
+        // unable to write to EITHER — every call refused as ambiguous, with no
+        // override, including the one client the mapping names exactly. The stored
+        // name pair is a byte copy of the upstream name, so the exact hit IS the
+        // mapping and the case-differing sibling is merely near it.
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->andReturn($this->upstreamClients(['ACME', 'Acme']));
+
+        $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture));
+
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+        // Deliberately the SECOND entry upstream, so passing by list order fails.
+        $this->assertStringContainsString("'Acme' (#8)", $run->proposed_content);
+        $this->assertStringNotContainsString("'ACME' (#7)", $run->proposed_content);
     }
 
     public function test_a_missing_upstream_client_is_refused_rather_than_created(): void
@@ -377,6 +403,62 @@ class TacticalSetClientCustomFieldTest extends TestCase
         $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
         $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
         $this->assertStringContainsString("'ACME' (#7)", $run->proposed_content);
+    }
+
+    // ---- the Control D master switch (#1290) ----------------------------------
+
+    public function test_the_control_d_master_switch_refuses_the_write_before_any_upstream_read(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+
+        // OFF=OFF. controld_org_id is the Control D DEPLOY TRIGGER: writing it
+        // makes Tactical automation roll the agent across the whole fleet. With
+        // PSA's own Control D module switched off, those devices would be deployed
+        // into a client PSA will then neither sync nor report on.
+        Setting::setValue('controld_enabled', '0');
+
+        // getClients() is COUNTED rather than forbidden outright: a bare
+        // shouldNotReceive() raises inside Mockery the moment the guard is absent,
+        // and that exception cascades into every later test in the class, which
+        // makes a red-check unreadable. Counting fails this test and only this one.
+        $upstreamReads = 0;
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->andReturnUsing(function () use (&$upstreamReads): array {
+            $upstreamReads++;
+
+            return $this->upstreamClients();
+        });
+        $client->shouldNotReceive('setClientCustomField');
+
+        $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture));
+
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('Control D integration is disabled', $text);
+        $this->assertStringContainsString('controld_enabled', $text);
+        $this->assertSame(0, $upstreamReads, 'the master switch must refuse before any upstream read');
+        $this->assertSame(0, TechnicianRun::count(), 'a refused write must not leave a staged proposal behind');
+    }
+
+    public function test_the_master_switch_defaults_to_enabled_so_an_unset_setting_is_not_a_refusal(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+
+        // configureTactical() never writes controld_enabled. The switch defaults to
+        // '1' (ControlDConfig::isEnabled), so the guard must not turn every
+        // instance that has not touched the setting into a refusal.
+        $this->assertTrue(ControlDConfig::isEnabled());
+
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->andReturn($this->upstreamClients());
+
+        $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture));
+
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
     }
 
     // ---- the staged happy path ------------------------------------------------
@@ -443,6 +525,170 @@ class TacticalSetClientCustomFieldTest extends TestCase
         $this->assertTrue($again['idempotent'] ?? false);
         $this->assertSame($first['run_id'], $again['run_id'], 'idempotent:true must never be paired with a null or drifting run_id');
         $this->assertSame(1, TechnicianRun::where('action_type', 'tactical_stage_set_client_custom_field')->count());
+    }
+
+    public function test_restaging_never_rewrites_a_live_proposal_and_names_the_stuck_run_instead(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $approver = User::factory()->create();
+        $fixture = $this->fixture();
+
+        // The proposal pins #7 and shows 'org-abc123'. 'Acme' is re-created upstream
+        // as #99 inside the approval window, so approval refuses and RELEASES the run
+        // back to AwaitingApproval, where an operator is still reading it. A caller
+        // holding only the staging grant then re-stages the same ticket and field
+        // with a different value: that must not land on the live run, or the operator
+        // would approve a fleet-wide Control D deploy value no human ever read.
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->once()->andReturn($this->upstreamClients());
+        $run = $this->stagedRun($fixture);
+
+        $client->shouldReceive('getClients')->andReturn([
+            ['id' => 99, 'name' => 'Acme', 'sites' => [['id' => 90, 'name' => 'Main']]],
+        ]);
+        $client->shouldNotReceive('setClientCustomField');
+
+        $this->assertSame('gate_declined', app(TechnicianApprovalService::class)->approveStagedTacticalAdminAction($run, $approver->id)->status);
+
+        $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture, [
+            'value' => 'org-evil',
+        ]));
+
+        // Refused — and the refusal names the stuck run and the cockpit deny that
+        // clears it, rather than reporting an idempotent success on a proposal that
+        // can never execute.
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString("Run #{$run->id}", $text);
+        $this->assertStringContainsString('cockpit', $text);
+
+        // The live proposal is byte-for-byte what the operator read: same value, same
+        // pinned target, same state, same run.
+        $fresh = $run->fresh();
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $fresh->state);
+        $this->assertStringContainsString("'Acme' (#7)", (string) $fresh->proposed_content);
+        $this->assertStringContainsString('org-abc123', (string) $fresh->proposed_content);
+        $this->assertStringNotContainsString('org-evil', (string) $fresh->proposed_content);
+        $this->assertSame(1, TechnicianRun::where('action_type', 'tactical_stage_set_client_custom_field')->count());
+
+        // And it is still refused at approval: the re-stage did not hand it a fresh
+        // pin to satisfy the witness with.
+        $this->assertSame('gate_declined', app(TechnicianApprovalService::class)->approveStagedTacticalAdminAction($fresh, $approver->id)->status);
+    }
+
+    public function test_a_run_released_back_into_awaiting_approval_after_the_live_check_gets_the_same_pin_guard(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $approver = User::factory()->create();
+        $fixture = $this->fixture();
+
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->once()->andReturn($this->upstreamClients());
+        $run = $this->stagedRun($fixture);
+
+        $client->shouldReceive('getClients')->andReturn([
+            ['id' => 99, 'name' => 'Acme', 'sites' => [['id' => 90, 'name' => 'Main']]],
+        ]);
+        $client->shouldNotReceive('setClientCustomField');
+
+        $this->assertSame('gate_declined', app(TechnicianApprovalService::class)->approveStagedTacticalAdminAction($run, $approver->id)->status);
+
+        // Past the staging cooldown, so the re-stage reaches the runs table at all.
+        $this->travel(301)->seconds();
+
+        // The interleaving the guard has to survive. approveStagedRun() claims a run
+        // OUT of AwaitingApproval and releases it back on every refusal, so a
+        // re-stage can read the state-filtered live-run query mid-claim, see
+        // nothing, and then have firstOrCreate() resolve the same
+        // (ticket_id, action_type, content_hash) key onto that run a moment later,
+        // already back in AwaitingApproval. Reproduced deterministically: hide the
+        // run from the state-filtered read, then restore it the instant that read
+        // completes — which is exactly what releaseClaim() does.
+        DB::table('technician_runs')->where('id', $run->id)->update(['state' => TechnicianRunState::Executing->value]);
+        $released = false;
+        DB::listen(function ($query) use ($run, &$released) {
+            if ($released
+                || ! str_contains($query->sql, 'technician_runs')
+                || ! str_contains($query->sql, 'content_hash')
+                || ! str_contains($query->sql, 'state')) {
+                return;
+            }
+            $released = true;
+            DB::table('technician_runs')->where('id', $run->id)->update(['state' => TechnicianRunState::AwaitingApproval->value]);
+        });
+
+        $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture, [
+            'value' => 'org-evil',
+        ]));
+
+        $this->assertTrue($released, 'the state-filtered live-run read never ran, so the race branch was not exercised');
+
+        // Same answer as the pre-check: a run that approval will refuse is named,
+        // never handed back as an idempotent success.
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString("Run #{$run->id}", $text);
+        $this->assertStringContainsString('cockpit', $text);
+
+        $fresh = $run->fresh();
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $fresh->state);
+        $this->assertStringContainsString('org-abc123', (string) $fresh->proposed_content);
+        $this->assertStringNotContainsString('org-evil', (string) $fresh->proposed_content);
+        $this->assertSame(1, TechnicianRun::where('action_type', 'tactical_stage_set_client_custom_field')->count());
+
+        // And the refusal is audited as blocked against that run, not swallowed.
+        $this->assertTrue(TechnicianActionLog::where('action_type', 'tactical_stage_set_client_custom_field')
+            ->where('result_status', 'blocked')
+            ->where('run_id', $run->id)
+            ->exists());
+    }
+
+    public function test_a_run_still_claimed_into_executing_by_an_in_flight_approval_is_never_rewritten(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->andReturn($this->upstreamClients());
+        $client->shouldNotReceive('setClientCustomField');
+
+        $run = $this->stagedRun($fixture);
+
+        // The other half of the claim/release interleaving. Here the approval is
+        // still HOLDING the claim: approveStagedRun() moved the run OUT of
+        // AwaitingApproval and is inside the live re-resolution HTTP call. The
+        // state-filtered pre-check therefore sees nothing, but firstOrCreate() still
+        // resolves the same (ticket_id, action_type, content_hash) key onto the
+        // claimed row. Executing is a live state, so it must get the same treatment
+        // as AwaitingApproval: no rewrite, with only the staging grant.
+        DB::table('technician_runs')->where('id', $run->id)->update(['state' => TechnicianRunState::Executing->value]);
+
+        // Past the staging cooldown, so the re-stage reaches the runs table at all.
+        $this->travel(301)->seconds();
+
+        $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture, [
+            'value' => 'org-evil',
+        ]));
+
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString("Run #{$run->id}", (string) $response->json('result.content.0.text'));
+
+        // The claim is left byte-for-byte as the approval left it: same state, so
+        // releaseClaim()/advanceTo() still have a row to CAS against, and same
+        // content, so no value the approver never read can be executed under it.
+        $fresh = $run->fresh();
+        $this->assertSame(TechnicianRunState::Executing, $fresh->state);
+        $this->assertStringContainsString('org-abc123', (string) $fresh->proposed_content);
+        $this->assertStringNotContainsString('org-evil', (string) $fresh->proposed_content);
+        $this->assertSame(1, TechnicianRun::where('action_type', 'tactical_stage_set_client_custom_field')->count());
+
+        $this->assertTrue(TechnicianActionLog::where('action_type', 'tactical_stage_set_client_custom_field')
+            ->where('result_status', 'blocked')
+            ->where('run_id', $run->id)
+            ->exists());
     }
 
     public function test_the_value_is_withheld_from_the_mcp_and_technician_audits(): void
@@ -526,13 +772,24 @@ class TacticalSetClientCustomFieldTest extends TestCase
     public static function approvalRemeasureProvider(): array
     {
         return [
-            // A second Tactical client with a case-differing name was created in the
-            // approval window: the target is no longer unambiguous.
+            // Two Tactical clients with case-differing names were created in the
+            // approval window and neither reproduces the stored name exactly: the
+            // target is no longer unambiguous and no exact match can break the tie.
             'the upstream client name became ambiguous' => ['ambiguous'],
             // The operator cleared or re-pointed the configured field id.
             'the configured field id was cleared' => ['field_id'],
             // The PSA mapping was removed.
             'the PSA client lost its Tactical mapping' => ['mapping'],
+            // The operator switched the Control D module off after staging (#1290).
+            // The approver's click must not execute on the state that existed when
+            // the proposal was written.
+            'the Control D master switch was turned off' => ['controld_disabled'],
+            // The mapped client was re-created upstream (or an exactly-named
+            // sibling appeared) in the approval window, so re-resolution SUCCEEDS
+            // but names a different upstream client than the proposal showed the
+            // approver. A clean answer is not agreement: the id pinned in the
+            // proposal has to be the id being written to.
+            'the resolved client is no longer the one that was staged' => ['retargeted'],
         ];
     }
 
@@ -549,9 +806,13 @@ class TacticalSetClientCustomFieldTest extends TestCase
         $run = $this->stagedRun($fixture);
 
         match ($change) {
-            'ambiguous' => $client->shouldReceive('getClients')->once()->andReturn($this->upstreamClients(['Acme', 'ACME'])),
+            'ambiguous' => $client->shouldReceive('getClients')->once()->andReturn($this->upstreamClients(['ACME', 'acme'])),
             'field_id' => Setting::setValue(ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING, ''),
             'mapping' => $fixture['client']->update(['tactical_site_id' => null]),
+            'controld_disabled' => Setting::setValue('controld_enabled', '0'),
+            'retargeted' => $client->shouldReceive('getClients')->once()->andReturn([
+                ['id' => 99, 'name' => 'Acme', 'sites' => [['id' => 90, 'name' => 'Main']]],
+            ]),
         };
         $client->shouldNotReceive('setClientCustomField');
 

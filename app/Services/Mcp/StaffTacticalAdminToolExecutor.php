@@ -3212,17 +3212,27 @@ class StaffTacticalAdminToolExecutor
 
         // "Still awaiting approval" comes from the LIVE runs table only, never from
         // the immutable audit log (bd psa-k4s0 Root B).
+        //
+        // A run that is AwaitingApproval is IMMUTABLE to a caller. An operator reads
+        // one proposal in the cockpit and then clicks approve on its run id, so
+        // rewriting the value, the reason or the pin under that same id would execute
+        // content no human ever read — and the ordinary staging grant, with no
+        // approval rights at all, would be enough to do it. Re-staging therefore
+        // never touches a live proposal.
+        //
+        // It still must not report a DEAD one as an idempotent success. The content
+        // hash keys on the field key alone, so a run pinned to an upstream client
+        // that has since been re-created — or staged before pinning existed and
+        // carrying no pin at all — sits on this ticket's only
+        // (ticket_id, action_type, content_hash) key in AwaitingApproval while being
+        // refused at every approval. Naming it back as a success hides that; naming
+        // it as what it is sends the operator to the one place that clears it, the
+        // cockpit deny button, after which staging this write again re-opens the key.
         $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
         if ($liveAwaitingRun !== null) {
-            return [
-                'success' => true,
-                'idempotent' => true,
-                'ticket_id' => $ticket->id,
-                'ticket_display_id' => $ticket->display_id,
-                'run_id' => $liveAwaitingRun->id,
-                'message' => 'Already staged; awaiting approval.',
-            ];
+            return $this->liveAwaitingRunAnswer($liveAwaitingRun, $target, $ticket, $tool, $clientId, $contentHash, $actorLabel);
         }
+
         if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
             $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Tactical client custom-field proposal cooldown active.', $actorLabel);
 
@@ -3253,11 +3263,17 @@ class StaffTacticalAdminToolExecutor
                 'ticket_id' => $ticket->id,
                 'arguments' => [
                     // The PSA-facing selectors are carried, never the upstream
-                    // client id or field id: approval re-resolves both against live
-                    // state, because the setting can be changed and a second
-                    // case-differing upstream client can appear in that window.
+                    // client id or field id AS THE THING WRITTEN: approval
+                    // re-resolves both against live state, because the setting can
+                    // be changed and a second case-differing upstream client can
+                    // appear in that window. The resolved client id rides along as
+                    // a WITNESS of the target this proposal put in front of the
+                    // approver — re-resolution answering with a different id is a
+                    // refusal at approval, so the fleet-wide deploy trigger cannot
+                    // fire on a client nobody read.
                     'field_key' => $target['field_key'],
                     'value' => $target['value'],
+                    'staged_upstream_client_id' => $target['upstream_client_id'],
                     'reason' => $guard['reason'],
                 ],
             ], JSON_THROW_ON_ERROR)),
@@ -3279,7 +3295,38 @@ class StaffTacticalAdminToolExecutor
             ],
         );
 
-        if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
+        if (! $run->wasRecentlyCreated) {
+            // The run ended in some other state, so re-open it in place. A run that
+            // is still AwaitingApproval here was missed by the pre-check above —
+            // approveStagedRun() claims a run out of AwaitingApproval and releases it
+            // back on every refusal, so a re-stage reading mid-claim sees nothing and
+            // then finds the same row returned to AwaitingApproval by the time
+            // firstOrCreate() resolves the key. That run gets the SAME guarded answer
+            // as the pre-check, never a bare idempotent success: a proposal an
+            // approver is reading is never rewritten under its own run id, and a
+            // proposal that can no longer pass approval is never reported as one that
+            // can.
+            if ($run->state === TechnicianRunState::AwaitingApproval) {
+                return $this->liveAwaitingRunAnswer($run, $target, $ticket, $tool, $clientId, $contentHash, $actorLabel);
+            }
+
+            // The OTHER half of that same interleaving: the approval is still
+            // HOLDING the claim, so the row sits in Executing and the state-filtered
+            // pre-check saw nothing for a different reason. Executing is a LIVE
+            // state, not an ended one. Rewriting it here would overwrite content an
+            // approver already released for execution, force the row back to
+            // AwaitingApproval underneath an in-flight upstream write — leaving
+            // releaseClaim() and advanceTo(), both CAS on Executing, with nothing to
+            // match — and re-arm an already-executed proposal carrying a fleet-wide
+            // Control D deploy value no human ever read. Nothing is staged and the
+            // claim is left exactly as the approval left it.
+            if ($run->state === TechnicianRunState::Executing) {
+                $message = "Run #{$run->id} for this ticket and field is being executed by an approval right now, so nothing was staged and that run was left untouched. Wait for it to settle: if it executes, this write is done; if it is refused, the run returns to awaiting approval, where the cockpit deny button clears the key for a fresh proposal.";
+                $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, $message, $actorLabel, $run->id);
+
+                return ['error' => $message];
+            }
+
             $run->update([
                 'state' => TechnicianRunState::AwaitingApproval->value,
                 'proposed_content' => $proposedContent,
@@ -3287,15 +3334,6 @@ class StaffTacticalAdminToolExecutor
                 'confidence' => null,
                 'tokens_used' => 0,
             ]);
-        } elseif (! $run->wasRecentlyCreated) {
-            return [
-                'success' => true,
-                'idempotent' => true,
-                'ticket_id' => $ticket->id,
-                'ticket_display_id' => $ticket->display_id,
-                'run_id' => $run->id,
-                'message' => 'Already staged; awaiting approval.',
-            ];
         }
 
         $this->auditAttempt($tool, 'awaiting_approval', $clientId, $contentHash, "MCP staged Tactical CLIENT custom-field write '{$target['field_key']}' for Tactical client '{$target['upstream_client_name']}'.", $actorLabel, $run->id);
@@ -3336,6 +3374,25 @@ class StaffTacticalAdminToolExecutor
             $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $target['error'], $actorLabel, $run?->id, $approverId);
 
             return ['error' => $target['error']];
+        }
+
+        // The approver read ONE upstream client, named and numbered, in the
+        // proposal. Re-resolution above is deliberately against live state, so a
+        // client created, renamed, or re-created upstream inside the approval
+        // window can answer CLEANLY with a different id — and the content hash
+        // keys on the field key alone, so nothing else here would notice. Writing
+        // controld_org_id rolls the Control D agent across that client's whole
+        // fleet, so a target the approver never read is refused, not written. A
+        // proposal carrying no pinned id is refused too: it cannot show that the
+        // target the approver read and the one resolved now are the same client.
+        $stagedClientId = $this->positiveInteger($arguments['staged_upstream_client_id'] ?? null);
+        if ($stagedClientId !== $target['upstream_client_id']) {
+            $message = $stagedClientId === null
+                ? 'This proposal recorded no upstream Tactical client id, so the approved target cannot be confirmed; no upstream call was made. Deny it in the cockpit, then stage the write again: a proposal awaiting approval is never rewritten in place, so the replacement is read and approved on its own proposal.'
+                : "The approved proposal targeted Tactical client #{$stagedClientId}, but '{$target['upstream_client_name']}' (#{$target['upstream_client_id']}) is what this PSA client's mapping resolves to now; the approved target changed and no upstream call was made. Deny this proposal in the cockpit, then stage the write again so '{$target['upstream_client_name']}' (#{$target['upstream_client_id']}) is read and approved on its own proposal.";
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $message];
         }
 
         if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
@@ -3386,6 +3443,78 @@ class StaffTacticalAdminToolExecutor
     }
 
     /**
+     * The only answer a live AwaitingApproval run on this key may be given.
+     *
+     * A proposal awaiting approval is immutable to a caller, so the sole question
+     * is whether the run already holding the key can still execute: its pinned
+     * upstream client id must equal the one this call just resolved. Agreement is
+     * an idempotent success. Disagreement — or no pin at all — is a refusal that
+     * names the run, because reporting a run that approval will refuse as an
+     * idempotent success hides the deadlock instead of sending the operator to the
+     * one thing that clears it.
+     *
+     * Both places a live run can be seen call this: the pre-check before
+     * firstOrCreate(), and the branch after it that catches a run claimed and
+     * released back into AwaitingApproval by a refused approval while the
+     * pre-check was reading. Two call sites, one answer — the second one giving a
+     * softer answer than the first is precisely the gap this helper closes.
+     *
+     * @param  array{field_key?: string, field_id?: int, value?: string, upstream_client_id?: int, upstream_client_name?: string}  $target
+     */
+    private function liveAwaitingRunAnswer(
+        TechnicianRun $run,
+        array $target,
+        Ticket $ticket,
+        string $tool,
+        int $clientId,
+        string $contentHash,
+        string $actorLabel,
+    ): array {
+        $pinnedClientId = $this->stagedPinnedUpstreamClientId($run);
+        if ($pinnedClientId === $target['upstream_client_id']) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        $message = $pinnedClientId === null
+            ? "Run #{$run->id} is already awaiting approval for this ticket and field, but it records no upstream Tactical client id, so approval will refuse it. A proposal awaiting approval is never rewritten in place — the approver has to execute the content they read — so nothing was staged and that run was left untouched. Deny it in the cockpit, then stage this write again."
+            : "Run #{$run->id} is already awaiting approval for this ticket and field, but it is pinned to Tactical client #{$pinnedClientId} while this PSA client's mapping now resolves to '{$target['upstream_client_name']}' (#{$target['upstream_client_id']}), so approval will refuse it. A proposal awaiting approval is never rewritten in place — the approver has to execute the content they read — so nothing was staged and that run was left untouched. Deny it in the cockpit, then stage this write again so the new target is read and approved on its own proposal.";
+        $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, $message, $actorLabel, $run->id);
+
+        return ['error' => $message];
+    }
+
+    /**
+     * The upstream Tactical client id a live proposal pinned in front of the
+     * approver, or null when it carries none (staged before the pin existed) or
+     * when its payload cannot be read.
+     *
+     * Read from the ENCRYPTED payload because that is the value approval compares
+     * against live re-resolution: a pin read from anywhere else could agree here
+     * and still be refused there, which is the deadlock this comparison exists to
+     * keep out. Unreadable is null, and null never equals a resolved id — an
+     * unreadable proposal is re-pinned rather than left holding the key.
+     */
+    private function stagedPinnedUpstreamClientId(TechnicianRun $run): ?int
+    {
+        try {
+            $payload = $this->decryptRunPayload($run);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        $arguments = is_array($payload['arguments'] ?? null) ? $payload['arguments'] : [];
+
+        return $this->positiveInteger($arguments['staged_upstream_client_id'] ?? null);
+    }
+
+    /**
      * Resolve and fully guard the client custom-field write. Fails CLOSED:
      * anything it cannot measure is a refusal, never a pass.
      *
@@ -3397,6 +3526,17 @@ class StaffTacticalAdminToolExecutor
         $setting = self::CLIENT_CUSTOM_FIELD_ALLOWLIST[$fieldKey] ?? null;
         if ($setting === null) {
             return ['error' => 'field_key is not an allowlisted PSA-owned Tactical CLIENT custom field'];
+        }
+
+        // OFF=OFF (#1290). Checked before the field id because "the integration is
+        // switched off" is the truer refusal than "its field id is unset", and
+        // checked HERE rather than in the staging path because this method is
+        // re-run at approval — so disabling the integration between staging and
+        // approval refuses the write instead of letting an approved proposal
+        // through on the state that existed when it was staged.
+        $disabled = $this->clientCustomFieldIntegrationDisabledReason($fieldKey);
+        if ($disabled !== null) {
+            return ['field_key' => $fieldKey, 'error' => $disabled];
         }
 
         $fieldId = $this->clientCustomFieldId($fieldKey);
@@ -3429,6 +3569,31 @@ class StaffTacticalAdminToolExecutor
     }
 
     /**
+     * The refusal reason when the integration OWNING an allowlisted client field
+     * is switched off in PSA, or null when it is on (#1290).
+     *
+     * Every key in CLIENT_CUSTOM_FIELD_ALLOWLIST is a field PSA writes on behalf
+     * of one of its own integration modules, so the module's master switch governs
+     * it. controld_org_id is the Control D DEPLOY TRIGGER: writing it makes
+     * Tactical automation roll the Control D agent across the client's whole
+     * fleet. Doing that while PSA's own Control D module is off would deploy
+     * agents into a client that PSA will then neither sync nor report on.
+     *
+     * The match is exhaustive by key rather than defaulting to "enabled", so a
+     * future allowlist entry whose switch nobody wired up refuses instead of
+     * silently inheriting a pass.
+     */
+    private function clientCustomFieldIntegrationDisabledReason(string $fieldKey): ?string
+    {
+        return match ($fieldKey) {
+            'controld_org_id' => ControlDConfig::isEnabled()
+                ? null
+                : "The Control D integration is disabled in PSA (setting 'controld_enabled'), and '{$fieldKey}' is its deploy trigger; no upstream call was made.",
+            default => "No integration master switch is wired up for '{$fieldKey}'; no upstream call was made.",
+        };
+    }
+
+    /**
      * The configured Tactical CLIENT custom field id for an allowlisted key.
      * Unset or malformed is null, and null is a refusal — never a default id.
      */
@@ -3455,6 +3620,22 @@ class StaffTacticalAdminToolExecutor
      * customer's whole fleet. Zero matches and two-or-more matches are both
      * refusals, and the refusal names what it saw so an operator can fix it
      * upstream.
+     *
+     * An EXACT-CASE match wins over case-differing ones (#1291). The stored name
+     * pair is a byte copy of the upstream name, so when a candidate reproduces it
+     * exactly that candidate is the mapping and the others are merely near it.
+     * Without the preference an MSP that legitimately runs both "Acme" and "ACME"
+     * could never write to either — every call refused as ambiguous, with no
+     * override — and the exactly-mapped client was the one being refused.
+     *
+     * The case-insensitive set remains the FALLBACK, so a purely cosmetic upstream
+     * re-casing ("Acme" → "ACME", nothing else changed) still resolves rather than
+     * breaking every mapping on the instance. That fallback keeps one residual on
+     * the table and it is deliberate, not overlooked: if the mapped client is
+     * renamed away upstream AND an unrelated customer differs from the stored name
+     * only by case, the fallback still resolves to that unrelated customer. It
+     * needs two independent upstream changes to line up; narrowing it further
+     * would break the cosmetic-re-casing case above, which is the common one.
      *
      * (The same first-match resolution still exists in patchResetScope() and is
      * filed separately; widening this build to it is a different change.)
@@ -3491,6 +3672,18 @@ class StaffTacticalAdminToolExecutor
 
         if ($matches === []) {
             return ['error' => "Tactical client '{$clientName}' was not found; no upstream call was made."];
+        }
+
+        // Exact-case first (#1291). Upstream names are unique case-sensitively, so
+        // more than one byte-identical hit cannot come from a well-formed Tactical;
+        // if one somehow does, fall through to the ambiguity refusal below rather
+        // than picking by list order.
+        $exact = array_values(array_filter(
+            $matches,
+            static fn (array $match): bool => $match['name'] === $clientName,
+        ));
+        if (count($exact) === 1) {
+            return $exact[0];
         }
 
         if (count($matches) > 1) {
