@@ -3230,24 +3230,7 @@ class StaffTacticalAdminToolExecutor
         // cockpit deny button, after which staging this write again re-opens the key.
         $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
         if ($liveAwaitingRun !== null) {
-            $pinnedClientId = $this->stagedPinnedUpstreamClientId($liveAwaitingRun);
-            if ($pinnedClientId === $target['upstream_client_id']) {
-                return [
-                    'success' => true,
-                    'idempotent' => true,
-                    'ticket_id' => $ticket->id,
-                    'ticket_display_id' => $ticket->display_id,
-                    'run_id' => $liveAwaitingRun->id,
-                    'message' => 'Already staged; awaiting approval.',
-                ];
-            }
-
-            $message = $pinnedClientId === null
-                ? "Run #{$liveAwaitingRun->id} is already awaiting approval for this ticket and field, but it records no upstream Tactical client id, so approval will refuse it. A proposal awaiting approval is never rewritten in place — the approver has to execute the content they read — so nothing was staged and that run was left untouched. Deny it in the cockpit, then stage this write again."
-                : "Run #{$liveAwaitingRun->id} is already awaiting approval for this ticket and field, but it is pinned to Tactical client #{$pinnedClientId} while this PSA client's mapping now resolves to '{$target['upstream_client_name']}' (#{$target['upstream_client_id']}), so approval will refuse it. A proposal awaiting approval is never rewritten in place — the approver has to execute the content they read — so nothing was staged and that run was left untouched. Deny it in the cockpit, then stage this write again so the new target is read and approved on its own proposal.";
-            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, $message, $actorLabel, $liveAwaitingRun->id);
-
-            return ['error' => $message];
+            return $this->liveAwaitingRunAnswer($liveAwaitingRun, $target, $ticket, $tool, $clientId, $contentHash, $actorLabel);
         }
 
         if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
@@ -3313,19 +3296,18 @@ class StaffTacticalAdminToolExecutor
         );
 
         if (! $run->wasRecentlyCreated) {
-            // The run ended in some other state, so re-open it in place. Anything
-            // still AwaitingApproval returned above, and this condition holds that
-            // line if a second staging call raced this one: a proposal an approver is
-            // reading is never rewritten under its own run id.
+            // The run ended in some other state, so re-open it in place. A run that
+            // is still AwaitingApproval here was missed by the pre-check above —
+            // approveStagedRun() claims a run out of AwaitingApproval and releases it
+            // back on every refusal, so a re-stage reading mid-claim sees nothing and
+            // then finds the same row returned to AwaitingApproval by the time
+            // firstOrCreate() resolves the key. That run gets the SAME guarded answer
+            // as the pre-check, never a bare idempotent success: a proposal an
+            // approver is reading is never rewritten under its own run id, and a
+            // proposal that can no longer pass approval is never reported as one that
+            // can.
             if ($run->state === TechnicianRunState::AwaitingApproval) {
-                return [
-                    'success' => true,
-                    'idempotent' => true,
-                    'ticket_id' => $ticket->id,
-                    'ticket_display_id' => $ticket->display_id,
-                    'run_id' => $run->id,
-                    'message' => 'Already staged; awaiting approval.',
-                ];
+                return $this->liveAwaitingRunAnswer($run, $target, $ticket, $tool, $clientId, $contentHash, $actorLabel);
             }
 
             $run->update([
@@ -3441,6 +3423,54 @@ class StaffTacticalAdminToolExecutor
             'client-field-'.($target['field_key'] ?? 'unresolved'),
             ['field_key' => $target['field_key'] ?? null],
         );
+    }
+
+    /**
+     * The only answer a live AwaitingApproval run on this key may be given.
+     *
+     * A proposal awaiting approval is immutable to a caller, so the sole question
+     * is whether the run already holding the key can still execute: its pinned
+     * upstream client id must equal the one this call just resolved. Agreement is
+     * an idempotent success. Disagreement — or no pin at all — is a refusal that
+     * names the run, because reporting a run that approval will refuse as an
+     * idempotent success hides the deadlock instead of sending the operator to the
+     * one thing that clears it.
+     *
+     * Both places a live run can be seen call this: the pre-check before
+     * firstOrCreate(), and the branch after it that catches a run claimed and
+     * released back into AwaitingApproval by a refused approval while the
+     * pre-check was reading. Two call sites, one answer — the second one giving a
+     * softer answer than the first is precisely the gap this helper closes.
+     *
+     * @param  array{field_key?: string, field_id?: int, value?: string, upstream_client_id?: int, upstream_client_name?: string}  $target
+     */
+    private function liveAwaitingRunAnswer(
+        TechnicianRun $run,
+        array $target,
+        Ticket $ticket,
+        string $tool,
+        int $clientId,
+        string $contentHash,
+        string $actorLabel,
+    ): array {
+        $pinnedClientId = $this->stagedPinnedUpstreamClientId($run);
+        if ($pinnedClientId === $target['upstream_client_id']) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        $message = $pinnedClientId === null
+            ? "Run #{$run->id} is already awaiting approval for this ticket and field, but it records no upstream Tactical client id, so approval will refuse it. A proposal awaiting approval is never rewritten in place — the approver has to execute the content they read — so nothing was staged and that run was left untouched. Deny it in the cockpit, then stage this write again."
+            : "Run #{$run->id} is already awaiting approval for this ticket and field, but it is pinned to Tactical client #{$pinnedClientId} while this PSA client's mapping now resolves to '{$target['upstream_client_name']}' (#{$target['upstream_client_id']}), so approval will refuse it. A proposal awaiting approval is never rewritten in place — the approver has to execute the content they read — so nothing was staged and that run was left untouched. Deny it in the cockpit, then stage this write again so the new target is read and approved on its own proposal.";
+        $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, $message, $actorLabel, $run->id);
+
+        return ['error' => $message];
     }
 
     /**

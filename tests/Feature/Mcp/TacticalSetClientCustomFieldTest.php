@@ -21,6 +21,7 @@ use App\Support\McpConfig;
 use App\Support\McpToolModes;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Testing\TestResponse;
 use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -574,6 +575,74 @@ class TacticalSetClientCustomFieldTest extends TestCase
         // And it is still refused at approval: the re-stage did not hand it a fresh
         // pin to satisfy the witness with.
         $this->assertSame('gate_declined', app(TechnicianApprovalService::class)->approveStagedTacticalAdminAction($fresh, $approver->id)->status);
+    }
+
+    public function test_a_run_released_back_into_awaiting_approval_after_the_live_check_gets_the_same_pin_guard(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $approver = User::factory()->create();
+        $fixture = $this->fixture();
+
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->once()->andReturn($this->upstreamClients());
+        $run = $this->stagedRun($fixture);
+
+        $client->shouldReceive('getClients')->andReturn([
+            ['id' => 99, 'name' => 'Acme', 'sites' => [['id' => 90, 'name' => 'Main']]],
+        ]);
+        $client->shouldNotReceive('setClientCustomField');
+
+        $this->assertSame('gate_declined', app(TechnicianApprovalService::class)->approveStagedTacticalAdminAction($run, $approver->id)->status);
+
+        // Past the staging cooldown, so the re-stage reaches the runs table at all.
+        $this->travel(301)->seconds();
+
+        // The interleaving the guard has to survive. approveStagedRun() claims a run
+        // OUT of AwaitingApproval and releases it back on every refusal, so a
+        // re-stage can read the state-filtered live-run query mid-claim, see
+        // nothing, and then have firstOrCreate() resolve the same
+        // (ticket_id, action_type, content_hash) key onto that run a moment later,
+        // already back in AwaitingApproval. Reproduced deterministically: hide the
+        // run from the state-filtered read, then restore it the instant that read
+        // completes — which is exactly what releaseClaim() does.
+        DB::table('technician_runs')->where('id', $run->id)->update(['state' => TechnicianRunState::Executing->value]);
+        $released = false;
+        DB::listen(function ($query) use ($run, &$released) {
+            if ($released
+                || ! str_contains($query->sql, 'technician_runs')
+                || ! str_contains($query->sql, 'content_hash')
+                || ! str_contains($query->sql, 'state')) {
+                return;
+            }
+            $released = true;
+            DB::table('technician_runs')->where('id', $run->id)->update(['state' => TechnicianRunState::AwaitingApproval->value]);
+        });
+
+        $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture, [
+            'value' => 'org-evil',
+        ]));
+
+        $this->assertTrue($released, 'the state-filtered live-run read never ran, so the race branch was not exercised');
+
+        // Same answer as the pre-check: a run that approval will refuse is named,
+        // never handed back as an idempotent success.
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString("Run #{$run->id}", $text);
+        $this->assertStringContainsString('cockpit', $text);
+
+        $fresh = $run->fresh();
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $fresh->state);
+        $this->assertStringContainsString('org-abc123', (string) $fresh->proposed_content);
+        $this->assertStringNotContainsString('org-evil', (string) $fresh->proposed_content);
+        $this->assertSame(1, TechnicianRun::where('action_type', 'tactical_stage_set_client_custom_field')->count());
+
+        // And the refusal is audited as blocked against that run, not swallowed.
+        $this->assertTrue(TechnicianActionLog::where('action_type', 'tactical_stage_set_client_custom_field')
+            ->where('result_status', 'blocked')
+            ->where('run_id', $run->id)
+            ->exists());
     }
 
     public function test_the_value_is_withheld_from_the_mcp_and_technician_audits(): void
