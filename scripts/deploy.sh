@@ -28,10 +28,13 @@ set -a
 set +a
 
 # Absolute path of the file bash is actually executing, for the deploy gate: it
-# hashes this file and refuses if it differs from the blob at the sha being
-# deployed. BOTH halves of the path are re-derived here from ${BASH_SOURCE[0]}
-# itself, using ONLY shell builtins and parameter expansion -- deliberately NOT
-# from SCRIPT_DIR, which is assigned above, BEFORE
+# hashes this file and passes only if the blob equals scripts/deploy.sh at the
+# sha being deployed OR at the sha already deployed -- the deploy checkout still
+# sits at the deployed sha while a change to this file deploys, so the OLD
+# script is the one running -- and its PASS line names which leg matched. Any
+# other blob is refused. BOTH halves of the path are re-derived here from
+# ${BASH_SOURCE[0]} itself, using ONLY shell builtins and parameter expansion
+# -- deliberately NOT from SCRIPT_DIR, which is assigned above, BEFORE
 # deploy.env is sourced under `set -a`, and so is reassignable by that
 # gitignored, ungated file: taking the directory from it would let a
 # `SCRIPT_DIR=/tmp/decoy` line aim the gate at a pristine copy while this file
