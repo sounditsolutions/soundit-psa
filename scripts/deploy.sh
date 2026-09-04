@@ -146,8 +146,15 @@ fi
 # fast-forward would have to overwrite. HEAD is still an ancestor in that state,
 # so the check above passes and the dump + prune would run before the refusal —
 # same eviction, different input. Both checks are read-only.
-if ! git diff --quiet HEAD --; then
-  echo "  ERROR: the production checkout has uncommitted changes to tracked files." >&2
+# Scoped to the paths the fast-forward actually rewrites — ff-only carries local
+# edits to files it does not touch straight across, so an unrelated dirty file
+# must not block the deploy. --no-renames so a rename is reported as its D source
+# plus its A destination (both of which the checkout really does write) instead of
+# a single R pair that the pathspec would then miss.
+TRACKED_BLOCKERS="$(git diff -z --name-only --no-renames HEAD "$TARGET" | xargs -0 -r git diff --name-only HEAD --)"
+if [ -n "$TRACKED_BLOCKERS" ]; then
+  echo "  ERROR: uncommitted changes on prod to tracked files that $TARGET rewrites:" >&2
+  echo "$TRACKED_BLOCKERS" | sed 's/^/    /' >&2
   echo "  'git merge --ff-only' would refuse to overwrite them, so the deploy stops here." >&2
   echo "  Inspect 'git status' / 'git diff' and either land those edits upstream or discard" >&2
   echo "  them on prod ('git checkout --') — do NOT --force. (so-e67m cutover-safety guard.)" >&2
@@ -157,7 +164,10 @@ fi
 
 # Same for untracked files sitting where $TARGET adds a file: scoped to the paths
 # the fast-forward would actually create, so unrelated stray files don't block.
-UNTRACKED_BLOCKERS="$(git diff -z --name-only --diff-filter=A HEAD "$TARGET" | xargs -0 -r git ls-files --others --exclude-standard --)"
+# --no-renames because diff.renames defaults on: a rename destination would be
+# reported as R and dropped by --diff-filter=A, yet ff-only still refuses to
+# overwrite an untracked file sitting at it.
+UNTRACKED_BLOCKERS="$(git diff -z --name-only --no-renames --diff-filter=A HEAD "$TARGET" | xargs -0 -r git ls-files --others --exclude-standard --)"
 if [ -n "$UNTRACKED_BLOCKERS" ]; then
   echo "  ERROR: untracked files on prod occupy paths that $TARGET adds:" >&2
   echo "$UNTRACKED_BLOCKERS" | sed 's/^/    /' >&2
