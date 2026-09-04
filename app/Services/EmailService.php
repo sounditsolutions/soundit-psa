@@ -242,8 +242,18 @@ class EmailService
                 ]);
             }
 
-            if ($clamp !== null && Carbon::parse($cursorTarget)->gt($clamp)) {
-                $cursorTarget = $clamp->toIso8601String();
+            if ($clamp !== null) {
+                // The clamp only ever holds the cursor back — it must never drag it
+                // backwards. On an operator backfill the failure sits behind the live
+                // cursor, so rewinding to it would re-walk the whole backfill on the
+                // next scheduled poll and, past the page limit, stall new mail behind
+                // it. The stored cursor is the floor.
+                $floor = $storedCursor !== null ? Carbon::parse($storedCursor) : null;
+                $clampTarget = ($floor !== null && $floor->gt($clamp)) ? $floor : $clamp;
+
+                if (Carbon::parse($cursorTarget)->gt($clampTarget)) {
+                    $cursorTarget = $clampTarget->toIso8601String();
+                }
             }
         }
 
