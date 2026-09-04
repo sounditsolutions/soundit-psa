@@ -3253,11 +3253,17 @@ class StaffTacticalAdminToolExecutor
                 'ticket_id' => $ticket->id,
                 'arguments' => [
                     // The PSA-facing selectors are carried, never the upstream
-                    // client id or field id: approval re-resolves both against live
-                    // state, because the setting can be changed and a second
-                    // case-differing upstream client can appear in that window.
+                    // client id or field id AS THE THING WRITTEN: approval
+                    // re-resolves both against live state, because the setting can
+                    // be changed and a second case-differing upstream client can
+                    // appear in that window. The resolved client id rides along as
+                    // a WITNESS of the target this proposal put in front of the
+                    // approver — re-resolution answering with a different id is a
+                    // refusal at approval, so the fleet-wide deploy trigger cannot
+                    // fire on a client nobody read.
                     'field_key' => $target['field_key'],
                     'value' => $target['value'],
+                    'staged_upstream_client_id' => $target['upstream_client_id'],
                     'reason' => $guard['reason'],
                 ],
             ], JSON_THROW_ON_ERROR)),
@@ -3336,6 +3342,25 @@ class StaffTacticalAdminToolExecutor
             $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $target['error'], $actorLabel, $run?->id, $approverId);
 
             return ['error' => $target['error']];
+        }
+
+        // The approver read ONE upstream client, named and numbered, in the
+        // proposal. Re-resolution above is deliberately against live state, so a
+        // client created, renamed, or re-created upstream inside the approval
+        // window can answer CLEANLY with a different id — and the content hash
+        // keys on the field key alone, so nothing else here would notice. Writing
+        // controld_org_id rolls the Control D agent across that client's whole
+        // fleet, so a target the approver never read is refused, not written. A
+        // proposal carrying no pinned id is refused too: it cannot show that the
+        // target the approver read and the one resolved now are the same client.
+        $stagedClientId = $this->positiveInteger($arguments['staged_upstream_client_id'] ?? null);
+        if ($stagedClientId !== $target['upstream_client_id']) {
+            $message = $stagedClientId === null
+                ? 'This proposal recorded no upstream Tactical client id, so the approved target cannot be confirmed; no upstream call was made.'
+                : "The approved proposal targeted Tactical client #{$stagedClientId}, but '{$target['upstream_client_name']}' (#{$target['upstream_client_id']}) is what this PSA client's mapping resolves to now; the approved target changed and no upstream call was made.";
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $message];
         }
 
         if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {

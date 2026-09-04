@@ -619,6 +619,12 @@ class TacticalSetClientCustomFieldTest extends TestCase
             // The approver's click must not execute on the state that existed when
             // the proposal was written.
             'the Control D master switch was turned off' => ['controld_disabled'],
+            // The mapped client was re-created upstream (or an exactly-named
+            // sibling appeared) in the approval window, so re-resolution SUCCEEDS
+            // but names a different upstream client than the proposal showed the
+            // approver. A clean answer is not agreement: the id pinned in the
+            // proposal has to be the id being written to.
+            'the resolved client is no longer the one that was staged' => ['retargeted'],
         ];
     }
 
@@ -639,6 +645,9 @@ class TacticalSetClientCustomFieldTest extends TestCase
             'field_id' => Setting::setValue(ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING, ''),
             'mapping' => $fixture['client']->update(['tactical_site_id' => null]),
             'controld_disabled' => Setting::setValue('controld_enabled', '0'),
+            'retargeted' => $client->shouldReceive('getClients')->once()->andReturn([
+                ['id' => 99, 'name' => 'Acme', 'sites' => [['id' => 90, 'name' => 'Main']]],
+            ]),
         };
         $client->shouldNotReceive('setClientCustomField');
 
