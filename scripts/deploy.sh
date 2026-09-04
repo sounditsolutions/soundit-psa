@@ -151,7 +151,7 @@ fi
 # must not block the deploy. --no-renames so a rename is reported as its D source
 # plus its A destination (both of which the checkout really does write) instead of
 # a single R pair that the pathspec would then miss.
-TRACKED_BLOCKERS="$(git diff -z --name-only --no-renames HEAD "$TARGET" | xargs -0 -r git diff --name-only HEAD --)"
+TRACKED_BLOCKERS="$(git diff -z --name-only --no-renames HEAD "$TARGET" | xargs -0 -r git --literal-pathspecs diff --name-only HEAD --)"
 if [ -n "$TRACKED_BLOCKERS" ]; then
   echo "  ERROR: uncommitted changes on prod to tracked files that $TARGET rewrites:" >&2
   echo "$TRACKED_BLOCKERS" | sed 's/^/    /' >&2
@@ -167,7 +167,7 @@ fi
 # --no-renames because diff.renames defaults on: a rename destination would be
 # reported as R and dropped by --diff-filter=A, yet ff-only still refuses to
 # overwrite an untracked file sitting at it.
-UNTRACKED_BLOCKERS="$(git diff -z --name-only --no-renames --diff-filter=A HEAD "$TARGET" | xargs -0 -r git ls-files --others --exclude-standard --)"
+UNTRACKED_BLOCKERS="$(git diff -z --name-only --no-renames --diff-filter=A HEAD "$TARGET" | xargs -0 -r git --literal-pathspecs ls-files --others --exclude-standard --)"
 if [ -n "$UNTRACKED_BLOCKERS" ]; then
   echo "  ERROR: untracked files on prod occupy paths that $TARGET adds:" >&2
   echo "$UNTRACKED_BLOCKERS" | sed 's/^/    /' >&2
