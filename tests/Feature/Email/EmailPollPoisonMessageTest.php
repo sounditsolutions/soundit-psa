@@ -6,6 +6,7 @@ use App\Models\Email;
 use App\Models\Setting;
 use App\Services\EmailService;
 use App\Services\Graph\GraphClient;
+use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery;
 use Tests\TestCase;
@@ -146,6 +147,59 @@ class EmailPollPoisonMessageTest extends TestCase
             '2026-07-01T00:00:00+00:00',
             Setting::getValue('graph_last_poll_at'),
             'nothing imported cleanly, so there is no proven point to advance to'
+        );
+    }
+
+    public function test_the_cursor_stays_within_the_retry_window_of_a_failed_message(): void
+    {
+        $this->existingRow('graph-GOOD', 'imid-good');
+
+        // A catch-up page spans days. Advancing to the newest success would leave the
+        // failed message days behind the 4-hour lookback and it would never be fetched
+        // again — the retry the cursor comment promises has to actually exist.
+        $poison = $this->message('graph-POISON', 'imid-poison', '2026-07-01T09:00:00Z');
+        $poison['toRecipients'] = 'not-an-array';
+
+        $result = $this->serviceReturning([
+            $poison,
+            $this->message('graph-GOOD', 'imid-good', '2026-07-04T18:00:00Z'),
+        ])->pollMailbox();
+
+        $this->assertSame(1, $result->errors);
+
+        $cursor = Carbon::parse(Setting::getValue('graph_last_poll_at'));
+        $failedAt = Carbon::parse('2026-07-01T09:00:00Z');
+
+        $this->assertTrue(
+            $cursor->greaterThan($failedAt),
+            'the walk still moves past the failed message'
+        );
+        $this->assertTrue(
+            $cursor->copy()->subHours(4)->lessThanOrEqualTo($failedAt),
+            'the next poll must still fetch the message that failed'
+        );
+    }
+
+    public function test_a_message_that_already_had_its_retry_does_not_hold_the_cursor(): void
+    {
+        // The cursor is already parked at the failure's retry deadline, so this poll
+        // is the retry — failing again must not freeze the walk on it.
+        Setting::setValue('graph_last_poll_at', '2026-07-01T13:00:00+00:00');
+        $this->existingRow('graph-GOOD', 'imid-good');
+
+        $poison = $this->message('graph-POISON', 'imid-poison', '2026-07-01T09:00:00Z');
+        $poison['toRecipients'] = 'not-an-array';
+
+        $result = $this->serviceReturning([
+            $poison,
+            $this->message('graph-GOOD', 'imid-good', '2026-07-04T18:00:00Z'),
+        ])->pollMailbox();
+
+        $this->assertSame(1, $result->errors);
+        $this->assertSame(
+            '2026-07-04T18:00:00Z',
+            Setting::getValue('graph_last_poll_at'),
+            'a message that keeps failing past its retry window must not park the cursor'
         );
     }
 }

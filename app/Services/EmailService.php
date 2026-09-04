@@ -66,13 +66,17 @@ class EmailService
             return $result;
         }
 
+        $storedCursor = Setting::getValue('graph_last_poll_at');
+
         $since = $sinceDate
-            ?? Setting::getValue('graph_last_poll_at')
+            ?? $storedCursor
             ?? now()->subDays(30)->toIso8601String();
 
-        // Look back 4 hours from the cursor to catch emails that were created
-        // in the DB (by a failed webhook) but never fully processed.
-        $sinceFormatted = Carbon::parse($since)->subHours(4)->toIso8601String();
+        // Look back from the cursor to catch emails that were created in the DB
+        // (by a failed webhook) but never fully processed. The cursor advance at the
+        // end of the poll is clamped to this same window, so the two stay in step.
+        $lookbackHours = 4;
+        $sinceFormatted = Carbon::parse($since)->subHours($lookbackHours)->toIso8601String();
 
         try {
             $messages = $this->graphClient->getMailboxMessages($mailbox, [
@@ -88,6 +92,7 @@ class EmailService
         }
 
         $lastSuccessfulReceivedAt = null;
+        $earliestFailedReceivedAt = null;
         $failedGraphIds = [];
         $hitPageLimit = count($messages) >= 2500; // 50 pages * 50 per page
 
@@ -167,6 +172,9 @@ class EmailService
                 $lastSuccessfulReceivedAt = $msg['receivedDateTime'] ?? $lastSuccessfulReceivedAt;
             } catch (\Throwable $e) {
                 $failedGraphIds[] = $graphId ?? 'unknown';
+                // Messages arrive ordered by receivedDateTime, so the first failure is
+                // the oldest one the cursor has to stay within reach of.
+                $earliestFailedReceivedAt ??= $msg['receivedDateTime'] ?? null;
                 $result->recordError("Failed to import message {$graphId}: ".$e->getMessage());
                 Log::error('[EmailService] Failed to import email', [
                     'graph_id' => $graphId ?? 'unknown',
@@ -185,20 +193,44 @@ class EmailService
         // Advance the cursor to the last message that imported cleanly, even when
         // others in the page failed. Holding the cursor back on a per-message failure
         // means one message that can never import freezes the whole poll: every later
-        // poll re-walks from the same point and re-fails it forever. Messages arrive
-        // ordered by receivedDateTime, and pollMailbox re-reads 4 hours behind the
-        // cursor, so a message that fails transiently is still retried for 4 hours.
-        // A message that keeps failing past that window is reported here and dropped
-        // from the walk rather than stopping every message behind it.
-        if ($lastSuccessfulReceivedAt) {
-            Setting::setValue('graph_last_poll_at', $lastSuccessfulReceivedAt);
+        // poll re-walks from the same point and re-fails it forever.
+        //
+        // The advance has to stay inside the lookback the retry depends on. A single
+        // page can span months — the backlog behind a cursor frozen at 2026-07-01 is
+        // walked in one poll — so advancing to the newest success would leave a
+        // failure early in that page days behind the next poll's window, never
+        // fetched again. Clamp the advance to the oldest failure plus the lookback,
+        // which is exactly far enough that the next poll still sees it.
+        //
+        // If the stored cursor already sits at or past that clamp, the message has had
+        // its retry and failed again: report it and let the walk move past rather than
+        // parking the cursor on it forever.
+        $cursorTarget = $lastSuccessfulReceivedAt;
+
+        if ($cursorTarget !== null && $earliestFailedReceivedAt !== null) {
+            $retryUntil = Carbon::parse($earliestFailedReceivedAt)->addHours($lookbackHours);
+
+            if (Carbon::parse($cursorTarget)->gt($retryUntil)) {
+                if ($storedCursor !== null && Carbon::parse($storedCursor)->gte($retryUntil)) {
+                    Log::warning('[EmailService] Message still failing after its retry window — cursor advancing past it', [
+                        'failed_received_at' => $earliestFailedReceivedAt,
+                        'failed_graph_ids' => $failedGraphIds,
+                    ]);
+                } else {
+                    $cursorTarget = $retryUntil->toIso8601String();
+                }
+            }
+        }
+
+        if ($cursorTarget) {
+            Setting::setValue('graph_last_poll_at', $cursorTarget);
         }
 
         if ($result->errors > 0) {
             Log::warning('[EmailService] Poll finished with per-message import failures', [
                 'errors' => $result->errors,
                 'failed_graph_ids' => $failedGraphIds,
-                'cursor_advanced_to' => $lastSuccessfulReceivedAt,
+                'cursor_advanced_to' => $cursorTarget,
             ]);
         }
 
