@@ -92,7 +92,7 @@ class EmailService
         }
 
         $lastSuccessfulReceivedAt = null;
-        $earliestFailedReceivedAt = null;
+        $failures = [];
         $failedGraphIds = [];
         $hitPageLimit = count($messages) >= 2500; // 50 pages * 50 per page
 
@@ -172,9 +172,15 @@ class EmailService
                 $lastSuccessfulReceivedAt = $msg['receivedDateTime'] ?? $lastSuccessfulReceivedAt;
             } catch (\Throwable $e) {
                 $failedGraphIds[] = $graphId ?? 'unknown';
-                // Messages arrive ordered by receivedDateTime, so the first failure is
-                // the oldest one the cursor has to stay within reach of.
-                $earliestFailedReceivedAt ??= $msg['receivedDateTime'] ?? null;
+                // Every failure needs its own retry window. Recording only the oldest
+                // means that once the oldest is dropped the cursor advances past every
+                // other failure in the page, including ones that have failed just once.
+                if (isset($msg['receivedDateTime'])) {
+                    $failures[] = [
+                        'graph_id' => $graphId ?? 'unknown',
+                        'received_at' => $msg['receivedDateTime'],
+                    ];
+                }
                 $result->recordError("Failed to import message {$graphId}: ".$e->getMessage());
                 Log::error('[EmailService] Failed to import email', [
                     'graph_id' => $graphId ?? 'unknown',
@@ -199,26 +205,45 @@ class EmailService
         // page can span months — the backlog behind a cursor frozen at 2026-07-01 is
         // walked in one poll — so advancing to the newest success would leave a
         // failure early in that page days behind the next poll's window, never
-        // fetched again. Clamp the advance to the oldest failure plus the lookback,
-        // which is exactly far enough that the next poll still sees it.
+        // fetched again. Clamp the advance to each failure plus the lookback and keep
+        // the earliest of those clamps, which is exactly far enough that the next poll
+        // still sees every message that failed.
         //
-        // If the stored cursor already sits at or past that clamp, the message has had
-        // its retry and failed again: report it and let the walk move past rather than
-        // parking the cursor on it forever.
+        // A failure whose retry window is already behind the start of this walk has had
+        // its retry and failed again: report it and let the cursor move past that one
+        // rather than parking on it forever — the other failures keep their own clamp.
+        // The comparison is against $since (the window this page was actually walked
+        // from), not the stored cursor: on an operator backfill the stored cursor is
+        // unrelated to this page and would call a first failure "already retried".
         $cursorTarget = $lastSuccessfulReceivedAt;
 
-        if ($cursorTarget !== null && $earliestFailedReceivedAt !== null) {
-            $retryUntil = Carbon::parse($earliestFailedReceivedAt)->addHours($lookbackHours);
+        if ($cursorTarget !== null && $failures !== []) {
+            $windowStart = Carbon::parse($since);
+            $clamp = null;
+            $droppedGraphIds = [];
 
-            if (Carbon::parse($cursorTarget)->gt($retryUntil)) {
-                if ($storedCursor !== null && Carbon::parse($storedCursor)->gte($retryUntil)) {
-                    Log::warning('[EmailService] Message still failing after its retry window — cursor advancing past it', [
-                        'failed_received_at' => $earliestFailedReceivedAt,
-                        'failed_graph_ids' => $failedGraphIds,
-                    ]);
-                } else {
-                    $cursorTarget = $retryUntil->toIso8601String();
+            foreach ($failures as $failure) {
+                $retryUntil = Carbon::parse($failure['received_at'])->addHours($lookbackHours);
+
+                if ($windowStart->gte($retryUntil)) {
+                    $droppedGraphIds[] = $failure['graph_id'];
+
+                    continue;
                 }
+
+                if ($clamp === null || $retryUntil->lt($clamp)) {
+                    $clamp = $retryUntil;
+                }
+            }
+
+            if ($droppedGraphIds !== []) {
+                Log::warning('[EmailService] Message still failing after its retry window — cursor advancing past it', [
+                    'failed_graph_ids' => $droppedGraphIds,
+                ]);
+            }
+
+            if ($clamp !== null && Carbon::parse($cursorTarget)->gt($clamp)) {
+                $cursorTarget = $clamp->toIso8601String();
             }
         }
 
