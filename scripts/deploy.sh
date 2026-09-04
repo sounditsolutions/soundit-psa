@@ -14,6 +14,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PSA_DEPLOY_SELF="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
 ENV_FILE="$SCRIPT_DIR/deploy.env"
 
 if [ ! -f "$ENV_FILE" ]; then
