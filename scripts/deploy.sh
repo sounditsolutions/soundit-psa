@@ -142,20 +142,6 @@ if ! git merge-base --is-ancestor HEAD "$TARGET"; then
   exit 1
 fi
 
-# Non-mutating ff check BEFORE the dump: a deploy that is going to be refused at
-# the ff-only guard below must not write a backup slot or prune an older one, or
-# a retry loop on a checkout ff-only will refuse evicts the very pre-migration snapshots the
-# 10-slot retention window exists to keep. This only decides whether to continue;
-# the `git merge --ff-only` below is still the thing that moves the checkout.
-if ! git merge-base --is-ancestor HEAD "$TARGET"; then
-  echo "  ERROR: cannot fast-forward the production checkout to $TARGET." >&2
-  echo "  The prod checkout has DIVERGED from origin (local commits, or a non-ancestor ref)." >&2
-  echo "  Refusing to merge/rewrite history on production. Inspect 'git status' / 'git log --oneline -5'" >&2
-  echo "  and reconcile manually — do NOT --force. (so-e67m cutover-safety guard.)" >&2
-  echo "  Nothing was backed up, pruned, or changed." >&2
-  exit 1
-fi
-
 # ff-only refuses for a second reason ancestry cannot see: a working tree the
 # fast-forward would have to overwrite. HEAD is still an ancestor in that state,
 # so the check above passes and the dump + prune would run before the refusal —
