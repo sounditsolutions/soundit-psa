@@ -10,6 +10,7 @@ use App\Models\Person;
 use App\Models\Setting;
 use App\Models\Ticket;
 use App\Services\TicketService;
+use App\Support\HdbPressId;
 use App\Support\T2TConfig;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -386,6 +387,8 @@ class T2TService
             'note_id' => $note->id,
         ]);
 
+        $this->captureHdbPressId($ticket, $body);
+
         return [
             'id' => $note->id,
             'ticketId' => $ticket->id,
@@ -396,6 +399,58 @@ class T2TService
                 'lastUpdated' => $note->updated_at?->toIso8601String(),
             ],
         ];
+    }
+
+    /**
+     * Persist the HelpDesk Buttons press id carried by an inbound note.
+     *
+     * FIRST WRITE WINS, and that is the "lowest note id" rule: notes arrive in
+     * order, so the first note that carries a press id is the lowest-id one. A
+     * later note carrying a DIFFERENT press id is logged and NOT applied —
+     * overwriting would re-key the ticket to another endpoint's diagnostics.
+     *
+     * Fail-soft by construction: this is bolted onto the vendor's inbound write,
+     * so nothing it does may break note creation. Absence of a press id is a
+     * normal state (2 of 50 measured tickets), not an error and not a retry.
+     */
+    private function captureHdbPressId(Ticket $ticket, string $body): void
+    {
+        try {
+            $pressId = HdbPressId::fromBody($body);
+
+            if ($pressId === null) {
+                return;
+            }
+
+            $existing = $ticket->hdb_press_id;
+
+            if ($existing === $pressId) {
+                return;
+            }
+
+            if ($existing !== null) {
+                Log::warning('[T2T] Conflicting HDB press id on ticket, keeping the first', [
+                    'ticket_id' => $ticket->id,
+                    'existing_press_id' => $existing,
+                    'rejected_press_id' => $pressId,
+                ]);
+
+                return;
+            }
+
+            $ticket->forceFill(['hdb_press_id' => $pressId])->save();
+
+            Log::info('[T2T] Captured HDB press id', [
+                'ticket_id' => $ticket->id,
+                'press_id' => $pressId,
+            ]);
+        } catch (\Throwable $e) {
+            // Never let press-id capture fail the note write.
+            Log::warning('[T2T] Failed to capture HDB press id', [
+                'ticket_id' => $ticket->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
