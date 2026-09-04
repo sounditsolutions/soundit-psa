@@ -130,7 +130,7 @@ git fetch --prune origin
 
 # Non-mutating ff check BEFORE the dump: a deploy that is going to be refused at
 # the ff-only guard below must not write a backup slot or prune an older one, or
-# a retry loop on a diverged checkout evicts the very pre-migration snapshots the
+# a retry loop on a checkout ff-only will refuse evicts the very pre-migration snapshots the
 # 10-slot retention window exists to keep. This only decides whether to continue;
 # the `git merge --ff-only` below is still the thing that moves the checkout.
 if ! git merge-base --is-ancestor HEAD "$TARGET"; then
@@ -138,6 +138,31 @@ if ! git merge-base --is-ancestor HEAD "$TARGET"; then
   echo "  The prod checkout has DIVERGED from origin (local commits, or a non-ancestor ref)." >&2
   echo "  Refusing to merge/rewrite history on production. Inspect 'git status' / 'git log --oneline -5'" >&2
   echo "  and reconcile manually — do NOT --force. (so-e67m cutover-safety guard.)" >&2
+  echo "  Nothing was backed up, pruned, or changed." >&2
+  exit 1
+fi
+
+# ff-only refuses for a second reason ancestry cannot see: a working tree the
+# fast-forward would have to overwrite. HEAD is still an ancestor in that state,
+# so the check above passes and the dump + prune would run before the refusal —
+# same eviction, different input. Both checks are read-only.
+if ! git diff --quiet HEAD --; then
+  echo "  ERROR: the production checkout has uncommitted changes to tracked files." >&2
+  echo "  'git merge --ff-only' would refuse to overwrite them, so the deploy stops here." >&2
+  echo "  Inspect 'git status' / 'git diff' and either land those edits upstream or discard" >&2
+  echo "  them on prod ('git checkout --') — do NOT --force. (so-e67m cutover-safety guard.)" >&2
+  echo "  Nothing was backed up, pruned, or changed." >&2
+  exit 1
+fi
+
+# Same for untracked files sitting where $TARGET adds a file: scoped to the paths
+# the fast-forward would actually create, so unrelated stray files don't block.
+UNTRACKED_BLOCKERS="$(git diff -z --name-only --diff-filter=A HEAD "$TARGET" | xargs -0 -r git ls-files --others --exclude-standard --)"
+if [ -n "$UNTRACKED_BLOCKERS" ]; then
+  echo "  ERROR: untracked files on prod occupy paths that $TARGET adds:" >&2
+  echo "$UNTRACKED_BLOCKERS" | sed 's/^/    /' >&2
+  echo "  'git merge --ff-only' would refuse to overwrite them, so the deploy stops here." >&2
+  echo "  Move or remove them on prod — do NOT --force. (so-e67m cutover-safety guard.)" >&2
   echo "  Nothing was backed up, pruned, or changed." >&2
   exit 1
 fi
