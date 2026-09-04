@@ -526,20 +526,19 @@ class TacticalSetClientCustomFieldTest extends TestCase
         $this->assertSame(1, TechnicianRun::where('action_type', 'tactical_stage_set_client_custom_field')->count());
     }
 
-    public function test_restaging_after_the_target_moved_repins_the_live_proposal_instead_of_reporting_it_idempotent(): void
+    public function test_restaging_never_rewrites_a_live_proposal_and_names_the_stuck_run_instead(): void
     {
         $this->configureTactical();
         $this->configureAiActor();
         $approver = User::factory()->create();
         $fixture = $this->fixture();
 
-        // The proposal pins #7. 'Acme' is re-created upstream as #99 inside the
-        // approval window, so approval refuses and RELEASES the run back to
-        // AwaitingApproval — where it holds the only (ticket, tool, content_hash)
-        // key this ticket has for this field, and the content hash keys on the field
-        // key alone. Re-staging has to re-pin that run: an idempotent success naming
-        // a run that can never execute would leave the write unreachable until
-        // someone denied it by hand.
+        // The proposal pins #7 and shows 'org-abc123'. 'Acme' is re-created upstream
+        // as #99 inside the approval window, so approval refuses and RELEASES the run
+        // back to AwaitingApproval, where an operator is still reading it. A caller
+        // holding only the staging grant then re-stages the same ticket and field
+        // with a different value: that must not land on the live run, or the operator
+        // would approve a fleet-wide Control D deploy value no human ever read.
         $client = $this->mockTactical();
         $client->shouldReceive('getClients')->once()->andReturn($this->upstreamClients());
         $run = $this->stagedRun($fixture);
@@ -547,22 +546,34 @@ class TacticalSetClientCustomFieldTest extends TestCase
         $client->shouldReceive('getClients')->andReturn([
             ['id' => 99, 'name' => 'Acme', 'sites' => [['id' => 90, 'name' => 'Main']]],
         ]);
-        $client->shouldReceive('setClientCustomField')->once()->with(99, self::FIELD_ID, 'org-abc123')->andReturn([]);
+        $client->shouldNotReceive('setClientCustomField');
 
         $this->assertSame('gate_declined', app(TechnicianApprovalService::class)->approveStagedTacticalAdminAction($run, $approver->id)->status);
 
-        // Inside the 300s proposal cooldown: re-pinning the run already on this key
-        // is the same proposal, not a second one, so the cooldown must not hold the
-        // stuck state in place either.
-        $again = $this->decodedResult($this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture)));
-        $this->assertFalse($again['idempotent'] ?? false, 're-pinning a dead proposal is a fresh staging, not an idempotent no-op');
-        $this->assertSame($run->id, $again['run_id']);
-        $this->assertSame(1, TechnicianRun::where('action_type', 'tactical_stage_set_client_custom_field')->count());
-        $this->assertStringContainsString("'Acme' (#99)", (string) $run->fresh()->proposed_content);
+        $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture, [
+            'value' => 'org-evil',
+        ]));
 
-        // And the re-pinned proposal executes: the deadlock is gone, not merely
-        // reported differently.
-        $this->assertSame('executed', app(TechnicianApprovalService::class)->approveStagedTacticalAdminAction($run->fresh(), $approver->id)->status);
+        // Refused — and the refusal names the stuck run and the cockpit deny that
+        // clears it, rather than reporting an idempotent success on a proposal that
+        // can never execute.
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString("Run #{$run->id}", $text);
+        $this->assertStringContainsString('cockpit', $text);
+
+        // The live proposal is byte-for-byte what the operator read: same value, same
+        // pinned target, same state, same run.
+        $fresh = $run->fresh();
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $fresh->state);
+        $this->assertStringContainsString("'Acme' (#7)", (string) $fresh->proposed_content);
+        $this->assertStringContainsString('org-abc123', (string) $fresh->proposed_content);
+        $this->assertStringNotContainsString('org-evil', (string) $fresh->proposed_content);
+        $this->assertSame(1, TechnicianRun::where('action_type', 'tactical_stage_set_client_custom_field')->count());
+
+        // And it is still refused at approval: the re-stage did not hand it a fresh
+        // pin to satisfy the witness with.
+        $this->assertSame('gate_declined', app(TechnicianApprovalService::class)->approveStagedTacticalAdminAction($fresh, $approver->id)->status);
     }
 
     public function test_the_value_is_withheld_from_the_mcp_and_technician_audits(): void
