@@ -88,6 +88,7 @@ class EmailService
         }
 
         $lastSuccessfulReceivedAt = null;
+        $failedGraphIds = [];
         $hitPageLimit = count($messages) >= 2500; // 50 pages * 50 per page
 
         foreach ($messages as $msg) {
@@ -102,15 +103,44 @@ class EmailService
 
                 // Dedup by internet_message_id (globally unique RFC 5322 ID).
                 // Graph's internal id can be recycled when messages are deleted/moved.
+                // internet_message_id is only indexed, not unique, so several rows can
+                // share one — prefer the row that already carries this graph id, which
+                // needs no write at all.
                 $email = null;
                 if ($internetMessageId) {
-                    $email = Email::where('internet_message_id', $internetMessageId)->first();
+                    $email = Email::where('internet_message_id', $internetMessageId)
+                        ->where('graph_id', $graphId)
+                        ->first()
+                        ?? Email::where('internet_message_id', $internetMessageId)->first();
                 }
 
                 if ($email) {
                     // Exact match by internet_message_id — same email, maybe different graph_id
                     if ($email->graph_id !== $graphId) {
-                        $email->update(['graph_id' => $graphId]);
+                        // graph_id is UNIQUE. If another row already owns this id, claiming
+                        // it throws on every poll forever and (before the cursor fix below)
+                        // froze graph_last_poll_at with it. Leave the id where it is.
+                        $owner = Email::where('graph_id', $graphId)
+                            ->where('id', '!=', $email->id)
+                            ->first();
+
+                        if ($owner && $owner->internet_message_id === $internetMessageId) {
+                            // Duplicate rows for one message. Work on the row Graph's id
+                            // already points at and leave the id alone.
+                            Log::warning('[EmailService] Duplicate email rows share an internet_message_id — using the row that holds the graph id', [
+                                'graph_id' => $graphId,
+                                'owner_email_id' => $owner->id,
+                                'duplicate_email_id' => $email->id,
+                            ]);
+                            $email = $owner;
+                        } else {
+                            if ($owner) {
+                                // Recycled graph id: clear it off the stale row first, the
+                                // same way the new-email branch below does.
+                                $owner->update(['graph_id' => null]);
+                            }
+                            $email->update(['graph_id' => $graphId]);
+                        }
                     }
 
                     // Retry processing for unprocessed inbound emails
@@ -136,6 +166,7 @@ class EmailService
 
                 $lastSuccessfulReceivedAt = $msg['receivedDateTime'] ?? $lastSuccessfulReceivedAt;
             } catch (\Throwable $e) {
+                $failedGraphIds[] = $graphId ?? 'unknown';
                 $result->recordError("Failed to import message {$graphId}: ".$e->getMessage());
                 Log::error('[EmailService] Failed to import email', [
                     'graph_id' => $graphId ?? 'unknown',
@@ -144,18 +175,31 @@ class EmailService
             }
         }
 
-        // Only advance the poll cursor on success
-        if ($result->errors === 0 && ! $hitPageLimit && $lastSuccessfulReceivedAt) {
-            Setting::setValue('graph_last_poll_at', $lastSuccessfulReceivedAt);
-        } elseif ($hitPageLimit) {
-            Log::warning('[EmailService] Hit page limit during poll — not advancing cursor', [
+        if ($hitPageLimit) {
+            Log::warning('[EmailService] Hit page limit during poll', [
                 'since' => $sinceFormatted,
                 'imported' => $result->created,
             ]);
-            // Advance to last successful message so next run picks up from there
-            if ($lastSuccessfulReceivedAt) {
-                Setting::setValue('graph_last_poll_at', $lastSuccessfulReceivedAt);
-            }
+        }
+
+        // Advance the cursor to the last message that imported cleanly, even when
+        // others in the page failed. Holding the cursor back on a per-message failure
+        // means one message that can never import freezes the whole poll: every later
+        // poll re-walks from the same point and re-fails it forever. Messages arrive
+        // ordered by receivedDateTime, and pollMailbox re-reads 4 hours behind the
+        // cursor, so a message that fails transiently is still retried for 4 hours.
+        // A message that keeps failing past that window is reported here and dropped
+        // from the walk rather than stopping every message behind it.
+        if ($lastSuccessfulReceivedAt) {
+            Setting::setValue('graph_last_poll_at', $lastSuccessfulReceivedAt);
+        }
+
+        if ($result->errors > 0) {
+            Log::warning('[EmailService] Poll finished with per-message import failures', [
+                'errors' => $result->errors,
+                'failed_graph_ids' => $failedGraphIds,
+                'cursor_advanced_to' => $lastSuccessfulReceivedAt,
+            ]);
         }
 
         return $result;
