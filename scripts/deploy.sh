@@ -29,13 +29,22 @@ set +a
 
 # Absolute path of the file bash is actually executing, for the deploy gate: it
 # hashes this file and refuses if it differs from the blob at the sha being
-# deployed. It MUST be assigned AFTER deploy.env is sourced -- that source runs
-# under `set -a`, so a PSA_DEPLOY_SELF= line in the gitignored, ungated env file
-# would otherwise override an earlier assignment and point the gate at a file
-# that never ran. `readonly` closes the same hole from the other side; if
-# deploy.env has already declared the name readonly, this assignment fails and
-# `set -e` aborts the deploy, which is the correct direction to fail.
-export PSA_DEPLOY_SELF="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
+# deployed. BOTH halves of the path are re-derived here from ${BASH_SOURCE[0]}
+# itself -- deliberately NOT from SCRIPT_DIR, which is assigned above, BEFORE
+# deploy.env is sourced under `set -a`, and so is reassignable by that
+# gitignored, ungated file: taking the directory from it would let a
+# `SCRIPT_DIR=/tmp/decoy` line aim the gate at a pristine copy while this file
+# is the one running.
+#
+# Assigning after the source, and `readonly`, guard only against an ACCIDENTAL
+# PSA_DEPLOY_SELF= collision in deploy.env (if the name is already readonly the
+# assignment fails and `set -e` aborts, which is the correct direction to fail).
+# They are NOT a boundary against a hostile deploy.env: that file is executed as
+# shell code in this shell (`. "$ENV_FILE"`), so it can shadow `export` and
+# `readonly` with functions, install a trap, or exec something else entirely.
+# A real boundary would require not sourcing it as code at all.
+PSA_DEPLOY_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/${BASH_SOURCE[0]##*/}"
+export PSA_DEPLOY_SELF
 readonly PSA_DEPLOY_SELF
 
 : "${DEPLOY_HOST:?not set in scripts/deploy.env}"
