@@ -3399,6 +3399,17 @@ class StaffTacticalAdminToolExecutor
             return ['error' => 'field_key is not an allowlisted PSA-owned Tactical CLIENT custom field'];
         }
 
+        // OFF=OFF (#1290). Checked before the field id because "the integration is
+        // switched off" is the truer refusal than "its field id is unset", and
+        // checked HERE rather than in the staging path because this method is
+        // re-run at approval — so disabling the integration between staging and
+        // approval refuses the write instead of letting an approved proposal
+        // through on the state that existed when it was staged.
+        $disabled = $this->clientCustomFieldIntegrationDisabledReason($fieldKey);
+        if ($disabled !== null) {
+            return ['field_key' => $fieldKey, 'error' => $disabled];
+        }
+
         $fieldId = $this->clientCustomFieldId($fieldKey);
         if ($fieldId === null) {
             return [
@@ -3429,6 +3440,31 @@ class StaffTacticalAdminToolExecutor
     }
 
     /**
+     * The refusal reason when the integration OWNING an allowlisted client field
+     * is switched off in PSA, or null when it is on (#1290).
+     *
+     * Every key in CLIENT_CUSTOM_FIELD_ALLOWLIST is a field PSA writes on behalf
+     * of one of its own integration modules, so the module's master switch governs
+     * it. controld_org_id is the Control D DEPLOY TRIGGER: writing it makes
+     * Tactical automation roll the Control D agent across the client's whole
+     * fleet. Doing that while PSA's own Control D module is off would deploy
+     * agents into a client that PSA will then neither sync nor report on.
+     *
+     * The match is exhaustive by key rather than defaulting to "enabled", so a
+     * future allowlist entry whose switch nobody wired up refuses instead of
+     * silently inheriting a pass.
+     */
+    private function clientCustomFieldIntegrationDisabledReason(string $fieldKey): ?string
+    {
+        return match ($fieldKey) {
+            'controld_org_id' => ControlDConfig::isEnabled()
+                ? null
+                : "The Control D integration is disabled in PSA (setting 'controld_enabled'), and '{$fieldKey}' is its deploy trigger; no upstream call was made.",
+            default => "No integration master switch is wired up for '{$fieldKey}'; no upstream call was made.",
+        };
+    }
+
+    /**
      * The configured Tactical CLIENT custom field id for an allowlisted key.
      * Unset or malformed is null, and null is a refusal — never a default id.
      */
@@ -3455,6 +3491,22 @@ class StaffTacticalAdminToolExecutor
      * customer's whole fleet. Zero matches and two-or-more matches are both
      * refusals, and the refusal names what it saw so an operator can fix it
      * upstream.
+     *
+     * An EXACT-CASE match wins over case-differing ones (#1291). The stored name
+     * pair is a byte copy of the upstream name, so when a candidate reproduces it
+     * exactly that candidate is the mapping and the others are merely near it.
+     * Without the preference an MSP that legitimately runs both "Acme" and "ACME"
+     * could never write to either — every call refused as ambiguous, with no
+     * override — and the exactly-mapped client was the one being refused.
+     *
+     * The case-insensitive set remains the FALLBACK, so a purely cosmetic upstream
+     * re-casing ("Acme" → "ACME", nothing else changed) still resolves rather than
+     * breaking every mapping on the instance. That fallback keeps one residual on
+     * the table and it is deliberate, not overlooked: if the mapped client is
+     * renamed away upstream AND an unrelated customer differs from the stored name
+     * only by case, the fallback still resolves to that unrelated customer. It
+     * needs two independent upstream changes to line up; narrowing it further
+     * would break the cosmetic-re-casing case above, which is the common one.
      *
      * (The same first-match resolution still exists in patchResetScope() and is
      * filed separately; widening this build to it is a different change.)
@@ -3491,6 +3543,18 @@ class StaffTacticalAdminToolExecutor
 
         if ($matches === []) {
             return ['error' => "Tactical client '{$clientName}' was not found; no upstream call was made."];
+        }
+
+        // Exact-case first (#1291). Upstream names are unique case-sensitively, so
+        // more than one byte-identical hit cannot come from a well-formed Tactical;
+        // if one somehow does, fall through to the ambiguity refusal below rather
+        // than picking by list order.
+        $exact = array_values(array_filter(
+            $matches,
+            static fn (array $match): bool => $match['name'] === $clientName,
+        ));
+        if (count($exact) === 1) {
+            return $exact[0];
         }
 
         if (count($matches) > 1) {

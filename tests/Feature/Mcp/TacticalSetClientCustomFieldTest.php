@@ -314,8 +314,10 @@ class TacticalSetClientCustomFieldTest extends TestCase
         // Upstream Client.name is unique=True, but PostgreSQL uniqueness is
         // CASE-SENSITIVE, so these two rows coexist happily and one
         // case-insensitive match hits both. First-match would pick by list order.
+        // NEITHER reproduces the stored 'Acme' exactly, so the #1291 exact-case
+        // preference cannot break the tie and the ambiguity refusal stands.
         $client = $this->mockTactical();
-        $client->shouldReceive('getClients')->andReturn($this->upstreamClients(['Acme', 'ACME']));
+        $client->shouldReceive('getClients')->andReturn($this->upstreamClients(['ACME', 'acme']));
         $client->shouldNotReceive('setClientCustomField');
 
         $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture));
@@ -323,9 +325,32 @@ class TacticalSetClientCustomFieldTest extends TestCase
         $this->assertTrue((bool) $response->json('result.isError'));
         $text = (string) $response->json('result.content.0.text');
         $this->assertStringContainsString('ambiguous', $text);
-        $this->assertStringContainsString("'Acme' (#7)", $text);
-        $this->assertStringContainsString("'ACME' (#8)", $text);
+        $this->assertStringContainsString("'ACME' (#7)", $text);
+        $this->assertStringContainsString("'acme' (#8)", $text);
         $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_an_exact_case_match_wins_over_a_case_differing_sibling(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+
+        // #1291(b): an MSP legitimately running both 'Acme' and 'ACME' used to be
+        // unable to write to EITHER — every call refused as ambiguous, with no
+        // override, including the one client the mapping names exactly. The stored
+        // name pair is a byte copy of the upstream name, so the exact hit IS the
+        // mapping and the case-differing sibling is merely near it.
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->andReturn($this->upstreamClients(['ACME', 'Acme']));
+
+        $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture));
+
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+        // Deliberately the SECOND entry upstream, so passing by list order fails.
+        $this->assertStringContainsString("'Acme' (#8)", $run->proposed_content);
+        $this->assertStringNotContainsString("'ACME' (#7)", $run->proposed_content);
     }
 
     public function test_a_missing_upstream_client_is_refused_rather_than_created(): void
@@ -377,6 +402,62 @@ class TacticalSetClientCustomFieldTest extends TestCase
         $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
         $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
         $this->assertStringContainsString("'ACME' (#7)", $run->proposed_content);
+    }
+
+    // ---- the Control D master switch (#1290) ----------------------------------
+
+    public function test_the_control_d_master_switch_refuses_the_write_before_any_upstream_read(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+
+        // OFF=OFF. controld_org_id is the Control D DEPLOY TRIGGER: writing it
+        // makes Tactical automation roll the agent across the whole fleet. With
+        // PSA's own Control D module switched off, those devices would be deployed
+        // into a client PSA will then neither sync nor report on.
+        Setting::setValue('controld_enabled', '0');
+
+        // getClients() is COUNTED rather than forbidden outright: a bare
+        // shouldNotReceive() raises inside Mockery the moment the guard is absent,
+        // and that exception cascades into every later test in the class, which
+        // makes a red-check unreadable. Counting fails this test and only this one.
+        $upstreamReads = 0;
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->andReturnUsing(function () use (&$upstreamReads): array {
+            $upstreamReads++;
+
+            return $this->upstreamClients();
+        });
+        $client->shouldNotReceive('setClientCustomField');
+
+        $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture));
+
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('Control D integration is disabled', $text);
+        $this->assertStringContainsString('controld_enabled', $text);
+        $this->assertSame(0, $upstreamReads, 'the master switch must refuse before any upstream read');
+        $this->assertSame(0, TechnicianRun::count(), 'a refused write must not leave a staged proposal behind');
+    }
+
+    public function test_the_master_switch_defaults_to_enabled_so_an_unset_setting_is_not_a_refusal(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+
+        // configureTactical() never writes controld_enabled. The switch defaults to
+        // '1' (ControlDConfig::isEnabled), so the guard must not turn every
+        // instance that has not touched the setting into a refusal.
+        $this->assertTrue(ControlDConfig::isEnabled());
+
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->andReturn($this->upstreamClients());
+
+        $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture));
+
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
     }
 
     // ---- the staged happy path ------------------------------------------------
@@ -526,13 +607,18 @@ class TacticalSetClientCustomFieldTest extends TestCase
     public static function approvalRemeasureProvider(): array
     {
         return [
-            // A second Tactical client with a case-differing name was created in the
-            // approval window: the target is no longer unambiguous.
+            // Two Tactical clients with case-differing names were created in the
+            // approval window and neither reproduces the stored name exactly: the
+            // target is no longer unambiguous and no exact match can break the tie.
             'the upstream client name became ambiguous' => ['ambiguous'],
             // The operator cleared or re-pointed the configured field id.
             'the configured field id was cleared' => ['field_id'],
             // The PSA mapping was removed.
             'the PSA client lost its Tactical mapping' => ['mapping'],
+            // The operator switched the Control D module off after staging (#1290).
+            // The approver's click must not execute on the state that existed when
+            // the proposal was written.
+            'the Control D master switch was turned off' => ['controld_disabled'],
         ];
     }
 
@@ -549,9 +635,10 @@ class TacticalSetClientCustomFieldTest extends TestCase
         $run = $this->stagedRun($fixture);
 
         match ($change) {
-            'ambiguous' => $client->shouldReceive('getClients')->once()->andReturn($this->upstreamClients(['Acme', 'ACME'])),
+            'ambiguous' => $client->shouldReceive('getClients')->once()->andReturn($this->upstreamClients(['ACME', 'acme'])),
             'field_id' => Setting::setValue(ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING, ''),
             'mapping' => $fixture['client']->update(['tactical_site_id' => null]),
+            'controld_disabled' => Setting::setValue('controld_enabled', '0'),
         };
         $client->shouldNotReceive('setClientCustomField');
 
