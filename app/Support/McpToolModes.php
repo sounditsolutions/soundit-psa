@@ -126,6 +126,13 @@ class McpToolModes
         // clearing an expiry LENGTHENS a hole in a customer's mail filtering,
         // which is the create verb's reason for being here, reached later.
         'mesh_edit_allow_rule',
+        // tactical_set_client_custom_field (#1276) has no immediate implementation
+        // (StaffTacticalAdminToolExecutor::immediateClientCustomFieldRefused). A
+        // CLIENT-scoped Tactical custom field is read by automation for every agent
+        // under that client, so one write is a fleet-wide change — and for a
+        // deployment field it IS the deploy trigger. Same second lock, same reason:
+        // a full-surface token must not reach that without a human releasing it.
+        'tactical_set_client_custom_field',
     ];
 
     /**
