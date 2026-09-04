@@ -66,13 +66,17 @@ class EmailService
             return $result;
         }
 
+        $storedCursor = Setting::getValue('graph_last_poll_at');
+
         $since = $sinceDate
-            ?? Setting::getValue('graph_last_poll_at')
+            ?? $storedCursor
             ?? now()->subDays(30)->toIso8601String();
 
-        // Look back 4 hours from the cursor to catch emails that were created
-        // in the DB (by a failed webhook) but never fully processed.
-        $sinceFormatted = Carbon::parse($since)->subHours(4)->toIso8601String();
+        // Look back from the cursor to catch emails that were created in the DB
+        // (by a failed webhook) but never fully processed. The cursor advance at the
+        // end of the poll is clamped to this same window, so the two stay in step.
+        $lookbackHours = 4;
+        $sinceFormatted = Carbon::parse($since)->subHours($lookbackHours)->toIso8601String();
 
         try {
             $messages = $this->graphClient->getMailboxMessages($mailbox, [
@@ -88,6 +92,8 @@ class EmailService
         }
 
         $lastSuccessfulReceivedAt = null;
+        $failures = [];
+        $failedGraphIds = [];
         $hitPageLimit = count($messages) >= 2500; // 50 pages * 50 per page
 
         foreach ($messages as $msg) {
@@ -102,15 +108,44 @@ class EmailService
 
                 // Dedup by internet_message_id (globally unique RFC 5322 ID).
                 // Graph's internal id can be recycled when messages are deleted/moved.
+                // internet_message_id is only indexed, not unique, so several rows can
+                // share one — prefer the row that already carries this graph id, which
+                // needs no write at all.
                 $email = null;
                 if ($internetMessageId) {
-                    $email = Email::where('internet_message_id', $internetMessageId)->first();
+                    $email = Email::where('internet_message_id', $internetMessageId)
+                        ->where('graph_id', $graphId)
+                        ->first()
+                        ?? Email::where('internet_message_id', $internetMessageId)->first();
                 }
 
                 if ($email) {
                     // Exact match by internet_message_id — same email, maybe different graph_id
                     if ($email->graph_id !== $graphId) {
-                        $email->update(['graph_id' => $graphId]);
+                        // graph_id is UNIQUE. If another row already owns this id, claiming
+                        // it throws on every poll forever and (before the cursor fix below)
+                        // froze graph_last_poll_at with it. Leave the id where it is.
+                        $owner = Email::where('graph_id', $graphId)
+                            ->where('id', '!=', $email->id)
+                            ->first();
+
+                        if ($owner && $owner->internet_message_id === $internetMessageId) {
+                            // Duplicate rows for one message. Work on the row Graph's id
+                            // already points at and leave the id alone.
+                            Log::warning('[EmailService] Duplicate email rows share an internet_message_id — using the row that holds the graph id', [
+                                'graph_id' => $graphId,
+                                'owner_email_id' => $owner->id,
+                                'duplicate_email_id' => $email->id,
+                            ]);
+                            $email = $owner;
+                        } else {
+                            if ($owner) {
+                                // Recycled graph id: clear it off the stale row first, the
+                                // same way the new-email branch below does.
+                                $owner->update(['graph_id' => null]);
+                            }
+                            $email->update(['graph_id' => $graphId]);
+                        }
                     }
 
                     // Retry processing for unprocessed inbound emails
@@ -136,6 +171,16 @@ class EmailService
 
                 $lastSuccessfulReceivedAt = $msg['receivedDateTime'] ?? $lastSuccessfulReceivedAt;
             } catch (\Throwable $e) {
+                $failedGraphIds[] = $graphId ?? 'unknown';
+                // Every failure needs its own retry window. Recording only the oldest
+                // means that once the oldest is dropped the cursor advances past every
+                // other failure in the page, including ones that have failed just once.
+                if (isset($msg['receivedDateTime'])) {
+                    $failures[] = [
+                        'graph_id' => $graphId ?? 'unknown',
+                        'received_at' => $msg['receivedDateTime'],
+                    ];
+                }
                 $result->recordError("Failed to import message {$graphId}: ".$e->getMessage());
                 Log::error('[EmailService] Failed to import email', [
                     'graph_id' => $graphId ?? 'unknown',
@@ -144,18 +189,84 @@ class EmailService
             }
         }
 
-        // Only advance the poll cursor on success
-        if ($result->errors === 0 && ! $hitPageLimit && $lastSuccessfulReceivedAt) {
-            Setting::setValue('graph_last_poll_at', $lastSuccessfulReceivedAt);
-        } elseif ($hitPageLimit) {
-            Log::warning('[EmailService] Hit page limit during poll — not advancing cursor', [
+        if ($hitPageLimit) {
+            Log::warning('[EmailService] Hit page limit during poll', [
                 'since' => $sinceFormatted,
                 'imported' => $result->created,
             ]);
-            // Advance to last successful message so next run picks up from there
-            if ($lastSuccessfulReceivedAt) {
-                Setting::setValue('graph_last_poll_at', $lastSuccessfulReceivedAt);
+        }
+
+        // Advance the cursor to the last message that imported cleanly, even when
+        // others in the page failed. Holding the cursor back on a per-message failure
+        // means one message that can never import freezes the whole poll: every later
+        // poll re-walks from the same point and re-fails it forever.
+        //
+        // The advance has to stay inside the lookback the retry depends on. A single
+        // page can span months — the backlog behind a cursor frozen at 2026-07-01 is
+        // walked in one poll — so advancing to the newest success would leave a
+        // failure early in that page days behind the next poll's window, never
+        // fetched again. Clamp the advance to each failure plus the lookback and keep
+        // the earliest of those clamps, which is exactly far enough that the next poll
+        // still sees every message that failed.
+        //
+        // A failure whose retry window is already behind the start of this walk has had
+        // its retry and failed again: report it and let the cursor move past that one
+        // rather than parking on it forever — the other failures keep their own clamp.
+        // The comparison is against $since (the window this page was actually walked
+        // from), not the stored cursor: on an operator backfill the stored cursor is
+        // unrelated to this page and would call a first failure "already retried".
+        $cursorTarget = $lastSuccessfulReceivedAt;
+
+        if ($cursorTarget !== null && $failures !== []) {
+            $windowStart = Carbon::parse($since);
+            $clamp = null;
+            $droppedGraphIds = [];
+
+            foreach ($failures as $failure) {
+                $retryUntil = Carbon::parse($failure['received_at'])->addHours($lookbackHours);
+
+                if ($windowStart->gte($retryUntil)) {
+                    $droppedGraphIds[] = $failure['graph_id'];
+
+                    continue;
+                }
+
+                if ($clamp === null || $retryUntil->lt($clamp)) {
+                    $clamp = $retryUntil;
+                }
             }
+
+            if ($droppedGraphIds !== []) {
+                Log::warning('[EmailService] Message still failing after its retry window — cursor advancing past it', [
+                    'failed_graph_ids' => $droppedGraphIds,
+                ]);
+            }
+
+            if ($clamp !== null) {
+                // The clamp only ever holds the cursor back — it must never drag it
+                // backwards. On an operator backfill the failure sits behind the live
+                // cursor, so rewinding to it would re-walk the whole backfill on the
+                // next scheduled poll and, past the page limit, stall new mail behind
+                // it. The stored cursor is the floor.
+                $floor = $storedCursor !== null ? Carbon::parse($storedCursor) : null;
+                $clampTarget = ($floor !== null && $floor->gt($clamp)) ? $floor : $clamp;
+
+                if (Carbon::parse($cursorTarget)->gt($clampTarget)) {
+                    $cursorTarget = $clampTarget->toIso8601String();
+                }
+            }
+        }
+
+        if ($cursorTarget) {
+            Setting::setValue('graph_last_poll_at', $cursorTarget);
+        }
+
+        if ($result->errors > 0) {
+            Log::warning('[EmailService] Poll finished with per-message import failures', [
+                'errors' => $result->errors,
+                'failed_graph_ids' => $failedGraphIds,
+                'cursor_advanced_to' => $cursorTarget,
+            ]);
         }
 
         return $result;
