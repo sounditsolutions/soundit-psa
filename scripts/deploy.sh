@@ -27,6 +27,43 @@ set -a
 . "$ENV_FILE"
 set +a
 
+# Absolute path of the file bash is actually executing, for the deploy gate: it
+# hashes this file and refuses if it differs from the blob at the sha being
+# deployed. BOTH halves of the path are re-derived here from ${BASH_SOURCE[0]}
+# itself, using ONLY shell builtins and parameter expansion -- deliberately NOT
+# from SCRIPT_DIR, which is assigned above, BEFORE
+# deploy.env is sourced under `set -a`, and so is reassignable by that
+# gitignored, ungated file: taking the directory from it would let a
+# `SCRIPT_DIR=/tmp/decoy` line aim the gate at a pristine copy while this file
+# is the one running.
+#
+# Assigning after the source, and `readonly`, guard only against an ACCIDENTAL
+# PSA_DEPLOY_SELF= collision in deploy.env (if the name is already readonly the
+# assignment fails and `set -e` aborts, which is the correct direction to fail).
+# They are NOT a boundary against a hostile deploy.env: that file is executed as
+# shell code in this shell (`. "$ENV_FILE"`), so it can shadow `export` and
+# `readonly` with functions, install a trap, or exec something else entirely.
+# A real boundary would require not sourcing it as code at all.
+# The derivation must not route through anything deploy.env can reassign with a
+# plain variable line: `dirname` is an external resolved through PATH (bash
+# flushes its command hash when PATH is assigned, so the earlier SCRIPT_DIR use
+# does not protect a later one), and `cd` consults CDPATH for a bare relative
+# operand -- and `bash scripts/deploy.sh`, the documented invocation, yields
+# exactly that form. Either one would aim the gate at a pristine decoy while
+# this file is the one running, which is the attack this block exists to stop.
+# So: directory half by parameter expansion, and the `cd` builtin run with
+# CDPATH emptied, -P, and -- .
+_psa_self_dir="${BASH_SOURCE[0]%/*}"
+if [ "$_psa_self_dir" = "${BASH_SOURCE[0]}" ]; then
+  _psa_self_dir="."   # no slash at all: the script is in the cwd
+elif [ -z "$_psa_self_dir" ]; then
+  _psa_self_dir="/"   # path was /name: the directory is the root
+fi
+PSA_DEPLOY_SELF="$(CDPATH= cd -P -- "$_psa_self_dir" && pwd -P)/${BASH_SOURCE[0]##*/}"
+unset _psa_self_dir
+export PSA_DEPLOY_SELF
+readonly PSA_DEPLOY_SELF
+
 : "${DEPLOY_HOST:?not set in scripts/deploy.env}"
 : "${DEPLOY_PATH:?not set in scripts/deploy.env}"
 : "${DEPLOY_DOMAIN:?not set in scripts/deploy.env}"
