@@ -64,6 +64,7 @@ class StagedActionLabels
         'tactical_stage_reset_patch_policies' => 'Tactical policy reset',
         'tactical_stage_run_policy_task_all' => 'Tactical policy task',
         'tactical_stage_remove_agent' => 'Tactical agent removal',
+        'tactical_stage_set_client_custom_field' => 'Tactical client field',
 
         // CIPP / Microsoft 365
         'cipp_stage_reset_user_password' => 'CIPP password reset',

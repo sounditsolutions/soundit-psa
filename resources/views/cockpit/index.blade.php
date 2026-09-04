@@ -42,6 +42,7 @@
             'tactical_stage_reset_patch_policies' => ['bg-danger text-white', 'Tactical policy reset', 'bi-shield-exclamation'],
             'tactical_stage_run_policy_task_all' => ['bg-danger text-white', 'Tactical policy task', 'bi-broadcast-pin'],
             'tactical_stage_remove_agent' => ['bg-danger text-white', 'Tactical agent removal', 'bi-pc-display-horizontal'],
+            'tactical_stage_set_client_custom_field' => ['bg-danger text-white', 'Tactical client field', 'bi-building-gear'],
             'cipp_stage_reset_user_password' => ['bg-danger text-white', 'CIPP password reset', 'bi-key-fill'],
             'cipp_stage_disable_user_sign_in' => ['bg-danger text-white', 'CIPP disable sign-in', 'bi-person-lock'],
             'cipp_stage_enable_user_sign_in' => ['bg-danger text-white', 'CIPP enable sign-in', 'bi-person-check'],

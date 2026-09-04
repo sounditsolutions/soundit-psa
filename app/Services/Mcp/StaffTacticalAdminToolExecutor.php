@@ -22,6 +22,7 @@ use App\Services\Tactical\TacticalProvisioningService;
 use App\Services\Tactical\TacticalScriptSyncService;
 use App\Services\Technician\TechnicianApprovalResult;
 use App\Support\CometConfig;
+use App\Support\ControlDConfig;
 use App\Support\ServosityConfig;
 use App\Support\TacticalConfig;
 use App\Support\TechnicianConfig;
@@ -58,6 +59,8 @@ class StaffTacticalAdminToolExecutor
         'tactical_stage_reset_patch_policies',
         'tactical_remove_agent',
         'tactical_stage_remove_agent',
+        'tactical_set_client_custom_field',
+        'tactical_stage_set_client_custom_field',
     ];
 
     /** @var array<int, string> */
@@ -144,6 +147,8 @@ class StaffTacticalAdminToolExecutor
         'tactical_stage_run_policy_task_all' => 900,
         'tactical_remove_agent' => 600,
         'tactical_stage_remove_agent' => 600,
+        'tactical_set_client_custom_field' => 300,
+        'tactical_stage_set_client_custom_field' => 300,
     ];
 
     /** @var array<string, int> */
@@ -153,6 +158,25 @@ class StaffTacticalAdminToolExecutor
         'servosity_screenconnect_url' => ServosityConfig::TACTICAL_SERVOSITY_SC_URL_FIELD_ID,
         'servosity_credential_user' => ServosityConfig::TACTICAL_SERVOSITY_CRED_USER_FIELD_ID,
         'servosity_credential_password' => ServosityConfig::TACTICAL_SERVOSITY_CRED_PASS_FIELD_ID,
+    ];
+
+    /**
+     * CLIENT-model custom fields this executor may write, keyed by PSA-facing name.
+     *
+     * Separate from CUSTOM_FIELD_ALLOWLIST by construction, not by accident:
+     * that constant is AGENT-model only, and Tactical's custom field id space is
+     * per-model, so agent field 27 and client field 27 are different fields. A
+     * shared allowlist would let an agent key resolve to a client id and write to
+     * whatever happens to sit there.
+     *
+     * The value is the SETTING NAME holding the id, not the id: see
+     * ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING for why a client field id
+     * is instance state rather than a constant. An unset setting is a refusal.
+     *
+     * @var array<string, string>
+     */
+    private const CLIENT_CUSTOM_FIELD_ALLOWLIST = [
+        'controld_org_id' => ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING,
     ];
 
     /** @var array<string, string> */
@@ -169,6 +193,14 @@ class StaffTacticalAdminToolExecutor
         // Upstream this call UNINSTALLS the RMM agent from the machine; re-enrolment
         // mints a new agent id and nothing about it is undoable from the API side.
         'tactical_stage_remove_agent' => 'tactical_remove_agent',
+        // tactical_set_client_custom_field is STAGED-ONLY BY CONSTRUCTION, the same
+        // shape as tactical_remove_agent above: the canonical name has no immediate
+        // implementation, execute() answers it with a refusal naming the staged
+        // grant, and McpToolModes::IMMEDIATE_REQUIRES_EXPLICIT_GRANT carries the
+        // second lock. The reason is fan-out, not deletion — a CLIENT custom field
+        // is read by Tactical automation across every agent under that client, so
+        // one write is a fleet-wide change rather than a per-endpoint one.
+        'tactical_stage_set_client_custom_field' => 'tactical_set_client_custom_field',
     ];
 
     /** @var array<int, string> */
@@ -256,6 +288,8 @@ class StaffTacticalAdminToolExecutor
             self::stageResetPatchPoliciesTool(),
             self::removeAgentTool(),
             self::stageRemoveAgentTool(),
+            self::setClientCustomFieldTool(),
+            self::stageSetClientCustomFieldTool(),
         ];
     }
 
@@ -298,6 +332,7 @@ class StaffTacticalAdminToolExecutor
                 'tactical_stage_reset_patch_policies' => $this->stagePatchPolicyReset($arguments, (int) $clientId, $actorLabel),
                 'tactical_stage_run_policy_task_all' => $this->stagePolicyTaskRunAll($arguments, (int) $clientId, $actorLabel),
                 'tactical_stage_remove_agent' => $this->stageAgentRemoval($arguments, (int) $clientId, $actorLabel),
+                'tactical_stage_set_client_custom_field' => $this->stageClientCustomField($arguments, (int) $clientId, $actorLabel),
                 default => ['error' => "Unknown Tactical staged admin tool: {$name}"],
             };
         }
@@ -342,6 +377,7 @@ class StaffTacticalAdminToolExecutor
             'tactical_delete_patch_policy' => $this->deletePatchPolicy($arguments, (int) $clientId, $actorLabel),
             'tactical_reset_patch_policies' => $this->resetPatchPolicies($arguments, (int) $clientId, $actorLabel),
             'tactical_remove_agent' => $this->immediateAgentRemovalRefused($arguments, $clientId, $actorLabel),
+            'tactical_set_client_custom_field' => $this->immediateClientCustomFieldRefused($arguments, $clientId, $actorLabel),
             default => ['error' => "Unknown Tactical admin tool: {$name}"],
         };
     }
@@ -3106,6 +3142,370 @@ class StaffTacticalAdminToolExecutor
         return null;
     }
 
+    /**
+     * The immediate lane for tactical_set_client_custom_field, which deliberately
+     * does not exist. Reaching it means a token holds the bare (`:immediate`)
+     * grant and called without staged=true; the answer is a refusal that names the
+     * grant that works, never an upstream call.
+     *
+     * @return array<string, mixed>
+     */
+    private function immediateClientCustomFieldRefused(array $arguments, ?int $clientId, string $actorLabel): array
+    {
+        $message = 'tactical_set_client_custom_field is staged-only: it always requires cockpit approval. '
+            .'Re-grant it as `tactical_set_client_custom_field:staged` (or call `tactical_stage_set_client_custom_field`) and pass a ticket_id. No upstream call was made.';
+        $this->auditAttempt('tactical_set_client_custom_field', 'rejected', $clientId, $this->contentHash('tactical_set_client_custom_field', $clientId, 'immediate-refused', $arguments), $message, $actorLabel);
+
+        return ['error' => $message];
+    }
+
+    /**
+     * Stage a Tactical CLIENT custom-field write for cockpit approval. There is no
+     * immediate lane: see the STAGED_TO_DIRECT note.
+     *
+     * @return array<string, mixed>
+     */
+    private function stageClientCustomField(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $tool = 'tactical_stage_set_client_custom_field';
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $ticket = $this->ticketForClient(
+            $arguments['ticket_id'] ?? null,
+            $clientId,
+            'ticket_id is required for a staged Tactical client custom-field write',
+        );
+        if (is_array($ticket)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $this->contentHash($tool, $clientId, 'client-field', $arguments), $ticket['error'], $actorLabel);
+
+            return ['error' => $ticket['error']];
+        }
+
+        $client = Client::find($clientId);
+        if (! $client) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $this->contentHash($tool, $clientId, 'client-field', $arguments), 'Client not found.', $actorLabel);
+
+            return ['error' => 'Client not found'];
+        }
+
+        $target = $this->clientCustomFieldTarget($arguments, $client);
+        $contentHash = $this->clientCustomFieldContentHash($clientId, $target);
+        if (isset($target['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $target['error'], $actorLabel);
+
+            return ['error' => $target['error']];
+        }
+
+        if ($this->alreadyExecuted('tactical_set_client_custom_field', $clientId, $contentHash)) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $this->executedRunId('tactical_set_client_custom_field', $clientId, $contentHash),
+                'message' => 'This Tactical client custom-field write already executed recently; no new proposal was staged.',
+            ];
+        }
+
+        // "Still awaiting approval" comes from the LIVE runs table only, never from
+        // the immutable audit log (bd psa-k4s0 Root B).
+        $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
+        if ($liveAwaitingRun !== null) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $liveAwaitingRun->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+        if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Tactical client custom-field proposal cooldown active.', $actorLabel);
+
+            return ['error' => 'tactical_set_client_custom_field cooldown active for this client; no proposal was staged.'];
+        }
+
+        // The value IS shown to the approver: this is the approval surface, and an
+        // operator cannot judge a value write without seeing the value. It stays
+        // out of redacted_params, the audit summary, and the content hash. If a
+        // credential-bearing client field is ever added to the allowlist, that is
+        // the point to give the allowlist a per-key sensitivity flag.
+        $proposedContent = "Set Tactical CLIENT custom field '{$target['field_key']}' (field #{$target['field_id']}) on Tactical client '{$target['upstream_client_name']}' (#{$target['upstream_client_id']}).\n"
+            ."Value: {$target['value']}\n"
+            ."A CLIENT custom field is read by Tactical automation across every agent under that client, so this is a fleet-wide change.\n"
+            .'Reason: '.$guard['reason'];
+        $meta = [
+            'drafted_by' => $actorLabel,
+            'reasons' => [$guard['reason']],
+            'direct_tool' => self::STAGED_TO_DIRECT[$tool],
+            'redacted_params' => [
+                'field_key' => $target['field_key'],
+                'upstream_client_name' => $target['upstream_client_name'],
+                'value_length' => mb_strlen($target['value']),
+            ],
+            'encrypted_payload' => Crypt::encryptString(json_encode([
+                'direct_tool' => self::STAGED_TO_DIRECT[$tool],
+                'client_id' => $clientId,
+                'ticket_id' => $ticket->id,
+                'arguments' => [
+                    // The PSA-facing selectors are carried, never the upstream
+                    // client id or field id: approval re-resolves both against live
+                    // state, because the setting can be changed and a second
+                    // case-differing upstream client can appear in that window.
+                    'field_key' => $target['field_key'],
+                    'value' => $target['value'],
+                    'reason' => $guard['reason'],
+                ],
+            ], JSON_THROW_ON_ERROR)),
+        ];
+
+        $run = TechnicianRun::firstOrCreate(
+            [
+                'ticket_id' => $ticket->id,
+                'action_type' => $tool,
+                'content_hash' => $contentHash,
+            ],
+            [
+                'client_id' => $clientId,
+                'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ],
+        );
+
+        if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
+            $run->update([
+                'state' => TechnicianRunState::AwaitingApproval->value,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ]);
+        } elseif (! $run->wasRecentlyCreated) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        $this->auditAttempt($tool, 'awaiting_approval', $clientId, $contentHash, "MCP staged Tactical CLIENT custom-field write '{$target['field_key']}' for Tactical client '{$target['upstream_client_name']}'.", $actorLabel, $run->id);
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'run_id' => $run->id,
+            'field_key' => $target['field_key'],
+            'message' => 'Staged for cockpit approval.',
+        ];
+    }
+
+    /**
+     * Execute an approved Tactical CLIENT custom-field write. Only reachable
+     * through approveStagedRun().
+     *
+     * @return array<string, mixed>
+     */
+    private function executeClientCustomField(
+        array $arguments,
+        Client $client,
+        string $actorLabel,
+        ?TechnicianRun $run = null,
+        ?int $approverId = null,
+    ): array {
+        $tool = 'tactical_set_client_custom_field';
+        $clientId = (int) $client->id;
+
+        // Re-measured against LIVE state, never trusted from the proposal: the
+        // field id lives in a setting an operator can change, and a second
+        // upstream client with a case-differing name can be created between
+        // staging and approval — which is exactly what the resolver refuses on.
+        $target = $this->clientCustomFieldTarget($arguments, $client);
+        $contentHash = $run?->content_hash ?? $this->clientCustomFieldContentHash($clientId, $target);
+        if (isset($target['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $target['error'], $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $target['error']];
+        }
+
+        if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Duplicate Tactical client custom-field write suppressed before upstream call.', $actorLabel, $run?->id, $approverId);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already wrote this Tactical client custom field recently; no upstream call was made.'];
+        }
+
+        try {
+            $this->client->setClientCustomField($target['upstream_client_id'], $target['field_id'], $target['value']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical client custom-field write');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', $clientId, $contentHash, "Set PSA-owned Tactical CLIENT custom field {$target['field_key']} on Tactical client '{$target['upstream_client_name']}' for PSA client #{$clientId}.", $actorLabel, $run?->id, $approverId);
+
+        return [
+            'success' => true,
+            'field_key' => $target['field_key'],
+            'message' => 'Tactical client custom field updated.',
+        ];
+    }
+
+    /**
+     * The dedup/staging key for a client custom-field write.
+     *
+     * Keyed on the STAGED tool name so the hash a proposal is created under is the
+     * hash approval re-derives, and on the field key only — never the value, which
+     * safeHashParams() strips anyway so that no audit row carries a hash the value
+     * could be recovered from. The consequence, shared with
+     * tactical_set_agent_custom_field: a second write to the SAME field inside the
+     * dedup window is suppressed as a duplicate regardless of the new value. The
+     * tool description says so.
+     *
+     * @param  array{field_key?: string, ...}  $target
+     */
+    private function clientCustomFieldContentHash(int $clientId, array $target): string
+    {
+        return $this->contentHash(
+            'tactical_stage_set_client_custom_field',
+            $clientId,
+            'client-field-'.($target['field_key'] ?? 'unresolved'),
+            ['field_key' => $target['field_key'] ?? null],
+        );
+    }
+
+    /**
+     * Resolve and fully guard the client custom-field write. Fails CLOSED:
+     * anything it cannot measure is a refusal, never a pass.
+     *
+     * @return array{field_key?: string, field_id?: int, value?: string, upstream_client_id?: int, upstream_client_name?: string, error?: string}
+     */
+    private function clientCustomFieldTarget(array $arguments, Client $client): array
+    {
+        $fieldKey = mb_strtolower(trim((string) ($arguments['field_key'] ?? '')));
+        $setting = self::CLIENT_CUSTOM_FIELD_ALLOWLIST[$fieldKey] ?? null;
+        if ($setting === null) {
+            return ['error' => 'field_key is not an allowlisted PSA-owned Tactical CLIENT custom field'];
+        }
+
+        $fieldId = $this->clientCustomFieldId($fieldKey);
+        if ($fieldId === null) {
+            return [
+                'field_key' => $fieldKey,
+                'error' => "The Tactical CLIENT custom field id for '{$fieldKey}' is not configured (setting '{$setting}'); no upstream call was made.",
+            ];
+        }
+
+        $value = array_key_exists('value', $arguments) && is_scalar($arguments['value'])
+            ? trim((string) $arguments['value'])
+            : '';
+        if ($value === '') {
+            return ['field_key' => $fieldKey, 'error' => 'value is required'];
+        }
+
+        $upstream = $this->resolveUpstreamTacticalClient($client);
+        if (isset($upstream['error'])) {
+            return ['field_key' => $fieldKey, 'error' => $upstream['error']];
+        }
+
+        return [
+            'field_key' => $fieldKey,
+            'field_id' => $fieldId,
+            'value' => $value,
+            'upstream_client_id' => $upstream['id'],
+            'upstream_client_name' => $upstream['name'],
+        ];
+    }
+
+    /**
+     * The configured Tactical CLIENT custom field id for an allowlisted key.
+     * Unset or malformed is null, and null is a refusal — never a default id.
+     */
+    private function clientCustomFieldId(string $fieldKey): ?int
+    {
+        return match ($fieldKey) {
+            'controld_org_id' => ControlDConfig::tacticalClientOrgFieldId(),
+            default => null,
+        };
+    }
+
+    /**
+     * Resolve the PSA client's Tactical mapping to EXACTLY ONE upstream client id.
+     *
+     * clients.tactical_site_id stores a NAME PAIR ("ClientName|SiteName"), so the
+     * only route back to a numeric id is a name match against GET clients/ at call
+     * time. Upstream Client.name is unique=True, but that uniqueness is enforced by
+     * PostgreSQL and is CASE-SENSITIVE — "Acme" and "ACME" can both exist, and one
+     * case-insensitive match can hit both. Taking the first hit would choose a
+     * customer by list order.
+     *
+     * That is worth refusing over here in a way it would not be for a read: this
+     * write is the DEPLOY TRIGGER, so a wrong match provisions a different
+     * customer's whole fleet. Zero matches and two-or-more matches are both
+     * refusals, and the refusal names what it saw so an operator can fix it
+     * upstream.
+     *
+     * (The same first-match resolution still exists in patchResetScope() and is
+     * filed separately; widening this build to it is a different change.)
+     *
+     * @return array{id?: int, name?: string, error?: string}
+     */
+    private function resolveUpstreamTacticalClient(Client $client): array
+    {
+        $siteKey = is_string($client->tactical_site_id) ? trim($client->tactical_site_id) : '';
+        $clientName = $siteKey === '' ? '' : trim(explode('|', $siteKey, 2)[0]);
+        if ($clientName === '') {
+            return ['error' => 'Client has no Tactical site mapping; no upstream call was made.'];
+        }
+
+        try {
+            $candidates = $this->client->getClients();
+        } catch (TacticalClientException) {
+            return ['error' => 'Could not read Tactical clients to resolve the custom-field target; no upstream call was made.'];
+        }
+
+        $matches = [];
+        foreach ($candidates as $candidate) {
+            if (! is_array($candidate) || strcasecmp((string) ($candidate['name'] ?? ''), $clientName) !== 0) {
+                continue;
+            }
+
+            $id = $this->positiveInteger($candidate['id'] ?? null);
+            if ($id === null) {
+                return ['error' => "A Tactical client named '{$clientName}' has no numeric id; no upstream call was made."];
+            }
+
+            $matches[] = ['id' => $id, 'name' => (string) ($candidate['name'] ?? $clientName)];
+        }
+
+        if ($matches === []) {
+            return ['error' => "Tactical client '{$clientName}' was not found; no upstream call was made."];
+        }
+
+        if (count($matches) > 1) {
+            $described = implode(', ', array_map(
+                static fn (array $match): string => "'{$match['name']}' (#{$match['id']})",
+                $matches,
+            ));
+
+            return ['error' => "Tactical client name '{$clientName}' is ambiguous: it matches ".count($matches)
+                ." upstream clients — {$described}. Upstream client names are unique only case-sensitively, so this cannot be resolved from the stored name pair; no upstream call was made."];
+        }
+
+        return $matches[0];
+    }
+
     public function approveStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
     {
         if (! self::isStagedActionType($run->action_type) || ! $run->claimForExecution()) {
@@ -3148,6 +3548,7 @@ class StaffTacticalAdminToolExecutor
                 'tactical_reset_patch_policies' => $this->executePatchPolicyReset($run->action_type, $arguments, $client, $this->approverLabel($approverId), $run, $approverId),
                 'tactical_run_policy_task_all' => $this->executePolicyTaskRunAll($directTool, $arguments, (int) $run->client_id, $this->approverLabel($approverId), $run, $approverId),
                 'tactical_remove_agent' => $this->executeAgentRemoval($arguments, (int) $run->client_id, $this->approverLabel($approverId), $run, $approverId),
+                'tactical_set_client_custom_field' => $this->executeClientCustomField($arguments, $client, $this->approverLabel($approverId), $run, $approverId),
                 default => ['error' => 'Unsupported Tactical staged admin action.'],
             };
             if (isset($result['error'])) {
@@ -5646,6 +6047,45 @@ class StaffTacticalAdminToolExecutor
             self::removeAgentProperties(),
             ['reason', 'ticket_id', 'confirm_hostname'],
         );
+    }
+
+    /** @return array<string, mixed> */
+    private static function setClientCustomFieldTool(): array
+    {
+        return self::tool(
+            'tactical_set_client_custom_field',
+            'Set one allowlisted PSA-owned Tactical CLIENT-scoped custom field for the server-derived PSA client, using PUT clients/{id}/. '
+            .'STAGED ONLY: every call is held as a cockpit approval proposal. There is no immediate implementation — a bare (immediate) grant is refused with a pointer to `tactical_set_client_custom_field:staged`. '
+            .'A CLIENT custom field is read by Tactical automation for every agent under that client, so one write is a fleet-wide change rather than a per-endpoint one. '
+            .'The upstream client is resolved by NAME from the stored PSA mapping at call time and must match EXACTLY ONE Tactical client: upstream names are unique only case-sensitively, and an ambiguous or missing name is refused rather than guessed. '
+            .'Arbitrary field IDs and upstream client IDs are rejected; the field id comes from the PSA setting for that key and an unconfigured id is a refusal. '
+            .'Values are withheld from MCP and Technician audits, and the dedup key deliberately excludes the value — so a second write to the SAME field inside the dedup window is suppressed as a duplicate whatever the new value is. '
+            .'Requires reason, ticket_id, explicit grant, kill-switch, dedup, and cooldown.',
+            self::clientCustomFieldProperties(),
+            ['reason', 'ticket_id', 'field_key', 'value'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageSetClientCustomFieldTool(): array
+    {
+        return self::tool(
+            'tactical_stage_set_client_custom_field',
+            'Stage the Tactical CLIENT custom-field write for cockpit approval. This is the only lane the verb has: approval re-resolves the field id and the upstream client against LIVE state before PUT clients/{id}/, because the configured field id can change and a second Tactical client with a case-differing name can appear between staging and approval. '
+            .'The write is fleet-wide for the client and, for deployment fields, is itself the deploy trigger. Requires a ticket, reason, an allowlisted field_key with a configured field id, an unambiguous upstream client name match, explicit grant, kill-switch, dedup, and cooldown.',
+            self::clientCustomFieldProperties(),
+            ['reason', 'ticket_id', 'field_key', 'value'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function clientCustomFieldProperties(): array
+    {
+        return array_merge(self::reasonProperties(), [
+            'ticket_id' => ['type' => 'integer', 'description' => 'PSA ticket this change belongs to. The proposal is staged against it for approval.'],
+            'field_key' => ['type' => 'string', 'description' => 'Allowlisted CLIENT-scoped key: controld_org_id.'],
+            'value' => ['type' => 'string', 'description' => 'Value to write. It is shown to the approver and sent upstream, but withheld from MCP and Technician audits.'],
+        ]);
     }
 
     /** @return array<string, mixed> */

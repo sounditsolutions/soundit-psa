@@ -398,6 +398,33 @@ class TacticalClient
         ]);
     }
 
+    /**
+     * Set a custom field value on a CLIENT via PUT clients/{id}/.
+     *
+     * This is deliberately NOT updateClientPolicies() with an extra key. Upstream
+     * (clients/views.py, GetUpdateDeleteClient::put) the client branch reads
+     * `request.data["client"]` UNCONDITIONALLY, so the `client` key must be present
+     * in every PUT even when nothing about the client itself is changing — an empty
+     * object is the safe no-op, because ClientSerializer is instantiated with
+     * partial=True. The `custom_fields` list is a SIBLING key, not nested inside
+     * `client`: the view only touches custom fields when "custom_fields" is a
+     * top-level key of request.data.
+     *
+     * Note the upstream asymmetry this shape has to live with: on the client branch
+     * ClientCustomFieldSerializer is built WITHOUT partial=True on its update path
+     * (the site branch does pass it), so each entry must carry the full field/value
+     * pair rather than a partial patch.
+     */
+    public function setClientCustomField(int $clientId, int $fieldId, string $value): mixed
+    {
+        return $this->put("clients/{$clientId}/", [
+            'client' => (object) [],
+            'custom_fields' => [
+                ['field' => $fieldId, 'string_value' => $value],
+            ],
+        ]);
+    }
+
     public function getAgents(): array
     {
         return $this->get('agents/');
