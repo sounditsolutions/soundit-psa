@@ -293,7 +293,11 @@ class McpInputSchema
             $properties = (array) $properties;
         }
 
-        if (! is_array($properties) || (! $fromObject && array_is_list($properties))) {
+        // An EMPTY properties map is valid JSON Schema — it simply declares no properties.
+        // json_decode($json, true) renders both `{}` and `[]` as the same empty PHP array, and
+        // array_is_list([]) is TRUE, so a no-argument tool was being reported as malformed. Only a
+        // NON-EMPTY list is genuinely wrong here (e.g. ["a","b"] where an object was required).
+        if (! is_array($properties) || (! $fromObject && $properties !== [] && array_is_list($properties))) {
             $errors[] = "{$path} must be an object";
 
             return;
