@@ -3212,8 +3212,18 @@ class StaffTacticalAdminToolExecutor
 
         // "Still awaiting approval" comes from the LIVE runs table only, never from
         // the immutable audit log (bd psa-k4s0 Root B).
+        //
+        // A live proposal is only STILL this proposal while the target it pinned in
+        // front of the approver is the target that resolves now. The content hash
+        // keys on the field key alone, so a run pinned to an upstream client that
+        // has since been re-created — or staged before pinning existed and carrying
+        // no pin at all — would otherwise sit on this ticket's only
+        // (ticket_id, action_type, content_hash) key in AwaitingApproval: refused at
+        // every approval, and reported back here as an idempotent success naming a
+        // run that can never execute. Re-staging RE-PINS that run instead, so the
+        // legitimate retarget the witness exists to catch stays reachable.
         $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
-        if ($liveAwaitingRun !== null) {
+        if ($liveAwaitingRun !== null && $this->stagedPinnedUpstreamClientId($liveAwaitingRun) === $target['upstream_client_id']) {
             return [
                 'success' => true,
                 'idempotent' => true,
@@ -3223,7 +3233,10 @@ class StaffTacticalAdminToolExecutor
                 'message' => 'Already staged; awaiting approval.',
             ];
         }
-        if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
+        // Re-pinning a run that is already awaiting approval is the same proposal on
+        // the same key, not a second one, so the proposal cooldown does not stand in
+        // front of it — holding it back would only keep the stuck state armed.
+        if ($liveAwaitingRun === null && $this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
             $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Tactical client custom-field proposal cooldown active.', $actorLabel);
 
             return ['error' => 'tactical_set_client_custom_field cooldown active for this client; no proposal was staged.'];
@@ -3285,7 +3298,12 @@ class StaffTacticalAdminToolExecutor
             ],
         );
 
-        if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
+        if (! $run->wasRecentlyCreated) {
+            // Either the run sat in some other state (re-open it), or it is the live
+            // proposal whose pin no longer names the target that resolves now — the
+            // check above already returned while the pin still agreed. Both rewrite
+            // the proposal in place, so the target the approver reads and the target
+            // approval re-resolves against are one client, not two.
             $run->update([
                 'state' => TechnicianRunState::AwaitingApproval->value,
                 'proposed_content' => $proposedContent,
@@ -3293,15 +3311,6 @@ class StaffTacticalAdminToolExecutor
                 'confidence' => null,
                 'tokens_used' => 0,
             ]);
-        } elseif (! $run->wasRecentlyCreated) {
-            return [
-                'success' => true,
-                'idempotent' => true,
-                'ticket_id' => $ticket->id,
-                'ticket_display_id' => $ticket->display_id,
-                'run_id' => $run->id,
-                'message' => 'Already staged; awaiting approval.',
-            ];
         }
 
         $this->auditAttempt($tool, 'awaiting_approval', $clientId, $contentHash, "MCP staged Tactical CLIENT custom-field write '{$target['field_key']}' for Tactical client '{$target['upstream_client_name']}'.", $actorLabel, $run->id);
@@ -3356,8 +3365,8 @@ class StaffTacticalAdminToolExecutor
         $stagedClientId = $this->positiveInteger($arguments['staged_upstream_client_id'] ?? null);
         if ($stagedClientId !== $target['upstream_client_id']) {
             $message = $stagedClientId === null
-                ? 'This proposal recorded no upstream Tactical client id, so the approved target cannot be confirmed; no upstream call was made.'
-                : "The approved proposal targeted Tactical client #{$stagedClientId}, but '{$target['upstream_client_name']}' (#{$target['upstream_client_id']}) is what this PSA client's mapping resolves to now; the approved target changed and no upstream call was made.";
+                ? 'This proposal recorded no upstream Tactical client id, so the approved target cannot be confirmed; no upstream call was made. Re-stage the write to replace this proposal with one pinned to the target that resolves now, or deny it in the cockpit.'
+                : "The approved proposal targeted Tactical client #{$stagedClientId}, but '{$target['upstream_client_name']}' (#{$target['upstream_client_id']}) is what this PSA client's mapping resolves to now; the approved target changed and no upstream call was made. Re-stage the write to re-pin this proposal to '{$target['upstream_client_name']}' (#{$target['upstream_client_id']}) for a fresh approval, or deny it in the cockpit.";
             $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $message, $actorLabel, $run?->id, $approverId);
 
             return ['error' => $message];
@@ -3408,6 +3417,30 @@ class StaffTacticalAdminToolExecutor
             'client-field-'.($target['field_key'] ?? 'unresolved'),
             ['field_key' => $target['field_key'] ?? null],
         );
+    }
+
+    /**
+     * The upstream Tactical client id a live proposal pinned in front of the
+     * approver, or null when it carries none (staged before the pin existed) or
+     * when its payload cannot be read.
+     *
+     * Read from the ENCRYPTED payload because that is the value approval compares
+     * against live re-resolution: a pin read from anywhere else could agree here
+     * and still be refused there, which is the deadlock this comparison exists to
+     * keep out. Unreadable is null, and null never equals a resolved id — an
+     * unreadable proposal is re-pinned rather than left holding the key.
+     */
+    private function stagedPinnedUpstreamClientId(TechnicianRun $run): ?int
+    {
+        try {
+            $payload = $this->decryptRunPayload($run);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        $arguments = is_array($payload['arguments'] ?? null) ? $payload['arguments'] : [];
+
+        return $this->positiveInteger($arguments['staged_upstream_client_id'] ?? null);
     }
 
     /**

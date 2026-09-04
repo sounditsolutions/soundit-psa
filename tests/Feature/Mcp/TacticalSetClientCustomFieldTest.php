@@ -526,6 +526,45 @@ class TacticalSetClientCustomFieldTest extends TestCase
         $this->assertSame(1, TechnicianRun::where('action_type', 'tactical_stage_set_client_custom_field')->count());
     }
 
+    public function test_restaging_after_the_target_moved_repins_the_live_proposal_instead_of_reporting_it_idempotent(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $approver = User::factory()->create();
+        $fixture = $this->fixture();
+
+        // The proposal pins #7. 'Acme' is re-created upstream as #99 inside the
+        // approval window, so approval refuses and RELEASES the run back to
+        // AwaitingApproval — where it holds the only (ticket, tool, content_hash)
+        // key this ticket has for this field, and the content hash keys on the field
+        // key alone. Re-staging has to re-pin that run: an idempotent success naming
+        // a run that can never execute would leave the write unreachable until
+        // someone denied it by hand.
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->once()->andReturn($this->upstreamClients());
+        $run = $this->stagedRun($fixture);
+
+        $client->shouldReceive('getClients')->andReturn([
+            ['id' => 99, 'name' => 'Acme', 'sites' => [['id' => 90, 'name' => 'Main']]],
+        ]);
+        $client->shouldReceive('setClientCustomField')->once()->with(99, self::FIELD_ID, 'org-abc123')->andReturn([]);
+
+        $this->assertSame('gate_declined', app(TechnicianApprovalService::class)->approveStagedTacticalAdminAction($run, $approver->id)->status);
+
+        // Inside the 300s proposal cooldown: re-pinning the run already on this key
+        // is the same proposal, not a second one, so the cooldown must not hold the
+        // stuck state in place either.
+        $again = $this->decodedResult($this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture)));
+        $this->assertFalse($again['idempotent'] ?? false, 're-pinning a dead proposal is a fresh staging, not an idempotent no-op');
+        $this->assertSame($run->id, $again['run_id']);
+        $this->assertSame(1, TechnicianRun::where('action_type', 'tactical_stage_set_client_custom_field')->count());
+        $this->assertStringContainsString("'Acme' (#99)", (string) $run->fresh()->proposed_content);
+
+        // And the re-pinned proposal executes: the deadlock is gone, not merely
+        // reported differently.
+        $this->assertSame('executed', app(TechnicianApprovalService::class)->approveStagedTacticalAdminAction($run->fresh(), $approver->id)->status);
+    }
+
     public function test_the_value_is_withheld_from_the_mcp_and_technician_audits(): void
     {
         $this->configureTactical();
