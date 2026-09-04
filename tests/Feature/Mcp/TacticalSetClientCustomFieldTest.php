@@ -645,6 +645,52 @@ class TacticalSetClientCustomFieldTest extends TestCase
             ->exists());
     }
 
+    public function test_a_run_still_claimed_into_executing_by_an_in_flight_approval_is_never_rewritten(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->andReturn($this->upstreamClients());
+        $client->shouldNotReceive('setClientCustomField');
+
+        $run = $this->stagedRun($fixture);
+
+        // The other half of the claim/release interleaving. Here the approval is
+        // still HOLDING the claim: approveStagedRun() moved the run OUT of
+        // AwaitingApproval and is inside the live re-resolution HTTP call. The
+        // state-filtered pre-check therefore sees nothing, but firstOrCreate() still
+        // resolves the same (ticket_id, action_type, content_hash) key onto the
+        // claimed row. Executing is a live state, so it must get the same treatment
+        // as AwaitingApproval: no rewrite, with only the staging grant.
+        DB::table('technician_runs')->where('id', $run->id)->update(['state' => TechnicianRunState::Executing->value]);
+
+        // Past the staging cooldown, so the re-stage reaches the runs table at all.
+        $this->travel(301)->seconds();
+
+        $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture, [
+            'value' => 'org-evil',
+        ]));
+
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString("Run #{$run->id}", (string) $response->json('result.content.0.text'));
+
+        // The claim is left byte-for-byte as the approval left it: same state, so
+        // releaseClaim()/advanceTo() still have a row to CAS against, and same
+        // content, so no value the approver never read can be executed under it.
+        $fresh = $run->fresh();
+        $this->assertSame(TechnicianRunState::Executing, $fresh->state);
+        $this->assertStringContainsString('org-abc123', (string) $fresh->proposed_content);
+        $this->assertStringNotContainsString('org-evil', (string) $fresh->proposed_content);
+        $this->assertSame(1, TechnicianRun::where('action_type', 'tactical_stage_set_client_custom_field')->count());
+
+        $this->assertTrue(TechnicianActionLog::where('action_type', 'tactical_stage_set_client_custom_field')
+            ->where('result_status', 'blocked')
+            ->where('run_id', $run->id)
+            ->exists());
+    }
+
     public function test_the_value_is_withheld_from_the_mcp_and_technician_audits(): void
     {
         $this->configureTactical();

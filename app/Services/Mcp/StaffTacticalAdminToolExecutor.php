@@ -3310,6 +3310,23 @@ class StaffTacticalAdminToolExecutor
                 return $this->liveAwaitingRunAnswer($run, $target, $ticket, $tool, $clientId, $contentHash, $actorLabel);
             }
 
+            // The OTHER half of that same interleaving: the approval is still
+            // HOLDING the claim, so the row sits in Executing and the state-filtered
+            // pre-check saw nothing for a different reason. Executing is a LIVE
+            // state, not an ended one. Rewriting it here would overwrite content an
+            // approver already released for execution, force the row back to
+            // AwaitingApproval underneath an in-flight upstream write — leaving
+            // releaseClaim() and advanceTo(), both CAS on Executing, with nothing to
+            // match — and re-arm an already-executed proposal carrying a fleet-wide
+            // Control D deploy value no human ever read. Nothing is staged and the
+            // claim is left exactly as the approval left it.
+            if ($run->state === TechnicianRunState::Executing) {
+                $message = "Run #{$run->id} for this ticket and field is being executed by an approval right now, so nothing was staged and that run was left untouched. Wait for it to settle: if it executes, this write is done; if it is refused, the run returns to awaiting approval, where the cockpit deny button clears the key for a fresh proposal.";
+                $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, $message, $actorLabel, $run->id);
+
+                return ['error' => $message];
+            }
+
             $run->update([
                 'state' => TechnicianRunState::AwaitingApproval->value,
                 'proposed_content' => $proposedContent,
