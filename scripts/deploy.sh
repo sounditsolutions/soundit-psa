@@ -128,19 +128,64 @@ TARGET="$2"
 echo "  Fetching origin..."
 git fetch --prune origin
 
-echo "  Fast-forwarding to $TARGET (ff-only — a diverged prod checkout FAILS LOUD, no silent merge)..."
-if ! git merge --ff-only "$TARGET"; then
+# Non-mutating ff check BEFORE the dump: a deploy that is going to be refused at
+# the ff-only guard below must not write a backup slot or prune an older one, or
+# a retry loop on a diverged checkout evicts the very pre-migration snapshots the
+# 10-slot retention window exists to keep. This only decides whether to continue;
+# the `git merge --ff-only` below is still the thing that moves the checkout.
+if ! git merge-base --is-ancestor HEAD "$TARGET"; then
   echo "  ERROR: cannot fast-forward the production checkout to $TARGET." >&2
   echo "  The prod checkout has DIVERGED from origin (local commits, or a non-ancestor ref)." >&2
   echo "  Refusing to merge/rewrite history on production. Inspect 'git status' / 'git log --oneline -5'" >&2
   echo "  and reconcile manually — do NOT --force. (so-e67m cutover-safety guard.)" >&2
+  echo "  Nothing was backed up, pruned, or changed." >&2
   exit 1
 fi
 
-echo "  Installing dependencies..."
-composer install --no-dev --optimize-autoloader --quiet
+# ff-only refuses for a second reason ancestry cannot see: a working tree the
+# fast-forward would have to overwrite. HEAD is still an ancestor in that state,
+# so the check above passes and the dump + prune would run before the refusal —
+# same eviction, different input. Both checks are read-only.
+# Scoped to the paths the fast-forward actually rewrites — ff-only carries local
+# edits to files it does not touch straight across, so an unrelated dirty file
+# must not block the deploy. --no-renames so a rename is reported as its D source
+# plus its A destination (both of which the checkout really does write) instead of
+# a single R pair that the pathspec would then miss.
+TRACKED_BLOCKERS="$(git diff -z --name-only --no-renames HEAD "$TARGET" | xargs -0 -r git --literal-pathspecs diff --name-only HEAD --)"
+if [ -n "$TRACKED_BLOCKERS" ]; then
+  echo "  ERROR: uncommitted changes on prod to tracked files that $TARGET rewrites:" >&2
+  echo "$TRACKED_BLOCKERS" | sed 's/^/    /' >&2
+  echo "  'git merge --ff-only' would refuse to overwrite them, so the deploy stops here." >&2
+  echo "  Inspect 'git status' / 'git diff' and either land those edits upstream or discard" >&2
+  echo "  them on prod ('git checkout --') — do NOT --force. (so-e67m cutover-safety guard.)" >&2
+  echo "  Nothing was backed up, pruned, or changed." >&2
+  exit 1
+fi
 
-echo "  Backing up database (pre-migration safety net)..."
+# Same for untracked files sitting where $TARGET adds a file: scoped to the paths
+# the fast-forward would actually create, so unrelated stray files don't block.
+# --no-renames because diff.renames defaults on: a rename destination would be
+# reported as R and dropped by --diff-filter=A, yet ff-only still refuses to
+# overwrite an untracked file sitting at it.
+UNTRACKED_BLOCKERS="$(git diff -z --name-only --no-renames --diff-filter=A HEAD "$TARGET" | xargs -0 -r git --literal-pathspecs ls-files --others --exclude-standard --)"
+if [ -n "$UNTRACKED_BLOCKERS" ]; then
+  echo "  ERROR: untracked files on prod occupy paths that $TARGET adds:" >&2
+  echo "$UNTRACKED_BLOCKERS" | sed 's/^/    /' >&2
+  echo "  'git merge --ff-only' would refuse to overwrite them, so the deploy stops here." >&2
+  echo "  Move or remove them on prod — do NOT --force. (so-e67m cutover-safety guard.)" >&2
+  echo "  Nothing was backed up, pruned, or changed." >&2
+  exit 1
+fi
+
+# The backup runs BEFORE the code swap (issue #733). It reads only .env and the
+# live database — nothing from the new tree — so ordering it first costs nothing
+# and buys two things: the serve-new-code-before-migrate window shrinks from
+# composer + a multi-minute mysqldump down to composer install alone (it does
+# NOT close — closing it is #675's app-side durable-ingest half), and a FAILED
+# backup now aborts before anything mutates, instead of stranding prod on
+# already-swapped code with no migration run. Accepted trade: the dump is taken
+# minutes earlier, so a rollback restore is very slightly staler.
+echo "  Backing up database (pre-checkout/pre-migration safety net)..."
 BACKUP_DIR="storage/app/backups"
 mkdir -p "$BACKUP_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -178,6 +223,18 @@ fi
 echo "  Backed up to $BACKUP_FILE ($(du -h "$BACKUP_FILE" | cut -f1))"
 # Retain only the 10 most recent pre-deploy backups.
 ls -1t "$BACKUP_DIR"/pre-deploy-* 2>/dev/null | tail -n +11 | xargs -r rm -f
+
+echo "  Fast-forwarding to $TARGET (ff-only — a diverged prod checkout FAILS LOUD, no silent merge)..."
+if ! git merge --ff-only "$TARGET"; then
+  echo "  ERROR: cannot fast-forward the production checkout to $TARGET." >&2
+  echo "  The prod checkout has DIVERGED from origin (local commits, or a non-ancestor ref)." >&2
+  echo "  Refusing to merge/rewrite history on production. Inspect 'git status' / 'git log --oneline -5'" >&2
+  echo "  and reconcile manually — do NOT --force. (so-e67m cutover-safety guard.)" >&2
+  exit 1
+fi
+
+echo "  Installing dependencies..."
+composer install --no-dev --optimize-autoloader --quiet
 
 echo "  Running migrations..."
 php artisan migrate --force
