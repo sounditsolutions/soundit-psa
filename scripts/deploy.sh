@@ -14,7 +14,6 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export PSA_DEPLOY_SELF="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
 ENV_FILE="$SCRIPT_DIR/deploy.env"
 
 if [ ! -f "$ENV_FILE" ]; then
@@ -27,6 +26,17 @@ set -a
 # shellcheck source=/dev/null
 . "$ENV_FILE"
 set +a
+
+# Absolute path of the file bash is actually executing, for the deploy gate: it
+# hashes this file and refuses if it differs from the blob at the sha being
+# deployed. It MUST be assigned AFTER deploy.env is sourced -- that source runs
+# under `set -a`, so a PSA_DEPLOY_SELF= line in the gitignored, ungated env file
+# would otherwise override an earlier assignment and point the gate at a file
+# that never ran. `readonly` closes the same hole from the other side; if
+# deploy.env has already declared the name readonly, this assignment fails and
+# `set -e` aborts the deploy, which is the correct direction to fail.
+export PSA_DEPLOY_SELF="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
+readonly PSA_DEPLOY_SELF
 
 : "${DEPLOY_HOST:?not set in scripts/deploy.env}"
 : "${DEPLOY_PATH:?not set in scripts/deploy.env}"
