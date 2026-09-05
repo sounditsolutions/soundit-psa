@@ -236,6 +236,32 @@ class HdbPressIdCaptureTest extends TestCase
         $this->assertSame(self::OTHER_UUID, $ticket->fresh()->hdb_press_id);
     }
 
+    public function test_backfill_does_not_demote_a_ticket_that_already_holds_a_newer_press(): void
+    {
+        $user = User::factory()->create();
+        $ticket = $this->buttonTicket();
+
+        // Legacy note, pre-dates capture: still unkeyed, and the OLDER press.
+        $legacy = TicketNote::create([
+            'ticket_id' => $ticket->id,
+            'author_id' => $user->id,
+            'body' => $this->noteBody(self::UUID),
+            'is_private' => true,
+        ]);
+
+        // A press that arrived through the vendor after the migration: the note
+        // is already keyed, so the backfill's whereNull scan cannot see it.
+        $newer = app(T2TService::class)->addNoteFromCw($ticket->fresh(), $this->noteBody(self::OTHER_UUID), true, $user->id);
+
+        $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
+
+        $this->assertSame(self::UUID, $this->pressIdOfNote($legacy->id));
+        $this->assertSame(self::OTHER_UUID, $this->pressIdOfNote($newer['id']));
+        // The cache must still name the newest press on the ticket, not the older
+        // legacy one this run happened to key.
+        $this->assertSame(self::OTHER_UUID, $ticket->fresh()->hdb_press_id);
+    }
+
     public function test_backfill_leaves_a_soft_deleted_notes_press_id_out_of_the_ticket(): void
     {
         $user = User::factory()->create();

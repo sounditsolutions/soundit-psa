@@ -66,9 +66,10 @@ class BackfillHdbPressIds extends Command
 
         $set = 0;
         $skipped = 0;
-        // ticket id => press id of the highest-id press note seen. $notes is
-        // ordered by id ascending, so the last write per ticket is the newest
-        // press — which is exactly what the ticket column caches.
+        // Ticket ids touched by this run. The cached VALUE is deliberately not
+        // derived here: this scan sees only notes that were still unkeyed, so it
+        // cannot know whether the ticket already holds a newer, capture-keyed
+        // press. The value is resolved below from all of the ticket's keyed notes.
         $ticketCache = [];
 
         foreach ($notes as $note) {
@@ -92,8 +93,22 @@ class BackfillHdbPressIds extends Command
         }
 
         if (! $dryRun) {
-            foreach ($ticketCache as $ticketId => $pressId) {
-                Ticket::whereKey($ticketId)->toBase()->update(['hdb_press_id' => $pressId]);
+            // Re-derive each touched ticket's cache from ALL of its live keyed
+            // notes, newest id wins. A ticket can already carry a NEWER press
+            // stamped by captureHdbPressId(), and that note is invisible to the
+            // whereNull scan above — writing this run's value unconditionally
+            // would demote the cache to the older legacy press, and the
+            // now-keyed note would never be revisited by a re-run.
+            foreach (array_keys($ticketCache) as $ticketId) {
+                $newest = TicketNote::query()
+                    ->where('ticket_id', $ticketId)
+                    ->whereNotNull('hdb_press_id')
+                    ->orderByDesc('id')
+                    ->value('hdb_press_id');
+
+                if ($newest !== null) {
+                    Ticket::whereKey($ticketId)->toBase()->update(['hdb_press_id' => $newest]);
+                }
             }
         }
 
