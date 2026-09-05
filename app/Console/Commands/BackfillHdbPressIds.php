@@ -2,99 +2,109 @@
 
 namespace App\Console\Commands;
 
-use App\Enums\TicketSource;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Support\HdbPressId;
 use Illuminate\Console\Command;
 
 /**
- * Backfill hdb_press_id for helpdesk_button tickets that predate the capture at
- * T2TService::addNoteFromCw(). 48 of the 50 most recent such tickets on prod
- * carry the link note, so this is the one-shot that makes history usable.
+ * Backfill hdb_press_id for the HDB notes already in prod, and the ticket-level
+ * cache derived from them.
+ *
+ * Aimed at NOTES, not tickets, for two measured reasons (prod, 2026-09-05,
+ * counts only):
+ *  - 105 live notes carry an HDB pressID link across 95 distinct tickets, but
+ *    only 45 of those tickets are source=helpdesk_button. A ticket-scoped pass
+ *    filtered on that source saw barely half the population: a merge brings the
+ *    press notes with it and the source does not follow.
+ *  - Keying the note removes the refusals entirely. The ticket-scoped pass
+ *    refused 7 of 45 tickets for "conflicting" press ids; under the note model
+ *    those are simply tickets holding two presses, and both are kept.
+ *
+ * Every write is a keyed BASE-query update: no $fillable path, no model events,
+ * and no updated_at churn on either table (GitHub #1317 — the objection that
+ * made the ticket-scoped backfill wait for a human word). The two are the same
+ * commit now rather than two.
+ *
+ * ->toBase() is what actually suppresses the timestamp. Eloquent's own
+ * Builder::update() calls addUpdatedAtColumn() (vendor Builder.php:1266), so the
+ * bare Model::whereKey()->update() would bump updated_at on all ~105 rows and
+ * reproduce the churn this is meant to retire.
  */
 class BackfillHdbPressIds extends Command
 {
     protected $signature = 'hdb:backfill-press-ids
-                            {--limit= : Cap the number of tickets to process}
+                            {--limit= : Cap the number of notes to process}
                             {--dry-run : Report what would be written without saving}';
 
-    protected $description = 'Parse the HelpDesk Buttons press id out of existing helpdesk_button ticket notes';
+    protected $description = 'Parse the HelpDesk Buttons press id out of existing ticket notes and key the notes with it';
 
     public function handle(): int
     {
         $dryRun = (bool) $this->option('dry-run');
 
-        $query = Ticket::query()
-            ->where('source', TicketSource::HelpdeskButton->value)
+        // Live notes only. A press id on a soft-deleted note is scoped to that
+        // note and must not reach the ticket around it (GitHub #1313) — under
+        // the note model that path dissolves rather than needs a guard, and
+        // prod's base rate for it is 0 (no soft-deleted note carries a link).
+        $query = TicketNote::query()
             ->whereNull('hdb_press_id')
+            ->where('body', 'like', '%pressID=%')
             ->orderBy('id');
 
         if ($limit = $this->option('limit')) {
             $query->limit((int) $limit);
         }
 
-        $tickets = $query->get();
+        $notes = $query->get(['id', 'ticket_id', 'body']);
 
-        if ($tickets->isEmpty()) {
-            $this->info('No helpdesk_button tickets are missing a press id.');
+        if ($notes->isEmpty()) {
+            $this->info('No notes are missing a press id.');
 
             return self::SUCCESS;
         }
 
-        $found = 0;
-        $absent = 0;
-        $conflicts = [];
+        $set = 0;
+        $skipped = 0;
+        // ticket id => press id of the highest-id press note seen. $notes is
+        // ordered by id ascending, so the last write per ticket is the newest
+        // press — which is exactly what the ticket column caches.
+        $ticketCache = [];
 
-        foreach ($tickets as $ticket) {
-            // Ordered by id ASCENDING — that ordering IS the "lowest note id wins"
-            // rule. The default notes() relation orders by noted_at desc, which is
-            // the wrong end and not a stable tiebreak.
-            $bodies = TicketNote::withTrashed()
-                ->where('ticket_id', $ticket->id)
-                ->orderBy('id')
-                ->pluck('body');
+        foreach ($notes as $note) {
+            $pressId = HdbPressId::fromBody($note->body);
 
-            $result = HdbPressId::resolve($bodies);
-
-            if ($result['status'] === HdbPressId::STATUS_CONFLICT) {
-                $conflicts[] = $ticket->id;
-                $this->warn(sprintf(
-                    'Ticket %d: REFUSED — %d different press ids (%s)',
-                    $ticket->id,
-                    count($result['candidates']),
-                    implode(', ', $result['candidates']),
-                ));
+            if ($pressId === null) {
+                // The LIKE is a coarse prefilter; the parser is the contract. A
+                // body mentioning pressID= outside a helpdeskbuttons.com URL, or
+                // naming two different presses, is not a press note.
+                $skipped++;
 
                 continue;
             }
 
-            if ($result['status'] === HdbPressId::STATUS_ABSENT) {
-                $absent++;
-
-                continue;
-            }
-
-            $found++;
+            $set++;
+            $ticketCache[$note->ticket_id] = $pressId;
 
             if (! $dryRun) {
-                // forceFill: hdb_press_id is deliberately not mass-assignable.
-                $ticket->forceFill(['hdb_press_id' => $result['press_id']])->save();
+                TicketNote::whereKey($note->id)->toBase()->update(['hdb_press_id' => $pressId]);
+            }
+        }
+
+        if (! $dryRun) {
+            foreach ($ticketCache as $ticketId => $pressId) {
+                Ticket::whereKey($ticketId)->toBase()->update(['hdb_press_id' => $pressId]);
             }
         }
 
         $this->info(sprintf(
-            '%s %d of %d ticket(s); %d had no HDB link note (normal); %d refused for conflicting press ids.',
-            $dryRun ? 'Would set' : 'Set',
-            $found,
-            $tickets->count(),
-            $absent,
-            count($conflicts),
+            '%s %d note(s) of %d scanned, across %d ticket(s); %d carried no parseable press id.',
+            $dryRun ? 'Would key' : 'Keyed',
+            $set,
+            $notes->count(),
+            count($ticketCache),
+            $skipped,
         ));
-
-        if ($conflicts !== []) {
-            $this->warn('Conflicting tickets need a human: '.implode(', ', $conflicts));
-        }
 
         return self::SUCCESS;
     }

@@ -11,10 +11,11 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 /**
- * Slice 1 of GitHub #340: the press id is the single key for every later report
- * fetch, so it is parsed and persisted at the inbound write (addNoteFromCw) and
- * backfilled for the tickets already in prod. No fetching happens here — that is
- * a later slice and needs a credential that does not exist yet.
+ * Slice 1a/1b of GitHub #340: the press id is the single key for every later
+ * report fetch, and it lives on the NOTE that carries the link — not on the
+ * ticket around it. Parsed and persisted at the inbound write (addNoteFromCw)
+ * and backfilled for the notes already in prod. No fetching happens here — that
+ * is slice 2 and needs a credential that does not exist yet.
  */
 class HdbPressIdCaptureTest extends TestCase
 {
@@ -36,50 +37,72 @@ class HdbPressIdCaptureTest extends TestCase
         return Ticket::factory()->create(['source' => TicketSource::HelpdeskButton->value]);
     }
 
-    public function test_inbound_note_persists_the_press_id_on_the_ticket(): void
+    private function pressIdOfNote(int $noteId): ?string
+    {
+        return TicketNote::withTrashed()->whereKey($noteId)->value('hdb_press_id');
+    }
+
+    public function test_inbound_note_persists_the_press_id_on_the_note_and_caches_it_on_the_ticket(): void
     {
         $user = User::factory()->create();
         $ticket = $this->buttonTicket();
 
-        app(T2TService::class)->addNoteFromCw($ticket, $this->noteBody(self::UUID), true, $user->id);
+        $result = app(T2TService::class)->addNoteFromCw($ticket, $this->noteBody(self::UUID), true, $user->id);
 
+        $this->assertSame(self::UUID, $this->pressIdOfNote($result['id']));
         $this->assertSame(self::UUID, $ticket->fresh()->hdb_press_id);
     }
 
-    public function test_note_without_a_press_id_leaves_the_column_null_and_is_not_an_error(): void
+    public function test_note_without_a_press_id_leaves_both_columns_null_and_is_not_an_error(): void
     {
         $user = User::factory()->create();
         $ticket = $this->buttonTicket();
 
         $result = app(T2TService::class)->addNoteFromCw($ticket, 'Customer called back, all good.', true, $user->id);
 
+        $this->assertNull($this->pressIdOfNote($result['id']));
         $this->assertNull($ticket->fresh()->hdb_press_id);
         // The note itself must still be written — capture is fail-soft, never a gate.
         $this->assertNotNull($result['id']);
         $this->assertSame(1, TicketNote::where('ticket_id', $ticket->id)->count());
     }
 
-    public function test_a_later_conflicting_press_id_refuses_the_ticket_like_the_backfill_does(): void
+    public function test_a_second_different_press_keeps_both_and_refuses_nothing(): void
+    {
+        $user = User::factory()->create();
+        $ticket = $this->buttonTicket();
+        $service = app(T2TService::class);
+
+        $first = $service->addNoteFromCw($ticket, $this->noteBody(self::UUID), true, $user->id);
+        $this->assertSame(self::UUID, $ticket->fresh()->hdb_press_id);
+
+        $second = $service->addNoteFromCw($ticket->fresh(), $this->noteBody(self::OTHER_UUID), true, $user->id);
+
+        // This is the case the ticket-keyed version called a CONFLICT and
+        // punished by clearing the column (GitHub #1330 — unrecoverable through
+        // the app). A ticket holding two presses is a normal ticket holding two
+        // presses: a merge brings the notes with it. Each note keeps its own key
+        // and neither report is lost.
+        $this->assertSame(self::UUID, $this->pressIdOfNote($first['id']));
+        $this->assertSame(self::OTHER_UUID, $this->pressIdOfNote($second['id']));
+        $this->assertSame(2, TicketNote::where('ticket_id', $ticket->id)->count());
+    }
+
+    public function test_the_ticket_column_caches_the_newest_press_by_construction(): void
     {
         $user = User::factory()->create();
         $ticket = $this->buttonTicket();
         $service = app(T2TService::class);
 
         $service->addNoteFromCw($ticket, $this->noteBody(self::UUID), true, $user->id);
-        $this->assertSame(self::UUID, $ticket->fresh()->hdb_press_id);
-
         $service->addNoteFromCw($ticket->fresh(), $this->noteBody(self::OTHER_UUID), true, $user->id);
 
-        // Same evidence, same answer as test_backfill_refuses_a_ticket_whose_notes
-        // _disagree: two press ids on one ticket is a REFUSAL, not a pick, so the
-        // already-stamped id is cleared rather than left keying the ticket to an
-        // endpoint we cannot show is the right one. Arrival time must not decide
-        // whether a ticket is usable.
-        $this->assertNull($ticket->fresh()->hdb_press_id);
-        $this->assertSame(2, TicketNote::where('ticket_id', $ticket->id)->count());
+        // Written from the note write, so "newest" needs no win-rule to decide
+        // it — and is never cleared.
+        $this->assertSame(self::OTHER_UUID, $ticket->fresh()->hdb_press_id);
     }
 
-    public function test_a_conflict_clears_an_id_stamped_after_the_instance_was_hydrated(): void
+    public function test_capture_is_not_gated_on_a_stale_in_memory_ticket(): void
     {
         $user = User::factory()->create();
         $ticket = $this->buttonTicket();
@@ -87,31 +110,45 @@ class HdbPressIdCaptureTest extends TestCase
 
         // Deliberately NOT re-hydrated: this is the instance a concurrent request
         // is holding, still reading hdb_press_id = null while the row underneath
-        // it gets stamped. The clear must not be gated on that stale value.
+        // it gets stamped. The keyed write must not consult that stale value.
         $stale = Ticket::find($ticket->id);
 
         $service->addNoteFromCw($ticket, $this->noteBody(self::UUID), true, $user->id);
         $this->assertSame(self::UUID, $ticket->fresh()->hdb_press_id);
         $this->assertNull($stale->hdb_press_id);
 
-        $service->addNoteFromCw($stale, $this->noteBody(self::OTHER_UUID), true, $user->id);
+        $second = $service->addNoteFromCw($stale, $this->noteBody(self::OTHER_UUID), true, $user->id);
 
-        $this->assertNull($ticket->fresh()->hdb_press_id);
+        $this->assertSame(self::OTHER_UUID, $this->pressIdOfNote($second['id']));
+        $this->assertSame(self::OTHER_UUID, $ticket->fresh()->hdb_press_id);
     }
 
-    public function test_the_same_press_id_repeated_on_a_later_note_is_not_a_conflict(): void
+    public function test_capture_adds_no_timestamp_churn_beyond_the_note_write_itself(): void
     {
         $user = User::factory()->create();
-        $ticket = $this->buttonTicket();
+        $pressTicket = $this->buttonTicket();
+        $plainTicket = $this->buttonTicket();
         $service = app(T2TService::class);
 
-        $service->addNoteFromCw($ticket, $this->noteBody(self::UUID), true, $user->id);
-        $service->addNoteFromCw($ticket->fresh(), $this->noteBody(self::UUID), true, $user->id);
+        Ticket::whereKey($pressTicket->id)->toBase()->update(['updated_at' => now()->subDays(30)]);
+        Ticket::whereKey($plainTicket->id)->toBase()->update(['updated_at' => now()->subDays(30)]);
 
-        $this->assertSame(self::UUID, $ticket->fresh()->hdb_press_id);
+        $service->addNoteFromCw($pressTicket->fresh(), $this->noteBody(self::UUID), true, $user->id);
+        $service->addNoteFromCw($plainTicket->fresh(), 'Customer called back, all good.', true, $user->id);
+
+        // An inbound note DOES touch its ticket — TicketService::addNote() calls
+        // $ticket->touch() by design, so latest activity is visible. What must not
+        // happen is capture adding churn of its own on top: a press note and a
+        // plain note leave the ticket in the same timestamp state (GitHub #1317
+        // is about mass churn on history, not about a live note arriving).
+        $this->assertSame(self::UUID, $pressTicket->fresh()->hdb_press_id);
+        $this->assertEquals(
+            $plainTicket->fresh()->updated_at->startOfSecond(),
+            $pressTicket->fresh()->updated_at->startOfSecond(),
+        );
     }
 
-    public function test_press_id_is_not_mass_assignable(): void
+    public function test_press_id_is_not_mass_assignable_on_either_table(): void
     {
         // Same reasoning as category_source: the press id is stamped by the
         // system from the vendor's own note, so no mass-assignment path (request
@@ -123,22 +160,38 @@ class HdbPressIdCaptureTest extends TestCase
 
         $this->assertNull($ticket->hdb_press_id);
         $this->assertSame('Changed', $ticket->subject);
+
+        $note = new TicketNote;
+        $note->fill(['hdb_press_id' => self::UUID, 'body' => 'Changed']);
+
+        $this->assertNull($note->hdb_press_id);
+        $this->assertSame('Changed', $note->body);
     }
 
-    public function test_backfill_sets_press_ids_from_existing_notes(): void
+    public function test_backfill_keys_notes_regardless_of_ticket_source(): void
     {
         $user = User::factory()->create();
-        $withLink = $this->buttonTicket();
-        $withoutLink = $this->buttonTicket();
+        $buttonTicket = $this->buttonTicket();
+        // 50 of the 95 prod tickets carrying a press note are NOT
+        // source=helpdesk_button — the notes arrive by merge and the source does
+        // not follow. The old ticket-scoped filter missed every one of them.
+        $mergedTicket = Ticket::factory()->create(['source' => TicketSource::Email->value]);
+        $noPress = $this->buttonTicket();
 
-        TicketNote::create([
-            'ticket_id' => $withLink->id,
+        $onButton = TicketNote::create([
+            'ticket_id' => $buttonTicket->id,
             'author_id' => $user->id,
             'body' => $this->noteBody(self::UUID),
             'is_private' => true,
         ]);
-        TicketNote::create([
-            'ticket_id' => $withoutLink->id,
+        $onMerged = TicketNote::create([
+            'ticket_id' => $mergedTicket->id,
+            'author_id' => $user->id,
+            'body' => $this->noteBody(self::OTHER_UUID),
+            'is_private' => true,
+        ]);
+        $plain = TicketNote::create([
+            'ticket_id' => $noPress->id,
             'author_id' => $user->id,
             'body' => 'No report on this one.',
             'is_private' => true,
@@ -146,22 +199,27 @@ class HdbPressIdCaptureTest extends TestCase
 
         $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
 
-        $this->assertSame(self::UUID, $withLink->fresh()->hdb_press_id);
-        $this->assertNull($withoutLink->fresh()->hdb_press_id);
+        $this->assertSame(self::UUID, $this->pressIdOfNote($onButton->id));
+        $this->assertSame(self::OTHER_UUID, $this->pressIdOfNote($onMerged->id));
+        $this->assertNull($this->pressIdOfNote($plain->id));
+
+        $this->assertSame(self::UUID, $buttonTicket->fresh()->hdb_press_id);
+        $this->assertSame(self::OTHER_UUID, $mergedTicket->fresh()->hdb_press_id);
+        $this->assertNull($noPress->fresh()->hdb_press_id);
     }
 
-    public function test_backfill_refuses_a_ticket_whose_notes_disagree(): void
+    public function test_backfill_keeps_both_presses_on_a_ticket_that_holds_two(): void
     {
         $user = User::factory()->create();
         $ticket = $this->buttonTicket();
 
-        TicketNote::create([
+        $first = TicketNote::create([
             'ticket_id' => $ticket->id,
             'author_id' => $user->id,
             'body' => $this->noteBody(self::UUID),
             'is_private' => true,
         ]);
-        TicketNote::create([
+        $second = TicketNote::create([
             'ticket_id' => $ticket->id,
             'author_id' => $user->id,
             'body' => $this->noteBody(self::OTHER_UUID),
@@ -170,6 +228,78 @@ class HdbPressIdCaptureTest extends TestCase
 
         $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
 
+        // The ticket-scoped pass REFUSED this shape — 7 of 45 tickets on prod,
+        // a 12% refusal rate against a spec written off a sample where the case
+        // never appeared. Nothing is refused now.
+        $this->assertSame(self::UUID, $this->pressIdOfNote($first->id));
+        $this->assertSame(self::OTHER_UUID, $this->pressIdOfNote($second->id));
+        $this->assertSame(self::OTHER_UUID, $ticket->fresh()->hdb_press_id);
+    }
+
+    public function test_backfill_leaves_a_soft_deleted_notes_press_id_out_of_the_ticket(): void
+    {
+        $user = User::factory()->create();
+        $ticket = $this->buttonTicket();
+
+        $deleted = TicketNote::create([
+            'ticket_id' => $ticket->id,
+            'author_id' => $user->id,
+            'body' => $this->noteBody(self::UUID),
+            'is_private' => true,
+        ]);
+        $deleted->delete();
+
+        $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
+
+        // GitHub #1313: a remediated bad link must not poison the ticket. Under
+        // the note model it cannot — a deleted note's key is scoped to the
+        // deleted note, and the backfill never reads one.
+        $this->assertNull($this->pressIdOfNote($deleted->id));
+        $this->assertNull($ticket->fresh()->hdb_press_id);
+    }
+
+    public function test_backfill_does_not_touch_timestamps(): void
+    {
+        $user = User::factory()->create();
+        $ticket = $this->buttonTicket();
+
+        $note = TicketNote::create([
+            'ticket_id' => $ticket->id,
+            'author_id' => $user->id,
+            'body' => $this->noteBody(self::UUID),
+            'is_private' => true,
+        ]);
+
+        Ticket::whereKey($ticket->id)->toBase()->update(['updated_at' => now()->subDays(30)]);
+        TicketNote::whereKey($note->id)->toBase()->update(['updated_at' => now()->subDays(30)]);
+        $ticketBefore = $ticket->fresh()->updated_at;
+        $noteBefore = TicketNote::whereKey($note->id)->value('updated_at');
+
+        $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
+
+        // #1317's shape, by construction: keyed query-builder updates on both
+        // tables, so the 105-row backfill jumps nothing to the top of a list.
+        $this->assertSame(self::UUID, $this->pressIdOfNote($note->id));
+        $this->assertEquals($ticketBefore, $ticket->fresh()->updated_at);
+        $this->assertEquals($noteBefore, TicketNote::whereKey($note->id)->value('updated_at'));
+    }
+
+    public function test_backfill_skips_a_press_id_mention_that_is_not_an_hdb_url(): void
+    {
+        $user = User::factory()->create();
+        $ticket = $this->buttonTicket();
+
+        $note = TicketNote::create([
+            'ticket_id' => $ticket->id,
+            'author_id' => $user->id,
+            'body' => 'Customer quoted a link from elsewhere: https://example.test/x?pressID='.self::UUID,
+            'is_private' => true,
+        ]);
+
+        $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
+
+        // The LIKE '%pressID=%' is a prefilter for the index, never the contract.
+        $this->assertNull($this->pressIdOfNote($note->id));
         $this->assertNull($ticket->fresh()->hdb_press_id);
     }
 
@@ -178,7 +308,7 @@ class HdbPressIdCaptureTest extends TestCase
         $user = User::factory()->create();
         $ticket = $this->buttonTicket();
 
-        TicketNote::create([
+        $note = TicketNote::create([
             'ticket_id' => $ticket->id,
             'author_id' => $user->id,
             'body' => $this->noteBody(self::UUID),
@@ -187,6 +317,7 @@ class HdbPressIdCaptureTest extends TestCase
 
         $this->artisan('hdb:backfill-press-ids', ['--dry-run' => true])->assertExitCode(0);
 
+        $this->assertNull($this->pressIdOfNote($note->id));
         $this->assertNull($ticket->fresh()->hdb_press_id);
     }
 }
