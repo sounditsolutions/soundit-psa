@@ -235,12 +235,26 @@ if [ ! -x "$PSA_GATE" ]; then
   if [ -z "${PSA_DEPLOY_GATE_OVERRIDE:-}" ]; then
     exit 2
   fi
-  echo "⚠️  OVERRIDE ACCEPTED (gate missing): ${PSA_DEPLOY_GATE_OVERRIDE}"
+  # Fold CR/LF/TAB out of the reason BEFORE either sink sees it, for the same
+  # reason the ref is folded at its point of entry. This is the least
+  # constrained value in the script — free-form operator text, or a standing
+  # assignment in the gitignored deploy.env under `set -a` — and it is
+  # interpolated into the same stdout and the same audit log as the
+  # GATE-RESOLVED record above. A newline in it would append a second,
+  # perfectly-formed GATE-RESOLVED line asserting that the real gate was
+  # consulted for this sha, on the one run where the gate was MISSING. Folded
+  # once here so both sinks get the same value.
+  _PSA_OVERRIDE_REASON="${PSA_DEPLOY_GATE_OVERRIDE//[$'\n\r\t']/ }"
+  echo "⚠️  OVERRIDE ACCEPTED (gate missing): ${_PSA_OVERRIDE_REASON}"
   # An override that is not recorded is just an off switch, so a failed append
   # must SCREAM rather than be swallowed. _PSA_AUDIT and _PSA_AUDIT_FB are
   # resolved once above, alongside the GATE-RESOLVED record, with the same
   # defaults and the coupling note that used to sit here.
-  _PSA_LINE="$(date -u +%Y-%m-%dT%H:%M:%SZ) OVERRIDE-GATE-MISSING target=$TARGET_SHA reason=${PSA_DEPLOY_GATE_OVERRIDE}"
+  _PSA_LINE="$(date -u +%Y-%m-%dT%H:%M:%SZ) OVERRIDE-GATE-MISSING target=$TARGET_SHA reason=${_PSA_OVERRIDE_REASON}"
+  # Belt and braces, as on the identity record: TARGET_SHA is a resolved sha and
+  # the timestamp is a date(1) format string, but ONE append must stay ONE
+  # record even if either of those ever stops being true.
+  _PSA_LINE="${_PSA_LINE//[$'\n\r\t']/ }"
   if ! echo "$_PSA_LINE" >> "$_PSA_AUDIT" 2>/dev/null; then
     if echo "$_PSA_LINE" >> "$_PSA_AUDIT_FB" 2>/dev/null; then
       echo "⚠️  AUDIT LOG UNWRITABLE ($_PSA_AUDIT) — recorded to fallback: $_PSA_AUDIT_FB" >&2

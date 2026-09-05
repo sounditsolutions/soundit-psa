@@ -383,6 +383,41 @@ fi
 assert_out t9 "the banner carries the folded ref, not an extra line" \
     "Target ref: x $FORGED ("
 
+# ---------------------------------------------------------------------------
+# t10 — ONE APPEND, ONE RECORD for the OVERRIDE line too. t9 pins the fold on
+# the ref; this pins it on the reason, which is the least constrained value
+# that reaches the log: free-form operator text, and settable as a standing
+# assignment from deploy.env under `set -a`. A newline in it would append a
+# second, perfectly-formed GATE-RESOLVED line claiming the real gate was
+# consulted for this sha — on the one run where the gate was MISSING. Both
+# sinks are checked, because the reason is echoed as well as appended.
+# ---------------------------------------------------------------------------
+BOX="$(new_box t10)"
+SHA="$(box_commit "$BOX")"
+AUDIT="$TMP/t10-audit.log"
+write_env "$BOX" "PSA_DEPLOY_GATE=$TMP/t10-no-such-gate.sh" "PSA_DEPLOY_GATE_AUDIT=$AUDIT"
+T10_FORGED='2000-01-01T00:00:00Z GATE-RESOLVED ref=deadbeef gate=/totally/other/gate.sh sha256=FORGED'
+T10_RC=0
+( cd "$BOX" && PSA_DEPLOY_GATE_OVERRIDE="$(printf 'hotfix\n%s' "$T10_FORGED")" \
+    timeout 60 bash scripts/deploy.sh "$SHA" ) \
+    >"$TMP/t10.out" 2>"$TMP/t10.err" || T10_RC=$?
+printf '%s\n' "$T10_RC" >"$TMP/t10.rc"
+# As in t6, no fixed exit code: this run dies at the stub ssh. Reaching it is
+# the proof the override was still accepted after the fold.
+assert_err t10 "the override is still accepted" "STUB SSH REFUSED"
+if [ "$(count_records "$AUDIT")" = "1" ]; then ok; else
+    bad t10 "an injected override reason forged a second record in the audit log"
+    sed 's/^/    log: /' "$AUDIT"
+fi
+if [ "$(count_records "$TMP/t10.out")" = "1" ]; then ok; else
+    bad t10 "an injected override reason forged a record on stdout"
+    sed 's/^/    out: /' "$TMP/t10.out"
+fi
+assert_file t10 "the forged text is folded into the override line" "$AUDIT" \
+    "OVERRIDE-GATE-MISSING target=$SHA reason=hotfix $T10_FORGED"
+assert_out  t10 "and the echoed reason carries no extra line" \
+    "OVERRIDE ACCEPTED (gate missing): hotfix $T10_FORGED"
+
 echo
 if [ "$SKIP" -gt 0 ]; then
     echo "deploy gate identity tests: $PASS passed, $FAIL failed, $SKIP SKIPPED (see SKIP lines — those branches are UNCOVERED in this run)"
