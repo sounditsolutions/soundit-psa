@@ -49,6 +49,13 @@ class IntegrationsController extends Controller
     private const SECRET_MASK = '••••••••';
 
     /**
+     * Host the HelpDesk Buttons report portal is reached on. Applied on READ when the
+     * setting is empty rather than being written into it, so clearing the field returns
+     * the operator to the default instead of leaving the fetch pointed at nothing.
+     */
+    private const HDB_DEFAULT_BASE_URL = 'https://beta.helpdeskbuttons.com';
+
+    /**
      * Vendor master switches that ALSO gate the vendor's AI tool surface (psa-wzjzz),
      * mapped to the surfaces each one actually feeds. The toggle confirmation has to
      * name that consequence: an operator who flips one off is otherwise never told the
@@ -261,6 +268,20 @@ class IntegrationsController extends Controller
         $t2tSystemUserId = T2TConfig::get('system_user_id');
         $t2tCallbackUrl = Setting::getValue('t2t_callback_url');
         $t2tUsers = \App\Models\User::active()->orderBy('name')->get(['id', 'name', 'is_active']);
+
+        // HDB report portal credentials. The two secrets are never rendered back into
+        // the form — the view learns only WHETHER one is stored, so it can show the
+        // mask placeholder and nothing else.
+        // The form renders this as the field's value, so it must be the STORED value —
+        // resolving the default here would echo it back on the next save and write it
+        // into the setting, which is exactly what HDB_DEFAULT_BASE_URL promises not to
+        // happen. The default travels separately and is shown as a placeholder.
+        $hdbBaseUrl = trim((string) Setting::getValue('hdb_base_url', ''));
+        $hdbDefaultBaseUrl = self::HDB_DEFAULT_BASE_URL;
+        $hdbEmail = (string) Setting::getValue('hdb_email', '');
+        $hdbHasPassword = trim((string) Setting::getEncrypted('hdb_password', '')) !== '';
+        $hdbHasTotpSecret = trim((string) Setting::getEncrypted('hdb_totp_secret', '')) !== '';
+
         if ($t2tSystemUserId && ! $t2tUsers->contains('id', (int) $t2tSystemUserId)) {
             $inactive = \App\Models\User::find($t2tSystemUserId, ['id', 'name', 'is_active']);
             if ($inactive) {
@@ -474,6 +495,7 @@ class IntegrationsController extends Controller
             'transcriptionConfigured', 'transcriptionHasKey', 'transcriptionAutoEnabled', 'transcriptionMinSeconds',
             'huntressCwConfigured', 'huntressCwHost', 'huntressCwCompanyId', 'huntressCwPublicKey', 'huntressCwSystemUserId', 'huntressCwUsers',
             't2tConfigured', 't2tApiUrl', 't2tCompanyId', 't2tCallbackUrl', 't2tUsers', 't2tSystemUserId', 't2tEnabled',
+            'hdbBaseUrl', 'hdbDefaultBaseUrl', 'hdbEmail', 'hdbHasPassword', 'hdbHasTotpSecret',
             'triageEnabled', 'triageAutoNew', 'triageAutoReview', 'triageReviewFrequency', 'triageReviewAutoClose', 'triageReviewThreshold',
             'triageDefaultAssignee', 'triageSystemUser', 'triageModel', 'triageMaxTokens', 'triageDailyTokens', 'triageBatchSize', 'triageStages',
             'assistantIntent', 'assistantEligible', 'assistantActive', 'assistantMaxMessages', 'assistantDailyTokens',
@@ -1856,6 +1878,10 @@ class IntegrationsController extends Controller
             'company_id' => 'nullable|string|max:100',
             'callback_url' => 'nullable|url|max:500',
             'system_user_id' => 'nullable|integer|exists:users,id',
+            'hdb_base_url' => 'nullable|url|max:255',
+            'hdb_email' => 'nullable|email|max:255',
+            'hdb_password' => 'nullable|string|max:1024',
+            'hdb_totp_secret' => 'nullable|string|max:255',
         ]);
 
         if (! empty($validated['api_key'])) {
@@ -1870,6 +1896,35 @@ class IntegrationsController extends Controller
 
         if (array_key_exists('system_user_id', $validated)) {
             Setting::setValue('t2t_system_user_id', $validated['system_user_id'] ?? '');
+        }
+
+        // --- HDB report portal credentials ---
+        //
+        // Entry surface only: nothing in the app reads these yet. They exist so the
+        // TOTP seed — which the vendor displays exactly once, at enrollment — has a
+        // sanctioned destination the moment it is minted.
+
+        // Non-secret. Written even when blank: an empty setting means "use the default
+        // host", which the read path applies, so clearing the field is a real action.
+        Setting::setValue('hdb_base_url', trim((string) ($validated['hdb_base_url'] ?? '')));
+        Setting::setValue('hdb_email', trim((string) ($validated['hdb_email'] ?? '')));
+
+        // Masked, encrypted, write-only — same convention as the Teams bot client
+        // secret and the encrypted Teams webhook: a blank submit or the echoed mask
+        // means "keep what is stored", so saving an unrelated field on this form can
+        // never wipe a credential.
+        $hdbPassword = trim((string) ($validated['hdb_password'] ?? ''));
+        if ($hdbPassword !== '' && $hdbPassword !== self::SECRET_MASK) {
+            Setting::setEncrypted('hdb_password', $hdbPassword);
+        }
+
+        // The seed is rendered in spaced base32 groups at enrollment and is routinely
+        // pasted with those spaces intact, so strip ALL whitespace rather than only the
+        // ends. Case is left alone deliberately: whitespace is unambiguously noise, and
+        // any further normalisation risks corrupting a seed we get exactly one shot at.
+        $hdbTotpSecret = (string) preg_replace('/\s+/', '', (string) ($validated['hdb_totp_secret'] ?? ''));
+        if ($hdbTotpSecret !== '' && $hdbTotpSecret !== self::SECRET_MASK) {
+            Setting::setEncrypted('hdb_totp_secret', $hdbTotpSecret);
         }
 
         return redirect()->route('settings.integrations')
