@@ -9,6 +9,7 @@ use App\Models\Client;
 use App\Models\Person;
 use App\Models\Setting;
 use App\Models\Ticket;
+use App\Models\TicketNote;
 use App\Services\TicketService;
 use App\Support\HdbPressId;
 use App\Support\T2TConfig;
@@ -387,7 +388,7 @@ class T2TService
             'note_id' => $note->id,
         ]);
 
-        $this->captureHdbPressId($ticket, $body);
+        $this->captureHdbPressId($ticket);
 
         return [
             'id' => $note->id,
@@ -404,45 +405,57 @@ class T2TService
     /**
      * Persist the HelpDesk Buttons press id carried by an inbound note.
      *
-     * FIRST WRITE WINS, and that is the "lowest note id" rule: notes arrive in
-     * order, so the first note that carries a press id is the lowest-id one. A
-     * later note carrying a DIFFERENT press id is logged and NOT applied —
-     * overwriting would re-key the ticket to another endpoint's diagnostics.
+     * Resolves over the ticket's WHOLE note history through the same
+     * HdbPressId::resolve() the backfill uses, so a ticket lands in the same
+     * state whether its notes arrived before or after this shipped. That is the
+     * one contract, in both places:
+     *  - lowest note id wins (bodies are read ordered by note id ascending);
+     *  - two DIFFERENT press ids on one ticket are a REFUSAL, not a pick — an id
+     *    already stamped is CLEARED, because keeping either one keys the ticket
+     *    to an endpoint we cannot show is the right one;
+     *  - absence is normal (2 of 50 measured tickets), not an error, not a retry.
      *
      * Fail-soft by construction: this is bolted onto the vendor's inbound write,
-     * so nothing it does may break note creation. Absence of a press id is a
-     * normal state (2 of 50 measured tickets), not an error and not a retry.
+     * so nothing it does may break note creation.
      */
-    private function captureHdbPressId(Ticket $ticket, string $body): void
+    private function captureHdbPressId(Ticket $ticket): void
     {
         try {
-            $pressId = HdbPressId::fromBody($body);
+            // withTrashed + id ascending: same read the backfill performs, so the
+            // two paths cannot disagree about which notes count or in what order.
+            $bodies = TicketNote::withTrashed()
+                ->where('ticket_id', $ticket->id)
+                ->orderBy('id')
+                ->pluck('body');
 
-            if ($pressId === null) {
+            $result = HdbPressId::resolve($bodies);
+
+            if ($result['status'] === HdbPressId::STATUS_ABSENT) {
                 return;
             }
 
-            $existing = $ticket->hdb_press_id;
+            if ($result['status'] === HdbPressId::STATUS_CONFLICT) {
+                if ($ticket->hdb_press_id !== null) {
+                    $ticket->forceFill(['hdb_press_id' => null])->save();
+                }
 
-            if ($existing === $pressId) {
-                return;
-            }
-
-            if ($existing !== null) {
-                Log::warning('[T2T] Conflicting HDB press id on ticket, keeping the first', [
+                Log::warning('[T2T] Conflicting HDB press ids on ticket, refusing to key it', [
                     'ticket_id' => $ticket->id,
-                    'existing_press_id' => $existing,
-                    'rejected_press_id' => $pressId,
+                    'candidates' => $result['candidates'],
                 ]);
 
                 return;
             }
 
-            $ticket->forceFill(['hdb_press_id' => $pressId])->save();
+            if ($ticket->hdb_press_id === $result['press_id']) {
+                return;
+            }
+
+            $ticket->forceFill(['hdb_press_id' => $result['press_id']])->save();
 
             Log::info('[T2T] Captured HDB press id', [
                 'ticket_id' => $ticket->id,
-                'press_id' => $pressId,
+                'press_id' => $result['press_id'],
             ]);
         } catch (\Throwable $e) {
             // Never let press-id capture fail the note write.

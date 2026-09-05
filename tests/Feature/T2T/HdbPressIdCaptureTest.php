@@ -59,19 +59,36 @@ class HdbPressIdCaptureTest extends TestCase
         $this->assertSame(1, TicketNote::where('ticket_id', $ticket->id)->count());
     }
 
-    public function test_a_later_conflicting_press_id_does_not_overwrite_the_first(): void
+    public function test_a_later_conflicting_press_id_refuses_the_ticket_like_the_backfill_does(): void
     {
         $user = User::factory()->create();
         $ticket = $this->buttonTicket();
         $service = app(T2TService::class);
 
         $service->addNoteFromCw($ticket, $this->noteBody(self::UUID), true, $user->id);
+        $this->assertSame(self::UUID, $ticket->fresh()->hdb_press_id);
+
         $service->addNoteFromCw($ticket->fresh(), $this->noteBody(self::OTHER_UUID), true, $user->id);
 
-        // First write wins; re-keying the ticket would fetch another endpoint's
-        // diagnostics onto it.
-        $this->assertSame(self::UUID, $ticket->fresh()->hdb_press_id);
+        // Same evidence, same answer as test_backfill_refuses_a_ticket_whose_notes
+        // _disagree: two press ids on one ticket is a REFUSAL, not a pick, so the
+        // already-stamped id is cleared rather than left keying the ticket to an
+        // endpoint we cannot show is the right one. Arrival time must not decide
+        // whether a ticket is usable.
+        $this->assertNull($ticket->fresh()->hdb_press_id);
         $this->assertSame(2, TicketNote::where('ticket_id', $ticket->id)->count());
+    }
+
+    public function test_the_same_press_id_repeated_on_a_later_note_is_not_a_conflict(): void
+    {
+        $user = User::factory()->create();
+        $ticket = $this->buttonTicket();
+        $service = app(T2TService::class);
+
+        $service->addNoteFromCw($ticket, $this->noteBody(self::UUID), true, $user->id);
+        $service->addNoteFromCw($ticket->fresh(), $this->noteBody(self::UUID), true, $user->id);
+
+        $this->assertSame(self::UUID, $ticket->fresh()->hdb_press_id);
     }
 
     public function test_press_id_is_not_mass_assignable(): void
