@@ -2807,7 +2807,8 @@
                                    class="form-control font-monospace @error('hdb_base_url') is-invalid @enderror"
                                    id="hdb_base_url"
                                    name="hdb_base_url"
-                                   value="{{ $hdbBaseUrl }}">
+                                   value="{{ $hdbBaseUrl }}"
+                                   placeholder="{{ $hdbDefaultBaseUrl }}">
                             @error('hdb_base_url')
                                 <div class="invalid-feedback">{{ $message }}</div>
                             @enderror

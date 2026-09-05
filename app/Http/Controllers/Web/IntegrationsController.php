@@ -272,7 +272,12 @@ class IntegrationsController extends Controller
         // HDB report portal credentials. The two secrets are never rendered back into
         // the form — the view learns only WHETHER one is stored, so it can show the
         // mask placeholder and nothing else.
-        $hdbBaseUrl = trim((string) Setting::getValue('hdb_base_url', '')) ?: self::HDB_DEFAULT_BASE_URL;
+        // The form renders this as the field's value, so it must be the STORED value —
+        // resolving the default here would echo it back on the next save and write it
+        // into the setting, which is exactly what HDB_DEFAULT_BASE_URL promises not to
+        // happen. The default travels separately and is shown as a placeholder.
+        $hdbBaseUrl = trim((string) Setting::getValue('hdb_base_url', ''));
+        $hdbDefaultBaseUrl = self::HDB_DEFAULT_BASE_URL;
         $hdbEmail = (string) Setting::getValue('hdb_email', '');
         $hdbHasPassword = trim((string) Setting::getEncrypted('hdb_password', '')) !== '';
         $hdbHasTotpSecret = trim((string) Setting::getEncrypted('hdb_totp_secret', '')) !== '';
@@ -490,7 +495,7 @@ class IntegrationsController extends Controller
             'transcriptionConfigured', 'transcriptionHasKey', 'transcriptionAutoEnabled', 'transcriptionMinSeconds',
             'huntressCwConfigured', 'huntressCwHost', 'huntressCwCompanyId', 'huntressCwPublicKey', 'huntressCwSystemUserId', 'huntressCwUsers',
             't2tConfigured', 't2tApiUrl', 't2tCompanyId', 't2tCallbackUrl', 't2tUsers', 't2tSystemUserId', 't2tEnabled',
-            'hdbBaseUrl', 'hdbEmail', 'hdbHasPassword', 'hdbHasTotpSecret',
+            'hdbBaseUrl', 'hdbDefaultBaseUrl', 'hdbEmail', 'hdbHasPassword', 'hdbHasTotpSecret',
             'triageEnabled', 'triageAutoNew', 'triageAutoReview', 'triageReviewFrequency', 'triageReviewAutoClose', 'triageReviewThreshold',
             'triageDefaultAssignee', 'triageSystemUser', 'triageModel', 'triageMaxTokens', 'triageDailyTokens', 'triageBatchSize', 'triageStages',
             'assistantIntent', 'assistantEligible', 'assistantActive', 'assistantMaxMessages', 'assistantDailyTokens',
