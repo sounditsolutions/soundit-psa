@@ -38,7 +38,7 @@ use Illuminate\Support\Facades\Log;
  *      `escalations/{id}` URL in the linked alert / description. getEscalation(id) is
  *      definitive. This is the clean path for tickets ingested after the id-capture fix.
  *   2. Org + subject + window, UNIQUELY — the legacy path for org-associated escalation
- *      tickets with no stored id. We take the ticket's mapped org and its subject "core",
+ *      tickets with no stored id or an id returning 404. We take the ticket's mapped org and its subject "core",
  *      and require exactly one escalation (across ALL statuses) for that org whose subject
  *      corresponds within the creation window; if that unique escalation is resolved, we
  *      resolve the ticket. Requiring uniqueness ACROSS statuses means a ticket whose own
@@ -146,16 +146,25 @@ class HuntressEscalationReconcileService
         if ($escalationId !== null) {
             try {
                 $escalation = $this->client->getEscalation($escalationId);
+
+                return $this->isResolved($escalation);
             } catch (\Throwable $e) {
-                Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) failed: {$e->getMessage()}");
+                if (! ($e instanceof HuntressClientException) || $e->getCode() !== 404) {
+                    Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) failed: {$e->getMessage()}");
 
-                return false;
+                    return false;
+                }
+
+                // Missing is not resolved. Give a stale id the same conservative matching
+                // opportunity as no id; never auto-close solely because the id is gone.
+                // This does not persist a tombstone: unmatched tickets can retry next run.
+                Log::info("[HuntressEscalationReconcile] getEscalation({$escalationId}) returned 404; falling back to org+subject+window matching", [
+                    'ticket_id' => $ticket->id,
+                ]);
             }
-
-            return $this->isResolved($escalation);
         }
 
-        // 2. Org + subject + window, uniquely (the legacy no-id path). SCOPE: requires the
+        // 2. Org + subject + window, uniquely (no id or a stale id returning 404). SCOPE: requires the
         //    ticket's client to be org-mapped AND the escalation to carry that org — which
         //    excludes account-level escalations (e.g. "Failed to Deliver") entirely.
         $orgId = $ticket->client?->huntress_organization_id;

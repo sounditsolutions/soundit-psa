@@ -17,13 +17,21 @@ use App\Models\TicketNote;
 use App\Models\User;
 use App\Services\AlertService;
 use App\Services\Huntress\HuntressClient;
+use App\Services\Huntress\HuntressClientException;
 use App\Services\Huntress\HuntressEscalationReconcileService;
 use App\Services\Huntress\HuntressService;
 use App\Services\TicketService;
 use Carbon\CarbonInterface;
+use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -336,6 +344,117 @@ class HuntressEscalationReconcileTest extends TestCase
         $this->service([], [556 => ['id' => 556, 'status' => 'sent']])->reconcile();
 
         $this->assertStaysOpen($ticket);
+    }
+
+    public function test_404_falls_back_to_unique_match_through_real_client_exception_wrapping(): void
+    {
+        Log::spy();
+        $ticket = $this->escalationTicket($this->mappedClient(), metaEscalationId: 555);
+        $row = $this->escalationRow(701, 42, 'resolved', $ticket->created_at, 'Endpoints Missing Key EDR Functionality');
+        $history = [];
+        $stack = HandlerStack::create(new MockHandler([
+            new Response(404, [], '{}'),
+            new Response(200, [], json_encode(['escalations' => [$row]])),
+        ]));
+        $stack->push(Middleware::history($history));
+        $client = new HuntressClient([], new GuzzleClient([
+            'base_uri' => 'https://api.huntress.io/v1/',
+            'handler' => $stack,
+        ]));
+        $service = new HuntressEscalationReconcileService($client, app(TicketService::class), app(AlertService::class));
+
+        $result = $service->reconcile();
+
+        $this->assertResolved($ticket);
+        $this->assertSame(1, $result->updated);
+        $this->assertSame(AlertStatus::Resolved, Alert::where('ticket_id', $ticket->id)->first()->status);
+        $this->assertCount(2, $history);
+        $this->assertSame('/v1/escalations/555', $history[0]['request']->getUri()->getPath());
+        $this->assertSame('/v1/escalations', $history[1]['request']->getUri()->getPath());
+        parse_str($history[1]['request']->getUri()->getQuery(), $query);
+        $this->assertSame('42', $query['organization_id']);
+        Log::shouldHaveReceived('info')->with(
+            '[HuntressEscalationReconcile] getEscalation(555) returned 404; falling back to org+subject+window matching',
+            ['ticket_id' => $ticket->id],
+        )->once();
+        $this->assertSame(0, $service->reconcile()->updated);
+        $this->assertCount(2, $history, 'resolved tickets no longer retry the stale id');
+    }
+
+    #[DataProvider('unsafeFallbacks')]
+    public function test_404_does_not_bypass_fallback_safety_guards(string $scenario): void
+    {
+        $mapped = $this->mappedClient();
+        if ($scenario === 'unmapped') {
+            $mapped->update(['huntress_organization_id' => null]);
+        }
+        $ticket = $this->escalationTicket($mapped, metaEscalationId: 555);
+        $rows = [$this->escalationRow(701, 42, 'resolved', $ticket->created_at, 'Endpoints Missing Key EDR Functionality')];
+        switch ($scenario) {
+            case 'no match': $rows = [];
+                break;
+            case 'ambiguous': $rows[] = array_merge($rows[0], ['id' => 702, 'status' => 'sent']);
+                break;
+            case 'open': $rows[0]['status'] = 'sent';
+                break;
+            case 'wrong org': $rows[0]['organizations'] = [['id' => 99]];
+                break;
+            case 'wrong subject': $rows[0]['subject'] = 'Unrelated issue';
+                break;
+            case 'outside window': $rows[0]['created_at'] = $ticket->created_at->copy()->addHours(3)->toIso8601String();
+                break;
+        }
+        $client = Mockery::mock(HuntressClient::class);
+        $client->shouldReceive('getEscalation')->once()->with(555)->andThrow(new HuntressClientException('Not found', 404));
+        if ($scenario === 'unmapped') {
+            $client->shouldNotReceive('getEscalations');
+        } else {
+            $client->shouldReceive('getEscalations')->once()->with(['organization_id' => 42])->andReturn($rows);
+        }
+
+        $result = (new HuntressEscalationReconcileService($client, app(TicketService::class), app(AlertService::class)))->reconcile();
+
+        $this->assertStaysOpen($ticket);
+        $this->assertSame(0, $result->updated);
+        $this->assertSame(AlertStatus::Ticketed, Alert::where('ticket_id', $ticket->id)->first()->status);
+    }
+
+    public static function unsafeFallbacks(): array
+    {
+        return array_map(fn ($scenario) => [$scenario], ['unmapped', 'no match', 'ambiguous', 'open', 'wrong org', 'wrong subject', 'outside window']);
+    }
+
+    #[DataProvider('non404Failures')]
+    public function test_other_throwables_still_warn_and_skip_without_fallback(\Throwable $failure): void
+    {
+        Log::spy();
+        $ticket = $this->escalationTicket($this->mappedClient(), metaEscalationId: 555);
+        $client = Mockery::mock(HuntressClient::class);
+        $client->shouldReceive('getEscalation')->twice()->with(555)->andThrow($failure);
+        $client->shouldNotReceive('getEscalations');
+        $service = new HuntressEscalationReconcileService($client, app(TicketService::class), app(AlertService::class));
+
+        $this->assertSame(0, $service->reconcile()->updated);
+        $this->assertSame(0, $service->reconcile()->updated);
+
+        $this->assertStaysOpen($ticket);
+        $this->assertSame(AlertStatus::Ticketed, Alert::where('ticket_id', $ticket->id)->first()->status);
+        Log::shouldHaveReceived('warning')->with(
+            "[HuntressEscalationReconcile] getEscalation(555) failed: {$failure->getMessage()}",
+        )->twice();
+        Log::shouldNotHaveReceived('info');
+    }
+
+    public static function non404Failures(): array
+    {
+        return [
+            'server error' => [new HuntressClientException('Unavailable', 503)],
+            'unauthorized' => [new HuntressClientException('Unauthorized', 401)],
+            'rate limited' => [new HuntressClientException('Rate limited', 429)],
+            'transport' => [new HuntressClientException('Timeout')],
+            'unrelated 404 code' => [new \RuntimeException('Not an HTTP error', 404)],
+            'error' => [new \Error('Unexpected failure')],
+        ];
     }
 
     public function test_id_recovered_from_escalations_url_in_source_alert_id_resolves(): void
