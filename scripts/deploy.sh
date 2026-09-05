@@ -77,6 +77,15 @@ DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 # whatever happens to be checked out on the deploying box. so-e67m: this replaces the
 # old 'git push' (unpinned local branch) + VPS 'git pull' (unconditional non-ff merge).
 REVIEWED_REF="${1:-origin/$DEPLOY_BRANCH}"
+# Fold CR/LF/TAB out of the ref BEFORE anything echoes it. A git ref cannot
+# contain them, so nothing legitimate is lost and nothing resolvable changes —
+# but this value is echoed to stdout twice and appended to the gate audit log,
+# and a newline in it would let a caller inject a whole extra line into either.
+# The line that matters is the GATE-RESOLVED record below, whose only value is
+# being true; a second, perfectly-formed record for a deploy that never
+# happened is worse than no record. Fixed here, at the single point of entry,
+# rather than at each place the value is printed.
+REVIEWED_REF="${REVIEWED_REF//[$'\n\r\t']/ }"
 
 echo "=== Deploying to $DEPLOY_HOST ==="
 echo "Target ref: $REVIEWED_REF (must already be on origin — land code via the review gate, not this script)"
@@ -135,9 +144,15 @@ _PSA_AUDIT_FB="${PSA_DEPLOY_GATE_AUDIT_FALLBACK:-${TMPDIR:-/tmp}/psa-deploy-gate
 # STDOUT, not only to the audit log. PSA_DEPLOY_GATE_AUDIT is set by the same
 # deploy.env this record is a control on, so a record whose only destination
 # that file chooses is not a control on that file — one edit would move both
-# the gate and the evidence of the gate. Stdout reaches the operator's terminal
-# and the CI log, outside that file's reach, and naming the audit path there
-# makes RELOCATING the log visible.
+# the gate and the evidence of the gate. Stdout is a SECOND destination that
+# deploy.env does not select, and naming the audit path on it is what makes
+# RELOCATING the log visible.
+# ⚠ Stdout is NOT out of that file's reach, and an earlier draft of this
+#   comment said it was. deploy.env is sourced as shell — not read as a list of
+#   values — so it can `exec 1>/dev/null`, or define an `echo` function, and
+#   suppress this line as easily as it can move the log. Two destinations that
+#   must BOTH be subverted is a higher bar and a second thing to get wrong. It
+#   is not a boundary; see above.
 #
 # ⭐ NOTHING HERE MAY REFUSE A DEPLOY. This runs under `set -e`; the
 # `[ ! -x "$PSA_GATE" ]` check below is the intended refusal point for a
@@ -169,10 +184,23 @@ else
   # aborting: the deploy is not less safe than it was before this block.
   _psa_gate_hash="UNHASHED"
 fi
+# Same zero-exit-but-silent case the hasher is guarded against, one line up: a
+# shadowed `date` that prints nothing would otherwise produce a timestampless
+# line that still looks well-formed and matches no sentinel.
+_psa_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo UNDATED)"
+[ -n "$_psa_ts" ] || _psa_ts="UNDATED"
 # REVIEWED_REF, not TARGET_SHA — the pin happens below, and this record must
 # survive the case where the ref never resolves. It correlates the line with
 # the deploy attempt that wrote it.
-_PSA_GATE_LINE="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo UNDATED) GATE-RESOLVED ref=$REVIEWED_REF gate=$PSA_GATE sha256=$_psa_gate_hash audit=$_PSA_AUDIT audit_fallback=$_PSA_AUDIT_FB"
+_PSA_GATE_LINE="$_psa_ts GATE-RESOLVED ref=$REVIEWED_REF gate=$PSA_GATE sha256=$_psa_gate_hash audit=$_PSA_AUDIT audit_fallback=$_PSA_AUDIT_FB"
+# ONE append, ONE record. REVIEWED_REF is already folded where it is read, so
+# this is the same fold applied to the other interpolated fields: the gate and
+# audit paths come from deploy.env, and a hasher that prints more than one line
+# survives `%% *` with the rest intact. Any of them could otherwise append a
+# second, perfectly-formed GATE-RESOLVED line describing a deploy that never
+# happened. Belt and braces on purpose — this is the only line here whose value
+# is that it is true.
+_PSA_GATE_LINE="${_PSA_GATE_LINE//[$'\n\r\t']/ }"
 echo "$_PSA_GATE_LINE"
 if ! echo "$_PSA_GATE_LINE" >> "$_PSA_AUDIT" 2>/dev/null; then
   if echo "$_PSA_GATE_LINE" >> "$_PSA_AUDIT_FB" 2>/dev/null; then

@@ -29,6 +29,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 PASS=0
 FAIL=0
+SKIP=0
 
 if [ ! -f "$DEPLOY_SH" ]; then
     echo "FATAL: $DEPLOY_SH not found"
@@ -95,6 +96,9 @@ run_deploy() {
 
 ok()   { PASS=$((PASS + 1)); }
 bad()  { FAIL=$((FAIL + 1)); echo "FAIL [$1] $2"; }
+# A skipped case is NOT a pass, and it is counted and named in the summary so a
+# green run cannot be read as coverage it does not have.
+skip() { SKIP=$((SKIP + 1)); echo "SKIP [$1] $2"; }
 
 # assert_out <name> <label> <fixed-string>
 assert_out() {
@@ -201,6 +205,35 @@ assert_out t3b "a zero-exit silent hasher is not a blank hash" "sha256=UNHASHED"
 assert_rc  t3b "still no refusal from the record" 2
 
 # ---------------------------------------------------------------------------
+# t3c — present-but-UNREADABLE is not ABSENT. `-r` and `-x` are independent
+# bits: a mode-0111 gate cannot be read to hash it, but it satisfies the
+# `[ ! -x ]` contract below and IS INVOKED. Recording ABSENT for a gate that
+# actually ran would state the opposite of what happened, which is the one
+# thing this line exists not to do.
+#
+# ROOT CANNOT RUN THIS CASE. For uid 0, `-r` succeeds whatever the mode, so the
+# fixture would fall through to the hasher and pin nothing — and the pipeline
+# that runs this suite runs as root. There is no root-proof way to make a file
+# unreadable, so this skips loudly rather than passing vacuously (t4/t5 use a
+# path under a regular file precisely because THAT trick does work for root;
+# this one does not).
+# ---------------------------------------------------------------------------
+if [ "$(id -u)" = "0" ]; then
+    skip t3c "running as root — every file is readable to uid 0, so the UNREADABLE branch cannot be reached"
+else
+    BOX="$(new_box t3c)"
+    GATE="$TMP/t3c-gate.sh"
+    printf '#!/bin/sh\nexit 0\n' >"$GATE"
+    chmod 0111 "$GATE"          # executable, NOT readable
+    write_env "$BOX" "PSA_DEPLOY_GATE=$GATE" "PSA_DEPLOY_GATE_AUDIT=$TMP/t3c-audit.log"
+    run_deploy t3c "$BOX" no-such-ref
+    assert_out     t3c "an unreadable gate is recorded"        "GATE-RESOLVED"
+    assert_out     t3c "and named UNREADABLE, not ABSENT"      "sha256=UNREADABLE"
+    assert_not_out t3c "a gate that is THERE is never ABSENT"  "sha256=ABSENT"
+    assert_rc      t3c "and it still does not refuse the deploy" 2
+fi
+
+# ---------------------------------------------------------------------------
 # t4 — an unwritable primary audit log falls back and warns, and the deploy is
 # not refused by it. The unwritable path is a child of a REGULAR FILE, which
 # fails the append for root as well as for an unprivileged user; a mode-based
@@ -245,9 +278,16 @@ BOX="$(new_box t6)"
 SHA="$(box_commit "$BOX")"
 AUDIT="$TMP/t6-audit.log"
 write_env "$BOX" "PSA_DEPLOY_GATE=$TMP/t6-no-such-gate.sh" "PSA_DEPLOY_GATE_AUDIT=$AUDIT"
+T6_RC=0
 ( cd "$BOX" && PSA_DEPLOY_GATE_OVERRIDE="fixture: t6" timeout 60 bash scripts/deploy.sh "$SHA" ) \
-    >"$TMP/t6.out" 2>"$TMP/t6.err" || true
-printf '0\n' >"$TMP/t6.rc"
+    >"$TMP/t6.out" 2>"$TMP/t6.err" || T6_RC=$?
+printf '%s\n' "$T6_RC" >"$TMP/t6.rc"
+# No FIXED exit code is asserted here: this run dies at the stub ssh, so the
+# code is the stub's and not a property of the override path. An earlier draft
+# wrote a literal 0 to t6.rc, which asserted nothing and would have read as a
+# real measurement to whoever added the next case. What IS assertable is that
+# the run did not report SUCCESS against a stub host.
+if [ "$T6_RC" -ne 0 ]; then ok; else bad t6 "override run reported success against a stub host"; fi
 assert_file t6 "identity line recorded" "$AUDIT" "GATE-RESOLVED"
 assert_file t6 "override line recorded" "$AUDIT" "OVERRIDE-GATE-MISSING target=$SHA"
 assert_file t6 "override names its reason" "$AUDIT" "reason=fixture: t6"
@@ -271,6 +311,82 @@ run_deploy t7b "$BOX" no-such-ref
 assert_out     t7b "the move is visible on stdout" "audit=$TMP/t7-moved.log"
 assert_not_out t7b "and the old destination is gone" "audit=$TMP/t7-first.log"
 
+# ---------------------------------------------------------------------------
+# t8 — THE SUCCESS PATH, which is the case the whole block was written for and
+# which nothing above reaches: a gate that is present, executable, and RETURNS
+# PASS. Every other case stops at a refusal or at the gate-missing override, so
+# without this one a refactor could move the record below the gate invocation
+# and the suite would stay green.
+#
+# The gate touches a marker so "the gate ran" is observed, not inferred, and the
+# run then walks into the stub ssh — reaching the deploy step is the proof that
+# the gate passed rather than refused.
+# ---------------------------------------------------------------------------
+BOX="$(new_box t8)"
+SHA="$(box_commit "$BOX")"
+GATE="$TMP/t8-gate.sh"
+MARK="$TMP/t8-gate-ran"
+printf '#!/bin/sh\necho "GATE SAW $1" > "%s"\nexit 0\n' "$MARK" >"$GATE"
+chmod +x "$GATE"
+GATE_SHA="$(sha256sum -- "$GATE" | cut -d' ' -f1)"
+AUDIT="$TMP/t8-audit.log"
+write_env "$BOX" "PSA_DEPLOY_GATE=$GATE" "PSA_DEPLOY_GATE_AUDIT=$AUDIT"
+run_deploy t8 "$BOX" "$SHA"
+assert_out  t8 "record emitted on the PASSING path"   "GATE-RESOLVED"
+assert_out  t8 "names the gate that passed it"        "gate=$GATE"
+assert_out  t8 "with the hash of the file that ran"   "sha256=$GATE_SHA"
+assert_file t8 "and it reached the audit log"         "$AUDIT" "sha256=$GATE_SHA"
+assert_file t8 "the gate really was invoked"          "$MARK" "GATE SAW $SHA"
+assert_err  t8 "and the run proceeded to the deploy step" "STUB SSH REFUSED"
+# Ordering: the record must be emitted BEFORE the pin, on this path too.
+if [ -s "$TMP/t8.out" ] \
+   && [ "$(grep -n 'GATE-RESOLVED' "$TMP/t8.out" | head -1 | cut -d: -f1)" \
+        -lt "$(grep -n 'Pinned target:' "$TMP/t8.out" | head -1 | cut -d: -f1)" ]; then
+    ok
+else
+    bad t8 "record did not precede the pin on the success path"
+    sed 's/^/    out: /' "$TMP/t8.out"
+fi
+
+# ---------------------------------------------------------------------------
+# t9 — ONE APPEND, ONE RECORD. The ref is the raw CLI argument and lands in the
+# line unvalidated (deliberately: the record must survive a ref that never
+# resolves). A newline in it would append a SECOND, perfectly-formed
+# GATE-RESOLVED line describing a deploy that never happened — a forged record
+# in the one file whose only value is being true. Newlines are folded to
+# spaces; a git ref cannot contain one, so nothing legitimate is lost.
+# ---------------------------------------------------------------------------
+BOX="$(new_box t9)"
+GATE="$TMP/t9-gate.sh"; printf '#!/bin/sh\nexit 0\n' >"$GATE"; chmod +x "$GATE"
+AUDIT="$TMP/t9-audit.log"
+write_env "$BOX" "PSA_DEPLOY_GATE=$GATE" "PSA_DEPLOY_GATE_AUDIT=$AUDIT"
+FORGED='2000-01-01T00:00:00Z GATE-RESOLVED ref=deadbeef gate=/totally/other/gate.sh sha256=FORGED'
+run_deploy t9 "$BOX" "$(printf 'x\n%s' "$FORGED")"
+assert_rc t9 "an injected ref still refuses at ref resolution" 2
+# A forged record is a line that STARTS like a record — timestamp, then the
+# marker. Counting bare "GATE-RESOLVED" would not do: once the injected text is
+# folded into a real line, that line legitimately contains the marker twice
+# over, which is ugly but honest and is not a second record.
+RECORD_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z GATE-RESOLVED '
+count_records() { grep -cE "$RECORD_RE" "$1" 2>/dev/null || true; }
+if [ "$(count_records "$AUDIT")" = "1" ]; then ok; else
+    bad t9 "one run wrote more than one record to the audit log"
+    sed 's/^/    log: /' "$AUDIT"
+fi
+assert_file t9 "the forged text is folded into the real line" "$AUDIT" "ref=x $FORGED"
+if [ "$(count_records "$TMP/t9.out")" = "1" ]; then ok; else
+    bad t9 "a forged record stood alone on stdout"
+    sed 's/^/    out: /' "$TMP/t9.out"
+fi
+# The banner echoes the ref too, and it was the SECOND sink: before the ref was
+# folded at its point of entry, the injected line appeared there in full.
+assert_out t9 "the banner carries the folded ref, not an extra line" \
+    "Target ref: x $FORGED ("
+
 echo
-echo "deploy gate identity tests: $PASS passed, $FAIL failed"
+if [ "$SKIP" -gt 0 ]; then
+    echo "deploy gate identity tests: $PASS passed, $FAIL failed, $SKIP SKIPPED (see SKIP lines — those branches are UNCOVERED in this run)"
+else
+    echo "deploy gate identity tests: $PASS passed, $FAIL failed"
+fi
 [ "$FAIL" -eq 0 ]
