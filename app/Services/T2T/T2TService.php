@@ -388,7 +388,7 @@ class T2TService
             'note_id' => $note->id,
         ]);
 
-        $this->captureHdbPressId($ticket);
+        $this->captureHdbPressId($ticket, $note);
 
         return [
             'id' => $note->id,
@@ -405,67 +405,60 @@ class T2TService
     /**
      * Persist the HelpDesk Buttons press id carried by an inbound note.
      *
-     * Resolves over the ticket's WHOLE note history through the same
-     * HdbPressId::resolve() the backfill uses, so a ticket lands in the same
-     * state whether its notes arrived before or after this shipped. That is the
-     * one contract, in both places:
-     *  - lowest note id wins (bodies are read ordered by note id ascending);
-     *  - two DIFFERENT press ids on one ticket are a REFUSAL, not a pick — an id
-     *    already stamped is CLEARED, because keeping either one keys the ticket
-     *    to an endpoint we cannot show is the right one;
-     *  - absence is normal (2 of 50 measured tickets), not an error, not a retry.
+     * Stamps the ONE note just written, from that one body. It does not read the
+     * ticket's note history and it never arbitrates between notes, because under
+     * the note model there is nothing to arbitrate: a ticket holding two presses
+     * is a normal ticket holding two presses — a merge brings the notes with it —
+     * and each note names its own endpoint unambiguously.
+     *
+     * That deletes the whole conflict class the ticket-keyed version carried
+     * (STATUS_CONFLICT, the refusal, and the unconditional keyed clear that could
+     * strip a valid press id from a ticket unrecoverably — GitHub #1330).
+     *
+     * The ticket-level column stays, redefined as a CACHE of the newest press on
+     * the ticket. It is written from the note write, so "newest" is by
+     * construction rather than by a win-rule, and it is never cleared.
+     *
+     * Both writes are keyed BASE-query updates: they bypass $fillable (the press
+     * id is stamped by the system from the vendor's own note and must not be
+     * forgeable through mass assignment), they fire no model events, and they do
+     * not touch updated_at — so capture cannot reorder a technician's ticket list
+     * or trip anything watching for a ticket change.
+     *
+     * ->toBase() is load-bearing, not decoration. Eloquent's own Builder::update()
+     * calls addUpdatedAtColumn() (vendor Builder.php:1266), so the bare
+     * Model::whereKey()->update() this was first specified as would stamp
+     * updated_at on every press — the exact churn GitHub #1317 objects to.
      *
      * Fail-soft by construction: this is bolted onto the vendor's inbound write,
      * so nothing it does may break note creation.
      */
-    private function captureHdbPressId(Ticket $ticket): void
+    private function captureHdbPressId(Ticket $ticket, TicketNote $note): void
     {
         try {
-            // withTrashed + id ascending: same read the backfill performs, so the
-            // two paths cannot disagree about which notes count or in what order.
-            $bodies = TicketNote::withTrashed()
-                ->where('ticket_id', $ticket->id)
-                ->orderBy('id')
-                ->pluck('body');
+            $pressId = HdbPressId::fromBody($note->body);
 
-            $result = HdbPressId::resolve($bodies);
-
-            if ($result['status'] === HdbPressId::STATUS_ABSENT) {
+            if ($pressId === null) {
+                // Not a press note. Overwhelmingly the common case, and normal.
                 return;
             }
 
-            if ($result['status'] === HdbPressId::STATUS_CONFLICT) {
-                // Unconditional keyed write, never a guard on the in-memory value:
-                // $ticket is whatever instance the caller handed us and may have
-                // been hydrated before a concurrent inbound note stamped the row,
-                // so an in-memory null says nothing about what is in the DB. A
-                // stamped id left on a conflicting ticket is precisely the state
-                // the backfill can never revisit — its query is whereNull.
-                Ticket::whereKey($ticket->id)->update(['hdb_press_id' => null]);
-                $ticket->forceFill(['hdb_press_id' => null])->syncOriginalAttribute('hdb_press_id');
+            TicketNote::whereKey($note->id)->toBase()->update(['hdb_press_id' => $pressId]);
+            $note->forceFill(['hdb_press_id' => $pressId])->syncOriginalAttribute('hdb_press_id');
 
-                Log::warning('[T2T] Conflicting HDB press ids on ticket, refusing to key it', [
-                    'ticket_id' => $ticket->id,
-                    'candidates' => $result['candidates'],
-                ]);
-
-                return;
-            }
-
-            if ($ticket->hdb_press_id === $result['press_id']) {
-                return;
-            }
-
-            $ticket->forceFill(['hdb_press_id' => $result['press_id']])->save();
+            Ticket::whereKey($ticket->id)->toBase()->update(['hdb_press_id' => $pressId]);
+            $ticket->forceFill(['hdb_press_id' => $pressId])->syncOriginalAttribute('hdb_press_id');
 
             Log::info('[T2T] Captured HDB press id', [
                 'ticket_id' => $ticket->id,
-                'press_id' => $result['press_id'],
+                'note_id' => $note->id,
+                'press_id' => $pressId,
             ]);
         } catch (\Throwable $e) {
             // Never let press-id capture fail the note write.
             Log::warning('[T2T] Failed to capture HDB press id', [
                 'ticket_id' => $ticket->id,
+                'note_id' => $note->id,
                 'error' => $e->getMessage(),
             ]);
         }

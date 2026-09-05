@@ -39,10 +39,7 @@ class HdbPressIdTest extends TestCase
             .'Connect to user: https://beta.helpdeskbuttons.com/connect?pressID='.self::UUID;
 
         $this->assertSame(self::UUID, HdbPressId::fromBody($body));
-        $this->assertSame(
-            ['status' => HdbPressId::STATUS_FOUND, 'press_id' => self::UUID, 'candidates' => [self::UUID]],
-            HdbPressId::resolve([$body]),
-        );
+        $this->assertSame([self::UUID], HdbPressId::allInBody($body));
     }
 
     public function test_bare_uuid_is_not_a_press_id(): void
@@ -85,32 +82,32 @@ class HdbPressIdTest extends TestCase
 
     public function test_absent_is_a_normal_state_not_an_error(): void
     {
-        $resolution = HdbPressId::resolve(['Customer called back.', null, '']);
-
-        $this->assertSame(HdbPressId::STATUS_ABSENT, $resolution['status']);
-        $this->assertNull($resolution['press_id']);
+        $this->assertNull(HdbPressId::fromBody('Customer called back.'));
+        $this->assertNull(HdbPressId::fromBody(null));
+        $this->assertNull(HdbPressId::fromBody(''));
     }
 
-    public function test_two_different_press_ids_on_one_ticket_are_refused_not_picked(): void
+    public function test_two_different_press_ids_in_one_body_name_no_endpoint(): void
     {
-        $resolution = HdbPressId::resolve([
-            'https://beta.helpdeskbuttons.com/pressView.php?pressID='.self::UUID,
-            'https://beta.helpdeskbuttons.com/pressView.php?pressID='.self::OTHER_UUID,
-        ]);
+        // The only ambiguity left under the note model, and it is a real one:
+        // this single note names two endpoints, so it names neither. Two press
+        // ids on one TICKET is no longer ambiguous and is no longer this
+        // class's business — each note carries its own key.
+        $body = 'https://beta.helpdeskbuttons.com/pressView.php?pressID='.self::UUID."\n"
+            .'https://beta.helpdeskbuttons.com/pressView.php?pressID='.self::OTHER_UUID;
 
-        $this->assertSame(HdbPressId::STATUS_CONFLICT, $resolution['status']);
-        $this->assertNull($resolution['press_id']);
-        $this->assertSame([self::UUID, self::OTHER_UUID], $resolution['candidates']);
+        $this->assertNull(HdbPressId::fromBody($body));
+        $this->assertSame([self::UUID, self::OTHER_UUID], HdbPressId::allInBody($body));
     }
 
-    public function test_same_press_id_repeated_across_notes_is_not_a_conflict(): void
+    public function test_the_same_press_id_twice_in_one_body_is_the_normal_shape(): void
     {
-        $resolution = HdbPressId::resolve([
-            'https://beta.helpdeskbuttons.com/pressView.php?pressID='.self::UUID,
-            'https://beta.helpdeskbuttons.com/connect?pressID='.strtoupper(self::UUID),
-        ]);
+        // The real vendor note carries the SAME press id on both links — the
+        // pressView one and the connect one — and casing must not split them.
+        $body = 'https://beta.helpdeskbuttons.com/pressView.php?pressID='.self::UUID."\n"
+            .'https://beta.helpdeskbuttons.com/connect?pressID='.strtoupper(self::UUID);
 
-        $this->assertSame(HdbPressId::STATUS_FOUND, $resolution['status']);
-        $this->assertSame(self::UUID, $resolution['press_id']);
+        $this->assertSame(self::UUID, HdbPressId::fromBody($body));
+        $this->assertSame([self::UUID], HdbPressId::allInBody($body));
     }
 }
