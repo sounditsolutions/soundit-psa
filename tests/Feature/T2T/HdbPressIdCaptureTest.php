@@ -79,6 +79,26 @@ class HdbPressIdCaptureTest extends TestCase
         $this->assertSame(2, TicketNote::where('ticket_id', $ticket->id)->count());
     }
 
+    public function test_a_conflict_clears_an_id_stamped_after_the_instance_was_hydrated(): void
+    {
+        $user = User::factory()->create();
+        $ticket = $this->buttonTicket();
+        $service = app(T2TService::class);
+
+        // Deliberately NOT re-hydrated: this is the instance a concurrent request
+        // is holding, still reading hdb_press_id = null while the row underneath
+        // it gets stamped. The clear must not be gated on that stale value.
+        $stale = Ticket::find($ticket->id);
+
+        $service->addNoteFromCw($ticket, $this->noteBody(self::UUID), true, $user->id);
+        $this->assertSame(self::UUID, $ticket->fresh()->hdb_press_id);
+        $this->assertNull($stale->hdb_press_id);
+
+        $service->addNoteFromCw($stale, $this->noteBody(self::OTHER_UUID), true, $user->id);
+
+        $this->assertNull($ticket->fresh()->hdb_press_id);
+    }
+
     public function test_the_same_press_id_repeated_on_a_later_note_is_not_a_conflict(): void
     {
         $user = User::factory()->create();

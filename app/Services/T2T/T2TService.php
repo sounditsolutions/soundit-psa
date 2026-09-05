@@ -435,9 +435,14 @@ class T2TService
             }
 
             if ($result['status'] === HdbPressId::STATUS_CONFLICT) {
-                if ($ticket->hdb_press_id !== null) {
-                    $ticket->forceFill(['hdb_press_id' => null])->save();
-                }
+                // Unconditional keyed write, never a guard on the in-memory value:
+                // $ticket is whatever instance the caller handed us and may have
+                // been hydrated before a concurrent inbound note stamped the row,
+                // so an in-memory null says nothing about what is in the DB. A
+                // stamped id left on a conflicting ticket is precisely the state
+                // the backfill can never revisit — its query is whereNull.
+                Ticket::whereKey($ticket->id)->update(['hdb_press_id' => null]);
+                $ticket->forceFill(['hdb_press_id' => null])->syncOriginalAttribute('hdb_press_id');
 
                 Log::warning('[T2T] Conflicting HDB press ids on ticket, refusing to key it', [
                     'ticket_id' => $ticket->id,
