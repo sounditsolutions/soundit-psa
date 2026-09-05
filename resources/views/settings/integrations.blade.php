@@ -2788,6 +2788,81 @@
                         </div>
                     </div>
 
+                    {{-- HDB Report Portal credentials (psa #340) --}}
+                    <fieldset class="border rounded p-3 mb-3">
+                        <legend class="float-none w-auto px-2 fs-6 text-muted">
+                            <i class="bi bi-file-earmark-medical me-1"></i>HDB Report Portal
+                        </legend>
+
+                        <p class="text-muted small mb-3">
+                            Credentials for the service account that reads per-press diagnostic reports
+                            back from HelpDesk Buttons. Use a dedicated subaccount scoped to reports only
+                            &mdash; never a technician's own login. Nothing reads these yet; the fetch is
+                            built separately.
+                        </p>
+
+                        <div class="mb-3">
+                            <label for="hdb_base_url" class="form-label">Portal URL</label>
+                            <input type="url"
+                                   class="form-control font-monospace @error('hdb_base_url') is-invalid @enderror"
+                                   id="hdb_base_url"
+                                   name="hdb_base_url"
+                                   value="{{ $hdbBaseUrl }}">
+                            @error('hdb_base_url')
+                                <div class="invalid-feedback">{{ $message }}</div>
+                            @enderror
+                            <div class="form-text">Leave blank to use the default portal host.</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="hdb_email" class="form-label">Service Account Email</label>
+                            <input type="email"
+                                   class="form-control @error('hdb_email') is-invalid @enderror"
+                                   id="hdb_email"
+                                   name="hdb_email"
+                                   value="{{ $hdbEmail }}"
+                                   autocomplete="off">
+                            @error('hdb_email')
+                                <div class="invalid-feedback">{{ $message }}</div>
+                            @enderror
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="hdb_password" class="form-label">Service Account Password</label>
+                            <input type="password"
+                                   class="form-control @error('hdb_password') is-invalid @enderror"
+                                   id="hdb_password"
+                                   name="hdb_password"
+                                   autocomplete="new-password"
+                                   placeholder="{{ $hdbHasPassword ? '••••••••' : 'Not set' }}">
+                            @error('hdb_password')
+                                <div class="invalid-feedback">{{ $message }}</div>
+                            @enderror
+                            <div class="form-text">
+                                Stored encrypted and never shown again. Leave blank to keep the current password.
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="hdb_totp_secret" class="form-label">Two-Factor Seed (base32)</label>
+                            <input type="password"
+                                   class="form-control font-monospace @error('hdb_totp_secret') is-invalid @enderror"
+                                   id="hdb_totp_secret"
+                                   name="hdb_totp_secret"
+                                   autocomplete="off"
+                                   placeholder="{{ $hdbHasTotpSecret ? '••••••••' : 'Not set' }}">
+                            @error('hdb_totp_secret')
+                                <div class="invalid-feedback">{{ $message }}</div>
+                            @enderror
+                            <div class="form-text">
+                                The setup secret shown <strong>once</strong> when two-factor is enrolled &mdash; the
+                                text behind the QR code, not a six-digit code. Paste it exactly as displayed;
+                                spaces are stripped. Stored encrypted and never shown again. Leave blank to keep
+                                the current seed.
+                            </div>
+                        </div>
+                    </fieldset>
+
                     <div class="d-flex gap-2">
                         <button type="submit" class="btn btn-primary">
                             <i class="bi bi-check-lg me-1"></i>Save Settings
