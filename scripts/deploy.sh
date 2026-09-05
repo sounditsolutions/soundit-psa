@@ -142,15 +142,24 @@ _PSA_AUDIT_FB="${PSA_DEPLOY_GATE_AUDIT_FALLBACK:-${TMPDIR:-/tmp}/psa-deploy-gate
 # ⭐ NOTHING HERE MAY REFUSE A DEPLOY. This runs under `set -e`; the
 # `[ ! -x "$PSA_GATE" ]` check below is the intended refusal point for a
 # missing gate, and this block is not (line numbers deliberately not cited —
-# this insertion moved them once already). An unreadable
-# gate degrades to ABSENT, a missing or broken hasher degrades to UNHASHED, an
+# this insertion moved them once already). A gate that is not there records as
+# ABSENT and a present-but-unreadable one as UNREADABLE — readability and
+# executability are independent bits, and a 0111 gate still satisfies the `-x`
+# contract below and RUNS — a missing or broken hasher degrades to UNHASHED, an
 # unwritable audit log warns and continues. A control that can brick the deploy
 # path it observes is worse than the blindness it fixes.
 # =============================================================================
-if [ ! -r "$PSA_GATE" ]; then
-  # Unreadable covers absent, and covers present-but-unreadable: in both cases
-  # there is no content to hash and the refusal below is the place that rules.
+if [ ! -e "$PSA_GATE" ]; then
+  # No file at all. The `[ ! -x ]` refusal below is the place that rules on it;
+  # this only names it.
   _psa_gate_hash="ABSENT"
+elif [ ! -r "$PSA_GATE" ]; then
+  # Present, but we cannot read it to hash it. NOT the same as absent: `-r` and
+  # `-x` are independent, so an execute-only gate reaches the refusal check
+  # below, passes it, and is INVOKED. Writing ABSENT for a gate that actually
+  # ran states the opposite of what happened, in the one record whose only
+  # value is being true.
+  _psa_gate_hash="UNREADABLE"
 elif _psa_gate_hash="$(sha256sum -- "$PSA_GATE" 2>/dev/null)"; then
   _psa_gate_hash="${_psa_gate_hash%% *}"
   # A hasher that exits 0 but prints nothing must not read as a blank hash.
