@@ -1926,6 +1926,89 @@
                         </div>
                     </div>
 
+                    <div class="border-top pt-3 mt-2">
+                        <h6 class="mb-1">Client Onboarding Defaults</h6>
+                        <p class="text-muted small mb-3">
+                            Used when a client is onboarded to Control D: the sub-organization is created
+                            with the enforced profile below, and its provisioning code is cut with these
+                            defaults. Onboarding refuses to run while any of the first four is blank.
+                            @if($controldOnboardingConfigured ?? false)
+                                <span class="badge bg-success ms-1">Ready</span>
+                            @else
+                                <span class="badge bg-secondary ms-1">Incomplete</span>
+                            @endif
+                        </p>
+
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="controld_tactical_client_field_id" class="form-label">Tactical client custom field ID</label>
+                                <input type="number" min="1" step="1"
+                                       class="form-control"
+                                       id="controld_tactical_client_field_id"
+                                       name="tactical_client_field_id"
+                                       value="{{ $controldTacticalFieldId ?? '' }}">
+                                <div class="form-text">
+                                    The CLIENT-model custom field in your Tactical RMM that carries the
+                                    provisioning code. You create this field yourself, so its ID is
+                                    whatever your instance assigned — find it in Tactical under
+                                    Settings &rarr; Global Settings &rarr; Custom Fields. Leave blank and
+                                    the write is refused rather than guessed.
+                                </div>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label for="controld_default_profile_id" class="form-label">Enforced profile ID</label>
+                                <input type="text"
+                                       class="form-control"
+                                       id="controld_default_profile_id"
+                                       name="default_profile_id"
+                                       value="{{ $controldDefaultProfileId ?? '' }}">
+                                <div class="form-text">
+                                    Control D profile applied as the new sub-organization's Global Profile.
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-3 mb-3">
+                                <label for="controld_code_expiry_days" class="form-label">Code expiry (days)</label>
+                                <input type="number" min="1" step="1"
+                                       class="form-control"
+                                       id="controld_code_expiry_days"
+                                       name="code_expiry_days"
+                                       value="{{ $controldCodeExpiryDays ?? '' }}">
+                            </div>
+                            <div class="col-md-3 mb-3">
+                                <label for="controld_code_device_limit_headroom" class="form-label">Device limit headroom</label>
+                                <input type="number" min="0" step="1"
+                                       class="form-control"
+                                       id="controld_code_device_limit_headroom"
+                                       name="code_device_limit_headroom"
+                                       value="{{ $controldCodeHeadroom ?? '' }}">
+                                <div class="form-text">
+                                    Added to the client's asset count. 0 admits no extra machines.
+                                </div>
+                            </div>
+                            <div class="col-md-3 mb-3">
+                                <label for="controld_code_analytics_level" class="form-label">Analytics level</label>
+                                <input type="text"
+                                       class="form-control"
+                                       id="controld_code_analytics_level"
+                                       name="code_analytics_level"
+                                       value="{{ $controldCodeAnalyticsLevel ?? '' }}">
+                                <div class="form-text">Optional. Blank sends nothing.</div>
+                            </div>
+                            <div class="col-md-3 mb-3">
+                                <label for="controld_code_intercept_mode" class="form-label">Intercept mode</label>
+                                <input type="text"
+                                       class="form-control"
+                                       id="controld_code_intercept_mode"
+                                       name="code_intercept_mode"
+                                       value="{{ $controldCodeInterceptMode ?? '' }}">
+                                <div class="form-text">Optional. Blank sends nothing.</div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="d-flex gap-2">
                         <button type="submit" class="btn btn-primary btn-sm">Save Control D Settings</button>
                         <button type="button" class="btn btn-outline-secondary" id="test-controld-btn"
