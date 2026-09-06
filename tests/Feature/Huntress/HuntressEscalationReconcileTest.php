@@ -894,6 +894,94 @@ class HuntressEscalationReconcileTest extends TestCase
         $this->assertSame(0, $result->updated);
     }
 
+    /**
+     * POSITIVE INGEST + INVOCATION control, persisted at the round-4 adjudicator's direction.
+     *
+     * Every other ingest test in this file is a refusal, so nothing walked the real happy path
+     * end to end — a guard that refused *everything* would pass all of them. This ingests a
+     * payload quoting the client's OWN org escalation and pins the CALL SHAPE as well as the
+     * outcome: getEscalation() runs exactly once for the captured id, and the legacy org
+     * listing is never consulted, because a successful by-id answer is the whole answer.
+     */
+    public function test_ingested_ticket_resolves_via_its_own_org_escalation_without_any_listing(): void
+    {
+        $client = Client::factory()->create([
+            'stage' => ClientStage::Active,
+            'is_active' => true,
+            'huntress_organization_id' => 42,
+        ]);
+
+        // Same dedup artifact as the sibling ingest test — the infection_reports URL steers dedup
+        // down the URL branch instead of the subject-hash branch, whose whereRaw('MD5(subject)…')
+        // has no SQLite equivalent. Here BOTH URLs are org 42: this is the legitimate shape.
+        app(HuntressService::class)->createTicketFromCw([
+            'summary' => 'Huntress EDR High Escalation | Endpoints Missing Key EDR Functionality',
+            'initialDescription' => 'Escalation https://dashboard.huntress.io/org/42/escalations/9016 '
+                .'re: https://dashboard.huntress.io/org/42/infection_reports/9184',
+            'company' => ['id' => $client->id],
+        ]);
+
+        $alert = Alert::where('source', AlertSource::Huntress->value)
+            ->where('client_id', $client->id)
+            ->latest('id')
+            ->first();
+
+        $this->assertNotNull($alert, 'ingest did not produce an alert');
+        $this->assertSame(9016, $alert->metadata['escalation_id'], 'ingest no longer captures the id — this test would pass vacuously');
+
+        $ticket = Ticket::findOrFail($alert->ticket_id);
+
+        $huntress = Mockery::mock(HuntressClient::class);
+        $huntress->shouldReceive('getEscalation')->once()->with(9016)->andReturn([
+            'id' => 9016,
+            'status' => 'resolved',
+            'organizations' => [['id' => 42, 'name' => 'Blue Org']],
+        ]);
+        $huntress->shouldReceive('getEscalations')->never();
+
+        $result = (new HuntressEscalationReconcileService(
+            $huntress,
+            app(TicketService::class),
+            app(AlertService::class),
+        ))->reconcile();
+
+        $this->assertResolved($ticket);
+        $this->assertSame(1, $result->updated);
+    }
+
+    /**
+     * NO-FALLBACK-ON-REFUSAL control, persisted at the round-4 adjudicator's direction.
+     *
+     * test_other_throwables_still_warn_and_skip_without_fallback covers a by-id call that
+     * THROWS. This covers a by-id call that SUCCEEDS and is then refused on ownership — the
+     * case round 4 created four more of. escalationTicket() builds a ticket that would match
+     * path 2 on org + subject + window, so a silent fallback would close it off the weaker
+     * matcher. getEscalations() is mocked ->never() rather than seeded: the claim is not that
+     * the fallback finds nothing, it is that the fallback is never reached at all. A stronger
+     * negative must not be overridden by a weaker matcher.
+     */
+    public function test_a_refused_by_id_answer_does_not_fall_back_to_the_org_listing(): void
+    {
+        $ticket = $this->escalationTicket($this->mappedClient(42), metaEscalationId: 9017);
+
+        $huntress = Mockery::mock(HuntressClient::class);
+        $huntress->shouldReceive('getEscalation')->once()->with(9017)->andReturn([
+            'id' => 9017,
+            'status' => 'resolved',
+            'organizations' => [['id' => 77, 'name' => 'Someone Else']],
+        ]);
+        $huntress->shouldReceive('getEscalations')->never();
+
+        $result = (new HuntressEscalationReconcileService(
+            $huntress,
+            app(TicketService::class),
+            app(AlertService::class),
+        ))->reconcile();
+
+        $this->assertStaysOpen($ticket);
+        $this->assertSame(0, $result->updated);
+    }
+
     /** MATCHING-ORG control: the guard must not be a blanket ban — the happy path still closes. */
     public function test_a_metadata_captured_id_resolves_when_the_escalation_carries_the_ticket_org(): void
     {
