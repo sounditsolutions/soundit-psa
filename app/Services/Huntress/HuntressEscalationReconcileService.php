@@ -159,7 +159,9 @@ class HuntressEscalationReconcileService
                 $escalation = $this->client->getEscalation($escalationId);
             } catch (\Throwable $e) {
                 if (! ($e instanceof HuntressClientException) || $e->getCode() !== 404) {
-                    Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) failed: {$e->getMessage()}");
+                    Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) failed: {$e->getMessage()}", [
+                        'ticket_id' => $ticket->id,
+                    ]);
 
                     return false;
                 }
@@ -169,11 +171,18 @@ class HuntressEscalationReconcileService
                 // org's rows, and once the by-id read fails we cannot confirm which row that
                 // is, so a lone match there may be a sibling and would close this ticket off
                 // someone else's escalation. A 404 is NOT proof of deletion (see the class
-                // docblock) — it is only the loss of the definitive read. Skip. Logged at info
-                // rather than warning because HuntressClient has already logged the failed
-                // request at error level; this line adds the ticket-side disposition, not a
-                // second fault report. No tombstone is persisted: the id is retried next run.
-                Log::info("[HuntressEscalationReconcile] getEscalation({$escalationId}) returned 404; skipping — a stale id cannot fall back to org+subject+window matching", [
+                // docblock) — it is only the loss of the definitive read. Skip.
+                //
+                // Deliberately still warning, at the SAME level as any other fetch failure.
+                // Downgrading it was tempting — a purged escalation is not a fault — but 404 is
+                // exactly the status this code says it cannot attribute, and the causes the
+                // docblock lists (narrowed key scope, changed base path, a gateway) return it
+                // for EVERY ticket at once. That is the widest blast radius this service has,
+                // and it would then be its quietest line. HuntressClient does log the failed
+                // request at error level, but request-scoped and without a ticket id, so the
+                // correlation below is the only per-ticket record that the skip happened.
+                // No tombstone is persisted: the id is retried next run.
+                Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) returned 404; skipping — a stale id cannot fall back to org+subject+window matching", [
                     'ticket_id' => $ticket->id,
                 ]);
 

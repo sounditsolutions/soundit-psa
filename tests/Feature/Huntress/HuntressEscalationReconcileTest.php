@@ -369,7 +369,9 @@ class HuntressEscalationReconcileTest extends TestCase
         $this->assertSame(AlertStatus::Ticketed, Alert::where('ticket_id', $ticket->id)->first()->status);
         $this->assertCount(1, $history, 'a stale id must not reach the org listing');
         $this->assertSame('/v1/escalations/555', $history[0]['request']->getUri()->getPath());
-        Log::shouldHaveReceived('info')->with(
+        // Warning, not info: 404 is the one status this code cannot attribute, and its
+        // systemic causes hit every ticket at once. See the catch block's comment.
+        Log::shouldHaveReceived('warning')->with(
             '[HuntressEscalationReconcile] getEscalation(555) returned 404; skipping — a stale id cannot fall back to org+subject+window matching',
             ['ticket_id' => $ticket->id],
         )->once();
@@ -380,10 +382,18 @@ class HuntressEscalationReconcileTest extends TestCase
     }
 
     /**
-     * THE mis-close vector the 404 path must not open: the sibling below WOULD be a unique
-     * org+subject+window match, but the 404 is positive evidence this ticket's own escalation
-     * is absent from that list — so uniqueness no longer implies ownership. Path 2 is for
-     * no-id tickets only; the org listing is never even read for a stale-id ticket.
+     * THE mis-close vector the 404 path must not open. Once the by-id read fails we can no
+     * longer confirm WHICH org row is this ticket's, so a unique org+subject+window match
+     * stops implying ownership and a lone survivor may be a sibling. Note the claim we do
+     * NOT make, and which the class docblock refutes: a 404 is not evidence this ticket's
+     * escalation is absent from the org listing.
+     *
+     * No sibling is fixtured, deliberately. `shouldNotReceive('getEscalations')` asserts the
+     * listing is never consulted AT ALL for a stale-id ticket, which is strictly stronger
+     * than asserting some particular sibling goes unmatched — it holds whatever the org
+     * contains. That assertion is the whole test; the resolution assertions below would pass
+     * against pre-change code too. This is a guard against reintroducing the fallback, not a
+     * demonstration that today's code was broken.
      */
     public function test_404_does_not_close_the_ticket_off_a_sibling_escalation(): void
     {
@@ -416,8 +426,16 @@ class HuntressEscalationReconcileTest extends TestCase
         $this->assertSame(AlertStatus::Ticketed, Alert::where('ticket_id', $ticket->id)->first()->status);
         Log::shouldHaveReceived('warning')->with(
             "[HuntressEscalationReconcile] getEscalation(555) failed: {$failure->getMessage()}",
+            ['ticket_id' => $ticket->id],
         )->twice();
-        Log::shouldNotHaveReceived('info');
+        // Scoped to the one line that must not appear, not to a whole log level: these rows
+        // take the generic-failure branch, so the 404 skip line is what proves they did not
+        // take the 404 branch. A bare shouldNotHaveReceived('warning') would now be false,
+        // and a bare shouldNotHaveReceived('info') would break on unrelated info logging.
+        Log::shouldNotHaveReceived('warning', [
+            '[HuntressEscalationReconcile] getEscalation(555) returned 404; skipping — a stale id cannot fall back to org+subject+window matching',
+            ['ticket_id' => $ticket->id],
+        ]);
     }
 
     public static function non404Failures(): array
