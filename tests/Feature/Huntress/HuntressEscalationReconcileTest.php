@@ -325,23 +325,46 @@ class HuntressEscalationReconcileTest extends TestCase
 
     // ── correspondence: exact id fast path (ingest-captured escalation id) ──
 
+    /**
+     * FIXTURE CORRECTION, flagged rather than buried: this stub previously carried no
+     * `organizations` key. HuntressClient::getEscalation's docblock records that the by-id
+     * view returns "an organizations[] array", so a stub without one was never a shape the API
+     * produces — and under the ownership guard it now fails closed, as any unreadable payload
+     * does. Org 42 is the org this ticket's client is already mapped to, so what the test
+     * asserts is unchanged; it is now asserted against a realistic response.
+     */
     public function test_id_bearing_ticket_resolves_via_exact_get_escalation(): void
     {
         $client = $this->mappedClient(42);
         $ticket = $this->escalationTicket($client, metaEscalationId: 555);
 
-        $result = $this->service([], [555 => ['id' => 555, 'status' => 'resolved']])->reconcile();
+        $result = $this->service([], [555 => [
+            'id' => 555,
+            'status' => 'resolved',
+            'organizations' => [['id' => 42, 'name' => 'Blue Org']],
+        ]])->reconcile();
 
         $this->assertResolved($ticket);
         $this->assertSame(1, $result->updated);
     }
 
+    /**
+     * Same fixture correction, and here it matters MORE: without `organizations[]` this test
+     * still passed after the guard landed, but for the wrong reason — the ticket stayed open
+     * because the payload was unreadable, not because the escalation was unresolved. That is a
+     * test rotted into a tautology. With the org present it once again exercises what its name
+     * claims.
+     */
     public function test_id_bearing_ticket_with_still_open_escalation_stays_open(): void
     {
         $client = $this->mappedClient(42);
         $ticket = $this->escalationTicket($client, metaEscalationId: 556);
 
-        $this->service([], [556 => ['id' => 556, 'status' => 'sent']])->reconcile();
+        $this->service([], [556 => [
+            'id' => 556,
+            'status' => 'sent',
+            'organizations' => [['id' => 42, 'name' => 'Blue Org']],
+        ]])->reconcile();
 
         $this->assertStaysOpen($ticket);
     }
@@ -506,7 +529,7 @@ class HuntressEscalationReconcileTest extends TestCase
         $this->assertSame(0, $result->updated);
         $this->assertSame(AlertStatus::Ticketed, Alert::where('ticket_id', $ticket->id)->first()->status);
         Log::shouldHaveReceived('warning')->with(
-            "[HuntressEscalationReconcile] getEscalation(9001) returned an escalation that does not correspond to the ticket's organization; skipping — a text-recovered id is not proof of ownership",
+            "[HuntressEscalationReconcile] getEscalation(9001) belongs to a different organization than the ticket's client; skipping — resolving here would close one client's ticket off another client's escalation",
             ['ticket_id' => $ticket->id],
         )->once();
     }
@@ -531,14 +554,14 @@ class HuntressEscalationReconcileTest extends TestCase
     }
 
     /**
-     * Fail CLOSED, not open, when correspondence cannot be established either way: an
-     * account-level escalation carries no organizations[], so a text-recovered id pointing at
-     * one can never be shown to be this ticket's. Compare
-     * test_account_level_failed_to_deliver_is_never_resolved, which is the same refusal
-     * arrived at down path 2.
+     * MISSING organizations[] is not the account-level shape and must fail CLOSED. The
+     * exception below is for a payload that says "this escalation belongs to no org" by
+     * carrying an empty list; a payload with no `organizations` key at all says nothing, and
+     * we do not guess. This is the malformed/truncated-response case.
      */
-    public function test_text_recovered_id_for_an_account_level_escalation_is_skipped(): void
+    public function test_a_recovered_id_fails_closed_when_organizations_is_absent(): void
     {
+        Log::spy();
         $ticket = $this->escalationTicket(
             $this->mappedClient(42),
             sourceAlertId: 'https://dashboard.huntress.io/escalations/9003',
@@ -547,11 +570,63 @@ class HuntressEscalationReconcileTest extends TestCase
         $result = $this->service([], [9003 => [
             'id' => 9003,
             'status' => 'resolved',
-            'organizations' => [],
         ]])->reconcile();
 
         $this->assertStaysOpen($ticket);
         $this->assertSame(0, $result->updated);
+        Log::shouldHaveReceived('warning')->with(
+            '[HuntressEscalationReconcile] getEscalation(9003) returned no usable organizations[] and is not the documented account-level shape; skipping — correspondence cannot be established, so this fails closed',
+            ['ticket_id' => $ticket->id, 'organizations_present' => false],
+        )->once();
+    }
+
+    /**
+     * A NON-EMPTY organizations[] whose entries yield no usable id is malformed, not
+     * account-level. Without the present-and-empty requirement this would read as "no org
+     * association" and sail through the exception.
+     */
+    public function test_a_recovered_id_fails_closed_when_organizations_entries_are_malformed(): void
+    {
+        $ticket = $this->escalationTicket(
+            $this->mappedClient(42),
+            sourceAlertId: 'https://dashboard.huntress.io/escalations/9013',
+        );
+
+        $result = $this->service([], [9013 => [
+            'id' => 9013,
+            'status' => 'resolved',
+            'organizations' => [['name' => 'No id here'], ['id' => 'not-a-number']],
+        ]])->reconcile();
+
+        $this->assertStaysOpen($ticket);
+        $this->assertSame(0, $result->updated);
+    }
+
+    /**
+     * THE ACKNOWLEDGED TRADE, pinned so it cannot change silently. Dropping the provenance
+     * exemption means the account-level exception is now decided by the ESCALATION's shape
+     * alone, so a text-recovered id pointing at an account-level escalation resolves where the
+     * previous revision skipped it. That is deliberate: provenance was not a real boundary, so
+     * it could not carry the distinction. The residual — a quoted account-level escalation URL
+     * closing an unrelated ticket — is same-account incident confusion, NOT the cross-client
+     * leak #1390 is about (an account-level escalation belongs to no client), and is tracked
+     * separately rather than papered over here.
+     */
+    public function test_a_recovered_id_resolves_for_a_documented_account_level_escalation(): void
+    {
+        $ticket = $this->escalationTicket(
+            $this->mappedClient(42),
+            sourceAlertId: 'https://dashboard.huntress.io/escalations/9014',
+        );
+
+        $result = $this->service([], [9014 => [
+            'id' => 9014,
+            'status' => 'resolved',
+            'organizations' => [],
+        ]])->reconcile();
+
+        $this->assertResolved($ticket);
+        $this->assertSame(1, $result->updated);
     }
 
     /** The ticket side of the same unknown: no org mapping, so nothing to correspond against. */
@@ -574,10 +649,11 @@ class HuntressEscalationReconcileTest extends TestCase
     }
 
     /**
-     * The guard is scoped to RECOVERED ids by provenance. An ingest-captured metadata id came
-     * from this alert's own Huntress payload, and account-level escalations carry no org at
-     * all — so org-checking it would close the one path the class docblock says an
-     * ingest-captured id exists to rescue. Trusted id + account-level escalation still resolves.
+     * PRESERVATION control for the narrow account-level exception, reached with a metadata id.
+     * Account-level escalations ("Failed to Deliver" integration health) carry no organization
+     * association at all and are the one class path 2 structurally cannot reach, so refusing
+     * them here would close the only route by which they ever resolve. This test is what a
+     * blanket "every escalation must carry the ticket's org" mutation breaks.
      */
     public function test_metadata_captured_id_still_resolves_for_an_account_level_escalation(): void
     {
@@ -591,6 +667,136 @@ class HuntressEscalationReconcileTest extends TestCase
 
         $this->assertResolved($ticket);
         $this->assertSame(1, $result->updated);
+    }
+
+    /**
+     * THE REGRESSION THE PREVIOUS REVISION MISSED, as a direct control on stored state: the id
+     * sits in alert metadata — the path that revision exempted as "trusted" — and points at
+     * another client's escalation. It must be refused exactly as a description-recovered id is.
+     * Metadata is not a provenance guarantee: HuntressService scrapes that value out of the
+     * vendor payload body with an unanchored `escalations/(\d+)`.
+     */
+    public function test_a_metadata_captured_id_for_another_clients_escalation_does_not_close_the_ticket(): void
+    {
+        Log::spy();
+        $ticket = $this->escalationTicket($this->mappedClient(42), metaEscalationId: 9006);
+
+        $result = $this->service([], [9006 => [
+            'id' => 9006,
+            'status' => 'resolved',
+            'organizations' => [['id' => 77, 'name' => 'Someone Else']],
+        ]])->reconcile();
+
+        $this->assertStaysOpen($ticket);
+        $this->assertSame(0, $result->updated);
+        $this->assertSame(AlertStatus::Ticketed, Alert::where('ticket_id', $ticket->id)->first()->status);
+        Log::shouldHaveReceived('warning')->with(
+            "[HuntressEscalationReconcile] getEscalation(9006) belongs to a different organization than the ticket's client; skipping — resolving here would close one client's ticket off another client's escalation",
+            ['ticket_id' => $ticket->id],
+        )->once();
+    }
+
+    /**
+     * The same regression END TO END, through real ingest rather than a hand-built alert. A
+     * Huntress payload for company A whose body quotes an org-B escalation URL is ingested by
+     * HuntressService::createTicketFromCw — which captures 9007 into alert metadata — and the
+     * reconcile pass must still refuse to close A's ticket off B's resolved escalation. This
+     * is the assertion that fails on the previous revision despite its own guard tests passing.
+     */
+    public function test_ingested_ticket_is_not_closed_by_an_escalation_from_another_org(): void
+    {
+        $clientA = Client::factory()->create([
+            'stage' => ClientStage::Active,
+            'is_active' => true,
+            'huntress_organization_id' => 42,
+        ]);
+
+        // The org-77 escalations URL is the hostile part: client A's payload quoting another
+        // tenant's escalation. The org-42 infection_reports URL is the same test artifact the
+        // sibling ingest test uses — it steers dedup down the URL branch instead of the
+        // subject-hash branch, whose whereRaw('MD5(subject)…') has no SQLite equivalent.
+        app(HuntressService::class)->createTicketFromCw([
+            'summary' => 'Huntress EDR High Escalation | Endpoints Missing Key EDR Functionality',
+            'initialDescription' => 'Escalation https://dashboard.huntress.io/org/77/escalations/9007 '
+                .'re: https://dashboard.huntress.io/org/42/infection_reports/9183',
+            'company' => ['id' => $clientA->id],
+        ]);
+
+        $alert = Alert::where('source', AlertSource::Huntress->value)
+            ->where('client_id', $clientA->id)
+            ->latest('id')
+            ->first();
+
+        $this->assertNotNull($alert, 'ingest did not produce an alert');
+        $this->assertSame(9007, $alert->metadata['escalation_id'], 'ingest no longer captures the id — this test would pass vacuously');
+
+        $ticket = Ticket::findOrFail($alert->ticket_id);
+
+        $result = $this->service([], [9007 => [
+            'id' => 9007,
+            'status' => 'resolved',
+            'organizations' => [['id' => 77, 'name' => 'Someone Else']],
+        ]])->reconcile();
+
+        // Not assertStaysOpen(): that helper pins InProgress, and a freshly ingested ticket is
+        // New. What matters here is only that reconcile did not resolve or close it.
+        $this->assertNotSame(TicketStatus::Resolved, $ticket->fresh()->status);
+        $this->assertNull($ticket->fresh()->closed_at);
+        $this->assertSame(0, $result->updated);
+    }
+
+    /** MATCHING-ORG control: the guard must not be a blanket ban — the happy path still closes. */
+    public function test_a_metadata_captured_id_resolves_when_the_escalation_carries_the_ticket_org(): void
+    {
+        $ticket = $this->escalationTicket($this->mappedClient(42), metaEscalationId: 9008);
+
+        $result = $this->service([], [9008 => [
+            'id' => 9008,
+            'status' => 'resolved',
+            'organizations' => [['id' => 42, 'name' => 'Blue Org']],
+        ]])->reconcile();
+
+        $this->assertResolved($ticket);
+        $this->assertSame(1, $result->updated);
+    }
+
+    /**
+     * BARE-ID control. escalationOrgIds() accepts both `[['id' => 42]]` and a bare `[42]`;
+     * nothing pinned the bare form, so a future "simplification" to `$org['id']` would break
+     * ownership matching silently — and it would break it OPEN-to-closed, refusing valid work.
+     */
+    public function test_ownership_matching_accepts_a_bare_organization_id_list(): void
+    {
+        $ticket = $this->escalationTicket($this->mappedClient(42), metaEscalationId: 9009);
+
+        $result = $this->service([], [9009 => [
+            'id' => 9009,
+            'status' => 'resolved',
+            'organizations' => [42],
+        ]])->reconcile();
+
+        $this->assertResolved($ticket);
+        $this->assertSame(1, $result->updated);
+    }
+
+    /**
+     * STILL-OPEN control. Ownership is a precondition, not the verdict: an escalation that
+     * passes the org check but is not resolved upstream must leave the ticket open. Without
+     * this, a guard that accidentally returned true for "belongs to us" would read as green.
+     */
+    public function test_an_owned_but_unresolved_escalation_leaves_the_ticket_open(): void
+    {
+        $ticket = $this->escalationTicket($this->mappedClient(42), metaEscalationId: 9010);
+
+        $result = $this->service([], [9010 => [
+            'id' => 9010,
+            'status' => 'sent',
+            'resolved_at' => null,
+            'organizations' => [['id' => 42, 'name' => 'Blue Org']],
+        ]])->reconcile();
+
+        $this->assertStaysOpen($ticket);
+        $this->assertSame(0, $result->updated);
     }
 
     // ── scope ──────────────────────────────────────────────────────────────
