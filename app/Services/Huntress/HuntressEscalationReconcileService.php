@@ -337,22 +337,34 @@ class HuntressEscalationReconcileService
      * ticket's client? Applied to every recovered id regardless of where it came from.
      *
      * FAILS CLOSED. Correspondence must be established positively; anything this method
-     * cannot interpret is a refusal, never a pass. Three refusals, logged distinctly because
-     * they need different operator responses:
+     * cannot interpret is a refusal, never a pass. FOUR refusals and no exceptions, logged
+     * distinctly because they need different operator responses:
      *   - org-associated but a DIFFERENT org — the #1390 cross-client vector; the loud one.
      *   - org-associated but the ticket's client is not org-mapped — a mapping gap here, not
      *     a vendor problem.
-     *   - no usable organizations[] and not the documented account-level shape — an unreadable
-     *     payload; we do not guess.
+     *   - account-level: `organizations` PRESENT and literally empty, so the escalation carries
+     *     no organization association at all. That is the account-level shape (integration
+     *     health, e.g. "Failed to Deliver"), and it is how HuntressReadOnlyToolset
+     *     ::escalationInScope already defines account-level.
+     *   - no usable organizations[] and not that shape — an unreadable payload; we do not guess.
      *
-     * ONE exception, deliberately narrow: an escalation with `organizations` PRESENT and
-     * literally empty carries no organization association at all. That is the account-level
-     * shape (integration health, e.g. "Failed to Deliver"), it is how HuntressReadOnlyToolset
-     * ::escalationInScope already defines account-level, and an org comparison against it is
-     * not merely unavailable but meaningless. Those escalations are exactly the ones path 2
-     * structurally cannot reach. A payload that merely HAPPENS to yield no org ids — key
-     * absent, not an array, or a non-empty list of malformed entries — is NOT that shape and
-     * is refused.
+     * The third of those was an exception until r3 and is now a refusal, which is a DELIBERATE
+     * loss of coverage. The argument for passing it was that an org comparison against an
+     * account-level escalation is not merely unavailable but meaningless. True, and not enough:
+     * meaningless-to-compare is the ABSENCE of correspondence, not correspondence, and this
+     * method's contract is that absence fails closed. Passing it meant any free text quoting an
+     * account-level escalation URL — and any metadata id captured from a payload that quoted one
+     * — closed the ticket holding it as soon as that account-wide escalation resolved, which
+     * happens routinely. Both were reproduced against the passing code. Account-level
+     * escalations are also exactly the ones path 2 structurally cannot reach, so refusing here
+     * means they auto-close nothing and a human closes those tickets: the class's own stated
+     * trade, lower coverage via skip for a security-status auto-close. Restoring the auto-close
+     * needs POSITIVE binding between ticket and escalation — subject core and creation window,
+     * as path 2 already requires — which is its own change with its own tests.
+     *
+     * A payload that merely HAPPENS to yield no org ids — key absent, not an array, or a
+     * non-empty list of malformed entries — is not the account-level shape and takes the fourth
+     * refusal, which says so rather than reporting an unreadable payload as account-level.
      *
      * `type` was considered as the account-level discriminator and REJECTED: no production
      * code reads it, and this repo's own fixtures disagree about its values ('Escalation' in
@@ -370,12 +382,24 @@ class HuntressEscalationReconcileService
      */
     private function escalationBelongsToTicket(Ticket $ticket, array $escalation, int $escalationId): bool
     {
-        $organizations = $escalation['organizations'] ?? null;
+        // array_key_exists, not ??, because a key PRESENT and null is a different upstream problem
+        // from an absent one — which is the exact distinction organizations_type below exists to
+        // draw, so ?? would have made that diagnostic contradict its own comment.
+        $hasOrganizations = array_key_exists('organizations', $escalation);
+        $organizations = $hasOrganizations ? $escalation['organizations'] : null;
         $escalationOrgIds = $this->escalationOrgIds($escalation);
 
         if ($escalationOrgIds === []) {
             if (is_array($organizations) && $organizations === []) {
-                return true;
+                // 🔑 Account-level, and it fails closed like everything else here. The reasoning
+                // and the coverage it costs are in this method's docblock; the short version is
+                // that having nothing to compare is not a match. No escalation id, subject or URL
+                // goes to the log beyond the id the caller already holds.
+                Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) is account-level (organizations[] present and empty), so it corresponds to no client and cannot correspond to this ticket; skipping — an account-wide escalation resolving is not evidence about this ticket, so this fails closed", [
+                    'ticket_id' => $ticket->id,
+                ]);
+
+                return false;
             }
 
             // organizations_type, not an is_array() boolean: a present-but-wrong-typed field
@@ -384,7 +408,7 @@ class HuntressEscalationReconcileService
             // missing key that is actually right there with the wrong shape.
             Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) returned no usable organizations[] and is not the documented account-level shape; skipping — correspondence cannot be established, so this fails closed", [
                 'ticket_id' => $ticket->id,
-                'organizations_type' => get_debug_type($organizations),
+                'organizations_type' => $hasOrganizations ? get_debug_type($organizations) : 'absent',
             ]);
 
             return false;

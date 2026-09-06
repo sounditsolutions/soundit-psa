@@ -557,10 +557,10 @@ class HuntressEscalationReconcileTest extends TestCase
     }
 
     /**
-     * MISSING organizations[] is not the account-level shape and must fail CLOSED. The
-     * exception below is for a payload that says "this escalation belongs to no org" by
-     * carrying an empty list; a payload with no `organizations` key at all says nothing, and
-     * we do not guess. This is the malformed/truncated-response case.
+     * MISSING organizations[] is not the account-level shape. Both refuse now, but they refuse
+     * with DIFFERENT messages and different remedies: an empty list says "this escalation
+     * belongs to no org" and is a well-formed answer, while no `organizations` key at all says
+     * nothing and is a malformed or truncated response. Reported as 'absent'.
      */
     public function test_a_recovered_id_fails_closed_when_organizations_is_absent(): void
     {
@@ -579,6 +579,34 @@ class HuntressEscalationReconcileTest extends TestCase
         $this->assertSame(0, $result->updated);
         Log::shouldHaveReceived('warning')->with(
             '[HuntressEscalationReconcile] getEscalation(9003) returned no usable organizations[] and is not the documented account-level shape; skipping — correspondence cannot be established, so this fails closed',
+            ['ticket_id' => $ticket->id, 'organizations_type' => 'absent'],
+        )->once();
+    }
+
+    /**
+     * PRESENT AND NULL, which is a THIRD upstream problem: the vendor answered and explicitly
+     * said null where a list belongs. It refuses like the absent case but must not REPORT like
+     * it — `?? null` collapsed the two into one 'null' reading, which is the reader's first
+     * question ("is the key missing or is it there with the wrong shape?") answered wrongly.
+     */
+    public function test_a_recovered_id_fails_closed_when_organizations_is_present_and_null(): void
+    {
+        Log::spy();
+        $ticket = $this->escalationTicket(
+            $this->mappedClient(42),
+            sourceAlertId: 'https://dashboard.huntress.io/escalations/9017',
+        );
+
+        $result = $this->service([], [9017 => [
+            'id' => 9017,
+            'status' => 'resolved',
+            'organizations' => null,
+        ]])->reconcile();
+
+        $this->assertStaysOpen($ticket);
+        $this->assertSame(0, $result->updated);
+        Log::shouldHaveReceived('warning')->with(
+            '[HuntressEscalationReconcile] getEscalation(9017) returned no usable organizations[] and is not the documented account-level shape; skipping — correspondence cannot be established, so this fails closed',
             ['ticket_id' => $ticket->id, 'organizations_type' => 'null'],
         )->once();
     }
@@ -614,17 +642,17 @@ class HuntressEscalationReconcileTest extends TestCase
     }
 
     /**
-     * THE ACKNOWLEDGED TRADE, pinned so it cannot change silently. Dropping the provenance
-     * exemption means the account-level exception is now decided by the ESCALATION's shape
-     * alone, so a text-recovered id pointing at an account-level escalation resolves where the
-     * previous revision skipped it. That is deliberate: provenance was not a real boundary, so
-     * it could not carry the distinction. The residual — a quoted account-level escalation URL
-     * closing an unrelated ticket — is same-account incident confusion, NOT the cross-client
-     * leak #1390 is about (an account-level escalation belongs to no client), and is tracked
-     * separately rather than papered over here.
+     * TEXT-RECOVERED + MAPPED CLIENT. An earlier revision let account-level escalations through
+     * on the reasoning that an org comparison against them is meaningless. This is the harm that
+     * bought: ticket text quoting an account-level escalation URL — the "Failed to Deliver"
+     * integration-health class, which fires account-wide and resolves routinely — closed the
+     * ticket holding the quote, for a mapped client the escalation says nothing about. Having
+     * nothing to compare is the absence of correspondence, not correspondence, so it now fails
+     * closed with its own message.
      */
-    public function test_a_recovered_id_resolves_for_a_documented_account_level_escalation(): void
+    public function test_a_recovered_id_fails_closed_for_an_account_level_escalation(): void
     {
+        Log::spy();
         $ticket = $this->escalationTicket(
             $this->mappedClient(42),
             sourceAlertId: 'https://dashboard.huntress.io/escalations/9014',
@@ -636,8 +664,15 @@ class HuntressEscalationReconcileTest extends TestCase
             'organizations' => [],
         ]])->reconcile();
 
-        $this->assertResolved($ticket);
-        $this->assertSame(1, $result->updated);
+        $this->assertStaysOpen($ticket);
+        $this->assertSame(0, $result->updated);
+        // A DISTINCT message from the unreadable-payload refusal above: account-level is a
+        // well-formed answer we decline to act on, not a payload we failed to read, and an
+        // operator seeing this one should not go looking for a broken vendor response.
+        Log::shouldHaveReceived('warning')->with(
+            '[HuntressEscalationReconcile] getEscalation(9014) is account-level (organizations[] present and empty), so it corresponds to no client and cannot correspond to this ticket; skipping — an account-wide escalation resolving is not evidence about this ticket, so this fails closed',
+            ['ticket_id' => $ticket->id],
+        )->once();
     }
 
     /** The ticket side of the same unknown: no org mapping, so nothing to correspond against. */
@@ -695,14 +730,15 @@ class HuntressEscalationReconcileTest extends TestCase
     }
 
     /**
-     * PRESERVATION control for the narrow account-level exception, reached with a metadata id.
-     * Account-level escalations ("Failed to Deliver" integration health) carry no organization
-     * association at all and are the one class path 2 structurally cannot reach, so refusing
-     * them here would close the only route by which they ever resolve. This test is what a
-     * blanket "every escalation must carry the ticket's org" mutation breaks.
+     * METADATA + MAPPED CLIENT — the same refusal reached by the other route. Metadata provenance
+     * is not a guarantee of anything: HuntressService scrapes the id out of the vendor payload
+     * body with an unanchored `escalations/(\d+)`, so a payload quoting an account-level
+     * escalation lands one here just as description text does. Both routes must refuse, or the
+     * "trusted metadata" distinction the previous revision was corrected for creeps back in.
      */
-    public function test_metadata_captured_id_still_resolves_for_an_account_level_escalation(): void
+    public function test_metadata_captured_id_fails_closed_for_an_account_level_escalation(): void
     {
+        Log::spy();
         $ticket = $this->escalationTicket($this->mappedClient(42), metaEscalationId: 9005);
 
         $result = $this->service([], [9005 => [
@@ -711,8 +747,73 @@ class HuntressEscalationReconcileTest extends TestCase
             'organizations' => [],
         ]])->reconcile();
 
-        $this->assertResolved($ticket);
-        $this->assertSame(1, $result->updated);
+        $this->assertStaysOpen($ticket);
+        $this->assertSame(0, $result->updated);
+        // The alert stays Ticketed: a refusal must not half-close the record either.
+        $this->assertSame(AlertStatus::Ticketed, Alert::where('ticket_id', $ticket->id)->first()->status);
+        Log::shouldHaveReceived('warning')->with(
+            '[HuntressEscalationReconcile] getEscalation(9005) is account-level (organizations[] present and empty), so it corresponds to no client and cannot correspond to this ticket; skipping — an account-wide escalation resolving is not evidence about this ticket, so this fails closed',
+            ['ticket_id' => $ticket->id],
+        )->once();
+    }
+
+    /**
+     * METADATA + UNMAPPED CLIENT. The refusal is decided by the ESCALATION's shape, so it must
+     * not depend on the ticket side being well-formed. An unmapped client is the case where the
+     * org-mismatch and no-mapping guards below can never fire — nothing on the ticket to compare
+     * — which is precisely why the account-level exception was so dangerous here: there was no
+     * second line of defence behind it. Note the account-level message, NOT the
+     * no-huntress_organization_id one: this returns before the ticket is ever consulted.
+     */
+    public function test_an_account_level_escalation_fails_closed_for_an_unmapped_client(): void
+    {
+        Log::spy();
+        $unmapped = Client::factory()->create(['huntress_organization_id' => null]);
+        $ticket = $this->escalationTicket($unmapped, metaEscalationId: 9015);
+
+        $result = $this->service([], [9015 => [
+            'id' => 9015,
+            'status' => 'resolved',
+            'organizations' => [],
+        ]])->reconcile();
+
+        $this->assertStaysOpen($ticket);
+        $this->assertSame(0, $result->updated);
+        Log::shouldHaveReceived('warning')->with(
+            '[HuntressEscalationReconcile] getEscalation(9015) is account-level (organizations[] present and empty), so it corresponds to no client and cannot correspond to this ticket; skipping — an account-wide escalation resolving is not evidence about this ticket, so this fails closed',
+            ['ticket_id' => $ticket->id],
+        )->once();
+    }
+
+    /**
+     * CLIENTLESS. The candidate query filters on source and status only, never on client_id, so
+     * a Huntress ticket with no client does reach this branch — and an account-level escalation
+     * is the one shape that used to close it. The escalation-shape refusal fires first and says
+     * account-level rather than "the ticket has no client": the ticket's defect is real but it is
+     * not why we are declining, and a log line that named it would send an operator to fix the
+     * wrong thing.
+     */
+    public function test_an_account_level_escalation_fails_closed_for_a_ticket_with_no_client(): void
+    {
+        Log::spy();
+        $ticket = $this->escalationTicket(
+            $this->mappedClient(42),
+            sourceAlertId: 'https://dashboard.huntress.io/escalations/9016',
+        );
+        $ticket->forceFill(['client_id' => null])->save();
+
+        $result = $this->service([], [9016 => [
+            'id' => 9016,
+            'status' => 'resolved',
+            'organizations' => [],
+        ]])->reconcile();
+
+        $this->assertStaysOpen($ticket);
+        $this->assertSame(0, $result->updated);
+        Log::shouldHaveReceived('warning')->with(
+            '[HuntressEscalationReconcile] getEscalation(9016) is account-level (organizations[] present and empty), so it corresponds to no client and cannot correspond to this ticket; skipping — an account-wide escalation resolving is not evidence about this ticket, so this fails closed',
+            ['ticket_id' => $ticket->id],
+        )->once();
     }
 
     /**
