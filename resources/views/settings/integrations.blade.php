@@ -1966,11 +1966,36 @@
                             // unsafe old() shape is used all over this file and predates this
                             // card. That did not excuse extending it here, and repairing it
                             // everywhere is not this change.
-                            $controldOld = static function (string $key, string $stored): string {
+                            // Whether THIS request is a bounce from the card's own
+                            // rejected submit. Asked ONCE for the card, because per
+                            // field is exactly what cannot be asked: the global
+                            // ConvertEmptyStringsToNull turns a deliberately emptied
+                            // field into null BEFORE the failed validate() flashes it,
+                            // so old($key) === null has the same shape as "never
+                            // flashed". Falling back to the stored value on that null
+                            // silently REVERSES the operator's clear — the one contract
+                            // this card exists to keep — and their corrected save then
+                            // re-persists the value they removed, worst of all for the
+                            // field id that arms the deploy trigger. Keyed on the six
+                            // names so that another card's bounce, which flashes its own
+                            // input and none of ours, still renders stored values here.
+                            $controldFlashed = session()->getOldInput();
+                            $controldBounced = is_array($controldFlashed) && array_intersect_key($controldFlashed, array_flip([
+                                'tactical_client_field_id',
+                                'default_profile_id',
+                                'code_expiry_days',
+                                'code_device_limit_headroom',
+                                'code_analytics_level',
+                                'code_intercept_mode',
+                            ])) !== [];
+
+                            $controldOld = static function (string $key, string $stored) use ($controldBounced): string {
                                 $attempted = old($key);
 
                                 if ($attempted === null) {
-                                    return $stored;
+                                    // On a bounce a null IS the operator's blank; off
+                                    // one it only means the field was never submitted.
+                                    return $controldBounced ? '' : $stored;
                                 }
 
                                 return is_scalar($attempted) ? (string) $attempted : '';

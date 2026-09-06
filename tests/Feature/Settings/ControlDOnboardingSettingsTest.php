@@ -323,6 +323,51 @@ class ControlDOnboardingSettingsTest extends TestCase
         $this->assertSame(14, ControlDConfig::codeExpiryDays(), 'a rejected submit writes nothing');
     }
 
+    public function test_a_rejected_submit_re_renders_a_cleared_field_as_cleared(): void
+    {
+        // The other half of the bounce, and the one that quietly undoes a clear.
+        // ConvertEmptyStringsToNull makes a deliberately emptied field flash as null,
+        // which old() cannot distinguish from "never flashed" — so a card that falls
+        // back to the stored value there re-shows the value the operator just removed.
+        // They fix the field that was actually rejected, save, and the clear they
+        // performed is silently re-persisted with nothing said.
+        $this->save();
+        $this->assertSame(14, ControlDConfig::codeExpiryDays());
+
+        // One field cleared on purpose, a different one rejected. Nothing is written.
+        $this->save(['code_expiry_days' => '', 'tactical_client_field_id' => '0'])
+            ->assertSessionHasErrors('tactical_client_field_id');
+
+        // One GET: the flashed input survives exactly one request.
+        $html = $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->getContent();
+
+        $this->assertSame(1, preg_match('/<input\b[^>]*\bname="code_expiry_days"[^>]*>/', $html, $tag));
+        $this->assertStringContainsString(
+            'value=""',
+            $tag[0],
+            'a deliberately cleared field must stay cleared on the bounce, not revert to the stored 14'
+        );
+
+        $this->assertSame(1, preg_match('/<input\b[^>]*\bname="default_profile_id"[^>]*>/', $html, $profile));
+        $this->assertStringContainsString(
+            'value="5840sea5y7"',
+            $profile[0],
+            'a sibling the operator left alone still shows what they submitted'
+        );
+    }
+
+    public function test_an_ordinary_page_load_still_renders_stored_values(): void
+    {
+        // The control for the test above: with no flashed input of this card's own,
+        // null from old() means "not submitted" and the stored value must be shown.
+        $this->save(['code_expiry_days' => '30']);
+
+        $this->assertSame('30', $this->renderedValue('code_expiry_days'));
+    }
+
     public function test_a_canonical_stored_number_is_left_exactly_as_it_is(): void
     {
         // Preservation control: green before this change and after it. If normalising
