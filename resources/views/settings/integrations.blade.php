@@ -1952,6 +1952,13 @@
                                        id="controld_tactical_client_field_id"
                                        name="tactical_client_field_id"
                                        value="{{ $controldTacticalFieldId ?? '' }}">
+                                @if (! empty($controldNumericUnusable['tactical_client_field_id']))
+                                    <div class="form-text text-danger">
+                                        Stored value <code>{{ $controldNumericUnusable['tactical_client_field_id'] }}</code>
+                                        is not a whole number, so this field cannot display it. Saving
+                                        this form will clear it — retype the value you want.
+                                    </div>
+                                @endif
                                 <div class="form-text">
                                     The CLIENT-model custom field in your Tactical RMM that holds the
                                     client's Control D organization ID — the field named
@@ -1983,6 +1990,13 @@
                                        id="controld_code_expiry_days"
                                        name="code_expiry_days"
                                        value="{{ $controldCodeExpiryDays ?? '' }}">
+                                @if (! empty($controldNumericUnusable['code_expiry_days']))
+                                    <div class="form-text text-danger">
+                                        Stored value <code>{{ $controldNumericUnusable['code_expiry_days'] }}</code>
+                                        is not a whole number, so this field cannot display it. Saving
+                                        this form will clear it — retype the value you want.
+                                    </div>
+                                @endif
                             </div>
                             <div class="col-md-3 mb-3">
                                 <label for="controld_code_device_limit_headroom" class="form-label">Device limit headroom</label>
@@ -1991,6 +2005,13 @@
                                        id="controld_code_device_limit_headroom"
                                        name="code_device_limit_headroom"
                                        value="{{ $controldCodeHeadroom ?? '' }}">
+                                @if (! empty($controldNumericUnusable['code_device_limit_headroom']))
+                                    <div class="form-text text-danger">
+                                        Stored value <code>{{ $controldNumericUnusable['code_device_limit_headroom'] }}</code>
+                                        is not a whole number, so this field cannot display it. Saving
+                                        this form will clear it — retype the value you want.
+                                    </div>
+                                @endif
                                 <div class="form-text">
                                     Added to the client's asset count. 0 admits no extra machines.
                                 </div>

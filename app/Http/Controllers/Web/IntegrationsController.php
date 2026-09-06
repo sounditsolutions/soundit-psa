@@ -171,13 +171,56 @@ class IntegrationsController extends Controller
         // back into the form as its stored value: the operator has to be able to SEE a
         // device limit or an expiry to correct it, and a masked number would be absurd.
         // Empty string rather than null so a blank field posts blank and clears cleanly.
-        $controldTacticalFieldId = (string) (ControlDConfig::get('tactical_client_org_field_id') ?? '');
+        //
+        // 🔑 THE THREE NUMBERS ARE NORMALISED FOR DISPLAY, and that is not cosmetic.
+        // They render into <input type="number">, and a browser SANITISES a value
+        // attribute it cannot parse as a number to the empty string. An empty number
+        // input is still a VALID one, so the field submits blank and the blank-clears
+        // rule in updateControlD() erases the setting. Rendering the raw stored bytes
+        // therefore meant that merely opening this page and pressing Save destroyed
+        // any stored value a browser could not parse — including the edge-whitespace
+        // shape ControlDConfig::readInt() accepts on purpose and
+        // ControlDOnboardingSettingsTest pins as supported. Rendering the canonical
+        // decimal form the typed readers already see makes what is displayed
+        // round-trip to exactly what was stored.
+        //
+        // A value no number input can carry at all is rendered blank and REPORTED
+        // rather than shown and silently swallowed — $controldNumericUnusable below.
+        // That keeps the two cases distinct: accepted whitespace round-trips
+        // untouched, a malformed row is named to the operator before a save clears it.
+        $displayInt = static function (?string $raw): string {
+            $raw = trim((string) $raw);
+
+            // Same shape readInt() accepts, plus a leading '-' so a negative row stays
+            // visible and correctable instead of vanishing. Bounds are the inputs' min
+            // attribute and the validator's job, not this renderer's.
+            return preg_match('/^-?(0|[1-9][0-9]*)$/', $raw) === 1 ? $raw : '';
+        };
+
+        $unusableInt = static function (?string $raw) use ($displayInt): ?string {
+            $raw = trim((string) $raw);
+
+            return $raw !== '' && $displayInt($raw) === '' ? $raw : null;
+        };
+
+        $controldTacticalFieldIdRaw = ControlDConfig::get('tactical_client_org_field_id');
+        $controldCodeExpiryDaysRaw = ControlDConfig::get('code_expiry_days');
+        $controldCodeHeadroomRaw = ControlDConfig::get('code_device_limit_headroom');
+
+        $controldTacticalFieldId = $displayInt($controldTacticalFieldIdRaw);
         $controldDefaultProfileId = (string) (ControlDConfig::get('default_profile_id') ?? '');
-        $controldCodeExpiryDays = (string) (ControlDConfig::get('code_expiry_days') ?? '');
-        $controldCodeHeadroom = (string) (ControlDConfig::get('code_device_limit_headroom') ?? '');
+        $controldCodeExpiryDays = $displayInt($controldCodeExpiryDaysRaw);
+        $controldCodeHeadroom = $displayInt($controldCodeHeadroomRaw);
         $controldCodeAnalyticsLevel = (string) (ControlDConfig::get('code_analytics_level') ?? '');
         $controldCodeInterceptMode = (string) (ControlDConfig::get('code_intercept_mode') ?? '');
         $controldOnboardingConfigured = ControlDConfig::isOnboardingConfigured();
+
+        // Keyed by the input NAME so the view can warn beside the field it concerns.
+        $controldNumericUnusable = array_filter([
+            'tactical_client_field_id' => $unusableInt($controldTacticalFieldIdRaw),
+            'code_expiry_days' => $unusableInt($controldCodeExpiryDaysRaw),
+            'code_device_limit_headroom' => $unusableInt($controldCodeHeadroomRaw),
+        ], static fn (?string $raw): bool => $raw !== null);
 
         // Zorus
         $zorusConfigured = ZorusConfig::isConfigured();
@@ -498,7 +541,7 @@ class IntegrationsController extends Controller
             'controldConfigured', 'controldConnected', 'controldEnabled',
             'controldTacticalFieldId', 'controldDefaultProfileId', 'controldCodeExpiryDays',
             'controldCodeHeadroom', 'controldCodeAnalyticsLevel', 'controldCodeInterceptMode',
-            'controldOnboardingConfigured',
+            'controldOnboardingConfigured', 'controldNumericUnusable',
             'zorusConfigured', 'zorusConnected', 'zorusEnabled',
             'appriverConfigured', 'appriverConnected', 'appriverConnectedAt', 'appriverEnabled',
             'printixConfigured', 'printixPartnerId', 'printixHasSecret', 'printixConnected', 'printixEnabled',

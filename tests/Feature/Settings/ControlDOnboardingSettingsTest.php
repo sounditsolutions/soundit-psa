@@ -130,6 +130,145 @@ class ControlDOnboardingSettingsTest extends TestCase
             ->assertSee('value="abc123"', false);
     }
 
+    // --- display normalisation: the form must round-trip what is stored ---
+    //
+    // The defect these pin: the three numbers render into <input type="number">, and
+    // the HTML value sanitisation algorithm for that type replaces a value the parser
+    // cannot read as a number with the EMPTY STRING. An empty number input is still a
+    // valid one, so the field submits blank and the blank-clears rule erases the
+    // setting. Opening this page and pressing Save therefore destroyed stored values
+    // this class elsewhere promises are supported — ' 14 ' and "\t18\n" among them.
+    //
+    // Observed, not theorised: headless Chromium on the actual rendered page reported
+    // DOM value empty, form valid and FormData empty for the stored "\t18\n" case,
+    // and the real POST that followed cleared the setting.
+
+    /**
+     * The value attribute the page renders for ONE named input.
+     *
+     * A whole-page assertSee('value="18"') cannot say which of this page's hundred-odd
+     * inputs carried it — which is exactly how a display defect on these three fields
+     * survived the original tests. Scope by name or prove nothing.
+     */
+    private function renderedValue(string $name): string
+    {
+        $html = $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->getContent();
+
+        $this->assertSame(
+            1,
+            preg_match('/<input\b[^>]*\bname="'.preg_quote($name, '/').'"[^>]*>/', $html, $tag),
+            "No single input named {$name} was rendered."
+        );
+
+        return preg_match('/\bvalue="([^"]*)"/', $tag[0], $m) === 1 ? $m[1] : '';
+    }
+
+    /**
+     * What a browser's <input type="number"> would hold, given a rendered attribute.
+     *
+     * A model of the HTML value sanitisation algorithm for the number state: a value
+     * that is not a valid floating-point number becomes ''. PHPUnit cannot run the
+     * sanitiser, so without this the round-trip half of these tests would post the raw
+     * attribute — which Laravel's TrimStrings would quietly rescue, hiding the very
+     * destruction being pinned. Chromium's observed behaviour on this page matches.
+     */
+    private function asBrowserWouldSubmit(string $rendered): string
+    {
+        return preg_match('/^-?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/', $rendered) === 1 ? $rendered : '';
+    }
+
+    public function test_stored_edge_whitespace_renders_canonically_and_survives_a_resave(): void
+    {
+        // The exact shape test_a_directly_stored_integer_with_edge_whitespace_still_reads_back
+        // declares supported. The panel canonicalises on write and never stores it; an
+        // older writer or a hand-edited row can, and this page must not eat it.
+        Setting::setValue(ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING, "\t18\n");
+        Setting::setValue(ControlDConfig::CODE_EXPIRY_DAYS_SETTING, ' 14 ');
+        Setting::setValue(ControlDConfig::CODE_DEVICE_LIMIT_HEADROOM_SETTING, " 0\n");
+
+        $this->assertSame('18', $this->renderedValue('tactical_client_field_id'));
+        $this->assertSame('14', $this->renderedValue('code_expiry_days'));
+        $this->assertSame('0', $this->renderedValue('code_device_limit_headroom'));
+
+        // Now submit the form exactly as a browser holding those values would.
+        $this->save([
+            'tactical_client_field_id' => $this->asBrowserWouldSubmit($this->renderedValue('tactical_client_field_id')),
+            'code_expiry_days' => $this->asBrowserWouldSubmit($this->renderedValue('code_expiry_days')),
+            'code_device_limit_headroom' => $this->asBrowserWouldSubmit($this->renderedValue('code_device_limit_headroom')),
+        ])->assertRedirect(route('settings.integrations'));
+
+        $this->assertSame(18, ControlDConfig::tacticalClientOrgFieldId());
+        $this->assertSame(14, ControlDConfig::codeExpiryDays());
+        $this->assertSame(0, ControlDConfig::codeDeviceLimitHeadroom());
+    }
+
+    public function test_saving_an_unrelated_field_does_not_erase_a_supported_stored_number(): void
+    {
+        // The harm itself, pinned without asserting anything about the markup: the
+        // operator opens the page to change the profile id, presses Save, and the
+        // expiry they never touched is gone. The test above goes red on the render
+        // before it reaches this, so this one carries the destruction on its own.
+        Setting::setValue(ControlDConfig::CODE_EXPIRY_DAYS_SETTING, ' 14 ');
+
+        $this->save([
+            'default_profile_id' => 'a-new-profile',
+            'code_expiry_days' => $this->asBrowserWouldSubmit($this->renderedValue('code_expiry_days')),
+        ])->assertRedirect(route('settings.integrations'));
+
+        $this->assertSame(14, ControlDConfig::codeExpiryDays());
+    }
+
+    public function test_zero_headroom_renders_as_zero_and_not_as_blank(): void
+    {
+        // Zero is a value, not an absence — the class docblock's second load-bearing
+        // property. A renderer written with ?: or empty() collapses it to blank, and a
+        // save would then clear the tightest legitimate setting there is.
+        Setting::setValue(ControlDConfig::CODE_DEVICE_LIMIT_HEADROOM_SETTING, '0');
+
+        $this->assertSame('0', $this->renderedValue('code_device_limit_headroom'));
+    }
+
+    public function test_the_largest_supported_integer_renders_unchanged(): void
+    {
+        Setting::setValue(ControlDConfig::CODE_EXPIRY_DAYS_SETTING, (string) PHP_INT_MAX);
+
+        $this->assertSame((string) PHP_INT_MAX, $this->renderedValue('code_expiry_days'));
+    }
+
+    public function test_a_malformed_stored_number_renders_blank_and_is_reported(): void
+    {
+        // The other side of the distinction: 'abc' is not a supported value — every
+        // ControlDConfig accessor already refuses it — so clearing it on save is
+        // correct. What would not be correct is doing it silently, so the operator is
+        // told what is stored and what saving will do before they press the button.
+        Setting::setValue(ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING, 'abc');
+
+        $this->assertSame('', $this->renderedValue('tactical_client_field_id'));
+
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertSee('is not a whole number')
+            ->assertSee('<code>abc</code>', false);
+    }
+
+    public function test_a_canonical_stored_number_is_left_exactly_as_it_is(): void
+    {
+        // Preservation control: green before this change and after it. If normalising
+        // the display ever alters a value that was already canonical, this goes red.
+        Setting::setValue(ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING, '18');
+
+        $this->assertSame('18', $this->renderedValue('tactical_client_field_id'));
+
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertDontSee('is not a whole number');
+    }
+
     public function test_the_readiness_badge_follows_the_four_required_values(): void
     {
         $this->actingAs($this->user)
