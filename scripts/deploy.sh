@@ -77,6 +77,15 @@ DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 # whatever happens to be checked out on the deploying box. so-e67m: this replaces the
 # old 'git push' (unpinned local branch) + VPS 'git pull' (unconditional non-ff merge).
 REVIEWED_REF="${1:-origin/$DEPLOY_BRANCH}"
+# Fold CR/LF/TAB out of the ref BEFORE anything echoes it. A git ref cannot
+# contain them, so nothing legitimate is lost and nothing resolvable changes —
+# but this value is echoed to stdout twice and appended to the gate audit log,
+# and a newline in it would let a caller inject a whole extra line into either.
+# The line that matters is the GATE-RESOLVED record below, whose only value is
+# being true; a second, perfectly-formed record for a deploy that never
+# happened is worse than no record. Fixed here, at the single point of entry,
+# rather than at each place the value is printed.
+REVIEWED_REF="${REVIEWED_REF//[$'\n\r\t']/ }"
 
 echo "=== Deploying to $DEPLOY_HOST ==="
 echo "Target ref: $REVIEWED_REF (must already be on origin — land code via the review gate, not this script)"
@@ -99,6 +108,107 @@ echo "Target ref: $REVIEWED_REF (must already be on origin — land code via the
 # =============================================================================
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PSA_GATE="${PSA_DEPLOY_GATE:-/home/charlie/soundit-office/scripts/psa-deploy-gate.sh}"
+
+# Audit destinations, resolved ONCE here rather than inside the gate-missing
+# override branch below, because the GATE-RESOLVED record needs them on every
+# path — including the paths that never reach that branch. Defaults unchanged.
+# ⚠ COUPLING: this path points at the office city from a file in the client
+# repo. Move or rename that directory and records stop being written there —
+# which is exactly why both writers below fall back and shout instead of
+# failing silently.
+_PSA_AUDIT="${PSA_DEPLOY_GATE_AUDIT:-/home/charlie/soundit-office/.gc/psa-deploy-gate.log}"
+_PSA_AUDIT_FB="${PSA_DEPLOY_GATE_AUDIT_FALLBACK:-${TMPDIR:-/tmp}/psa-deploy-gate.audit.log}"
+
+# =============================================================================
+# GATE IDENTITY RECORD (card 6a9a2420). Names the gate that is ABOUT to be
+# consulted, before either branch below, so it is recorded on the refusal, the
+# override and the success paths alike.
+#
+# Why the success path needed this at all: PSA_GATE is resolved directly above
+# and invoked well below, and until this block the resolved path reached the
+# operator ONLY from the refusal message — i.e. exactly when the gate did NOT
+# run. A substituted gate that returns PASS left the deploy log unable to say
+# which file passed it.
+#
+# ⭐ THIS IS DETECTION, NOT A BOUNDARY, and the distinction is not decoration:
+#   * `sha256sum` is an external resolved through PATH, and PATH is assignable
+#     from the gitignored scripts/deploy.env, which is sourced under `set -a`
+#     as shell code in this shell (the same trap documented at lines 43-49 for
+#     `dirname`). A hostile deploy.env can shadow the hasher, or this echo.
+#   * So this catches substitution by ACCIDENT, drift, and a stale deploy.env,
+#     and it is honest evidence in the log afterwards. It stops nothing.
+# The path/hash pair is what makes it useful: a same-path different-content
+# swap has an unchanged `gate=` and a changed `sha256=`.
+#
+# The resolved AUDIT paths are named on the line too, and the line goes to
+# STDOUT, not only to the audit log. PSA_DEPLOY_GATE_AUDIT is set by the same
+# deploy.env this record is a control on, so a record whose only destination
+# that file chooses is not a control on that file — one edit would move both
+# the gate and the evidence of the gate. Stdout is a SECOND destination that
+# deploy.env does not select, and naming the audit path on it is what makes
+# RELOCATING the log visible.
+# ⚠ Stdout is NOT out of that file's reach, and an earlier draft of this
+#   comment said it was. deploy.env is sourced as shell — not read as a list of
+#   values — so it can `exec 1>/dev/null`, or define an `echo` function, and
+#   suppress this line as easily as it can move the log. Two destinations that
+#   must BOTH be subverted is a higher bar and a second thing to get wrong. It
+#   is not a boundary; see above.
+#
+# ⭐ NOTHING HERE MAY REFUSE A DEPLOY. This runs under `set -e`; the
+# `[ ! -x "$PSA_GATE" ]` check below is the intended refusal point for a
+# missing gate, and this block is not (line numbers deliberately not cited —
+# this insertion moved them once already). A gate that is not there records as
+# ABSENT and a present-but-unreadable one as UNREADABLE — readability and
+# executability are independent bits, and a 0111 gate still satisfies the `-x`
+# contract below and RUNS — a missing or broken hasher degrades to UNHASHED, an
+# unwritable audit log warns and continues. A control that can brick the deploy
+# path it observes is worse than the blindness it fixes.
+# =============================================================================
+if [ ! -e "$PSA_GATE" ]; then
+  # No file at all. The `[ ! -x ]` refusal below is the place that rules on it;
+  # this only names it.
+  _psa_gate_hash="ABSENT"
+elif [ ! -r "$PSA_GATE" ]; then
+  # Present, but we cannot read it to hash it. NOT the same as absent: `-r` and
+  # `-x` are independent, so an execute-only gate reaches the refusal check
+  # below, passes it, and is INVOKED. Writing ABSENT for a gate that actually
+  # ran states the opposite of what happened, in the one record whose only
+  # value is being true.
+  _psa_gate_hash="UNREADABLE"
+elif _psa_gate_hash="$(sha256sum -- "$PSA_GATE" 2>/dev/null)"; then
+  _psa_gate_hash="${_psa_gate_hash%% *}"
+  # A hasher that exits 0 but prints nothing must not read as a blank hash.
+  [ -n "$_psa_gate_hash" ] || _psa_gate_hash="UNHASHED"
+else
+  # Absent, shadowed, or failing sha256sum. Recorded as such rather than
+  # aborting: the deploy is not less safe than it was before this block.
+  _psa_gate_hash="UNHASHED"
+fi
+# Same zero-exit-but-silent case the hasher is guarded against, one line up: a
+# shadowed `date` that prints nothing would otherwise produce a timestampless
+# line that still looks well-formed and matches no sentinel.
+_psa_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo UNDATED)"
+[ -n "$_psa_ts" ] || _psa_ts="UNDATED"
+# REVIEWED_REF, not TARGET_SHA — the pin happens below, and this record must
+# survive the case where the ref never resolves. It correlates the line with
+# the deploy attempt that wrote it.
+_PSA_GATE_LINE="$_psa_ts GATE-RESOLVED ref=$REVIEWED_REF gate=$PSA_GATE sha256=$_psa_gate_hash audit=$_PSA_AUDIT audit_fallback=$_PSA_AUDIT_FB"
+# ONE append, ONE record. REVIEWED_REF is already folded where it is read, so
+# this is the same fold applied to the other interpolated fields: the gate and
+# audit paths come from deploy.env, and a hasher that prints more than one line
+# survives `%% *` with the rest intact. Any of them could otherwise append a
+# second, perfectly-formed GATE-RESOLVED line describing a deploy that never
+# happened. Belt and braces on purpose — this is the only line here whose value
+# is that it is true.
+_PSA_GATE_LINE="${_PSA_GATE_LINE//[$'\n\r\t']/ }"
+echo "$_PSA_GATE_LINE"
+if ! echo "$_PSA_GATE_LINE" >> "$_PSA_AUDIT" 2>/dev/null; then
+  if echo "$_PSA_GATE_LINE" >> "$_PSA_AUDIT_FB" 2>/dev/null; then
+    echo "⚠️  AUDIT LOG UNWRITABLE ($_PSA_AUDIT) — gate identity recorded to fallback: $_PSA_AUDIT_FB" >&2
+  else
+    echo "⚠️  GATE IDENTITY NOT RECORDED ON DISK (tried $_PSA_AUDIT and $_PSA_AUDIT_FB) — the line above is stdout-only." >&2
+  fi
+fi
 
 # Resolve the ref to an IMMUTABLE SHA and deploy THAT. The gate has to judge the
 # exact commit that ships: if we gated "origin/main" and then let the VPS fetch
@@ -125,15 +235,26 @@ if [ ! -x "$PSA_GATE" ]; then
   if [ -z "${PSA_DEPLOY_GATE_OVERRIDE:-}" ]; then
     exit 2
   fi
-  echo "⚠️  OVERRIDE ACCEPTED (gate missing): ${PSA_DEPLOY_GATE_OVERRIDE}"
+  # Fold CR/LF/TAB out of the reason BEFORE either sink sees it, for the same
+  # reason the ref is folded at its point of entry. This is the least
+  # constrained value in the script — free-form operator text, or a standing
+  # assignment in the gitignored deploy.env under `set -a` — and it is
+  # interpolated into the same stdout and the same audit log as the
+  # GATE-RESOLVED record above. A newline in it would append a second,
+  # perfectly-formed GATE-RESOLVED line asserting that the real gate was
+  # consulted for this sha, on the one run where the gate was MISSING. Folded
+  # once here so both sinks get the same value.
+  _PSA_OVERRIDE_REASON="${PSA_DEPLOY_GATE_OVERRIDE//[$'\n\r\t']/ }"
+  echo "⚠️  OVERRIDE ACCEPTED (gate missing): ${_PSA_OVERRIDE_REASON}"
   # An override that is not recorded is just an off switch, so a failed append
-  # must SCREAM rather than be swallowed.
-  # ⚠ COUPLING: this path points at the office city from a file in the client
-  # repo. Move or rename that directory and overrides stop being recorded —
-  # which is exactly why this falls back and shouts instead of failing silently.
-  _PSA_AUDIT="${PSA_DEPLOY_GATE_AUDIT:-/home/charlie/soundit-office/.gc/psa-deploy-gate.log}"
-  _PSA_AUDIT_FB="${PSA_DEPLOY_GATE_AUDIT_FALLBACK:-${TMPDIR:-/tmp}/psa-deploy-gate.audit.log}"
-  _PSA_LINE="$(date -u +%Y-%m-%dT%H:%M:%SZ) OVERRIDE-GATE-MISSING target=$TARGET_SHA reason=${PSA_DEPLOY_GATE_OVERRIDE}"
+  # must SCREAM rather than be swallowed. _PSA_AUDIT and _PSA_AUDIT_FB are
+  # resolved once above, alongside the GATE-RESOLVED record, with the same
+  # defaults and the coupling note that used to sit here.
+  _PSA_LINE="$(date -u +%Y-%m-%dT%H:%M:%SZ) OVERRIDE-GATE-MISSING target=$TARGET_SHA reason=${_PSA_OVERRIDE_REASON}"
+  # Belt and braces, as on the identity record: TARGET_SHA is a resolved sha and
+  # the timestamp is a date(1) format string, but ONE append must stay ONE
+  # record even if either of those ever stops being true.
+  _PSA_LINE="${_PSA_LINE//[$'\n\r\t']/ }"
   if ! echo "$_PSA_LINE" >> "$_PSA_AUDIT" 2>/dev/null; then
     if echo "$_PSA_LINE" >> "$_PSA_AUDIT_FB" 2>/dev/null; then
       echo "⚠️  AUDIT LOG UNWRITABLE ($_PSA_AUDIT) — recorded to fallback: $_PSA_AUDIT_FB" >&2
