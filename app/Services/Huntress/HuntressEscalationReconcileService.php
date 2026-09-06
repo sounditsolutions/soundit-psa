@@ -36,7 +36,14 @@ use Illuminate\Support\Facades\Log;
  * CORRESPONDENCE — resolve ONLY on positive ticket↔escalation correspondence:
  *   1. Exact id — an escalation id captured at ingest (alert metadata `escalation_id`) or an
  *      `escalations/{id}` URL in the linked alert / description. getEscalation(id) is
- *      definitive. This is the clean path for tickets ingested after the id-capture fix.
+ *      definitive AS TO EXISTENCE; whether it is definitive as to OWNERSHIP depends on where
+ *      the id came from. An ingest-captured metadata id came from this alert's own Huntress
+ *      payload and is trusted. An id scraped out of `source_alert_id` or the ticket
+ *      description did not: that is free text which can quote any escalation URL, including a
+ *      different tenant's, so a recovered id must ALSO show the fetched escalation carries the
+ *      ticket client's mapped org — and fails closed when it cannot (no mapping, or an
+ *      account-level escalation with no organizations[] to compare). This is the clean path
+ *      for tickets ingested after the id-capture fix.
  *   2. Org + subject + window, UNIQUELY — the legacy path for org-associated escalation
  *      tickets with NO stored id. We take the ticket's mapped org and its subject "core",
  *      and require exactly one escalation (across ALL statuses) for that org whose subject
@@ -150,8 +157,9 @@ class HuntressEscalationReconcileService
     {
         // 1. Exact id fast path (the id-bearing tickets — clean path after the ingest fix).
         //    An escalation id is itself the positive correspondence.
-        $escalationId = $this->extractEscalationId($ticket, $alert);
-        if ($escalationId !== null) {
+        $recovered = $this->extractEscalationId($ticket, $alert);
+        if ($recovered !== null) {
+            $escalationId = $recovered['id'];
             // Only the FETCH is guarded. Classifying a successfully-fetched escalation stays
             // outside the catch so that anything isResolved() raises is not reported as a
             // failed HTTP call — that error accounting is the pre-change behaviour and is kept.
@@ -187,6 +195,29 @@ class HuntressEscalationReconcileService
                 ]);
 
                 return false;
+            }
+
+            // A successful fetch proves the escalation EXISTS. It does not prove it is THIS
+            // ticket's. For an id we recovered out of free text that distinction is the whole
+            // ballgame: a description quoting another tenant's escalation URL would otherwise
+            // close this ticket the moment that unrelated escalation is resolved. So an
+            // untrusted id must additionally clear org correspondence, and fails CLOSED when
+            // correspondence cannot be established at all — no client org mapping, or an
+            // account-level escalation carrying no organizations[] to compare against.
+            // (A trusted metadata id skips this: it was captured by our own ingest from this
+            // alert's payload, and requiring an org there would break the account-level
+            // escalations the class docblock says an ingest-captured id is what rescues.)
+            if (! $recovered['trusted']) {
+                $ticketOrgId = $ticket->client?->huntress_organization_id;
+                $escalationOrgIds = $this->escalationOrgIds($escalation);
+
+                if ($ticketOrgId === null || ! in_array((int) $ticketOrgId, $escalationOrgIds, true)) {
+                    Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) returned an escalation that does not correspond to the ticket's organization; skipping — a text-recovered id is not proof of ownership", [
+                        'ticket_id' => $ticket->id,
+                    ]);
+
+                    return false;
+                }
             }
 
             return $this->isResolved($escalation);
@@ -344,17 +375,27 @@ class HuntressEscalationReconcileService
      * Recover an escalation id from the linked alert's stored `escalation_id` metadata (the
      * ingest-fix clean path) or an `escalations/{id}` URL in the alert source_alert_id or the
      * ticket description. Null when no id is recoverable (the legacy no-id majority).
+     *
+     * PROVENANCE MATTERS, and is returned alongside the id. The metadata id was written by our
+     * own ingest out of the Huntress payload FOR THIS ALERT, so the id is as trustworthy as the
+     * alert-to-ticket link itself. A regex-recovered id is not: `source_alert_id` and especially
+     * `description` are free text that can carry ANY escalation URL — quoted from an email, a
+     * customer reply, a copy-pasted dashboard link for a different tenant. `trusted` is what
+     * escalationResolvedFor() uses to decide whether the fetched escalation must additionally
+     * prove it belongs to this ticket's org.
+     *
+     * @return array{id: int, trusted: bool}|null
      */
-    private function extractEscalationId(Ticket $ticket, ?Alert $alert): ?int
+    private function extractEscalationId(Ticket $ticket, ?Alert $alert): ?array
     {
         $metaId = $alert?->metadata['escalation_id'] ?? null;
         if (is_numeric($metaId) && (int) $metaId > 0) {
-            return (int) $metaId;
+            return ['id' => (int) $metaId, 'trusted' => true];
         }
 
         foreach ([$alert?->source_alert_id, $ticket->description] as $text) {
             if ($text && preg_match('#escalations/(\d+)#', $text, $m)) {
-                return (int) $m[1];
+                return ['id' => (int) $m[1], 'trusted' => false];
             }
         }
 
