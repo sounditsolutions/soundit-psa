@@ -632,9 +632,11 @@ class HuntressEscalationReconcileTest extends TestCase
 
         $this->assertStaysOpen($ticket);
         $this->assertSame(0, $result->updated);
-        // organizations_type distinguishes THIS refusal (present, an array, but unreadable) from
-        // the absent-key one above, which reports 'null'. A boolean present-flag reported both as
-        // the same failure and sent the reader after the wrong upstream problem.
+        // organizations_type distinguishes THIS refusal (present, an array, but unreadable, so
+        // 'array') from the other two payload faults that reach the same message: the ABSENT key
+        // reports 'absent' and a key present but explicitly null reports 'null'. A boolean
+        // present-flag reported all three as the same failure and sent the reader after the wrong
+        // upstream problem.
         Log::shouldHaveReceived('warning')->with(
             '[HuntressEscalationReconcile] getEscalation(9013) returned no usable organizations[] and is not the documented account-level shape; skipping — correspondence cannot be established, so this fails closed',
             ['ticket_id' => $ticket->id, 'organizations_type' => 'array'],
@@ -711,12 +713,12 @@ class HuntressEscalationReconcileTest extends TestCase
         Log::spy();
         $ticket = $this->escalationTicket(
             $this->mappedClient(42),
-            sourceAlertId: 'https://dashboard.huntress.io/org/42/escalations/9014',
+            sourceAlertId: 'https://dashboard.huntress.io/org/42/escalations/9011',
         );
         $ticket->forceFill(['client_id' => null])->save();
 
-        $result = $this->service([], [9014 => [
-            'id' => 9014,
+        $result = $this->service([], [9011 => [
+            'id' => 9011,
             'status' => 'resolved',
             'organizations' => [['id' => 42, 'name' => 'Blue Org']],
         ]])->reconcile();
@@ -724,7 +726,7 @@ class HuntressEscalationReconcileTest extends TestCase
         $this->assertStaysOpen($ticket);
         $this->assertSame(0, $result->updated);
         Log::shouldHaveReceived('warning')->with(
-            '[HuntressEscalationReconcile] getEscalation(9014) is org-associated but the ticket has no client; skipping — correspondence cannot be established, so this fails closed',
+            '[HuntressEscalationReconcile] getEscalation(9011) is org-associated but the ticket has no client; skipping — correspondence cannot be established, so this fails closed',
             ['ticket_id' => $ticket->id, 'escalation_org_ids' => [42]],
         )->once();
     }

@@ -43,9 +43,13 @@ use Illuminate\Support\Facades\Log;
  *      So a fetched escalation must ALSO show it carries the ticket client's mapped org, with
  *      no exemption for how the id arrived, and fails closed when correspondence cannot be
  *      established (no client org mapping, or a payload with no readable organizations[]).
- *      The single exception is an escalation with `organizations` present and empty: that is
- *      the account-level shape, which is associated with no org by definition and is the one
- *      class of escalation path 2 below structurally cannot reach. This is the clean path for
+ *      There is NO exception. In particular an escalation with `organizations` present and
+ *      empty — the account-level shape, associated with no org by definition — is REFUSED
+ *      like everything else here: having nothing to compare is the ABSENCE of correspondence,
+ *      not correspondence. Account-level escalations are also the one class path 2 below
+ *      structurally cannot reach, so they now auto-close nothing and a human closes those
+ *      tickets; escalationBelongsToTicket()'s docblock states that trade and the positive
+ *      binding that would be needed to restore the auto-close. This is the clean path for
  *      tickets ingested after the id-capture fix.
  *   2. Org + subject + window, UNIQUELY — the legacy path for org-associated escalation
  *      tickets with NO stored id. We take the ticket's mapped org and its subject "core",
@@ -337,11 +341,13 @@ class HuntressEscalationReconcileService
      * ticket's client? Applied to every recovered id regardless of where it came from.
      *
      * FAILS CLOSED. Correspondence must be established positively; anything this method
-     * cannot interpret is a refusal, never a pass. FOUR refusals and no exceptions, logged
-     * distinctly because they need different operator responses:
+     * cannot interpret is a refusal, never a pass. FOUR refusal branches and no exceptions,
+     * carrying FIVE distinct diagnoses because the second branch splits — each is logged
+     * separately because they need different operator responses:
      *   - org-associated but a DIFFERENT org — the #1390 cross-client vector; the loud one.
-     *   - org-associated but the ticket's client is not org-mapped — a mapping gap here, not
-     *     a vendor problem.
+     *   - org-associated but no org to compare against, which is TWO faults with two remedies
+     *     and so two messages via $cause: the ticket has no client at all, or the ticket's
+     *     client carries no huntress_organization_id. A mapping gap here, not a vendor problem.
      *   - account-level: `organizations` PRESENT and literally empty, so the escalation carries
      *     no organization association at all. That is the account-level shape (integration
      *     health, e.g. "Failed to Deliver"), and it is how HuntressReadOnlyToolset
