@@ -251,8 +251,76 @@ class ControlDOnboardingSettingsTest extends TestCase
         $this->actingAs($this->user)
             ->get(route('settings.integrations'))
             ->assertOk()
-            ->assertSee('is not a whole number')
+            ->assertSee('is not a value onboarding can use')
             ->assertSee('<code>abc</code>', false);
+    }
+
+    public function test_a_stored_number_below_its_floor_renders_blank_and_is_reported(): void
+    {
+        // A value the typed reader refuses on its FLOOR, not its shape. Rendering it
+        // "so the operator can correct it" is not an option for a number input: -1
+        // against min="1" (and 0 against the same) trips HTML constraint validation and
+        // the browser refuses to submit the whole form, api_key included. Blank plus a
+        // warning is the only rendering that leaves the card submittable.
+        Setting::setValue(ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING, '-1');
+        Setting::setValue(ControlDConfig::CODE_EXPIRY_DAYS_SETTING, '0');
+        Setting::setValue(ControlDConfig::CODE_DEVICE_LIMIT_HEADROOM_SETTING, '-3');
+
+        $this->assertSame('', $this->renderedValue('tactical_client_field_id'));
+        $this->assertSame('', $this->renderedValue('code_expiry_days'));
+        $this->assertSame('', $this->renderedValue('code_device_limit_headroom'));
+
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertSee('<code>-1</code>', false)
+            // '0' is falsy: an empty() guard on the warning drops exactly this row.
+            ->assertSee('<code>0</code>', false)
+            ->assertSee('<code>-3</code>', false);
+    }
+
+    public function test_display_agrees_with_the_typed_reader_for_every_shape_it_refuses(): void
+    {
+        // The display and the accessor must be ONE judgement, not two regexes that
+        // happen to agree today. Each of these is a shape readInt() documents as
+        // refused; if any renders non-blank, a second parser has crept in.
+        foreach (['+14', '007', '1.0', '1e3', '9223372036854775808', 'abc'] as $stored) {
+            Setting::setValue(ControlDConfig::CODE_EXPIRY_DAYS_SETTING, $stored);
+
+            $this->assertNull(ControlDConfig::codeExpiryDays(), "reader accepted {$stored}");
+            $this->assertSame('', $this->renderedValue('code_expiry_days'), "display rendered {$stored}");
+        }
+    }
+
+    public function test_a_rejected_submit_re_renders_the_operators_input_with_an_error(): void
+    {
+        // The card was rendering stored values on every GET, so a rejected POST bounced
+        // the operator back to a form showing the OLD value and no message: the typed
+        // value vanished and nothing said why. Every other card on this page uses
+        // old() and @error; these six now do too.
+        Setting::setValue(ControlDConfig::CODE_EXPIRY_DAYS_SETTING, '14');
+
+        $this->save(['code_expiry_days' => '0', 'default_profile_id' => 'typed-profile'])
+            ->assertSessionHasErrors('code_expiry_days');
+
+        $html = $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->getContent();
+
+        $this->assertSame(1, preg_match('/<input\b[^>]*\bname="code_expiry_days"[^>]*>/', $html, $tag));
+        $this->assertStringContainsString('is-invalid', $tag[0]);
+        $this->assertStringContainsString('value="0"', $tag[0], 'the rejected input should be re-rendered, not the stored 14');
+
+        $this->assertSame(1, preg_match('/<input\b[^>]*\bname="default_profile_id"[^>]*>/', $html, $profile));
+        $this->assertStringContainsString('value="typed-profile"', $profile[0], 'a valid sibling field keeps what the operator typed');
+
+        $this->assertMatchesRegularExpression(
+            '/name="code_expiry_days"[^>]*>\s*<div class="invalid-feedback">[^<]*code expiry days[^<]*<\/div>/i',
+            $html
+        );
+
+        $this->assertSame(14, ControlDConfig::codeExpiryDays(), 'a rejected submit writes nothing');
     }
 
     public function test_a_canonical_stored_number_is_left_exactly_as_it_is(): void
@@ -266,7 +334,7 @@ class ControlDOnboardingSettingsTest extends TestCase
         $this->actingAs($this->user)
             ->get(route('settings.integrations'))
             ->assertOk()
-            ->assertDontSee('is not a whole number');
+            ->assertDontSee('is not a value onboarding can use');
     }
 
     public function test_the_readiness_badge_follows_the_four_required_values(): void

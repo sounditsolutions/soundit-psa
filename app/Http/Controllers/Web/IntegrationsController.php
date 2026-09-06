@@ -172,54 +172,51 @@ class IntegrationsController extends Controller
         // device limit or an expiry to correct it, and a masked number would be absurd.
         // Empty string rather than null so a blank field posts blank and clears cleanly.
         //
-        // 🔑 THE THREE NUMBERS ARE NORMALISED FOR DISPLAY, and that is not cosmetic.
-        // They render into <input type="number">, and a browser SANITISES a value
-        // attribute it cannot parse as a number to the empty string. An empty number
-        // input is still a VALID one, so the field submits blank and the blank-clears
-        // rule in updateControlD() erases the setting. Rendering the raw stored bytes
-        // therefore meant that merely opening this page and pressing Save destroyed
-        // any stored value a browser could not parse — including the edge-whitespace
-        // shape ControlDConfig::readInt() accepts on purpose and
-        // ControlDOnboardingSettingsTest pins as supported. Rendering the canonical
-        // decimal form the typed readers already see makes what is displayed
-        // round-trip to exactly what was stored.
+        // 🔑 THE THREE NUMBERS RENDER WHAT THEIR TYPED READER RETURNS, and that is not
+        // cosmetic. They render into <input type="number">, and a browser SANITISES a
+        // value attribute it cannot parse as a number to the empty string. An empty
+        // number input is still a VALID one, so the field submits blank and the
+        // blank-clears rule in updateControlD() erases the setting. Rendering the raw
+        // stored bytes therefore meant that merely opening this page and pressing Save
+        // destroyed any stored value a browser could not parse — including the
+        // edge-whitespace shape ControlDConfig::readInt() accepts on purpose and
+        // ControlDOnboardingSettingsTest pins as supported.
         //
-        // A value no number input can carry at all is rendered blank and REPORTED
-        // rather than shown and silently swallowed — $controldNumericUnusable below.
-        // That keeps the two cases distinct: accepted whitespace round-trips
-        // untouched, a malformed row is named to the operator before a save clears it.
-        $displayInt = static function (?string $raw): string {
+        // The typed accessor is the ONLY judge of what is displayable. A value it
+        // accepts renders in the canonical decimal form it returns, so what is shown
+        // round-trips to exactly what is stored. A value it refuses — malformed, padded,
+        // signed, or below the accessor's floor — renders blank and is REPORTED beside
+        // its field ($controldNumericUnusable below) rather than shown and silently
+        // swallowed. Rendering a refused value "so the operator can correct it" does
+        // not work for a number input: a stored -1 against min="1" trips HTML
+        // constraint validation and the browser refuses to submit the WHOLE form,
+        // api_key included, so the row is visible and not correctable. Blank plus a
+        // warning keeps the form submittable and tells the operator what a save does.
+        $displayInt = static fn (?int $read): string => $read === null ? '' : (string) $read;
+
+        $unusableInt = static function (?string $raw, ?int $read): ?string {
             $raw = trim((string) $raw);
 
-            // Same shape readInt() accepts, plus a leading '-' so a negative row stays
-            // visible and correctable instead of vanishing. Bounds are the inputs' min
-            // attribute and the validator's job, not this renderer's.
-            return preg_match('/^-?(0|[1-9][0-9]*)$/', $raw) === 1 ? $raw : '';
+            return $raw !== '' && $read === null ? $raw : null;
         };
 
-        $unusableInt = static function (?string $raw) use ($displayInt): ?string {
-            $raw = trim((string) $raw);
+        $controldTacticalFieldIdRead = ControlDConfig::tacticalClientOrgFieldId();
+        $controldCodeExpiryDaysRead = ControlDConfig::codeExpiryDays();
+        $controldCodeHeadroomRead = ControlDConfig::codeDeviceLimitHeadroom();
 
-            return $raw !== '' && $displayInt($raw) === '' ? $raw : null;
-        };
-
-        $controldTacticalFieldIdRaw = ControlDConfig::get('tactical_client_org_field_id');
-        $controldCodeExpiryDaysRaw = ControlDConfig::get('code_expiry_days');
-        $controldCodeHeadroomRaw = ControlDConfig::get('code_device_limit_headroom');
-
-        $controldTacticalFieldId = $displayInt($controldTacticalFieldIdRaw);
+        $controldTacticalFieldId = $displayInt($controldTacticalFieldIdRead);
         $controldDefaultProfileId = (string) (ControlDConfig::get('default_profile_id') ?? '');
-        $controldCodeExpiryDays = $displayInt($controldCodeExpiryDaysRaw);
-        $controldCodeHeadroom = $displayInt($controldCodeHeadroomRaw);
+        $controldCodeExpiryDays = $displayInt($controldCodeExpiryDaysRead);
+        $controldCodeHeadroom = $displayInt($controldCodeHeadroomRead);
         $controldCodeAnalyticsLevel = (string) (ControlDConfig::get('code_analytics_level') ?? '');
         $controldCodeInterceptMode = (string) (ControlDConfig::get('code_intercept_mode') ?? '');
         $controldOnboardingConfigured = ControlDConfig::isOnboardingConfigured();
 
         // Keyed by the input NAME so the view can warn beside the field it concerns.
         $controldNumericUnusable = array_filter([
-            'tactical_client_field_id' => $unusableInt($controldTacticalFieldIdRaw),
-            'code_expiry_days' => $unusableInt($controldCodeExpiryDaysRaw),
-            'code_device_limit_headroom' => $unusableInt($controldCodeHeadroomRaw),
+            'tactical_client_field_id' => $unusableInt(ControlDConfig::get('tactical_client_org_field_id'), $controldTacticalFieldIdRead),
+            'code_expiry_days' => $unusableInt(ControlDConfig::get('code_expiry_days'), $controldCodeExpiryDaysRead),
+            'code_device_limit_headroom' => $unusableInt(ControlDConfig::get('code_device_limit_headroom'), $controldCodeHeadroomRead),
         ], static fn (?string $raw): bool => $raw !== null);
 
         // Zorus

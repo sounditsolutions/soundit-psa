@@ -1948,14 +1948,17 @@
                             <div class="col-md-6 mb-3">
                                 <label for="controld_tactical_client_field_id" class="form-label">Tactical client custom field ID</label>
                                 <input type="number" min="1" step="1"
-                                       class="form-control"
+                                       class="form-control @error('tactical_client_field_id') is-invalid @enderror"
                                        id="controld_tactical_client_field_id"
                                        name="tactical_client_field_id"
-                                       value="{{ $controldTacticalFieldId ?? '' }}">
-                                @if (! empty($controldNumericUnusable['tactical_client_field_id']))
+                                       value="{{ old('tactical_client_field_id', $controldTacticalFieldId ?? '') }}">
+                                @error('tactical_client_field_id')
+                                    <div class="invalid-feedback">{{ $message }}</div>
+                                @enderror
+                                @if (isset($controldNumericUnusable['tactical_client_field_id']))
                                     <div class="form-text text-danger">
                                         Stored value <code>{{ $controldNumericUnusable['tactical_client_field_id'] }}</code>
-                                        is not a whole number, so this field cannot display it. Saving
+                                        is not a value onboarding can use, so this field cannot display it. Saving
                                         this form will clear it — retype the value you want.
                                     </div>
                                 @endif
@@ -1972,10 +1975,13 @@
                             <div class="col-md-6 mb-3">
                                 <label for="controld_default_profile_id" class="form-label">Enforced profile ID</label>
                                 <input type="text"
-                                       class="form-control"
+                                       class="form-control @error('default_profile_id') is-invalid @enderror"
                                        id="controld_default_profile_id"
                                        name="default_profile_id"
-                                       value="{{ $controldDefaultProfileId ?? '' }}">
+                                       value="{{ old('default_profile_id', $controldDefaultProfileId ?? '') }}">
+                                @error('default_profile_id')
+                                    <div class="invalid-feedback">{{ $message }}</div>
+                                @enderror
                                 <div class="form-text">
                                     Control D profile applied as the new sub-organization's Global Profile.
                                 </div>
@@ -1986,14 +1992,17 @@
                             <div class="col-md-3 mb-3">
                                 <label for="controld_code_expiry_days" class="form-label">Code expiry (days)</label>
                                 <input type="number" min="1" step="1"
-                                       class="form-control"
+                                       class="form-control @error('code_expiry_days') is-invalid @enderror"
                                        id="controld_code_expiry_days"
                                        name="code_expiry_days"
-                                       value="{{ $controldCodeExpiryDays ?? '' }}">
-                                @if (! empty($controldNumericUnusable['code_expiry_days']))
+                                       value="{{ old('code_expiry_days', $controldCodeExpiryDays ?? '') }}">
+                                @error('code_expiry_days')
+                                    <div class="invalid-feedback">{{ $message }}</div>
+                                @enderror
+                                @if (isset($controldNumericUnusable['code_expiry_days']))
                                     <div class="form-text text-danger">
                                         Stored value <code>{{ $controldNumericUnusable['code_expiry_days'] }}</code>
-                                        is not a whole number, so this field cannot display it. Saving
+                                        is not a value onboarding can use, so this field cannot display it. Saving
                                         this form will clear it — retype the value you want.
                                     </div>
                                 @endif
@@ -2001,14 +2010,17 @@
                             <div class="col-md-3 mb-3">
                                 <label for="controld_code_device_limit_headroom" class="form-label">Device limit headroom</label>
                                 <input type="number" min="0" step="1"
-                                       class="form-control"
+                                       class="form-control @error('code_device_limit_headroom') is-invalid @enderror"
                                        id="controld_code_device_limit_headroom"
                                        name="code_device_limit_headroom"
-                                       value="{{ $controldCodeHeadroom ?? '' }}">
-                                @if (! empty($controldNumericUnusable['code_device_limit_headroom']))
+                                       value="{{ old('code_device_limit_headroom', $controldCodeHeadroom ?? '') }}">
+                                @error('code_device_limit_headroom')
+                                    <div class="invalid-feedback">{{ $message }}</div>
+                                @enderror
+                                @if (isset($controldNumericUnusable['code_device_limit_headroom']))
                                     <div class="form-text text-danger">
                                         Stored value <code>{{ $controldNumericUnusable['code_device_limit_headroom'] }}</code>
-                                        is not a whole number, so this field cannot display it. Saving
+                                        is not a value onboarding can use, so this field cannot display it. Saving
                                         this form will clear it — retype the value you want.
                                     </div>
                                 @endif
@@ -2019,19 +2031,25 @@
                             <div class="col-md-3 mb-3">
                                 <label for="controld_code_analytics_level" class="form-label">Analytics level</label>
                                 <input type="text"
-                                       class="form-control"
+                                       class="form-control @error('code_analytics_level') is-invalid @enderror"
                                        id="controld_code_analytics_level"
                                        name="code_analytics_level"
-                                       value="{{ $controldCodeAnalyticsLevel ?? '' }}">
+                                       value="{{ old('code_analytics_level', $controldCodeAnalyticsLevel ?? '') }}">
+                                @error('code_analytics_level')
+                                    <div class="invalid-feedback">{{ $message }}</div>
+                                @enderror
                                 <div class="form-text">Optional. Blank sends nothing.</div>
                             </div>
                             <div class="col-md-3 mb-3">
                                 <label for="controld_code_intercept_mode" class="form-label">Intercept mode</label>
                                 <input type="text"
-                                       class="form-control"
+                                       class="form-control @error('code_intercept_mode') is-invalid @enderror"
                                        id="controld_code_intercept_mode"
                                        name="code_intercept_mode"
-                                       value="{{ $controldCodeInterceptMode ?? '' }}">
+                                       value="{{ old('code_intercept_mode', $controldCodeInterceptMode ?? '') }}">
+                                @error('code_intercept_mode')
+                                    <div class="invalid-feedback">{{ $message }}</div>
+                                @enderror
                                 <div class="form-text">Optional. Blank sends nothing.</div>
                             </div>
                         </div>
