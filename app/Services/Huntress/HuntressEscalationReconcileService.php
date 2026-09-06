@@ -36,7 +36,21 @@ use Illuminate\Support\Facades\Log;
  * CORRESPONDENCE — resolve ONLY on positive ticket↔escalation correspondence:
  *   1. Exact id — an escalation id captured at ingest (alert metadata `escalation_id`) or an
  *      `escalations/{id}` URL in the linked alert / description. getEscalation(id) is
- *      definitive. This is the clean path for tickets ingested after the id-capture fix.
+ *      definitive AS TO EXISTENCE, and says NOTHING about OWNERSHIP. Every id we can recover
+ *      traces back to text we did not author — `source_alert_id` and the ticket description
+ *      are free text that can quote any tenant's escalation URL, and the alert metadata id is
+ *      scraped by HuntressService out of the vendor payload body with an unanchored pattern.
+ *      So a fetched escalation must ALSO show it carries the ticket client's mapped org, with
+ *      no exemption for how the id arrived, and fails closed when correspondence cannot be
+ *      established (no client org mapping, or a payload with no readable organizations[]).
+ *      There is NO exception. In particular an escalation with `organizations` present and
+ *      empty — the account-level shape, associated with no org by definition — is REFUSED
+ *      like everything else here: having nothing to compare is the ABSENCE of correspondence,
+ *      not correspondence. Account-level escalations are also the one class path 2 below
+ *      structurally cannot reach, so they now auto-close nothing and a human closes those
+ *      tickets; escalationBelongsToTicket()'s docblock states that trade and the positive
+ *      binding that would be needed to restore the auto-close. This is the clean path for
+ *      tickets ingested after the id-capture fix.
  *   2. Org + subject + window, UNIQUELY — the legacy path for org-associated escalation
  *      tickets with NO stored id. We take the ticket's mapped org and its subject "core",
  *      and require exactly one escalation (across ALL statuses) for that org whose subject
@@ -189,6 +203,23 @@ class HuntressEscalationReconcileService
                 return false;
             }
 
+            // A successful fetch proves the escalation EXISTS. It does not prove it is THIS
+            // ticket's, and that gap is the whole of #1390: a ticket carrying another tenant's
+            // escalation URL would otherwise be auto-closed the moment that unrelated
+            // escalation is resolved.
+            //
+            // The check applies to EVERY id, with NO provenance exemption. An earlier revision
+            // of this guard exempted the ingest-captured metadata id on the reasoning that it
+            // came from our own ingest of this alert's payload. That reasoning was false:
+            // HuntressService captures it with `preg_match('#escalations/(\d+)#', $description)`
+            // — the SAME unanchored pattern used here, over the same vendor-supplied body, nine
+            // lines below a capture that IS host-anchored to huntress.io with a comment
+            // explaining that this text can be attacker-influenced. Our ingest never validated
+            // what it scraped, so "it is in metadata" is not a trust boundary.
+            if (! $this->escalationBelongsToTicket($ticket, $escalation, $escalationId)) {
+                return false;
+            }
+
             return $this->isResolved($escalation);
         }
 
@@ -306,6 +337,127 @@ class HuntressEscalationReconcileService
     }
 
     /**
+     * Ownership gate for the by-id path: does this fetched escalation correspond to the
+     * ticket's client? Applied to every recovered id regardless of where it came from.
+     *
+     * FAILS CLOSED. Correspondence must be established positively; anything this method
+     * cannot interpret is a refusal, never a pass. FOUR refusal branches and no exceptions,
+     * carrying FIVE distinct diagnoses because the second branch splits — each is logged
+     * separately because they need different operator responses:
+     *   - org-associated but a DIFFERENT org — the #1390 cross-client vector; the loud one.
+     *   - org-associated but no org to compare against, which is TWO faults with two remedies
+     *     and so two messages via $cause: the ticket has no client at all, or the ticket's
+     *     client carries no huntress_organization_id. A mapping gap here, not a vendor problem.
+     *   - account-level: `organizations` PRESENT and literally empty, so the escalation carries
+     *     no organization association at all. That is the account-level shape (integration
+     *     health, e.g. "Failed to Deliver"), and it is how HuntressReadOnlyToolset
+     *     ::escalationInScope already defines account-level.
+     *   - no usable organizations[] and not that shape — an unreadable payload; we do not guess.
+     *
+     * The third of those was an exception until r3 and is now a refusal, which is a DELIBERATE
+     * loss of coverage. The argument for passing it was that an org comparison against an
+     * account-level escalation is not merely unavailable but meaningless. True, and not enough:
+     * meaningless-to-compare is the ABSENCE of correspondence, not correspondence, and this
+     * method's contract is that absence fails closed. Passing it meant any free text quoting an
+     * account-level escalation URL — and any metadata id captured from a payload that quoted one
+     * — closed the ticket holding it as soon as that account-wide escalation resolved, which
+     * happens routinely. Both were reproduced against the passing code. Account-level
+     * escalations are also exactly the ones path 2 structurally cannot reach, so refusing here
+     * means they auto-close nothing and a human closes those tickets: the class's own stated
+     * trade, lower coverage via skip for a security-status auto-close. Restoring the auto-close
+     * needs POSITIVE binding between ticket and escalation — subject core and creation window,
+     * as path 2 already requires — which is its own change with its own tests.
+     *
+     * A payload that merely HAPPENS to yield no org ids — key absent, not an array, or a
+     * non-empty list of malformed entries — is not the account-level shape and takes the fourth
+     * refusal, which says so rather than reporting an unreadable payload as account-level.
+     *
+     * `type` was considered as the account-level discriminator and REJECTED: no production
+     * code reads it, and this repo's own fixtures disagree about its values ('Escalation' in
+     * this test file's escalationRow(), 'account'/'incident' in HuntressReadOnlyToolsetTest).
+     * Resting a security gate on an unverified vendor contract is how the previous revision
+     * of this guard went wrong; presence-and-emptiness is checkable here and now.
+     *
+     * A refusal TERMINATES the by-id path — the caller returns false rather than falling
+     * through to path 2. The by-id read succeeded and told us this escalation is not this
+     * ticket's; letting the weaker org+subject+window matcher then close the ticket anyway
+     * would be a weaker matcher overriding a stronger negative. Same reasoning as the 404
+     * branch above.
+     *
+     * @param  array<string, mixed>  $escalation
+     */
+    private function escalationBelongsToTicket(Ticket $ticket, array $escalation, int $escalationId): bool
+    {
+        // array_key_exists, not ??, because a key PRESENT and null is a different upstream problem
+        // from an absent one — which is the exact distinction organizations_type below exists to
+        // draw, so ?? would have made that diagnostic contradict its own comment.
+        $hasOrganizations = array_key_exists('organizations', $escalation);
+        $organizations = $hasOrganizations ? $escalation['organizations'] : null;
+        $escalationOrgIds = $this->escalationOrgIds($escalation);
+
+        if ($escalationOrgIds === []) {
+            if (is_array($organizations) && $organizations === []) {
+                // 🔑 Account-level, and it fails closed like everything else here. The reasoning
+                // and the coverage it costs are in this method's docblock; the short version is
+                // that having nothing to compare is not a match. No escalation id, subject or URL
+                // goes to the log beyond the id the caller already holds.
+                Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) is account-level (organizations[] present and empty), so it corresponds to no client and cannot correspond to this ticket; skipping — an account-wide escalation resolving is not evidence about this ticket, so this fails closed", [
+                    'ticket_id' => $ticket->id,
+                ]);
+
+                return false;
+            }
+
+            // organizations_type, not an is_array() boolean: a present-but-wrong-typed field
+            // (a string, an object, a null) is a DIFFERENT upstream problem from an absent one,
+            // and a boolean reports both as "absent" — sending whoever reads this looking for a
+            // missing key that is actually right there with the wrong shape.
+            Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) returned no usable organizations[] and is not the documented account-level shape; skipping — correspondence cannot be established, so this fails closed", [
+                'ticket_id' => $ticket->id,
+                'organizations_type' => $hasOrganizations ? get_debug_type($organizations) : 'absent',
+            ]);
+
+            return false;
+        }
+
+        // Both halves of this are null-safe, and they are NOT the same failure: a ticket with no
+        // client at all is a data defect here, while a client with no huntress_organization_id is
+        // an unfinished mapping in the Huntress settings screen. One message covering both would
+        // name the wrong remedy for one of them.
+        $ticketClient = $ticket->client;
+        $ticketOrgId = $ticketClient?->huntress_organization_id;
+
+        if ($ticketOrgId === null) {
+            $cause = $ticketClient === null
+                ? 'the ticket has no client'
+                : "the ticket's client has no huntress_organization_id";
+
+            Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) is org-associated but {$cause}; skipping — correspondence cannot be established, so this fails closed", [
+                'ticket_id' => $ticket->id,
+                'escalation_org_ids' => $escalationOrgIds,
+            ]);
+
+            return false;
+        }
+
+        if (! in_array((int) $ticketOrgId, $escalationOrgIds, true)) {
+            // Both sides are logged. Without them this warning says a mismatch happened but not
+            // between what and what, and the operator's next question — is the ESCALATION on the
+            // wrong org or is the CLIENT mapped to the wrong one — is unanswerable from the log.
+            // Org ids are opaque integers: no client name, subject text or URL goes to the log.
+            Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) belongs to a different organization than the ticket's client; skipping — resolving here would close one client's ticket off another client's escalation", [
+                'ticket_id' => $ticket->id,
+                'escalation_org_ids' => $escalationOrgIds,
+                'ticket_org_id' => (int) $ticketOrgId,
+            ]);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
      * The org ids an escalation touches. organizations[] elements are org objects ({id,…}) or
      * bare ids; an empty array means account-level (no org association).
      *
@@ -344,6 +496,12 @@ class HuntressEscalationReconcileService
      * Recover an escalation id from the linked alert's stored `escalation_id` metadata (the
      * ingest-fix clean path) or an `escalations/{id}` URL in the alert source_alert_id or the
      * ticket description. Null when no id is recoverable (the legacy no-id majority).
+     *
+     * NO id this returns is self-certifying, and the caller treats them all alike. Every
+     * source here traces back to text we did not author: `source_alert_id` and `description`
+     * are free text that can carry any escalation URL, and the alert metadata id is itself
+     * scraped by HuntressService out of the vendor payload body with an unanchored pattern.
+     * An id is a lookup key, never evidence of ownership — see escalationBelongsToTicket().
      */
     private function extractEscalationId(Ticket $ticket, ?Alert $alert): ?int
     {
