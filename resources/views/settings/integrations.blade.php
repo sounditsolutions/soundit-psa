@@ -1966,36 +1966,35 @@
                             // unsafe old() shape is used all over this file and predates this
                             // card. That did not excuse extending it here, and repairing it
                             // everywhere is not this change.
-                            // Whether THIS request is a bounce from the card's own
-                            // rejected submit. Asked ONCE for the card, because per
-                            // field is exactly what cannot be asked: the global
+                            // Whether THIS FIELD was flashed by a rejected submit, asked
+                            // per field rather than once for the card. The global
                             // ConvertEmptyStringsToNull turns a deliberately emptied
                             // field into null BEFORE the failed validate() flashes it,
-                            // so old($key) === null has the same shape as "never
-                            // flashed". Falling back to the stored value on that null
-                            // silently REVERSES the operator's clear — the one contract
-                            // this card exists to keep — and their corrected save then
-                            // re-persists the value they removed, worst of all for the
-                            // field id that arms the deploy trigger. Keyed on the six
-                            // names so that another card's bounce, which flashes its own
-                            // input and none of ours, still renders stored values here.
+                            // so old($key) === null cannot tell a clear from a key that
+                            // was never submitted — but the flashed bag itself can, and
+                            // array_key_exists() is the question that answers it.
+                            // Falling back to the stored value on a FLASHED null would
+                            // silently REVERSE the operator's clear — the one contract
+                            // this card exists to keep — and their corrected save would
+                            // re-persist the value they removed, worst of all for the
+                            // field id that arms the deploy trigger. Falling back to ''
+                            // on a key that was NEVER flashed is the mirror harm: this
+                            // handler is a plain route, an api_key-only POST is a shape
+                            // updateControlD() supports on purpose, and a bounce on one
+                            // field must not render the five stored-but-unsubmitted ones
+                            // blank for the corrective full-form save to then erase.
+                            // Another card's bounce flashes its own input and none of
+                            // ours, so stored values still render here.
                             $controldFlashed = session()->getOldInput();
-                            $controldBounced = is_array($controldFlashed) && array_intersect_key($controldFlashed, array_flip([
-                                'tactical_client_field_id',
-                                'default_profile_id',
-                                'code_expiry_days',
-                                'code_device_limit_headroom',
-                                'code_analytics_level',
-                                'code_intercept_mode',
-                            ])) !== [];
+                            $controldFlashed = is_array($controldFlashed) ? $controldFlashed : [];
 
-                            $controldOld = static function (string $key, string $stored) use ($controldBounced): string {
+                            $controldOld = static function (string $key, string $stored) use ($controldFlashed): string {
                                 $attempted = old($key);
 
                                 if ($attempted === null) {
-                                    // On a bounce a null IS the operator's blank; off
-                                    // one it only means the field was never submitted.
-                                    return $controldBounced ? '' : $stored;
+                                    // A flashed null IS the operator's blank; a key that
+                                    // was never flashed was never submitted at all.
+                                    return array_key_exists($key, $controldFlashed) ? '' : $stored;
                                 }
 
                                 return is_scalar($attempted) ? (string) $attempted : '';
