@@ -1944,6 +1944,39 @@
                             @endif
                         </p>
 
+                        @php
+                            // Re-render of the operator's own attempt, for a value that may
+                            // not be a string.
+                            //
+                            // A failed validate() flashes the input EXACTLY as submitted, and
+                            // `name[]=x` is a shape anything that speaks HTTP can send. All six
+                            // rules refuse an array, which is correct — but old() then handed
+                            // that array to value="{{ }}", and Blade's e()/htmlspecialchars()
+                            // throws on an array. So the GET meant to SHOW the operator why
+                            // their submit was rejected returned a 500 instead, and the refusal
+                            // became unrecoverable through the UI: the page telling you what to
+                            // fix was the page that crashed.
+                            //
+                            // Only a scalar can be echoed into an attribute. A nonscalar attempt
+                            // renders BLANK rather than as the word "Array" — printing "Array"
+                            // into an input reads as something the operator typed — and the
+                            // @error block beside each field is what reports the refusal.
+                            //
+                            // Scoped to the six Control D onboarding inputs on purpose: the same
+                            // unsafe old() shape is used all over this file and predates this
+                            // card. That did not excuse extending it here, and repairing it
+                            // everywhere is not this change.
+                            $controldOld = static function (string $key, string $stored): string {
+                                $attempted = old($key);
+
+                                if ($attempted === null) {
+                                    return $stored;
+                                }
+
+                                return is_scalar($attempted) ? (string) $attempted : '';
+                            };
+                        @endphp
+
                         <div class="row">
                             <div class="col-md-6 mb-3">
                                 <label for="controld_tactical_client_field_id" class="form-label">Tactical client custom field ID</label>
@@ -1951,7 +1984,7 @@
                                        class="form-control @error('tactical_client_field_id') is-invalid @enderror"
                                        id="controld_tactical_client_field_id"
                                        name="tactical_client_field_id"
-                                       value="{{ old('tactical_client_field_id', $controldTacticalFieldId ?? '') }}">
+                                       value="{{ $controldOld('tactical_client_field_id', $controldTacticalFieldId ?? '') }}">
                                 @error('tactical_client_field_id')
                                     <div class="invalid-feedback">{{ $message }}</div>
                                 @enderror
@@ -1978,7 +2011,7 @@
                                        class="form-control @error('default_profile_id') is-invalid @enderror"
                                        id="controld_default_profile_id"
                                        name="default_profile_id"
-                                       value="{{ old('default_profile_id', $controldDefaultProfileId ?? '') }}">
+                                       value="{{ $controldOld('default_profile_id', $controldDefaultProfileId ?? '') }}">
                                 @error('default_profile_id')
                                     <div class="invalid-feedback">{{ $message }}</div>
                                 @enderror
@@ -1995,7 +2028,7 @@
                                        class="form-control @error('code_expiry_days') is-invalid @enderror"
                                        id="controld_code_expiry_days"
                                        name="code_expiry_days"
-                                       value="{{ old('code_expiry_days', $controldCodeExpiryDays ?? '') }}">
+                                       value="{{ $controldOld('code_expiry_days', $controldCodeExpiryDays ?? '') }}">
                                 @error('code_expiry_days')
                                     <div class="invalid-feedback">{{ $message }}</div>
                                 @enderror
@@ -2013,7 +2046,7 @@
                                        class="form-control @error('code_device_limit_headroom') is-invalid @enderror"
                                        id="controld_code_device_limit_headroom"
                                        name="code_device_limit_headroom"
-                                       value="{{ old('code_device_limit_headroom', $controldCodeHeadroom ?? '') }}">
+                                       value="{{ $controldOld('code_device_limit_headroom', $controldCodeHeadroom ?? '') }}">
                                 @error('code_device_limit_headroom')
                                     <div class="invalid-feedback">{{ $message }}</div>
                                 @enderror
@@ -2034,7 +2067,7 @@
                                        class="form-control @error('code_analytics_level') is-invalid @enderror"
                                        id="controld_code_analytics_level"
                                        name="code_analytics_level"
-                                       value="{{ old('code_analytics_level', $controldCodeAnalyticsLevel ?? '') }}">
+                                       value="{{ $controldOld('code_analytics_level', $controldCodeAnalyticsLevel ?? '') }}">
                                 @error('code_analytics_level')
                                     <div class="invalid-feedback">{{ $message }}</div>
                                 @enderror
@@ -2046,7 +2079,7 @@
                                        class="form-control @error('code_intercept_mode') is-invalid @enderror"
                                        id="controld_code_intercept_mode"
                                        name="code_intercept_mode"
-                                       value="{{ old('code_intercept_mode', $controldCodeInterceptMode ?? '') }}">
+                                       value="{{ $controldOld('code_intercept_mode', $controldCodeInterceptMode ?? '') }}">
                                 @error('code_intercept_mode')
                                     <div class="invalid-feedback">{{ $message }}</div>
                                 @enderror

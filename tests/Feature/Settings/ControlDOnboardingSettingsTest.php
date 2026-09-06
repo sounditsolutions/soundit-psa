@@ -776,4 +776,54 @@ class ControlDOnboardingSettingsTest extends TestCase
             ->assertDontSee('<script>alert(1)</script>', false)
             ->assertSee(e($hostile), false);
     }
+
+    /**
+     * Rejected input has a shape, and one of the shapes is not a string.
+     *
+     * `name[]=x` is a submission anything that speaks HTTP can make, and all six rules
+     * above already refuse it — nullable|integer and nullable|string both reject an
+     * array. The refusal is the correct answer; what was broken is what happened next.
+     * A failed validate() flashes the input EXACTLY as submitted, so old() handed the
+     * array back to the value="{{ }}" attribute, and Blade's e()/htmlspecialchars()
+     * throws on an array: the GET that was supposed to show the operator the
+     * validation message returned a 500 instead. The rejection became unrecoverable
+     * through the UI — the page telling you what to fix was the page that crashed.
+     *
+     * Blanking the field is the only safe answer for a value that cannot be echoed:
+     * casting would print the word "Array" into an input as though it were typed, and
+     * the flashed @error beside the field is what reports the refusal. This pins all
+     * three legs — refusal, a 200 that says so, and a corrected save landing — for
+     * every one of the six.
+     */
+    public function test_an_array_shaped_submit_is_refused_without_crashing_the_next_page(): void
+    {
+        foreach ([
+            'tactical_client_field_id' => '18',
+            'default_profile_id' => '5840sea5y7',
+            'code_expiry_days' => '14',
+            'code_device_limit_headroom' => '5',
+            'code_analytics_level' => 'none',
+            'code_intercept_mode' => 'opt_in',
+        ] as $field => $corrected) {
+            $this->save([$field => ['x']])->assertSessionHasErrors($field);
+
+            $html = $this->actingAs($this->user)
+                ->get(route('settings.integrations'))
+                ->assertOk()
+                ->getContent();
+
+            $this->assertSame(
+                1,
+                preg_match('/<input\b[^>]*\bname="'.preg_quote($field, '/').'"[^>]*>/', $html, $tag),
+                "No single input named {$field} was rendered after an array-shaped submit."
+            );
+            $this->assertStringContainsString('is-invalid', $tag[0], "{$field} must report the refusal.");
+            $this->assertStringContainsString('value=""', $tag[0], "{$field} must not echo a nonscalar attempt back.");
+            $this->assertStringNotContainsString('Array', $tag[0], "{$field} must not cast the attempt to the word Array.");
+
+            // The refusal is recoverable: retyping a good value saves it.
+            $this->save([$field => $corrected])->assertSessionHasNoErrors();
+            $this->assertSame($corrected, $this->renderedValue($field));
+        }
+    }
 }
