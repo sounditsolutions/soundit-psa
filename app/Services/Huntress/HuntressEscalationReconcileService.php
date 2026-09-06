@@ -44,9 +44,14 @@ use Illuminate\Support\Facades\Log;
  *      resolve the ticket. Requiring uniqueness ACROSS statuses means a ticket whose own
  *      escalation is still open (also in the window) is ambiguous → skipped, never
  *      false-resolved by a coincidental sibling close. That guard holds only because the
- *      ticket's own escalation is itself one of the org's rows — so a ticket whose stored id
- *      404s (positive evidence its escalation is NOT in that list) is skipped, never matched
- *      here: the lone survivor would by construction be a sibling, not this ticket's.
+ *      ticket's own escalation is presumed to BE one of the org's rows — so a ticket whose
+ *      stored id 404s is skipped, never matched here. Note what the 404 does and does not
+ *      establish: it is NOT proof the escalation was deleted, and NOT proof it is absent from
+ *      the org listing. HuntressClient maps any upstream 404 to the same code, so a narrowed
+ *      key scope, a changed base path or a gateway yields one while the escalation is alive
+ *      and possibly still open. The weaker claim is the one we rely on, and it is sufficient:
+ *      once the by-id read fails we can no longer confirm WHICH row is this ticket's, so
+ *      uniqueness stops implying ownership and a lone survivor may be a sibling.
  *
  * Bare time-window matching is NOT a resolve trigger. Account-level escalations (empty
  * organizations[], e.g. "Failed to Deliver") carry no org to scope on and no recoverable id,
@@ -147,10 +152,11 @@ class HuntressEscalationReconcileService
         //    An escalation id is itself the positive correspondence.
         $escalationId = $this->extractEscalationId($ticket, $alert);
         if ($escalationId !== null) {
+            // Only the FETCH is guarded. Classifying a successfully-fetched escalation stays
+            // outside the catch so that anything isResolved() raises is not reported as a
+            // failed HTTP call — that error accounting is the pre-change behaviour and is kept.
             try {
                 $escalation = $this->client->getEscalation($escalationId);
-
-                return $this->isResolved($escalation);
             } catch (\Throwable $e) {
                 if (! ($e instanceof HuntressClientException) || $e->getCode() !== 404) {
                     Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) failed: {$e->getMessage()}");
@@ -158,23 +164,28 @@ class HuntressEscalationReconcileService
                     return false;
                 }
 
-                // Missing is not resolved — and a stale id must NOT fall through to path 2:
-                // its uniqueness guard presumes THIS ticket's escalation is among the org's
-                // rows, which a 404 positively contradicts, so a lone match there would be a
-                // sibling and would close this ticket off someone else's escalation. Skip
-                // (info, not warning — an upstream purge is not a fault). No tombstone is
-                // persisted: the id is retried on the next run.
+                // Missing-by-id is not resolved — and a stale id must NOT fall through to
+                // path 2: its uniqueness guard presumes THIS ticket's escalation is among the
+                // org's rows, and once the by-id read fails we cannot confirm which row that
+                // is, so a lone match there may be a sibling and would close this ticket off
+                // someone else's escalation. A 404 is NOT proof of deletion (see the class
+                // docblock) — it is only the loss of the definitive read. Skip. Logged at info
+                // rather than warning because HuntressClient has already logged the failed
+                // request at error level; this line adds the ticket-side disposition, not a
+                // second fault report. No tombstone is persisted: the id is retried next run.
                 Log::info("[HuntressEscalationReconcile] getEscalation({$escalationId}) returned 404; skipping — a stale id cannot fall back to org+subject+window matching", [
                     'ticket_id' => $ticket->id,
                 ]);
 
                 return false;
             }
+
+            return $this->isResolved($escalation);
         }
 
         // 2. Org + subject + window, uniquely — for tickets with NO stored id only (a stale id
-        //    that 404s is skipped above: uniqueness cannot imply ownership once this ticket's
-        //    own escalation is known-absent from the org's rows). SCOPE: requires the ticket's
+        //    that 404s is skipped above: uniqueness cannot imply ownership once the by-id read
+        //    for this ticket's own escalation has failed). SCOPE: requires the ticket's
         //    client to be org-mapped AND the escalation to carry that org — which excludes
         //    account-level escalations (e.g. "Failed to Deliver") entirely.
         $orgId = $ticket->client?->huntress_organization_id;
