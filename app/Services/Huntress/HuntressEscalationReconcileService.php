@@ -333,13 +333,6 @@ class HuntressEscalationReconcileService
     }
 
     /**
-     * The org ids an escalation touches. organizations[] elements are org objects ({id,…}) or
-     * bare ids; an empty array means account-level (no org association).
-     *
-     * @param  array<string, mixed>  $escalation
-     * @return array<int, int>
-     */
-    /**
      * Ownership gate for the by-id path: does this fetched escalation correspond to the
      * ticket's client? Applied to every recovered id regardless of where it came from.
      *
@@ -385,27 +378,47 @@ class HuntressEscalationReconcileService
                 return true;
             }
 
+            // organizations_type, not an is_array() boolean: a present-but-wrong-typed field
+            // (a string, an object, a null) is a DIFFERENT upstream problem from an absent one,
+            // and a boolean reports both as "absent" — sending whoever reads this looking for a
+            // missing key that is actually right there with the wrong shape.
             Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) returned no usable organizations[] and is not the documented account-level shape; skipping — correspondence cannot be established, so this fails closed", [
                 'ticket_id' => $ticket->id,
-                'organizations_present' => is_array($organizations),
+                'organizations_type' => get_debug_type($organizations),
             ]);
 
             return false;
         }
 
-        $ticketOrgId = $ticket->client?->huntress_organization_id;
+        // Both halves of this are null-safe, and they are NOT the same failure: a ticket with no
+        // client at all is a data defect here, while a client with no huntress_organization_id is
+        // an unfinished mapping in the Huntress settings screen. One message covering both would
+        // name the wrong remedy for one of them.
+        $ticketClient = $ticket->client;
+        $ticketOrgId = $ticketClient?->huntress_organization_id;
 
         if ($ticketOrgId === null) {
-            Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) is org-associated but the ticket's client has no huntress_organization_id; skipping — correspondence cannot be established, so this fails closed", [
+            $cause = $ticketClient === null
+                ? 'the ticket has no client'
+                : "the ticket's client has no huntress_organization_id";
+
+            Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) is org-associated but {$cause}; skipping — correspondence cannot be established, so this fails closed", [
                 'ticket_id' => $ticket->id,
+                'escalation_org_ids' => $escalationOrgIds,
             ]);
 
             return false;
         }
 
         if (! in_array((int) $ticketOrgId, $escalationOrgIds, true)) {
+            // Both sides are logged. Without them this warning says a mismatch happened but not
+            // between what and what, and the operator's next question — is the ESCALATION on the
+            // wrong org or is the CLIENT mapped to the wrong one — is unanswerable from the log.
+            // Org ids are opaque integers: no client name, subject text or URL goes to the log.
             Log::warning("[HuntressEscalationReconcile] getEscalation({$escalationId}) belongs to a different organization than the ticket's client; skipping — resolving here would close one client's ticket off another client's escalation", [
                 'ticket_id' => $ticket->id,
+                'escalation_org_ids' => $escalationOrgIds,
+                'ticket_org_id' => (int) $ticketOrgId,
             ]);
 
             return false;
@@ -414,6 +427,13 @@ class HuntressEscalationReconcileService
         return true;
     }
 
+    /**
+     * The org ids an escalation touches. organizations[] elements are org objects ({id,…}) or
+     * bare ids; an empty array means account-level (no org association).
+     *
+     * @param  array<string, mixed>  $escalation
+     * @return array<int, int>
+     */
     private function escalationOrgIds(array $escalation): array
     {
         $ids = [];

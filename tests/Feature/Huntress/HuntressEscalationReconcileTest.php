@@ -530,7 +530,10 @@ class HuntressEscalationReconcileTest extends TestCase
         $this->assertSame(AlertStatus::Ticketed, Alert::where('ticket_id', $ticket->id)->first()->status);
         Log::shouldHaveReceived('warning')->with(
             "[HuntressEscalationReconcile] getEscalation(9001) belongs to a different organization than the ticket's client; skipping — resolving here would close one client's ticket off another client's escalation",
-            ['ticket_id' => $ticket->id],
+            // BOTH sides pinned: without them the warning says a mismatch happened but not
+            // between what and what, and "is the escalation wrong or is the client mapped
+            // wrong" is the first question anyone triaging this asks.
+            ['ticket_id' => $ticket->id, 'escalation_org_ids' => [77], 'ticket_org_id' => 42],
         )->once();
     }
 
@@ -576,7 +579,7 @@ class HuntressEscalationReconcileTest extends TestCase
         $this->assertSame(0, $result->updated);
         Log::shouldHaveReceived('warning')->with(
             '[HuntressEscalationReconcile] getEscalation(9003) returned no usable organizations[] and is not the documented account-level shape; skipping — correspondence cannot be established, so this fails closed',
-            ['ticket_id' => $ticket->id, 'organizations_present' => false],
+            ['ticket_id' => $ticket->id, 'organizations_type' => 'null'],
         )->once();
     }
 
@@ -587,6 +590,7 @@ class HuntressEscalationReconcileTest extends TestCase
      */
     public function test_a_recovered_id_fails_closed_when_organizations_entries_are_malformed(): void
     {
+        Log::spy();
         $ticket = $this->escalationTicket(
             $this->mappedClient(42),
             sourceAlertId: 'https://dashboard.huntress.io/escalations/9013',
@@ -600,6 +604,13 @@ class HuntressEscalationReconcileTest extends TestCase
 
         $this->assertStaysOpen($ticket);
         $this->assertSame(0, $result->updated);
+        // organizations_type distinguishes THIS refusal (present, an array, but unreadable) from
+        // the absent-key one above, which reports 'null'. A boolean present-flag reported both as
+        // the same failure and sent the reader after the wrong upstream problem.
+        Log::shouldHaveReceived('warning')->with(
+            '[HuntressEscalationReconcile] getEscalation(9013) returned no usable organizations[] and is not the documented account-level shape; skipping — correspondence cannot be established, so this fails closed',
+            ['ticket_id' => $ticket->id, 'organizations_type' => 'array'],
+        )->once();
     }
 
     /**
@@ -632,6 +643,7 @@ class HuntressEscalationReconcileTest extends TestCase
     /** The ticket side of the same unknown: no org mapping, so nothing to correspond against. */
     public function test_text_recovered_id_is_skipped_when_the_client_has_no_org_mapping(): void
     {
+        Log::spy();
         $unmapped = Client::factory()->create(['huntress_organization_id' => null]);
         $ticket = $this->escalationTicket(
             $unmapped,
@@ -646,6 +658,40 @@ class HuntressEscalationReconcileTest extends TestCase
 
         $this->assertStaysOpen($ticket);
         $this->assertSame(0, $result->updated);
+        Log::shouldHaveReceived('warning')->with(
+            "[HuntressEscalationReconcile] getEscalation(9004) is org-associated but the ticket's client has no huntress_organization_id; skipping — correspondence cannot be established, so this fails closed",
+            ['ticket_id' => $ticket->id, 'escalation_org_ids' => [42]],
+        )->once();
+    }
+
+    /**
+     * The OTHER way the ticket's org id comes back null, and it is a different fault with a
+     * different remedy: a Huntress ticket with no client at all. The candidate query filters on
+     * source and status only, never on client_id, so such a ticket does reach this branch. One
+     * message covering both cases would send an operator to the Huntress org-mapping screen for
+     * what is actually a ticket missing its client.
+     */
+    public function test_a_ticket_with_no_client_fails_closed_with_its_own_diagnosis(): void
+    {
+        Log::spy();
+        $ticket = $this->escalationTicket(
+            $this->mappedClient(42),
+            sourceAlertId: 'https://dashboard.huntress.io/org/42/escalations/9014',
+        );
+        $ticket->forceFill(['client_id' => null])->save();
+
+        $result = $this->service([], [9014 => [
+            'id' => 9014,
+            'status' => 'resolved',
+            'organizations' => [['id' => 42, 'name' => 'Blue Org']],
+        ]])->reconcile();
+
+        $this->assertStaysOpen($ticket);
+        $this->assertSame(0, $result->updated);
+        Log::shouldHaveReceived('warning')->with(
+            '[HuntressEscalationReconcile] getEscalation(9014) is org-associated but the ticket has no client; skipping — correspondence cannot be established, so this fails closed',
+            ['ticket_id' => $ticket->id, 'escalation_org_ids' => [42]],
+        )->once();
     }
 
     /**
@@ -692,7 +738,7 @@ class HuntressEscalationReconcileTest extends TestCase
         $this->assertSame(AlertStatus::Ticketed, Alert::where('ticket_id', $ticket->id)->first()->status);
         Log::shouldHaveReceived('warning')->with(
             "[HuntressEscalationReconcile] getEscalation(9006) belongs to a different organization than the ticket's client; skipping — resolving here would close one client's ticket off another client's escalation",
-            ['ticket_id' => $ticket->id],
+            ['ticket_id' => $ticket->id, 'escalation_org_ids' => [77], 'ticket_org_id' => 42],
         )->once();
     }
 
