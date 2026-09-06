@@ -1953,11 +1953,13 @@
                                        name="tactical_client_field_id"
                                        value="{{ $controldTacticalFieldId ?? '' }}">
                                 <div class="form-text">
-                                    The CLIENT-model custom field in your Tactical RMM that carries the
-                                    provisioning code. You create this field yourself, so its ID is
-                                    whatever your instance assigned — find it in Tactical under
-                                    Settings &rarr; Global Settings &rarr; Custom Fields. Leave blank and
-                                    the write is refused rather than guessed.
+                                    The CLIENT-model custom field in your Tactical RMM that holds the
+                                    client's Control D organization ID — the field named
+                                    <code>controld_org_id</code>, not the provisioning code. You create
+                                    this field yourself, so its ID is whatever your instance assigned —
+                                    find it in Tactical under Settings &rarr; Global Settings &rarr;
+                                    Custom Fields. Leave blank and the write is refused rather than
+                                    guessed.
                                 </div>
                             </div>
                             <div class="col-md-6 mb-3">
