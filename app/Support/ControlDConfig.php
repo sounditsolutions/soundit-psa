@@ -45,10 +45,13 @@ class ControlDConfig
      * NORMALISATION, stated exactly rather than as "verbatim": surrounding whitespace
      * is stripped, on write by the controller and again on read here, and nothing else
      * is touched. The interior of the value — case, punctuation, separators — is the
-     * vendor's and is preserved byte for byte. Trimming is safe because no vendor
-     * identifier can be distinguished from another by leading or trailing spaces,
-     * while a value that differs from the operator's intent only by an invisible
-     * character is a support call nobody can see the cause of.
+     * vendor's and is preserved byte for byte. Trimming is THIS PANEL'S CHOSEN INPUT
+     * CONTRACT, not a proven fact about Control D: whether the vendor can distinguish
+     * two identifiers by leading or trailing spaces is unknown here and is not claimed.
+     * The contract is chosen because a value that differs from the operator's intent
+     * only by an invisible character is a support call nobody can see the cause of. An
+     * identifier that genuinely needs edge whitespace cannot be entered through this
+     * panel, and that limit is deliberate.
      */
     public const CODE_EXPIRY_DAYS_SETTING = 'controld_code_expiry_days';
 
@@ -80,10 +83,13 @@ class ControlDConfig
      *
      * Three ways a stored string can look like an integer and not be one, all refused:
      *
-     *  - Anything the digit pattern rejects: '', '+14', ' 14' after trimming fails,
-     *    '1.0', '1e3', '-1', '007'. A signed or padded form is not wrong so much as
+     *  - Anything the digit pattern rejects AFTER the trim below: '', '+14', '1.0',
+     *    '1e3', '-1', '007'. A signed or padded form is not wrong so much as
      *    unproven — it means something other than the panel wrote this value, and the
      *    panel canonicalises precisely so that it never has to be interpreted here.
+     *    Note what this does NOT refuse: a stored ' 14' is trimmed first and reads
+     *    back as 14, the same edge-whitespace contract the class docblock states.
+     *    Only the interior is significant to the pattern.
      *  - A digit string too large for the platform int. PHP's (int) cast SATURATES at
      *    PHP_INT_MAX instead of failing, so '9223372036854775808' would otherwise be
      *    read back as a perfectly plausible 9223372036854775807. Re-rendering the cast

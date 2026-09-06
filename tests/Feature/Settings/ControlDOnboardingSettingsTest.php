@@ -476,6 +476,21 @@ class ControlDOnboardingSettingsTest extends TestCase
         $this->assertSame(0, ControlDConfig::codeDeviceLimitHeadroom());
     }
 
+    public function test_a_directly_stored_integer_with_edge_whitespace_still_reads_back(): void
+    {
+        // The other half of the refusal list above, pinned because readInt()'s docblock
+        // now states it: edge whitespace is trimmed BEFORE the digit pattern runs, so a
+        // stored ' 14 ' is 14 and not a refusal. The panel canonicalises on write and
+        // never stores this shape; a hand-edited row or an older writer can. Trimming
+        // here is the same input contract the class docblock states — this panel's
+        // choice, not a claim about Control D — so the two must not drift.
+        Setting::setValue(ControlDConfig::CODE_EXPIRY_DAYS_SETTING, ' 14 ');
+        Setting::setValue(ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING, "\t18\n");
+
+        $this->assertSame(14, ControlDConfig::codeExpiryDays());
+        $this->assertSame(18, ControlDConfig::tacticalClientOrgFieldId());
+    }
+
     public function test_the_largest_representable_integer_survives_the_round_trip(): void
     {
         // The upper edge of what readInt() may return. There is deliberately no
