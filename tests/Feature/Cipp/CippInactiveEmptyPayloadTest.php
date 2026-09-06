@@ -125,10 +125,4 @@ class CippInactiveEmptyPayloadTest extends TestCase
             'cipp_inactive' => true,
         ]);
     }
-
-    protected function tearDown(): void
-    {
-        Mockery::close();
-        parent::tearDown();
-    }
 }

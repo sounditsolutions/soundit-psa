@@ -515,10 +515,4 @@ class HuntressEscalationReconcileTest extends TestCase
     {
         $this->artisan('huntress:reconcile-escalations')->assertExitCode(1);
     }
-
-    protected function tearDown(): void
-    {
-        Mockery::close();
-        parent::tearDown();
-    }
 }

@@ -46,12 +46,6 @@ class DeviceAbsenceVerificationTest extends TestCase
 
     private const ZORUS_CUSTOMER = 'cust-uuid-1';
 
-    protected function tearDown(): void
-    {
-        Mockery::close();
-        parent::tearDown();
-    }
-
     private function enableTactical(): void
     {
         Setting::setValue('tactical_api_url', 'https://rmm.example.test');

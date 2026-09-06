@@ -574,10 +574,4 @@ class TacticalRemoveAgentTest extends TestCase
         $this->assertSame('executed', app(TechnicianApprovalService::class)->approveStagedTacticalAdminAction($run, $approver->id)->status);
         $this->assertSame('already_handled', app(TechnicianApprovalService::class)->approveStagedTacticalAdminAction($run->fresh(), $approver->id)->status);
     }
-
-    protected function tearDown(): void
-    {
-        Mockery::close();
-        parent::tearDown();
-    }
 }

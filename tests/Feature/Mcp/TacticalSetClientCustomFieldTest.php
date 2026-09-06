@@ -825,10 +825,4 @@ class TacticalSetClientCustomFieldTest extends TestCase
             'a declined approval must release the claim, not consume the proposal',
         );
     }
-
-    protected function tearDown(): void
-    {
-        Mockery::close();
-        parent::tearDown();
-    }
 }

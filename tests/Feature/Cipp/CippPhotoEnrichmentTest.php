@@ -159,10 +159,4 @@ class CippPhotoEnrichmentTest extends TestCase
 
         return ob_get_clean();
     }
-
-    protected function tearDown(): void
-    {
-        Mockery::close();
-        parent::tearDown();
-    }
 }
