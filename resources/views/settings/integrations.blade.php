@@ -1932,8 +1932,13 @@
                             Used when a client is onboarded to Control D: the sub-organization is created
                             with the enforced profile below, and its provisioning code is cut with these
                             defaults. Onboarding refuses to run while any of the first four is blank.
+                            {{-- "Defaults complete", not "Ready": this badge reports only that the four
+                                 required values on THIS card are filled in. It says nothing about the
+                                 integration being enabled, an API key being stored, Control D having
+                                 agreed any of these values exist, or the onboarding verb being granted.
+                                 A badge reading "Ready" would be read as all four. --}}
                             @if($controldOnboardingConfigured ?? false)
-                                <span class="badge bg-success ms-1">Ready</span>
+                                <span class="badge bg-success ms-1">Defaults complete</span>
                             @else
                                 <span class="badge bg-secondary ms-1">Incomplete</span>
                             @endif

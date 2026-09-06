@@ -23,7 +23,8 @@ class ControlDConfig
 
     /**
      * Control D profile enforced as a new sub-organisation's Global Profile. An opaque
-     * vendor primary key, not a number of ours — stored and echoed verbatim.
+     * vendor primary key, not a number of ours — stored and echoed as typed, apart
+     * from surrounding whitespace (see the normalisation note below).
      */
     public const DEFAULT_PROFILE_SETTING = 'controld_default_profile_id';
 
@@ -37,9 +38,17 @@ class ControlDConfig
      * deliberately does not enumerate it. Cutting a code under a sub-organisation uses
      * POST /provision, which is not in Control D's public reference, so an allow-list
      * written here would be a guess that either rejects a legal value or blesses an
-     * illegal one. They are stored verbatim and validated where the code is actually
-     * cut, against the vendor's own response — the read-back that every Control D write
-     * owes anyway, since the API answers 200 to a write that changed nothing.
+     * illegal one. They are validated where the code is actually cut, against the
+     * vendor's own response — the read-back that every Control D write owes anyway,
+     * since the API answers 200 to a write that changed nothing.
+     *
+     * NORMALISATION, stated exactly rather than as "verbatim": surrounding whitespace
+     * is stripped, on write by the controller and again on read here, and nothing else
+     * is touched. The interior of the value — case, punctuation, separators — is the
+     * vendor's and is preserved byte for byte. Trimming is safe because no vendor
+     * identifier can be distinguished from another by leading or trailing spaces,
+     * while a value that differs from the operator's intent only by an invisible
+     * character is a support call nobody can see the cause of.
      */
     public const CODE_EXPIRY_DAYS_SETTING = 'controld_code_expiry_days';
 
@@ -65,14 +74,54 @@ class ControlDConfig
     }
 
     /**
+     * A stored setting read as a non-negative integer, or null if it is not exactly
+     * one. Shared by every numeric accessor below so that "fail closed" means the same
+     * thing in each of them.
+     *
+     * Three ways a stored string can look like an integer and not be one, all refused:
+     *
+     *  - Anything the digit pattern rejects: '', '+14', ' 14' after trimming fails,
+     *    '1.0', '1e3', '-1', '007'. A signed or padded form is not wrong so much as
+     *    unproven — it means something other than the panel wrote this value, and the
+     *    panel canonicalises precisely so that it never has to be interpreted here.
+     *  - A digit string too large for the platform int. PHP's (int) cast SATURATES at
+     *    PHP_INT_MAX instead of failing, so '9223372036854775808' would otherwise be
+     *    read back as a perfectly plausible 9223372036854775807. Re-rendering the cast
+     *    and comparing catches it: a value that does not survive the round trip was
+     *    never this integer.
+     *  - A value below the caller's floor.
+     *
+     * There is deliberately no upper bound beyond the platform's. What a sane expiry
+     * or device limit is belongs to Control D, is not in its public reference for
+     * POST /provision, and a ceiling invented here would refuse a legal value. The
+     * contract this returns is only "an exact integer at least $min"; the site that
+     * eventually does arithmetic with it owes its own bounds check, and can now write
+     * one against a value that is precisely what it appears to be.
+     */
+    private static function readInt(string $key, int $min): ?int
+    {
+        $raw = trim((string) self::get($key));
+
+        if (preg_match('/^(0|[1-9][0-9]*)$/', $raw) !== 1) {
+            return null;
+        }
+
+        $value = (int) $raw;
+
+        if ((string) $value !== $raw) {
+            return null;
+        }
+
+        return $value >= $min ? $value : null;
+    }
+
+    /**
      * The configured Tactical CLIENT custom field id, or null when it is unset or
      * not a positive integer. Callers must treat null as a refusal.
      */
     public static function tacticalClientOrgFieldId(): ?int
     {
-        $raw = trim((string) self::get('tactical_client_org_field_id'));
-
-        return preg_match('/^[1-9][0-9]*$/', $raw) === 1 ? (int) $raw : null;
+        return self::readInt('tactical_client_org_field_id', 1);
     }
 
     /**
@@ -94,9 +143,7 @@ class ControlDConfig
      */
     public static function codeExpiryDays(): ?int
     {
-        $raw = trim((string) self::get('code_expiry_days'));
-
-        return preg_match('/^[1-9][0-9]*$/', $raw) === 1 ? (int) $raw : null;
+        return self::readInt('code_expiry_days', 1);
     }
 
     /**
@@ -109,14 +156,13 @@ class ControlDConfig
      */
     public static function codeDeviceLimitHeadroom(): ?int
     {
-        $raw = trim((string) self::get('code_device_limit_headroom'));
-
-        return preg_match('/^(0|[1-9][0-9]*)$/', $raw) === 1 ? (int) $raw : null;
+        return self::readInt('code_device_limit_headroom', 0);
     }
 
     /**
-     * Vendor-defined analytics level for a new code, verbatim, or null when blank.
-     * Not enumerated here — see the constant's docblock.
+     * Vendor-defined analytics level for a new code, or null when blank — including
+     * whitespace-only, which is blank an operator cannot see. Not enumerated here, and
+     * trimmed but otherwise unaltered; both are explained on the constant's docblock.
      */
     public static function codeAnalyticsLevel(): ?string
     {
@@ -126,8 +172,9 @@ class ControlDConfig
     }
 
     /**
-     * Vendor-defined intercept mode for a new code, verbatim, or null when blank.
-     * Not enumerated here — see the constant's docblock.
+     * Vendor-defined intercept mode for a new code, or null when blank — including
+     * whitespace-only, which is blank an operator cannot see. Not enumerated here, and
+     * trimmed but otherwise unaltered; both are explained on the constant's docblock.
      */
     public static function codeInterceptMode(): ?string
     {
@@ -144,6 +191,14 @@ class ControlDConfig
      * (step 2), and the code's expiry and headroom (step 4). Analytics level and
      * intercept mode are optional HERE — when blank, onboarding sends nothing for them
      * rather than inventing a value.
+     *
+     * 🔑 WHAT THIS DOES NOT MEAN, because the name is short and the answer is narrow.
+     * True says only that these four local values are present and readable. It does
+     * NOT mean the integration is enabled, that an API key is stored, that Control D
+     * has ever agreed any of these values exist, or that the onboarding verb is
+     * granted. Every one of those is a separate check owned somewhere else, and an
+     * onboarding service must make all of them before it writes anything — this is
+     * the first gate it passes, not the last.
      */
     public static function isOnboardingConfigured(): bool
     {

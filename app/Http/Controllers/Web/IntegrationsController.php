@@ -1645,30 +1645,45 @@ class IntegrationsController extends Controller
         // and there is no mask to mistake for a value, so clearing a field is a real
         // action: it re-arms the fail-closed refusal in ControlDConfig rather than
         // stranding a stale default the operator believes they removed.
-        Setting::setValue(
-            ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING,
-            trim((string) ($validated['tactical_client_field_id'] ?? ''))
-        );
-        Setting::setValue(
-            ControlDConfig::DEFAULT_PROFILE_SETTING,
-            trim((string) ($validated['default_profile_id'] ?? ''))
-        );
-        Setting::setValue(
-            ControlDConfig::CODE_EXPIRY_DAYS_SETTING,
-            trim((string) ($validated['code_expiry_days'] ?? ''))
-        );
-        Setting::setValue(
-            ControlDConfig::CODE_DEVICE_LIMIT_HEADROOM_SETTING,
-            trim((string) ($validated['code_device_limit_headroom'] ?? ''))
-        );
-        Setting::setValue(
-            ControlDConfig::CODE_ANALYTICS_LEVEL_SETTING,
-            trim((string) ($validated['code_analytics_level'] ?? ''))
-        );
-        Setting::setValue(
-            ControlDConfig::CODE_INTERCEPT_MODE_SETTING,
-            trim((string) ($validated['code_intercept_mode'] ?? ''))
-        );
+        //
+        // 🔑 BLANK AND OMITTED ARE DIFFERENT, and only blank clears. A field posted
+        // empty is an operator removing a value. An ABSENT key is a caller that never
+        // offered one — the panel's own form always posts all six, but this handler is
+        // a plain route, and an api_key-only POST must not erase the onboarding
+        // defaults as a side effect of saving a credential. Writing every key
+        // unconditionally made the two indistinguishable, and the destructive reading
+        // was the one that won.
+        //
+        // Integers are stored CANONICALLY rather than as typed, so that what is stored
+        // is exactly what the accessor will read back. Laravel's integer rule accepts
+        // '+14'; ControlDConfig::readInt() refuses it. Without canonicalising, the
+        // panel would report "saved" for a value onboarding then declines to use, and
+        // the operator's only symptom would be a refusal pointing at a field that
+        // visibly holds a number.
+        $canonicalInt = static function ($value): string {
+            $raw = trim((string) ($value ?? ''));
+
+            return $raw === '' ? '' : (string) (int) $raw;
+        };
+
+        $onboardingDefaults = [
+            'tactical_client_field_id' => [ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING, $canonicalInt],
+            'default_profile_id' => [ControlDConfig::DEFAULT_PROFILE_SETTING, null],
+            'code_expiry_days' => [ControlDConfig::CODE_EXPIRY_DAYS_SETTING, $canonicalInt],
+            'code_device_limit_headroom' => [ControlDConfig::CODE_DEVICE_LIMIT_HEADROOM_SETTING, $canonicalInt],
+            'code_analytics_level' => [ControlDConfig::CODE_ANALYTICS_LEVEL_SETTING, null],
+            'code_intercept_mode' => [ControlDConfig::CODE_INTERCEPT_MODE_SETTING, null],
+        ];
+
+        foreach ($onboardingDefaults as $field => [$setting, $canonicalise]) {
+            if (! array_key_exists($field, $validated)) {
+                continue;
+            }
+
+            Setting::setValue($setting, $canonicalise === null
+                ? trim((string) ($validated[$field] ?? ''))
+                : $canonicalise($validated[$field]));
+        }
 
         return redirect()->route('settings.integrations')
             ->with('success', 'Control D settings saved.');
