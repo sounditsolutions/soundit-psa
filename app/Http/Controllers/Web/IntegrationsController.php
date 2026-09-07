@@ -167,18 +167,6 @@ class IntegrationsController extends Controller
         $controldConfigured = ControlDConfig::isConfigured();
         $controldConnected = (bool) $fmtTs(Setting::getValue('controld_connected_at'));
 
-        // Client-onboarding defaults. None of these are secrets, so each is rendered
-        // back into the form as its stored value: the operator has to be able to SEE a
-        // device limit or an expiry to correct it, and a masked number would be absurd.
-        // Empty string rather than null so a blank field posts blank and clears cleanly.
-        $controldTacticalFieldId = (string) (ControlDConfig::get('tactical_client_org_field_id') ?? '');
-        $controldDefaultProfileId = (string) (ControlDConfig::get('default_profile_id') ?? '');
-        $controldCodeExpiryDays = (string) (ControlDConfig::get('code_expiry_days') ?? '');
-        $controldCodeHeadroom = (string) (ControlDConfig::get('code_device_limit_headroom') ?? '');
-        $controldCodeAnalyticsLevel = (string) (ControlDConfig::get('code_analytics_level') ?? '');
-        $controldCodeInterceptMode = (string) (ControlDConfig::get('code_intercept_mode') ?? '');
-        $controldOnboardingConfigured = ControlDConfig::isOnboardingConfigured();
-
         // Zorus
         $zorusConfigured = ZorusConfig::isConfigured();
         $zorusConnected = (bool) $fmtTs(Setting::getValue('zorus_connected_at'));
@@ -496,9 +484,6 @@ class IntegrationsController extends Controller
             'powerdmarcConfigured', 'powerdmarcConnected', 'powerdmarcBaseUrl', 'powerdmarcMsspBaseUrl', 'powerdmarcMsspWalkSeconds', 'powerdmarcEnabled',
             'servosityConfigured', 'servosityConnected', 'servosityConnectedAt', 'servosityEnabled',
             'controldConfigured', 'controldConnected', 'controldEnabled',
-            'controldTacticalFieldId', 'controldDefaultProfileId', 'controldCodeExpiryDays',
-            'controldCodeHeadroom', 'controldCodeAnalyticsLevel', 'controldCodeInterceptMode',
-            'controldOnboardingConfigured',
             'zorusConfigured', 'zorusConnected', 'zorusEnabled',
             'appriverConfigured', 'appriverConnected', 'appriverConnectedAt', 'appriverEnabled',
             'printixConfigured', 'printixPartnerId', 'printixHasSecret', 'printixConnected', 'printixEnabled',
@@ -1615,78 +1600,14 @@ class IntegrationsController extends Controller
     {
         $validated = $request->validate([
             'api_key' => 'nullable|string|min:1|max:500',
-            // Rejected at the form rather than left to fail closed later: a 0 or a
-            // negative id is always a typo, and an operator who is told so on the spot
-            // does not go hunting for why onboarding refuses a value the panel accepted.
-            'tactical_client_field_id' => 'nullable|integer|min:1',
-            'default_profile_id' => 'nullable|string|max:64',
-            'code_expiry_days' => 'nullable|integer|min:1',
-            // Zero is a real answer here — see ControlDConfig::codeDeviceLimitHeadroom().
-            'code_device_limit_headroom' => 'nullable|integer|min:0',
-            // No enum rule on these two by design: the value space is the vendor's and
-            // POST /provision under a sub-organisation is not in its public reference,
-            // so an allow-list here would be a guess. See the constants' docblock.
-            'code_analytics_level' => 'nullable|string|max:64',
-            'code_intercept_mode' => 'nullable|string|max:64',
         ]);
 
         if (! empty($validated['api_key'])) {
             Setting::setEncrypted('controld_api_key', $validated['api_key']);
         }
 
-        // --- Client-onboarding defaults ---
-        //
-        // Entry surface only: the onboarding service and its verb are separate work and
-        // read nothing here yet. These land first because the Tactical field id is NULL
-        // on every instance until someone types it, and the #1277 verb refuses while it
-        // is unset — with no screen that sets it, that refusal has been unclearable.
-        //
-        // Unlike the API key above, a blank submit WRITES BLANK. These are not secrets
-        // and there is no mask to mistake for a value, so clearing a field is a real
-        // action: it re-arms the fail-closed refusal in ControlDConfig rather than
-        // stranding a stale default the operator believes they removed.
-        //
-        // 🔑 BLANK AND OMITTED ARE DIFFERENT, and only blank clears. A field posted
-        // empty is an operator removing a value. An ABSENT key is a caller that never
-        // offered one — the panel's own form always posts all six, but this handler is
-        // a plain route, and an api_key-only POST must not erase the onboarding
-        // defaults as a side effect of saving a credential. Writing every key
-        // unconditionally made the two indistinguishable, and the destructive reading
-        // was the one that won.
-        //
-        // Integers are stored CANONICALLY rather than as typed, so that what is stored
-        // is exactly what the accessor will read back. Laravel's integer rule accepts
-        // '+14'; ControlDConfig::readInt() refuses it. Without canonicalising, the
-        // panel would report "saved" for a value onboarding then declines to use, and
-        // the operator's only symptom would be a refusal pointing at a field that
-        // visibly holds a number.
-        $canonicalInt = static function ($value): string {
-            $raw = trim((string) ($value ?? ''));
-
-            return $raw === '' ? '' : (string) (int) $raw;
-        };
-
-        $onboardingDefaults = [
-            'tactical_client_field_id' => [ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING, $canonicalInt],
-            'default_profile_id' => [ControlDConfig::DEFAULT_PROFILE_SETTING, null],
-            'code_expiry_days' => [ControlDConfig::CODE_EXPIRY_DAYS_SETTING, $canonicalInt],
-            'code_device_limit_headroom' => [ControlDConfig::CODE_DEVICE_LIMIT_HEADROOM_SETTING, $canonicalInt],
-            'code_analytics_level' => [ControlDConfig::CODE_ANALYTICS_LEVEL_SETTING, null],
-            'code_intercept_mode' => [ControlDConfig::CODE_INTERCEPT_MODE_SETTING, null],
-        ];
-
-        foreach ($onboardingDefaults as $field => [$setting, $canonicalise]) {
-            if (! array_key_exists($field, $validated)) {
-                continue;
-            }
-
-            Setting::setValue($setting, $canonicalise === null
-                ? trim((string) ($validated[$field] ?? ''))
-                : $canonicalise($validated[$field]));
-        }
-
         return redirect()->route('settings.integrations')
-            ->with('success', 'Control D settings saved.');
+            ->with('success', 'Control D credentials saved.');
     }
 
     public function testControlD()
