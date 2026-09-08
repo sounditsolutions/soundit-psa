@@ -1042,6 +1042,64 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertSame(1, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'blocked')->count());
     }
 
+    /**
+     * The mirror of the test above, and the reason that brake is keyed on the
+     * run rather than on 'a fault happened'. A fault that DID write a PSA row
+     * is the row brakes' business, and it must not outlive the row: card A
+     * faults on scope, the technician does exactly what the fault text asks and
+     * the record is closed to 'removed', and card B — the corrected retry both
+     * fault branches state must remain possible — is approved inside the same
+     * 24-hour window and reaches Mesh. The audit row is immutable, so nothing
+     * else could ever clear it.
+     */
+    public function test_a_corrected_retry_is_approved_after_a_scope_fault_record_was_closed(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $secondTicket = Ticket::factory()->for($fixture['client'])->create(['subject' => 'Same vendor, corrected']);
+
+        $first = $this->stagedRun($fixture);
+        // Same sender, second ticket: a genuinely second card, not the live
+        // proposal handed back.
+        $this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture, [
+            'ticket_id' => $secondTicket->id,
+        ]))->assertOk();
+        $corrected = TechnicianRun::where('ticket_id', $secondTicket->id)->sole();
+
+        // First approval: Mesh answers 201 with an `added_for` that is NOT this
+        // tenant, which is the scope_unconfirmed fault — PSA record written
+        // unresolved, audited 'executed_with_fault'. Second approval: a clean
+        // create.
+        $write->shouldReceive('createAllowRule')->twice()->andReturn(
+            ['added_for' => ['99999999-8888-7777-6666-555555555555']],
+            ['added_for' => [self::TENANT]],
+        );
+        // Only the clean create gets as far as the id re-read; the scope fault
+        // returns before it.
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'r-corrected']);
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $first))->assertSessionHas('error');
+        $faulted = MeshAllowRule::sole();
+        $this->assertSame(MeshAllowRule::STATE_UNRESOLVED, $faulted->state);
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed_with_fault')->count());
+
+        // The technician checks the portal, removes the wrongly-scoped rule and
+        // the removal verb proves absence: the record is closed. It is now in
+        // neither liveAllowRule()'s nor unsettledAllowRule()'s list, so the
+        // fault's audit row is the only thing that could refuse the retry.
+        $faulted->update(['state' => MeshAllowRule::STATE_REMOVED]);
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $corrected))->assertSessionHas('success');
+
+        $this->assertSame(TechnicianRunState::Done, $corrected->fresh()->state);
+        $this->assertSame(2, MeshAllowRule::count());
+        $this->assertSame('r-corrected', MeshAllowRule::where('state', MeshAllowRule::STATE_ACTIVE)->sole()->mesh_rule_id);
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed')->count());
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'blocked')->count());
+    }
+
     public function test_kill_switch_refuses_approval_before_any_upstream_call(): void
     {
         $this->configureMesh();

@@ -1666,15 +1666,54 @@ class StaffMeshAdminToolExecutor
      * recently', success:true, is the opposite of what a live untracked rule
      * needs said about it. Kept because it is the LAST brake standing for
      * record_unwritable, the one fault that writes no mesh_allow_rules row for
-     * liveAllowRule()/unsettledAllowRule() to see.
+     * liveAllowRule()/unsettledAllowRule() to see — and NARROWED to exactly
+     * that fault, because this reads the IMMUTABLE audit log and nothing that
+     * later settles the situation can clear a row in it.
+     *
+     * Every other fault path (scope_unconfirmed, rule_id_unresolved,
+     * create_unacknowledged, create_outcome_unmeasured) DOES write a
+     * mesh_allow_rules row, so the two brakes above own those cases in every
+     * state that row can reach — including 'removed' (executeRemoveAllowRule
+     * proved absence) and 'reaped' (the reaper proved a 404), where the right
+     * answer is to let the CORRECTED RETRY through. That retry is the one thing
+     * the scope branch and reconcileUnacknowledgedCreate both say a fault must
+     * not suppress; matching them here refused it for the whole dedup window
+     * with a message asserting a live untracked rule the PSA had already proved
+     * gone.
+     *
+     * So the question is not "did a fault happen" but "did a fault happen that
+     * left NO row of its own": run_id ties an audit row to its proposal, and
+     * mesh_allow_rules.technician_run_id ties the row back to the same one.
      */
     private function faultedExecution(string $tool, ?int $clientId, string $contentHash): bool
     {
-        return $this->actionLogQuery($tool, $clientId)
+        $faultRunIds = $this->actionLogQuery($tool, $clientId)
             ->where('content_hash', $contentHash)
             ->where('result_status', 'executed_with_fault')
             ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
-            ->exists();
+            ->pluck('run_id')
+            ->all();
+
+        if ($faultRunIds === []) {
+            return false;
+        }
+
+        $recordedRunIds = MeshAllowRule::query()
+            ->whereIn('technician_run_id', array_values(array_filter($faultRunIds, static fn ($id): bool => $id !== null)))
+            ->pluck('technician_run_id')
+            ->map(static fn ($id): int => (int) $id)
+            ->all();
+
+        foreach ($faultRunIds as $runId) {
+            // A fault audited against no run cannot be tied to a row either
+            // way, and unknown is a refusal here as everywhere else in this
+            // verb.
+            if ($runId === null || ! in_array((int) $runId, $recordedRunIds, true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function executedRunId(string $tool, ?int $clientId, string $contentHash): ?int
