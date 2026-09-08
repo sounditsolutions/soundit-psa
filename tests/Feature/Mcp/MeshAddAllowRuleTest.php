@@ -995,6 +995,53 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'blocked')->count());
     }
 
+    /**
+     * Free approval is for DISTINCT writes. A fault on the same write is not
+     * one: record_unwritable leaves the rule live upstream with no PSA row, so
+     * liveAllowRule() and unsettledAllowRule() both see nothing and
+     * alreadyExecuted() matches 'executed' alone. The fault's own audit row is
+     * the only brake left, and a second card for the same sender must hit it
+     * rather than open a second, untracked hole in this client's filtering.
+     *
+     * The executor has no seam to fail the mesh_allow_rules insert through, so
+     * the STATE that path leaves — an 'executed_with_fault' row for this write
+     * and no PSA record — is constructed here from a fault that does write one.
+     */
+    public function test_a_second_card_is_refused_after_a_fault_left_a_rule_live_and_untracked(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $secondTicket = Ticket::factory()->for($fixture['client'])->create(['subject' => 'Same vendor, raised twice']);
+
+        $first = $this->stagedRun($fixture);
+        // Same sender, second ticket: a genuinely second card, not the live
+        // proposal handed back.
+        $this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture, [
+            'ticket_id' => $secondTicket->id,
+        ]))->assertOk();
+        $duplicate = TechnicianRun::where('ticket_id', $secondTicket->id)->sole();
+
+        // The create lands upstream and the post-write bookkeeping faults.
+        $write->shouldReceive('createAllowRule')->once()->andReturn(['added_for' => [self::TENANT]]);
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(null);
+        $this->actingAs($actor)->post(route('cockpit.approve', $first))->assertSessionHas('error');
+        $this->assertSame(0, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed')->count());
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed_with_fault')->count());
+
+        // ...and the PSA row never reached disk, as record_unwritable leaves
+        // it. Nothing in mesh_allow_rules can speak for that rule now.
+        MeshAllowRule::query()->delete();
+
+        $write->shouldNotReceive('createAllowRule');
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $duplicate))->assertSessionHas('error');
+        $this->assertStringContainsString('FAULTED', (string) session('error'));
+        $this->assertSame(0, MeshAllowRule::count(), 'a second, untracked rule must not be created');
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'blocked')->count());
+    }
+
     public function test_kill_switch_refuses_approval_before_any_upstream_call(): void
     {
         $this->configureMesh();

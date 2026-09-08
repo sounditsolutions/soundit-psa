@@ -749,6 +749,24 @@ class StaffMeshAdminToolExecutor
             return ['error' => $message];
         }
 
+        // ...and one fault path leaves NO row for either of those two brakes to
+        // find: record_unwritable, where the rule IS live upstream and the row
+        // that would reap it is precisely what could not be written. Its
+        // 'executed_with_fault' audit line is then the only trace the write
+        // left, and alreadyExecuted() matches 'executed' alone, so without this
+        // check a second card for the same sender walks past every brake and
+        // opens a SECOND hole — one of them untracked, and therefore never
+        // reaped. Unknown is a refusal, never a pass.
+        if ($this->faultedExecution($tool, $clientId, $contentHash)) {
+            $message = "An earlier create for '{$target['sender']}' on this client FAULTED after the write reached Mesh, and no PSA record of it exists, "
+                .'so a rule may be live upstream with nothing tracking it and a second rule was not created. '
+                .'Find that rule in the Mesh portal and remove it by hand — the earlier audit row for this write says what happened — '
+                .'and note that the lifetime on this proposal is NOT in force. No upstream call was made.';
+            $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $message];
+        }
+
         $comment = $this->requiredString($arguments, 'comment') ?? $this->generateComment();
 
         // Re-validated at approval, not carried as a parsed value: the same
@@ -1635,6 +1653,26 @@ class StaffMeshAdminToolExecutor
         return $this->actionLogQuery($tool, $clientId)
             ->where('content_hash', $contentHash)
             ->where('result_status', 'executed')
+            ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
+            ->exists();
+    }
+
+    /**
+     * A recent audit row for this write whose outcome was a FAULT: the write
+     * landed (or may have) and a post-condition did not hold.
+     *
+     * Deliberately NOT folded into alreadyExecuted(): a fault is not an
+     * idempotent success and must never be answered as one — 'already created
+     * recently', success:true, is the opposite of what a live untracked rule
+     * needs said about it. Kept because it is the LAST brake standing for
+     * record_unwritable, the one fault that writes no mesh_allow_rules row for
+     * liveAllowRule()/unsettledAllowRule() to see.
+     */
+    private function faultedExecution(string $tool, ?int $clientId, string $contentHash): bool
+    {
+        return $this->actionLogQuery($tool, $clientId)
+            ->where('content_hash', $contentHash)
+            ->where('result_status', 'executed_with_fault')
             ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
             ->exists();
     }
