@@ -75,8 +75,6 @@ class StaffMeshAdminToolExecutor
      */
     private const MAX_RUN_GENERATIONS = 20;
 
-    private const COOLDOWN_SECONDS = 300;
-
     private const REASON_MAX = 500;
 
     /**
@@ -515,11 +513,11 @@ class StaffMeshAdminToolExecutor
             return ['error' => $message];
         }
 
-        if ($this->cooldownActive($tool, $clientId)) {
-            $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $contentHash, 'Mesh allow-rule proposal cooldown active.', $actorLabel);
-
-            return ['error' => 'mesh_add_allow_rule cooldown active for this client; no proposal was staged.'];
-        }
+        // No per-client staging cooldown: a proposal is a held card a human
+        // still has to approve, so a damper here only delayed that decision
+        // (Charlie, 2026-09-08; same ruling as tactical_run_command, T-22782).
+        // Distinct senders may be staged back-to-back; identical content is
+        // still answered by the dedup brakes above.
 
         // Generated HERE, not at execution, and carried in the encrypted
         // payload: the approver is shown the exact comment the rule will
@@ -1163,13 +1161,6 @@ class StaffMeshAdminToolExecutor
                 return new TechnicianApprovalResult('gate_declined');
             }
 
-            if ($this->approveCooldownActive($directTool, (int) $run->client_id)) {
-                $this->auditAttempt($run->action_type, 'blocked', (int) $run->client_id, $ticket, $run->content_hash, 'Mesh allow-rule cooldown active; approval refused before upstream call.', $this->approverLabel($approverId), $run->id, $approverId);
-                $run->releaseClaim();
-
-                return new TechnicianApprovalResult('gate_declined');
-            }
-
             $arguments = is_array($payload['arguments'] ?? null) ? $payload['arguments'] : [];
             $result = match ($directTool) {
                 'mesh_add_allow_rule' => $this->executeAllowRule($arguments, (int) $run->client_id, $this->approverLabel($approverId), $run, $approverId),
@@ -1744,46 +1735,18 @@ class StaffMeshAdminToolExecutor
         return ['error' => 'This ticket already carries '.self::MAX_RUN_GENERATIONS.' Mesh allow-rule proposals for this sender; no proposal was staged. Raise a new ticket for a further allow rule.'];
     }
 
-    private function cooldownActive(string $tool, ?int $clientId): bool
-    {
-        return $this->actionLogQuery($tool, $clientId)
-            ->where('created_at', '>=', now()->subSeconds(self::COOLDOWN_SECONDS))
-            ->whereIn('result_status', ['executed', 'awaiting_approval'])
-            ->exists();
-    }
-
     /**
-     * APPROVE-TIME cooldown: rows for attempts that REACHED UPSTREAM. The
-     * staging call leaves an awaiting_approval row for this same client, and
-     * counting it would make every proposal decline its own approval inside
-     * the cooldown window. Runaway staging is the stage-time check's question,
-     * not this one's.
-     *
-     * 'executed_with_fault' counts: the write landed (or may have), so a second
-     * approval seconds later is the same burst this window exists to damp —
-     * counting only clean executions left the fault outcomes, the ones where a
-     * rule is live and unaccounted for, with no cooldown at all.
-     */
-    private function approveCooldownActive(string $directTool, int $clientId): bool
-    {
-        return $this->actionLogQuery($directTool, $clientId)
-            ->where('created_at', '>=', now()->subSeconds(self::COOLDOWN_SECONDS))
-            ->whereIn('result_status', ['executed', 'executed_with_fault'])
-            ->exists();
-    }
-
-    /**
-     * The staged and direct names of ONE verb share a cooldown and dedup
-     * window; they are one action.
+     * The staged and direct names of ONE verb share a dedup window; they are
+     * one action.
      *
      * The pair is derived from $tool rather than listed, and that is
      * load-bearing now that there is more than one verb (#1134). While
      * mesh_add_allow_rule was the only one, hardcoding its two names was
      * indistinguishable from honouring the argument — with a second verb it
      * would mean the removal verb deduping against the create verb's log
-     * (so a repeat removal is never caught) and each verb's cooldown being
-     * spent by the other. They are opposite-signed writes: an allow that just
-     * landed is not a reason to refuse the removal of a different rule.
+     * (so a repeat removal is never caught). They are opposite-signed writes:
+     * an allow that just landed says nothing about the removal of a different
+     * rule.
      */
     private function actionLogQuery(string $tool, ?int $clientId)
     {
@@ -1809,7 +1772,7 @@ class StaffMeshAdminToolExecutor
      * approveStagedRun's catch, which calls releaseClaim() and returns the run
      * to AwaitingApproval — and with neither an audit row nor a
      * mesh_allow_rules row written, none of the brakes (alreadyExecuted,
-     * liveAllowRule, unsettledAllowRule, approveCooldownActive) can see the
+     * liveAllowRule, unsettledAllowRule) can see the
      * write that landed, so the next Approve click opens a SECOND hole in the
      * customer's mail filtering. A lost audit line is a fault to log; it is
      * never a reason to make a landed write look un-done. Mirrors
@@ -2194,11 +2157,7 @@ class StaffMeshAdminToolExecutor
             ];
         }
 
-        if ($this->cooldownActive($tool, $clientId)) {
-            $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $contentHash, 'Mesh allow-rule removal proposal cooldown active.', $actorLabel);
-
-            return ['error' => 'mesh_remove_allow_rule cooldown active for this client; no proposal was staged.'];
-        }
+        // No per-client staging cooldown — see stageAllowRule().
 
         $proposedContent = "Remove the Mesh Email Security allow rule '{$target['rule_id']}' for {$target['client_name']}.\n"
             ."Sender allowed by this rule: {$target['sender']}\n"
@@ -2648,11 +2607,7 @@ class StaffMeshAdminToolExecutor
             ];
         }
 
-        if ($this->cooldownActive($tool, $clientId)) {
-            $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $contentHash, 'Mesh allow-rule edit proposal cooldown active.', $actorLabel);
-
-            return ['error' => 'mesh_edit_allow_rule cooldown active for this client; no proposal was staged.'];
-        }
+        // No per-client staging cooldown — see stageAllowRule().
 
         $proposedContent = "Change the expiry of the Mesh Email Security allow rule '{$target['rule_id']}' for {$target['client_name']}.\n"
             ."Sender allowed by this rule: {$target['sender']}\n"
@@ -3059,7 +3014,7 @@ class StaffMeshAdminToolExecutor
             .'This WEAKENS the customer’s mail filtering for that sender (allow-only, never partner-wide, never `edge`) until the PSA removes the rule — after the lifetime `expires_at` asks for, '
             .'or the '.MeshAllowRule::DEFAULT_LIFETIME_DAYS.'-day default if it is omitted, or NEVER if it is "'.self::EXPIRY_NEVER.'". '
             .'The proposal names the sender, the scope width (single address vs whole domain), the chosen lifetime in words (including PERMANENT when there is no expiry), and whose identity Mesh will record as the rule’s creator. '
-            .'Requires a ticket, reason, typed domain confirmation, explicit grant, kill-switch, dedup and cooldown.',
+            .'Requires a ticket, reason, typed domain confirmation, explicit grant, kill-switch and identical-content dedup. No staging cooldown: distinct senders may be staged back-to-back.',
             self::allowRuleProperties(),
             ['sender', 'confirm_domain', 'reason', 'ticket_id'],
         );
@@ -3120,7 +3075,7 @@ class StaffMeshAdminToolExecutor
             'Stage the removal of a Mesh Email Security allow rule for cockpit approval. STAGED ONLY — this is the only lane the verb has: approval re-resolves the client’s Mesh tenant and re-checks the rule’s ownership, its allow/block type and the typed sender confirmation against LIVE state before anything is deleted. '
             .'The proposal names the sender the rule allows, how wide it is (one address vs a whole domain), whether the rule is PSA-TRACKED or FOREIGN, the expiry Mesh displays, the Mesh comment, and who Mesh records as its creator. '
             .'Removing an allow rule STRENGTHENS filtering for that sender — but a FOREIGN rule was put there by someone outside this system, and removing it can break mail that is being delivered today. '
-            .'Requires a ticket, reason, the sender typed back, explicit grant, kill-switch, dedup and cooldown.',
+            .'Requires a ticket, reason, the sender typed back, explicit grant, kill-switch and identical-content dedup. No staging cooldown: distinct rules may be staged back-to-back.',
             self::removeAllowRuleProperties(),
             ['rule_id', 'confirm_sender', 'reason', 'ticket_id'],
         );
@@ -3178,7 +3133,7 @@ class StaffMeshAdminToolExecutor
             .'The proposal names the sender the rule allows, how wide it is, the expiry the PSA currently enforces, the new expiry in words (including PERMANENT when there is no expiry), and that Mesh’s own Expires column is display only. '
             .'Extending or removing an expiry LENGTHENS the hole in this customer’s mail filtering. '
             .'PSA-TRACKED RULES ONLY: a FOREIGN rule (one the PSA did not create) has no PSA-enforced expiry to change and is refused with the reason. '
-            .'Requires a ticket, reason, the sender typed back, an explicit expires_at, explicit grant, kill-switch, dedup and cooldown.',
+            .'Requires a ticket, reason, the sender typed back, an explicit expires_at, explicit grant, kill-switch and identical-content dedup. No staging cooldown: distinct rules may be staged back-to-back.',
             self::editAllowRuleProperties(),
             ['rule_id', 'confirm_sender', 'expires_at', 'reason', 'ticket_id'],
         );

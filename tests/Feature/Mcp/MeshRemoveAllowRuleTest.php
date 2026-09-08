@@ -548,8 +548,8 @@ class MeshRemoveAllowRuleTest extends TestCase
         ))['psa_tracked']);
 
         // A second CLIENT, on its own tenant: mesh_customer_id is unique per
-        // client, and a same-client second call inside the cooldown would be
-        // answering a different question than this one.
+        // client, so this is the cross-tenant question and not a same-client
+        // repeat.
         $second = '99999999-8888-7777-6666-555555555555';
         $owned = $this->fixture($second);
         $write->shouldReceive('findRuleById')->andReturn($this->upstreamRow());
@@ -879,9 +879,8 @@ class MeshRemoveAllowRuleTest extends TestCase
 
         $first = $this->stagedRun($fixture);
 
-        // Past the staging cooldown, and on another ticket, so this is a
-        // genuinely second card rather than the live proposal handed back.
-        $this->travel(6)->minutes();
+        // On another ticket, so this is a genuinely second card rather than
+        // the live proposal handed back.
         $this->callTool(
             $this->token(['mesh_remove_allow_rule:staged']),
             'mesh_remove_allow_rule',
@@ -910,14 +909,16 @@ class MeshRemoveAllowRuleTest extends TestCase
     }
 
     /**
-     * The two verbs are opposite-signed writes and do NOT share a dedup or
-     * cooldown window. This is the regression guard for the shortcut that was
+     * The two verbs are opposite-signed writes and do NOT share a dedup
+     * window. This is the regression guard for the shortcut that was
      * invisible while there was only one verb: actionLogQuery() took a $tool
      * argument and ignored it, listing the create verb's action types. With a
-     * second verb that meant a removal was throttled by an unrelated addition
-     * — and, in the other direction, that a repeat removal was never caught.
+     * second verb that meant a repeat removal was never caught, and — while
+     * the verbs still carried a staging cooldown — that a removal was
+     * throttled by an unrelated addition. There is no staging cooldown any
+     * more: a second addition for the same client stages just as freely.
      */
-    public function test_a_staged_addition_does_not_spend_the_removal_verbs_cooldown(): void
+    public function test_a_staged_addition_and_a_removal_for_one_client_stage_back_to_back(): void
     {
         $this->configureMesh();
         $fixture = $this->fixture();
@@ -943,15 +944,19 @@ class MeshRemoveAllowRuleTest extends TestCase
         $this->assertTrue($removed['success']);
         $this->assertSame(2, TechnicianRun::count());
 
-        // And the reverse: a second ADDITION for that client is still braked by
-        // its own verb, so the split did not simply remove the cooldown.
-        $this->assertStringContainsString('cooldown active', $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', [
+        // A second ADDITION for that client seconds later is staged too: the
+        // proposal is a held card, and nothing damps distinct proposals.
+        $third = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', [
             'client_id' => $fixture['client']->id,
             'ticket_id' => $fixture['ticket']->id,
             'sender' => 'third@vendor.example',
             'confirm_domain' => 'vendor.example',
-            'reason' => 'A third allow for the same client inside the cooldown window.',
-        ]))['error']);
+            'reason' => 'A third allow for the same client, seconds after the others.',
+        ]));
+        $this->assertArrayNotHasKey('error', $third);
+        $this->assertTrue($third['success']);
+        $this->assertSame(3, TechnicianRun::count());
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'blocked')->count());
     }
 
     public function test_staging_the_same_removal_twice_returns_the_live_proposal(): void
