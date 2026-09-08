@@ -1220,9 +1220,9 @@ class MeshEditAllowRuleTest extends TestCase
         $fixture = $this->fixture();
         $record = $this->tracked($fixture);
         $secondTicket = Ticket::factory()->for($fixture['client'])->create(['subject' => 'Same edit, raised twice']);
-        // ONE instant, held across the travel below: newExpiry() is relative to
-        // now(), so re-deriving it for the second card would ask for a lifetime
-        // minutes apart from the first and stop being a duplicate at all.
+        // ONE instant, reused by both cards: newExpiry() is relative to now(),
+        // so re-deriving it for the second card would ask for a different
+        // lifetime and stop being a duplicate at all.
         $expiry = $this->newExpiry();
         $write = $this->mockWrite();
         // Mesh agrees with whatever the PSA record enforces: these tests are
@@ -1233,7 +1233,6 @@ class MeshEditAllowRuleTest extends TestCase
 
         $first = $this->stagedRun($fixture, ['expires_at' => $expiry->toIso8601String()]);
 
-        $this->travel(6)->minutes();
         $this->callTool(
             $this->token(['mesh_edit_allow_rule:staged']),
             'mesh_edit_allow_rule',
@@ -1268,9 +1267,9 @@ class MeshEditAllowRuleTest extends TestCase
         $fixture = $this->fixture();
         $record = $this->tracked($fixture);
         $secondTicket = Ticket::factory()->for($fixture['client'])->create(['subject' => 'Same edit, raised twice']);
-        // ONE instant, held across the travel below: newExpiry() is relative to
-        // now(), so re-deriving it for the second card would ask for a lifetime
-        // minutes apart from the first and stop being a duplicate at all.
+        // ONE instant, reused by both cards: newExpiry() is relative to now(),
+        // so re-deriving it for the second card would ask for a different
+        // lifetime and stop being a duplicate at all.
         $expiry = $this->newExpiry();
         $write = $this->mockWrite();
         // Mesh agrees with whatever the PSA record enforces: these tests are
@@ -1280,7 +1279,6 @@ class MeshEditAllowRuleTest extends TestCase
         ]));
 
         $first = $this->stagedRun($fixture, ['expires_at' => $expiry->toIso8601String()]);
-        $this->travel(6)->minutes();
         $this->callTool(
             $this->token(['mesh_edit_allow_rule:staged']),
             'mesh_edit_allow_rule',
@@ -1303,11 +1301,17 @@ class MeshEditAllowRuleTest extends TestCase
     }
 
     /**
-     * The three verbs are different writes and do NOT share a dedup window —
-     * the regression guard for the shortcut that made one verb's action-log
-     * query answer for another. There is no staging cooldown at all any
-     * more: a second, DIFFERENT edit for the same client stages just as
-     * freely, seconds after the first.
+     * Staging one verb never brakes another, and nothing damps distinct
+     * proposals for one client at all: an addition and two DIFFERENT edits
+     * stage back-to-back, seconds apart.
+     *
+     * This test no longer discriminates the #1134 shortcut (one verb's
+     * action-log query answering for another): the assertion that did was the
+     * cooldown refusal, and free staging is the expected outcome under either
+     * implementation. That guard now lives at APPROVAL, in
+     * test_a_duplicate_card_approved_after_the_edit_landed_closes_as_idempotent,
+     * whose shouldNotReceive('patchRule') fails if alreadyExecuted() reads the
+     * wrong verb's log; do not read this one as covering it.
      */
     public function test_a_staged_addition_and_two_distinct_edits_for_one_client_stage_back_to_back(): void
     {

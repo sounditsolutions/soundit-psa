@@ -865,6 +865,12 @@ class MeshRemoveAllowRuleTest extends TestCase
      * close as an idempotent no-op: refusing it with a tenant-scope error
      * releases the claim and strands the card AwaitingApproval forever, while
      * telling the approver to check an id that was never wrong.
+     *
+     * This is also where the #1134 shortcut is caught now that the staging
+     * cooldown is gone: alreadyExecuted() reaches the log through
+     * actionLogQuery($tool, ...), so a query that ignored $tool and listed the
+     * create verb's action types would find no executed REMOVAL, let this card
+     * through, and fail shouldNotReceive('deleteRule').
      */
     public function test_a_duplicate_card_approved_after_the_removal_landed_closes_as_idempotent(): void
     {
@@ -893,10 +899,11 @@ class MeshRemoveAllowRuleTest extends TestCase
         $this->actingAs($actor)->post(route('cockpit.approve', $first))->assertSessionHas('success');
 
         // The rule is gone and proved gone: nothing resolves it now, and no
-        // second DELETE may be sent for it.
+        // second DELETE may be sent for it. Approved seconds after the first,
+        // with no window to step over: the brake is the removal verb's OWN
+        // executed row, not a cooldown.
         $write->shouldNotReceive('findRuleById');
         $write->shouldNotReceive('deleteRule');
-        $this->travel(6)->minutes();
 
         $this->actingAs($actor)->post(route('cockpit.approve', $duplicate))->assertSessionHas('error');
         $this->assertStringContainsString('was already removed for this client recently', (string) session('error'));
@@ -909,14 +916,17 @@ class MeshRemoveAllowRuleTest extends TestCase
     }
 
     /**
-     * The two verbs are opposite-signed writes and do NOT share a dedup
-     * window. This is the regression guard for the shortcut that was
-     * invisible while there was only one verb: actionLogQuery() took a $tool
-     * argument and ignored it, listing the create verb's action types. With a
-     * second verb that meant a repeat removal was never caught, and — while
-     * the verbs still carried a staging cooldown — that a removal was
-     * throttled by an unrelated addition. There is no staging cooldown any
-     * more: a second addition for the same client stages just as freely.
+     * Staging one verb never brakes another, and nothing damps distinct
+     * proposals for one client at all: a removal and two additions stage
+     * back-to-back.
+     *
+     * This test no longer discriminates the #1134 shortcut (actionLogQuery()
+     * taking a $tool argument and ignoring it): the assertion that did — a
+     * second addition refused with 'cooldown active' by the create verb's own
+     * window — went with the cooldown, and free staging is the expected
+     * outcome under either implementation. That guard now lives at APPROVAL,
+     * in test_a_duplicate_card_approved_after_the_removal_landed_closes_as_idempotent;
+     * do not read this one as covering it.
      */
     public function test_a_staged_addition_and_a_removal_for_one_client_stage_back_to_back(): void
     {
