@@ -1175,9 +1175,6 @@ class MeshEditAllowRuleTest extends TestCase
 
         $first = $this->stagedRun($fixture);
 
-        // Past the staging cooldown, so this is a second proposal rather than
-        // the live one handed back.
-        $this->travel(6)->minutes();
         $second = $this->decodedResult($this->callTool(
             $this->token(['mesh_edit_allow_rule:staged']),
             'mesh_edit_allow_rule',
@@ -1223,9 +1220,9 @@ class MeshEditAllowRuleTest extends TestCase
         $fixture = $this->fixture();
         $record = $this->tracked($fixture);
         $secondTicket = Ticket::factory()->for($fixture['client'])->create(['subject' => 'Same edit, raised twice']);
-        // ONE instant, held across the travel below: newExpiry() is relative to
-        // now(), so re-deriving it for the second card would ask for a lifetime
-        // minutes apart from the first and stop being a duplicate at all.
+        // ONE instant, reused by both cards: newExpiry() is relative to now(),
+        // so re-deriving it for the second card would ask for a different
+        // lifetime and stop being a duplicate at all.
         $expiry = $this->newExpiry();
         $write = $this->mockWrite();
         // Mesh agrees with whatever the PSA record enforces: these tests are
@@ -1236,7 +1233,6 @@ class MeshEditAllowRuleTest extends TestCase
 
         $first = $this->stagedRun($fixture, ['expires_at' => $expiry->toIso8601String()]);
 
-        $this->travel(6)->minutes();
         $this->callTool(
             $this->token(['mesh_edit_allow_rule:staged']),
             'mesh_edit_allow_rule',
@@ -1247,10 +1243,9 @@ class MeshEditAllowRuleTest extends TestCase
         $write->shouldReceive('patchRule')->once()->andReturn([]);
         $this->actingAs($actor)->post(route('cockpit.approve', $first))->assertSessionHas('success');
 
-        // Past the approve-time cooldown, so the refusal below is the duplicate
-        // brake and not the cooldown answering for it.
+        // The refusal below is the duplicate brake; there is no approve-time
+        // cooldown to answer for it.
         $write->shouldNotReceive('patchRule');
-        $this->travel(6)->minutes();
 
         $this->actingAs($actor)->post(route('cockpit.approve', $duplicate))->assertSessionHas('error');
         $this->assertStringContainsString('already set to this expiry for this client recently', (string) session('error'));
@@ -1272,9 +1267,9 @@ class MeshEditAllowRuleTest extends TestCase
         $fixture = $this->fixture();
         $record = $this->tracked($fixture);
         $secondTicket = Ticket::factory()->for($fixture['client'])->create(['subject' => 'Same edit, raised twice']);
-        // ONE instant, held across the travel below: newExpiry() is relative to
-        // now(), so re-deriving it for the second card would ask for a lifetime
-        // minutes apart from the first and stop being a duplicate at all.
+        // ONE instant, reused by both cards: newExpiry() is relative to now(),
+        // so re-deriving it for the second card would ask for a different
+        // lifetime and stop being a duplicate at all.
         $expiry = $this->newExpiry();
         $write = $this->mockWrite();
         // Mesh agrees with whatever the PSA record enforces: these tests are
@@ -1284,7 +1279,6 @@ class MeshEditAllowRuleTest extends TestCase
         ]));
 
         $first = $this->stagedRun($fixture, ['expires_at' => $expiry->toIso8601String()]);
-        $this->travel(6)->minutes();
         $this->callTool(
             $this->token(['mesh_edit_allow_rule:staged']),
             'mesh_edit_allow_rule',
@@ -1307,11 +1301,19 @@ class MeshEditAllowRuleTest extends TestCase
     }
 
     /**
-     * The three verbs are different writes and do NOT share a dedup or cooldown
-     * window — the regression guard for the shortcut that made one verb's
-     * action-log query answer for another.
+     * Staging one verb never brakes another, and nothing damps distinct
+     * proposals for one client at all: an addition and two DIFFERENT edits
+     * stage back-to-back, seconds apart.
+     *
+     * This test no longer discriminates the #1134 shortcut (one verb's
+     * action-log query answering for another): the assertion that did was the
+     * cooldown refusal, and free staging is the expected outcome under either
+     * implementation. That guard now lives at APPROVAL, in
+     * test_a_duplicate_card_approved_after_the_edit_landed_closes_as_idempotent,
+     * whose shouldNotReceive('patchRule') fails if alreadyExecuted() reads the
+     * wrong verb's log; do not read this one as covering it.
      */
-    public function test_a_staged_addition_does_not_spend_the_edit_verbs_cooldown(): void
+    public function test_a_staged_addition_and_two_distinct_edits_for_one_client_stage_back_to_back(): void
     {
         $this->configureMesh();
         $fixture = $this->fixture();
@@ -1338,13 +1340,26 @@ class MeshEditAllowRuleTest extends TestCase
         $this->assertTrue($edited['success']);
         $this->assertSame(2, TechnicianRun::count());
 
-        // And the reverse: a second EDIT for that client is braked by its own
-        // verb, so the split did not simply remove the cooldown.
-        $this->travel(1)->minute();
-        $this->assertStringContainsString('cooldown active', $this->decodedResult($this->callTool(
+        // A second, different edit for that client seconds later is staged
+        // too; the identical one is the live proposal handed back.
+        $third = $this->decodedResult($this->callTool(
             $this->token(['mesh_edit_allow_rule:staged']),
             'mesh_edit_allow_rule',
             $this->editArgs($fixture, ['expires_at' => now()->addDays(120)->startOfMinute()->toIso8601String()]),
-        ))['error']);
+        ));
+        $this->assertArrayNotHasKey('error', $third);
+        $this->assertTrue($third['success']);
+        $this->assertArrayNotHasKey('idempotent', $third);
+        $this->assertSame(3, TechnicianRun::count());
+
+        $retry = $this->decodedResult($this->callTool(
+            $this->token(['mesh_edit_allow_rule:staged']),
+            'mesh_edit_allow_rule',
+            $this->editArgs($fixture),
+        ));
+        $this->assertTrue($retry['idempotent']);
+        $this->assertSame($edited['run_id'], $retry['run_id']);
+        $this->assertSame(3, TechnicianRun::count());
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'blocked')->count());
     }
 }

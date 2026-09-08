@@ -510,10 +510,6 @@ class MeshAddAllowRuleTest extends TestCase
         $first = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
         TechnicianRun::whereKey($first['run_id'])->update(['state' => TechnicianRunState::Denied->value]);
 
-        // Past the staging cooldown, so the re-stage is answered by the dedup
-        // branches under test rather than by the burst damper.
-        $this->travel(6)->minutes();
-
         $second = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
         $this->assertNotSame($first['run_id'], $second['run_id'], 'a denied run is never revived; the proposal takes the next generation');
 
@@ -870,7 +866,7 @@ class MeshAddAllowRuleTest extends TestCase
         $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'r1']);
         $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('success');
 
-        // The rule ran its life — reaped, dedup and cooldown windows past.
+        // The rule ran its life — reaped, dedup window past.
         MeshAllowRule::sole()->update(['state' => MeshAllowRule::STATE_REAPED, 'reaped_at' => now()]);
         TechnicianActionLog::query()->update(['created_at' => now()->subDays(2)]);
 
@@ -906,7 +902,7 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertSame(1, MeshAllowRule::count());
     }
 
-    public function test_the_stage_time_cooldown_does_not_block_the_proposals_own_approval(): void
+    public function test_a_proposal_is_approvable_seconds_after_it_was_staged(): void
     {
         $this->configureMesh();
         $actor = $this->configureAiActor();
@@ -920,6 +916,188 @@ class MeshAddAllowRuleTest extends TestCase
 
         $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('success');
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+    }
+
+    /**
+     * There is no per-client staging cooldown. A proposal is a held card a
+     * human still has to approve, so a damper between two DISTINCT proposals
+     * only delayed that human's decision — the shape that had a second allow
+     * for the same client, on a second ticket, refused for a quarter of an
+     * hour. Identical content is still answered by the dedup brakes, and that
+     * is asserted alongside so the two cannot be confused.
+     */
+    public function test_distinct_senders_for_one_client_stage_back_to_back_without_a_cooldown(): void
+    {
+        $this->configureMesh();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWrite();
+        $secondTicket = Ticket::factory()->for($fixture['client'])->create(['subject' => 'Second vendor quarantined']);
+
+        $first = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+        $this->assertTrue($first['success']);
+
+        $second = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture, [
+            'ticket_id' => $secondTicket->id,
+            'sender' => 'invoices@othervendor.example',
+            'confirm_domain' => 'othervendor.example',
+            'reason' => 'A second vendor for the same client, staged seconds after the first.',
+        ])));
+
+        $this->assertArrayNotHasKey('error', $second, 'a distinct proposal for the same client must not wait on the first one');
+        $this->assertTrue($second['success']);
+        $this->assertArrayNotHasKey('idempotent', $second);
+        $this->assertNotSame($first['run_id'], $second['run_id']);
+        $this->assertSame(2, TechnicianRun::where('state', TechnicianRunState::AwaitingApproval->value)->count());
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'blocked')->count());
+
+        // The dedup guard is untouched: the same content again is the live
+        // proposal handed back, not a third card.
+        $retry = $this->decodedResult($this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture)));
+        $this->assertTrue($retry['idempotent']);
+        $this->assertSame($first['run_id'], $retry['run_id']);
+        $this->assertSame(2, TechnicianRun::count());
+    }
+
+    /**
+     * Same ruling at approve time: two distinct proposals for one client are
+     * approved back-to-back, each reaching upstream, with no window between
+     * them. The post-execution duplicate brake (alreadyExecuted) is a
+     * different question and keeps its own tests.
+     */
+    public function test_distinct_proposals_for_one_client_are_approved_back_to_back_without_a_cooldown(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $secondTicket = Ticket::factory()->for($fixture['client'])->create(['subject' => 'Second vendor quarantined']);
+
+        $first = $this->stagedRun($fixture);
+        $this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture, [
+            'ticket_id' => $secondTicket->id,
+            'sender' => 'invoices@othervendor.example',
+            'confirm_domain' => 'othervendor.example',
+            'reason' => 'A second vendor for the same client, staged seconds after the first.',
+        ]))->assertOk();
+        $second = TechnicianRun::where('ticket_id', $secondTicket->id)->sole();
+
+        $write->shouldReceive('createAllowRule')->twice()->andReturn(['added_for' => [self::TENANT]]);
+        $write->shouldReceive('findRuleByComment')->twice()->andReturn(['id' => 'r1'], ['id' => 'r2']);
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $first))->assertSessionHas('success');
+        $this->actingAs($actor)->post(route('cockpit.approve', $second))->assertSessionHas('success');
+
+        $this->assertSame(TechnicianRunState::Done, $first->fresh()->state);
+        $this->assertSame(TechnicianRunState::Done, $second->fresh()->state);
+        $this->assertSame(2, MeshAllowRule::count());
+        $this->assertSame(2, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed')->count());
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'blocked')->count());
+    }
+
+    /**
+     * Free approval is for DISTINCT writes. A fault on the same write is not
+     * one: record_unwritable leaves the rule live upstream with no PSA row, so
+     * liveAllowRule() and unsettledAllowRule() both see nothing and
+     * alreadyExecuted() matches 'executed' alone. The fault's own audit row is
+     * the only brake left, and a second card for the same sender must hit it
+     * rather than open a second, untracked hole in this client's filtering.
+     *
+     * The executor has no seam to fail the mesh_allow_rules insert through, so
+     * the STATE that path leaves — an 'executed_with_fault' row for this write
+     * and no PSA record — is constructed here from a fault that does write one.
+     */
+    public function test_a_second_card_is_refused_after_a_fault_left_a_rule_live_and_untracked(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $secondTicket = Ticket::factory()->for($fixture['client'])->create(['subject' => 'Same vendor, raised twice']);
+
+        $first = $this->stagedRun($fixture);
+        // Same sender, second ticket: a genuinely second card, not the live
+        // proposal handed back.
+        $this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture, [
+            'ticket_id' => $secondTicket->id,
+        ]))->assertOk();
+        $duplicate = TechnicianRun::where('ticket_id', $secondTicket->id)->sole();
+
+        // The create lands upstream and the post-write bookkeeping faults.
+        $write->shouldReceive('createAllowRule')->once()->andReturn(['added_for' => [self::TENANT]]);
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(null);
+        $this->actingAs($actor)->post(route('cockpit.approve', $first))->assertSessionHas('error');
+        $this->assertSame(0, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed')->count());
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed_with_fault')->count());
+
+        // ...and the PSA row never reached disk, as record_unwritable leaves
+        // it. Nothing in mesh_allow_rules can speak for that rule now.
+        MeshAllowRule::query()->delete();
+
+        $write->shouldNotReceive('createAllowRule');
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $duplicate))->assertSessionHas('error');
+        $this->assertStringContainsString('FAULTED', (string) session('error'));
+        $this->assertSame(0, MeshAllowRule::count(), 'a second, untracked rule must not be created');
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'blocked')->count());
+    }
+
+    /**
+     * The mirror of the test above, and the reason that brake is keyed on the
+     * run rather than on 'a fault happened'. A fault that DID write a PSA row
+     * is the row brakes' business, and it must not outlive the row: card A
+     * faults on scope, the technician does exactly what the fault text asks and
+     * the record is closed to 'removed', and card B — the corrected retry both
+     * fault branches state must remain possible — is approved inside the same
+     * 24-hour window and reaches Mesh. The audit row is immutable, so nothing
+     * else could ever clear it.
+     */
+    public function test_a_corrected_retry_is_approved_after_a_scope_fault_record_was_closed(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+        $secondTicket = Ticket::factory()->for($fixture['client'])->create(['subject' => 'Same vendor, corrected']);
+
+        $first = $this->stagedRun($fixture);
+        // Same sender, second ticket: a genuinely second card, not the live
+        // proposal handed back.
+        $this->callTool($this->token(['mesh_add_allow_rule:staged']), 'mesh_add_allow_rule', $this->stageArgs($fixture, [
+            'ticket_id' => $secondTicket->id,
+        ]))->assertOk();
+        $corrected = TechnicianRun::where('ticket_id', $secondTicket->id)->sole();
+
+        // First approval: Mesh answers 201 with an `added_for` that is NOT this
+        // tenant, which is the scope_unconfirmed fault — PSA record written
+        // unresolved, audited 'executed_with_fault'. Second approval: a clean
+        // create.
+        $write->shouldReceive('createAllowRule')->twice()->andReturn(
+            ['added_for' => ['99999999-8888-7777-6666-555555555555']],
+            ['added_for' => [self::TENANT]],
+        );
+        // Only the clean create gets as far as the id re-read; the scope fault
+        // returns before it.
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'r-corrected']);
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $first))->assertSessionHas('error');
+        $faulted = MeshAllowRule::sole();
+        $this->assertSame(MeshAllowRule::STATE_UNRESOLVED, $faulted->state);
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed_with_fault')->count());
+
+        // The technician checks the portal, removes the wrongly-scoped rule and
+        // the removal verb proves absence: the record is closed. It is now in
+        // neither liveAllowRule()'s nor unsettledAllowRule()'s list, so the
+        // fault's audit row is the only thing that could refuse the retry.
+        $faulted->update(['state' => MeshAllowRule::STATE_REMOVED]);
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $corrected))->assertSessionHas('success');
+
+        $this->assertSame(TechnicianRunState::Done, $corrected->fresh()->state);
+        $this->assertSame(2, MeshAllowRule::count());
+        $this->assertSame('r-corrected', MeshAllowRule::where('state', MeshAllowRule::STATE_ACTIVE)->sole()->mesh_rule_id);
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed')->count());
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'blocked')->count());
     }
 
     public function test_kill_switch_refuses_approval_before_any_upstream_call(): void
