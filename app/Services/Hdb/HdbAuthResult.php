@@ -48,6 +48,13 @@ final readonly class HdbAuthResult
     public const REASON_REQUEST_BUDGET_EXHAUSTED = 'request_budget_exhausted';
 
     /**
+     * The portal tried to redirect a leg off the configured origin. Redirects
+     * re-send the credential body, so the hop was refused rather than followed
+     * and nothing reached that host.
+     */
+    public const REASON_REDIRECT_REFUSED = 'redirect_refused';
+
+    /**
      * The stored Portal URL is not a destination this integration will post a
      * credential to — not https, or a host that is an IP literal, a bare name or
      * a reserved internal suffix. Nothing was sent anywhere.
@@ -95,6 +102,7 @@ final readonly class HdbAuthResult
             self::REASON_TRANSPORT_ERROR => 'Could not reach the HDB portal. Check the Portal URL and outbound network access.',
             self::REASON_UNEXPECTED_RESPONSE => 'The HDB portal answered with something this integration could not classify. Nothing was retried.',
             self::REASON_REQUEST_BUDGET_EXHAUSTED => 'The HDB portal kept redirecting and the attempt was stopped at its request limit.',
+            self::REASON_REDIRECT_REFUSED => 'The HDB portal tried to redirect the sign-in to a different host, so it was stopped and nothing was sent there. Check the Portal URL.',
             self::REASON_PORTAL_URL_REFUSED => 'The stored Portal URL is not an https:// address with a public hostname, so nothing was sent. Fix the Portal URL, or clear it to use the default portal host.',
             self::REASON_PORTAL_URL_UNRESOLVED => 'The Portal URL hostname could not be resolved, so nothing was sent. That is usually DNS or outbound network access rather than the stored URL — retry, and check the Portal URL only if it keeps failing.',
             default => 'The HDB portal login attempt did not complete.',

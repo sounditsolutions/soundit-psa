@@ -119,6 +119,16 @@ final class HdbAuthClient
 
     private int $requests = 0;
 
+    /**
+     * The URL the body most recently returned by {@see request()} was actually
+     * served from — the URL asked for, or the last redirect hop Guzzle followed
+     * to reach it. A form action of `""` means "post back to THIS page" per
+     * HTML, and a relative one resolves against this page's directory, so the
+     * challenge form is measured against this rather than against the URL the
+     * leg started at.
+     */
+    private string $effectiveUrl = '';
+
     private CookieJar $cookies;
 
     public function __construct()
@@ -189,7 +199,7 @@ final class HdbAuthClient
 
             $body = (string) $posted;
 
-            $challenge = $this->findChallengeForm($body, $loginUrl);
+            $challenge = $this->findChallengeForm($body, $this->effectiveUrl);
             if ($challenge !== null) {
                 return $this->answerChallenge($challenge);
             }
@@ -199,6 +209,11 @@ final class HdbAuthClient
                 HdbAuthResult::REASON_CREDENTIALS_REJECTED,
                 HdbAuthResult::REASON_TOTP_CHALLENGE_UNRECOGNISED,
             );
+        } catch (HdbRedirectRefusedException) {
+            // A hop that left the configured origin. Guzzle re-POSTs the
+            // credential body on every redirect under `strict`, so the hop is
+            // refused BEFORE it is followed and nothing reached that host.
+            return $this->result(HdbAuthStatus::Unreachable, HdbAuthResult::REASON_REDIRECT_REFUSED);
         } catch (TooManyRedirectsException) {
             return $this->result(HdbAuthStatus::Unreachable, HdbAuthResult::REASON_REQUEST_BUDGET_EXHAUSTED);
         } catch (\Throwable) {
@@ -295,7 +310,25 @@ final class HdbAuthClient
             ->timeout(self::TIMEOUT_SECONDS)
             ->withOptions([
                 'cookies' => $this->cookies,
-                'allow_redirects' => ['max' => self::MAX_REDIRECTS, 'strict' => true, 'referer' => true],
+                // `strict` means a 301/302 on the credential POST is re-issued
+                // AS a POST, body and all (307/308 always are), so EVERY hop is
+                // another send of the decrypted password — and the first URL
+                // passing the destination guard decides nothing about where hop
+                // two goes. Guzzle's defaults allow `http` and check no host, so
+                // both are pinned here: https only, and each hop measured
+                // against the same origin the first one was. The configured
+                // origin or nowhere.
+                'allow_redirects' => [
+                    'max' => self::MAX_REDIRECTS,
+                    'strict' => true,
+                    'referer' => true,
+                    'protocols' => ['https'],
+                    'on_redirect' => function ($request, $response, $uri) {
+                        if (! $this->isOnPortalOrigin((string) $uri)) {
+                            throw new HdbRedirectRefusedException;
+                        }
+                    },
+                ],
                 'http_errors' => false,
             ]);
 
@@ -307,6 +340,13 @@ final class HdbAuthClient
             // "learned nothing" is never a pass.
             return $this->result(HdbAuthStatus::Unreachable, HdbAuthResult::REASON_UNEXPECTED_RESPONSE);
         }
+
+        // The page a body came from is not always the URL we asked for: Guzzle
+        // may have followed hops to get here, each one already measured against
+        // the portal origin by the guard above. A form served on THIS page
+        // resolves its action against THIS url — see {@see resolveAction}.
+        $effective = (string) ($response->effectiveUri() ?? '');
+        $this->effectiveUrl = $effective !== '' && $this->isOnPortalOrigin($effective) ? $effective : $url;
 
         return $response->body();
     }
@@ -397,23 +437,39 @@ final class HdbAuthClient
             return $pageUrl;
         }
 
-        $base = HdbPortalConfig::baseUrl();
-
-        if (preg_match('~^https?://~i', $action)) {
-            return str_starts_with($action, $base.'/') || $action === $base ? $action : null;
-        }
-
         if (str_starts_with($action, '//')) {
             return null;
         }
 
-        return $base.'/'.ltrim($action, '/');
+        if (preg_match('~^[a-z][a-z0-9+.-]*:~i', $action)) {
+            return $this->isOnPortalOrigin($action) ? $action : null;
+        }
+
+        if (str_starts_with($action, '/')) {
+            $resolved = HdbPortalConfig::baseUrl().'/'.ltrim($action, '/');
+        } else {
+            // Page-relative, per HTML: against the DIRECTORY of the page the
+            // form was served on, not against the origin — a challenge served
+            // at /auth/verify posts `verify2` to /auth/verify2.
+            $directory = (string) preg_replace('~[^/]*$~', '', (string) preg_replace('~[?#].*$~', '', $pageUrl));
+            $resolved = rtrim($directory, '/').'/'.$action;
+        }
+
+        // Whatever the shape, a live one-time code only ever goes to the
+        // configured origin — including when a degenerate page URL produced
+        // something that is no longer a URL at all.
+        return $this->isOnPortalOrigin($resolved) ? $resolved : null;
     }
 
     /** One HTML attribute off a single tag, or null. */
     private function attr(string $tag, string $attribute): ?string
     {
-        $pattern = '~\b'.preg_quote($attribute, '~').'\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))~i';
+        // NOT `\b`: a word boundary matches between `-` and a letter, so
+        // `data-name=` satisfies `\bname=` and — preg_match taking the leftmost
+        // hit — an earlier `data-*` attribute wins over the real one. That would
+        // name the wrong field for the code, or read `data-type="password"` as a
+        // password input and suppress the challenge entirely.
+        $pattern = '~(?<![\w-])'.preg_quote($attribute, '~').'\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))~i';
 
         if (! preg_match($pattern, $tag, $m)) {
             return null;
@@ -426,6 +482,54 @@ final class HdbAuthClient
         $value = $value !== '' ? $value : ($m[3] ?? '');
 
         return html_entity_decode($value, ENT_QUOTES | ENT_HTML5);
+    }
+
+    /**
+     * Whether a URL is the configured portal origin, or somewhere under it.
+     *
+     * Applied to every redirect hop as well as to form actions: under `strict`
+     * redirects each hop re-sends the credential body, so the first URL passing
+     * {@see HdbPortalConfig::baseUrlVerdict()} is not enough on its own.
+     *
+     * Scheme and host are lowercased first, because a Location header may spell
+     * either differently from the stored setting; the rest is a path-boundary
+     * prefix test, so `portal.example.com.evil.test` cannot pass as
+     * `portal.example.com`. Anything that is not absolute https, or that carries
+     * inline credentials, is refused outright.
+     */
+    private function isOnPortalOrigin(string $url): bool
+    {
+        $target = $this->comparableUrl($url);
+        $base = $this->comparableUrl(HdbPortalConfig::baseUrl());
+
+        if ($target === null || $base === null) {
+            return false;
+        }
+
+        return $target === $base
+            || str_starts_with($target, $base.'/')
+            || str_starts_with($target, $base.'?');
+    }
+
+    /** A URL reduced to a comparable form, or null when it is not absolute https. */
+    private function comparableUrl(string $url): ?string
+    {
+        $parts = parse_url(trim($url));
+
+        if (! is_array($parts) || strtolower((string) ($parts['scheme'] ?? '')) !== 'https') {
+            return null;
+        }
+
+        $host = strtolower((string) ($parts['host'] ?? ''));
+
+        if ($host === '' || isset($parts['user']) || isset($parts['pass'])) {
+            return null;
+        }
+
+        return 'https://'.$host
+            .(isset($parts['port']) ? ':'.$parts['port'] : '')
+            .rtrim((string) ($parts['path'] ?? ''), '/')
+            .(isset($parts['query']) ? '?'.$parts['query'] : '');
     }
 
     private function result(HdbAuthStatus $status, string $reason): HdbAuthResult
