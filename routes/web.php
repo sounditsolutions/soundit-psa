@@ -525,6 +525,8 @@ Route::middleware('auth')->group(function () {
     // Settings — T2T / HelpDesk Buttons
     Route::post('/settings/integrations/t2t', [IntegrationsController::class, 'updateT2t'])->name('settings.integrations.t2t.update');
     Route::post('/settings/integrations/t2t/generate-key', [IntegrationsController::class, 'generateT2tKey'])->name('settings.integrations.t2t.generate-key');
+    // Admin-gated inside the action, not here — see IntegrationsController::testHdb().
+    Route::post('/settings/integrations/hdb/test', [IntegrationsController::class, 'testHdb'])->name('settings.integrations.hdb.test');
 
     // Settings — QBO
     Route::post('/settings/integrations/qbo', [IntegrationsController::class, 'updateQbo'])->name('settings.integrations.qbo.update');

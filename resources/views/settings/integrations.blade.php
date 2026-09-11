@@ -2797,8 +2797,9 @@
                         <p class="text-muted small mb-3">
                             Credentials for the service account that reads per-press diagnostic reports
                             back from HelpDesk Buttons. Use a dedicated subaccount scoped to reports only
-                            &mdash; never a technician's own login. Nothing reads these yet; the fetch is
-                            built separately.
+                            &mdash; never a technician's own login. Save first, then use <strong>Test
+                            Connection</strong> below to confirm the subaccount still signs in. The
+                            report fetch itself is built separately; the test only proves the login.
                         </p>
 
                         <div class="mb-3">
@@ -2862,6 +2863,28 @@
                                 the current seed.
                             </div>
                         </div>
+
+                        {{--
+                            Admin-only, because this button spends the stored password against the
+                            vendor. The action enforces it too (403); this only avoids offering a
+                            control that would refuse. It does not close psa #1344 — the rest of
+                            this page is still reachable by any authenticated user.
+                        --}}
+                        @if(auth()->user()?->isAdmin())
+                            <div class="d-flex gap-2">
+                                {{--
+                                    Labelled exactly like every other test button on this page on
+                                    purpose: testConnection()'s finally() restores that literal
+                                    string, so a custom label here would silently change after the
+                                    first click.
+                                --}}
+                                <button type="button" class="btn btn-outline-secondary btn-sm" id="test-hdb-btn"
+                                        onclick="testConnection('hdb')">
+                                    <i class="bi bi-plug me-1"></i>Test Connection
+                                </button>
+                            </div>
+                            <div id="test-result-hdb" class="alert mt-2" style="display:none;"></div>
+                        @endif
                     </fieldset>
 
                     <div class="d-flex gap-2">
@@ -4659,6 +4682,7 @@ function testConnection(service) {
         graph: '{{ route("settings.integrations.graph.test") }}',
         ai: '{{ route("settings.integrations.ai.test") }}',
         transcription: '{{ route("settings.integrations.transcription.test") }}',
+        hdb: '{{ route("settings.integrations.hdb.test") }}',
     };
 
     fetch(routes[service], {

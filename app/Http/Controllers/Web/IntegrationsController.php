@@ -9,6 +9,7 @@ use App\Services\Agent\Intake\EmailTriageWatch;
 use App\Services\Cipp\CippMcpCatalogSyncService;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphWebhookManager;
+use App\Services\Hdb\HdbAuthClient;
 use App\Services\Level\LevelClient;
 use App\Services\Ninja\NinjaBackupSyncService;
 use App\Services\Ninja\NinjaClient;
@@ -17,6 +18,7 @@ use App\Support\AppRiverConfig;
 use App\Support\AppTimezone;
 use App\Support\CippConfig;
 use App\Support\ControlDConfig;
+use App\Support\HdbPortalConfig;
 use App\Support\HuntressConfig;
 use App\Support\LevelConfig;
 use App\Support\MeshConfig;
@@ -47,13 +49,6 @@ class IntegrationsController extends Controller
      * with the mask. Matches the existing convention used elsewhere in this controller.
      */
     private const SECRET_MASK = '••••••••';
-
-    /**
-     * Host the HelpDesk Buttons report portal is reached on. Applied on READ when the
-     * setting is empty rather than being written into it, so clearing the field returns
-     * the operator to the default instead of leaving the fetch pointed at nothing.
-     */
-    private const HDB_DEFAULT_BASE_URL = 'https://beta.helpdeskbuttons.com';
 
     /**
      * Vendor master switches that ALSO gate the vendor's AI tool surface (psa-wzjzz),
@@ -274,10 +269,13 @@ class IntegrationsController extends Controller
         // mask placeholder and nothing else.
         // The form renders this as the field's value, so it must be the STORED value —
         // resolving the default here would echo it back on the next save and write it
-        // into the setting, which is exactly what HDB_DEFAULT_BASE_URL promises not to
-        // happen. The default travels separately and is shown as a placeholder.
+        // into the setting, which is exactly what the blank-means-default contract
+        // promises not to happen. The default travels separately, shown as a
+        // placeholder. It now lives on the read path that applies it
+        // ({@see HdbPortalConfig}) rather than in a private const here, so the form
+        // and the client cannot drift to two different hosts — psa #1352.
         $hdbBaseUrl = trim((string) Setting::getValue('hdb_base_url', ''));
-        $hdbDefaultBaseUrl = self::HDB_DEFAULT_BASE_URL;
+        $hdbDefaultBaseUrl = HdbPortalConfig::DEFAULT_BASE_URL;
         $hdbEmail = (string) Setting::getValue('hdb_email', '');
         $hdbHasPassword = trim((string) Setting::getEncrypted('hdb_password', '')) !== '';
         $hdbHasTotpSecret = trim((string) Setting::getEncrypted('hdb_totp_secret', '')) !== '';
@@ -1900,9 +1898,11 @@ class IntegrationsController extends Controller
 
         // --- HDB report portal credentials ---
         //
-        // Entry surface only: nothing in the app reads these yet. They exist so the
-        // TOTP seed — which the vendor displays exactly once, at enrollment — has a
-        // sanctioned destination the moment it is minted.
+        // Read back by {@see HdbPortalConfig} and spent by {@see HdbAuthClient} from
+        // testHdb() below. The seed field predates both: it exists so the seed — which
+        // the vendor displays exactly once, at enrollment — had a sanctioned
+        // destination the moment it was minted. The report fetch itself is still
+        // separate work; this form still writes, it does not fetch.
 
         // Non-secret. Written even when blank: an empty setting means "use the default
         // host", which the read path applies, so clearing the field is a real action.
@@ -1929,6 +1929,65 @@ class IntegrationsController extends Controller
 
         return redirect()->route('settings.integrations')
             ->with('success', 'Tier2Tickets settings saved.');
+    }
+
+    /**
+     * Prove the stored HDB report-portal credentials still sign in.
+     *
+     * Deliberately unlike its siblings on this page in two ways, both of which a
+     * reviewer should read as intentional:
+     *
+     * 1. **Nothing the vendor said reaches this response.** testLevel() above
+     *    interpolates `$e->getMessage()` into the operator's message, and the
+     *    integrations page assigns a test result through `innerHTML` — so that
+     *    pattern hands a remote host a write primitive on the DOM. This action
+     *    returns only {@see HdbAuthResult::message()}, a fixed string chosen by
+     *    symbol, and audits only the closed-vocabulary reason code.
+     * 2. **It is admin-only.** It is the one action here that spends a live
+     *    credential against a third party, so it fails closed rather than
+     *    inheriting the page's auth-only middleware. That middleware gap is psa
+     *    #1344 and this guard does NOT close it — every other action on this page
+     *    is still reachable by any authenticated user.
+     */
+    public function testHdb(Request $request)
+    {
+        abort_unless($request->user()?->isAdmin() === true, 403);
+
+        $startedAt = hrtime(true);
+        $result = (new HdbAuthClient)->authenticate();
+        $durationMs = (int) round((hrtime(true) - $startedAt) / 1_000_000);
+
+        if ($result->ok()) {
+            Setting::setValue('hdb_connected_at', now()->toDateTimeString());
+        }
+
+        // Audit who/when/outcome on the settings-surface audit sink (parity with
+        // unbindPersonaConversation below). Fail-soft — an audit hiccup must never
+        // sink the operator's test. `error_message` carries the reason SYMBOL, not
+        // vendor text: this row is read back in a UI too.
+        try {
+            \App\Models\McpAuditLog::create([
+                'server_name' => 'staff',
+                'method' => 'hdb/test_connection',
+                'tool_name' => 'hdb_report_portal',
+                'arguments' => [
+                    'base_url' => HdbPortalConfig::baseUrl(),
+                    'requests' => $result->requests,
+                ],
+                'status' => $result->ok() ? 'success' : 'error',
+                'error_message' => $result->ok() ? null : $result->reason,
+                'duration_ms' => $durationMs,
+                'actor_label' => mb_substr('web:'.((string) ($request->user()?->email ?? $request->user()?->id ?? 'unknown')), 0, 100),
+                'source_ip' => $request->ip(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('[Settings/Integrations] HDB connection test audit write failed: '.$e->getMessage());
+        }
+
+        return response()->json([
+            'success' => $result->ok(),
+            'message' => $result->message(),
+        ]);
     }
 
     public function generateT2tKey()
