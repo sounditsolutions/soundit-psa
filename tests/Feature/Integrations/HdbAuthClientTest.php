@@ -8,6 +8,13 @@ use App\Services\Hdb\HdbAuthResult;
 use App\Services\Hdb\HdbAuthStatus;
 use App\Services\Hdb\HdbRedirectRefusedException;
 use App\Support\HdbPortalConfig;
+use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Exception\BadResponseException;
+use GuzzleHttp\Exception\TooManyRedirectsException;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Psr7\Request as GuzzleRequest;
+use GuzzleHttp\Psr7\Response as GuzzleResponse;
 use GuzzleHttp\Psr7\Uri;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
@@ -580,8 +587,15 @@ class HdbAuthClientTest extends TestCase
     {
         $onRedirect = $this->capturedRedirectOptions()['on_redirect'];
 
-        // `protocols` refuses this one hop earlier inside RedirectMiddleware, so
-        // this asserts the second of the two locks, not a duplicate of the first.
+        // Both halves refuse this hop, but not at the same moment, and the
+        // earlier one wins: `protocols` refuses it inside RedirectMiddleware
+        // BEFORE on_redirect is reached, so Guzzle never hands this closure an
+        // http hop at all — pinned by
+        // test_guzzle_refuses_a_scheme_downgrade_before_the_on_redirect_guard_sees_it.
+        // So this is not "the second of the two locks" as it used to claim; it is
+        // the closure holding the line if `protocols` were ever relaxed. The
+        // reachable path is
+        // test_a_refused_scheme_downgrade_reports_as_a_refused_redirect_not_a_network_fault.
         $this->expectException(HdbRedirectRefusedException::class);
 
         $onRedirect(null, null, new Uri('http://portal.example.test/login'));
@@ -593,14 +607,23 @@ class HdbAuthClientTest extends TestCase
 
         try {
             $onRedirect(null, null, new Uri('https://portal.example.test/login?next=reports'));
-            // Guzzle's Uri drops the scheme default port; the stored setting may
-            // carry it. A guard that refused this would break every real sign-in.
             $onRedirect(null, null, new Uri('https://portal.example.test:443/reports'));
         } catch (HdbRedirectRefusedException) {
             $this->fail('A hop inside the configured portal origin was refused.');
         }
 
-        $this->assertTrue(true, 'Both same-origin hops were allowed through.');
+        // Saying what that second hop is actually worth, in place of the filler
+        // assertTrue(true) this test used to end on: PSR-7's Uri drops a scheme's
+        // default port at construction, so the :443 argument reaches the guard
+        // with no port on it and cannot tell a port-blind comparator from a
+        // port-aware one. It pins the comparator's INPUT, not the guard. The port
+        // case that can really differ lives on the stored-setting side, and
+        // test_a_portal_url_with_an_explicit_default_port_still_matches_its_own_origin
+        // is what covers that.
+        $this->assertSame(
+            'https://portal.example.test/reports',
+            (string) new Uri('https://portal.example.test:443/reports'),
+        );
     }
 
     public function test_a_refused_redirect_is_reported_as_one_and_leaks_nothing(): void
@@ -613,6 +636,100 @@ class HdbAuthClientTest extends TestCase
         $this->assertSame(HdbAuthStatus::Unreachable, $result->status);
         $this->assertSame(HdbAuthResult::REASON_REDIRECT_REFUSED, $result->reason);
         $this->assertNothingLeaked($result);
+    }
+
+    public function test_a_redirect_loop_reports_as_the_request_budget_not_a_network_fault(): void
+    {
+        // Guzzle throws this from RedirectMiddleware::guardMax(), but Laravel
+        // does not let it out: PendingRequest::send() catches TransferException
+        // and — because Response::toException() is null for a 3xx — re-throws it
+        // as ConnectionException with the Guzzle exception only on getPrevious().
+        // Without the unwrapping this reads REASON_TRANSPORT_ERROR: a portal that
+        // was reached and looping, reported as a firewall problem.
+        Http::fake(fn () => throw new TooManyRedirectsException(
+            'Will not follow more than 5 redirects to '.self::BEACON,
+            new GuzzleRequest('GET', self::BASE.'/login'),
+            new GuzzleResponse(302, ['Location' => self::BASE.'/login']),
+        ));
+
+        $result = (new HdbAuthClient)->authenticate();
+
+        $this->assertFalse($result->ok());
+        $this->assertSame(HdbAuthStatus::Unreachable, $result->status);
+        $this->assertSame(HdbAuthResult::REASON_REQUEST_BUDGET_EXHAUSTED, $result->reason);
+        $this->assertNothingLeaked($result);
+    }
+
+    public function test_a_refused_scheme_downgrade_reports_as_a_refused_redirect_not_a_network_fault(): void
+    {
+        // The `protocols` half of the guard refuses inside RedirectMiddleware, so
+        // it never raises HdbRedirectRefusedException — it raises a
+        // BadResponseException carrying the 302 that proposed the downgrade,
+        // wrapped exactly like the loop above. A deliberate downgrade attempt
+        // must not read as a DNS blip. The beacon sits in the vendor message on
+        // purpose: the symbol is chosen by class and status, never by text.
+        Http::fake(fn () => throw new BadResponseException(
+            'Redirect URI, http://portal.example.test/'.self::BEACON.', does not use one of the allowed redirect protocols: https',
+            new GuzzleRequest('GET', self::BASE.'/login'),
+            new GuzzleResponse(302, ['Location' => 'http://portal.example.test/login']),
+        ));
+
+        $result = (new HdbAuthClient)->authenticate();
+
+        $this->assertFalse($result->ok());
+        $this->assertSame(HdbAuthStatus::Unreachable, $result->status);
+        $this->assertSame(HdbAuthResult::REASON_REDIRECT_REFUSED, $result->reason);
+        $this->assertNothingLeaked($result);
+    }
+
+    public function test_guzzle_refuses_a_scheme_downgrade_before_the_on_redirect_guard_sees_it(): void
+    {
+        // Http::fake() cannot settle this one: its stub handler is installed
+        // OUTSIDE RedirectMiddleware, so a faked 302 comes back as a body and is
+        // never followed. A real Guzzle stack over a MockHandler, fed the
+        // client's own captured options, is the seam that actually runs the
+        // middleware — which is what makes the two mappings above a measurement
+        // rather than a guess about vendor internals.
+        $client = new GuzzleClient([
+            'handler' => HandlerStack::create(new MockHandler([
+                new GuzzleResponse(302, ['Location' => 'http://portal.example.test/login']),
+                new GuzzleResponse(200, [], 'must never be reached'),
+            ])),
+            'http_errors' => false,
+        ]);
+
+        try {
+            $client->get(self::BASE.'/login', [
+                'allow_redirects' => $this->capturedRedirectOptions(),
+            ]);
+
+            $this->fail('Guzzle followed an https to http downgrade hop.');
+        } catch (HdbRedirectRefusedException) {
+            $this->fail('on_redirect refused the hop; `protocols` is what refuses it, one step earlier.');
+        } catch (BadResponseException $e) {
+            $this->assertSame(302, $e->getResponse()->getStatusCode());
+            $this->assertTrue($e->getResponse()->hasHeader('Location'));
+        }
+    }
+
+    public function test_guzzle_stops_a_same_origin_redirect_loop_at_the_clients_own_cap(): void
+    {
+        // The other half of the same measurement: a same-origin loop satisfies
+        // on_redirect every time, so what ends it is `max`, and what it throws is
+        // the class the mapping reads.
+        $client = new GuzzleClient([
+            'handler' => HandlerStack::create(new MockHandler(array_map(
+                fn () => new GuzzleResponse(302, ['Location' => self::BASE.'/login']),
+                range(1, 8),
+            ))),
+            'http_errors' => false,
+        ]);
+
+        $this->expectException(TooManyRedirectsException::class);
+
+        $client->get(self::BASE.'/login', [
+            'allow_redirects' => $this->capturedRedirectOptions(),
+        ]);
     }
 
     public function test_every_reason_it_can_return_has_an_operator_message(): void

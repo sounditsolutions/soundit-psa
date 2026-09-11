@@ -4,6 +4,7 @@ namespace App\Services\Hdb;
 
 use App\Support\HdbPortalConfig;
 use GuzzleHttp\Cookie\CookieJar;
+use GuzzleHttp\Exception\BadResponseException;
 use GuzzleHttp\Exception\TooManyRedirectsException;
 use Illuminate\Support\Facades\Http;
 
@@ -60,8 +61,11 @@ final class HdbAuthClient
      *
      * The happy path spends exactly this many, so the ceiling is a structural
      * invariant rather than a live limiter — it is here so that a future fourth
-     * leg has to raise it deliberately. The budget reason it produces IS reached
-     * in practice, by the redirect cap: {@see MAX_REDIRECTS}.
+     * leg has to raise it deliberately. The in-band check against it is NOT
+     * reachable at three legs, and the earlier claim that it was is corrected
+     * here. What IS reached is the budget REASON, produced by the redirect cap
+     * ({@see MAX_REDIRECTS}) — and only through {@see transportReasonFor()},
+     * because Guzzle's refusal arrives wrapped rather than as itself.
      *
      * There is no retry at any level. A refused credential re-tried is a lockout
      * risk on a service subaccount, and a transport failure tells us nothing a
@@ -216,13 +220,68 @@ final class HdbAuthClient
             // credential body on every redirect under `strict`, so the hop is
             // refused BEFORE it is followed and nothing reached that host.
             return $this->result(HdbAuthStatus::Unreachable, HdbAuthResult::REASON_REDIRECT_REFUSED);
-        } catch (TooManyRedirectsException) {
-            return $this->result(HdbAuthStatus::Unreachable, HdbAuthResult::REASON_REQUEST_BUDGET_EXHAUSTED);
-        } catch (\Throwable) {
-            // Deliberately discards the exception: a Guzzle message carries the
-            // URL, and a redirected URL can carry a token.
-            return $this->result(HdbAuthStatus::Unreachable, HdbAuthResult::REASON_TRANSPORT_ERROR);
+        } catch (\Throwable $e) {
+            // The exception NEVER reaches the operator: a Guzzle message carries
+            // the URL, and a redirected URL can carry a token. Only its class and
+            // its response status choose the symbol.
+            return $this->result(HdbAuthStatus::Unreachable, $this->transportReasonFor($e));
         }
+    }
+
+    /**
+     * Which closed-vocabulary symbol a thrown transport failure means.
+     *
+     * Laravel's HTTP client does not let Guzzle's transfer exceptions through.
+     * PendingRequest::send() catches TransferException, and for one carrying a
+     * response — which both refusals below do, a 3xx — it re-throws
+     * Illuminate\Http\Client\ConnectionException with the Guzzle exception only
+     * on getPrevious(), because Response::toException() is null for a 3xx. So
+     * catching either of them by type on the try above was dead code, and a
+     * portal that was reached and looping reported as a firewall problem.
+     *
+     * Both refusals are raised inside Guzzle's own RedirectMiddleware BEFORE
+     * `on_redirect` is reached — guardMax() throws TooManyRedirectsException and
+     * redirectUri() throws BadResponseException for a hop whose scheme is not in
+     * `protocols` — so neither can ever arrive as an
+     * {@see HdbRedirectRefusedException}, and each needs its own mapping here.
+     *
+     * Decided on class and response status ONLY. The vendor messages quote the
+     * refused URL and are one dependency bump from changing, so nothing here
+     * reads them and nothing off the exception reaches the returned symbol.
+     */
+    private function transportReasonFor(\Throwable $e): string
+    {
+        $cause = $e;
+
+        while ($cause !== null) {
+            if ($cause instanceof TooManyRedirectsException) {
+                return HdbAuthResult::REASON_REQUEST_BUDGET_EXHAUSTED;
+            }
+
+            if ($cause instanceof BadResponseException && $this->isRefusedRedirect($cause)) {
+                return HdbAuthResult::REASON_REDIRECT_REFUSED;
+            }
+
+            $cause = $cause->getPrevious();
+        }
+
+        return HdbAuthResult::REASON_TRANSPORT_ERROR;
+    }
+
+    /**
+     * Whether a Guzzle exception is the redirect middleware refusing a hop
+     * rather than an ordinary bad response.
+     *
+     * Structural, never textual: the refusal carries the 3xx that proposed the
+     * hop, Location header and all. Nothing else in this client produces that
+     * shape — `http_errors` is off, so a status code never raises on its own.
+     */
+    private function isRefusedRedirect(BadResponseException $e): bool
+    {
+        $response = $e->getResponse();
+        $status = $response->getStatusCode();
+
+        return $status >= 300 && $status < 400 && $response->hasHeader('Location');
     }
 
     /**
