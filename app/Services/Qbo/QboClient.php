@@ -15,6 +15,12 @@ class QboClient
 
     private const TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
 
+    /** Longest Fault `code` copied into the log; real codes are 3–4 characters. */
+    private const MAX_FAULT_CODE_LENGTH = 32;
+
+    /** Most Fault codes copied into one log line. */
+    private const MAX_FAULT_CODES = 25;
+
     private const BASE_URLS = [
         'production' => 'https://quickbooks.api.intuit.com/v3/company/',
         'sandbox' => 'https://sandbox-quickbooks.api.intuit.com/v3/company/',
@@ -272,6 +278,7 @@ class QboClient
 
         // Extract human-readable error from QBO Fault response
         $faultErrors = $responseBody['Fault']['Error'] ?? [];
+        $faultEntries = self::faultErrorEntries($faultErrors);
 
         Log::error('[QboClient] API request failed', [
             'method' => $method,
@@ -282,7 +289,13 @@ class QboClient
             // Fault code is the only thing that separates them, so it is logged
             // alongside the status. Codes only — never Message/Detail, which can
             // carry request content.
-            'fault_codes' => self::faultCodes($faultErrors),
+            'fault_codes' => self::faultCodes($faultEntries),
+            // How many Error entries the Fault carried, readable or not. Without
+            // it an empty `fault_codes` says two very different things with one
+            // value: "no Fault came back at all" and "a Fault came back whose
+            // codes I could not read". A count is a plain int — it carries none
+            // of the Message/Detail bytes the codes-only rule above excludes.
+            'fault_error_count' => count($faultEntries),
             'error' => $e->getMessage(),
         ]);
 
@@ -301,30 +314,80 @@ class QboClient
     }
 
     /**
-     * The `code` of every entry in a QBO Fault.Error array, in order.
+     * A QBO `Fault.Error` as a list of entries, whatever shape it arrived in.
      *
-     * Intuit documents `code` as a numeric string, but the wire is not trusted:
-     * a non-scalar (array/object) entry is dropped rather than stringified, so
-     * a malformed or hostile payload cannot smuggle structure into the log
-     * context. Absent codes are dropped; the empty array means "no Fault, or no
-     * codes in it", which is exactly what a transport-level failure looks like.
+     * Intuit documents `Fault.Error` as an array, and it is one on every
+     * response we have seen. But single-element collapsing — an object where a
+     * list is expected — is the standard XML-to-JSON translation hazard on
+     * payloads of this shape, and a collapsed Error would silently lose the one
+     * value this logging exists to surface. An entry carrying a `code` key is
+     * that shape, so it is wrapped; any other non-list array is not an Error
+     * entry and yields nothing.
      *
      * @param  mixed  $faultErrors  Raw `Fault.Error` as decoded, shape unverified.
-     * @return list<string>
+     * @return list<mixed>
      */
-    private static function faultCodes(mixed $faultErrors): array
+    private static function faultErrorEntries(mixed $faultErrors): array
     {
         if (! is_array($faultErrors)) {
             return [];
         }
 
+        if (array_is_list($faultErrors)) {
+            return $faultErrors;
+        }
+
+        return isset($faultErrors['code']) ? [$faultErrors] : [];
+    }
+
+    /**
+     * The `code` of every readable entry in a QBO Fault.Error, in order.
+     *
+     * Intuit documents `code` as a short numeric string, but the wire is not
+     * trusted, and three separate limits say so rather than resting on that
+     * documentation:
+     *
+     *  - only `string` and `int` codes are kept. `is_scalar` would also admit
+     *    bool and float, and `(string) true` is `'1'` — a value shaped exactly
+     *    like a real fault code. A fabricated code is worse than an absent one,
+     *    and `true`/`false` would otherwise take opposite paths for no reason.
+     *  - each code is truncated to MAX_FAULT_CODE_LENGTH. Real codes are 3–4
+     *    characters; anything longer means a malformed upstream, an intermediary
+     *    or a future schema change, and none of those may copy an unbounded span
+     *    of wire bytes into a log line that is written on every failure.
+     *  - at most MAX_FAULT_CODES entries are kept, so a Fault carrying thousands
+     *    of Error entries cannot do the same thing by cardinality.
+     *
+     * Truncation deliberately is NOT an allow-list regex: a code Intuit adds
+     * later should still reach the operator, merely bounded. Nothing here is a
+     * substitute for `fault_error_count` — an empty list means "no code I was
+     * willing to read", which is not the same fact as "no Fault at all", and the
+     * count beside it is what separates the two.
+     *
+     * @param  list<mixed>  $faultEntries  From faultErrorEntries(); entry shapes unverified.
+     * @return list<string>
+     */
+    private static function faultCodes(array $faultEntries): array
+    {
         $codes = [];
 
-        foreach ($faultErrors as $error) {
+        foreach ($faultEntries as $error) {
             $code = is_array($error) ? ($error['code'] ?? null) : null;
 
-            if (is_scalar($code) && (string) $code !== '') {
-                $codes[] = (string) $code;
+            if (! is_string($code) && ! is_int($code)) {
+                continue;
+            }
+
+            $code = mb_substr((string) $code, 0, self::MAX_FAULT_CODE_LENGTH);
+
+            if ($code === '') {
+                continue;
+            }
+
+            $codes[] = $code;
+
+            if (count($codes) >= self::MAX_FAULT_CODES) {
+                break;
             }
         }
 

@@ -6,8 +6,10 @@ use App\Models\Setting;
 use App\Services\Qbo\QboClient;
 use App\Services\Qbo\QboClientException;
 use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Log\Events\MessageLogged;
@@ -271,15 +273,194 @@ class QboClientFaultCodeLoggingTest extends TestCase
     }
 
     /**
-     * A Fault whose Error is a bare object rather than a list, and a Fault with
-     * no `code` at all: both are shapes Intuit does not document but the client
-     * must not fatal on.
+     * A bare object with no `code` in it is not an Error entry, and a list entry
+     * with no `code` has nothing to log: neither may fatal, and neither may be
+     * counted as a readable code.
+     *
+     * Both cases are driven here rather than described: the first is the shape
+     * faultErrorEntries() refuses to wrap, the second is the `$error['code'] ??
+     * null` branch, and a docblock claiming a case no body drives is worth
+     * nothing.
      */
-    public function test_malformed_fault_shapes_do_not_throw_out_of_the_logger(): void
+    public function test_fault_shapes_carrying_no_code_do_not_throw_out_of_the_logger(): void
     {
         $this->failingGet(400, ['Fault' => ['Error' => ['Message' => 'not a list']]]);
 
         $this->assertSame([], $this->requestFailedContext()['fault_codes']);
+
+        $this->capturedLogs = [];
+
+        $this->failingGet(400, ['Fault' => ['Error' => [['Message' => 'Object Not Found']]]]);
+
+        $context = $this->requestFailedContext();
+
+        $this->assertSame([], $context['fault_codes']);
+        $this->assertSame(1, $context['fault_error_count']);
+    }
+
+    /**
+     * Single-element collapsing — an object where a list is expected — is the
+     * standard XML-to-JSON translation hazard on Intuit-shaped payloads, and it
+     * would otherwise lose the exact 610 this logging exists to surface.
+     *
+     * The sentinel sweep runs here too: wrapping a collapsed entry must not
+     * widen what reaches the context.
+     */
+    public function test_a_fault_error_collapsed_to_a_single_object_still_logs_its_code(): void
+    {
+        $this->failingGet(400, [
+            'Fault' => [
+                'Error' => [
+                    'Message' => 'MAGIC-MESSAGE-SENTINEL',
+                    'Detail' => 'MAGIC-DETAIL-SENTINEL',
+                    'code' => '610',
+                ],
+            ],
+        ]);
+
+        $context = $this->requestFailedContext();
+        unset($context['error']);
+
+        $this->assertSame(['610'], $context['fault_codes']);
+        $this->assertSame(1, $context['fault_error_count']);
+        $this->assertStringNotContainsString('MAGIC-MESSAGE-SENTINEL', (string) json_encode($context));
+        $this->assertStringNotContainsString('MAGIC-DETAIL-SENTINEL', (string) json_encode($context));
+    }
+
+    /**
+     * `is_scalar` would admit bool and float. `(string) true` is `'1'` — a value
+     * shaped exactly like a real fault code — while `(string) false` is `''` and
+     * would be dropped, so the two booleans would take opposite paths for no
+     * stated reason. A fabricated code is worse than an absent one, because a
+     * consumer is meant to branch on it.
+     */
+    public function test_a_boolean_or_float_code_is_dropped_rather_than_coerced(): void
+    {
+        $this->failingGet(400, [
+            'Fault' => [
+                'Error' => [
+                    ['code' => true],
+                    ['code' => false],
+                    ['code' => 610.5],
+                    ['code' => '610'],
+                ],
+            ],
+        ]);
+
+        $context = $this->requestFailedContext();
+
+        $this->assertSame(['610'], $context['fault_codes']);
+        $this->assertSame(4, $context['fault_error_count']);
+    }
+
+    /**
+     * An int code is documented-shaped and must survive; only its stringification
+     * is this method's business.
+     */
+    public function test_an_integer_code_is_logged_as_its_string_form(): void
+    {
+        $this->failingGet(400, ['Fault' => ['Error' => [['code' => 610]]]]);
+
+        $this->assertSame(['610'], $this->requestFailedContext()['fault_codes']);
+    }
+
+    /**
+     * The type check alone bounds the SHAPE of `code` and nothing else. This line
+     * is written on every failure — 18 times a day on production today — so an
+     * unbounded copy of wire bytes into it is a real cost even without a hostile
+     * upstream.
+     */
+    public function test_an_overlong_code_is_truncated_rather_than_copied_whole(): void
+    {
+        $this->failingGet(400, [
+            'Fault' => ['Error' => [['code' => '610'.str_repeat('X', 4000).'MAGIC-TAIL-SENTINEL']]],
+        ]);
+
+        $context = $this->requestFailedContext();
+        unset($context['error']);
+
+        $codes = $context['fault_codes'];
+
+        $this->assertCount(1, $codes);
+        $this->assertSame(32, mb_strlen($codes[0]));
+        $this->assertStringStartsWith('610', $codes[0]);
+        $this->assertStringNotContainsString('MAGIC-TAIL-SENTINEL', (string) json_encode($context));
+    }
+
+    /**
+     * Cardinality is the same problem by another route: 40 entries must not write
+     * 40 codes. The count still reports every entry that arrived, which is the
+     * point of having it.
+     */
+    public function test_the_number_of_logged_codes_is_capped_while_the_count_is_not(): void
+    {
+        $errors = [];
+
+        for ($i = 0; $i < 40; $i++) {
+            $errors[] = ['code' => (string) (600 + $i)];
+        }
+
+        $this->failingGet(400, ['Fault' => ['Error' => $errors]]);
+
+        $context = $this->requestFailedContext();
+
+        $this->assertCount(25, $context['fault_codes']);
+        $this->assertSame('600', $context['fault_codes'][0]);
+        $this->assertSame(40, $context['fault_error_count']);
+    }
+
+    /**
+     * The reason `fault_error_count` exists: an empty `fault_codes` alone cannot
+     * say whether a Fault came back at all. Without the count these two lines are
+     * byte-identical, and an operator reading "no codes" on a 400 is back in the
+     * #1354 blind spot the key was added to close.
+     */
+    public function test_a_fault_with_unreadable_codes_is_distinguishable_from_no_fault_at_all(): void
+    {
+        $this->failingGet(400, ['Fault' => ['Error' => [['code' => ['nested' => 'x']], ['code' => []]]]]);
+
+        $unreadable = $this->requestFailedContext();
+
+        $this->capturedLogs = [];
+
+        $this->failingGet(502, ['error' => 'gateway exploded']);
+
+        $noFault = $this->requestFailedContext();
+
+        $this->assertSame([], $unreadable['fault_codes']);
+        $this->assertSame([], $noFault['fault_codes']);
+        $this->assertSame(2, $unreadable['fault_error_count']);
+        $this->assertSame(0, $noFault['fault_error_count']);
+    }
+
+    /**
+     * The extraction now runs ABOVE the Log call, so it also runs on the path
+     * where the exception carries no response at all — a DNS or TLS failure,
+     * where `$responseBody` is null and the status is 0. Every other case here
+     * queues a Response, so without this one that path is reasoned about in a
+     * docblock and asserted nowhere.
+     */
+    public function test_a_transport_failure_with_no_response_logs_an_empty_code_list(): void
+    {
+        $http = new GuzzleClient([
+            'handler' => HandlerStack::create(new MockHandler([
+                new ConnectException('cURL error 6: Could not resolve host', new Request('GET', 'invoice/1042')),
+            ])),
+            'timeout' => 30,
+        ]);
+
+        try {
+            (new QboClient($http))->get('invoice/1042');
+            $this->fail('Expected QboClientException.');
+        } catch (QboClientException $e) {
+            $this->assertSame(0, $e->getCode());
+        }
+
+        $context = $this->requestFailedContext();
+
+        $this->assertSame([], $context['fault_codes']);
+        $this->assertSame(0, $context['fault_error_count']);
+        $this->assertSame(0, $context['status']);
     }
 
     /**
@@ -309,11 +490,25 @@ class QboClientFaultCodeLoggingTest extends TestCase
 
     /**
      * The injected client is a seam, not a behaviour change: a QboClient built
-     * the way the container builds it still owns its own Guzzle client.
+     * the way the container builds it still owns a client carrying the 30s
+     * timeout.
+     *
+     * `assertInstanceOf(QboClient::class, ...)` would be true no matter which
+     * Guzzle client landed in `$http` — true before this seam existed, and true
+     * after a future `$app->bind(GuzzleHttp\Client::class, ...)` replaced the
+     * timed-out client with someone else's. The timeout is the property that
+     * matters (an untimed client turns a stalled QBO endpoint into a hung
+     * `qbo:sync-invoices` run), so the timeout is what is asserted.
      */
-    public function test_the_default_constructor_still_builds_its_own_http_client(): void
+    public function test_the_default_constructor_still_builds_a_client_with_the_thirty_second_timeout(): void
     {
-        $this->assertInstanceOf(QboClient::class, new QboClient);
-        $this->assertInstanceOf(QboClient::class, app(QboClient::class));
+        $property = new \ReflectionProperty(QboClient::class, 'http');
+
+        foreach (['new' => new QboClient, 'container' => app(QboClient::class)] as $how => $client) {
+            $http = $property->getValue($client);
+
+            $this->assertInstanceOf(GuzzleClient::class, $http, "{$how}: not a Guzzle client");
+            $this->assertSame(30, $http->getConfig('timeout'), "{$how}: lost the 30s timeout");
+        }
     }
 }

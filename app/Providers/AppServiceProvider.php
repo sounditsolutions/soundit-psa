@@ -78,8 +78,12 @@ class AppServiceProvider extends ServiceProvider
         // the other vendor-client bindings (Ninja/Mesh/Cipp). StripeClient's ctor
         // needs a config array, so without this it can't be autowired and
         // StripeSyncService can't be resolved/injected (unlike QboClient, whose
-        // ctor is arg-less). Manual `new StripeClient([...])` sites are
-        // unaffected. Tests override with $this->mock(StripeClient::class).
+        // ctor args are all defaulted — psa-1354 gave it an optional
+        // `?GuzzleHttp\Client` test seam, and the container hands back that
+        // default only for as long as GuzzleHttp\Client itself stays unbound,
+        // which is what keeps QboClient's own 30s timeout alive). Manual
+        // `new StripeClient([...])` sites are unaffected. Tests override with
+        // $this->mock(StripeClient::class).
         $this->app->singleton(StripeClient::class, fn () => new StripeClient([
             'secret_key' => StripeConfig::get('secret_key'),
         ]));
