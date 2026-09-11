@@ -60,7 +60,7 @@ class HdbPressIdCaptureTest extends TestCase
      * Freeze the backfill window where the release migration freezes it on a
      * deployment that already holds the legacy notes: at the current high-water
      * mark of ticket_notes (GitHub #1359).
- *
+     *
      * Prod records this at MIGRATE time, so every note the release found is
      * inside the window and every note written afterwards is outside it. A test
      * database is empty when migrations run, so the fixtures below say where
