@@ -20,9 +20,15 @@ class QboClient
         'sandbox' => 'https://sandbox-quickbooks.api.intuit.com/v3/company/',
     ];
 
-    public function __construct()
+    /**
+     * @param  Client|null  $http  HTTP seam. Defaults to a plain 30s client in
+     *                             production; injected by tests so the error
+     *                             path can be driven through a real Guzzle
+     *                             stack rather than a throwing fake.
+     */
+    public function __construct(?Client $http = null)
     {
-        $this->http = new Client(['timeout' => 30]);
+        $this->http = $http ?? new Client(['timeout' => 30]);
     }
 
     public function getAuthorizationUrl(string $state): string
@@ -264,17 +270,24 @@ class QboClient
             $responseBody = json_decode((string) $e->getResponse()->getBody(), true);
         }
 
+        // Extract human-readable error from QBO Fault response
+        $faultErrors = $responseBody['Fault']['Error'] ?? [];
+
         Log::error('[QboClient] API request failed', [
             'method' => $method,
             'path' => $path,
             'status' => $statusCode,
+            // psa-1354: QBO overloads HTTP 400 across genuine bad syntax and
+            // Fault 610 "Object Not Found", which need opposite handling. The
+            // Fault code is the only thing that separates them, so it is logged
+            // alongside the status. Codes only — never Message/Detail, which can
+            // carry request content.
+            'fault_codes' => self::faultCodes($faultErrors),
             'error' => $e->getMessage(),
         ]);
 
         $detail = "QBO API error: {$method} {$path} returned {$statusCode}";
 
-        // Extract human-readable error from QBO Fault response
-        $faultErrors = $responseBody['Fault']['Error'] ?? [];
         if ($faultErrors) {
             $messages = array_map(fn ($err) => $err['Message'] ?? $err['Detail'] ?? '', $faultErrors);
             $detail .= ' — '.implode('; ', array_filter($messages));
@@ -285,5 +298,36 @@ class QboClient
             $statusCode,
             $responseBody,
         );
+    }
+
+    /**
+     * The `code` of every entry in a QBO Fault.Error array, in order.
+     *
+     * Intuit documents `code` as a numeric string, but the wire is not trusted:
+     * a non-scalar (array/object) entry is dropped rather than stringified, so
+     * a malformed or hostile payload cannot smuggle structure into the log
+     * context. Absent codes are dropped; the empty array means "no Fault, or no
+     * codes in it", which is exactly what a transport-level failure looks like.
+     *
+     * @param  mixed  $faultErrors  Raw `Fault.Error` as decoded, shape unverified.
+     * @return list<string>
+     */
+    private static function faultCodes(mixed $faultErrors): array
+    {
+        if (! is_array($faultErrors)) {
+            return [];
+        }
+
+        $codes = [];
+
+        foreach ($faultErrors as $error) {
+            $code = is_array($error) ? ($error['code'] ?? null) : null;
+
+            if (is_scalar($code) && (string) $code !== '') {
+                $codes[] = (string) $code;
+            }
+        }
+
+        return $codes;
     }
 }
