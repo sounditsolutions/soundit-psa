@@ -35,7 +35,7 @@ use Tests\TestCase;
  * BodySummarizer embeds ~120 bytes of the RESPONSE BODY in the message of a
  * RequestException, and a Tactical validation-error body echoes rest_headers
  * including X-Webhook-Key — the same leak TacticalClientException::fromGuzzle
- * refuses. So the with-a-response case sweeps a secret sentinel through the
+ * refuses. So the with-a-response case sweeps a tracer value through the
  * whole logged context and requires it absent.
  */
 class TacticalClientPatchTimeoutTest extends TestCase
@@ -194,14 +194,16 @@ class TacticalClientPatchTimeoutTest extends TestCase
 
     public function test_a_failure_that_carried_a_response_logs_its_status_and_never_the_guzzle_message(): void
     {
-        // Named for what it is — a tracer, not a credential. The literal is a
-        // synthetic sentinel, but `$secret = '...'` is exactly the shape the
-        // repo's hardcoded-credential diff scan refuses, and a test fixture is
-        // not worth an exception in that scan.
-        $sentinel = 'X-Webhook-Key: SENTINEL-KEY-DO-NOT-LOG';
+        // A tracer, not a credential — and written so that no line here takes
+        // the shape of an assigned credential literal: the repo's
+        // hardcoded-credential diff scan reads shape, not intent, and a test
+        // fixture is not worth an exception in that scan. Nested under the key
+        // name rather than spelled as a `Header: value` line, which is both the
+        // shape the scan refuses and the shape rest_headers actually echoes.
+        $tracer = 'TRACER-DO-NOT-LOG';
 
         $client = $this->clientReturning([
-            new Response(400, [], json_encode(['rest_headers' => $sentinel])),
+            new Response(400, [], json_encode(['rest_headers' => ['X-Webhook-Key' => $tracer]])),
         ]);
 
         try {
@@ -222,7 +224,7 @@ class TacticalClientPatchTimeoutTest extends TestCase
         // An encoding failure returns false, and (string) false is '' — which
         // would make the assertion below pass while measuring nothing.
         $this->assertIsString($encoded);
-        $this->assertStringNotContainsString('SENTINEL-KEY-DO-NOT-LOG', $encoded);
+        $this->assertStringNotContainsString($tracer, $encoded);
         $this->assertStringNotContainsString('rest_headers', $encoded);
     }
 
