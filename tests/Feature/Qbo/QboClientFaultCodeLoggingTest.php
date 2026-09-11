@@ -120,6 +120,46 @@ class QboClientFaultCodeLoggingTest extends TestCase
         return $matches[0];
     }
 
+    /**
+     * The failure context for one response, from a clean log buffer.
+     *
+     * Several tests below drive two bodies and compare the two lines; clearing
+     * the buffer between them is what keeps requestFailedContext()'s
+     * exactly-one assertion meaningful.
+     *
+     * @param  array<string, mixed>|string  $body
+     * @return array<mixed>
+     */
+    private function requestFailedContextFor(int $status, array|string $body): array
+    {
+        $this->capturedLogs = [];
+
+        $this->failingGet($status, $body);
+
+        return $this->requestFailedContext();
+    }
+
+    /**
+     * The sweep haystack for the sentinel assertions, proved non-vacuous.
+     *
+     * json_encode returns false on failure and `(string) false` is '', at which
+     * point every assertStringNotContainsString against it passes trivially —
+     * the redaction boundary this file exists to hold would stop being checked
+     * without a single test turning red. assertIsString is what makes the sweep
+     * mean something.
+     *
+     * @param  array<mixed>  $context
+     */
+    private function sweepHaystack(array $context): string
+    {
+        $encoded = json_encode($context);
+
+        $this->assertIsString($encoded, 'Context did not encode; the sentinel sweep would pass vacuously.');
+        $this->assertNotSame('', $encoded);
+
+        return $encoded;
+    }
+
     public function test_a_fault_610_object_not_found_logs_its_code(): void
     {
         $this->failingGet(400, [
@@ -213,7 +253,7 @@ class QboClientFaultCodeLoggingTest extends TestCase
         $context = $this->requestFailedContext();
         unset($context['error']);
 
-        $encoded = (string) json_encode($context);
+        $encoded = $this->sweepHaystack($context);
 
         $this->assertStringNotContainsString('MAGIC-MESSAGE-SENTINEL', $encoded);
         $this->assertStringNotContainsString('MAGIC-DETAIL-SENTINEL', $encoded);
@@ -224,7 +264,11 @@ class QboClientFaultCodeLoggingTest extends TestCase
     {
         $this->failingGet(500, ['error' => 'gateway exploded']);
 
-        $this->assertSame([], $this->requestFailedContext()['fault_codes']);
+        $context = $this->requestFailedContext();
+
+        $this->assertSame([], $context['fault_codes']);
+        // 0 is reserved for this case — no Fault arrived at all.
+        $this->assertSame(0, $context['fault_error_count']);
     }
 
     /**
@@ -240,6 +284,7 @@ class QboClientFaultCodeLoggingTest extends TestCase
 
         $this->assertArrayHasKey('fault_codes', $context);
         $this->assertSame([], $context['fault_codes']);
+        $this->assertSame(0, $context['fault_error_count']);
     }
 
     /**
@@ -269,7 +314,7 @@ class QboClientFaultCodeLoggingTest extends TestCase
         unset($context['error']);
 
         $this->assertSame(['610'], $context['fault_codes']);
-        $this->assertStringNotContainsString('MAGIC-NESTED-SENTINEL', (string) json_encode($context));
+        $this->assertStringNotContainsString('MAGIC-NESTED-SENTINEL', $this->sweepHaystack($context));
     }
 
     /**
@@ -284,9 +329,12 @@ class QboClientFaultCodeLoggingTest extends TestCase
      */
     public function test_fault_shapes_carrying_no_code_do_not_throw_out_of_the_logger(): void
     {
-        $this->failingGet(400, ['Fault' => ['Error' => ['Message' => 'not a list']]]);
+        $firstContext = $this->requestFailedContextFor(400, ['Fault' => ['Error' => ['Message' => 'not a list']]]);
 
-        $this->assertSame([], $this->requestFailedContext()['fault_codes']);
+        $this->assertSame([], $firstContext['fault_codes']);
+        // The entry is unreadable, not absent. 0 here would be the exact
+        // conflation `fault_error_count` was added to remove.
+        $this->assertSame(1, $firstContext['fault_error_count']);
 
         $this->capturedLogs = [];
 
@@ -323,8 +371,8 @@ class QboClientFaultCodeLoggingTest extends TestCase
 
         $this->assertSame(['610'], $context['fault_codes']);
         $this->assertSame(1, $context['fault_error_count']);
-        $this->assertStringNotContainsString('MAGIC-MESSAGE-SENTINEL', (string) json_encode($context));
-        $this->assertStringNotContainsString('MAGIC-DETAIL-SENTINEL', (string) json_encode($context));
+        $this->assertStringNotContainsString('MAGIC-MESSAGE-SENTINEL', $this->sweepHaystack($context));
+        $this->assertStringNotContainsString('MAGIC-DETAIL-SENTINEL', $this->sweepHaystack($context));
     }
 
     /**
@@ -384,7 +432,7 @@ class QboClientFaultCodeLoggingTest extends TestCase
         $this->assertCount(1, $codes);
         $this->assertSame(32, mb_strlen($codes[0]));
         $this->assertStringStartsWith('610', $codes[0]);
-        $this->assertStringNotContainsString('MAGIC-TAIL-SENTINEL', (string) json_encode($context));
+        $this->assertStringNotContainsString('MAGIC-TAIL-SENTINEL', $this->sweepHaystack($context));
     }
 
     /**
@@ -508,7 +556,130 @@ class QboClientFaultCodeLoggingTest extends TestCase
             $http = $property->getValue($client);
 
             $this->assertInstanceOf(GuzzleClient::class, $http, "{$how}: not a Guzzle client");
+            // getConfig() carries an @deprecated "removed in guzzlehttp/guzzle:8.0"
+            // annotation. It is the cheapest read of the timeout today; on a
+            // Guzzle 8 upgrade this line fatals rather than failing, and the
+            // replacement is a behavioural assertion (drive a MockHandler that
+            // sleeps past the timeout), NOT deleting the assertion — it is the
+            // only guard against a future bind() dropping the 30s timeout.
             $this->assertSame(30, $http->getConfig('timeout'), "{$how}: lost the 30s timeout");
         }
+    }
+
+    /**
+     * The same XML-to-JSON hazard as collapsing, one shape over: a translator
+     * that numbers the Error array from 1, or leaves it sparse, produces a keyed
+     * map that `array_is_list` rejects. Reading it as "not an Error at all"
+     * would lose both the 610 and the fact that a Fault arrived.
+     */
+    public function test_a_keyed_error_map_is_read_as_a_list_of_entries(): void
+    {
+        $context = $this->requestFailedContextFor(400, [
+            'Fault' => [
+                'Error' => [
+                    '1' => ['Message' => 'Object Not Found', 'code' => '610'],
+                    '3' => ['Message' => 'Invalid Reference Id', 'code' => '2500'],
+                ],
+            ],
+        ]);
+
+        $this->assertSame(['610', '2500'], $context['fault_codes']);
+        $this->assertSame(2, $context['fault_error_count']);
+    }
+
+    /**
+     * The map heuristic reads a keyed object whose values are all arrays as a
+     * list of entries. A single collapsed entry can look exactly like that, so
+     * a `code` key decides first — otherwise one Fault entry would be counted
+     * as two, and the count is the thing an operator branches on.
+     */
+    public function test_a_collapsed_entry_whose_values_are_all_arrays_is_still_one_entry(): void
+    {
+        $context = $this->requestFailedContextFor(400, [
+            'Fault' => [
+                'Error' => [
+                    'code' => ['nested' => 'MAGIC-NESTED-SENTINEL'],
+                    'Detail' => ['more' => 'MAGIC-DETAIL-SENTINEL'],
+                ],
+            ],
+        ]);
+
+        unset($context['error']);
+
+        $this->assertSame([], $context['fault_codes']);
+        $this->assertSame(1, $context['fault_error_count']);
+        $this->assertStringNotContainsString('MAGIC-NESTED-SENTINEL', $this->sweepHaystack($context));
+    }
+
+    /**
+     * One upstream fact must not produce opposite counts depending only on
+     * whether the translator collapsed the list. `isset()` on the wrap predicate
+     * did exactly that for a null code: 0 collapsed, 1 in list form.
+     */
+    public function test_a_collapsed_entry_with_a_null_code_counts_the_same_as_its_list_form(): void
+    {
+        $collapsed = $this->requestFailedContextFor(400, [
+            'Fault' => ['Error' => ['Message' => 'Object Not Found', 'code' => null]],
+        ]);
+
+        $asList = $this->requestFailedContextFor(400, [
+            'Fault' => ['Error' => [['Message' => 'Object Not Found', 'code' => null]]],
+        ]);
+
+        $this->assertSame([], $collapsed['fault_codes']);
+        $this->assertSame([], $asList['fault_codes']);
+        $this->assertSame(1, $collapsed['fault_error_count']);
+        $this->assertSame($asList['fault_error_count'], $collapsed['fault_error_count']);
+    }
+
+    /**
+     * A scalar `Fault.Error` is unreadable, but it is not nothing — and it must
+     * not fatal on the way out. The detail path below the log call runs
+     * `array_map` over the same raw value, so a bare string there raised a
+     * TypeError out of the error path itself.
+     */
+    public function test_a_scalar_fault_error_counts_as_one_unreadable_entry(): void
+    {
+        $context = $this->requestFailedContextFor(400, [
+            'Fault' => ['Error' => 'Object Not Found'],
+        ]);
+
+        $this->assertSame([], $context['fault_codes']);
+        $this->assertSame(1, $context['fault_error_count']);
+    }
+
+    /**
+     * The cap bounds DISTINCT codes. A positional cap would let 25 repetitions
+     * of one code exhaust the budget and drop the single 610 behind them — the
+     * one value that decides whether the row is ever retried again, which is the
+     * whole of #1354.
+     */
+    public function test_a_repeated_code_does_not_exhaust_the_budget_for_the_one_that_matters(): void
+    {
+        $errors = array_fill(0, 25, ['Message' => 'Invalid Reference Id', 'code' => '2500']);
+        $errors[] = ['Message' => 'Object Not Found', 'code' => '610'];
+
+        $context = $this->requestFailedContextFor(400, ['Fault' => ['Error' => $errors]]);
+
+        $this->assertSame(['2500', '610'], $context['fault_codes']);
+        $this->assertSame(26, $context['fault_error_count']);
+    }
+
+    /**
+     * The bound exists to cap what reaches the log file, so it is stated in
+     * bytes. 32 astral-plane characters are 128 bytes — a character bound would
+     * be four times the figure the constant reads as, and more once a formatter
+     * escapes them.
+     */
+    public function test_the_logged_code_is_bounded_in_bytes_not_characters(): void
+    {
+        $context = $this->requestFailedContextFor(400, [
+            'Fault' => ['Error' => [['code' => str_repeat('😀', 32)]]],
+        ]);
+
+        $this->assertCount(1, $context['fault_codes']);
+        $this->assertLessThanOrEqual(32, strlen($context['fault_codes'][0]));
+        // Never mid-character: the cut must still decode as UTF-8.
+        $this->assertSame($context['fault_codes'][0], mb_convert_encoding($context['fault_codes'][0], 'UTF-8', 'UTF-8'));
     }
 }

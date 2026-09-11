@@ -15,10 +15,15 @@ class QboClient
 
     private const TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
 
-    /** Longest Fault `code` copied into the log; real codes are 3–4 characters. */
-    private const MAX_FAULT_CODE_LENGTH = 32;
+    /**
+     * Longest Fault `code` copied into the log, in BYTES; real codes are 3–4
+     * characters. Bytes, not characters, because the bound exists to cap what
+     * reaches the log file: 32 astral-plane characters are 128 bytes, and more
+     * again once a formatter escapes them.
+     */
+    private const MAX_FAULT_CODE_BYTES = 32;
 
-    /** Most Fault codes copied into one log line. */
+    /** Most DISTINCT Fault codes copied into one log line. */
     private const MAX_FAULT_CODES = 25;
 
     private const BASE_URLS = [
@@ -290,7 +295,10 @@ class QboClient
             // alongside the status. Codes only — never Message/Detail, which can
             // carry request content.
             'fault_codes' => self::faultCodes($faultEntries),
-            // How many Error entries the Fault carried, readable or not. Without
+            // How many Error entries the Fault carried, readable or not — and
+            // "or not" is load-bearing: every present-but-unrecognised shape
+            // counts as at least one entry (see faultErrorEntries), so this is
+            // 0 only when no Fault arrived. Without
             // it an empty `fault_codes` says two very different things with one
             // value: "no Fault came back at all" and "a Fault came back whose
             // codes I could not read". A count is a plain int — it carries none
@@ -301,8 +309,14 @@ class QboClient
 
         $detail = "QBO API error: {$method} {$path} returned {$statusCode}";
 
-        if ($faultErrors) {
-            $messages = array_map(fn ($err) => $err['Message'] ?? $err['Detail'] ?? '', $faultErrors);
+        // is_array guards a pre-existing fatal, nothing more: a scalar
+        // `Fault.Error` would put a string through array_map and raise a
+        // TypeError out of the error path itself. The text this produces is
+        // unchanged for every shape that did not fatal (a non-array entry
+        // already yielded '' through the null-coalesce); the detail path proper
+        // is owned by the forward log-remediation work, not by this change.
+        if (is_array($faultErrors) && $faultErrors) {
+            $messages = array_map(fn ($err) => is_array($err) ? ($err['Message'] ?? $err['Detail'] ?? '') : '', $faultErrors);
             $detail .= ' — '.implode('; ', array_filter($messages));
         }
 
@@ -320,9 +334,14 @@ class QboClient
      * response we have seen. But single-element collapsing — an object where a
      * list is expected — is the standard XML-to-JSON translation hazard on
      * payloads of this shape, and a collapsed Error would silently lose the one
-     * value this logging exists to surface. An entry carrying a `code` key is
-     * that shape, so it is wrapped; any other non-list array is not an Error
-     * entry and yields nothing.
+     * value this logging exists to surface. So a collapsed object is wrapped, a
+     * numbered or sparse map of entries is re-listed, and anything else that is
+     * present but unrecognised counts as ONE entry that cannot be read.
+     *
+     * Nothing here returns an empty list for a Fault that did arrive. That is
+     * the whole point: the count beside `fault_codes` is derived from what this
+     * returns, and a Fault whose shape defeats the reader must not log the same
+     * pair as a response carrying no Fault at all.
      *
      * @param  mixed  $faultErrors  Raw `Fault.Error` as decoded, shape unverified.
      * @return list<mixed>
@@ -330,14 +349,36 @@ class QboClient
     private static function faultErrorEntries(mixed $faultErrors): array
     {
         if (! is_array($faultErrors)) {
-            return [];
+            // A scalar `Error` is an entry this code cannot read, which is not
+            // the same fact as no Fault at all — so it counts as one entry and
+            // yields no code. Absent or empty is nothing.
+            return ($faultErrors === null || $faultErrors === '') ? [] : [$faultErrors];
         }
 
         if (array_is_list($faultErrors)) {
             return $faultErrors;
         }
 
-        return isset($faultErrors['code']) ? [$faultErrors] : [];
+        // A `code` key positively identifies one collapsed entry, so it is
+        // checked BEFORE the map heuristic below — an entry whose values all
+        // happen to be arrays would otherwise be read as a map of two entries.
+        // array_key_exists, not isset, because the predicate means "carries a
+        // code key" and a present-but-null code is an entry I cannot read, not
+        // a missing key. (The catch-all at the end means the two spellings agree
+        // on today's shapes; the difference is that this one says what it means.)
+        if (array_key_exists('code', $faultErrors)) {
+            return [$faultErrors];
+        }
+
+        // A keyed map whose every value is an array is a list the translator
+        // numbered from 1, or left sparse — the same XML-to-JSON hazard as
+        // collapsing, one shape over.
+        if (array_filter($faultErrors, 'is_array') === $faultErrors) {
+            return array_values($faultErrors);
+        }
+
+        // Anything else non-list: one entry that arrived and cannot be read.
+        return [$faultErrors];
     }
 
     /**
@@ -351,12 +392,18 @@ class QboClient
      *    bool and float, and `(string) true` is `'1'` — a value shaped exactly
      *    like a real fault code. A fabricated code is worse than an absent one,
      *    and `true`/`false` would otherwise take opposite paths for no reason.
-     *  - each code is truncated to MAX_FAULT_CODE_LENGTH. Real codes are 3–4
-     *    characters; anything longer means a malformed upstream, an intermediary
-     *    or a future schema change, and none of those may copy an unbounded span
-     *    of wire bytes into a log line that is written on every failure.
-     *  - at most MAX_FAULT_CODES entries are kept, so a Fault carrying thousands
-     *    of Error entries cannot do the same thing by cardinality.
+     *  - each code is cut to MAX_FAULT_CODE_BYTES *bytes* (mb_strcut, so never
+     *    mid-character). Real codes are 3–4 characters; anything longer means a
+     *    malformed upstream, an intermediary or a future schema change, and none
+     *    of those may copy an unbounded span of wire bytes into a log line that
+     *    is written on every failure. A character bound would not say that: 32
+     *    astral-plane characters are 128 bytes.
+     *  - at most MAX_FAULT_CODES DISTINCT codes are kept, so a Fault carrying
+     *    thousands of Error entries cannot do the same thing by cardinality.
+     *    Distinct, not positional: 25 repetitions of one code would otherwise
+     *    exhaust the budget and hide the single 610 behind them, which is the
+     *    exact value the operator needs. `fault_error_count` still reports every
+     *    entry, so cardinality is not lost by de-duplicating here.
      *
      * Truncation deliberately is NOT an allow-list regex: a code Intuit adds
      * later should still reach the operator, merely bounded. Nothing here is a
@@ -378,9 +425,9 @@ class QboClient
                 continue;
             }
 
-            $code = mb_substr((string) $code, 0, self::MAX_FAULT_CODE_LENGTH);
+            $code = mb_strcut((string) $code, 0, self::MAX_FAULT_CODE_BYTES, 'UTF-8');
 
-            if ($code === '') {
+            if ($code === '' || in_array($code, $codes, true)) {
                 continue;
             }
 
