@@ -51,60 +51,13 @@ class ServosityConfig
     /**
      * Generate a TOTP code from the stored secret (RFC 6238).
      * Returns null if no TOTP secret is configured.
+     *
+     * The algorithm moved to {@see Totp} when the HDB report portal became the
+     * second caller (psa #340). Behaviour here is unchanged — same decoder, same
+     * 30-second SHA1 step, same 6-digit zero-padded truncation.
      */
     public static function generateTotp(): ?string
     {
-        $secret = self::get('totp_secret');
-        if (! $secret) {
-            return null;
-        }
-
-        // Decode base32 secret
-        $decoded = self::base32Decode($secret);
-        if (! $decoded) {
-            return null;
-        }
-
-        // Standard TOTP: 30-second period, 6-digit code, SHA1
-        $timeCounter = pack('N*', 0, (int) floor(time() / 30));
-        $hash = hash_hmac('sha1', $timeCounter, $decoded, true);
-
-        $offset = ord($hash[19]) & 0x0F;
-        $code = (
-            ((ord($hash[$offset]) & 0x7F) << 24) |
-            ((ord($hash[$offset + 1]) & 0xFF) << 16) |
-            ((ord($hash[$offset + 2]) & 0xFF) << 8) |
-            (ord($hash[$offset + 3]) & 0xFF)
-        ) % 1000000;
-
-        return str_pad((string) $code, 6, '0', STR_PAD_LEFT);
-    }
-
-    /**
-     * Decode a base32-encoded string.
-     */
-    private static function base32Decode(string $input): ?string
-    {
-        $input = strtoupper(rtrim($input, '='));
-        $map = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-
-        $buffer = 0;
-        $bitsLeft = 0;
-        $result = '';
-
-        for ($i = 0, $len = strlen($input); $i < $len; $i++) {
-            $val = strpos($map, $input[$i]);
-            if ($val === false) {
-                return null;
-            }
-            $buffer = ($buffer << 5) | $val;
-            $bitsLeft += 5;
-            if ($bitsLeft >= 8) {
-                $bitsLeft -= 8;
-                $result .= chr(($buffer >> $bitsLeft) & 0xFF);
-            }
-        }
-
-        return $result;
+        return Totp::code(self::get('totp_secret'));
     }
 }
