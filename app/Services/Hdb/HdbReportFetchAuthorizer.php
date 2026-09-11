@@ -25,6 +25,14 @@ use App\Models\TicketNote;
  *    ticket with exactly that id — i.e. the paste can never widen access beyond
  *    what the capture path already established.
  *
+ *    That claim rests on `ticket_notes.hdb_press_id` meaning PSA capture and
+ *    nothing else, so BOTH of its writers are bound to the capture identity:
+ *    {@see \App\Services\T2T\T2TService::captureHdbPressId()} stamps the note it
+ *    has just written, and `hdb:backfill-press-ids` keys only notes authored by
+ *    the configured T2T system user, refusing to run when that identity is
+ *    unset rather than guessing one. A note a human wrote is never keyed, so a
+ *    pasted link has no route to authority here.
+ *
  * 2. **`tickets.hdb_press_id` is NOT an authority and is never read here.**
  *    Slice 1a redefined it as a never-cleared CACHE of the newest press on the
  *    ticket, written from the note write. Because the conflict refusal was

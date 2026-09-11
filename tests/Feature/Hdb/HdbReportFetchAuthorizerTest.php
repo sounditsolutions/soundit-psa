@@ -5,6 +5,7 @@ namespace Tests\Feature\Hdb;
 use App\Enums\NoteType;
 use App\Enums\TicketSource;
 use App\Models\Client;
+use App\Models\Setting;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
@@ -442,5 +443,42 @@ class HdbReportFetchAuthorizerTest extends TestCase
             $this->authorizer()->authorize($ticket->id, self::PRESS_B),
             HdbReportFetchRefusal::NoKeyedNote,
         );
+    }
+
+    public function test_a_pasted_link_is_not_promoted_to_authority_by_the_backfill(): void
+    {
+        // The class's first claim — a pasted key is a locator, never a
+        // credential — holds only while the note key means "the PSA captured
+        // this". hdb:backfill-press-ids is the column's OTHER writer and is
+        // re-runnable, so it is pointed at the capture identity: a technician
+        // pasting client A's link onto their own client's ticket keys nothing,
+        // and the gate still refuses after the command has run.
+        Setting::setValue('t2t_system_user_id', (string) User::factory()->create()->id);
+        $technician = User::factory()->create();
+
+        $owner = $this->ticketFor();
+        $this->keyedNote($owner, self::PRESS_A);
+
+        $viewed = $this->ticketFor();
+        $pasted = TicketNote::create([
+            'ticket_id' => $viewed->id,
+            'note_type' => NoteType::Note,
+            'author_id' => $technician->id,
+            'body' => 'Their report: https://beta.helpdeskbuttons.com/pressView.php?pressID='.self::PRESS_A,
+            'noted_at' => now(),
+        ]);
+
+        $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
+
+        $this->assertNull(TicketNote::whereKey($pasted->id)->value('hdb_press_id'));
+        $this->assertRefused(
+            $this->authorizer()->authorize($viewed->id, self::PRESS_A),
+            HdbReportFetchRefusal::NoKeyedNote,
+        );
+        $this->assertRefused(
+            $this->authorizer()->authorizeNote($viewed->id, $pasted->id),
+            HdbReportFetchRefusal::NoKeyedNote,
+        );
+        $this->assertNotSame($owner->client_id, $viewed->client_id);
     }
 }

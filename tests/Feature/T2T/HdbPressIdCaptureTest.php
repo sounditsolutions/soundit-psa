@@ -3,6 +3,7 @@
 namespace Tests\Feature\T2T;
 
 use App\Enums\TicketSource;
+use App\Models\Setting;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
@@ -40,6 +41,19 @@ class HdbPressIdCaptureTest extends TestCase
     private function pressIdOfNote(int $noteId): ?string
     {
         return TicketNote::withTrashed()->whereKey($noteId)->value('hdb_press_id');
+    }
+
+    /**
+     * The identity the PSA captures as — the configured T2T system user, the
+     * author T2TController hands addNoteFromCw and the only authorship the
+     * backfill may key (GitHub #1359).
+     */
+    private function captureIdentity(): User
+    {
+        $user = User::factory()->create();
+        Setting::setValue('t2t_system_user_id', (string) $user->id);
+
+        return $user;
     }
 
     public function test_inbound_note_persists_the_press_id_on_the_note_and_caches_it_on_the_ticket(): void
@@ -170,7 +184,7 @@ class HdbPressIdCaptureTest extends TestCase
 
     public function test_backfill_keys_notes_regardless_of_ticket_source(): void
     {
-        $user = User::factory()->create();
+        $user = $this->captureIdentity();
         $buttonTicket = $this->buttonTicket();
         // 50 of the 95 prod tickets carrying a press note are NOT
         // source=helpdesk_button — the notes arrive by merge and the source does
@@ -210,7 +224,7 @@ class HdbPressIdCaptureTest extends TestCase
 
     public function test_backfill_keeps_both_presses_on_a_ticket_that_holds_two(): void
     {
-        $user = User::factory()->create();
+        $user = $this->captureIdentity();
         $ticket = $this->buttonTicket();
 
         $first = TicketNote::create([
@@ -238,7 +252,7 @@ class HdbPressIdCaptureTest extends TestCase
 
     public function test_backfill_does_not_demote_a_ticket_that_already_holds_a_newer_press(): void
     {
-        $user = User::factory()->create();
+        $user = $this->captureIdentity();
         $ticket = $this->buttonTicket();
 
         // Legacy note, pre-dates capture: still unkeyed, and the OLDER press.
@@ -264,7 +278,7 @@ class HdbPressIdCaptureTest extends TestCase
 
     public function test_backfill_leaves_a_soft_deleted_notes_press_id_out_of_the_ticket(): void
     {
-        $user = User::factory()->create();
+        $user = $this->captureIdentity();
         $ticket = $this->buttonTicket();
 
         $deleted = TicketNote::create([
@@ -286,7 +300,7 @@ class HdbPressIdCaptureTest extends TestCase
 
     public function test_backfill_does_not_touch_timestamps(): void
     {
-        $user = User::factory()->create();
+        $user = $this->captureIdentity();
         $ticket = $this->buttonTicket();
 
         $note = TicketNote::create([
@@ -312,7 +326,7 @@ class HdbPressIdCaptureTest extends TestCase
 
     public function test_backfill_skips_a_press_id_mention_that_is_not_an_hdb_url(): void
     {
-        $user = User::factory()->create();
+        $user = $this->captureIdentity();
         $ticket = $this->buttonTicket();
 
         $note = TicketNote::create([
@@ -331,7 +345,7 @@ class HdbPressIdCaptureTest extends TestCase
 
     public function test_backfill_dry_run_writes_nothing(): void
     {
-        $user = User::factory()->create();
+        $user = $this->captureIdentity();
         $ticket = $this->buttonTicket();
 
         $note = TicketNote::create([
@@ -342,6 +356,64 @@ class HdbPressIdCaptureTest extends TestCase
         ]);
 
         $this->artisan('hdb:backfill-press-ids', ['--dry-run' => true])->assertExitCode(0);
+
+        $this->assertNull($this->pressIdOfNote($note->id));
+        $this->assertNull($ticket->fresh()->hdb_press_id);
+    }
+
+    public function test_backfill_never_keys_a_note_the_psa_did_not_write(): void
+    {
+        // GitHub #1359. The note key is the authority the report-fetch gate
+        // reads, so this command may only key notes the PSA itself wrote: a
+        // technician pasting a report link — or an end user quoting one in a
+        // portal reply, which lands with no author at all — must not mint an
+        // authority for the press behind it.
+        $this->captureIdentity();
+        $technician = User::factory()->create();
+        $ticket = $this->buttonTicket();
+
+        $pasted = TicketNote::create([
+            'ticket_id' => $ticket->id,
+            'author_id' => $technician->id,
+            'body' => $this->noteBody(self::UUID),
+            'is_private' => true,
+        ]);
+        $quoted = TicketNote::create([
+            'ticket_id' => $ticket->id,
+            'author_id' => null,
+            'body' => $this->noteBody(self::OTHER_UUID),
+            'is_private' => false,
+        ]);
+
+        $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
+
+        $this->assertNull($this->pressIdOfNote($pasted->id));
+        $this->assertNull($this->pressIdOfNote($quoted->id));
+        $this->assertNull($ticket->fresh()->hdb_press_id);
+    }
+
+    public function test_backfill_refuses_to_run_when_no_capture_identity_is_configured(): void
+    {
+        // T2TConfig::systemUserId() falls back to the FIRST user — a real
+        // technician's account in any deployment that never configured one. A
+        // run that keyed against a guessed identity would be the same defect as
+        // one that keyed against none, so it refuses rather than guesses.
+        $user = User::factory()->create();
+        $ticket = $this->buttonTicket();
+
+        $note = TicketNote::create([
+            'ticket_id' => $ticket->id,
+            'author_id' => $user->id,
+            'body' => $this->noteBody(self::UUID),
+            'is_private' => true,
+        ]);
+
+        $this->artisan('hdb:backfill-press-ids')->assertExitCode(1);
+
+        // The integrations form stores an empty string when the select is
+        // cleared, so that shape is unconfigured too.
+        Setting::setValue('t2t_system_user_id', '');
+        $this->artisan('hdb:backfill-press-ids')->assertExitCode(1);
 
         $this->assertNull($this->pressIdOfNote($note->id));
         $this->assertNull($ticket->fresh()->hdb_press_id);
