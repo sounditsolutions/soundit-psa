@@ -180,6 +180,82 @@ class TacticalReconcileAlertsTest extends TestCase
         $this->assertSame(AlertStatus::Resolved, $notReturned->fresh()->status);
     }
 
+    /**
+     * The second absence-is-not-evidence case, and the one the fail-closed
+     * guard does not reach.
+     *
+     * The fetch is filtered to a 30-day window, so an alert older than that is
+     * missing from EVERY response the filter can produce. The not-returned
+     * branch read that as "resolved in Tactical" and closed it with an audit
+     * reason reading like a considered decision — for being old. The guard above
+     * cannot catch it: the response is healthy and full, it simply does not
+     * contain the alert. Measured on production while this was written: 60 open
+     * Tactical alerts, 3 of them past the window.
+     */
+    public function test_an_open_alert_older_than_the_window_is_left_open_not_swept(): void
+    {
+        $inWindow = $this->openAlert('tactical-1');
+
+        $tooOld = $this->openAlert('tactical-old');
+        $tooOld->forceFill(['fired_at' => now()->subDays(45)])->save();
+
+        // A healthy answer that contains the in-window alert and — correctly,
+        // given the filter — says nothing at all about the 45-day-old one.
+        $this->fakeTacticalReturning([
+            ['id' => 'tactical-1', 'resolved' => true],
+        ]);
+
+        $this->artisan('tactical:reconcile-alerts')
+            ->expectsOutputToContain('Skipped 1 open alert(s) older than the 30-day reconcile window')
+            ->assertSuccessful();
+
+        $this->assertSame(AlertStatus::Resolved, $inWindow->fresh()->status);
+        $this->assertSame(AlertStatus::Ticketed, $tooOld->fresh()->status);
+    }
+
+    /**
+     * fired_at is nullable, and an alert that cannot prove it is inside the
+     * window is not judged by the window's answer either. Fail closed on
+     * unknown: left open, counted in the skip line.
+     */
+    public function test_an_open_alert_with_no_fired_at_falls_back_to_its_creation_time(): void
+    {
+        $unknownAge = $this->openAlert('tactical-unknown');
+        $unknownAge->forceFill([
+            'fired_at' => null,
+            'created_at' => now()->subDays(45),
+        ])->save();
+
+        $this->fakeTacticalReturning([
+            ['id' => 'tactical-other', 'resolved' => false],
+        ]);
+
+        $this->artisan('tactical:reconcile-alerts')
+            ->expectsOutputToContain('Skipped 1 open alert(s)')
+            ->assertSuccessful();
+
+        $this->assertSame(AlertStatus::Ticketed, $unknownAge->fresh()->status);
+    }
+
+    /**
+     * REGRESSION GUARD, and it passes against the unfixed command by design:
+     * the window bound must not disable the ordinary sweep. An alert inside the
+     * window that Tactical omits is still absent from a response that should
+     * have contained it, which is the inference the command exists to make.
+     */
+    public function test_an_absent_alert_inside_the_window_is_still_resolved(): void
+    {
+        $notReturned = $this->openAlert('tactical-3');
+
+        $this->fakeTacticalReturning([
+            ['id' => 'tactical-1', 'resolved' => false],
+        ]);
+
+        $this->artisan('tactical:reconcile-alerts')->assertSuccessful();
+
+        $this->assertSame(AlertStatus::Resolved, $notReturned->fresh()->status);
+    }
+
     public function test_with_no_open_alerts_the_fetch_is_never_made(): void
     {
         $tactical = Mockery::mock(TacticalClient::class);

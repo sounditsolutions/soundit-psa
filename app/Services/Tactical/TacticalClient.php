@@ -378,17 +378,21 @@ class TacticalClient
      *
      * @param  float|null  $timeout  Seconds for THIS request only, overriding the
      *                               client default. Null leaves the client's own
-     *                               timeout in force. Must be greater than zero —
-     *                               Guzzle reads 0 as "no timeout", which is never
-     *                               what a caller asking for a bound means.
+     *                               timeout in force. Must be a FINITE number
+     *                               greater than zero — Guzzle reads 0 as "no
+     *                               timeout", which is never what a caller asking
+     *                               for a bound means, and NAN/INF both survive a
+     *                               bare `<= 0` test (every NAN comparison is
+     *                               false) only to reach cURL as that same
+     *                               unbounded 0.
      *
-     * @throws \InvalidArgumentException when $timeout is not greater than zero
+     * @throws \InvalidArgumentException when $timeout is not a finite number greater than zero
      */
     public function patch(string $endpoint, array $body = [], ?float $timeout = null): array
     {
-        if ($timeout !== null && $timeout <= 0) {
+        if ($timeout !== null && (! is_finite($timeout) || $timeout <= 0)) {
             throw new \InvalidArgumentException(
-                "Tactical PATCH {$endpoint}: per-request timeout must be greater than zero seconds."
+                "Tactical PATCH {$endpoint}: per-request timeout must be a finite number greater than zero seconds."
             );
         }
 
@@ -403,10 +407,10 @@ class TacticalClient
         try {
             $response = $this->http->request('PATCH', $endpoint, $options);
         } catch (GuzzleException $e) {
-            $hasResponse = $e instanceof \GuzzleHttp\Exception\RequestException && $e->hasResponse();
+            $responseCarrier = self::responseCarrier($e);
 
             Log::error("[TacticalClient] PATCH {$endpoint} failed", [
-                'status' => $hasResponse ? $e->getResponse()->getStatusCode() : null,
+                'status' => $responseCarrier?->getResponse()?->getStatusCode(),
                 // psa-1355: a null status said only "no response arrived" and the
                 // line carried nothing else — no class, no reason, no timing — so
                 // a connect failure, a TLS failure and a timeout were one
@@ -419,7 +423,10 @@ class TacticalClient
                 // X-Webhook-Key (the reason TacticalClientException::fromGuzzle
                 // refuses it too). With no response there is no body to summarize
                 // and the text is the transport diagnostic this line was missing.
-                'reason' => $hasResponse ? null : self::boundedReason($e->getMessage()),
+                //
+                // "No response" is decided over the WHOLE cause chain, not just
+                // $e — see responseCarrier().
+                'reason' => $responseCarrier !== null ? null : self::boundedReason($e->getMessage()),
                 'elapsed_ms' => (int) round((microtime(true) - $startedAt) * 1000),
                 // What THIS call asked for; null means the client default applied.
                 // Read beside elapsed_ms it answers the question the original line
@@ -430,6 +437,38 @@ class TacticalClient
         }
 
         return json_decode((string) $response->getBody(), true) ?? [];
+    }
+
+    /**
+     * The first exception in the cause chain that carries an HTTP response.
+     *
+     * The catch above is on the `GuzzleException` INTERFACE, which any class may
+     * implement, and the no-body invariant on `reason` is what stops a response
+     * body — `rest_headers` including X-Webhook-Key — reaching an hourly log
+     * line. Testing only `$e` decides that invariant on the outermost wrapper:
+     * Guzzle's own `RequestException::wrapException()` returns a RequestException
+     * with a NULL response and the inner message copied verbatim, so a wrapping
+     * middleware would present "no response" to the check while the message
+     * still carries the BodySummarizer's summary of the body.
+     *
+     * Walking the chain decides it on the cause instead, which is where the
+     * response actually is. Nothing on today's handler stack wraps like that —
+     * this is the guard that keeps it true when something does. The hop cap is
+     * against a self-referential chain, not against any real Guzzle shape.
+     */
+    private static function responseCarrier(\Throwable $e): ?\GuzzleHttp\Exception\RequestException
+    {
+        $current = $e;
+
+        for ($hops = 0; $current !== null && $hops < 10; $hops++) {
+            if ($current instanceof \GuzzleHttp\Exception\RequestException && $current->hasResponse()) {
+                return $current;
+            }
+
+            $current = $current->getPrevious();
+        }
+
+        return null;
     }
 
     /**

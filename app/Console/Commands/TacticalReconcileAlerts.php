@@ -29,6 +29,24 @@ class TacticalReconcileAlerts extends Command
      */
     private const FETCH_TIMEOUT_SECONDS = 150.0;
 
+    /**
+     * Days of Tactical alert history this command reconciles against (psa-1355).
+     *
+     * The fetch has always been filtered to a window, and the not-returned
+     * branch below has always read "absent from the response" as "resolved in
+     * Tactical". Those two only agree inside the window: an alert older than it
+     * is absent from EVERY response because the filter excluded it, not because
+     * Tactical resolved it. Until this change the open-alert query had no age
+     * bound at all, so the two disagreed for anything older than the window —
+     * unreachable only because every run in the retained production window timed
+     * out before a response arrived. Measured on production at the time of this
+     * commit: 60 open Tactical alerts, 3 of them older than the window.
+     *
+     * So the constant feeds BOTH the filter and the age bound on the inference,
+     * and they cannot drift apart. Widening the window widens both.
+     */
+    private const RECONCILE_WINDOW_DAYS = 30;
+
     public function handle(TacticalClient $client, AlertService $alertService): int
     {
         if (! TacticalConfig::isConfigured()) {
@@ -52,9 +70,14 @@ class TacticalReconcileAlerts extends Command
 
         $this->info("Found {$openAlerts->count()} open Tactical alert(s) to check.");
 
-        // Fetch alerts from Tactical (last 30 days covers most open alerts)
+        // Fetch the window of Tactical alert history this command reconciles
+        // against. Anything older is not in the answer and is not judged by it.
         try {
-            $remoteAlerts = $client->patch('alerts/', ['timeFilter' => 30], self::FETCH_TIMEOUT_SECONDS);
+            $remoteAlerts = $client->patch(
+                'alerts/',
+                ['timeFilter' => self::RECONCILE_WINDOW_DAYS],
+                self::FETCH_TIMEOUT_SECONDS
+            );
         } catch (\Throwable $e) {
             $this->error("Failed to fetch alerts from Tactical RMM: {$e->getMessage()}");
 
@@ -99,13 +122,35 @@ class TacticalReconcileAlerts extends Command
         }
 
         $resolved = 0;
+        $outsideWindow = 0;
+        $windowStart = now()->subDays(self::RECONCILE_WINDOW_DAYS);
 
         foreach ($openAlerts as $alert) {
             $sourceAlertId = $alert->source_alert_id;
             $isResolved = $alertStatus[$sourceAlertId] ?? null;
 
             if ($isResolved === null) {
-                // Alert not returned by Tactical (too old or deleted) — treat as resolved
+                // ABSENCE IS ONLY EVIDENCE INSIDE THE WINDOW (psa-1355). An
+                // alert older than the fetch filter is missing from every
+                // response the filter produces, so reading its absence as
+                // "resolved in Tactical" resolves it for being old — with an
+                // audit reason reading like a considered decision, and no
+                // reverse sweep. Leave it open and say how many were skipped.
+                //
+                // fired_at is the alert's own firing time and the closest thing
+                // we hold to the timestamp Tactical filters on; it is nullable,
+                // so created_at (never null) is the fallback. The residual skew
+                // between the two clocks is webhook delivery latency — seconds,
+                // against a window measured in days.
+                $firedAt = $alert->fired_at ?? $alert->created_at;
+
+                if ($firedAt === null || $firedAt->lt($windowStart)) {
+                    $outsideWindow++;
+
+                    continue;
+                }
+
+                // Absent from a window that should have contained it.
                 $reason = 'Alert not found in Tactical RMM (too old or deleted)';
             } elseif ($isResolved === true) {
                 $reason = 'Alert resolved in Tactical RMM (caught by reconciliation)';
@@ -122,6 +167,16 @@ class TacticalReconcileAlerts extends Command
             }
 
             $resolved++;
+        }
+
+        if ($outsideWindow > 0) {
+            // Said out loud on every run that skips one: these alerts are open
+            // in the PSA and this command will never close them, so an operator
+            // reading "Resolved 0" needs to know the difference between nothing
+            // to do and something deliberately not judged.
+            $this->warn("Skipped {$outsideWindow} open alert(s) older than the "
+                .self::RECONCILE_WINDOW_DAYS.'-day reconcile window — absence from a '
+                .'filtered response is not evidence they were resolved.');
         }
 
         if ($dryRun) {

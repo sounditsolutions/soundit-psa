@@ -6,6 +6,7 @@ use App\Services\Tactical\TacticalClient;
 use App\Services\Tactical\TacticalClientException;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
@@ -14,6 +15,7 @@ use GuzzleHttp\Psr7\Response;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -146,6 +148,85 @@ class TacticalClientPatchTimeoutTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
 
         $client->patch('alerts/', [], -1.0);
+    }
+
+    /**
+     * NAN and INF are the two values that defeat a bare `<= 0` bound and then
+     * degrade into exactly the unbounded wait it exists to prevent: every NAN
+     * comparison is false, INF is genuinely greater than zero, and cURL takes
+     * either as timeout 0 — "wait forever". Today's only caller passes a literal
+     * constant; this holds the seam for the one that computes it.
+     */
+    #[DataProvider('nonFiniteTimeouts')]
+    public function test_a_non_finite_timeout_is_refused_and_nothing_is_sent(float $timeout): void
+    {
+        $client = $this->clientReturning([new Response(200, [], json_encode([]))]);
+
+        try {
+            $client->patch('alerts/', [], $timeout);
+            $this->fail('A non-finite timeout should be refused.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('finite', $e->getMessage());
+        }
+
+        $this->assertSame([], $this->history);
+    }
+
+    /** @return array<string, array{float}> */
+    public static function nonFiniteTimeouts(): array
+    {
+        return [
+            'NAN' => [NAN],
+            'INF' => [INF],
+            '-INF' => [-INF],
+        ];
+    }
+
+    /**
+     * The no-body invariant decided on the CAUSE, not on the wrapper.
+     *
+     * Guzzle's own `RequestException::wrapException()` produces this shape — a
+     * RequestException with a null response whose message is copied verbatim
+     * from the inner exception. A check that reads only the outermost object
+     * sees "no response arrived" and logs that message, which still carries the
+     * BodySummarizer's summary of the response body: for Tactical, a
+     * validation-error body echoing `rest_headers` including X-Webhook-Key.
+     */
+    public function test_a_response_wrapped_one_level_deep_still_logs_no_guzzle_message(): void
+    {
+        $tracer = 'TRACER-DO-NOT-LOG';
+        $request = new Request('PATCH', 'alerts/');
+
+        // RequestException::create() is what composes the body summary into the
+        // message, so the wrapper below carries body-derived text by the same
+        // mechanism production would.
+        $inner = RequestException::create(
+            $request,
+            new Response(400, [], json_encode(['rest_headers' => ['X-Webhook-Key' => $tracer]]))
+        );
+
+        $client = $this->clientReturning([
+            new RequestException($inner->getMessage(), $request, null, $inner),
+        ]);
+
+        try {
+            $client->patch('alerts/', ['timeFilter' => 30], 150.0);
+            $this->fail('A wrapped failure should surface as TacticalClientException.');
+        } catch (TacticalClientException $e) {
+            // The client's own refusal is unchanged; this test is about the log.
+        }
+
+        $context = $this->lastFailureContext();
+
+        // Found through the chain: the status is the inner response's, and the
+        // message is withheld exactly as it would be without the wrapper.
+        $this->assertSame(400, $context['status']);
+        $this->assertNull($context['reason']);
+
+        $encoded = json_encode($context);
+        $this->assertIsString($encoded);
+        $this->assertStringNotContainsString($tracer, $encoded);
+        $this->assertStringNotContainsString('rest_headers', $encoded);
     }
 
     public function test_a_transport_failure_logs_the_class_the_reason_the_timing_and_the_timeout_asked_for(): void
