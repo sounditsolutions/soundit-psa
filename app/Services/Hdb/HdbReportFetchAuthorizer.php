@@ -25,13 +25,22 @@ use App\Models\TicketNote;
  *    ticket with exactly that id — i.e. the paste can never widen access beyond
  *    what the capture path already established.
  *
- *    That claim rests on `ticket_notes.hdb_press_id` meaning PSA capture and
- *    nothing else, so BOTH of its writers are bound to the capture identity:
+ *    That claim rests on `ticket_notes.hdb_press_id` meaning PSA capture, so
+ *    BOTH of its writers are bound:
  *    {@see \App\Services\T2T\T2TService::captureHdbPressId()} stamps the note it
  *    has just written, and `hdb:backfill-press-ids` keys only notes authored by
- *    the configured T2T system user, refusing to run when that identity is
- *    unset rather than guessing one. A note a human wrote is never keyed, so a
- *    pasted link has no route to authority here.
+ *    the configured T2T system user — refusing to run when that identity is
+ *    unset rather than guessing one — and only notes that already existed the
+ *    first time it ran.
+ *
+ *    The second bound is the load-bearing one, because AUTHORSHIP IS NOT PROOF
+ *    OF CAPTURE: `t2t_system_user_id` names an ordinary staff login, and in a
+ *    single-technician deployment it is the account that technician works
+ *    under, so a link they paste carries exactly the author_id the backfill
+ *    accepts. What the code guarantees is therefore narrower than "a note a
+ *    human wrote is never keyed" — it is that the backfill's population was
+ *    frozen before any later paste existed, so a pasted link has no route to
+ *    authority through a re-run.
  *
  * 2. **`tickets.hdb_press_id` is NOT an authority and is never read here.**
  *    Slice 1a redefined it as a never-cleared CACHE of the newest press on the

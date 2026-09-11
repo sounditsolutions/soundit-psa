@@ -481,4 +481,47 @@ class HdbReportFetchAuthorizerTest extends TestCase
         );
         $this->assertNotSame($owner->client_id, $viewed->client_id);
     }
+
+    public function test_a_paste_under_the_configured_capture_identity_is_not_keyed_by_a_later_re_run(): void
+    {
+        // The same claim under the configuration that actually exists in the
+        // field. t2t_system_user_id is a plain staff login chosen from the user
+        // list, and in a single-technician MSP it IS the account the technician
+        // works under — so authorship cannot be what proves capture, and the
+        // previous test's separate "technician" account is the easy case.
+        //
+        // The backfill's window is frozen at its first run instead: a link
+        // pasted afterwards is out of scope permanently, however it is
+        // authored, and the gate still refuses however often the command runs.
+        $technician = User::factory()->create();
+        Setting::setValue('t2t_system_user_id', (string) $technician->id);
+
+        $owner = $this->ticketFor();
+        $this->keyedNote($owner, self::PRESS_A);
+
+        // The legacy population, and the window closes behind it.
+        $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
+
+        $viewed = $this->ticketFor();
+        $pasted = TicketNote::create([
+            'ticket_id' => $viewed->id,
+            'note_type' => NoteType::Note,
+            'author_id' => $technician->id,
+            'body' => 'Their report: https://beta.helpdeskbuttons.com/pressView.php?pressID='.self::PRESS_A,
+            'noted_at' => now(),
+        ]);
+
+        $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
+
+        $this->assertNull(TicketNote::whereKey($pasted->id)->value('hdb_press_id'));
+        $this->assertRefused(
+            $this->authorizer()->authorize($viewed->id, self::PRESS_A),
+            HdbReportFetchRefusal::NoKeyedNote,
+        );
+        $this->assertRefused(
+            $this->authorizer()->authorizeNote($viewed->id, $pasted->id),
+            HdbReportFetchRefusal::NoKeyedNote,
+        );
+        $this->assertNotSame($owner->client_id, $viewed->client_id);
+    }
 }

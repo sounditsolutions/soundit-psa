@@ -418,4 +418,41 @@ class HdbPressIdCaptureTest extends TestCase
         $this->assertNull($this->pressIdOfNote($note->id));
         $this->assertNull($ticket->fresh()->hdb_press_id);
     }
+
+    public function test_backfill_window_is_frozen_at_its_first_run_even_when_that_run_is_a_dry_run(): void
+    {
+        // GitHub #1359. The configured capture identity is an ordinary staff
+        // login — under the form's "Auto (first admin user)" default it is the
+        // account prod's legacy notes were written as, and in a single-tech
+        // deployment the account the technician works under — so authorship is
+        // not proof of capture. The window is: a note that did not exist when
+        // this command first ran is never keyed by it, whoever authored it.
+        //
+        // The first run here is a --dry-run, because the mark is the boundary
+        // of the population the command may see, not a result of writing.
+        $user = $this->captureIdentity();
+        $ticket = $this->buttonTicket();
+
+        $legacy = TicketNote::create([
+            'ticket_id' => $ticket->id,
+            'author_id' => $user->id,
+            'body' => $this->noteBody(self::UUID),
+            'is_private' => true,
+        ]);
+
+        $this->artisan('hdb:backfill-press-ids', ['--dry-run' => true])->assertExitCode(0);
+
+        $later = TicketNote::create([
+            'ticket_id' => $ticket->id,
+            'author_id' => $user->id,
+            'body' => $this->noteBody(self::OTHER_UUID),
+            'is_private' => true,
+        ]);
+
+        $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
+
+        $this->assertSame(self::UUID, $this->pressIdOfNote($legacy->id));
+        $this->assertNull($this->pressIdOfNote($later->id));
+        $this->assertSame(self::UUID, $ticket->fresh()->hdb_press_id);
+    }
 }

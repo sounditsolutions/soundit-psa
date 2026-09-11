@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Models\Setting;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Support\HdbPressId;
@@ -22,19 +23,30 @@ use Illuminate\Console\Command;
  *    refused 7 of 45 tickets for "conflicting" press ids; under the note model
  *    those are simply tickets holding two presses, and both are kept.
  *
- * ONLY THE PSA'S OWN NOTES ARE KEYED (GitHub #1359). The note key is the
- * authority the report-fetch gate reads — column presence is what it treats as
- * proof of capture — so this command must not mint one for a note a human
- * wrote. A technician pasting another client's report link, or an end user
- * quoting one in a portal reply, would otherwise become authority for that
- * press on their own ticket the next time this re-runnable command is run, and
- * the fetch would be scoped to their client: the exact cross-client vector
- * #1359 exists to refuse. The scan is therefore restricted to notes authored by
- * the configured T2T system user — the identity every inbound CW-compat note is
- * written as (T2TController hands it to addNoteFromCw) — and the command
- * REFUSES to run when that identity is not configured; see captureAuthorId().
+ * WHAT THIS COMMAND MAY KEY IS BOUNDED TWICE (GitHub #1359). The note key is
+ * the authority the report-fetch gate reads — column presence is what it treats
+ * as proof of capture — so a note a human pasted a report link into must never
+ * acquire one: it would become authority for that press on that human's own
+ * ticket, and the fetch would be scoped to their client, the exact cross-client
+ * vector #1359 exists to refuse.
+ *
+ *  - AUTHORSHIP. Only notes authored by the configured T2T system user are
+ *    scanned — the identity every inbound CW-compat note is written as
+ *    (T2TController hands it to addNoteFromCw) — and the command REFUSES to run
+ *    when that identity is not configured rather than guessing one; see
+ *    captureAuthorId().
+ *  - A FROZEN WINDOW. Authorship alone is not proof of capture and cannot be:
+ *    t2t_system_user_id is a select over ordinary staff logins, and in the
+ *    deployments whose legacy notes this command exists to key it names a real
+ *    person's account — in a single-technician MSP, the very account that
+ *    technician works under. So the scan is ALSO capped at the highest note id
+ *    in existence the first time this command ran; see noteCeiling(). A note
+ *    written after that point is out of scope permanently, whoever authored it,
+ *    so a link pasted today cannot be promoted to authority by a re-run
+ *    tomorrow.
+ *
  * The 105-note population measured above is the notes CARRYING a link; what
- * this keys is the PSA-authored subset of it.
+ * this keys is the subset of it inside both bounds.
  *
  * Every write is a keyed BASE-query update: no $fillable path, no model events,
  * and no updated_at churn on either table (GitHub #1317 — the objection that
@@ -48,6 +60,12 @@ use Illuminate\Console\Command;
  */
 class BackfillHdbPressIds extends Command
 {
+    /**
+     * Where this command's window was frozen: the highest ticket_notes id in
+     * existence the first time it ran. See noteCeiling().
+     */
+    private const NOTE_CEILING_SETTING = 'hdb_press_id_backfill_note_ceiling';
+
     protected $signature = 'hdb:backfill-press-ids
                             {--limit= : Cap the number of notes to process}
                             {--dry-run : Report what would be written without saving}';
@@ -66,17 +84,21 @@ class BackfillHdbPressIds extends Command
             return self::FAILURE;
         }
 
+        $noteCeiling = $this->noteCeiling();
+
         // Live notes only. A press id on a soft-deleted note is scoped to that
         // note and must not reach the ticket around it (GitHub #1313) — under
         // the note model that path dissolves rather than needs a guard, and
         // prod's base rate for it is 0 (no soft-deleted note carries a link).
         //
-        // PSA-authored notes only. What this scan will NOT key matters as much
-        // as what it will: a human's note is never keyed, whatever its body
-        // says, because the key is an authority and a paste is not a capture.
+        // What this scan will NOT key matters as much as what it will: nothing
+        // authored by anyone but the capture identity, and nothing written
+        // after the window was frozen — because the key is an authority and a
+        // paste is not a capture, whoever's login it was pasted under.
         $query = TicketNote::query()
             ->whereNull('hdb_press_id')
             ->where('author_id', $captureAuthorId)
+            ->where('id', '<=', $noteCeiling)
             ->where('body', 'like', '%pressID=%')
             ->orderBy('id');
 
@@ -170,5 +192,44 @@ class BackfillHdbPressIds extends Command
         $configured = T2TConfig::get('system_user_id');
 
         return ($configured === null || $configured === '') ? null : (int) $configured;
+    }
+
+    /**
+     * The highest note id this command may ever touch: the high-water mark of
+     * ticket_notes at the moment it first ran, recorded once and re-read after.
+     *
+     * Authorship is not proof of capture (GitHub #1359). t2t_system_user_id is
+     * chosen from the ordinary user list, the capture path's own fallback is
+     * the FIRST user, and the legacy prod notes were written under that
+     * fallback — so the one value of the setting that lets this command key
+     * them is a real person's login, under which a hand-pasted link carries
+     * exactly the author_id captureAuthorId() accepts.
+     *
+     * The window is what closes that. Every note prod already held is below the
+     * mark, so nothing this command exists to key moves; a note written after
+     * the mark is out of scope permanently, so a paste made after the command
+     * shipped can never be keyed by a later re-run. --limit batching is
+     * unaffected: every run shares the one frozen window.
+     *
+     * Recorded on a --dry-run too. The mark is not a result, it is the boundary
+     * of the population this command is allowed to see, and a dry run has
+     * already seen it — establishing it later would widen the window by exactly
+     * the notes written in between. It writes no note row and no ticket row.
+     */
+    private function noteCeiling(): int
+    {
+        $recorded = Setting::getValue(self::NOTE_CEILING_SETTING);
+
+        if ($recorded !== null && $recorded !== '') {
+            return (int) $recorded;
+        }
+
+        // withTrashed(): a soft-deleted note still holds an id, so a mark taken
+        // through the default scope could be overtaken by rows already there.
+        $ceiling = (int) (TicketNote::withTrashed()->max('id') ?? 0);
+
+        Setting::setValue(self::NOTE_CEILING_SETTING, (string) $ceiling);
+
+        return $ceiling;
     }
 }
