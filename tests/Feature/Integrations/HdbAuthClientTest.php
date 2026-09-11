@@ -448,6 +448,23 @@ class HdbAuthClientTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_a_portal_host_that_does_not_resolve_is_unreachable_not_a_refused_url(): void
+    {
+        // The destination guard runs on EVERY attempt, so a resolver outage hits
+        // a saved, unchanged, valid URL. Fail closed — nothing is sent — but the
+        // operator must be able to tell this from a URL we refused on sight.
+        $this->app->instance(HdbPortalConfig::HOST_RESOLVER, fn (string $host) => []);
+        Http::fake();
+
+        $result = (new HdbAuthClient)->authenticate();
+
+        $this->assertFalse($result->ok());
+        $this->assertSame(HdbAuthStatus::Unreachable, $result->status);
+        $this->assertSame(HdbAuthResult::REASON_PORTAL_URL_UNRESOLVED, $result->reason);
+        $this->assertSame(0, $result->requests);
+        Http::assertNothingSent();
+    }
+
     public function test_every_reason_it_can_return_has_an_operator_message(): void
     {
         // message() falls back to a generic sentence on an unknown reason, which

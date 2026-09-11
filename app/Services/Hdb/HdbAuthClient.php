@@ -144,7 +144,22 @@ final class HdbAuthClient
         // (psa #1344), so the admin-only gate on Test Connection does not decide
         // this; refusing here also covers resolveAction(), which measures a form
         // action against baseUrl() and so inherits whatever it names.
-        if (! HdbPortalConfig::hasPostableBaseUrl()) {
+        $verdict = HdbPortalConfig::baseUrlVerdict();
+
+        // A host that did not resolve is refused too — nothing is sent either
+        // way — but it is NOT evidence the stored URL is wrong, and this check
+        // runs on every attempt rather than only at save time. Reporting a
+        // resolver outage as `portal_url_refused` would send an operator to edit
+        // a Portal URL that has not changed and is not the problem.
+        if ($verdict === HdbPortalConfig::BASE_URL_UNRESOLVED) {
+            return new HdbAuthResult(
+                HdbAuthStatus::Unreachable,
+                HdbAuthResult::REASON_PORTAL_URL_UNRESOLVED,
+                $this->requests,
+            );
+        }
+
+        if ($verdict !== HdbPortalConfig::BASE_URL_POSTABLE) {
             return new HdbAuthResult(
                 HdbAuthStatus::NotConfigured,
                 HdbAuthResult::REASON_PORTAL_URL_REFUSED,

@@ -54,6 +54,15 @@ final readonly class HdbAuthResult
      */
     public const REASON_PORTAL_URL_REFUSED = 'portal_url_refused';
 
+    /**
+     * The stored Portal URL passed every string-level test and then did not
+     * resolve, so where it points could not be checked. Nothing was sent —
+     * deliberately fail-closed — but this is an infrastructure fact, not a
+     * verdict on the setting: distinct from REASON_PORTAL_URL_REFUSED so an
+     * operator can tell a resolver outage from a hostile URL.
+     */
+    public const REASON_PORTAL_URL_UNRESOLVED = 'portal_url_unresolved';
+
     public function __construct(
         public HdbAuthStatus $status,
         public string $reason,
@@ -87,6 +96,7 @@ final readonly class HdbAuthResult
             self::REASON_UNEXPECTED_RESPONSE => 'The HDB portal answered with something this integration could not classify. Nothing was retried.',
             self::REASON_REQUEST_BUDGET_EXHAUSTED => 'The HDB portal kept redirecting and the attempt was stopped at its request limit.',
             self::REASON_PORTAL_URL_REFUSED => 'The stored Portal URL is not an https:// address with a public hostname, so nothing was sent. Fix the Portal URL, or clear it to use the default portal host.',
+            self::REASON_PORTAL_URL_UNRESOLVED => 'The Portal URL hostname could not be resolved, so nothing was sent. That is usually DNS or outbound network access rather than the stored URL — retry, and check the Portal URL only if it keeps failing.',
             default => 'The HDB portal login attempt did not complete.',
         };
     }

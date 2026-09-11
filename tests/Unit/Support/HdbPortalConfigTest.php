@@ -155,6 +155,29 @@ class HdbPortalConfigTest extends TestCase
         $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://portal.example.test'));
     }
 
+    public function test_an_unresolvable_host_is_a_different_verdict_from_a_refused_one(): void
+    {
+        // Both fail closed and both leave hasPostableBaseUrl() false, but only
+        // one of them is a setting the operator should go and change — and this
+        // predicate runs on every login attempt, not just at save time.
+        Setting::setValue('hdb_base_url', 'https://portal.example.test');
+
+        $this->resolveHostsAs([]);
+        $this->assertFalse(HdbPortalConfig::hasPostableBaseUrl());
+        $this->assertSame(HdbPortalConfig::BASE_URL_UNRESOLVED, HdbPortalConfig::baseUrlVerdict());
+
+        $this->resolveHostsAs(['10.0.0.5']);
+        $this->assertFalse(HdbPortalConfig::hasPostableBaseUrl());
+        $this->assertSame(HdbPortalConfig::BASE_URL_REFUSED, HdbPortalConfig::baseUrlVerdict());
+
+        Setting::setValue('hdb_base_url', 'http://portal.example.test');
+        $this->assertSame(HdbPortalConfig::BASE_URL_REFUSED, HdbPortalConfig::baseUrlVerdict());
+
+        Setting::setValue('hdb_base_url', 'https://portal.example.test');
+        $this->resolveHostsAs(['93.184.216.34']);
+        $this->assertSame(HdbPortalConfig::BASE_URL_POSTABLE, HdbPortalConfig::baseUrlVerdict());
+    }
+
     public function test_the_password_is_returned_untrimmed(): void
     {
         // Leading/trailing whitespace inside a password is part of the password.
