@@ -131,7 +131,7 @@ class HdbReportFetchAuthorizerTest extends TestCase
         $ticket = $this->ticketFor();
         $note = $this->keyedNote($ticket, self::PRESS_A);
 
-        $byNote = $this->authorizer()->authorizeNote($note->id);
+        $byNote = $this->authorizer()->authorizeNote($ticket->id, $note->id);
         $byPress = $this->authorizer()->authorize($ticket->id, self::PRESS_A);
 
         $this->assertTrue($byNote->allowed);
@@ -211,7 +211,7 @@ class HdbReportFetchAuthorizerTest extends TestCase
             HdbReportFetchRefusal::NoKeyedNote,
         );
         $this->assertRefused(
-            $this->authorizer()->authorizeNote($note->id),
+            $this->authorizer()->authorizeNote($ticket->id, $note->id),
             HdbReportFetchRefusal::NoKeyedNote,
         );
 
@@ -333,9 +333,53 @@ class HdbReportFetchAuthorizerTest extends TestCase
             'noted_at' => now(),
         ]);
 
-        $this->assertRefused($this->authorizer()->authorizeNote($plain->id), HdbReportFetchRefusal::NoKeyedNote);
-        $this->assertRefused($this->authorizer()->authorizeNote(null), HdbReportFetchRefusal::NoKeyedNote);
-        $this->assertRefused($this->authorizer()->authorizeNote($plain->id + 10_000), HdbReportFetchRefusal::NoKeyedNote);
+        $this->assertRefused($this->authorizer()->authorizeNote($ticket->id, $plain->id), HdbReportFetchRefusal::NoKeyedNote);
+        $this->assertRefused($this->authorizer()->authorizeNote($ticket->id, null), HdbReportFetchRefusal::NoKeyedNote);
+        $this->assertRefused($this->authorizer()->authorizeNote($ticket->id, $plain->id + 10_000), HdbReportFetchRefusal::NoKeyedNote);
+
+        // No viewing context at all is the same refusal the press-id entry
+        // point makes, and it is decided before the note is read.
+        $this->assertRefused($this->authorizer()->authorizeNote(null, $plain->id), HdbReportFetchRefusal::TicketMissing);
+    }
+
+    public function test_a_keyed_note_on_another_clients_ticket_does_not_self_authorize_through_the_note_entry_point(): void
+    {
+        // #1359 reached through the note control. The note id is an opaque
+        // integer in the request, so the TICKET BEING VIEWED — never the
+        // offered note — decides which ticket, and therefore which client, is
+        // in play. Enumerating note ids must not walk another client's presses.
+        $owner = $this->ticketFor();
+        $note = $this->keyedNote($owner, self::PRESS_A);
+
+        $viewed = $this->ticketFor();
+
+        $decision = $this->authorizer()->authorizeNote($viewed->id, $note->id);
+
+        $this->assertRefused($decision, HdbReportFetchRefusal::NoKeyedNote);
+        $this->assertNotSame($owner->client_id, $viewed->client_id);
+
+        // And indistinguishable from a note id that exists nowhere: the refusal
+        // must not become an oracle for "that note exists, but not for you".
+        $this->assertEquals(
+            $this->authorizer()->authorizeNote($viewed->id, $note->id + 10_000),
+            $decision,
+        );
+    }
+
+    public function test_a_keyed_note_on_another_ticket_of_the_same_client_is_also_refused(): void
+    {
+        // The binding is to the ticket, not merely to the client: a note on a
+        // sibling ticket is not on the ticket being viewed.
+        $client = Client::factory()->create();
+        $owner = $this->ticketFor($client);
+        $note = $this->keyedNote($owner, self::PRESS_A);
+
+        $viewed = $this->ticketFor($client);
+
+        $this->assertRefused(
+            $this->authorizer()->authorizeNote($viewed->id, $note->id),
+            HdbReportFetchRefusal::NoKeyedNote,
+        );
     }
 
     // ── The seam this class must not be mistaken for ──

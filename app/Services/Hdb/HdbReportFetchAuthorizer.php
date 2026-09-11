@@ -117,25 +117,45 @@ class HdbReportFetchAuthorizer
 
     /**
      * Authorize the fetch offered against one note — the "report" control the
-     * ticket view renders on a keyed note.
+     * ticket view renders on a keyed note — in the context of the ticket being
+     * viewed.
      *
-     * Routed through authorize() rather than short-circuiting: the note's own
-     * ticket is still resolved and still has to carry a client, so there is one
-     * decision point and one set of refusals rather than two that can drift.
+     * The viewed ticket is a PARAMETER and is never derived from the offered
+     * note. A note id is an opaque integer in the request, so resolving the
+     * ticket from the note would make the ticket/press binding tautological:
+     * any live keyed note id would self-authorize and hand back its OWN
+     * client's scope, which is exactly the cross-client fetch #1359 exists to
+     * refuse. The note is therefore looked up scoped to the viewed ticket, and
+     * a note that is not on it refuses NoKeyedNote — the same case, with the
+     * same label, as a note id that exists nowhere.
+     *
+     * Routed through authorize() once past that check: the ticket still has to
+     * carry a client and the press id is still resolved to the ticket's first
+     * capture, so there is one decision point and one set of refusals rather
+     * than two that can drift.
      */
-    public function authorizeNote(?int $noteId): HdbReportFetchAuthorization
+    public function authorizeNote(?int $ticketId, ?int $noteId): HdbReportFetchAuthorization
     {
+        // Answered before the note is touched, so a missing viewing context
+        // cannot become an existence oracle for note ids.
+        if ($ticketId === null) {
+            return HdbReportFetchAuthorization::refuse(HdbReportFetchRefusal::TicketMissing);
+        }
+
         if ($noteId === null) {
             return HdbReportFetchAuthorization::refuse(HdbReportFetchRefusal::NoKeyedNote);
         }
 
-        $note = TicketNote::query()->whereKey($noteId)->first();
+        $note = TicketNote::query()
+            ->whereKey($noteId)
+            ->where('ticket_id', $ticketId)
+            ->first();
 
         if ($note === null || $note->hdb_press_id === null) {
             return HdbReportFetchAuthorization::refuse(HdbReportFetchRefusal::NoKeyedNote);
         }
 
-        return $this->authorize($note->ticket_id, $note->hdb_press_id);
+        return $this->authorize($ticketId, $note->hdb_press_id);
     }
 
     /** Trimmed and lowercased, or null when the value is not a press id. */
