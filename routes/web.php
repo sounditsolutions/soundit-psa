@@ -494,6 +494,7 @@ Route::middleware('auth')->group(function () {
     // Settings — Stripe
     Route::post('/settings/integrations/stripe', [IntegrationsController::class, 'updateStripe'])->name('settings.integrations.stripe.update');
     Route::post('/settings/integrations/stripe/test', [IntegrationsController::class, 'testStripe'])->name('settings.integrations.stripe.test');
+    Route::post('/settings/integrations/benjipays', [IntegrationsController::class, 'updateBenjiPays'])->name('settings.integrations.benjipays.update');
     Route::get('/settings/integrations/stripe/customers', [\App\Http\Controllers\Web\StripeCustomerController::class, 'index'])->name('settings.stripe-customers.index');
     Route::post('/settings/integrations/stripe/customers', [\App\Http\Controllers\Web\StripeCustomerController::class, 'update'])->name('settings.stripe-customers.update');
     Route::get('/settings/integrations/stripe/customers/auto-match', [\App\Http\Controllers\Web\StripeCustomerController::class, 'autoMatch'])->name('settings.stripe-customers.auto-match');
