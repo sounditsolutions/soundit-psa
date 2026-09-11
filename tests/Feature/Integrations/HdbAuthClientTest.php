@@ -269,6 +269,51 @@ class HdbAuthClientTest extends TestCase
         $this->assertNothingLeaked($result);
     }
 
+    public function test_a_query_only_challenge_action_keeps_the_page_path(): void
+    {
+        // `?submit=1` is a query-only reference: per RFC 3986 it keeps the
+        // page's own path and replaces only the query. Resolving it against the
+        // page's DIRECTORY would post the live code to /?submit=1, whose answer
+        // then misreports as a refused seed on a portal that is working.
+        Setting::setEncrypted('hdb_totp_secret', self::SEED);
+
+        Http::fake([
+            'portal.example.test/*' => Http::sequence()
+                ->push($this->loginPage())
+                ->push($this->challengePage('otp', '?submit=1'))
+                ->push($this->signedInPage()),
+        ]);
+
+        $result = (new HdbAuthClient)->authenticate();
+
+        $this->assertTrue($result->ok());
+        Http::assertSent(fn (Request $request) => $request->method() === 'POST'
+            && $request->url() === self::BASE.'/login?submit=1');
+    }
+
+    public function test_a_portal_url_with_an_explicit_default_port_still_matches_its_own_origin(): void
+    {
+        // Guzzle's PSR-7 Uri drops the scheme's default port from every redirect
+        // hop and from effectiveUri(), so a stored `:443` compared verbatim would
+        // refuse every same-origin hop and absolute same-origin action — on a
+        // Portal URL the config guard accepts.
+        Setting::setValue('hdb_base_url', self::BASE.':443');
+        Setting::setEncrypted('hdb_totp_secret', self::SEED);
+
+        Http::fake([
+            'portal.example.test*' => Http::sequence()
+                ->push($this->loginPage())
+                ->push($this->challengePage('otp', self::BASE.'/2fa'))
+                ->push($this->signedInPage()),
+        ]);
+
+        $result = (new HdbAuthClient)->authenticate();
+
+        $this->assertTrue($result->ok());
+        Http::assertSent(fn (Request $request) => $request->method() === 'POST'
+            && str_starts_with($request->url(), self::BASE.'/2fa'));
+    }
+
     public function test_it_refuses_to_post_a_code_to_a_challenge_form_on_another_host(): void
     {
         Setting::setEncrypted('hdb_totp_secret', self::SEED);

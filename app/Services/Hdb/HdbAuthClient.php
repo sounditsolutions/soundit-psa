@@ -447,6 +447,17 @@ final class HdbAuthClient
 
         if (str_starts_with($action, '/')) {
             $resolved = HdbPortalConfig::baseUrl().'/'.ltrim($action, '/');
+        } elseif (str_starts_with($action, '#')) {
+            // Fragment-only reference, per RFC 3986: the SAME page, path and
+            // query intact. The fragment is never sent, so it is dropped rather
+            // than resolved.
+            $resolved = (string) preg_replace('~#.*$~', '', $pageUrl);
+        } elseif (str_starts_with($action, '?')) {
+            // Query-only reference, per RFC 3986: the page's own path is KEPT
+            // and only the query is replaced. Falling into the path-relative
+            // branch below would drop the last segment and post the live code to
+            // the directory index — a working portal reported as a stale seed.
+            $resolved = (string) preg_replace('~[?#].*$~', '', $pageUrl).$action;
         } else {
             // Page-relative, per HTML: against the DIRECTORY of the page the
             // form was served on, not against the origin — a challenge served
@@ -526,8 +537,17 @@ final class HdbAuthClient
             return null;
         }
 
+        // The scheme's DEFAULT port is normalised away rather than carried
+        // through. The other side of every comparison is a PSR-7 `Uri` — the one
+        // Guzzle hands `on_redirect`, or `effectiveUri()` — whose filterPort()
+        // drops `:443` for https, while a stored Portal URL of
+        // `https://host:443` passes the config guard untouched. Keeping the port
+        // here would refuse every same-origin hop and absolute same-origin form
+        // action on a setting this module itself calls postable.
+        $port = isset($parts['port']) && (int) $parts['port'] !== 443 ? ':'.$parts['port'] : '';
+
         return 'https://'.$host
-            .(isset($parts['port']) ? ':'.$parts['port'] : '')
+            .$port
             .rtrim((string) ($parts['path'] ?? ''), '/')
             .(isset($parts['query']) ? '?'.$parts['query'] : '');
     }
