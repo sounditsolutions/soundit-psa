@@ -197,7 +197,10 @@ class TacticalWebhookTest extends TestCase
         // The backstop poll sees Tactical reporting this alert resolved.
         $mock = $this->mock(TacticalClient::class);
         $mock->shouldReceive('patch')
-            ->with('alerts/', ['timeFilter' => 30])
+            // Third argument is the psa-1355 fetch timeout: this query is
+            // analytical, and was measured answering in 41-85s against the
+            // client's 30s default.
+            ->with('alerts/', ['timeFilter' => 30], 150.0)
             ->andReturn([
                 ['id' => 84213, 'resolved' => true],
             ]);
