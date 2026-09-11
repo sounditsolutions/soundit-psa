@@ -4,6 +4,7 @@ namespace Tests\Feature\Settings;
 
 use App\Models\Setting;
 use App\Models\User;
+use App\Support\HdbPortalConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -31,6 +32,11 @@ class HdbReportPortalCredentialSettingsTest extends TestCase
         parent::setUp();
 
         $this->user = User::factory()->create();
+
+        // The destination guard resolves the host and fails closed on NXDOMAIN.
+        // The portal names used below resolve nowhere, so the resolution step
+        // gets a public answer by default; the hostile cases name their own.
+        $this->app->instance(HdbPortalConfig::HOST_RESOLVER, fn (string $host) => ['93.184.216.34']);
     }
 
     /** The placeholder the form shows for an already-stored secret. */
@@ -192,6 +198,17 @@ class HdbReportPortalCredentialSettingsTest extends TestCase
                 ]))
                 ->assertSessionHasErrors(['hdb_base_url']);
         }
+
+        // And the same destination named as a host that RESOLVES inside: the
+        // string is unremarkable, only the answer is hostile, so refusing it is
+        // something no amount of parsing can do.
+        $this->app->instance(HdbPortalConfig::HOST_RESOLVER, fn (string $host) => ['10.0.0.5']);
+
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.t2t.update'), $this->payload([
+                'hdb_base_url' => 'https://portal.example.test',
+            ]))
+            ->assertSessionHasErrors(['hdb_base_url']);
 
         $this->assertNull(Setting::getValue('hdb_base_url'));
     }

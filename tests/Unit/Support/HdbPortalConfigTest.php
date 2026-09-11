@@ -21,6 +21,26 @@ class HdbPortalConfigTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // The destination guard resolves the host and fails closed on NXDOMAIN.
+        // The example names below resolve nowhere, so the resolution step gets a
+        // public answer by default; the cases that care name their own.
+        $this->resolveHostsAs(['93.184.216.34']);
+    }
+
+    /**
+     * Answer every host lookup with $ips for the rest of this test.
+     *
+     * @param  string[]  $ips
+     */
+    private function resolveHostsAs(array $ips): void
+    {
+        $this->app->instance(HdbPortalConfig::HOST_RESOLVER, fn (string $host) => $ips);
+    }
+
     public function test_an_unset_portal_url_reads_as_the_default_host(): void
     {
         $this->assertSame(HdbPortalConfig::DEFAULT_BASE_URL, HdbPortalConfig::baseUrl());
@@ -92,6 +112,47 @@ class HdbPortalConfigTest extends TestCase
         $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://portal.internal'));
         $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://someone:something@portal.example.test'));
         $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('not a url'));
+    }
+
+    public function test_a_trailing_root_dot_does_not_smuggle_a_reserved_suffix_past_the_list(): void
+    {
+        // `vault.internal.` is the same name to a resolver as `vault.internal`,
+        // but str_ends_with('.internal') is false for it — and the same hole is
+        // open on .local, .localhost and .home.arpa.
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://vault.internal.'));
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://printer.local.'));
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://box.home.arpa.'));
+    }
+
+    public function test_a_legacy_ipv4_spelling_is_still_an_ip_literal(): void
+    {
+        // FILTER_VALIDATE_IP calls none of these an address and each carries a
+        // dot, so a plain string test lets them through — while every resolver
+        // still reaches 127.0.0.1 through them.
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://0177.0.0.1'));
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://0x7f.0.0.1'));
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://127.1'));
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://2130706433'));
+    }
+
+    public function test_a_public_looking_name_that_resolves_inside_is_not_a_postable_destination(): void
+    {
+        // The name is registrable and its suffix is ordinary; only resolving it
+        // shows where the stored password would actually be posted.
+        $this->resolveHostsAs(['10.0.0.5']);
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://portal.example.test'));
+
+        // One public A-record does not launder a private one.
+        $this->resolveHostsAs(['93.184.216.34', '169.254.169.254']);
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://portal.example.test'));
+    }
+
+    public function test_a_host_that_resolves_to_nothing_is_refused(): void
+    {
+        // Fail closed: an unresolvable name is not evidence of a safe one.
+        $this->resolveHostsAs([]);
+
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://portal.example.test'));
     }
 
     public function test_the_password_is_returned_untrimmed(): void

@@ -6,6 +6,7 @@ use App\Models\McpAuditLog;
 use App\Models\Setting;
 use App\Models\User;
 use App\Services\Hdb\HdbAuthResult;
+use App\Support\HdbPortalConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -38,6 +39,11 @@ class HdbConnectionTestActionTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // The destination guard resolves the host and fails closed on NXDOMAIN;
+        // this example portal name resolves nowhere, so the resolution step gets
+        // an injected public answer.
+        $this->app->instance(HdbPortalConfig::HOST_RESOLVER, fn (string $host) => ['93.184.216.34']);
 
         Setting::setValue('hdb_base_url', self::BASE);
         Setting::setValue('hdb_email', 'reports@example.test');

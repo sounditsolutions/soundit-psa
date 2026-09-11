@@ -6,6 +6,7 @@ use App\Models\Setting;
 use App\Services\Hdb\HdbAuthClient;
 use App\Services\Hdb\HdbAuthResult;
 use App\Services\Hdb\HdbAuthStatus;
+use App\Support\HdbPortalConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
@@ -50,6 +51,12 @@ class HdbAuthClientTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // The destination guard resolves the host and fails closed on NXDOMAIN.
+        // This portal name is an RFC 6761 example that resolves nowhere, so the
+        // resolution step gets an injected public answer; every other part of
+        // the guard still applies to it.
+        $this->app->instance(HdbPortalConfig::HOST_RESOLVER, fn (string $host) => ['93.184.216.34']);
 
         Setting::setValue('hdb_base_url', self::BASE);
         Setting::setValue('hdb_email', 'reports@example.test');
