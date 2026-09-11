@@ -65,6 +65,35 @@ class HdbPortalConfigTest extends TestCase
         $this->assertSame('https://beta.helpdeskbuttons.com', HdbPortalConfig::DEFAULT_BASE_URL);
     }
 
+    public function test_the_default_and_a_stored_https_host_are_postable_destinations(): void
+    {
+        $this->assertTrue(HdbPortalConfig::hasPostableBaseUrl());
+
+        Setting::setValue('hdb_base_url', 'https://portal.example.test/');
+
+        $this->assertTrue(HdbPortalConfig::hasPostableBaseUrl());
+    }
+
+    public function test_a_plain_http_portal_url_is_not_a_postable_destination(): void
+    {
+        // The stored password is POSTed to this host, and the setting is writable
+        // by any authenticated user (psa #1344) — http would put it on the wire
+        // in cleartext for whoever chose the host.
+        Setting::setValue('hdb_base_url', 'http://portal.example.test');
+
+        $this->assertFalse(HdbPortalConfig::hasPostableBaseUrl());
+    }
+
+    public function test_an_internal_or_credentialled_portal_url_is_not_a_postable_destination(): void
+    {
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://169.254.169.254/latest/meta-data'));
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://[::1]'));
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://localhost'));
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://portal.internal'));
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('https://someone:something@portal.example.test'));
+        $this->assertFalse(HdbPortalConfig::isPostableBaseUrl('not a url'));
+    }
+
     public function test_the_password_is_returned_untrimmed(): void
     {
         // Leading/trailing whitespace inside a password is part of the password.

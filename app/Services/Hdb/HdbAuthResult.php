@@ -47,6 +47,13 @@ final readonly class HdbAuthResult
     /** The attempt hit its own request ceiling, most likely a redirect loop. */
     public const REASON_REQUEST_BUDGET_EXHAUSTED = 'request_budget_exhausted';
 
+    /**
+     * The stored Portal URL is not a destination this integration will post a
+     * credential to — not https, or a host that is an IP literal, a bare name or
+     * a reserved internal suffix. Nothing was sent anywhere.
+     */
+    public const REASON_PORTAL_URL_REFUSED = 'portal_url_refused';
+
     public function __construct(
         public HdbAuthStatus $status,
         public string $reason,
@@ -79,6 +86,7 @@ final readonly class HdbAuthResult
             self::REASON_TRANSPORT_ERROR => 'Could not reach the HDB portal. Check the Portal URL and outbound network access.',
             self::REASON_UNEXPECTED_RESPONSE => 'The HDB portal answered with something this integration could not classify. Nothing was retried.',
             self::REASON_REQUEST_BUDGET_EXHAUSTED => 'The HDB portal kept redirecting and the attempt was stopped at its request limit.',
+            self::REASON_PORTAL_URL_REFUSED => 'The stored Portal URL is not an https:// address with a public hostname, so nothing was sent. Fix the Portal URL, or clear it to use the default portal host.',
             default => 'The HDB portal login attempt did not complete.',
         };
     }

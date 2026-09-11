@@ -410,6 +410,37 @@ class HdbAuthClientTest extends TestCase
         Http::assertSent(fn (Request $request) => str_starts_with($request->url(), 'https://beta.helpdeskbuttons.com/login'));
     }
 
+    public function test_it_refuses_to_spend_the_credential_on_a_plain_http_portal_url(): void
+    {
+        // The destination is checked before the credential is loaded: the Portal
+        // URL is writable by any authenticated user (psa #1344), so the admin-only
+        // gate on Test Connection cannot be what decides where the password goes.
+        Setting::setValue('hdb_base_url', 'http://attacker.example');
+        Http::fake();
+
+        $result = (new HdbAuthClient)->authenticate();
+
+        $this->assertFalse($result->ok());
+        $this->assertSame(HdbAuthResult::REASON_PORTAL_URL_REFUSED, $result->reason);
+        $this->assertSame(0, $result->requests);
+        Http::assertNothingSent();
+    }
+
+    public function test_it_refuses_to_spend_the_credential_on_an_internal_address(): void
+    {
+        // The same primitive reaches link-local metadata services, so an IP
+        // literal is refused whatever its scheme.
+        Setting::setValue('hdb_base_url', 'https://169.254.169.254');
+        Http::fake();
+
+        $result = (new HdbAuthClient)->authenticate();
+
+        $this->assertFalse($result->ok());
+        $this->assertSame(HdbAuthResult::REASON_PORTAL_URL_REFUSED, $result->reason);
+        $this->assertNothingLeaked($result);
+        Http::assertNothingSent();
+    }
+
     public function test_every_reason_it_can_return_has_an_operator_message(): void
     {
         // message() falls back to a generic sentence on an unknown reason, which

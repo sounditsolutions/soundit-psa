@@ -1876,7 +1876,15 @@ class IntegrationsController extends Controller
             'company_id' => 'nullable|string|max:100',
             'callback_url' => 'nullable|url|max:500',
             'system_user_id' => 'nullable|integer|exists:users,id',
-            'hdb_base_url' => 'nullable|url|max:255',
+            // The stored password is POSTed to whatever this names, and every
+            // action on this page is still reachable by any authenticated user
+            // (psa #1344), so the destination is validated where it is WRITTEN as
+            // well as where it is read — one predicate, both paths.
+            'hdb_base_url' => ['nullable', 'url', 'max:255', function (string $attribute, mixed $value, \Closure $fail) {
+                if (trim((string) $value) !== '' && ! HdbPortalConfig::isPostableBaseUrl((string) $value)) {
+                    $fail('The portal URL must be an https:// address with a public hostname.');
+                }
+            }],
             'hdb_email' => 'nullable|email|max:255',
             'hdb_password' => 'nullable|string|max:1024',
             'hdb_totp_secret' => 'nullable|string|max:255',
@@ -1904,7 +1912,10 @@ class IntegrationsController extends Controller
         // destination the moment it was minted. The report fetch itself is still
         // separate work; this form still writes, it does not fetch.
 
-        // Non-secret. Written even when blank: an empty setting means "use the default
+        // Non-secret, but NOT unchecked: it names the host the stored password is
+        // posted to, so the rule above refuses anything
+        // {@see HdbPortalConfig::isPostableBaseUrl()} would not spend a credential
+        // on. Written even when blank: an empty setting means "use the default
         // host", which the read path applies, so clearing the field is a real action.
         Setting::setValue('hdb_base_url', trim((string) ($validated['hdb_base_url'] ?? '')));
         Setting::setValue('hdb_email', trim((string) ($validated['hdb_email'] ?? '')));

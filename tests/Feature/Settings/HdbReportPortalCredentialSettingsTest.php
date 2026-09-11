@@ -179,6 +179,23 @@ class HdbReportPortalCredentialSettingsTest extends TestCase
         $this->assertNull(Setting::getValue('hdb_email'));
     }
 
+    public function test_it_rejects_a_portal_url_it_would_not_post_the_password_to(): void
+    {
+        // The write path is the other half of the destination guard: this action
+        // is reachable by any authenticated user (psa #1344), so a non-admin must
+        // not be able to name where an admin's Test Connection sends the stored
+        // password — in cleartext, or at an internal address.
+        foreach (['http://attacker.example', 'https://169.254.169.254', 'https://localhost'] as $hostile) {
+            $this->actingAs($this->user)
+                ->post(route('settings.integrations.t2t.update'), $this->payload([
+                    'hdb_base_url' => $hostile,
+                ]))
+                ->assertSessionHasErrors(['hdb_base_url']);
+        }
+
+        $this->assertNull(Setting::getValue('hdb_base_url'));
+    }
+
     public function test_stored_secrets_are_never_rendered_back_into_the_form(): void
     {
         Setting::setEncrypted('hdb_password', 'stored-password');

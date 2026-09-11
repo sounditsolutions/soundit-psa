@@ -40,6 +40,58 @@ final class HdbPortalConfig
         return rtrim($stored !== '' ? $stored : self::DEFAULT_BASE_URL, '/');
     }
 
+    /**
+     * Whether {@see baseUrl()} is somewhere this integration will POST the
+     * decrypted service-subaccount password and a live one-time code.
+     *
+     * The Portal URL setting is written from a form any authenticated user can
+     * reach (psa #1344 is still open), so the admin-only gate on Test Connection
+     * decides only WHO spends the credential — this decides WHERE it may go.
+     * {@see \App\Services\Hdb\HdbAuthClient} measures a returned form action
+     * AGAINST this origin, so it inherits whatever the setting names and cannot
+     * be the check.
+     */
+    public static function hasPostableBaseUrl(): bool
+    {
+        return self::isPostableBaseUrl(self::baseUrl());
+    }
+
+    /**
+     * The origin test, applied on read here and on write by
+     * {@see \App\Http\Controllers\Web\IntegrationsController::updateT2t()}.
+     *
+     * Refuses, in order: anything that is not https (plain http puts the stored
+     * password on the wire in cleartext), a URL carrying its own credentials, an
+     * IP literal or a dotless name (169.254.169.254 and short internal names are
+     * the targets this exists for), and the reserved internal suffixes.
+     */
+    public static function isPostableBaseUrl(string $url): bool
+    {
+        $parts = parse_url(rtrim(trim($url), '/'));
+
+        if (! is_array($parts) || ($parts['scheme'] ?? '') !== 'https') {
+            return false;
+        }
+
+        if (isset($parts['user']) || isset($parts['pass'])) {
+            return false;
+        }
+
+        $host = strtolower(trim((string) ($parts['host'] ?? ''), '[]'));
+
+        if ($host === '' || filter_var($host, FILTER_VALIDATE_IP) !== false || ! str_contains($host, '.')) {
+            return false;
+        }
+
+        foreach (['.local', '.localhost', '.internal', '.home.arpa'] as $reserved) {
+            if (str_ends_with($host, $reserved)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     public static function email(): string
     {
         return trim((string) Setting::getValue('hdb_email', ''));

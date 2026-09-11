@@ -139,6 +139,19 @@ final class HdbAuthClient
             );
         }
 
+        // WHERE the credential may go, checked before it is loaded. The Portal
+        // URL setting is written from a form any authenticated user can reach
+        // (psa #1344), so the admin-only gate on Test Connection does not decide
+        // this; refusing here also covers resolveAction(), which measures a form
+        // action against baseUrl() and so inherits whatever it names.
+        if (! HdbPortalConfig::hasPostableBaseUrl()) {
+            return new HdbAuthResult(
+                HdbAuthStatus::NotConfigured,
+                HdbAuthResult::REASON_PORTAL_URL_REFUSED,
+                $this->requests,
+            );
+        }
+
         $loginUrl = HdbPortalConfig::baseUrl().'/login';
 
         try {

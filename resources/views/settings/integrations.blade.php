@@ -2813,7 +2813,11 @@
                             @error('hdb_base_url')
                                 <div class="invalid-feedback">{{ $message }}</div>
                             @enderror
-                            <div class="form-text">Leave blank to use the default portal host.</div>
+                            <div class="form-text">
+                                Leave blank to use the default portal host. Must be an
+                                <code>https://</code> address with a public hostname &mdash; the stored
+                                password is posted to it.
+                            </div>
                         </div>
 
                         <div class="mb-3">
