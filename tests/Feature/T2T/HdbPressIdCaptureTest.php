@@ -56,6 +56,24 @@ class HdbPressIdCaptureTest extends TestCase
         return $user;
     }
 
+    /**
+     * Freeze the backfill window where the release migration freezes it on a
+     * deployment that already holds the legacy notes: at the current high-water
+     * mark of ticket_notes (GitHub #1359).
+ *
+     * Prod records this at MIGRATE time, so every note the release found is
+     * inside the window and every note written afterwards is outside it. A test
+     * database is empty when migrations run, so the fixtures below say where
+     * the release lands in each story rather than inheriting a mark of 0.
+     */
+    private function freezeBackfillWindow(): void
+    {
+        Setting::setValue(
+            'hdb_press_id_backfill_note_ceiling',
+            (string) (TicketNote::withTrashed()->max('id') ?? 0),
+        );
+    }
+
     public function test_inbound_note_persists_the_press_id_on_the_note_and_caches_it_on_the_ticket(): void
     {
         $user = User::factory()->create();
@@ -211,6 +229,8 @@ class HdbPressIdCaptureTest extends TestCase
             'is_private' => true,
         ]);
 
+        $this->freezeBackfillWindow();
+
         $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
 
         $this->assertSame(self::UUID, $this->pressIdOfNote($onButton->id));
@@ -240,6 +260,8 @@ class HdbPressIdCaptureTest extends TestCase
             'is_private' => true,
         ]);
 
+        $this->freezeBackfillWindow();
+
         $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
 
         // The ticket-scoped pass REFUSED this shape — 7 of 45 tickets on prod,
@@ -267,6 +289,8 @@ class HdbPressIdCaptureTest extends TestCase
         // is already keyed, so the backfill's whereNull scan cannot see it.
         $newer = app(T2TService::class)->addNoteFromCw($ticket->fresh(), $this->noteBody(self::OTHER_UUID), true, $user->id);
 
+        $this->freezeBackfillWindow();
+
         $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
 
         $this->assertSame(self::UUID, $this->pressIdOfNote($legacy->id));
@@ -288,6 +312,8 @@ class HdbPressIdCaptureTest extends TestCase
             'is_private' => true,
         ]);
         $deleted->delete();
+
+        $this->freezeBackfillWindow();
 
         $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
 
@@ -315,6 +341,8 @@ class HdbPressIdCaptureTest extends TestCase
         $ticketBefore = $ticket->fresh()->updated_at;
         $noteBefore = TicketNote::whereKey($note->id)->value('updated_at');
 
+        $this->freezeBackfillWindow();
+
         $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
 
         // #1317's shape, by construction: keyed query-builder updates on both
@@ -336,6 +364,8 @@ class HdbPressIdCaptureTest extends TestCase
             'is_private' => true,
         ]);
 
+        $this->freezeBackfillWindow();
+
         $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
 
         // The LIKE '%pressID=%' is a prefilter for the index, never the contract.
@@ -354,6 +384,8 @@ class HdbPressIdCaptureTest extends TestCase
             'body' => $this->noteBody(self::UUID),
             'is_private' => true,
         ]);
+
+        $this->freezeBackfillWindow();
 
         $this->artisan('hdb:backfill-press-ids', ['--dry-run' => true])->assertExitCode(0);
 
@@ -385,6 +417,10 @@ class HdbPressIdCaptureTest extends TestCase
             'is_private' => false,
         ]);
 
+        // Inside the window, so the refusal below is about authorship and not
+        // about the notes happening to fall outside it.
+        $this->freezeBackfillWindow();
+
         $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
 
         $this->assertNull($this->pressIdOfNote($pasted->id));
@@ -408,6 +444,10 @@ class HdbPressIdCaptureTest extends TestCase
             'is_private' => true,
         ]);
 
+        // A recorded window, so the refusal is caused by the missing identity
+        // and by nothing else.
+        $this->freezeBackfillWindow();
+
         $this->artisan('hdb:backfill-press-ids')->assertExitCode(1);
 
         // The integrations form stores an empty string when the select is
@@ -419,17 +459,20 @@ class HdbPressIdCaptureTest extends TestCase
         $this->assertNull($ticket->fresh()->hdb_press_id);
     }
 
-    public function test_backfill_window_is_frozen_at_its_first_run_even_when_that_run_is_a_dry_run(): void
+    public function test_backfill_window_is_frozen_at_cutover_not_at_the_first_run(): void
     {
         // GitHub #1359. The configured capture identity is an ordinary staff
         // login — under the form's "Auto (first admin user)" default it is the
         // account prod's legacy notes were written as, and in a single-tech
         // deployment the account the technician works under — so authorship is
-        // not proof of capture. The window is: a note that did not exist when
-        // this command first ran is never keyed by it, whoever authored it.
+        // not proof of capture. The window is what bounds the population.
         //
-        // The first run here is a --dry-run, because the mark is the boundary
-        // of the population the command may see, not a result of writing.
+        // WHERE it is taken is the whole point. A mark taken at the command's
+        // first invocation is whatever the operator's scheduling chose: this is
+        // a manual artisan command with no deploy hook, so a link pasted in the
+        // gap between deploy and that first run would be inside the window and
+        // keyed. The mark belongs to the RELEASE, so here the deploy lands
+        // first, the paste happens after it, and no run may key it.
         $user = $this->captureIdentity();
         $ticket = $this->buttonTicket();
 
@@ -440,7 +483,22 @@ class HdbPressIdCaptureTest extends TestCase
             'is_private' => true,
         ]);
 
+        // Cutover: the release migration records the mark.
+        $this->freezeBackfillWindow();
+
+        // Pasted under the capture identity AFTER the release and BEFORE the
+        // command has ever run — the note a first-run mark would swallow.
+        $pastedBeforeFirstRun = TicketNote::create([
+            'ticket_id' => $ticket->id,
+            'author_id' => $user->id,
+            'body' => $this->noteBody(self::OTHER_UUID),
+            'is_private' => true,
+        ]);
+
+        // A --dry-run establishes nothing now, so it cannot widen the window by
+        // the notes written before it either.
         $this->artisan('hdb:backfill-press-ids', ['--dry-run' => true])->assertExitCode(0);
+        $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
 
         $later = TicketNote::create([
             'ticket_id' => $ticket->id,
@@ -452,7 +510,36 @@ class HdbPressIdCaptureTest extends TestCase
         $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
 
         $this->assertSame(self::UUID, $this->pressIdOfNote($legacy->id));
+        $this->assertNull($this->pressIdOfNote($pastedBeforeFirstRun->id));
         $this->assertNull($this->pressIdOfNote($later->id));
         $this->assertSame(self::UUID, $ticket->fresh()->hdb_press_id);
+    }
+
+    public function test_backfill_refuses_to_run_when_no_window_was_recorded(): void
+    {
+        // The mark is the boundary of the population this command may see, and
+        // it belongs to the release migration. Minting one here on first
+        // invocation is the defect the test above exists for, so an unrecorded
+        // window refuses the run rather than freezing a later boundary.
+        $user = $this->captureIdentity();
+        $ticket = $this->buttonTicket();
+
+        $note = TicketNote::create([
+            'ticket_id' => $ticket->id,
+            'author_id' => $user->id,
+            'body' => $this->noteBody(self::UUID),
+            'is_private' => true,
+        ]);
+
+        Setting::where('key', 'hdb_press_id_backfill_note_ceiling')->delete();
+
+        $this->artisan('hdb:backfill-press-ids')->assertExitCode(1);
+
+        // And it records nothing on the way out: the next run is refused too,
+        // rather than keying against a mark the refused run minted.
+        $this->artisan('hdb:backfill-press-ids')->assertExitCode(1);
+
+        $this->assertNull($this->pressIdOfNote($note->id));
+        $this->assertNull($ticket->fresh()->hdb_press_id);
     }
 }

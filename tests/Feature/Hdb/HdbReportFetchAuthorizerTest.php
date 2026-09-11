@@ -82,6 +82,23 @@ class HdbReportFetchAuthorizerTest extends TestCase
         Ticket::whereKey($ticket->id)->toBase()->update(['hdb_press_id' => $pressId]);
     }
 
+    /**
+     * Freeze the backfill window where the release migration freezes it: at the
+     * current high-water mark of ticket_notes.
+     *
+     * Prod records this at MIGRATE time, when the legacy notes are already in
+     * place. A test database is empty then, so the fixtures below say where the
+     * release lands rather than inheriting a mark of 0 that would make every
+     * backfill assertion vacuous.
+     */
+    private function freezeBackfillWindow(): void
+    {
+        Setting::setValue(
+            'hdb_press_id_backfill_note_ceiling',
+            (string) (TicketNote::withTrashed()->max('id') ?? 0),
+        );
+    }
+
     private function assertRefused(
         HdbReportFetchAuthorization $decision,
         HdbReportFetchRefusal $expected,
@@ -468,6 +485,10 @@ class HdbReportFetchAuthorizerTest extends TestCase
             'noted_at' => now(),
         ]);
 
+        // Inside the window, so the refusal below is about authorship — not
+        // about the paste happening to fall outside it.
+        $this->freezeBackfillWindow();
+
         $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
 
         $this->assertNull(TicketNote::whereKey($pasted->id)->value('hdb_press_id'));
@@ -482,7 +503,7 @@ class HdbReportFetchAuthorizerTest extends TestCase
         $this->assertNotSame($owner->client_id, $viewed->client_id);
     }
 
-    public function test_a_paste_under_the_configured_capture_identity_is_not_keyed_by_a_later_re_run(): void
+    public function test_a_paste_under_the_configured_capture_identity_is_not_keyed_after_cutover(): void
     {
         // The same claim under the configuration that actually exists in the
         // field. t2t_system_user_id is a plain staff login chosen from the user
@@ -490,17 +511,20 @@ class HdbReportFetchAuthorizerTest extends TestCase
         // works under — so authorship cannot be what proves capture, and the
         // previous test's separate "technician" account is the easy case.
         //
-        // The backfill's window is frozen at its first run instead: a link
-        // pasted afterwards is out of scope permanently, however it is
-        // authored, and the gate still refuses however often the command runs.
+        // The backfill's window is frozen by the RELEASE MIGRATION instead, at
+        // cutover — not at the operator's first run, which is a manual artisan
+        // command and may be days later. A link pasted from the release onwards
+        // is out of scope permanently, however it is authored, and the gate
+        // still refuses however often the command runs.
         $technician = User::factory()->create();
         Setting::setValue('t2t_system_user_id', (string) $technician->id);
 
         $owner = $this->ticketFor();
         $this->keyedNote($owner, self::PRESS_A);
 
-        // The legacy population, and the window closes behind it.
-        $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
+        // The legacy population, and the release closes the window behind it —
+        // before the command has ever run.
+        $this->freezeBackfillWindow();
 
         $viewed = $this->ticketFor();
         $pasted = TicketNote::create([
@@ -511,6 +535,9 @@ class HdbReportFetchAuthorizerTest extends TestCase
             'noted_at' => now(),
         ]);
 
+        // Both runs come AFTER the paste — the deploy-to-first-run gap that a
+        // mark taken at first invocation would have swallowed whole.
+        $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
         $this->artisan('hdb:backfill-press-ids')->assertExitCode(0);
 
         $this->assertNull(TicketNote::whereKey($pasted->id)->value('hdb_press_id'));

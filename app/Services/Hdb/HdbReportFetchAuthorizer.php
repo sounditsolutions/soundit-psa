@@ -30,17 +30,27 @@ use App\Models\TicketNote;
  *    {@see \App\Services\T2T\T2TService::captureHdbPressId()} stamps the note it
  *    has just written, and `hdb:backfill-press-ids` keys only notes authored by
  *    the configured T2T system user — refusing to run when that identity is
- *    unset rather than guessing one — and only notes that already existed the
- *    first time it ran.
+ *    unset rather than guessing one — and only notes that already existed when
+ *    the release was migrated.
  *
  *    The second bound is the load-bearing one, because AUTHORSHIP IS NOT PROOF
  *    OF CAPTURE: `t2t_system_user_id` names an ordinary staff login, and in a
  *    single-technician deployment it is the account that technician works
  *    under, so a link they paste carries exactly the author_id the backfill
- *    accepts. What the code guarantees is therefore narrower than "a note a
- *    human wrote is never keyed" — it is that the backfill's population was
- *    frozen before any later paste existed, so a pasted link has no route to
- *    authority through a re-run.
+ *    accepts. Read the guarantee precisely, because it is narrower than "a note
+ *    a human wrote is never keyed": the backfill's window is the mark the
+ *    RELEASE MIGRATION took at cutover, not one the command takes when an
+ *    operator first runs it, so every note written from the release onwards is
+ *    outside it permanently — a link pasted after cutover has no route to
+ *    authority, on any run, and the deploy-to-first-run gap carries no notes
+ *    into the population.
+ *
+ *    What that leaves: a link the capture identity's account pasted BEFORE
+ *    cutover is inside the window and can be keyed, and this class cannot tell
+ *    such a note from a capture. That residue is finite and pre-existing rather
+ *    than a standing path — it is the legacy population the operator points the
+ *    backfill at, inspectable with --dry-run before anything is written — but
+ *    it is real, and an allow is not evidence that no human typed the link.
  *
  * 2. **`tickets.hdb_press_id` is NOT an authority and is never read here.**
  *    Slice 1a redefined it as a never-cleared CACHE of the newest press on the

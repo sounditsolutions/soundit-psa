@@ -35,15 +35,30 @@ use Illuminate\Console\Command;
  *    (T2TController hands it to addNoteFromCw) — and the command REFUSES to run
  *    when that identity is not configured rather than guessing one; see
  *    captureAuthorId().
- *  - A FROZEN WINDOW. Authorship alone is not proof of capture and cannot be:
- *    t2t_system_user_id is a select over ordinary staff logins, and in the
- *    deployments whose legacy notes this command exists to key it names a real
- *    person's account — in a single-technician MSP, the very account that
- *    technician works under. So the scan is ALSO capped at the highest note id
- *    in existence the first time this command ran; see noteCeiling(). A note
- *    written after that point is out of scope permanently, whoever authored it,
- *    so a link pasted today cannot be promoted to authority by a re-run
- *    tomorrow.
+ *  - A WINDOW FROZEN AT CUTOVER. Authorship alone is not proof of capture and
+ *    cannot be: t2t_system_user_id is a select over ordinary staff logins, and
+ *    in the deployments whose legacy notes this command exists to key it names
+ *    a real person's account — in a single-technician MSP, the very account
+ *    that technician works under. So the scan is ALSO capped at a mark this
+ *    command does not set: the release migration
+ *    (2026_09_11_000001_freeze_hdb_press_id_backfill_window) records the
+ *    highest note id in existence AT MIGRATE TIME, and this command reads that
+ *    mark or refuses to run; see recordedNoteCeiling(). A note written from the
+ *    release onwards is out of scope permanently, whoever authored it, so a
+ *    link pasted after cutover cannot be promoted to authority by any run —
+ *    first, dry, or later.
+ *
+ * WHERE the mark is taken is the whole bound. Taken here, on first invocation,
+ * it would be whatever the operator's own scheduling chose: this is a manual
+ * artisan command with no deploy hook, so every link pasted in the gap between
+ * deploy and first run would still be inside the window and keyed.
+ *
+ * WHAT THAT STILL DOES NOT COVER, stated because the fetch gate's contract
+ * depends on it: a report link the capture identity's account pasted BEFORE the
+ * release is inside the window and carries the accepted author_id, so it can be
+ * keyed. That population is finite, already written, and named by the operator's
+ * own choice of capture identity — --dry-run reports its size before anything is
+ * written — but it is bounded by authorship alone, not by proof of capture.
  *
  * The 105-note population measured above is the notes CARRYING a link; what
  * this keys is the subset of it inside both bounds.
@@ -62,7 +77,8 @@ class BackfillHdbPressIds extends Command
 {
     /**
      * Where this command's window was frozen: the highest ticket_notes id in
-     * existence the first time it ran. See noteCeiling().
+     * existence when the release migration ran. Written there, never here.
+     * See recordedNoteCeiling().
      */
     private const NOTE_CEILING_SETTING = 'hdb_press_id_backfill_note_ceiling';
 
@@ -84,7 +100,13 @@ class BackfillHdbPressIds extends Command
             return self::FAILURE;
         }
 
-        $noteCeiling = $this->noteCeiling();
+        $noteCeiling = $this->recordedNoteCeiling();
+
+        if ($noteCeiling === null) {
+            $this->error('No backfill window is recorded, so this command cannot tell a note that predates the release from one written since. The release migration records the mark at cutover: run `php artisan migrate` and re-run.');
+
+            return self::FAILURE;
+        }
 
         // Live notes only. A press id on a soft-deleted note is scoped to that
         // note and must not reach the ticket around it (GitHub #1313) — under
@@ -93,8 +115,8 @@ class BackfillHdbPressIds extends Command
         //
         // What this scan will NOT key matters as much as what it will: nothing
         // authored by anyone but the capture identity, and nothing written
-        // after the window was frozen — because the key is an authority and a
-        // paste is not a capture, whoever's login it was pasted under.
+        // after the release froze the window — because the key is an authority
+        // and a paste is not a capture, whoever's login it was pasted under.
         $query = TicketNote::query()
             ->whereNull('hdb_press_id')
             ->where('author_id', $captureAuthorId)
@@ -196,7 +218,10 @@ class BackfillHdbPressIds extends Command
 
     /**
      * The highest note id this command may ever touch: the high-water mark of
-     * ticket_notes at the moment it first ran, recorded once and re-read after.
+     * ticket_notes at the moment the release carrying this command was
+     * migrated. Recorded THERE
+     * (2026_09_11_000001_freeze_hdb_press_id_backfill_window), read-only here,
+     * and null when it was never recorded.
      *
      * Authorship is not proof of capture (GitHub #1359). t2t_system_user_id is
      * chosen from the ordinary user list, the capture path's own fallback is
@@ -205,31 +230,27 @@ class BackfillHdbPressIds extends Command
      * them is a real person's login, under which a hand-pasted link carries
      * exactly the author_id captureAuthorId() accepts.
      *
-     * The window is what closes that. Every note prod already held is below the
-     * mark, so nothing this command exists to key moves; a note written after
-     * the mark is out of scope permanently, so a paste made after the command
-     * shipped can never be keyed by a later re-run. --limit batching is
-     * unaffected: every run shares the one frozen window.
+     * The window is what bounds that, and WHERE the mark is taken decides how
+     * much it bounds. Taken on first invocation it would be a boundary the
+     * operator's scheduling chooses: this is a manual artisan command with no
+     * deploy hook, so every link pasted between deploy and that first run — a
+     * gap of any length — would sit inside the window and be keyed. Taken at
+     * migrate time it is the cutover itself: prod's legacy notes are all below
+     * it, and no note written from the release onwards can ever be, however
+     * often this command runs and whoever authored it. --limit batching is
+     * unaffected: every run shares the one recorded window.
      *
-     * Recorded on a --dry-run too. The mark is not a result, it is the boundary
-     * of the population this command is allowed to see, and a dry run has
-     * already seen it — establishing it later would widen the window by exactly
-     * the notes written in between. It writes no note row and no ticket row.
+     * A --dry-run reads the same recorded mark and establishes nothing, so a
+     * dry run can no longer widen the window by the notes written before it.
+     *
+     * Null (never recorded, or cleared) refuses the run rather than minting a
+     * mark. Minting one here is precisely the defect above, and a command that
+     * silently re-freezes its own window is worse than one that will not start.
      */
-    private function noteCeiling(): int
+    private function recordedNoteCeiling(): ?int
     {
         $recorded = Setting::getValue(self::NOTE_CEILING_SETTING);
 
-        if ($recorded !== null && $recorded !== '') {
-            return (int) $recorded;
-        }
-
-        // withTrashed(): a soft-deleted note still holds an id, so a mark taken
-        // through the default scope could be overtaken by rows already there.
-        $ceiling = (int) (TicketNote::withTrashed()->max('id') ?? 0);
-
-        Setting::setValue(self::NOTE_CEILING_SETTING, (string) $ceiling);
-
-        return $ceiling;
+        return ($recorded === null || $recorded === '') ? null : (int) $recorded;
     }
 }
