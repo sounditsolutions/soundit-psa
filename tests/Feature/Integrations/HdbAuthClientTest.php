@@ -464,9 +464,10 @@ class HdbAuthClientTest extends TestCase
 
     public function test_it_refuses_to_spend_the_credential_on_a_plain_http_portal_url(): void
     {
-        // The destination is checked before the credential is loaded: the Portal
-        // URL is writable by any authenticated user (psa #1344), so the admin-only
-        // gate on Test Connection cannot be what decides where the password goes.
+        // The destination is checked before the credential is loaded, and on
+        // EVERY attempt rather than only at save time — so a URL stored before
+        // the write gate was admin-only, or one an admin typed wrong since, is
+        // refused here rather than spent.
         Setting::setValue('hdb_base_url', 'http://attacker.example');
         Http::fake();
 

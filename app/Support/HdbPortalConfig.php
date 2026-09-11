@@ -69,12 +69,16 @@ final class HdbPortalConfig
      * Whether {@see baseUrl()} is somewhere this integration will POST the
      * decrypted service-subaccount password and a live one-time code.
      *
-     * The Portal URL setting is written from a form any authenticated user can
-     * reach (psa #1344 is still open), so the admin-only gate on Test Connection
-     * decides only WHO spends the credential — this decides WHERE it may go.
-     * {@see \App\Services\Hdb\HdbAuthClient} measures a returned form action
-     * AGAINST this origin, so it inherits whatever the setting names and cannot
-     * be the check.
+     * WHO may write the setting is an admin-only gate on the form
+     * ({@see \App\Http\Controllers\Web\IntegrationsController::updateT2t()}),
+     * because what follows here proves "https, public hostname" and nothing
+     * more — it cannot prove a host belongs to the vendor, so it was never
+     * enough on a field any authenticated user could write (psa #1344 is still
+     * open for the rest of that page). This is the separate question of whether
+     * the named destination is one we will post to at all, asked on every read
+     * as well as on that write. {@see \App\Services\Hdb\HdbAuthClient} measures
+     * a returned form action AGAINST this origin, so it inherits whatever the
+     * setting names and cannot be the check.
      */
     public static function hasPostableBaseUrl(): bool
     {

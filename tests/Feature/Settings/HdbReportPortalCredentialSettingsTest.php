@@ -187,10 +187,10 @@ class HdbReportPortalCredentialSettingsTest extends TestCase
 
     public function test_it_rejects_a_portal_url_it_would_not_post_the_password_to(): void
     {
-        // The write path is the other half of the destination guard: this action
-        // is reachable by any authenticated user (psa #1344), so a non-admin must
-        // not be able to name where an admin's Test Connection sends the stored
-        // password — in cleartext, or at an internal address.
+        // The write path is the other half of the destination guard. It runs on
+        // an admin's save (the fields are admin-only), and an admin can name an
+        // internal address or a cleartext one just as easily — so the same
+        // predicate the read path applies is applied here too.
         foreach (['http://attacker.example', 'https://169.254.169.254', 'https://localhost'] as $hostile) {
             $this->actingAs($this->user)
                 ->post(route('settings.integrations.t2t.update'), $this->payload([
@@ -211,6 +211,44 @@ class HdbReportPortalCredentialSettingsTest extends TestCase
             ->assertSessionHasErrors(['hdb_base_url']);
 
         $this->assertNull(Setting::getValue('hdb_base_url'));
+    }
+
+    public function test_a_non_admin_cannot_name_where_the_stored_credential_is_spent(): void
+    {
+        // The URL guard can only prove "https, public hostname" — a host a
+        // tech-role user owns passes it on sight — so who may WRITE these fields
+        // is the same gate as who may spend them: admin, as on Test Connection.
+        Setting::setValue('hdb_base_url', 'https://portal.example.test');
+        Setting::setValue('hdb_email', 'reports@example.test');
+        Setting::setEncrypted('hdb_password', 'stored-password');
+
+        $this->actingAs(User::factory()->tech()->create())
+            ->post(route('settings.integrations.t2t.update'), $this->payload([
+                'hdb_base_url' => 'https://hdb-portal.attacker.example',
+                'hdb_email' => 'attacker@attacker.example',
+                'hdb_password' => 'attacker-password',
+                'hdb_totp_secret' => 'JBSWY3DPEHPK3PXP',
+            ]))
+            ->assertRedirect(route('settings.integrations'));
+
+        // Not merely refused: every stored value is left exactly as it was, so a
+        // tech saving the rest of this form cannot blank the portal host either —
+        // clearing it selects the default host, which is a real action.
+        $this->assertSame('https://portal.example.test', Setting::getValue('hdb_base_url'));
+        $this->assertSame('reports@example.test', Setting::getValue('hdb_email'));
+        $this->assertSame('stored-password', Setting::getEncrypted('hdb_password'));
+        $this->assertSame('', (string) Setting::getEncrypted('hdb_totp_secret', ''));
+    }
+
+    public function test_the_hdb_fields_are_not_offered_to_a_non_admin(): void
+    {
+        $this->actingAs(User::factory()->tech()->create())
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertSee('HDB Report Portal')
+            ->assertDontSee('name="hdb_base_url"', false)
+            ->assertDontSee('name="hdb_password"', false)
+            ->assertDontSee('name="hdb_totp_secret"', false);
     }
 
     public function test_stored_secrets_are_never_rendered_back_into_the_form(): void

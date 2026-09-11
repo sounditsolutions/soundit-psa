@@ -1871,24 +1871,38 @@ class IntegrationsController extends Controller
 
     public function updateT2t(Request $request)
     {
-        $validated = $request->validate([
+        // The four HDB fields below choose WHERE the decrypted service-subaccount
+        // password and a live one-time code are POSTed, so writing them is gated
+        // exactly like spending them ({@see testHdb()}): admin only. The URL rule
+        // that follows can prove "https, public hostname" and nothing more — no
+        // check on a URL can prove the host is the vendor's — so on its own it
+        // left any authenticated user (psa #1344 is still open for the rest of
+        // this page) able to point the next admin Test Connection at a server
+        // they own and collect the credential.
+        $isAdmin = $request->user()?->isAdmin() === true;
+
+        $rules = [
             'api_key' => 'nullable|string|min:1|max:500',
             'company_id' => 'nullable|string|max:100',
             'callback_url' => 'nullable|url|max:500',
             'system_user_id' => 'nullable|integer|exists:users,id',
-            // The stored password is POSTed to whatever this names, and every
-            // action on this page is still reachable by any authenticated user
-            // (psa #1344), so the destination is validated where it is WRITTEN as
-            // well as where it is read — one predicate, both paths.
-            'hdb_base_url' => ['nullable', 'url', 'max:255', function (string $attribute, mixed $value, \Closure $fail) {
+        ];
+
+        if ($isAdmin) {
+            // Still validated now that it is admin-only: an admin can type an
+            // internal address as easily as anyone, and the read path applies
+            // the same predicate — one predicate, both paths.
+            $rules['hdb_base_url'] = ['nullable', 'url', 'max:255', function (string $attribute, mixed $value, \Closure $fail) {
                 if (trim((string) $value) !== '' && ! HdbPortalConfig::isPostableBaseUrl((string) $value)) {
                     $fail('The portal URL must be an https:// address with a public hostname.');
                 }
-            }],
-            'hdb_email' => 'nullable|email|max:255',
-            'hdb_password' => 'nullable|string|max:1024',
-            'hdb_totp_secret' => 'nullable|string|max:255',
-        ]);
+            }];
+            $rules['hdb_email'] = 'nullable|email|max:255';
+            $rules['hdb_password'] = 'nullable|string|max:1024';
+            $rules['hdb_totp_secret'] = 'nullable|string|max:255';
+        }
+
+        $validated = $request->validate($rules);
 
         if (! empty($validated['api_key'])) {
             Setting::setEncrypted('t2t_api_key', $validated['api_key']);
@@ -1911,6 +1925,16 @@ class IntegrationsController extends Controller
         // the vendor displays exactly once, at enrollment — had a sanctioned
         // destination the moment it was minted. The report fetch itself is still
         // separate work; this form still writes, it does not fetch.
+        //
+        // A non-admin never reaches these writes, and returning before them is
+        // what makes that safe rather than destructive: the fields are neither
+        // rendered nor validated for them, so falling through would write the
+        // blanks their form did not carry — and clearing the Portal URL is a
+        // real action (it selects the default host), not a no-op.
+        if (! $isAdmin) {
+            return redirect()->route('settings.integrations')
+                ->with('success', 'Tier2Tickets settings saved.');
+        }
 
         // Non-secret, but NOT unchecked: it names the host the stored password is
         // posted to, so the rule above refuses anything

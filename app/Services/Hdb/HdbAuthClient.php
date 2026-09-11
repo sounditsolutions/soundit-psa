@@ -149,11 +149,13 @@ final class HdbAuthClient
             );
         }
 
-        // WHERE the credential may go, checked before it is loaded. The Portal
-        // URL setting is written from a form any authenticated user can reach
-        // (psa #1344), so the admin-only gate on Test Connection does not decide
-        // this; refusing here also covers resolveAction(), which measures a form
-        // action against baseUrl() and so inherits whatever it names.
+        // WHERE the credential may go, checked before it is loaded. Writing the
+        // Portal URL is admin-only, so this is no longer the only thing between a
+        // non-admin and the credential — but it runs on EVERY attempt, which the
+        // write gate cannot: a URL stored before that gate existed, or typed
+        // wrong by an admin since, is still refused here. It also covers
+        // resolveAction(), which measures a form action against baseUrl() and so
+        // inherits whatever the setting names.
         $verdict = HdbPortalConfig::baseUrlVerdict();
 
         // A host that did not resolve is refused too — nothing is sent either

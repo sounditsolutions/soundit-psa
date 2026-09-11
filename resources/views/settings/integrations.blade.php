@@ -2802,6 +2802,16 @@
                             report fetch itself is built separately; the test only proves the login.
                         </p>
 
+                        {{--
+                            Admin-only as a whole, not just the Test Connection button below.
+                            The Portal URL names the host the stored password and a live
+                            one-time code are posted to, and "https with a public hostname" is
+                            the most any URL check can prove — never "this is the vendor" — so
+                            a non-admin able to write it would collect the credential on the
+                            next admin test. updateT2t() enforces the same gate on the save;
+                            this only stops offering fields that save would ignore.
+                        --}}
+                        @if(auth()->user()?->isAdmin())
                         <div class="mb-3">
                             <label for="hdb_base_url" class="form-label">Portal URL</label>
                             <input type="url"
@@ -2869,12 +2879,11 @@
                         </div>
 
                         {{--
-                            Admin-only, because this button spends the stored password against the
-                            vendor. The action enforces it too (403); this only avoids offering a
-                            control that would refuse. It does not close psa #1344 — the rest of
-                            this page is still reachable by any authenticated user.
+                            The button spends the stored password against the vendor, so it sits
+                            inside the same admin branch as the fields above; the action enforces
+                            it too (403). It does not close psa #1344 — every other card on this
+                            page is still reachable by any authenticated user.
                         --}}
-                        @if(auth()->user()?->isAdmin())
                             <div class="d-flex gap-2">
                                 {{--
                                     Labelled exactly like every other test button on this page on
@@ -2888,6 +2897,11 @@
                                 </button>
                             </div>
                             <div id="test-result-hdb" class="alert mt-2" style="display:none;"></div>
+                        @else
+                            <p class="text-muted small mb-0">
+                                <i class="bi bi-lock me-1"></i>These credentials name where a stored
+                                password is sent, so only an administrator can view or change them.
+                            </p>
                         @endif
                     </fieldset>
 

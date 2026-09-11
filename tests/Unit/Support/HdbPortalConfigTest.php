@@ -96,9 +96,10 @@ class HdbPortalConfigTest extends TestCase
 
     public function test_a_plain_http_portal_url_is_not_a_postable_destination(): void
     {
-        // The stored password is POSTed to this host, and the setting is writable
-        // by any authenticated user (psa #1344) — http would put it on the wire
-        // in cleartext for whoever chose the host.
+        // The stored password is POSTed to this host, so http would put it on
+        // the wire in cleartext for whoever chose the host — refused on read as
+        // well as on the (admin-only) write, because only the read runs on every
+        // attempt.
         Setting::setValue('hdb_base_url', 'http://portal.example.test');
 
         $this->assertFalse(HdbPortalConfig::hasPostableBaseUrl());
