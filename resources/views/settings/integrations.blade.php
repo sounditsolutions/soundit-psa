@@ -371,6 +371,48 @@
             </div>
         </div>
 
+        {{-- BenjiPays Card --}}
+        <div class="card card-static shadow-sm mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="bi bi-credit-card me-2"></i>BenjiPays
+                </div>
+                @if($benjipaysConfigured ?? false)
+                    <span class="badge bg-success">Key stored</span>
+                @else
+                    <span class="badge bg-secondary">Not configured</span>
+                @endif
+            </div>
+            <div class="card-body">
+                <p class="text-muted small mb-3">
+                    Store the API key generated in your BenjiPays account. The key is encrypted at rest and is
+                    never shown again after saving; enter a new one to replace it, or leave the field blank to keep it.
+                </p>
+
+                <form method="POST" action="{{ route('settings.integrations.benjipays.update') }}">
+                    @csrf
+
+                    <div class="row">
+                        <div class="col-md-8 mb-3">
+                            <label for="benjipays_api_key" class="form-label">API Key</label>
+                            <input type="password"
+                                   class="form-control @error('api_key') is-invalid @enderror"
+                                   id="benjipays_api_key"
+                                   name="api_key"
+                                   value=""
+                                   autocomplete="off"
+                                   placeholder="{{ ($benjipaysConfigured ?? false) ? '••••••••' : 'Enter API key' }}">
+                            @error('api_key')
+                                <div class="invalid-feedback">{{ $message }}</div>
+                            @enderror
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-sm">Save BenjiPays Settings</button>
+                </form>
+            </div>
+        </div>
+
         </div>{{-- /billing tab --}}
 
         {{-- ============================================================ --}}

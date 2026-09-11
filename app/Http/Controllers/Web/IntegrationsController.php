@@ -15,6 +15,7 @@ use App\Services\Ninja\NinjaClient;
 use App\Support\AiConfig;
 use App\Support\AppRiverConfig;
 use App\Support\AppTimezone;
+use App\Support\BenjiPaysConfig;
 use App\Support\CippConfig;
 use App\Support\ControlDConfig;
 use App\Support\HuntressConfig;
@@ -123,6 +124,9 @@ class IntegrationsController extends Controller
         $stripeMode = StripeConfig::get('mode');
         $stripeConnected = (bool) $fmtTs(Setting::getValue('stripe_connected_at'));
         $stripeAutoPush = Setting::getValue('stripe_auto_push_invoices') === '1';
+
+        // BenjiPays
+        $benjipaysConfigured = BenjiPaysConfig::isConfigured();
 
         // Level
         $levelHasApiKey = (bool) (Setting::getValue('level_api_key') ?? config('services.level.api_key'));
@@ -476,6 +480,7 @@ class IntegrationsController extends Controller
         return view('settings.integrations', compact(
             'qboClientId', 'qboHasSecret', 'qboEnvironment', 'qboRealmId', 'qboConnected', 'qboTokenExpiresAt', 'qboAutoPush', 'qboHasWebhookToken', 'qboDefaultIncomeId', 'qboDefaultExpenseId', 'qboIncomeAccounts', 'qboExpenseAccounts',
             'stripeConfigured', 'stripeMode', 'stripeConnected', 'stripeAutoPush', 'stripeEnabled',
+            'benjipaysConfigured',
             'ninjaClientId', 'ninjaConnected', 'ninjaConnectedAt', 'ninjaEnabled',
             'levelHasApiKey', 'levelConnected', 'levelConnectedAt', 'levelWebhookSecret', 'levelHasInstallAccountToken', 'levelEnabled',
             'meshHasApiKey', 'meshBaseUrl', 'meshConnected', 'meshEnabled',
@@ -629,6 +634,36 @@ class IntegrationsController extends Controller
 
         return redirect()->route('settings.integrations')
             ->with('success', 'Stripe credentials saved.');
+    }
+
+    // --- BenjiPays ---
+
+    /**
+     * Store the BenjiPays API key encrypted at rest. Blank, or the masked
+     * placeholder echoed back from the form, means "keep the stored key" — the
+     * same blank-preserves rule every other operator secret in this controller
+     * follows. Nothing reads the key back out: the form never renders it and the
+     * flash names the outcome only.
+     */
+    public function updateBenjiPays(Request $request)
+    {
+        $validated = $request->validate([
+            'api_key' => 'nullable|string|min:1|max:500',
+        ]);
+
+        $submitted = trim((string) ($validated['api_key'] ?? ''));
+
+        if ($submitted !== '' && $submitted !== self::SECRET_MASK) {
+            Setting::setEncrypted('benjipays_api_key', $submitted);
+
+            return redirect()->route('settings.integrations')
+                ->with('success', 'BenjiPays API key saved.');
+        }
+
+        return redirect()->route('settings.integrations')
+            ->with('success', BenjiPaysConfig::isConfigured()
+                ? 'BenjiPays API key unchanged.'
+                : 'No BenjiPays API key entered.');
     }
 
     public function testStripe()
