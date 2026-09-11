@@ -6,7 +6,9 @@ use App\Models\Setting;
 use App\Services\Hdb\HdbAuthClient;
 use App\Services\Hdb\HdbAuthResult;
 use App\Services\Hdb\HdbAuthStatus;
+use App\Services\Hdb\HdbRedirectRefusedException;
 use App\Support\HdbPortalConfig;
+use GuzzleHttp\Psr7\Uri;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
@@ -509,6 +511,108 @@ class HdbAuthClientTest extends TestCase
         $this->assertSame(HdbAuthResult::REASON_PORTAL_URL_UNRESOLVED, $result->reason);
         $this->assertSame(0, $result->requests);
         Http::assertNothingSent();
+    }
+
+    /**
+     * The redirect control, pulled out of the options array and invoked.
+     *
+     * `Http::fake()` installs its stub OUTSIDE Guzzle's RedirectMiddleware, so a
+     * faked 302 comes back as a body and is never followed — no amount of faking
+     * reaches `allow_redirects`, and that is why three cycles of work on this
+     * guard shipped with no coverage at all. Measured on `67348bf8`: deleting
+     * `'protocols' => ['https']` AND the whole `on_redirect` closure left all 24
+     * tests in this file, and all 93 HDB tests, green. The seam that does work is
+     * the options array the fake callback is handed: the closure the client
+     * installed can be taken out of it and called with the hop URI Guzzle would
+     * have passed.
+     *
+     * @return array{max: int, strict: bool, referer: bool, protocols: array<int, string>, on_redirect: callable}
+     */
+    private function capturedRedirectOptions(): array
+    {
+        $captured = null;
+
+        Http::fake(function (Request $request, array $options) use (&$captured) {
+            $captured ??= $options;
+
+            return Http::response($this->loginPage());
+        });
+
+        (new HdbAuthClient)->authenticate();
+
+        $this->assertIsArray($captured, 'Nothing was sent, so no request options were captured.');
+        $this->assertIsArray($captured['allow_redirects'] ?? null, 'The client sent a request with no redirect policy at all.');
+
+        return $captured['allow_redirects'];
+    }
+
+    public function test_every_request_carries_the_redirect_guard(): void
+    {
+        $allow = $this->capturedRedirectOptions();
+
+        // Guzzle's own default allows http and checks no host; both are pinned.
+        $this->assertSame(['https'], $allow['protocols'] ?? null);
+        $this->assertSame(5, $allow['max'] ?? null);
+        $this->assertIsCallable($allow['on_redirect'] ?? null);
+    }
+
+    public function test_the_redirect_guard_refuses_a_hop_to_another_host(): void
+    {
+        $onRedirect = $this->capturedRedirectOptions()['on_redirect'];
+
+        // `strict` re-POSTs the credential body on every hop, so an off-origin
+        // hop must be refused BEFORE it is followed.
+        $this->expectException(HdbRedirectRefusedException::class);
+
+        $onRedirect(null, null, new Uri('https://attacker.example/login'));
+    }
+
+    public function test_the_redirect_guard_refuses_a_lookalike_host(): void
+    {
+        $onRedirect = $this->capturedRedirectOptions()['on_redirect'];
+
+        $this->expectException(HdbRedirectRefusedException::class);
+
+        $onRedirect(null, null, new Uri('https://portal.example.test.evil.test/login'));
+    }
+
+    public function test_the_redirect_guard_refuses_a_cleartext_hop_on_the_portals_own_host(): void
+    {
+        $onRedirect = $this->capturedRedirectOptions()['on_redirect'];
+
+        // `protocols` refuses this one hop earlier inside RedirectMiddleware, so
+        // this asserts the second of the two locks, not a duplicate of the first.
+        $this->expectException(HdbRedirectRefusedException::class);
+
+        $onRedirect(null, null, new Uri('http://portal.example.test/login'));
+    }
+
+    public function test_the_redirect_guard_follows_a_hop_inside_the_portal_origin(): void
+    {
+        $onRedirect = $this->capturedRedirectOptions()['on_redirect'];
+
+        try {
+            $onRedirect(null, null, new Uri('https://portal.example.test/login?next=reports'));
+            // Guzzle's Uri drops the scheme default port; the stored setting may
+            // carry it. A guard that refused this would break every real sign-in.
+            $onRedirect(null, null, new Uri('https://portal.example.test:443/reports'));
+        } catch (HdbRedirectRefusedException) {
+            $this->fail('A hop inside the configured portal origin was refused.');
+        }
+
+        $this->assertTrue(true, 'Both same-origin hops were allowed through.');
+    }
+
+    public function test_a_refused_redirect_is_reported_as_one_and_leaks_nothing(): void
+    {
+        Http::fake(fn () => throw new HdbRedirectRefusedException);
+
+        $result = (new HdbAuthClient)->authenticate();
+
+        $this->assertFalse($result->ok());
+        $this->assertSame(HdbAuthStatus::Unreachable, $result->status);
+        $this->assertSame(HdbAuthResult::REASON_REDIRECT_REFUSED, $result->reason);
+        $this->assertNothingLeaked($result);
     }
 
     public function test_every_reason_it_can_return_has_an_operator_message(): void
