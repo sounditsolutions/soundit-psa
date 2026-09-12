@@ -1926,6 +1926,193 @@
                         </div>
                     </div>
 
+                    <div class="border-top pt-3 mt-2">
+                        <h6 class="mb-1">Client Onboarding Defaults</h6>
+                        <p class="text-muted small mb-3">
+                            Used when a client is onboarded to Control D: the sub-organization is created
+                            with the enforced profile below, and its provisioning code is cut with these
+                            defaults. Onboarding refuses to run while any of the first four is blank.
+                            {{-- "Defaults complete", not "Ready": this badge reports only that the four
+                                 required values on THIS card are filled in. It says nothing about the
+                                 integration being enabled, an API key being stored, Control D having
+                                 agreed any of these values exist, or the onboarding verb being granted.
+                                 A badge reading "Ready" would be read as all four. --}}
+                            @if($controldOnboardingConfigured ?? false)
+                                <span class="badge bg-success ms-1">Defaults complete</span>
+                            @else
+                                <span class="badge bg-secondary ms-1">Incomplete</span>
+                            @endif
+                        </p>
+
+                        @php
+                            // Re-render of the operator's own attempt, for a value that may
+                            // not be a string.
+                            //
+                            // Validation failure flashes input after TrimStrings and
+                            // ConvertEmptyStringsToNull normalize it. An array-shaped
+                            // `name[]=x` is a shape anything that speaks HTTP can send. All six
+                            // rules refuse an array, which is correct — but old() then handed
+                            // that array to value="{{ }}", and Blade's e()/htmlspecialchars()
+                            // throws on an array. So the GET meant to SHOW the operator why
+                            // their submit was rejected returned a 500 instead, and the refusal
+                            // became unrecoverable through the UI: the page telling you what to
+                            // fix was the page that crashed.
+                            //
+                            // Only a scalar can be echoed into an attribute. A nonscalar attempt
+                            // renders BLANK rather than as the word "Array" — printing "Array"
+                            // into an input reads as something the operator typed — and the
+                            // @error block beside each field is what reports the refusal.
+                            //
+                            // Scoped to the six Control D onboarding inputs on purpose: the same
+                            // unsafe old() shape is used all over this file and predates this
+                            // card. That did not excuse extending it here, and repairing it
+                            // everywhere is not this change.
+                            // Whether THIS FIELD was flashed by a rejected submit, asked
+                            // per field rather than once for the card. The global
+                            // ConvertEmptyStringsToNull turns a deliberately emptied
+                            // field into null BEFORE the failed validate() flashes it,
+                            // so old($key) === null cannot tell a clear from a key that
+                            // was never submitted — but the flashed bag itself can, and
+                            // array_key_exists() is the question that answers it.
+                            // Falling back to the stored value on a FLASHED null would
+                            // silently REVERSE the operator's clear — the one contract
+                            // this card exists to keep — and their corrected save would
+                            // re-persist the value they removed, worst of all for the
+                            // field id that arms the deploy trigger. Falling back to ''
+                            // on a key that was NEVER flashed is the mirror harm: this
+                            // handler is a plain route, an api_key-only POST is a shape
+                            // updateControlD() supports on purpose, and a bounce on one
+                            // field must not render the five stored-but-unsubmitted ones
+                            // blank for the corrective full-form save to then erase.
+                            // Another card's bounce flashes its own input and none of
+                            // ours, so stored values still render here.
+                            $controldFlashed = session()->getOldInput();
+                            $controldFlashed = is_array($controldFlashed) ? $controldFlashed : [];
+
+                            $controldOld = static function (string $key, string $stored) use ($controldFlashed): string {
+                                $attempted = old($key);
+
+                                if ($attempted === null) {
+                                    // A flashed null IS the operator's blank; a key that
+                                    // was never flashed was never submitted at all.
+                                    return array_key_exists($key, $controldFlashed) ? '' : $stored;
+                                }
+
+                                return is_scalar($attempted) ? (string) $attempted : '';
+                            };
+                        @endphp
+
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="controld_tactical_client_field_id" class="form-label">Tactical client custom field ID</label>
+                                <input type="number" min="1" step="1"
+                                       class="form-control @error('tactical_client_field_id') is-invalid @enderror"
+                                       id="controld_tactical_client_field_id"
+                                       name="tactical_client_field_id"
+                                       value="{{ $controldOld('tactical_client_field_id', $controldTacticalFieldId ?? '') }}">
+                                @error('tactical_client_field_id')
+                                    <div class="invalid-feedback">{{ $message }}</div>
+                                @enderror
+                                @if (isset($controldNumericUnusable['tactical_client_field_id']))
+                                    <div class="form-text text-danger">
+                                        Stored value <code>{{ $controldNumericUnusable['tactical_client_field_id'] }}</code>
+                                        is not a value onboarding can use. Leaving this field blank when
+                                        saving clears the stored value; enter a valid replacement to replace it.
+                                    </div>
+                                @endif
+                                <div class="form-text">
+                                    The CLIENT-model custom field in your Tactical RMM that holds the
+                                    client's Control D organization ID — the field named
+                                    <code>controld_org_id</code>, not the provisioning code. You create
+                                    this field yourself, so its ID is whatever your instance assigned —
+                                    find it in Tactical under Settings &rarr; Global Settings &rarr;
+                                    Custom Fields. Leave blank and the write is refused rather than
+                                    guessed.
+                                </div>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label for="controld_default_profile_id" class="form-label">Enforced profile ID</label>
+                                <input type="text"
+                                       class="form-control @error('default_profile_id') is-invalid @enderror"
+                                       id="controld_default_profile_id"
+                                       name="default_profile_id"
+                                       value="{{ $controldOld('default_profile_id', $controldDefaultProfileId ?? '') }}">
+                                @error('default_profile_id')
+                                    <div class="invalid-feedback">{{ $message }}</div>
+                                @enderror
+                                <div class="form-text">
+                                    Control D profile applied as the new sub-organization's Global Profile.
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-3 mb-3">
+                                <label for="controld_code_expiry_days" class="form-label">Code expiry (days)</label>
+                                <input type="number" min="1" step="1"
+                                       class="form-control @error('code_expiry_days') is-invalid @enderror"
+                                       id="controld_code_expiry_days"
+                                       name="code_expiry_days"
+                                       value="{{ $controldOld('code_expiry_days', $controldCodeExpiryDays ?? '') }}">
+                                @error('code_expiry_days')
+                                    <div class="invalid-feedback">{{ $message }}</div>
+                                @enderror
+                                @if (isset($controldNumericUnusable['code_expiry_days']))
+                                    <div class="form-text text-danger">
+                                        Stored value <code>{{ $controldNumericUnusable['code_expiry_days'] }}</code>
+                                        is not a value onboarding can use. Leaving this field blank when
+                                        saving clears the stored value; enter a valid replacement to replace it.
+                                    </div>
+                                @endif
+                            </div>
+                            <div class="col-md-3 mb-3">
+                                <label for="controld_code_device_limit_headroom" class="form-label">Device limit headroom</label>
+                                <input type="number" min="0" step="1"
+                                       class="form-control @error('code_device_limit_headroom') is-invalid @enderror"
+                                       id="controld_code_device_limit_headroom"
+                                       name="code_device_limit_headroom"
+                                       value="{{ $controldOld('code_device_limit_headroom', $controldCodeHeadroom ?? '') }}">
+                                @error('code_device_limit_headroom')
+                                    <div class="invalid-feedback">{{ $message }}</div>
+                                @enderror
+                                @if (isset($controldNumericUnusable['code_device_limit_headroom']))
+                                    <div class="form-text text-danger">
+                                        Stored value <code>{{ $controldNumericUnusable['code_device_limit_headroom'] }}</code>
+                                        is not a value onboarding can use. Leaving this field blank when
+                                        saving clears the stored value; enter a valid replacement to replace it.
+                                    </div>
+                                @endif
+                                <div class="form-text">
+                                    Added to the client's asset count. 0 admits no extra machines.
+                                </div>
+                            </div>
+                            <div class="col-md-3 mb-3">
+                                <label for="controld_code_analytics_level" class="form-label">Analytics level</label>
+                                <input type="text"
+                                       class="form-control @error('code_analytics_level') is-invalid @enderror"
+                                       id="controld_code_analytics_level"
+                                       name="code_analytics_level"
+                                       value="{{ $controldOld('code_analytics_level', $controldCodeAnalyticsLevel ?? '') }}">
+                                @error('code_analytics_level')
+                                    <div class="invalid-feedback">{{ $message }}</div>
+                                @enderror
+                                <div class="form-text">Optional. Blank sends nothing.</div>
+                            </div>
+                            <div class="col-md-3 mb-3">
+                                <label for="controld_code_intercept_mode" class="form-label">Intercept mode</label>
+                                <input type="text"
+                                       class="form-control @error('code_intercept_mode') is-invalid @enderror"
+                                       id="controld_code_intercept_mode"
+                                       name="code_intercept_mode"
+                                       value="{{ $controldOld('code_intercept_mode', $controldCodeInterceptMode ?? '') }}">
+                                @error('code_intercept_mode')
+                                    <div class="invalid-feedback">{{ $message }}</div>
+                                @enderror
+                                <div class="form-text">Optional. Blank sends nothing.</div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="d-flex gap-2">
                         <button type="submit" class="btn btn-primary btn-sm">Save Control D Settings</button>
                         <button type="button" class="btn btn-outline-secondary" id="test-controld-btn"
