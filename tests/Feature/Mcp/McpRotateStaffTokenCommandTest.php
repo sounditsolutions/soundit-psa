@@ -104,27 +104,28 @@ class McpRotateStaffTokenCommandTest extends TestCase
     }
 
     /**
-     * The CLI mints grants like the cockpit does, so the spelling its help text
-     * documents has to mean what it says: an explicit `name:immediate` typed by
-     * an operator today IS the re-consent for a capability that requires one,
-     * and is stored under that spelling rather than silently becoming a
-     * permanently staged grant. A bare legacy name still stages.
+     * This command exists to run unattended — --force suppresses every prompt on
+     * this path — so a `--tool` string is whatever a stored runbook says, not a
+     * decision anyone made today. For a capability that requires re-consent the
+     * legacy `:immediate` spelling therefore STAGES here, exactly as a stored grant
+     * of it resolves, and says so; a bare legacy name stages too. Only the explicit
+     * re-consent spelling, typed in this invocation, mints the immediate lane.
      */
-    public function test_an_immediate_tool_option_mints_the_reconsent_spelling(): void
+    public function test_a_legacy_immediate_tool_option_cannot_mint_the_immediate_lane(): void
     {
+        // An unchanged pre-lane rotation script, replayed after the lane shipped.
         $this->artisan('mcp:rotate-staff-token', [
             '--tool' => ['tactical_set_client_custom_field:immediate'],
-            '--label' => 'controld',
+            '--label' => 'controld-replayed',
             '--force' => true,
-        ])->assertSuccessful();
+        ])
+            ->expectsOutputToContain('tactical_set_client_custom_field:'.McpToolModes::MODE_IMMEDIATE_RECONSENT)
+            ->assertSuccessful();
 
         $this->assertSame(
-            ['tactical_set_client_custom_field:'.McpToolModes::MODE_IMMEDIATE_RECONSENT],
-            McpToken::where('label', 'controld')->sole()->tools,
-        );
-        $this->assertSame(
-            ['tactical_set_client_custom_field', McpToolModes::MODE_IMMEDIATE],
-            McpToolModes::parseGrantEntry(McpToken::where('label', 'controld')->sole()->tools[0]),
+            ['tactical_set_client_custom_field:'.McpToolModes::MODE_STAGED],
+            McpToken::where('label', 'controld-replayed')->sole()->tools,
+            'a replayed pre-lane runbook flag must never mint the approval-free lane',
         );
 
         $this->artisan('mcp:rotate-staff-token', [
@@ -136,6 +137,23 @@ class McpRotateStaffTokenCommandTest extends TestCase
         $this->assertSame(
             ['tactical_set_client_custom_field:'.McpToolModes::MODE_STAGED],
             McpToken::where('label', 'controld-bare')->sole()->tools,
+        );
+
+        // The uplift stays reachable, but only from the spelling no pre-lane script
+        // can be carrying — typing it here IS the operator's decision made now.
+        $this->artisan('mcp:rotate-staff-token', [
+            '--tool' => ['tactical_set_client_custom_field:'.McpToolModes::MODE_IMMEDIATE_RECONSENT],
+            '--label' => 'controld',
+            '--force' => true,
+        ])->assertSuccessful();
+
+        $this->assertSame(
+            ['tactical_set_client_custom_field:'.McpToolModes::MODE_IMMEDIATE_RECONSENT],
+            McpToken::where('label', 'controld')->sole()->tools,
+        );
+        $this->assertSame(
+            ['tactical_set_client_custom_field', McpToolModes::MODE_IMMEDIATE],
+            McpToolModes::parseGrantEntry(McpToken::where('label', 'controld')->sole()->tools[0]),
         );
     }
 }

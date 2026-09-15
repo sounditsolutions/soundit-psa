@@ -368,6 +368,14 @@ class McpToolModes
             // submission IS the re-consent and is stored under the re-consent
             // spelling below. A bare entry is not (legacy grammar only), and nor is
             // a staged alias — hence the exact match on the canonical name.
+            //
+            // "NOW" is the CALLER's warranty, not this method's. It holds for an
+            // interactive surface where a human just ticked the box (the cockpit
+            // checkbox, McpTokensController::updateTools) and NOT for an unattended
+            // one, where the entry is whatever a stored runbook says. A
+            // non-interactive caller must require the explicit re-consent spelling
+            // itself before routing here — see
+            // McpRotateStaffToken::withoutLegacyImmediateUplift().
             if ($mode === self::MODE_STAGED
                 && self::requiresImmediateReconsent($name)
                 && $raw === $name.':'.self::MODE_IMMEDIATE) {
