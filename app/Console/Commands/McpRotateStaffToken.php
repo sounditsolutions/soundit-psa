@@ -3,12 +3,13 @@
 namespace App\Console\Commands;
 
 use App\Support\McpConfig;
+use App\Support\McpToolModes;
 use Illuminate\Console\Command;
 
 class McpRotateStaffToken extends Command
 {
     protected $signature = 'mcp:rotate-staff-token
-        {--tool=* : Tool name allowed for this scoped token. Repeat or comma-separate. Stageable action tools accept a mode suffix (name:staged holds every call for cockpit approval; name:immediate allows direct execution; bare name = immediate). Required: every token carries an explicit allowlist (psa-688).}
+        {--tool=* : Tool name allowed for this scoped token. Repeat or comma-separate. Stageable action tools accept a mode suffix (name:staged holds every call for cockpit approval; name:immediate allows direct execution; bare name = immediate, except for a capability whose immediate lane post-dates the grant grammar — there a bare name stages and only an explicit name:immediate is read as consent to the immediate lane). Required: every token carries an explicit allowlist (psa-688).}
         {--tools= : Comma-separated tool names allowed for this scoped token.}
         {--label= : Stable label for a scoped token; rotating the same label replaces the previous scoped token.}
         {--retire-legacy : Delete the legacy full-surface token without minting a replacement. The only remaining unscoped operation — break-glass on a leaked legacy token is retirement, not rotation.}
@@ -62,6 +63,17 @@ class McpRotateStaffToken extends Command
                 return self::SUCCESS;
             }
         }
+
+        // This command is a grant-minting surface like the cockpit, so `--tool`
+        // spellings are normalized the same way (McpTokensController::updateTools):
+        // an explicit `name:immediate` typed here is an operator's decision made
+        // NOW, against the description the lane actually has, so for a capability
+        // in McpToolModes::IMMEDIATE_RECONSENT_REQUIRED it is stored as the
+        // re-consent spelling rather than silently minting a permanently staged
+        // grant against this command's own help text. Names outside the grantable
+        // catalog are stored exactly as typed, as before.
+        $normalized = McpToolModes::normalizeGrantEntries($tools);
+        $tools = array_merge($normalized['entries'], $normalized['unknown']);
 
         $token = McpConfig::rotateStaffToken(
             allowedTools: $tools,

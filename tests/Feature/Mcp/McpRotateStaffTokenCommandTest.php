@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\Mcp;
 
+use App\Models\McpToken;
 use App\Support\McpConfig;
+use App\Support\McpToolModes;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -99,5 +101,41 @@ class McpRotateStaffTokenCommandTest extends TestCase
             ->assertFailed();
 
         $this->assertSame($existing, McpConfig::staffToken());
+    }
+
+    /**
+     * The CLI mints grants like the cockpit does, so the spelling its help text
+     * documents has to mean what it says: an explicit `name:immediate` typed by
+     * an operator today IS the re-consent for a capability that requires one,
+     * and is stored under that spelling rather than silently becoming a
+     * permanently staged grant. A bare legacy name still stages.
+     */
+    public function test_an_immediate_tool_option_mints_the_reconsent_spelling(): void
+    {
+        $this->artisan('mcp:rotate-staff-token', [
+            '--tool' => ['tactical_set_client_custom_field:immediate'],
+            '--label' => 'controld',
+            '--force' => true,
+        ])->assertSuccessful();
+
+        $this->assertSame(
+            ['tactical_set_client_custom_field:'.McpToolModes::MODE_IMMEDIATE_RECONSENT],
+            McpToken::where('label', 'controld')->sole()->tools,
+        );
+        $this->assertSame(
+            ['tactical_set_client_custom_field', McpToolModes::MODE_IMMEDIATE],
+            McpToolModes::parseGrantEntry(McpToken::where('label', 'controld')->sole()->tools[0]),
+        );
+
+        $this->artisan('mcp:rotate-staff-token', [
+            '--tool' => ['tactical_set_client_custom_field'],
+            '--label' => 'controld-bare',
+            '--force' => true,
+        ])->assertSuccessful();
+
+        $this->assertSame(
+            ['tactical_set_client_custom_field:'.McpToolModes::MODE_STAGED],
+            McpToken::where('label', 'controld-bare')->sole()->tools,
+        );
     }
 }
