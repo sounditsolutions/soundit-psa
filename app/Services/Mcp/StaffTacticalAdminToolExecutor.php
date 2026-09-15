@@ -193,9 +193,12 @@ class StaffTacticalAdminToolExecutor
         // Upstream this call UNINSTALLS the RMM agent from the machine; re-enrolment
         // mints a new agent id and nothing about it is undoable from the API side.
         'tactical_stage_remove_agent' => 'tactical_remove_agent',
-        // Immediate execution requires an explicit grant in McpToolModes; staged
-        // callers retain cockpit approval and its pinned upstream target. Both
-        // lanes share the guarded write because this field fans out client-wide.
+        // Immediate execution requires an immediate grant RE-CONSENTED after this
+        // lane existed (McpToolModes::IMMEDIATE_RECONSENT_REQUIRED): a bare or
+        // legacy `:immediate` entry was mintable while this verb only refused, so
+        // it stages. Staged callers retain cockpit approval and its pinned upstream
+        // target. Both lanes share the guarded write because this field fans out
+        // client-wide.
         'tactical_stage_set_client_custom_field' => 'tactical_set_client_custom_field',
     ];
 
@@ -6261,7 +6264,7 @@ class StaffTacticalAdminToolExecutor
         return self::tool(
             'tactical_set_client_custom_field',
             'Set one allowlisted PSA-owned Tactical CLIENT-scoped custom field for the server-derived PSA client, using PUT clients/{id}/. '
-            .'An explicit :immediate grant permits immediate execution with staged=false; staged grants and staged=true retain cockpit approval. '
+            .'Immediate execution with staged=false requires an immediate grant RE-CONSENTED after this lane existed (stored as `:immediate-reconsent`, produced by granting immediate again on the token). A grant minted while this verb had no immediate implementation — a bare name or a legacy `:immediate` entry — stages instead, as do staged grants and staged=true. '
             .'A CLIENT custom field is read by Tactical automation for every agent under that client, so one write is a fleet-wide change rather than a per-endpoint one. '
             .'The upstream client is resolved by NAME from the stored PSA mapping at call time and must match EXACTLY ONE Tactical client: upstream names are unique only case-sensitively, and an ambiguous or missing name is refused rather than guessed. '
             .'Arbitrary field IDs and upstream client IDs are rejected; the field id comes from the PSA setting for that key and an unconfigured id is a refusal. '

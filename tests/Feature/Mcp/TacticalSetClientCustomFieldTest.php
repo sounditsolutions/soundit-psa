@@ -153,6 +153,17 @@ class TacticalSetClientCustomFieldTest extends TestCase
         return $this->token(['tactical_set_client_custom_field:staged']);
     }
 
+    /**
+     * The immediate lane is reachable ONLY from an immediate grant re-consented
+     * after the lane existed. The two legacy spellings were both mintable while
+     * this verb only refused, so neither is consent to it — see
+     * test_a_grant_minted_before_this_lane_existed_still_stages.
+     */
+    private function immediateToken(): string
+    {
+        return $this->token(['tactical_set_client_custom_field:'.McpToolModes::MODE_IMMEDIATE_RECONSENT]);
+    }
+
     // ---- surface / grant shape ------------------------------------------------
 
     public function test_the_verb_is_a_sensitive_explicit_grant_tactical_admin_tool(): void
@@ -213,7 +224,7 @@ class TacticalSetClientCustomFieldTest extends TestCase
         $client->shouldReceive('setClientCustomField')->once()->with(7, self::FIELD_ID, 'org-abc123');
 
         $response = $this->callTool(
-            $this->token(['tactical_set_client_custom_field:immediate']),
+            $this->immediateToken(),
             'tactical_set_client_custom_field',
             $this->stageArgs($fixture, ['staged' => false]),
         );
@@ -238,13 +249,85 @@ class TacticalSetClientCustomFieldTest extends TestCase
         $client->shouldNotReceive('setClientCustomField');
 
         foreach ([false, true] as $staged) {
-            $token = $staged ? $this->token(['tactical_set_client_custom_field:immediate']) : $this->grantedToken();
+            $token = $staged ? $this->immediateToken() : $this->grantedToken();
             $response = $this->callTool($token, 'tactical_set_client_custom_field', $this->stageArgs($fixture, ['staged' => $staged]));
             $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
             $this->assertNotEmpty($this->decodedResult($response)['run_id'] ?? null, (string) $response->json('result.content.0.text'));
         }
         $this->assertSame(1, TechnicianRun::where('state', TechnicianRunState::AwaitingApproval)->count());
         $this->assertSame(McpToolModes::MODE_STAGED, McpToolModes::effectiveMode(null, 'tactical_set_client_custom_field'));
+    }
+
+    /** @return array<string, array{0: string}> */
+    public static function legacyImmediateGrants(): array
+    {
+        return [
+            // What a bulk/CLI grant of the verb produced before this lane existed.
+            'a bare legacy grant' => ['tactical_set_client_custom_field'],
+            // What the token UI stored for that same bare submission, and what an
+            // operator ticking "allow immediate" got while the verb only refused.
+            'a legacy :immediate grant' => ['tactical_set_client_custom_field:immediate'],
+        ];
+    }
+
+    #[DataProvider('legacyImmediateGrants')]
+    public function test_a_grant_minted_before_this_lane_existed_still_stages(string $entry): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+
+        // Both spellings were mintable while the canonical verb's only behaviour
+        // was a refusal, and storage cannot tell them apart from each other, so
+        // neither may be read as consent to an approval-free fleet-wide write that
+        // did not exist when the operator granted it. The grant is not revoked —
+        // the call still stages — and re-consent is one checkbox away.
+        $writes = 0;
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->andReturn($this->upstreamClients());
+        $client->shouldReceive('setClientCustomField')->andReturnUsing(function () use (&$writes): void {
+            $writes++;
+        });
+
+        $this->assertSame(
+            ['tactical_set_client_custom_field', McpToolModes::MODE_STAGED],
+            McpToolModes::parseGrantEntry($entry),
+        );
+
+        $response = $this->callTool($this->token([$entry]), 'tactical_set_client_custom_field', $this->stageArgs($fixture, ['staged' => false]));
+
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $this->assertNotEmpty($this->decodedResult($response)['run_id'] ?? null, (string) $response->json('result.content.0.text'));
+        $this->assertSame(0, $writes, 'a grant minted before the immediate lane existed must never reach the upstream write');
+        $this->assertSame(1, TechnicianRun::where('state', TechnicianRunState::AwaitingApproval)->count());
+    }
+
+    public function test_an_operator_granting_immediate_now_is_stored_under_the_reconsent_spelling(): void
+    {
+        // The token UI submits `name:immediate` when an operator ticks "Allow
+        // immediate execution" — a decision made now, against the description the
+        // lane actually has — so that submission IS the re-consent, and it is
+        // stored under a spelling no pre-existing token can carry. A bare
+        // submission is not, and neither is the staged alias.
+        $this->assertSame(
+            ['tactical_set_client_custom_field:'.McpToolModes::MODE_IMMEDIATE_RECONSENT],
+            McpToolModes::normalizeGrantEntries(['tactical_set_client_custom_field:immediate'])['entries'],
+        );
+        $this->assertSame(
+            ['tactical_set_client_custom_field:'.McpToolModes::MODE_STAGED],
+            McpToolModes::normalizeGrantEntries(['tactical_set_client_custom_field'])['entries'],
+        );
+        $this->assertSame(
+            ['tactical_set_client_custom_field:'.McpToolModes::MODE_STAGED],
+            McpToolModes::normalizeGrantEntries(['tactical_stage_set_client_custom_field:immediate'])['entries'],
+        );
+
+        // And it reads back as the immediate mode, so the cockpit checkbox, the
+        // advertised schema, and the call-time gate all agree on one answer.
+        $this->assertSame(
+            ['tactical_set_client_custom_field', McpToolModes::MODE_IMMEDIATE],
+            McpToolModes::parseGrantEntry('tactical_set_client_custom_field:'.McpToolModes::MODE_IMMEDIATE_RECONSENT),
+        );
     }
 
     /** @return array<string, array{string}> */
@@ -292,7 +375,7 @@ class TacticalSetClientCustomFieldTest extends TestCase
         $client->shouldReceive('setClientCustomField')->andReturnUsing(function () use (&$writes): void {
             $writes++;
         });
-        $response = $this->callTool($this->token(['tactical_set_client_custom_field:immediate']), 'tactical_set_client_custom_field', $this->stageArgs($fixture, ['staged' => false]));
+        $response = $this->callTool($this->immediateToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture, ['staged' => false]));
         $this->assertTrue((bool) $response->json('result.isError'));
         $this->assertStringContainsString($expected, (string) $response->json('result.content.0.text'));
         $this->assertSame(0, $writes);
@@ -311,7 +394,7 @@ class TacticalSetClientCustomFieldTest extends TestCase
         $client->shouldReceive('getClients')->andReturn($this->upstreamClients());
         $client->shouldReceive('setClientCustomField')->once()->with(7, self::FIELD_ID, 'org-abc123');
         $client->shouldReceive('setClientCustomField')->once()->with(7, self::FIELD_ID, 'org-replacement');
-        $token = $this->token(['tactical_set_client_custom_field:immediate']);
+        $token = $this->immediateToken();
         $args = $this->stageArgs($fixture, ['staged' => false]);
         $first = $this->callTool($token, 'tactical_set_client_custom_field', $args);
         $this->assertTrue($this->decodedResult($first)['success']);

@@ -33,12 +33,34 @@ use App\Services\Mcp\StaffTacticalAdminToolExecutor;
  *                             what granting the immediate name meant before.
  *  - `stage_email`          — bare legacy alias entry; grants staged-only on
  *                             the send_email capability.
+ *  - `x:immediate-reconsent` — immediate grant made AFTER the capability gained
+ *                             an immediate lane. Only capabilities listed in
+ *                             IMMEDIATE_RECONSENT_REQUIRED use this spelling,
+ *                             and for those it is the ONLY entry that grants
+ *                             immediate: the two legacy spellings above were
+ *                             both mintable while the lane was a refusal, so
+ *                             neither can be read as consent to it.
  */
 class McpToolModes
 {
     public const MODE_STAGED = 'staged';
 
     public const MODE_IMMEDIATE = 'immediate';
+
+    /**
+     * Storage spelling for an immediate grant of a capability listed in
+     * IMMEDIATE_RECONSENT_REQUIRED. It is deliberately a spelling no previously
+     * minted token can carry: a bare canonical entry and a `:immediate` entry were
+     * both mintable while such a capability's immediate lane was a refusal, and
+     * normalizeGrantEntries() stored a BARE submission as `:immediate`, so the two
+     * are indistinguishable in storage and neither is evidence that an operator
+     * consented to an approval-free lane that did not exist when they granted it.
+     *
+     * It resolves to MODE_IMMEDIATE once parsed, so the mode vocabulary every
+     * consumer sees (effectiveMode, allowsImmediate, tools/list, the cockpit
+     * checkbox) stays two-valued — this is a storage distinction only.
+     */
+    public const MODE_IMMEDIATE_RECONSENT = 'immediate-reconsent';
 
     /**
      * PSA-native staged aliases; the vendor families contribute theirs through
@@ -136,6 +158,45 @@ class McpToolModes
     ];
 
     /**
+     * Capabilities whose immediate lane must be granted AGAIN, after the lane
+     * existed, before any token can reach it.
+     *
+     * IMMEDIATE_REQUIRES_EXPLICIT_GRANT above governs defaultMode() only — the
+     * full-surface token that carries no per-tool entry. It says nothing about a
+     * SCOPED token that already carries a bare or `:immediate` entry, and for
+     * tactical_set_client_custom_field every such entry was minted while the
+     * canonical verb's only behaviour was a refusal and its description read that
+     * there is no immediate implementation. Landing the lane would hand those
+     * tokens an approval-free, fleet-wide, deploy-triggering write nobody granted,
+     * so both legacy spellings resolve to STAGED here and the immediate lane is
+     * reachable only from MODE_IMMEDIATE_RECONSENT — which an operator can only
+     * produce by granting immediate again, today, against the description the lane
+     * actually has. Nothing is revoked: the tool stays granted in its staged lane
+     * and the cockpit shows it as staged until someone re-ticks the box.
+     *
+     * @var array<int, string>
+     */
+    private const IMMEDIATE_RECONSENT_REQUIRED = [
+        'tactical_set_client_custom_field',
+    ];
+
+    /** Whether an immediate grant of this capability must carry the re-consent spelling. */
+    public static function requiresImmediateReconsent(string $name): bool
+    {
+        return in_array($name, self::IMMEDIATE_RECONSENT_REQUIRED, true);
+    }
+
+    /**
+     * The mode a LEGACY immediate spelling (bare canonical, or `:immediate`)
+     * resolves to: immediate exactly as before, unless the capability requires
+     * re-consent — for which a legacy spelling is not consent to this lane.
+     */
+    private static function legacyImmediateMode(string $name): string
+    {
+        return self::requiresImmediateReconsent($name) ? self::MODE_STAGED : self::MODE_IMMEDIATE;
+    }
+
+    /**
      * Mode for a capability the token holds no explicit per-tool mode entry for.
      */
     public static function defaultMode(string $name): string
@@ -155,7 +216,8 @@ class McpToolModes
      * by the full-surface token (allowedTools === null). A SCOPED token that carries
      * no per-tool mode entry for a capability is out of the grant grammar's contract
      * — parseGrantEntry() stamps a mode on every stageable grant (bare canonical =>
-     * immediate, alias or `:staged` => staged) — so it resolves STAGED rather than
+     * immediate except where re-consent is required, alias or `:staged` => staged)
+     * — so it resolves STAGED rather than
      * inheriting full-surface trust. A scoped grant can therefore never gain an
      * approval-free lane it was not explicitly given, and tools/list advertises the
      * staged schema for exactly the calls the gate will stage.
@@ -214,11 +276,13 @@ class McpToolModes
         }
 
         if (self::isStageable($entry)) {
-            // Bare canonical = legacy grant of the immediate variant.
-            return [$entry, self::MODE_IMMEDIATE];
+            // Bare canonical = legacy grant of the immediate variant, except for a
+            // capability whose immediate lane post-dates the grant grammar: there a
+            // legacy spelling stages (IMMEDIATE_RECONSENT_REQUIRED).
+            return [$entry, self::legacyImmediateMode($entry)];
         }
 
-        foreach ([self::MODE_STAGED, self::MODE_IMMEDIATE] as $mode) {
+        foreach ([self::MODE_STAGED, self::MODE_IMMEDIATE_RECONSENT, self::MODE_IMMEDIATE] as $mode) {
             $suffix = ':'.$mode;
             if (str_ends_with($entry, $suffix)) {
                 $base = substr($entry, 0, -strlen($suffix));
@@ -227,7 +291,14 @@ class McpToolModes
                     return [$canonical, self::MODE_STAGED];
                 }
                 if (self::isStageable($base)) {
-                    return [$base, $mode];
+                    // The re-consent spelling IS the immediate mode downstream; the
+                    // legacy `:immediate` spelling is only immediate where the
+                    // capability does not require re-consent.
+                    if ($mode === self::MODE_IMMEDIATE_RECONSENT) {
+                        return [$base, self::MODE_IMMEDIATE];
+                    }
+
+                    return [$base, $mode === self::MODE_IMMEDIATE ? self::legacyImmediateMode($base) : $mode];
                 }
             }
         }
@@ -292,6 +363,17 @@ class McpToolModes
                 continue;
             }
 
+            // A submission is a decision a human is making NOW, against the tool
+            // description the lane actually has, so an explicit `name:immediate`
+            // submission IS the re-consent and is stored under the re-consent
+            // spelling below. A bare entry is not (legacy grammar only), and nor is
+            // a staged alias — hence the exact match on the canonical name.
+            if ($mode === self::MODE_STAGED
+                && self::requiresImmediateReconsent($name)
+                && $raw === $name.':'.self::MODE_IMMEDIATE) {
+                $mode = self::MODE_IMMEDIATE;
+            }
+
             if ($mode === null) {
                 $plain[$name] = true;
             } elseif (($modes[$name] ?? null) !== self::MODE_IMMEDIATE) {
@@ -304,7 +386,10 @@ class McpToolModes
             $normalized[] = $name;
         }
         foreach ($modes as $name => $mode) {
-            $normalized[] = $name.':'.$mode;
+            $suffix = $mode === self::MODE_IMMEDIATE && self::requiresImmediateReconsent($name)
+                ? self::MODE_IMMEDIATE_RECONSENT
+                : $mode;
+            $normalized[] = $name.':'.$suffix;
         }
 
         return ['entries' => $normalized, 'unknown' => array_values(array_unique($unknown))];
