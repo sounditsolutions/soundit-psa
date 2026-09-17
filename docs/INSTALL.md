@@ -1152,6 +1152,35 @@ Syncs backup account counts (M365 mailboxes, DR servers, etc.) from Servosity fo
 4. Go to **Company Mapping** to map Servosity companies to local clients
 5. Click **Sync Licenses Now** or wait for the daily 05:45 cron
 
+### AutoElevate (Privilege Management — read-only)
+
+Shows a client's AutoElevate computers on its client page. Read-only against the vendor:
+the PSA never writes to AutoElevate, and nothing here is billed or licensed.
+
+**Schema:** the stage-2 migration adds one nullable, indexed column,
+`clients.autoelevate_company_id` (the AutoElevate company UUID, stored lowercase). It is
+nullable with no backfill, so existing rows are untouched and no client is mapped until an
+admin maps it. Run `php artisan migrate --force` on deploy as usual — the integration screens
+require the column, so a deploy that skips migrate will fail with a column-not-found error
+rather than degrade.
+
+1. Settings > Integrations > **RMM & Monitoring** tab > AutoElevate
+2. In `msp.autoelevate.com`, open **Users > Add User** and create a **Service** user (this
+   requires the Administrator role), then generate its API key. If Service or API Keys is
+   missing, request Partner API (Beta) access from AutoElevate support.
+3. Paste the key into **API Key** and save
+4. Click **Test connection** — it reads a single company (`companyView`) and verifies nothing else
+5. Click **Map companies** to map AutoElevate companies to local clients — **Auto-Match by
+   Name** fills only unmapped rows and skips any normalized name shared by two clients
+6. Open any mapped client to see its AutoElevate computers panel
+
+**Notes:**
+- One client holds at most one company, and mapping is saved clear-then-apply over the
+  companies the screen listed. If the vendor returns zero companies (bad key or a degraded
+  read) the screen withholds Save and keeps existing mappings rather than clearing them.
+- All mapping routes are admin-only; the client panel is read-only for any user who can see
+  the client.
+
 ### Control D (DNS Security)
 
 The standard migration adds two nullable encrypted client attributes for future

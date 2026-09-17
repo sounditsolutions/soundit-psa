@@ -61,6 +61,22 @@ class AutoElevateCompanyController extends Controller
             $mappings = [];
         }
 
+        // A submission carrying NO company keys is refused before the clear-then-apply write.
+        //
+        // Clear-then-apply derives the new state from the rendered form, so "no keys" and
+        // "unmap everything" are the same request on the wire — but they are not the same
+        // intent. The screen renders the Save button even when the vendor returned zero
+        // companies (a bad key, a degraded read, a tenant with none), so an admin who presses
+        // Save on a visibly empty table silently nulls every existing mapping and is told
+        // "Saved 0 mapping(s)" — the flash reports success for a destructive write.
+        //
+        // Refusing the empty post is the conservative direction: the only intent it can block
+        // is "unmap every company at once", which is still reachable one dropdown at a time on
+        // a form that actually lists them. Nothing is cleared on this path.
+        if ($mappings === []) {
+            return back()->withErrors(['mappings' => 'No AutoElevate companies were submitted, so nothing was changed. Existing mappings were kept. To remove a mapping, set its dropdown to "Not mapped" on a form that lists the company.']);
+        }
+
         // Every key must be a company UUID; every non-empty value a client id. A client holds
         // exactly one company id, so the same client under two company keys is a refusal — both
         // UPDATEs would hit one row and the last write would silently win.

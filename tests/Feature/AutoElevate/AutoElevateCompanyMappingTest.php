@@ -131,6 +131,100 @@ class AutoElevateCompanyMappingTest extends TestCase
         Http::assertNothingSent();
     }
 
+    /**
+     * #2108: the vendor returning zero companies must never become "unmap everything".
+     *
+     * Clear-then-apply reads the new state off the rendered form, so an empty post and a
+     * deliberate unmap-all are the same bytes. The screen kept its Save button on the empty
+     * branch, so one click on a degraded read nulled every mapping and flashed success.
+     */
+    public function test_save_with_no_companies_submitted_keeps_every_mapping(): void
+    {
+        $a = Client::factory()->create(['autoelevate_company_id' => self::COMPANY_A]);
+        $b = Client::factory()->create(['autoelevate_company_id' => self::COMPANY_B]);
+        $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
+
+        $this->from(route('settings.autoelevate-companies.index'))
+            ->post(route('settings.autoelevate-companies.update'), ['mappings' => []])
+            ->assertRedirect(route('settings.autoelevate-companies.index'))
+            ->assertSessionHasErrors('mappings')
+            ->assertSessionMissing('success');
+
+        $this->assertSame(self::COMPANY_A, $a->fresh()->autoelevate_company_id, 'mapping survives an empty submission');
+        $this->assertSame(self::COMPANY_B, $b->fresh()->autoelevate_company_id, 'mapping survives an empty submission');
+        Http::assertNothingSent();
+    }
+
+    /** A wholly absent `mappings` key is the same refusal as an empty array, not a silent wipe. */
+    public function test_save_with_a_missing_mappings_key_keeps_every_mapping(): void
+    {
+        $a = Client::factory()->create(['autoelevate_company_id' => self::COMPANY_A]);
+        $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
+
+        $this->from(route('settings.autoelevate-companies.index'))
+            ->post(route('settings.autoelevate-companies.update'), [])
+            ->assertRedirect(route('settings.autoelevate-companies.index'))
+            ->assertSessionHasErrors('mappings');
+
+        $this->assertSame(self::COMPANY_A, $a->fresh()->autoelevate_company_id);
+    }
+
+    /** A non-array `mappings` (scalar) must also refuse rather than coerce to "clear all". */
+    public function test_save_with_a_scalar_mappings_value_keeps_every_mapping(): void
+    {
+        $a = Client::factory()->create(['autoelevate_company_id' => self::COMPANY_A]);
+        $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
+
+        $this->from(route('settings.autoelevate-companies.index'))
+            ->post(route('settings.autoelevate-companies.update'), ['mappings' => 'all'])
+            ->assertRedirect(route('settings.autoelevate-companies.index'))
+            ->assertSessionHasErrors('mappings');
+
+        $this->assertSame(self::COMPANY_A, $a->fresh()->autoelevate_company_id);
+    }
+
+    /**
+     * The guard must not block ordinary unmapping: a form that DID list a company can still
+     * clear it. Refusing only the no-keys case keeps one-at-a-time removal working.
+     */
+    public function test_unmapping_a_listed_company_still_works(): void
+    {
+        $a = Client::factory()->create(['autoelevate_company_id' => self::COMPANY_A]);
+        $b = Client::factory()->create(['autoelevate_company_id' => self::COMPANY_B]);
+        $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
+
+        $this->post(route('settings.autoelevate-companies.update'), ['mappings' => [
+            self::COMPANY_A => '',
+            self::COMPANY_B => $b->id,
+        ]])->assertSessionHas('success', 'Saved 1 AutoElevate company mapping(s).');
+
+        $this->assertNull($a->fresh()->autoelevate_company_id, 'a listed company can still be unmapped');
+        $this->assertSame(self::COMPANY_B, $b->fresh()->autoelevate_company_id);
+    }
+
+    /** The empty screen must not render a Save button that can only destroy or fail. */
+    public function test_index_with_zero_companies_withholds_save_and_warns_about_held_mappings(): void
+    {
+        $this->fakeCompanies([]);
+        Client::factory()->create(['autoelevate_company_id' => self::COMPANY_A]);
+        $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
+
+        $this->get(route('settings.autoelevate-companies.index'))
+            ->assertOk()
+            ->assertSee('AutoElevate returned zero companies for this key.')
+            ->assertSee('1 client(s) still hold a mapping')
+            ->assertDontSee('Save Mappings');
+    }
+
+    /** Positive control: with companies listed, Save is present. */
+    public function test_index_with_companies_renders_save(): void
+    {
+        $this->fakeCompanies([self::company(self::COMPANY_A, 'Acme Manufacturing')]);
+        $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
+
+        $this->get(route('settings.autoelevate-companies.index'))->assertOk()->assertSee('Save Mappings');
+    }
+
     public function test_save_rejects_a_non_uuid_company_key_and_changes_nothing(): void
     {
         $a = Client::factory()->create(['autoelevate_company_id' => self::COMPANY_A]);

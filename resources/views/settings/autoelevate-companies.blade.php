@@ -90,7 +90,12 @@
                             </tr>
                             @empty
                             <tr>
-                                <td colspan="3" class="text-muted">AutoElevate returned zero companies for this key.</td>
+                                <td colspan="3" class="text-muted">
+                                    AutoElevate returned zero companies for this key.
+                                    @if($mappedClients->isNotEmpty())
+                                        <br><span class="text-danger">{{ $mappedClients->count() }} client(s) still hold a mapping. They are kept — saving is disabled while the list is empty so an empty screen cannot clear them.</span>
+                                    @endif
+                                </td>
                             </tr>
                             @endforelse
                         </tbody>
@@ -98,9 +103,14 @@
                 </div>
             </div>
 
+            {{-- Save is withheld when the table lists nothing: a submission with no company
+                 keys is indistinguishable from "unmap everything", so the controller refuses
+                 it. The button would have no inputs to submit and could only destroy or fail. --}}
+            @if(count($companies) > 0)
             <div class="mt-3">
                 <button type="submit" class="btn btn-primary">Save Mappings</button>
             </div>
+            @endif
         </form>
     </div>
 </div>
