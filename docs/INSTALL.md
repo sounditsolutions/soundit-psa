@@ -1190,8 +1190,11 @@ migrate is skipped; the read-only computers panel on the client page degrades qu
   returns a PARTIAL list — some companies present, others omitted — saving still applies
   over what was listed, and mappings for the omitted companies are cleared. Do not save the
   mapping screen while the vendor is returning an incomplete company list.
-- Because removal is driven by the rendered form, a mapping whose company the vendor no
-  longer lists cannot be removed from this screen; it persists until the company reappears.
+- Because the form drives the write, a mapping whose company the vendor no longer lists has
+  no row on this screen — and that absence does not protect it: the save clears every
+  existing mapping before re-applying the ones the screen listed, so an unlisted company's
+  mapping is dropped by the next save. It can only be set again once the vendor lists the
+  company.
 - All mapping routes are admin-only; the client panel is read-only for any user who can see
   the client.
 
