@@ -1158,26 +1158,40 @@ Shows a client's AutoElevate computers on its client page. Read-only against the
 the PSA never writes to AutoElevate, and nothing here is billed or licensed.
 
 **Schema:** the stage-2 migration adds one nullable, indexed column,
-`clients.autoelevate_company_id` (the AutoElevate company UUID, stored lowercase). It is
-nullable with no backfill, so existing rows are untouched and no client is mapped until an
-admin maps it. Run `php artisan migrate --force` on deploy as usual — the integration screens
-require the column, so a deploy that skips migrate will fail with a column-not-found error
-rather than degrade.
+`clients.autoelevate_company_id` (the AutoElevate company UUID). Values arrive from the
+vendor and are stored as received; nothing normalises or enforces case, so do not rely on
+them being lowercase. It is nullable with no backfill, so existing rows are untouched and no
+client is mapped until an admin maps it. Run `php artisan migrate --force` on deploy as
+usual. The mapping screens require the column and will fail with a column-not-found error if
+migrate is skipped; the read-only computers panel on the client page degrades quietly to
+"Not mapped" instead, so a skipped migration is not uniformly loud.
 
 1. Settings > Integrations > **RMM & Monitoring** tab > AutoElevate
 2. In `msp.autoelevate.com`, open **Users > Add User** and create a **Service** user (this
-   requires the Administrator role), then generate its API key. If Service or API Keys is
+   requires the Administrator role), then generate its API key. The in-app setup guide
+   specifies an **AE-BEARER** key with read-only scopes; a key of another type or with
+   narrower scopes will save here and then fail at Test connection. If Service or API Keys is
    missing, request Partner API (Beta) access from AutoElevate support.
 3. Paste the key into **API Key** and save
 4. Click **Test connection** — it reads a single company (`companyView`) and verifies nothing else
 5. Click **Map companies** to map AutoElevate companies to local clients — **Auto-Match by
-   Name** fills only unmapped rows and skips any normalized name shared by two clients
+   Name** fills only unmapped rows. Its ambiguity guard compares within the unmapped
+   operational clients it considers, so a normalized name shared with a client that is
+   already mapped, or that is inactive, is not treated as ambiguous and can still auto-map.
+   Review what it filled before saving.
 6. Open any mapped client to see its AutoElevate computers panel
 
 **Notes:**
 - One client holds at most one company, and mapping is saved clear-then-apply over the
-  companies the screen listed. If the vendor returns zero companies (bad key or a degraded
-  read) the screen withholds Save and keeps existing mappings rather than clearing them.
+  companies the screen listed. If the vendor lists zero companies the screen withholds Save
+  and keeps existing mappings rather than clearing them. (A missing key or a failed read does
+  not reach that screen at all — both redirect back to Integrations with an error.)
+- **Caveat, clear-then-apply:** the refusal covers only a wholly empty list. If the vendor
+  returns a PARTIAL list — some companies present, others omitted — saving still applies
+  over what was listed, and mappings for the omitted companies are cleared. Do not save the
+  mapping screen while the vendor is returning an incomplete company list.
+- Because removal is driven by the rendered form, a mapping whose company the vendor no
+  longer lists cannot be removed from this screen; it persists until the company reappears.
 - All mapping routes are admin-only; the client panel is read-only for any user who can see
   the client.
 

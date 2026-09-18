@@ -93,7 +93,7 @@
                                 <td colspan="3" class="text-muted">
                                     AutoElevate returned zero companies for this key.
                                     @if($mappedClients->isNotEmpty())
-                                        <br><span class="text-danger">{{ $mappedClients->count() }} client(s) still hold a mapping. They are kept — saving is disabled while the list is empty so an empty screen cannot clear them.</span>
+                                        <br><span class="text-danger">{{ $mappedClientCount ?? $mappedClients->count() }} client(s) still hold a mapping. They are kept — saving is disabled while the list is empty so an empty screen cannot clear them.</span>
                                     @endif
                                 </td>
                             </tr>

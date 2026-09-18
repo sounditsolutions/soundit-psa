@@ -34,9 +34,16 @@ class AutoElevateCompanyController extends Controller
                 ->with('error', "Could not read AutoElevate companies ({$e->reason}). Nothing was changed.");
         }
 
-        $mappedClients = Client::whereNotNull('autoelevate_company_id')
-            ->get(['id', 'name', 'autoelevate_company_id'])
+        $mappedClientRows = Client::whereNotNull('autoelevate_company_id')
+            ->get(['id', 'name', 'autoelevate_company_id']);
+
+        // keyBy() collapses clients that share a company id, so the keyed collection is the
+        // right shape for the per-company lookup below but the WRONG thing to count: the
+        // empty-state warning speaks of "client(s) still hold a mapping" and must count rows,
+        // not distinct companies, or it under-reports what an empty-screen save would risk.
+        $mappedClients = $mappedClientRows
             ->keyBy(fn ($c) => strtolower($c->autoelevate_company_id));
+        $mappedClientCount = $mappedClientRows->count();
 
         // The dropdown must also offer every client that already HOLDS a mapping: a mapped
         // client that has since left the operational set would have no <option>, so the select
@@ -50,6 +57,7 @@ class AutoElevateCompanyController extends Controller
         return view('settings.autoelevate-companies', [
             'companies' => $companies,
             'mappedClients' => $mappedClients,
+            'mappedClientCount' => $mappedClientCount,
             'allClients' => $allClients,
         ]);
     }
@@ -66,7 +74,9 @@ class AutoElevateCompanyController extends Controller
         // Clear-then-apply derives the new state from the rendered form, so "no keys" and
         // "unmap everything" are the same request on the wire — but they are not the same
         // intent. The screen renders the Save button even when the vendor returned zero
-        // companies (a bad key, a degraded read, a tenant with none), so an admin who presses
+        // companies -- which index() reaches only when the vendor genuinely lists none, since
+        // an unconfigured key and an AutoElevateReadException both redirect away before the
+        // view renders -- so an admin who presses
         // Save on a visibly empty table silently nulls every existing mapping and is told
         // "Saved 0 mapping(s)" — the flash reports success for a destructive write.
         //

@@ -216,6 +216,25 @@ class AutoElevateCompanyMappingTest extends TestCase
             ->assertDontSee('Save Mappings');
     }
 
+    /**
+     * contract:7 from the r1 held review: the warning says "client(s)", but the collection it
+     * counted was keyBy(company id), which collapses two clients sharing one company into one
+     * entry. The screen then under-reports what an empty-screen save would put at risk.
+     * Two clients, one company id => the warning must say 2.
+     */
+    public function test_empty_state_warning_counts_clients_not_distinct_companies(): void
+    {
+        $this->fakeCompanies([]);
+        Client::factory()->create(['autoelevate_company_id' => self::COMPANY_A]);
+        Client::factory()->create(['autoelevate_company_id' => self::COMPANY_A]);
+        $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
+
+        $this->get(route('settings.autoelevate-companies.index'))
+            ->assertOk()
+            ->assertSee('2 client(s) still hold a mapping')
+            ->assertDontSee('Save Mappings');
+    }
+
     /** Positive control: with companies listed, Save is present. */
     public function test_index_with_companies_renders_save(): void
     {
