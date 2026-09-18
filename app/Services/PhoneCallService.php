@@ -45,25 +45,35 @@ class PhoneCallService
                 // same reason as in logOutboundCall(): updateOrCreate applies
                 // these values on the UPDATE branch too, so a second delivery
                 // for an existing CallUUID would regress a finished call to
-                // Ringing and re-date its start (and with it the prepay debit).
+                // Ringing and re-date its start. That start feeds prepay dating
+                // (PrepayService dates its transaction from `started_at ??
+                // created_at`), so a redelivery that lands BEFORE the debit is
+                // written mis-dates the charge; one that lands after it leaves
+                // the already-written transaction's date alone. Stated with that
+                // ordering caveat rather than as a flat "it re-dates the
+                // charge".
                 // Card 6aac6ee770e3c3433477d91f.
                 //
                 // LATENT rather than live on this path, and the mechanism
                 // matters, so state it exactly. The sole caller
                 // (PlivoWebhookController) guards this with `if (! $existing)`,
                 // so the update branch is normally unreachable from a webhook.
-                // It is not unreachable in general, and the reachable
-                // interleaving is NOT "both deliveries create" - call_uuid is
-                // unique, so a genuine simultaneous INSERT pair ends in a
-                // QueryException, not a silent regression. The path that does
-                // reach the update branch is this one: two deliveries both pass
-                // the caller's existence check, the first completes its INSERT
-                // and COMMITS, and the second then runs updateOrCreate, whose
-                // OWN lookup now finds the row and takes the update branch.
-                // The method is also public and nothing binds future callers to
-                // that existence check. Fixed here because the hazard is
-                // identical to the outbound one and a guard that lives in a
-                // caller's check-then-act is not a guard.
+                // It is not unreachable in general, and the mechanism is worth
+                // getting right because two earlier versions of this comment got
+                // it wrong. Read at the vendor source rather than assumed
+                // (Illuminate\Database\Eloquent\Builder): updateOrCreate calls
+                // firstOrCreate, whose createOrFirst CATCHES
+                // UniqueConstraintViolationException and re-reads the row. So a
+                // simultaneous INSERT pair does NOT surface as an exception -
+                // the loser silently receives the winner's row with
+                // wasRecentlyCreated FALSE, which is precisely the update
+                // branch. Two deliveries that both pass the caller's existence
+                // check therefore reach it, as does the plainer ordering where
+                // the first COMMITS before the second's lookup runs. The method
+                // is public too, and nothing binds a future caller to that
+                // existence check. Fixed here because the hazard is identical to
+                // the outbound one and a guard that lives in a caller's
+                // check-then-act is not a guard.
             ]
         );
 
@@ -393,13 +403,17 @@ class PhoneCallService
      *     call with no recording callback nothing ever replaces the ceiling -
      *     no re-stamp or truncation required. The repo already documents that
      *     inbound recording callbacks "often don't reach our webhook", and the
-     *     compensating API path (resolveRecordingFromPlivo) writes
-     *     recording_duration WITHOUT invoking the second look, and is itself
-     *     gated behind duration >= 1 - which is exactly the duration-null
-     *     population this branch is about. So for a meaningful share of the very
-     *     rows this fix targets, the ceiling is the permanent value. The status
-     *     is still corrected, which is the defect being fixed; the answer moment
-     *     stays approximate.
+     *     compensating path (resolveRecordingFromPlivo) writes
+     *     recording_duration WITHOUT invoking the second look. Be exact about
+     *     the gate, because an earlier version of this note put it in the wrong
+     *     place: resolveRecordingFromPlivo itself is UNGATED. The duration >= 1
+     *     gate lives in ONE of its callers, the controller's
+     *     resolveRecordingAfterEnd, and that gate excludes exactly the
+     *     duration-null population this branch is about; the console callers
+     *     (calls:resolve-recording and its bulk sibling) have no such gate and
+     *     can reach a duration-null row, though they still do not run the second
+     *     look. Either way the ceiling survives. The status is still corrected,
+     *     which is the defect being fixed; the answer moment stays approximate.
      *  1. THE CEILING IS NOT RELIABLY TRANSIENT. handleCallEnded() re-stamps
      *     ended_at on EVERY delivery, and the controller routes two distinct
      *     callbacks to it (DialAction=hangup and CallStatus=completed). On a

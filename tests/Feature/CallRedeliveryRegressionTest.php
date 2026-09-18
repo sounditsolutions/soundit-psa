@@ -14,7 +14,9 @@ use Tests\TestCase;
 
 /**
  * Card 6aac6ee770e3c3433477d91f — a redelivered webhook regresses a COMPLETED
- * call back to Ringing and re-dates its start.
+ * call back to Ringing and re-dates its start (which in turn can mis-date the
+ * prepay charge — see the dating note below for the ordering that decides
+ * whether it actually does).
  *
  * Same defect shape as the answered_by one that was fixed just before this:
  * PhoneCall::updateOrCreate()'s values array is applied on the UPDATE branch as
@@ -125,7 +127,7 @@ class CallRedeliveryRegressionTest extends TestCase
         $service->logOutboundCall($payload);
 
         $this->assertTrue($originalStart->equalTo(PhoneCall::where('call_uuid', $payload['CallUUID'])->firstOrFail()->started_at),
-            'the call started when it started; a redelivery 37 minutes later must not re-date it, because the prepay charge is dated from it');
+            'the call started when it started; a redelivery 37 minutes later must not re-date it, because prepay dating reads this column');
     }
 
     /**
@@ -167,8 +169,12 @@ class CallRedeliveryRegressionTest extends TestCase
     /**
      * The create branch must still do its job. Removing two keys from an
      * updateOrCreate values array is only correct if the create path still
-     * establishes them — the column default for status is 'ringing' and
-     * started_at is nullable, so this is not something the schema covers for us.
+     * establishes them. Precisely: status HAS a DB default of 'ringing', so the
+     * schema does cover that one and the assignment is belt-and-braces;
+     * started_at is nullable with no default, so that write is the one actually
+     * doing the work on create. (An earlier version of this docblock said the
+     * schema covered neither, which was the same error the source comment
+     * carried and which was corrected there first.)
      *
      * GREEN before and after by construction; it is the guard on the fix.
      */
