@@ -1172,10 +1172,16 @@ class HdbAuthClientTest extends TestCase
         // The EFFECTIVE policy, and the honest limit of this assertion.
         //
         // Deleting `'strict' => false` from the client is an EQUIVALENT mutant,
-        // not an escape: measured here, Laravel merges Guzzle's own defaults
-        // into the options before they are sent, and Guzzle's default for
-        // `strict` is already false — the captured array carries
-        // `'strict' => false` and `'track_redirects' => false` either way. So
+        // not an escape — and the mechanism matters, because an earlier draft of
+        // this comment named the wrong one. It is NOT Laravel: PendingRequest
+        // merges only its own defaults and never sets `allow_redirects`, and
+        // Guzzle's Client::prepareDefaults is a shallow `$options + $defaults`,
+        // so a request-level array would suppress a config-level one entirely.
+        // The injection is RedirectMiddleware::__invoke doing
+        // `$options['allow_redirects'] += self::$defaultSettings`, whose
+        // defaults already carry `'strict' => false`. That is also why
+        // `track_redirects` — a key nothing in this client or in Laravel ever
+        // sets — appears in the capture at all. So
         // this seam cannot distinguish "stated false" from "defaulted false",
         // and asserting the key's PRESENCE would be theatre: it passes on the
         // mutant too. What it CAN settle is the one that matters, the regression
@@ -1189,10 +1195,13 @@ class HdbAuthClientTest extends TestCase
     /**
      * The portal's measured sign-in chain, replayed through a REAL Guzzle stack.
      *
-     * `Http::fake()` cannot settle any of this: its stub is installed OUTSIDE
-     * RedirectMiddleware, so a faked 302 comes back as a body and is never
-     * followed. Only a real stack over a MockHandler, handed the client's own
-     * captured options, runs the middleware that decides method and body per hop.
+     * `Http::fake()` cannot settle any of this: its stub short-circuits before
+     * any hop is followed, so a faked 302 comes back as a body and the redirect
+     * policy is never exercised. (The stub is INNERMOST, not outside the
+     * middleware — see {@see capturedRedirectOptions} for the mechanism and for
+     * the correction of the opposite claim.) Only a real stack over a
+     * MockHandler, handed the client's own captured options, runs the middleware
+     * that decides method and body per hop.
      *
      * The responses are the ones measured 2026-09-17 21:58Z against the portal:
      * an accepted credential post 302s to `/home.php`, which 307s to `/home`,
@@ -1275,7 +1284,12 @@ class HdbAuthClientTest extends TestCase
         // every later hop is already a GET; a portal that answered the credential
         // POST with a 307 instead would re-POST the password onward exactly as
         // before. The ONLY thing bounding that is the origin pin, and the pin
-        // bounds the HOST, not the path.
+        // bounds the host, and bounds the path only to a PREFIX of the
+        // configured base — `isOnPortalOrigin` accepts the base or anything
+        // under `base/`, so any path under the origin qualifies. Said exactly,
+        // because "the pin bounds the HOST, not the path" (an earlier draft)
+        // reads as though the path were unchecked, and the two statements
+        // differ for a base URL that carries a path of its own.
         //
         // This is not a defect introduced here and it is not something this
         // client can fix by a flag — it is the residual the docblocks claim, and
@@ -1463,9 +1477,10 @@ class HdbAuthClientTest extends TestCase
 
     public function test_guzzle_refuses_a_scheme_downgrade_before_the_on_redirect_guard_sees_it(): void
     {
-        // Http::fake() cannot settle this one: its stub handler is installed
-        // OUTSIDE RedirectMiddleware, so a faked 302 comes back as a body and is
-        // never followed. A real Guzzle stack over a MockHandler, fed the
+        // Http::fake() cannot settle this one: its stub short-circuits before a
+        // hop is followed, so a faked 302 comes back as a body and the redirect
+        // policy never runs. (Innermost, not outside the middleware — mechanism
+        // in capturedRedirectOptions().) A real Guzzle stack over a MockHandler, fed the
         // client's own captured options, is the seam that actually runs the
         // middleware — which is what makes the two mappings above a measurement
         // rather than a guess about vendor internals.
@@ -1504,15 +1519,24 @@ class HdbAuthClientTest extends TestCase
         // enforcing the cap. Deriving the count means the next cap change cannot
         // silently turn this measurement into noise.
         //
-        // The COST of deriving it, and the reason for the two guards below: a
-        // self-sizing queue would keep passing for max => 50 or max => 1000, so
-        // on its own it can no longer notice an over-permissive cap. So the cap
-        // is bounded here explicitly, and an absent `max` — which would evaluate
-        // to null + 2 = 2 and silently re-create the very artefact this repair
-        // removed — is refused rather than tolerated.
-        $max = $this->capturedRedirectOptions()['max'] ?? null;
+        // The COST of deriving it: a self-sizing queue would keep passing for
+        // max => 50 or max => 1000, so on its own it can no longer notice an
+        // over-permissive cap. The bound below is what restores that, and 12 is
+        // deliberately LOOSER than the constant's own arithmetic (4 measured
+        // hops plus two routing pairs = 8): this test catches a cap that has
+        // escaped its rationale entirely, while the rationale itself is argued
+        // in MAX_REDIRECTS's docblock and pinned exactly by
+        // test_every_request_carries_the_redirect_guard. Two ceilings, stated
+        // rather than blurred.
+        //
+        // No guard against an ABSENT `max`: it cannot be absent. The capture is
+        // taken inside RedirectMiddleware, which has already merged its own
+        // defaults (`max => 5`) into the array — so an assertion on its presence
+        // would be failure-unreachable. An earlier draft shipped exactly that
+        // assertion with a message describing an impossible state; this comment
+        // is what replaced it.
+        $max = $this->capturedRedirectOptions()['max'];
 
-        $this->assertIsInt($max, 'The redirect policy states no `max`; this test would silently size its queue to 2.');
         $this->assertLessThanOrEqual(12, $max, 'The redirect cap has grown past anything this portal\'s measured 4-hop chain justifies.');
 
         $overCap = $max + 2;
