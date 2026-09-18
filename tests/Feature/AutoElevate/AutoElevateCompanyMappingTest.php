@@ -217,6 +217,30 @@ class AutoElevateCompanyMappingTest extends TestCase
     }
 
     /**
+     * Pins the INSTALL.md caveat that an UNLISTED company's mapping is destroyed by the next
+     * save. The clear-then-apply transaction nulls every mapping before re-applying only the
+     * submitted ones, so absence from the form is not protection. Documented behaviour that
+     * no test pins is exactly how a later "harmless" refactor silently changes it.
+     */
+    public function test_saving_clears_a_mapping_whose_company_the_vendor_no_longer_lists(): void
+    {
+        $listed = Client::factory()->create(['autoelevate_company_id' => null]);
+        $unlisted = Client::factory()->create(['autoelevate_company_id' => self::COMPANY_B]);
+        $this->fakeCompanies([self::company(self::COMPANY_A, 'Acme Manufacturing')]);
+        $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
+
+        $this->post(route('settings.autoelevate-companies.update'), [
+            'mappings' => [self::COMPANY_A => (string) $listed->id],
+        ]);
+
+        $this->assertSame(strtolower(self::COMPANY_A), $listed->fresh()->autoelevate_company_id);
+        $this->assertNull(
+            $unlisted->fresh()->autoelevate_company_id,
+            'An unlisted company mapping must be cleared by the next save - INSTALL.md documents this.'
+        );
+    }
+
+    /**
      * contract:7 from the r1 held review: the warning says "client(s)", but the collection it
      * counted was keyBy(company id), which collapses two clients sharing one company into one
      * entry. The screen then under-reports what an empty-screen save would put at risk.
