@@ -391,6 +391,76 @@ class StuckRingingCallTest extends TestCase
      * length to anchor from. The row must still stop claiming to ring, and
      * the end time falls back to the last moment we can defend - the start.
      */
+    /**
+     * A row whose STORED duration is already at the ceiling must not be
+     * finalised by a later short callback.
+     *
+     * The guard used to test only the incoming $duration. A 30-second callback
+     * on a row already carrying duration=20000 therefore read "complete", and
+     * finaliseCallTheHangupNeverClosed() then derived ended_at from
+     * effectiveDurationSeconds(), which prefers the STORED 20000 - stamping an
+     * end time from the very number the ceiling exists to distrust, on a call
+     * that may still be connected.
+     */
+    public function test_a_stored_duration_at_the_ceiling_is_not_finalised_by_a_later_short_callback(): void
+    {
+        Queue::fake();
+        $call = $this->stuckRingingCall(
+            'stuck-ringing-stored-at-ceiling',
+            PhoneCallService::RECORDING_MAX_LENGTH_SECONDS,
+        );
+
+        $this->assertNull($call->fresh()->ended_at,
+            'precondition: the row starts unfinalised');
+
+        app(PhoneCallService::class)->handleRecordingReady(
+            'stuck-ringing-stored-at-ceiling',
+            'https://media.plivo.com/v1/Account/MA/Recording/rec-stored-ceiling.mp3',
+            30,
+        );
+
+        $stored = $call->fresh();
+
+        $this->assertNull($stored->ended_at,
+            'a stored length at the ceiling must withhold finalisation, however short the later callback');
+        $this->assertSame(CallStatus::Ringing, $stored->status);
+        $this->assertNotNull($stored->recording_url,
+            'the recording columns are still written - only the finalisation is declined');
+    }
+
+    /**
+     * The recording_duration arm of the guard, stated honestly.
+     *
+     * This arm CANNOT be reached through handleRecordingReady(): that method
+     * overwrites recording_duration with the incoming value before the flag is
+     * computed, so a seeded over-ceiling recording_duration is gone by the time
+     * the guard runs. My first version of this test seeded the column and
+     * asserted the row stayed open; it failed, and the failure was correct -
+     * the premise was wrong, not the fix.
+     *
+     * The arm is still worth holding, because effectiveDurationSeconds() falls
+     * back to recording_duration and any future caller that does not rewrite
+     * the column would reach it. It is pinned here at the level it is real:
+     * the predicate, exercised directly through the ceiling constant.
+     */
+    public function test_the_ceiling_predicate_rejects_an_over_ceiling_recording_duration(): void
+    {
+        $service = app(PhoneCallService::class);
+        $method = new \ReflectionMethod($service, 'lengthIsBelowRecordingCeiling');
+        $method->setAccessible(true);
+
+        $ceiling = PhoneCallService::RECORDING_MAX_LENGTH_SECONDS;
+
+        $this->assertFalse($method->invoke($service, $ceiling),
+            'a length AT the ceiling is not below it');
+        $this->assertFalse($method->invoke($service, $ceiling + 1),
+            'a length above the ceiling is not below it');
+        $this->assertTrue($method->invoke($service, $ceiling - 1),
+            'one second under the ceiling is below it');
+        $this->assertTrue($method->invoke($service, null),
+            'no recorded length is not evidence of a rollover, matching the sweep predicate');
+    }
+
     public function test_a_recording_without_a_duration_still_finalises_the_row(): void
     {
         Queue::fake();

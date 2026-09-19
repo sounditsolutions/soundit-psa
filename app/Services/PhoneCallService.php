@@ -508,7 +508,19 @@ class PhoneCallService
             // RECORDING stopped, not that the CALL did - see the guard in
             // finaliseCallTheHangupNeverClosed(). Anything shorter stopped
             // because the call did.
-            $recordingIsComplete = $duration === null || $duration < self::RECORDING_MAX_LENGTH_SECONDS;
+            //
+            // THE GUARD MUST TEST THE OPERAND THE FINALISATION WILL USE.
+            // finaliseCallTheHangupNeverClosed() derives ended_at from
+            // effectiveDurationSeconds(), which prefers the STORED duration
+            // and falls back to the STORED recording_duration - never this
+            // incoming $duration. Testing only the incoming value let a short
+            // later callback finalise a row whose stored length is already at
+            // or above the ceiling, deriving ended_at from the very number the
+            // guard exists to distrust. The sweep in FinaliseStuckCalls has
+            // always tested both stored columns; this now agrees with it.
+            $recordingIsComplete = $this->lengthIsBelowRecordingCeiling($duration)
+                && $this->lengthIsBelowRecordingCeiling($call->duration)
+                && $this->lengthIsBelowRecordingCeiling($call->recording_duration);
 
             $this->finaliseCallTheHangupNeverClosed($call, $recordingIsComplete);
             $this->reconcileAnsweredStateWithDuration($call);
@@ -614,6 +626,19 @@ class PhoneCallService
      *
      * Mutates the model only; the caller saves.
      */
+    /**
+     * Is one stored or reported length below the recording ceiling?
+     *
+     * Null means "no length recorded", which is not evidence of a rollover and
+     * so does not withhold finalisation - the same reading the sweep's
+     * $belowRecordingCeiling predicate gives a null column. Only a length at or
+     * above the ceiling answers false.
+     */
+    private function lengthIsBelowRecordingCeiling(?int $seconds): bool
+    {
+        return $seconds === null || $seconds < self::RECORDING_MAX_LENGTH_SECONDS;
+    }
+
     private function finaliseCallTheHangupNeverClosed(PhoneCall $call, bool $recordingIsComplete = true): void
     {
         if ($call->ended_at !== null) {
