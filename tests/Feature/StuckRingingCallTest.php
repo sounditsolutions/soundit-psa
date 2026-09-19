@@ -408,4 +408,50 @@ class StuckRingingCallTest extends TestCase
             'the recording still proves the call ended, even with no length');
         $this->assertNotSame(CallStatus::Ringing, $stored->status);
     }
+
+    /**
+     * The ceiling guard must be impossible to skip by omission.
+     *
+     * finaliseCallTheHangupNeverClosed() once defaulted $recordingIsComplete
+     * to true. The sole caller passes it, so no behavioural test could fail if
+     * the default came back - a future second call site would silently inherit
+     * the pre-guard behaviour and finalise a still-connected call. There is no
+     * safe default (true skips the guard; false declines everything the method
+     * exists to do), so the contract is that the caller MUST state it.
+     *
+     * This asserts the contract itself rather than a behaviour, because the
+     * defect it guards is precisely the absence of a caller to observe.
+     *
+     * WHAT IT CANNOT SEE, stated rather than fixed: it constrains the
+     * SIGNATURE, so it cannot catch a future caller that supplies the flag as a
+     * literal true and skips the guard that way. Only a behavioural test of
+     * such a caller could, and that caller does not exist yet - which is the
+     * same reason this asserts a contract at all.
+     *
+     * It deliberately does NOT assert the required-parameter COUNT. That would
+     * go red on any legitimately added required parameter, under a message
+     * claiming the ceiling contract was broken when it was intact. Assert what
+     * is meant: this flag exists, is named, and is required.
+     */
+    public function test_the_ceiling_flag_cannot_be_omitted_by_a_future_caller(): void
+    {
+        $method = new \ReflectionMethod(PhoneCallService::class, 'finaliseCallTheHangupNeverClosed');
+        $parameters = $method->getParameters();
+
+        // Assert the parameter EXISTS before dereferencing it, so the loudest
+        // failure - someone removing the flag outright - surfaces as this
+        // message rather than an undefined-key warning and a call on null.
+        $this->assertGreaterThanOrEqual(2, count($parameters),
+            'the ceiling flag is gone from finaliseCallTheHangupNeverClosed() entirely');
+
+        $parameter = $parameters[1];
+
+        $this->assertSame('recordingIsComplete', $parameter->getName(),
+            'guarding the wrong parameter - the ceiling flag moved position');
+
+        $this->assertFalse($parameter->isOptional(),
+            'finaliseCallTheHangupNeverClosed() must REQUIRE $recordingIsComplete: '
+            .'a default lets a future caller skip the ceiling guard and finalise a live call, '
+            .'and no behavioural test would catch it because the only caller today passes it');
+    }
 }

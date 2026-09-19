@@ -78,9 +78,30 @@ use Illuminate\Support\Facades\Log;
  * recording at or above the ceiling is declined here too, on either
  * direction. That false negative is bought against a false positive on a live
  * call, and it is not a silent loss - those rows are COUNTED and reported on
- * every run, and a later hangup webhook, or a rerun after one arrives, still
- * reaches them. Whether the exclusion should be narrowed is an open question
- * for the card owner; this round states the reach rather than changes it.
+ * every run. A rerun of THIS command will not take them, and NOTHING ELSE IS
+ * KNOWN TO EITHER. Both halves of that need stating precisely, because earlier
+ * versions of this paragraph got each of them wrong in turn.
+ *
+ * Why a rerun does not: the ceiling arm reads the STORED duration and
+ * recording_duration, and a declined row keeps a stored length at or above the
+ * ceiling, so the predicate excludes it again on every pass. Note what this
+ * does NOT rest on - the stored length is not frozen. PhoneCallService::
+ * resolveRecordingFromPlivo() rewrites recording_duration (and writes no
+ * ended_at), and the controller can call it on the same delivery. The reason a
+ * rerun still declines is that the duration column, backfilled before the
+ * ceiling test, stays at the ceiling and the predicate requires BOTH arms below
+ * it.
+ *
+ * What does NOT rescue the row: do not read this exclusion as a handoff to the
+ * hangup webhook. This command's population is whereNull('ended_at') - rows
+ * whose hangup webhook never arrived, which is what PhoneCallService::
+ * finaliseCallTheHangupNeverClosed() is named for. If that webhook does arrive
+ * it writes ended_at and the row leaves this population, but for the rows this
+ * command exists to serve it never does. So an operator who reads the exclusion
+ * as temporary, and waits either for the next run or for a later webhook, waits
+ * forever: a genuinely ended ceiling-length row is dispositioned by nothing at
+ * all today. Whether the exclusion should be narrowed is an open question for
+ * the card owner; this round states the reach rather than changes it.
  *
  * With both bounds in place the evidence filter's job is the narrow one it
  * always really did: it excludes rows that never finalised AND left no trace
@@ -195,8 +216,9 @@ class FinaliseStuckCalls extends Command
         // drift. What such a length does and does not establish is stated
         // once in the docblock above and deliberately not restated here. It
         // costs the row that really did end with its recording at the
-        // ceiling: declined, counted below, and left for a later webhook
-        // rather than risked.
+        // ceiling: declined, counted below, and left undispositioned rather
+        // than risked. Not "left for a later webhook" - the population is
+        // rows whose webhook never came.
         //
         // Ageing keys on the same anchor the derivation below uses -
         // started_at, else created_at - so a row can never be aged by one
@@ -287,9 +309,11 @@ class FinaliseStuckCalls extends Command
         // precedes it, so it cannot drift from the filter it reports on. These
         // rows DID leave a trace, but one at or above the ceiling, which the
         // docblock above explains is not something this command will act on. A
-        // genuinely ended call in this shape is reachable again as soon as a
-        // hangup webhook lands, and until then this run says out loud that it
-        // did not cover it.
+        // genuinely ended call in this shape is reached by NOTHING today: this
+        // sweep declines it for the same stored length on every pass, and the
+        // hangup webhook that would finalise it is the one that never arrived -
+        // that absence is what put the row in this population. So this run says
+        // out loud that it did not cover it, and nothing else will either.
         $agedStuckWithEvidence = $agedStuck->clone()->where($endedEvidence);
         $declinedAtCeiling = $agedStuckWithEvidence->clone()->count()
             - $agedStuckWithEvidence->clone()->where($belowRecordingCeiling)->count();

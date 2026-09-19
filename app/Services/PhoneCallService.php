@@ -547,6 +547,26 @@ class PhoneCallService
      * when it hits the maxLength ceiling, which is why $recordingIsComplete is
      * threaded through below.
      *
+     * WHAT THAT FLAG DOES NOT COVER. It discriminates on a REPORTED length, so
+     * it only declines when the vendor tells us the recording is long. It is
+     * computed as ($duration === null || $duration < CEILING), so a callback
+     * carrying NO usable length reads as complete and finalises. That is a
+     * deliberate choice - the recording callback is itself evidence the call
+     * ended - but it means the ceiling guard protects against a long recording,
+     * NOT against an unmeasured one. The controller widens that case:
+     * $request->integer() turns an ABSENT RecordingDuration into 0, so a
+     * rollover callback that omits the field is indistinguishable here from a
+     * zero-length recording. Do not read this guard as covering it.
+     *
+     * ON WHAT IS ACTUALLY PINNED, stated narrowly because an earlier version of
+     * this docblock overclaimed it: test_a_recording_without_a_duration_still_
+     * finalises_the_row covers the NULL arm by calling this service directly
+     * with null. That is a real contract and it is why the null branch must not
+     * be flipped. It is NOT coverage of production, because the sole production
+     * caller passes $request->integer(), which cannot return null - so the
+     * branch that test pins is one no delivery reaches. The value production
+     * actually emits for an absent field is 0, and no test passes 0 here.
+     *
      * Why the second look below could not do this job: it returns early when
      * ended_at === null, so the one webhook that DID arrive declined to act on
      * exactly the rows that needed it. This runs FIRST and supplies the
@@ -613,8 +633,17 @@ class PhoneCallService
      * and a control rather than an incident.
      *
      * Mutates the model only; the caller saves.
+     *
+     * $recordingIsComplete is REQUIRED, deliberately. It used to default to
+     * true, which meant a caller that simply forgot the argument got the
+     * pre-guard behaviour - the ceiling test skipped, a still-connected call
+     * finalised - and no test would have failed, because the one existing
+     * caller passes it. Protection that is opt-in is protection the next
+     * call site silently loses. There is no safe default here: true skips the
+     * guard, and false would decline every finalisation this method exists to
+     * perform. The caller must say which it knows.
      */
-    private function finaliseCallTheHangupNeverClosed(PhoneCall $call, bool $recordingIsComplete = true): void
+    private function finaliseCallTheHangupNeverClosed(PhoneCall $call, bool $recordingIsComplete): void
     {
         if ($call->ended_at !== null) {
             return;
