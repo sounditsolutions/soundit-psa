@@ -725,21 +725,35 @@ class PhoneCallService
      * debitFromPhoneCall() RECONCILES rather than double-charging. It keys on
      * phone_call_id, and a redelivery takes the update branch, rewriting hours
      * and moving prepay_used/prepay_balance by the DIFFERENCE only. So the
-     * ledger arithmetic is repeat-safe. It is NOT idempotent end to end: every
-     * invocation that gets past the returns above finishes by calling
-     * PrepayAlertService::checkThreshold(), which on a balance at or below the
-     * threshold stamps prepay_alert_notified_at, sends a low-balance
-     * notification, and - if auto top-up is enabled - generates an invoice and
-     * pushes it to the billing backend. Those are outward effects no later
-     * correction retracts.
+     * ledger arithmetic is repeat-safe. It is NOT idempotent end to end: an
+     * invocation that runs the debit through to the end finishes by calling
+     * PrepayAlertService::checkThreshold() at PrepayService :615, which on a
+     * balance at or below the threshold stamps prepay_alert_notified_at, sends
+     * a low-balance notification, and - if auto top-up is enabled - generates
+     * an invoice and pushes it to the billing backend. Those are outward
+     * effects no later correction retracts. Not every invocation gets there:
+     * the zero-or-non-billable branch at :562-566 is past both returns above,
+     * and it reverses and returns BEFORE :615 - so the maximal downward
+     * revision, the one to zero, makes no threshold pass at all.
      *
-     * Do NOT read checkThreshold()'s guards as bounding that to one crossing.
-     * prepay_alert_notified_at is a resettable edge detector, not a latch: the
-     * early return holds only while the flag is set AND the balance is still
-     * down, because the branch above it NULLS the flag on any pass where the
-     * balance is back above the threshold - a pass this same debit path makes
-     * on every invocation, including a downward duration revision that credits
-     * the balance back, and one the hourly balance command makes too.
+     * Do NOT read checkThreshold()'s guards as bounding those effects to one
+     * crossing - and do not read them as self-clearing either. The branch at
+     * PrepayAlertService :37-43 does NULL prepay_alert_notified_at, but only on
+     * a pass that happens while the balance is ALREADY back above the
+     * threshold, and such passes are scarce: checkThreshold() has exactly four
+     * callers - PrepayService :501 (ticket-note debit) and :615 (phone-call
+     * debit), ExpirePrepayBalances :67, and CheckPrepayBalances :27. The hourly
+     * balance command is not a clearer despite the name: it selects
+     * whereColumn('prepay_balance', '<=', 'prepay_alert_threshold') at
+     * CheckPrepayBalances :20, so a contract whose balance is back above the
+     * threshold is never handed to checkThreshold() by it at all. Nor is a
+     * credit a clearer: neither depositFromInvoice(), which restores the hours
+     * when a top-up invoice is paid, nor reverseDebitForPhoneCall() calls it.
+     * So the flag can outlive a full recovery, and the next genuine crossing
+     * then hits the early return at :46-48 - stale flag, balance below
+     * threshold - with no low-balance notification and no auto top-up. Read it
+     * as a latch that only a debit landing while the balance is above the
+     * threshold happens to release.
      *
      * The unpaid-invoice guard is narrower than its name as well: it matches
      * only Draft and Posted auto top-up invoices, so a Synced or paid one does
@@ -749,23 +763,37 @@ class PhoneCallService
      * with a log line. For a manually-billed client with neither id, or any
      * client whose push threw, the auto top-up invoice created Posted stays
      * Posted, and there this guard DOES match and DOES block every later
-     * crossing while it stands. One fact about this repo's gates is worth more
-     * than a list of ways out, because it is what the swallowed-failure log
-     * line will make a maintainer try: NO staff or automatic push surface
-     * admits a Posted invoice - the bulk action at InvoiceController :352-353,
-     * the single push button at invoices/show.blade.php :26 and the auto-push
-     * job at PushInvoiceToBilling :34 are each gated to Draft or PendingSync,
-     * while createAutoTopUpInvoice() creates the row Posted. So re-pushing is
-     * not the remedy for a push-threw client's held top-up invoice; nothing
-     * reaches it by that route.
+     * crossing while it stands. What releases it is the thing the swallowed-
+     * failure log line already tells a maintainer to do - push it manually -
+     * so do not read Posted as sealing the row off. The status gates in this
+     * repo guard a button or a batch, not the route. The bulk action at
+     * Web/InvoiceController :353 and the single push button at
+     * invoices/show.blade.php :26 admit only Draft or PendingSync, and the
+     * auto-push job at PushInvoiceToBilling :34 is narrower still - Draft ONLY,
+     * a strict equality, not the two-status set - while
+     * createAutoTopUpInvoice() (PrepayOrderService :161) creates the row
+     * Posted, so none of those three picks it up. The single-push ROUTES are
+     * ungated: routes/web.php :680 and :683 map to
+     * Web\InvoiceController::pushToQbo() (:199-210) and ::pushToStripe()
+     * (:225-246), neither of which reads status at all; downstream,
+     * pushInvoiceToStripe() refuses only a Void row or one already carrying a
+     * stripe_invoice_id, and pushInvoiceToQbo() has no status gate. A POST to
+     * one of those routes therefore does reach the Posted top-up invoice, and
+     * on success Invoice::recordPushResult() (:428-429) writes Synced to any
+     * row that is not Void or Paid - a status this guard does not match, which
+     * is how the hold ends. A client with NEITHER customer id still needs one
+     * linked first: what the route declines to gate is the invoice's status,
+     * not the backend's own requirements.
      *
      * What the guards DO bound is repeat callbacks within one unbroken dip:
      * while the flag stands and the balance stays down, further debits for this
      * call notify no further. A rollover callback and the real hangup for the
      * same call can still produce two notifications - and, where no Draft or
      * Posted top-up invoice is standing, two top-up invoices and two backend
-     * pushes - if the balance recovers in between, and the first of them is
-     * caused by a debit for a call that is still connected. Note also that
+     * pushes - but only where a debit's own threshold pass lands while the
+     * balance is back above the line and clears the flag in between; the first
+     * of the two is caused by a debit for a call that is still connected. Note
+     * also that
      * reverseDebitForPhoneCall() deletes the transaction and restores the
      * balance WITHOUT calling checkThreshold(), so reversing a debit does not
      * clear a notification the debit triggered.
