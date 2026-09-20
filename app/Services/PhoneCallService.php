@@ -721,11 +721,17 @@ class PhoneCallService
      * that omission would conclude a declined row never costs the client
      * anything.
      *
-     * On the debit specifically, measured rather than assumed:
-     * debitFromPhoneCall() RECONCILES rather than double-charging. It keys on
-     * phone_call_id, and a redelivery takes the update branch, rewriting hours
-     * and moving prepay_used/prepay_balance by the DIFFERENCE only. So the
-     * ledger arithmetic is repeat-safe. It is NOT idempotent end to end: an
+     * On the debit specifically, measured rather than assumed: under SERIAL
+     * redelivery, debitFromPhoneCall() keys on phone_call_id, takes the update
+     * branch, and moves prepay_used/prepay_balance by the difference. That is
+     * the case measured here and it is not a safety claim - the lookup at
+     * PrepayService :573 is an unlocked SELECT inside DB::transaction() with no
+     * unique index on prepay_transactions.phone_call_id, so two deliveries
+     * landing at once can both take the create branch at :592-600 and each move
+     * the FULL amount at :602-603. That race is open and tracked as #2873; do
+     * not read this paragraph as certifying the ledger against it.
+     *
+     * The debit is NOT idempotent end to end: an
      * invocation that runs the debit through to the end finishes by calling
      * PrepayAlertService::checkThreshold() at PrepayService :615, which on a
      * balance at or below the threshold stamps prepay_alert_notified_at, sends
