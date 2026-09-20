@@ -859,16 +859,29 @@ class PhoneCallService
      * holds the CONTRACTS row - the row the flag lives on - across that pair.
      * debitFromPhoneCall() calls it at PrepayService :615, outside the
      * DB::transaction() at :572 that moved the ledger - but do NOT read that
-     * as "after a commit" on both paths. handleCallEnded() invokes the debit
-     * at :494, INSIDE updateCallSafely()'s DB::transaction (:1370), so :572
-     * opens a nested SAVEPOINT and nothing commits until the outer closure
-     * returns: on that path :615 stamps the flag, sends the notification and
-     * can create and push a top-up invoice while the ledger move is still
-     * uncommitted, and a later throw in that closure rolls the move back with
-     * the notification and the invoice already out. Only
-     * handleRecordingReady()'s call at :599 runs after its transaction has
-     * committed. Neither path changes the check-then-act above: no lock on
-     * the contracts row is held across :46-:57 on either. Nor are the two
+     * as "after a commit" on every path. Which it is depends on the CALLER,
+     * not on the call site. handleCallEnded() invokes the debit at :494,
+     * INSIDE updateCallSafely()'s DB::transaction (:1428), so :572 opens a
+     * nested SAVEPOINT and nothing commits until the outer closure returns:
+     * on that path :615 stamps the flag, sends the notification and can
+     * create and push a top-up invoice while the ledger move is still
+     * uncommitted, and a later throw in that closure rolls the move back
+     * with the notification and the invoice already out. That shape is NOT
+     * unique to handleCallEnded(). linkCallToTicket() debits at :1235, and
+     * the MCP link_call_to_ticket and create_ticket_from_call actions both
+     * reach it from inside a DB::transaction() of their own -
+     * StaffPsaActionToolExecutor :2224 and :2285 - whose audit write runs
+     * AFTER the debit, so :615 fires pre-commit there too, and a throw in
+     * that audit write rolls the ledger move back with the notification and
+     * the invoice already out. Of the call sites measured here,
+     * handleRecordingReady()'s at :599 runs after its own transaction has
+     * committed, and setBillable() (:1346) and the web link route
+     * (CallController :347) run inside no transaction at all. Read that as
+     * the list measured at this commit, not as a closed one: any caller that
+     * wraps a debit in a transaction of its own acquires the pre-commit
+     * shape without touching this file. No path named here changes the
+     * check-then-act above: none of them holds a lock on the contracts row
+     * across :46-:57. Nor are the two
      * callbacks serialised against each other: handleCallEnded()'s debit runs
      * inside updateCallSafely()'s lockForUpdate on the phone_calls row, while
      * handleRecordingReady()'s runs after that transaction has committed and
