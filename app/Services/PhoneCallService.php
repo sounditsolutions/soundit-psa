@@ -712,24 +712,39 @@ class PhoneCallService
      *
      * That money write is conditional twice over: the caller's
      * ticket_id/is_billable gate above it, and debitFromPhoneCall()'s own
-     * returns - with no ticket, or no active hours-based prepay contract
-     * resolving for it, it moves no money (and with a zero or non-billable
-     * duration it REVERSES instead). An untagged inbound row - the common
-     * intake shape - therefore takes no money path at all, so do not read a
-     * prepay transaction per declined row. Where it DOES run it is named here
-     * because the numbered residue list omits it, and a reader reasoning from
-     * that omission would conclude a declined row never costs the client
-     * anything.
+     * returns - with no ticket, or no hours-based prepay contract resolving
+     * for it, it moves no money (and with a zero or non-billable duration it
+     * REVERSES instead). Do NOT read a STATUS gate into that second one: a
+     * ticket-attached contract is taken as-is at PrepayService :527 with no
+     * status test, so an expired or cancelled contract is still debited. The
+     * where('status', 'active') at :531 filters the client-wide FALLBACK
+     * query alone - it runs only when the ticket carries no contract_id - and
+     * the final gate at :537 tests has_prepay and prepay_as_amount and
+     * nothing else. De-activating a contract does not stop this money path.
+     * An untagged inbound row - the common intake shape - does take no money
+     * path at all, so do not read a prepay transaction per declined row.
+     * Where it DOES run it is named here because the numbered residue list
+     * omits it, and a reader reasoning from that omission would conclude a
+     * declined row never costs the client anything.
      *
-     * On the debit specifically, measured rather than assumed: under SERIAL
-     * redelivery, debitFromPhoneCall() keys on phone_call_id, takes the update
-     * branch, and moves prepay_used/prepay_balance by the difference. That is
-     * the case measured here and it is not a safety claim - the lookup at
-     * PrepayService :573 is an unlocked SELECT inside DB::transaction() with no
-     * unique index on prepay_transactions.phone_call_id, so two deliveries
-     * landing at once can both take the create branch at :592-600 and each move
-     * the FULL amount at :602-603. That race is open and tracked as #2873; do
-     * not read this paragraph as certifying the ledger against it.
+     * On the debit specifically, measured rather than assumed, and stated as
+     * a CONDITIONAL because the condition is the whole of it: a redelivery
+     * that still FINDS a prepay_transactions row for this phone_call_id at
+     * PrepayService :573 takes the update branch and moves
+     * prepay_used/prepay_balance by the difference only. Finding one is not
+     * the only serial outcome, and being serial does not make it the likely
+     * one. reverseDebitForPhoneCall() DELETES the row (:634), and a first
+     * delivery that hit either return above - no ticket, or no contract
+     * resolving - wrote no row to find; in both cases the next delivery,
+     * however far apart, sees nothing at :573, takes the create branch at
+     * :592-600, and moves the FULL amount at :602-603. So a repeat is
+     * difference-only where the row survived and full-amount where it did
+     * not, and neither half is a safety claim: that same lookup is an
+     * unlocked SELECT inside DB::transaction() with no unique index on
+     * prepay_transactions.phone_call_id, so two deliveries landing AT ONCE
+     * can both miss an existing row and both create. That race is open and
+     * tracked as #2873; do not read this paragraph as certifying the ledger
+     * against it.
      *
      * The debit is NOT idempotent end to end: an
      * invocation that runs the debit through to the end finishes by calling
@@ -762,11 +777,18 @@ class PhoneCallService
      * doing: the flag drops on any checkThreshold() pass that happens while
      * the balance is already above the line, and a debit is only one way such
      * a pass arrives. The nightly prepay:expire run is another, and is not a
-     * debit at all - ExpirePrepayBalances selects hours-based prepay contracts
-     * with NO threshold filter (:23-24), unlike the hourly command above, and
-     * calls checkThreshold() at :67 after any forfeiture that wrote hours off,
-     * so a contract sitting above its threshold when that scheduled job runs
-     * (routes/console.php :337) has the flag NULLed with no debit involved.
+     * debit at all - but it is a far narrower clearer than its SELECTION
+     * suggests, and selection is not what reaches checkThreshold().
+     * ExpirePrepayBalances does select hours-based prepay contracts with NO
+     * threshold filter (:23-24), unlike the hourly command above; between
+     * that query and the call, :46-48 skips to the next contract on a skipped
+     * result or forfeited_hours <= 0, and :66 skips the call entirely on a
+     * dry run. Only a contract that actually FORFEITED hours on that run is
+     * handed to checkThreshold() at :67. A contract with no lot expiring that
+     * night - the ordinary case - is selected, skipped, and never passed at
+     * all, so the scheduled run (routes/console.php :337) clears a stale flag
+     * only for the contracts it wrote hours off, not for every contract
+     * sitting above its threshold.
      * The flag is cleared outside checkThreshold() entirely as well, by an
      * alert-settings save: ContractController :565 (staff) and
      * PortalPrepayController :204 (portal) both NULL it unconditionally,
@@ -798,11 +820,24 @@ class PhoneCallService
      * pushInvoiceToStripe() refuses only a Void row or one already carrying a
      * stripe_invoice_id, and pushInvoiceToQbo() has no status gate. A POST to
      * one of those routes therefore does reach the Posted top-up invoice, and
-     * on success Invoice::recordPushResult() (:428-429) writes Synced to any
-     * row that is not Void or Paid - a status this guard does not match, which
-     * is how the hold ends. A client with NEITHER customer id still needs one
-     * linked first: what the route declines to gate is the invoice's status,
-     * not the backend's own requirements.
+     * on success Invoice::recordPushResult() can move it to Synced - a status
+     * this guard does not match, which is how the hold ends. That transition
+     * is CONDITIONAL, not automatic: :428-429 writes Synced only when the
+     * CALLER asked for it (transitionToSynced) and the locked row is neither
+     * Void nor Paid. The Stripe push and the QBO CREATE branch do ask, and
+     * both cases named above leave a row carrying no backend id, so for those
+     * two the push is the release. A row that ALREADY carries a
+     * qbo_invoice_id is not released by it: QboSyncService :349 routes that
+     * row to the UPDATE branch, which passes transitionToSynced: false at
+     * :399 to keep the current status. Such a row is reachable - a QBO pull
+     * reverts a Paid row with no stripe_invoice_id to Posted at :494-517, and
+     * it still carries the id its CREATE push stored - so a QBO-only client
+     * can hold a Posted auto top-up invoice that this guard matches, that
+     * pushToQbo() cannot move off Posted, and for which the Stripe route at
+     * routes/web.php :683 is unavailable. Pushing is the release for the two
+     * cases above, not for that one. A client with NEITHER customer id still
+     * needs one linked first: what the route declines to gate is the
+     * invoice's status, not the backend's own requirements.
      *
      * What the guards DO bound is repeat callbacks within one unbroken dip,
      * and only the passes that actually OBSERVE the flag: while the flag
@@ -822,10 +857,20 @@ class PhoneCallService
      * check-then-act on the flag: it reads prepay_alert_notified_at at
      * PrepayAlertService :46 and only then writes now() at :57, and no caller
      * holds the CONTRACTS row - the row the flag lives on - across that pair.
-     * debitFromPhoneCall() calls it at PrepayService :615, after its own
-     * DB::transaction() has already committed. Nor are the two callbacks
-     * serialised against each other: handleCallEnded()'s debit runs inside
-     * updateCallSafely()'s lockForUpdate on the phone_calls row, while
+     * debitFromPhoneCall() calls it at PrepayService :615, outside the
+     * DB::transaction() at :572 that moved the ledger - but do NOT read that
+     * as "after a commit" on both paths. handleCallEnded() invokes the debit
+     * at :494, INSIDE updateCallSafely()'s DB::transaction (:1370), so :572
+     * opens a nested SAVEPOINT and nothing commits until the outer closure
+     * returns: on that path :615 stamps the flag, sends the notification and
+     * can create and push a top-up invoice while the ledger move is still
+     * uncommitted, and a later throw in that closure rolls the move back with
+     * the notification and the invoice already out. Only
+     * handleRecordingReady()'s call at :599 runs after its transaction has
+     * committed. Neither path changes the check-then-act above: no lock on
+     * the contracts row is held across :46-:57 on either. Nor are the two
+     * callbacks serialised against each other: handleCallEnded()'s debit runs
+     * inside updateCallSafely()'s lockForUpdate on the phone_calls row, while
      * handleRecordingReady()'s runs after that transaction has committed and
      * the lock is gone. Two deliveries landing on two workers at once can
      * therefore both read NULL at :46, both fall through to :57, and both
