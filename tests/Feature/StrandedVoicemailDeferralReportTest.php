@@ -833,25 +833,44 @@ class StrandedVoicemailDeferralReportTest extends TestCase
             $graphSends[] = $endpoint;
         };
 
-        $this->app->bind(\App\Services\Graph\GraphClient::class, function () use ($recordGraphSend) {
-            return new class($recordGraphSend) extends \App\Services\Graph\GraphClient
-            {
-                private \Closure $record;
+        // Round 3 contract:1, MEASURED BEFORE IT WAS ACCEPTED. This binding used
+        // to be an anonymous GraphClient subclass that skipped the parent
+        // constructor and overrode post() ONLY. That instrument was broken in
+        // the exact direction it was added to detect: a send-shaped mutant
+        // calling patch() (or get/delete/createEvent/getRaw/...) never reached
+        // the override, hit a half-constructed parent, and raised
+        //   Error: Typed property GraphClient::$cache must not be accessed
+        //   before initialization
+        // which NotificationService's catch (\Throwable) then swallowed. The
+        // mutant SURVIVED with the marker showing it fired: a Graph send was
+        // attempted and this guard reported green. Overriding one verb is a
+        // claim about which verb a future defect will choose.
+        //
+        // So the instrument moved from the VERB to the WIRE. GraphClient's
+        // constructor has a documented Guzzle `handler` seam (config['handler'],
+        // honoured at every one of its three client-construction sites);
+        // production config never sets it. A real, fully-constructed client is
+        // built here with a handler that records and refuses EVERY outbound
+        // request, whatever verb or helper reaches it. The token cache is
+        // pre-seeded because getToken() posts through `authHttp`, which has no
+        // handler seam -- without the seed a token request would be the thing
+        // that escapes, which is this same finding one layer down.
+        cache()->put('graph_api_token', 'test-token-not-a-real-credential', 3600);
 
-                public function __construct(\Closure $record)
-                {
-                    $this->record = $record;
-                }
+        $graphHandler = \GuzzleHttp\HandlerStack::create(function ($request) use ($recordGraphSend) {
+            $target = $request->getUri()->getPath();
+            $recordGraphSend($target);
 
-                public function post(string $endpoint, array $data): array
-                {
-                    ($this->record)($endpoint);
+            throw new \RuntimeException(
+                'The command sent a Graph request to '.$target.': it sent something.'
+            );
+        });
 
-                    throw new \RuntimeException(
-                        'The command sent a Graph request to '.$endpoint.': it sent something.'
-                    );
-                }
-            };
+        $this->app->bind(\App\Services\Graph\GraphClient::class, function () use ($graphHandler) {
+            return new \App\Services\Graph\GraphClient(
+                array_merge(config('services.graph'), ['handler' => $graphHandler]),
+                app(\Illuminate\Contracts\Cache\Repository::class),
+            );
         });
 
         $this->assertSame(
