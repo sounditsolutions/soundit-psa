@@ -639,17 +639,45 @@ class PhoneCallService
      * hours that callback is mid-conversation, and without this guard the
      * finalisation below would stamp ended_at and flip the status on a live
      * call. That is a regression THIS METHOD INTRODUCED: before it existed
-     * the mid-call callback wrote the recording columns and nothing else,
-     * because reconcileAnsweredStateWithDuration() returns early on a null
-     * ended_at.
+     * the mid-call callback did not stamp ended_at or move status, because
+     * reconcileAnsweredStateWithDuration() returns early on a null ended_at.
+     * It did NOT write "the recording columns and nothing else" - that
+     * wording was false and is withdrawn. The early return bounds only
+     * reconcileAnsweredStateWithDuration(); nothing on the writes listed
+     * below depends on ended_at.
      *
-     * DECLINING IS NOT THE WHOLE FIX, because the caller has already written
-     * recording_url, recording_duration and (on a duration-less row) duration
-     * by the time this returns. The row left behind - null ended_at, full end
-     * evidence, hours old - is exactly the shape FinaliseStuckCalls sweeps, so
-     * that command applies this same ceiling test to its population and counts
-     * what it declines. Both halves read RECORDING_MAX_LENGTH_SECONDS above;
-     * neither restates the number.
+     * DECLINING IS NOT THE WHOLE FIX, because by the time this returns the
+     * caller has already written recording_url and recording_duration, has
+     * backfilled duration on a duration-less row, has called
+     * downloadRecording() (which writes recording_disk_path and a file to
+     * local storage), and has run PrepayService::debitFromPhoneCall() - a
+     * MONEY write, which the residue list below omitted and which is named
+     * here because a reader reasoning from that omission would conclude the
+     * declined row costs the client nothing.
+     *
+     * On the debit specifically, measured at this sha rather than assumed:
+     * debitFromPhoneCall() RECONCILES rather than double-charging. It keys on
+     * phone_call_id, and a redelivery takes the update branch, rewriting hours
+     * and moving prepay_used/prepay_balance by the DIFFERENCE only. So the
+     * ledger arithmetic is repeat-safe. It is NOT idempotent end to end: it
+     * finishes by calling PrepayAlertService::checkThreshold(), which on a
+     * first dip below the threshold stamps prepay_alert_notified_at, sends a
+     * low-balance notification, and - if auto top-up is enabled - generates an
+     * invoice and pushes it to the billing backend. Those are outward effects
+     * no later correction retracts. checkThreshold() self-guards (it returns
+     * early while prepay_alert_notified_at is set, and the top-up skips when
+     * an unpaid auto top-up invoice exists), so the exposure is ONE crossing,
+     * not one per callback - but that crossing can be caused by a debit for a
+     * call that is still connected. Note also that
+     * reverseDebitForPhoneCall() deletes the transaction and restores the
+     * balance WITHOUT calling checkThreshold(), so reversing a debit does not
+     * clear a notification the debit triggered.
+     *
+     * The row left behind - null ended_at, full end evidence, hours old - is
+     * exactly the shape FinaliseStuckCalls sweeps, so that command applies
+     * this same ceiling test to its population and counts what it declines.
+     * Both halves read RECORDING_MAX_LENGTH_SECONDS above; neither restates
+     * the number.
      *
      * Raised by three independent review seats against the first version of
      * this change, whose docblock asserted the opposite - that the recording
