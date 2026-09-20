@@ -689,12 +689,88 @@ class PhoneCallService
      * because reconcileAnsweredStateWithDuration() returns early on a null
      * ended_at.
      *
-     * DECLINING IS NOT THE WHOLE FIX, because the caller has already written
-     * recording_url and (on a duration-less row) duration by the time this
-     * returns - and recording_duration too, EXCEPT where the stored length was
-     * already at or above the ceiling, which the caller declines to lower so
-     * the rollover evidence outlives the delivery it declined rather than being
-     * erased by it. The row left behind - null ended_at, full end
+     * DECLINING IS NOT THE WHOLE FIX, because declining bounds THIS method and
+     * nothing else the same delivery does. Stated in the order it actually
+     * happens, because that ordering is load-bearing.
+     *
+     * BEFORE this is reached, inside the caller's transaction,
+     * handleRecordingReady() has already set recording_url and (on a
+     * duration-less row) backfilled duration - and set recording_duration too,
+     * EXCEPT where the incoming value would lower a stored length that is
+     * already at or above the ceiling, which the caller declines to do at
+     * :547-551 so the rollover evidence outlives the delivery it declined
+     * rather than being erased by it. The save comes after this returns, at the
+     * end of the closure.
+     *
+     * AFTER this returns and that transaction has COMMITTED, the caller calls
+     * downloadRecording() (which writes recording_disk_path and a file to local
+     * storage) and then, only when $call->ticket_id && $call->is_billable, runs
+     * PrepayService::debitFromPhoneCall() - a MONEY write. Do not read
+     * "already" into those last two: at the instant this method returns neither
+     * has run, and if the closure throws, updateCallSafely() rolls back and
+     * returns null and neither runs at all.
+     *
+     * That money write is conditional twice over: the caller's
+     * ticket_id/is_billable gate above it, and debitFromPhoneCall()'s own
+     * returns - with no ticket, or no active hours-based prepay contract
+     * resolving for it, it moves no money (and with a zero or non-billable
+     * duration it REVERSES instead). An untagged inbound row - the common
+     * intake shape - therefore takes no money path at all, so do not read a
+     * prepay transaction per declined row. Where it DOES run it is named here
+     * because the numbered residue list omits it, and a reader reasoning from
+     * that omission would conclude a declined row never costs the client
+     * anything.
+     *
+     * On the debit specifically, measured rather than assumed:
+     * debitFromPhoneCall() RECONCILES rather than double-charging. It keys on
+     * phone_call_id, and a redelivery takes the update branch, rewriting hours
+     * and moving prepay_used/prepay_balance by the DIFFERENCE only. So the
+     * ledger arithmetic is repeat-safe. It is NOT idempotent end to end: every
+     * invocation that gets past the returns above finishes by calling
+     * PrepayAlertService::checkThreshold(), which on a balance at or below the
+     * threshold stamps prepay_alert_notified_at, sends a low-balance
+     * notification, and - if auto top-up is enabled - generates an invoice and
+     * pushes it to the billing backend. Those are outward effects no later
+     * correction retracts.
+     *
+     * Do NOT read checkThreshold()'s guards as bounding that to one crossing.
+     * prepay_alert_notified_at is a resettable edge detector, not a latch: the
+     * early return holds only while the flag is set AND the balance is still
+     * down, because the branch above it NULLS the flag on any pass where the
+     * balance is back above the threshold - a pass this same debit path makes
+     * on every invocation, including a downward duration revision that credits
+     * the balance back, and one the hourly balance command makes too.
+     *
+     * The unpaid-invoice guard is narrower than its name as well: it matches
+     * only Draft and Posted auto top-up invoices, so a Synced or paid one does
+     * not block a second top-up. It is not inert and must not be read as dead
+     * code: pushToBillingBackend() pushes only when the client has a
+     * stripe_customer_id or a qbo_customer_id, and it swallows a push failure
+     * with a log line. For a manually-billed client with neither id, or any
+     * client whose push threw, the auto top-up invoice created Posted stays
+     * Posted, and there this guard DOES match and DOES block every later
+     * crossing while it stands. One fact about this repo's gates is worth more
+     * than a list of ways out, because it is what the swallowed-failure log
+     * line will make a maintainer try: NO staff or automatic push surface
+     * admits a Posted invoice - the bulk action at InvoiceController :352-353,
+     * the single push button at invoices/show.blade.php :26 and the auto-push
+     * job at PushInvoiceToBilling :34 are each gated to Draft or PendingSync,
+     * while createAutoTopUpInvoice() creates the row Posted. So re-pushing is
+     * not the remedy for a push-threw client's held top-up invoice; nothing
+     * reaches it by that route.
+     *
+     * What the guards DO bound is repeat callbacks within one unbroken dip:
+     * while the flag stands and the balance stays down, further debits for this
+     * call notify no further. A rollover callback and the real hangup for the
+     * same call can still produce two notifications - and, where no Draft or
+     * Posted top-up invoice is standing, two top-up invoices and two backend
+     * pushes - if the balance recovers in between, and the first of them is
+     * caused by a debit for a call that is still connected. Note also that
+     * reverseDebitForPhoneCall() deletes the transaction and restores the
+     * balance WITHOUT calling checkThreshold(), so reversing a debit does not
+     * clear a notification the debit triggered.
+     *
+     * The row left behind - null ended_at, full end
      * evidence, hours old - is exactly the shape FinaliseStuckCalls sweeps, so
      * that command applies this same ceiling test to its population and counts
      * what it declines. Both halves read RECORDING_MAX_LENGTH_SECONDS above;
