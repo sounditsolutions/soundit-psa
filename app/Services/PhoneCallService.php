@@ -752,8 +752,21 @@ class PhoneCallService
      * So the flag can outlive a full recovery, and the next genuine crossing
      * then hits the early return at :46-48 - stale flag, balance below
      * threshold - with no low-balance notification and no auto top-up. Read it
-     * as a latch that only a debit landing while the balance is above the
-     * threshold happens to release.
+     * as a latch with no self-clearing discipline rather than as a debit's
+     * doing: the flag drops on any checkThreshold() pass that happens while
+     * the balance is already above the line, and a debit is only one way such
+     * a pass arrives. The nightly prepay:expire run is another, and is not a
+     * debit at all - ExpirePrepayBalances selects hours-based prepay contracts
+     * with NO threshold filter (:23-24), unlike the hourly command above, and
+     * calls checkThreshold() at :67 after any forfeiture that wrote hours off,
+     * so a contract sitting above its threshold when that scheduled job runs
+     * (routes/console.php :337) has the flag NULLed with no debit involved.
+     * The flag is cleared outside checkThreshold() entirely as well, by an
+     * alert-settings save: ContractController :565 (staff) and
+     * PortalPrepayController :204 (portal) both NULL it unconditionally,
+     * whatever the balance. So do not reason backwards from a cleared flag to
+     * a debit - and do not read this list as closed either; it is what was
+     * measured here, not a proof that nothing else clears it.
      *
      * The unpaid-invoice guard is narrower than its name as well: it matches
      * only Draft and Posted auto top-up invoices, so a Synced or paid one does
@@ -790,9 +803,11 @@ class PhoneCallService
      * call notify no further. A rollover callback and the real hangup for the
      * same call can still produce two notifications - and, where no Draft or
      * Posted top-up invoice is standing, two top-up invoices and two backend
-     * pushes - but only where a debit's own threshold pass lands while the
-     * balance is back above the line and clears the flag in between; the first
-     * of the two is caused by a debit for a call that is still connected. Note
+     * pushes - but only where something clears the flag in between: a
+     * threshold pass landing while the balance is back above the line (a later
+     * debit's own, or the scheduled prepay:expire one), or an alert-settings
+     * save. The first of the two is caused by a debit for a call that is still
+     * connected. Note
      * also that
      * reverseDebitForPhoneCall() deletes the transaction and restores the
      * balance WITHOUT calling checkThreshold(), so reversing a debit does not
