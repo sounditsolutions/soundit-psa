@@ -701,7 +701,16 @@ class PhoneCallService
      * with a log line. For a manually-billed client with neither id, or any
      * client whose push threw, the auto top-up invoice created Posted stays
      * Posted - and there this guard DOES match and DOES block every later
-     * crossing until someone pays or voids that invoice. What
+     * crossing until that invoice leaves Draft and Posted. That is NOT the
+     * same as "until someone pays or voids it": the guard is a status test,
+     * so any exit from those two releases it. For the push-threw client the
+     * expected remedy is exactly such an exit - the staff push action that
+     * the swallowed-failure log line advertises calls
+     * Invoice::recordPushResult(), which transitions the row to Synced by
+     * default, so a successful re-push unblocks the next crossing with the
+     * invoice still unpaid; soft-deleting the invoice releases it too. Only
+     * the neither-id client, with no push route that can succeed, is held
+     * until someone pays or voids. What
      * the guards DO bound is repeat callbacks within one unbroken dip: while
      * the flag stands and the balance stays down, further debits for this call
      * notify no further. A rollover callback and the real hangup for the same
