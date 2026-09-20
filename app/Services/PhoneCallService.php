@@ -691,15 +691,24 @@ class PhoneCallService
      * balance is back above the threshold - a pass this same debit path makes
      * on every invocation, including a downward duration revision that credits
      * the balance back, and one the hourly balance command makes too. The
-     * unpaid-invoice guard is narrower than its name as well: it matches only
-     * Draft and Posted invoices, while the auto top-up flow pushes its invoice
-     * to the billing backend, which moves it to Synced - so an unpaid PUSHED
-     * invoice does not block a second one, and neither does a paid one. What
+     * unpaid-invoice guard is narrower than its name as well, but how much
+     * narrower depends on the client: it matches only Draft and Posted
+     * invoices, and a SUCCESSFUL push moves the auto top-up invoice to
+     * Synced, so an unpaid pushed invoice does not block a second one, and
+     * neither does a paid one. It is not inert, though, and must not be read
+     * as dead code: pushToBillingBackend() pushes only when the client has a
+     * stripe_customer_id or a qbo_customer_id, and it swallows a push failure
+     * with a log line. For a manually-billed client with neither id, or any
+     * client whose push threw, the auto top-up invoice created Posted stays
+     * Posted - and there this guard DOES match and DOES block every later
+     * crossing until someone pays or voids that invoice. What
      * the guards DO bound is repeat callbacks within one unbroken dip: while
      * the flag stands and the balance stays down, further debits for this call
      * notify no further. A rollover callback and the real hangup for the same
-     * call can still produce two notifications and two backend pushes if the
-     * balance recovers in between - and the first of them is caused by a debit
+     * call can still produce two notifications - and, where no Draft or
+     * Posted top-up invoice is standing, two top-up invoices and two backend
+     * pushes - if the balance recovers in between, and the first of them is
+     * caused by a debit
      * for a call that is still connected. Note also that
      * reverseDebitForPhoneCall() deletes the transaction and restores the
      * balance WITHOUT calling checkThreshold(), so reversing a debit does not
