@@ -689,12 +689,20 @@ class PhoneCallService
      * because reconcileAnsweredStateWithDuration() returns early on a null
      * ended_at.
      *
-     * DECLINING IS NOT THE WHOLE FIX, because the caller has already written
-     * recording_url and (on a duration-less row) duration by the time this
-     * returns - and recording_duration too, EXCEPT where the stored length was
-     * already at or above the ceiling, which the caller declines to lower so
-     * the rollover evidence outlives the delivery it declined rather than being
-     * erased by it. The row left behind - null ended_at, full end
+     * DECLINING IS NOT THE WHOLE FIX, because declining bounds THIS method and
+     * nothing else the same delivery does. Stated in the order it actually
+     * happens, because that ordering is load-bearing.
+     *
+     * BEFORE this is reached, inside the caller's transaction,
+     * handleRecordingReady() has already set recording_url and (on a
+     * duration-less row) backfilled duration - and set recording_duration too,
+     * EXCEPT where the incoming value would lower a stored length that is
+     * already at or above the ceiling, which the caller declines to do at
+     * :547-551 so the rollover evidence outlives the delivery it declined
+     * rather than being erased by it. The save comes after this returns, at the
+     * end of the closure.
+     *
+     * The row left behind - null ended_at, full end
      * evidence, hours old - is exactly the shape FinaliseStuckCalls sweeps, so
      * that command applies this same ceiling test to its population and counts
      * what it declines. Both halves read RECORDING_MAX_LENGTH_SECONDS above;
