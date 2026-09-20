@@ -798,20 +798,40 @@ class PhoneCallService
      * linked first: what the route declines to gate is the invoice's status,
      * not the backend's own requirements.
      *
-     * What the guards DO bound is repeat callbacks within one unbroken dip:
-     * while the flag stands and the balance stays down, further debits for this
-     * call notify no further. A rollover callback and the real hangup for the
-     * same call can still produce two notifications - and, where no Draft or
-     * Posted top-up invoice is standing, two top-up invoices and two backend
-     * pushes - but only where something clears the flag in between: a
-     * threshold pass landing while the balance is back above the line (a later
-     * debit's own, or the scheduled prepay:expire one), or an alert-settings
-     * save. The first of the two is caused by a debit for a call that is still
-     * connected. Note
-     * also that
-     * reverseDebitForPhoneCall() deletes the transaction and restores the
-     * balance WITHOUT calling checkThreshold(), so reversing a debit does not
-     * clear a notification the debit triggered.
+     * What the guards DO bound is repeat callbacks within one unbroken dip,
+     * and only the passes that actually OBSERVE the flag: while the flag
+     * stands, the balance stays down, and the passes are SERIALISED, further
+     * debits for this call notify no further. A rollover callback and the real
+     * hangup for the same call can still produce two notifications - and, where
+     * no Draft or Posted top-up invoice is standing, two top-up invoices and
+     * two backend pushes - by at least two routes, and the second of them needs
+     * nothing cleared at all.
+     *
+     * The first route is a flag cleared in between: a threshold pass landing
+     * while the balance is back above the line (a later debit's own, or the
+     * scheduled prepay:expire one), or an alert-settings save. The first of
+     * those is caused by a debit for a call that is still connected.
+     *
+     * The second is plain concurrency, because checkThreshold() is an UNLOCKED
+     * check-then-act on the flag: it reads prepay_alert_notified_at at
+     * PrepayAlertService :46 and only then writes now() at :57, and no caller
+     * holds the CONTRACTS row - the row the flag lives on - across that pair.
+     * debitFromPhoneCall() calls it at PrepayService :615, after its own
+     * DB::transaction() has already committed. Nor are the two callbacks
+     * serialised against each other: handleCallEnded()'s debit runs inside
+     * updateCallSafely()'s lockForUpdate on the phone_calls row, while
+     * handleRecordingReady()'s runs after that transaction has committed and
+     * the lock is gone. Two deliveries landing on two workers at once can
+     * therefore both read NULL at :46, both fall through to :57, and both
+     * notify and top up - and the standing-invoice guard above is a
+     * check-then-act too, so it does not serialise them either.
+     *
+     * Do not read those two routes as closed; they are what was measured here.
+     * In particular, a duplicate notification or a duplicate top-up with NO
+     * clearer anywhere in the audit trail is not evidence that this path was
+     * uninvolved. Note also that reverseDebitForPhoneCall() deletes the
+     * transaction and restores the balance WITHOUT calling checkThreshold(), so
+     * reversing a debit does not clear a notification the debit triggered.
      *
      * The row left behind - null ended_at, full end
      * evidence, hours old - is exactly the shape FinaliseStuckCalls sweeps, so
