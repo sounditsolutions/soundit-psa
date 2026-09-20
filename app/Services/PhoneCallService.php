@@ -646,29 +646,61 @@ class PhoneCallService
      * reconcileAnsweredStateWithDuration(); nothing on the writes listed
      * below depends on ended_at.
      *
-     * DECLINING IS NOT THE WHOLE FIX, because by the time this returns the
-     * caller has already written recording_url and recording_duration, has
-     * backfilled duration on a duration-less row, has called
-     * downloadRecording() (which writes recording_disk_path and a file to
-     * local storage), and has run PrepayService::debitFromPhoneCall() - a
-     * MONEY write, which the residue list below omitted and which is named
-     * here because a reader reasoning from that omission would conclude the
-     * declined row costs the client nothing.
+     * DECLINING IS NOT THE WHOLE FIX, because declining bounds THIS method
+     * and nothing else the same delivery does. Stated in the order it
+     * actually happens, because that ordering is load-bearing. BEFORE this is
+     * reached, inside the caller's transaction, handleRecordingReady() has
+     * already set recording_url and recording_duration on the model and
+     * backfilled duration on a duration-less row (the save comes after this
+     * returns, at the end of the closure). AFTER this returns and that
+     * transaction has COMMITTED, the caller calls downloadRecording() (which
+     * writes recording_disk_path and a file to local storage) and then, only
+     * when $call->ticket_id && $call->is_billable, runs
+     * PrepayService::debitFromPhoneCall() - a MONEY write. Do not read
+     * "already" into those last two: at the instant this method returns
+     * neither has run, and if the closure throws, updateCallSafely() rolls
+     * back and returns null and neither runs at all.
+     *
+     * That money write is conditional twice over: the caller's
+     * ticket_id/is_billable gate above it, and debitFromPhoneCall()'s own
+     * returns - with no ticket, or no active hours-based prepay contract
+     * resolving for it, it moves no money (and with a zero or non-billable
+     * duration it REVERSES instead). An untagged inbound row - the common
+     * intake shape - therefore takes no money path at all, so do not read a
+     * prepay transaction per declined row. Where it DOES run it is named here
+     * because the numbered residue list omits it, and a reader reasoning from
+     * that omission would conclude a declined row never costs the client
+     * anything.
      *
      * On the debit specifically, measured at this sha rather than assumed:
      * debitFromPhoneCall() RECONCILES rather than double-charging. It keys on
      * phone_call_id, and a redelivery takes the update branch, rewriting hours
      * and moving prepay_used/prepay_balance by the DIFFERENCE only. So the
-     * ledger arithmetic is repeat-safe. It is NOT idempotent end to end: it
-     * finishes by calling PrepayAlertService::checkThreshold(), which on a
-     * first dip below the threshold stamps prepay_alert_notified_at, sends a
-     * low-balance notification, and - if auto top-up is enabled - generates an
-     * invoice and pushes it to the billing backend. Those are outward effects
-     * no later correction retracts. checkThreshold() self-guards (it returns
-     * early while prepay_alert_notified_at is set, and the top-up skips when
-     * an unpaid auto top-up invoice exists), so the exposure is ONE crossing,
-     * not one per callback - but that crossing can be caused by a debit for a
-     * call that is still connected. Note also that
+     * ledger arithmetic is repeat-safe. It is NOT idempotent end to end: every
+     * invocation that gets past the returns above finishes by calling
+     * PrepayAlertService::checkThreshold(), which on a balance at or below the
+     * threshold stamps prepay_alert_notified_at, sends a low-balance
+     * notification, and - if auto top-up is enabled - generates an invoice and
+     * pushes it to the billing backend. Those are outward effects no later
+     * correction retracts.
+     *
+     * Do NOT read checkThreshold()'s guards as bounding that to one crossing.
+     * prepay_alert_notified_at is a resettable edge detector, not a latch: the
+     * early return holds only while the flag is set AND the balance is still
+     * down, because the branch above it NULLS the flag on any pass where the
+     * balance is back above the threshold - a pass this same debit path makes
+     * on every invocation, including a downward duration revision that credits
+     * the balance back, and one the hourly balance command makes too. The
+     * unpaid-invoice guard is narrower than its name as well: it matches only
+     * Draft and Posted invoices, while the auto top-up flow pushes its invoice
+     * to the billing backend, which moves it to Synced - so an unpaid PUSHED
+     * invoice does not block a second one, and neither does a paid one. What
+     * the guards DO bound is repeat callbacks within one unbroken dip: while
+     * the flag stands and the balance stays down, further debits for this call
+     * notify no further. A rollover callback and the real hangup for the same
+     * call can still produce two notifications and two backend pushes if the
+     * balance recovers in between - and the first of them is caused by a debit
+     * for a call that is still connected. Note also that
      * reverseDebitForPhoneCall() deletes the transaction and restores the
      * balance WITHOUT calling checkThreshold(), so reversing a debit does not
      * clear a notification the debit triggered.
