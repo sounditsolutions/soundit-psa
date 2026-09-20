@@ -873,13 +873,26 @@ class PhoneCallService
      * StaffPsaActionToolExecutor :2224 and :2285 - whose audit write runs
      * AFTER the debit, so :615 fires pre-commit there too, and a throw in
      * that audit write rolls the ledger move back with the notification and
-     * the invoice already out. Of the call sites measured here,
-     * handleRecordingReady()'s at :599 runs after its own transaction has
-     * committed, and setBillable() (:1346) and the web link route
-     * (CallController :347) run inside no transaction at all. Read that as
-     * the list measured at this commit, not as a closed one: any caller that
-     * wraps a debit in a transaction of its own acquires the pre-commit
-     * shape without touching this file. No path named here changes the
+     * the invoice already out. Which shape a debit has is a property of the
+     * CALLER, so what follows lists CALLERS, not call sites.
+     * handleRecordingReady()'s debit at :599 runs after updateCallSafely()'s
+     * transaction has committed, and its sole production caller,
+     * PlivoWebhookController :408, opens none of its own. setBillable()'s
+     * debit at :1346 is BOTH shapes, depending on who called setBillable():
+     * CallController :334 and :375 open none of their own, but
+     * PhoneCallActionService::applyBillable() reaches it at :391 from inside
+     * the DB::transaction() that execute() opens at :91 and approve() at
+     * :144, and that route's audit write at :394 runs AFTER the debit - the
+     * same pre-commit shape as StaffPsaActionToolExecutor above, so :615
+     * fires pre-commit on set_call_billable too, and a throw in that audit
+     * write rolls the ledger move back with the notification and the invoice
+     * already out. The web link route (CallController :347) opens none of
+     * its own, and TriagePipeline :466 debits directly inside none of its
+     * own. Read that as the callers measured at this commit, not as a closed
+     * list: any caller that wraps a debit in a transaction of its own has
+     * the pre-commit shape without touching this file, whether it is added
+     * later or simply not measured here.
+     * No path named here changes the
      * check-then-act above: none of them holds a lock on the contracts row
      * across :46-:57. Nor are the two
      * callbacks serialised against each other: handleCallEnded()'s debit runs
