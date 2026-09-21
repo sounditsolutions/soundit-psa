@@ -69,13 +69,16 @@ class PhoneCallService
                 // transaction, but a later debitFromPhoneCall() call rewrites
                 // that transaction's date from the column. The delivery-driven
                 // paths gate that debit on billability -- handleCallEnded() and
-                // handleRecordingReady() both require ticket_id && is_billable,
-                // and linkCallToTicket() requires is_billable && duration -- so
-                // a ticketless or non-billable call is not re-dated by a
-                // terminal delivery. setBillable() and the Triage
-                // reconciliation in Triage/TriagePipeline.php carry no such
-                // guard, deliberately, so that flipping billability can reverse
-                // a charge; an operator toggle or a triage re-classification is
+                // handleRecordingReady() both require ticket_id && is_billable
+                // -- so a ticketless or non-billable call is not re-dated by a
+                // terminal delivery. Other callers reach the debit with no
+                // webhook at all: linkCallToTicket() is reached from the staff
+                // web POST in Web/CallController.php and from MCP as well as
+                // from the intake pipeline, and is guarded only by is_billable
+                // && duration; setBillable() and the Triage reconciliation in
+                // Triage/TriagePipeline.php carry no such guard, deliberately,
+                // so that flipping billability can reverse a charge. A UI
+                // re-link, an operator toggle or a triage re-classification is
                 // therefore enough to propagate a corrupted started_at into an
                 // already-booked transaction's date with no further webhook.
                 // Card 6aac6ee770e3c3433477d91f.
@@ -164,13 +167,16 @@ class PhoneCallService
                 // transaction, but a later debitFromPhoneCall() call rewrites
                 // that transaction's date from the column. The delivery-driven
                 // paths gate that debit on billability -- handleCallEnded() and
-                // handleRecordingReady() both require ticket_id && is_billable,
-                // and linkCallToTicket() requires is_billable && duration -- so
-                // a ticketless or non-billable call is not re-dated by a
-                // terminal delivery. setBillable() and the Triage
-                // reconciliation in Triage/TriagePipeline.php carry no such
-                // guard, deliberately, so that flipping billability can reverse
-                // a charge; an operator toggle or a triage re-classification is
+                // handleRecordingReady() both require ticket_id && is_billable
+                // -- so a ticketless or non-billable call is not re-dated by a
+                // terminal delivery. Other callers reach the debit with no
+                // webhook at all: linkCallToTicket() is reached from the staff
+                // web POST in Web/CallController.php and from MCP as well as
+                // from the intake pipeline, and is guarded only by is_billable
+                // && duration; setBillable() and the Triage reconciliation in
+                // Triage/TriagePipeline.php carry no such guard, deliberately,
+                // so that flipping billability can reverse a charge. A UI
+                // re-link, an operator toggle or a triage re-classification is
                 // therefore enough to propagate a corrupted started_at into an
                 // already-booked transaction's date with no further webhook.
                 // 'status' and 'started_at' are applied on the create branch
