@@ -71,16 +71,26 @@ class PhoneCallService
                 // paths gate that debit on billability -- handleCallEnded() and
                 // handleRecordingReady() both require ticket_id && is_billable
                 // -- so a ticketless or non-billable call is not re-dated by a
-                // terminal delivery. Other callers reach the debit with no
-                // webhook at all: linkCallToTicket() is reached from the staff
-                // web POST in Web/CallController.php and from MCP as well as
-                // from the intake pipeline, and is guarded only by is_billable
-                // && duration; setBillable() and the Triage reconciliation in
+                // terminal delivery. Other callers reach the debit outside
+                // that terminal pair, on two different footings.
+                // linkCallToTicket() is guarded only by is_billable &&
+                // duration and is reached from the staff web POST in
+                // Web/CallController.php, from MCP, and from the intake
+                // pipeline -- but that last route is not webhook-free:
+                // CallIntakePipeline runs inside CallIntakeJob, dispatched
+                // only from
+                // TranscriptionService::finalizeSuccessfulTranscription(), and
+                // the transcription it finalises is normally the one the Plivo
+                // recording callback spawned (calls:transcribe and the staff
+                // transcribe endpoint can also reach it by hand).
+                // setBillable() and the Triage reconciliation in
                 // Triage/TriagePipeline.php carry no such guard, deliberately,
-                // so that flipping billability can reverse a charge. A UI
+                // so that flipping billability can reverse a charge. So a UI
                 // re-link, an operator toggle or a triage re-classification is
-                // therefore enough to propagate a corrupted started_at into an
-                // already-booked transaction's date with no further webhook.
+                // enough to propagate a corrupted started_at into an
+                // already-booked transaction's date with no webhook at all --
+                // and a redelivered recording callback can reach the same
+                // debit with no operator at all, via transcription and intake.
                 // Card 6aac6ee770e3c3433477d91f.
                 //
                 // LATENT rather than live on this path, and the mechanism
@@ -169,16 +179,26 @@ class PhoneCallService
                 // paths gate that debit on billability -- handleCallEnded() and
                 // handleRecordingReady() both require ticket_id && is_billable
                 // -- so a ticketless or non-billable call is not re-dated by a
-                // terminal delivery. Other callers reach the debit with no
-                // webhook at all: linkCallToTicket() is reached from the staff
-                // web POST in Web/CallController.php and from MCP as well as
-                // from the intake pipeline, and is guarded only by is_billable
-                // && duration; setBillable() and the Triage reconciliation in
+                // terminal delivery. Other callers reach the debit outside
+                // that terminal pair, on two different footings.
+                // linkCallToTicket() is guarded only by is_billable &&
+                // duration and is reached from the staff web POST in
+                // Web/CallController.php, from MCP, and from the intake
+                // pipeline -- but that last route is not webhook-free:
+                // CallIntakePipeline runs inside CallIntakeJob, dispatched
+                // only from
+                // TranscriptionService::finalizeSuccessfulTranscription(), and
+                // the transcription it finalises is normally the one the Plivo
+                // recording callback spawned (calls:transcribe and the staff
+                // transcribe endpoint can also reach it by hand).
+                // setBillable() and the Triage reconciliation in
                 // Triage/TriagePipeline.php carry no such guard, deliberately,
-                // so that flipping billability can reverse a charge. A UI
+                // so that flipping billability can reverse a charge. So a UI
                 // re-link, an operator toggle or a triage re-classification is
-                // therefore enough to propagate a corrupted started_at into an
-                // already-booked transaction's date with no further webhook.
+                // enough to propagate a corrupted started_at into an
+                // already-booked transaction's date with no webhook at all --
+                // and a redelivered recording callback can reach the same
+                // debit with no operator at all, via transcription and intake.
                 // 'status' and 'started_at' are applied on the create branch
                 // only, below.
                 // Card 6aac6ee770e3c3433477d91f.
