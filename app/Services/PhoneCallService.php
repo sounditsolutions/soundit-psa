@@ -79,18 +79,30 @@ class PhoneCallService
                 // pipeline -- but that last route is not webhook-free:
                 // CallIntakePipeline runs inside CallIntakeJob, dispatched
                 // only from
-                // TranscriptionService::finalizeSuccessfulTranscription(), and
-                // the transcription it finalises is normally the one the Plivo
-                // recording callback spawned (calls:transcribe and the staff
-                // transcribe endpoint can also reach it by hand).
+                // TranscriptionService::finalizeSuccessfulTranscription().
+                // The transcription it finalises is usually the one the Plivo
+                // recording callback spawned; calls:transcribe and the staff
+                // transcribe endpoint reach it by hand; and the hourly
+                // calls:resolve-recordings sweep scheduled in
+                // routes/console.php reaches it with neither webhook nor
+                // operator, because ResolveCallRecordings::autoTranscribe()
+                // spawns calls:transcribe itself -- on exactly the rows whose
+                // recording callback never arrived.
                 // setBillable() and the Triage reconciliation in
                 // Triage/TriagePipeline.php carry no such guard, deliberately,
                 // so that flipping billability can reverse a charge. So a UI
                 // re-link, an operator toggle or a triage re-classification is
                 // enough to propagate a corrupted started_at into an
-                // already-booked transaction's date with no webhook at all --
-                // and a redelivered recording callback can reach the same
-                // debit with no operator at all, via transcription and intake.
+                // already-booked transaction's date with no webhook at all.
+                // Intake is NOT a second route to that re-dating: its Stage 2
+                // returns on any call that already has a ticket_id, and the
+                // recording callback skips the transcribe spawn once the call
+                // is transcribed or transcribing (it writes Pending before
+                // spawning), so a redelivery normally spawns nothing. What
+                // intake does unattended is the FIRST link of a still-unlinked
+                // call, which BOOKS the charge from a started_at an earlier
+                // redelivery already corrupted, rather than re-dating a
+                // transaction that exists.
                 // Card 6aac6ee770e3c3433477d91f.
                 //
                 // LATENT rather than live on this path, and the mechanism
@@ -187,18 +199,30 @@ class PhoneCallService
                 // pipeline -- but that last route is not webhook-free:
                 // CallIntakePipeline runs inside CallIntakeJob, dispatched
                 // only from
-                // TranscriptionService::finalizeSuccessfulTranscription(), and
-                // the transcription it finalises is normally the one the Plivo
-                // recording callback spawned (calls:transcribe and the staff
-                // transcribe endpoint can also reach it by hand).
+                // TranscriptionService::finalizeSuccessfulTranscription().
+                // The transcription it finalises is usually the one the Plivo
+                // recording callback spawned; calls:transcribe and the staff
+                // transcribe endpoint reach it by hand; and the hourly
+                // calls:resolve-recordings sweep scheduled in
+                // routes/console.php reaches it with neither webhook nor
+                // operator, because ResolveCallRecordings::autoTranscribe()
+                // spawns calls:transcribe itself -- on exactly the rows whose
+                // recording callback never arrived.
                 // setBillable() and the Triage reconciliation in
                 // Triage/TriagePipeline.php carry no such guard, deliberately,
                 // so that flipping billability can reverse a charge. So a UI
                 // re-link, an operator toggle or a triage re-classification is
                 // enough to propagate a corrupted started_at into an
-                // already-booked transaction's date with no webhook at all --
-                // and a redelivered recording callback can reach the same
-                // debit with no operator at all, via transcription and intake.
+                // already-booked transaction's date with no webhook at all.
+                // Intake is NOT a second route to that re-dating: its Stage 2
+                // returns on any call that already has a ticket_id, and the
+                // recording callback skips the transcribe spawn once the call
+                // is transcribed or transcribing (it writes Pending before
+                // spawning), so a redelivery normally spawns nothing. What
+                // intake does unattended is the FIRST link of a still-unlinked
+                // call, which BOOKS the charge from a started_at an earlier
+                // redelivery already corrupted, rather than re-dating a
+                // transaction that exists.
                 // 'status' and 'started_at' are applied on the create branch
                 // only, below.
                 // Card 6aac6ee770e3c3433477d91f.
