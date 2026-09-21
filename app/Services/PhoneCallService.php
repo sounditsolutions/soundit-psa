@@ -87,12 +87,15 @@ class PhoneCallService
                 // It is not unreachable in general, and the reachable
                 // interleaving includes two deliveries passing that check:
                 // updateOrCreate can find the first delivery's committed row in
-                // its own lookup, or lose an INSERT race. Laravel's Eloquent
-                // Builder::createOrFirst catches UniqueConstraintViolationException
-                // and re-reads on the write connection; if it finds the winner's
-                // row, wasRecentlyCreated is false and updateOrCreate takes the
-                // UPDATE branch. If the re-read finds no row, it rethrows. The
-                // unique constraint therefore does not exclude this update path.
+                // its own lookup, or lose an INSERT race. call_uuid is unique
+                // (2026_02_15_100000_create_phone_calls_tables.php:22), so the
+                // loser's INSERT fails rather than duplicating the row; but
+                // Laravel's Eloquent Builder::createOrFirst catches
+                // UniqueConstraintViolationException and re-reads on the write
+                // connection; if it finds the winner's row, wasRecentlyCreated
+                // is false and updateOrCreate takes the UPDATE branch. If the
+                // re-read finds no row, it rethrows. The unique constraint
+                // therefore does not exclude this update path.
                 // The method is also public and nothing binds future callers to
                 // that existence check. Fixed here because the hazard is
                 // identical to the outbound one and a guard that lives in a
@@ -169,8 +172,8 @@ class PhoneCallService
                 // that flipping billability can reverse a charge; an operator
                 // toggle or a triage re-classification is therefore enough to
                 // propagate a corrupted started_at into an already-booked
-                // transaction's date with no further webhook. These two call
-                // columns are applied on the create branch only, below.
+                // transaction's date with no further webhook. 'status' and
+                // 'started_at' are applied on the create branch only, below.
                 // Card 6aac6ee770e3c3433477d91f.
                 //
                 // 'answered_by' is deliberately NOT in this array. It is stored
