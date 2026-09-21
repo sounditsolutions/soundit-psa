@@ -62,11 +62,13 @@ class PhoneCallService
                 // same reason as in logOutboundCall(): updateOrCreate applies
                 // these values on the UPDATE branch too, so a second delivery
                 // for an existing CallUUID would regress a finished call to
-                // Ringing and re-date its start. If that redelivery lands BEFORE
-                // the debit is written, it also mis-dates the charge: prepay
-                // dating reads started_at ?? created_at. A later redelivery does
-                // not itself change an already-written transaction (a subsequent
-                // debitFromPhoneCall() call can update its date from that column).
+                // Ringing and re-date its start. Re-dating started_at mis-dates
+                // the charge as well, whether the redelivery lands before or
+                // after the debit: prepay dating reads started_at ?? created_at.
+                // The redelivery does not itself rewrite an already-written
+                // transaction, but the next debitFromPhoneCall() call rewrites
+                // that transaction's date from the column unconditionally, and
+                // handleCallEnded re-runs it on every terminal delivery.
                 // Card 6aac6ee770e3c3433477d91f.
                 //
                 // LATENT rather than live on this path, and the mechanism
@@ -143,12 +145,14 @@ class PhoneCallService
                 // for 'answered_by': updateOrCreate applies these values on the
                 // UPDATE branch too. Plivo re-delivers webhooks, so leaving them
                 // here regressed a COMPLETED call back to Ringing and re-dated
-                // started_at to the redelivery instant. If the redelivery lands
-                // BEFORE the debit is written, it also mis-dates the charge via
-                // started_at ?? created_at. It does not itself change an
-                // already-written transaction; a later debitFromPhoneCall() can
-                // update that transaction's date from the column. These two
-                // call columns are applied on the create branch only, below.
+                // started_at to the redelivery instant. Re-dating started_at
+                // mis-dates the charge as well, whether the redelivery lands
+                // before or after the debit, via started_at ?? created_at. The
+                // redelivery does not itself rewrite an already-written
+                // transaction, but the next debitFromPhoneCall() call rewrites
+                // that transaction's date from the column unconditionally, and
+                // handleCallEnded re-runs it on every terminal delivery. These
+                // two call columns are applied on the create branch only, below.
                 // Card 6aac6ee770e3c3433477d91f.
                 //
                 // 'answered_by' is deliberately NOT in this array. It is stored
