@@ -83,14 +83,8 @@ class PhoneCallService
                 // and its callers are the operator link action
                 // (CallController), the MCP executor and the queued intake
                 // pipeline (both via linkCallToTicketWithNote()), and
-                // createTicketFromCall(), which the MCP executor and that
-                // same queued pipeline (Agent/Intake/CallIntakePipeline.php)
-                // both call. No delivery handler calls any of them, but BOTH
-                // intake routes are delivery-indirect behind transcription --
-                // and the one a stock deployment reaches is the unconditional
-                // createTicketFromCall() branch, NOT the auto-attach link,
-                // which fires only when intake_attach_auto_threshold is set
-                // and it is unset by default.
+                // createTicketFromCall(). Only that intake caller is even
+                // indirectly delivery-triggered, and only behind transcription.
                 // An operator toggle, an operator link to a ticket, or a triage
                 // re-classification is therefore enough to propagate a
                 // corrupted started_at into an already-booked transaction's
@@ -195,14 +189,8 @@ class PhoneCallService
                 // and its callers are the operator link action
                 // (CallController), the MCP executor and the queued intake
                 // pipeline (both via linkCallToTicketWithNote()), and
-                // createTicketFromCall(), which the MCP executor and that
-                // same queued pipeline (Agent/Intake/CallIntakePipeline.php)
-                // both call. No delivery handler calls any of them, but BOTH
-                // intake routes are delivery-indirect behind transcription --
-                // and the one a stock deployment reaches is the unconditional
-                // createTicketFromCall() branch, NOT the auto-attach link,
-                // which fires only when intake_attach_auto_threshold is set
-                // and it is unset by default.
+                // createTicketFromCall(). Only that intake caller is even
+                // indirectly delivery-triggered, and only behind transcription.
                 // An operator toggle, an operator link to a ticket, or a triage
                 // re-classification is therefore enough to propagate a
                 // corrupted started_at into an already-booked transaction's
