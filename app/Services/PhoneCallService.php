@@ -62,7 +62,11 @@ class PhoneCallService
                 // same reason as in logOutboundCall(): updateOrCreate applies
                 // these values on the UPDATE branch too, so a second delivery
                 // for an existing CallUUID would regress a finished call to
-                // Ringing and re-date its start (and with it the prepay debit).
+                // Ringing and re-date its start. If that redelivery lands BEFORE
+                // the debit is written, it also mis-dates the charge: prepay
+                // dating reads started_at ?? created_at. A later redelivery does
+                // not itself change an already-written transaction (a subsequent
+                // debitFromPhoneCall() call can update its date from that column).
                 // Card 6aac6ee770e3c3433477d91f.
                 //
                 // LATENT rather than live on this path, and the mechanism
@@ -70,13 +74,14 @@ class PhoneCallService
                 // (PlivoWebhookController) guards this with `if (! $existing)`,
                 // so the update branch is normally unreachable from a webhook.
                 // It is not unreachable in general, and the reachable
-                // interleaving is NOT "both deliveries create" - call_uuid is
-                // unique, so a genuine simultaneous INSERT pair ends in a
-                // QueryException, not a silent regression. The path that does
-                // reach the update branch is this one: two deliveries both pass
-                // the caller's existence check, the first completes its INSERT
-                // and COMMITS, and the second then runs updateOrCreate, whose
-                // OWN lookup now finds the row and takes the update branch.
+                // interleaving includes two deliveries passing that check:
+                // updateOrCreate can find the first delivery's committed row in
+                // its own lookup, or lose an INSERT race. Laravel's Eloquent
+                // Builder::createOrFirst catches UniqueConstraintViolationException
+                // and re-reads on the write connection; if it finds the winner's
+                // row, wasRecentlyCreated is false and updateOrCreate takes the
+                // UPDATE branch. If the re-read finds no row, it rethrows. The
+                // unique constraint therefore does not exclude this update path.
                 // The method is also public and nothing binds future callers to
                 // that existence check. Fixed here because the hazard is
                 // identical to the outbound one and a guard that lives in a
@@ -138,9 +143,13 @@ class PhoneCallService
                 // for 'answered_by': updateOrCreate applies these values on the
                 // UPDATE branch too. Plivo re-delivers webhooks, so leaving them
                 // here regressed a COMPLETED call back to Ringing and re-dated
-                // started_at to the redelivery instant - which also re-dates the
-                // prepay debit derived from it. They are applied on the create
-                // branch only, below. Card 6aac6ee770e3c3433477d91f.
+                // started_at to the redelivery instant. If the redelivery lands
+                // BEFORE the debit is written, it also mis-dates the charge via
+                // started_at ?? created_at. It does not itself change an
+                // already-written transaction; a later debitFromPhoneCall() can
+                // update that transaction's date from the column. These two
+                // call columns are applied on the create branch only, below.
+                // Card 6aac6ee770e3c3433477d91f.
                 //
                 // 'answered_by' is deliberately NOT in this array. It is stored
                 // below instead, because updateOrCreate applies these values on
