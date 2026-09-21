@@ -67,17 +67,17 @@ class PhoneCallService
                 // after the debit: prepay dating reads started_at ?? created_at.
                 // The redelivery does not itself rewrite an already-written
                 // transaction, but a later debitFromPhoneCall() call rewrites
-                // that transaction's date from the column. The webhook paths
-                // gate that debit on billability -- handleCallEnded() at :507
-                // and :631 require ticket_id && is_billable, :1072 requires
-                // is_billable && duration -- so a ticketless or non-billable
-                // call is not re-dated by a terminal delivery. setBillable()
-                // at :1183 and the Triage reconciliation at
-                // TriagePipeline:466 carry no such guard, deliberately, so
-                // that flipping billability can reverse a charge; an operator
-                // toggle or a triage re-classification is therefore enough to
-                // propagate a corrupted started_at into an already-booked
-                // transaction's date with no further webhook.
+                // that transaction's date from the column. The delivery-driven
+                // paths gate that debit on billability -- handleCallEnded() and
+                // handleRecordingReady() both require ticket_id && is_billable,
+                // and linkCallToTicket() requires is_billable && duration -- so
+                // a ticketless or non-billable call is not re-dated by a
+                // terminal delivery. setBillable() and the Triage
+                // reconciliation in Triage/TriagePipeline.php carry no such
+                // guard, deliberately, so that flipping billability can reverse
+                // a charge; an operator toggle or a triage re-classification is
+                // therefore enough to propagate a corrupted started_at into an
+                // already-booked transaction's date with no further webhook.
                 // Card 6aac6ee770e3c3433477d91f.
                 //
                 // LATENT rather than live on this path, and the mechanism
@@ -162,18 +162,19 @@ class PhoneCallService
                 // before or after the debit, via started_at ?? created_at. The
                 // redelivery does not itself rewrite an already-written
                 // transaction, but a later debitFromPhoneCall() call rewrites
-                // that transaction's date from the column. The webhook paths
-                // gate that debit on billability -- handleCallEnded() at :507
-                // and :631 require ticket_id && is_billable, :1072 requires
-                // is_billable && duration -- so a ticketless or non-billable
-                // call is not re-dated by a terminal delivery. setBillable()
-                // at :1183 and the Triage reconciliation at
-                // TriagePipeline:466 carry no such guard, deliberately, so
-                // that flipping billability can reverse a charge; an operator
-                // toggle or a triage re-classification is therefore enough to
-                // propagate a corrupted started_at into an already-booked
-                // transaction's date with no further webhook. 'status' and
-                // 'started_at' are applied on the create branch only, below.
+                // that transaction's date from the column. The delivery-driven
+                // paths gate that debit on billability -- handleCallEnded() and
+                // handleRecordingReady() both require ticket_id && is_billable,
+                // and linkCallToTicket() requires is_billable && duration -- so
+                // a ticketless or non-billable call is not re-dated by a
+                // terminal delivery. setBillable() and the Triage
+                // reconciliation in Triage/TriagePipeline.php carry no such
+                // guard, deliberately, so that flipping billability can reverse
+                // a charge; an operator toggle or a triage re-classification is
+                // therefore enough to propagate a corrupted started_at into an
+                // already-booked transaction's date with no further webhook.
+                // 'status' and 'started_at' are applied on the create branch
+                // only, below.
                 // Card 6aac6ee770e3c3433477d91f.
                 //
                 // 'answered_by' is deliberately NOT in this array. It is stored
