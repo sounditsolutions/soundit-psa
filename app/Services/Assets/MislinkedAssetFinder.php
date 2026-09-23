@@ -95,12 +95,26 @@ class MislinkedAssetFinder
     ];
 
     /**
-     * Hostname prefixes that are NOT a client's naming scheme, so no client can own
-     * one however many of them it happens to hold. An entry qualifies on one of two
-     * grounds: a documented OS or vendor default (DESKTOP-, WIN-, the mac and linux
-     * entries), or a generated name admitted by recorded judgement because the harm
-     * of omitting it outweighs the cost of silencing it — see WINDOWS- below, which
-     * cites no vendor default and says so.
+     * Hostname prefixes no client may OWN, so the learner never treats one as a
+     * client's fingerprint however many of them a client happens to hold.
+     *
+     * Each entry is here for one of two reasons, and the reason is per entry rather
+     * than per list:
+     *   - it is the prefix an installer or vendor generates when nobody names the
+     *     machine (DESKTOP-, LAPTOP-, WIN-); or
+     *   - it is a product/OS word that appears at the front of machine names and
+     *     would be learned as a fingerprint if it were not skipped (the mac and
+     *     linux entries, LOCALHOST-, and WINDOWS-).
+     *
+     * The second group is weaker than the first and the list does not pretend
+     * otherwise. In particular it does NOT claim these are the strings a stock
+     * install produces: a default macOS name is <User>s-MacBook-Pro or MacBook-Air,
+     * which hostnamePrefix() reduces to <USER>S- or MACBOOK-, never MACBOOKPRO-;
+     * a stock ubuntu/debian name has no separator at all and yields null. The
+     * MACBOOKPRO-/MACBOOKAIR-/IMAC-/MACMINI-/UBUNTU-/DEBIAN- entries therefore only
+     * ever match names a human composed (MacBookPro-Reception, ubuntu-web01). They
+     * are here because a product word is a poor fingerprint, not because a vendor
+     * ships them.
      *
      * buildPrefixOwners() rejects a generic prefix only when 2+ clients hold it
      * DOMINANTLY, and that test needs data thick enough to express the fact. On a
@@ -110,8 +124,9 @@ class MislinkedAssetFinder
      * factory-named machine. Measured against the live fleet 2026-09-23 at merge
      * 8465d5d8: DESKTOP- was dominant for exactly ONE client (3 assets), the
      * multi-client filter therefore could not reject it, and rule 6 emitted 28 Tier B
-     * rows — every one of them a factory-named box at a different client. WINDOWS-
-     * was in the same position and was one asset away from doing the same.
+     * rows — every one of them a factory-named box at a different client. That is
+     * DESKTOP-'s figure alone; see the WINDOWS- note below for why no other entry
+     * on this list can claim a share of it.
      *
      * These names are excluded from OWNERSHIP only, before dominance is learned.
      * They are NOT excluded from the sweep: a factory-named hostname colliding across
@@ -122,41 +137,36 @@ class MislinkedAssetFinder
      * distinguish "one client owns DESKTOP-" from "one client happens to hold three
      * un-renamed machines", and on this data it guesses wrong.
      *
-     * WINDOWS- IS THE WEAKEST ENTRY ON THIS LIST, AND NO MEASUREMENT HERE MAKES IT
-     * STRONG. It sits at exactly one client, which is also what a deliberate client
-     * scheme looks like. Three rounds of review tried to find a discriminator in
-     * the hostnames and there is none:
+     * WINDOWS- IS THE WEAKEST ENTRY ON THIS LIST AND ITS OWN MEASURED BENEFIT IS
+     * ZERO. Measured against the live fleet 2026-09-23: WINDOWS- is held by a single
+     * client and by no other, and rule 6 needs a machine at a DIFFERENT client from
+     * the prefix's owner, so replaying the learner with WINDOWS- removed from this
+     * list produces 0 rule-6 rows. The 28 rows above are DESKTOP-'s; none of them
+     * are WINDOWS-'s. Nothing in the hostnames distinguishes a generated WINDOWS-
+     * name from a client scheme either: the suffix width is fixed by the 15-char
+     * NetBIOS cap, a random [A-Z0-9] fill shows no repeated letter/digit shape
+     * across seven samples about 56% of the time (p ~ 0.028 per pair), and
+     * WINDOWS-<7-character service tag> reproduces every observed fact.
      *
-     *   - A single suffix width proves nothing. Add the prefix back and each lands
-     *     on exactly 15 characters (DESKTOP- 8+7, WINDOWS- 8+7, WIN- 4+11), the
-     *     NetBIOS computer-name cap. Any generator filling the name to the limit
-     *     produces one width per prefix, whatever produced it.
-     *   - "Letters and digits interleaved, no two of seven alike" proves nothing
-     *     either. For a uniform [A-Z0-9] fill, two samples share a letter/digit
-     *     shape with p ~ 0.028, so seven samples show no repeat about 56% of the
-     *     time. A coin flip is not evidence.
-     *   - A client naming machines WINDOWS-<7-character service tag> reproduces
-     *     every one of those facts exactly.
+     * So the entry is PROPHYLACTIC, and both sides of its trade are hypothetical:
+     * if a second client ever acquires a WINDOWS- machine, excluding the prefix
+     * loses one Tier B row that rule 6 would have raised, while including it avoids
+     * one row that would be false if the name was generated. Nothing here decides
+     * which. It is on the list because a product word is a poor thing to learn a
+     * client's identity from, and that is the whole of the argument.
      *
-     * So the entry does NOT rest on shape. It rests on a JUDGEMENT: the harm is
-     * asymmetric. Leaving it off cost 28 false Tier B rows on the live fleet at
-     * merge 8465d5d8, and WINDOWS- was one asset from adding its own. Putting it
-     * on costs silence for one prefix at one client IF that client turns out to
-     * have chosen the name deliberately — and rule 3 still reports any genuine
-     * cross-client collision, because it reads a contradiction rather than a name.
-     * That trade is accepted deliberately, and it is recorded here rather than in
-     * a commit message so the next reader can re-weigh it rather than re-derive it.
-     *
-     * If the trade is ever revisited, the discriminator is NOT in the hostname. It
-     * is whether the client's other machines follow the same scheme, which is a
-     * question about that client's naming convention and not about this list.
+     * Two things this does NOT claim. Rule 3 is not a general backstop: it catches
+     * only the cross-client cases that also carry a contradiction, which is why
+     * rule 6 exists at all. And the exclusion is not scoped to the one client that
+     * holds the prefix today — isFactoryPrefix() skips it for every client, now and
+     * later.
      *
      * @var array<int, string>
      */
     public const FACTORY_HOSTNAME_PREFIXES = [
         'DESKTOP-',   // Windows 10/11 default (DESKTOP-XXXXXXX)
         'LAPTOP-',    // Windows default on portable SKUs
-        'WINDOWS-',   // no vendor default cited, no discriminating evidence — see the judgement above
+        'WINDOWS-',   // product word, not a vendor default; 0 measured rows — see above
         'WIN-',       // Windows Server default (WIN-XXXXXXXXXXX)
         'MACBOOK-',   // macOS default when the model name is hyphenated
         'MACBOOKAIR-',
@@ -460,7 +470,7 @@ class MislinkedAssetFinder
      * $prefixOwner, $owner and owner_asset_count all carry. That distinctness filter
      * shapes slot [0] alone; slot [1] is built before it runs.
      *
-     * An OS factory-default prefix (FACTORY_HOSTNAME_PREFIXES) is skipped before any
+     * A prefix on FACTORY_HOSTNAME_PREFIXES is skipped before any
      * counting, so it can reach neither slot. The distinctness filter alone cannot
      * reject one: it needs 2+ clients holding the prefix dominantly, and a thin fleet
      * where a single client holds LEARNED_PREFIX_MIN factory-named boxes satisfies
@@ -843,7 +853,9 @@ class MislinkedAssetFinder
     }
 
     /**
-     * Whether a prefix is an OS factory default, which no client may own.
+     * Whether a prefix is on the fixed no-ownership list. See the constant for what
+     * qualifies an entry; "factory" is shorthand, not a claim that a vendor ships
+     * every one of these strings.
      *
      * hostnamePrefix() upper-cases and keeps the separator, so the comparison is a
      * membership test on already-normalised values rather than a prefix match — WIN-

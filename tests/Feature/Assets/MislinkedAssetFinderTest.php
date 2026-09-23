@@ -573,7 +573,7 @@ class MislinkedAssetFinderTest extends TestCase
     }
 
     /**
-     * The exclusion is a fixed list of OS factory defaults, NOT a widening of the
+     * The exclusion is a fixed list of no-ownership prefixes, NOT a widening of the
      * generic filter: a genuine client prefix held dominantly by one client alone
      * must still be learned and must still fire. Without this the fix could pass by
      * disabling rule 6 altogether.
@@ -734,7 +734,9 @@ class MislinkedAssetFinderTest extends TestCase
      * failure instead of a smaller run.
      *
      * Adding an entry to the constant therefore requires adding it here too, which
-     * is the point: a new entry must arrive with its own evidence and its own case.
+     * is the point. Note what that does NOT give: the per-entry case is GENERATED
+     * from the expected list, so a new entry arrives with a case automatically and
+     * nothing mechanical checks its justification.
      *
      * @var array<int, string>
      */
@@ -782,18 +784,24 @@ class MislinkedAssetFinderTest extends TestCase
             self::EXPECTED_FACTORY_PREFIXES,
             MislinkedAssetFinder::FACTORY_HOSTNAME_PREFIXES,
             'FACTORY_HOSTNAME_PREFIXES has drifted from the set this suite covers. '
-            .'Every entry needs a recorded reason for being here — a documented vendor '
-            .'default, or an explicit judgement like the one for WINDOWS- — and a case '
-            .'proving it is load-bearing; removing one must be a deliberate act, not '
-            .'a silently smaller test run.'
+            .'Adding an entry here is not reviewed by this assertion: it only forces '
+            .'the two lists to agree, and a new string added to BOTH passes the whole '
+            ."suite (measured with a novel 'ZTOP-'). The reason an entry belongs is "
+            .'recorded in the constant docblock and judged by a human; what this '
+            .'catches is DRIFT — a membership change in either direction, including a '
+            .'duplicate, so removing one is a deliberate act and not a silently '
+            .'smaller test run.'
         );
     }
 
     /**
-     * EVERY entry on the factory list must be load-bearing. Before this control
-     * only DESKTOP- was exercised, so deleting any other entry — including
-     * WINDOWS-, the one the live fleet was a single asset away from firing on —
-     * left the suite green and the exposure came back silently.
+     * EVERY entry on the factory list must SUPPRESS ITS OWN FIXTURE. Before this
+     * control only DESKTOP- was exercised, so deleting any other entry left the
+     * suite green and the exposure came back silently.
+     *
+     * The name is deliberately about suppression, not importance: passing here says
+     * the exclusion reaches the entry, NOT that the entry protects any real asset.
+     * WINDOWS- passes and its measured benefit on the live fleet is zero rows.
      *
      * Driven from EXPECTED_FACTORY_PREFIXES, never from the constant under test —
      * see that docblock for why. This test proves each entry SUPPRESSES. Deleting
