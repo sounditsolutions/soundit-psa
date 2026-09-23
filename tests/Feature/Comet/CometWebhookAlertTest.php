@@ -283,7 +283,7 @@ class CometWebhookAlertTest extends TestCase
 
         $this->assertSame(AlertStatus::Active, Alert::sole()->fresh()->status, 'stale success must be rejected');
         Log::shouldHaveReceived('warning')
-            ->withArgs(fn ($message) => str_contains($message, 'Stale success rejected'))
+            ->withArgs(fn ($message) => str_contains($message, 'Stale/replayed success rejected'))
             ->atLeast()->once();
     }
 
@@ -335,16 +335,48 @@ class CometWebhookAlertTest extends TestCase
     //
     // staleAgainst() refuses for two reasons and returns the first that
     // matches: `same_job_guid` (which never reads a timestamp) and
-    // `not_strictly_newer`. Each of the three refusal records below is emitted
-    // for BOTH reasons, so none of them may describe a time comparison — a
-    // replayed GUID can be arbitrarily NEWER than the recorded state. The
-    // reason travels in `stale_because`, which is accurate on both arms; these
-    // tests pin it there so a future edit that swaps the two return values
-    // fails instead of quietly relabelling every replay.
+    // `not_strictly_newer`. Each of the three refusal records is emitted for
+    // BOTH reasons, so none of them may describe a time comparison — a
+    // replayed GUID can be arbitrarily NEWER than the recorded state.
+    //
+    // These tests assert the message by EQUALITY, not by banning the phrase
+    // that was deleted: a control that bans one wording lets the next wording
+    // of the same false claim through. And each sweeps EVERY captured record
+    // for that site, because proving a clean record exists does not prove a
+    // false one was not emitted beside it.
+
+    /**
+     * Capture every record the app really writes.
+     *
+     * Log::spy() + shouldHaveReceived()->withArgs() cannot be used to COLLECT
+     * records: Mockery re-evaluates the matcher during verification, so each
+     * write is seen more than once and a count assertion is meaningless.
+     * Log::listen() fires exactly once per write, which is what "no false
+     * record was emitted beside the clean one" needs.
+     *
+     * @var list<array{0:string,1:array}>
+     */
+    private array $captured = [];
+
+    private function captureLogRecords(): void
+    {
+        $this->captured = [];
+        Log::listen(function ($record) {
+            $this->captured[] = [$record->message, $record->context];
+        });
+    }
+
+    private function recordsMatching(string $level, string $needle): array
+    {
+        return array_values(array_filter(
+            $this->captured,
+            fn (array $r) => str_contains($r[0], $needle),
+        ));
+    }
 
     public function test_a_replayed_guid_newer_than_the_failure_is_refused_without_claiming_it_is_older(): void
     {
-        Log::spy();
+        $this->captureLogRecords();
         $this->linkedAsset();
         $failEnd = now()->subHour()->timestamp;
         $guid = 'aaaaaaaa-0000-4000-8000-00000000abcd';
@@ -362,19 +394,27 @@ class CometWebhookAlertTest extends TestCase
 
         $this->assertSame(AlertStatus::Active, Alert::sole()->fresh()->status, 'a replayed GUID must not resolve the alert');
 
-        Log::shouldHaveReceived('warning')
-            ->withArgs(fn ($message, $context = []) => str_contains($message, 'Stale success rejected')
-                && ! str_contains($message, 'postdate')
-                && ($context['stale_because'] ?? null) === 'same_job_guid')
-            ->atLeast()->once();
+        $records = $this->recordsMatching('warning', 'success rejected');
+        $this->assertCount(1, $records, 'exactly one rejection record, so a false one cannot ride alongside a clean one');
+        [$message, $context] = $records[0];
+        $this->assertSame('[Comet Alert] Stale/replayed success rejected, alert stays open', $message);
+        $this->assertSame('same_job_guid', $context['stale_because'] ?? null);
+        // The comparands, so the refusal can be checked from the record alone.
+        $this->assertSame($guid, $context['event_guid'] ?? null);
+        $this->assertSame($guid, $context['last_event_guid'] ?? null);
+        $this->assertSame($failEnd + 9999, $context['event_time'] ?? null);
+        $this->assertSame($failEnd, $context['last_event_time'] ?? null);
     }
 
-    public function test_the_timestamp_arm_still_names_its_own_reason(): void
+    public function test_the_timestamp_arm_is_reported_as_itself_at_every_site(): void
     {
-        // The positive control for the test above: the OTHER arm must keep
+        // Positive control for the tests above: the OTHER arm must keep
         // reporting itself, so deleting the clause cannot be mistaken for
-        // deleting the distinction between the two reasons.
-        Log::spy();
+        // losing the distinction between the two reasons. This also pins the
+        // timestamp arm at the WARNING site; the two INFO sites are pinned by
+        // the two tests that follow, so a site-local hardcoded stale_because
+        // cannot survive at any of the three.
+        $this->captureLogRecords();
         $this->linkedAsset();
         $failEnd = now()->subHour()->timestamp;
 
@@ -382,15 +422,18 @@ class CometWebhookAlertTest extends TestCase
         $this->postEvent($this->jobCompletedEvent(['status' => \Comet\Def::JOB_STATUS_STOP_SUCCESS, 'end' => $failEnd - 3600]))
             ->assertOk()->assertJsonPath('status', 'stale_ignored');
 
-        Log::shouldHaveReceived('warning')
-            ->withArgs(fn ($message, $context = []) => str_contains($message, 'Stale success rejected')
-                && ($context['stale_because'] ?? null) === 'not_strictly_newer')
-            ->atLeast()->once();
+        $records = $this->recordsMatching('warning', 'success rejected');
+        $this->assertCount(1, $records);
+        [$message, $context] = $records[0];
+        $this->assertSame('[Comet Alert] Stale/replayed success rejected, alert stays open', $message);
+        $this->assertSame('not_strictly_newer', $context['stale_because'] ?? null, 'the timestamp arm must name itself, not the GUID arm');
+        $this->assertSame($failEnd - 3600, $context['event_time'] ?? null);
+        $this->assertSame($failEnd, $context['last_event_time'] ?? null);
     }
 
     public function test_a_replayed_guid_on_a_resolved_series_is_refused_without_claiming_newer_state(): void
     {
-        Log::spy();
+        $this->captureLogRecords();
         $this->linkedAsset();
         $t0 = now()->subHour()->timestamp;
         $resolvingGuid = 'bbbbbbbb-0000-4000-8000-00000000beef';
@@ -408,16 +451,42 @@ class CometWebhookAlertTest extends TestCase
             'status' => \Comet\Def::JOB_STATUS_STOP_SUCCESS, 'end' => $t0 + 60 + 9999, 'guid' => $resolvingGuid,
         ]))->assertOk()->assertJsonPath('status', 'stale_ignored');
 
-        Log::shouldHaveReceived('info')
-            ->withArgs(fn ($message, $context = []) => str_contains($message, 'Stale/replayed success ignored')
-                && ! str_contains($message, 'newer state already recorded')
-                && ($context['stale_because'] ?? null) === 'same_job_guid')
-            ->atLeast()->once();
+        $records = $this->recordsMatching('info', 'Stale/replayed success ignored');
+        $this->assertCount(1, $records);
+        [$message, $context] = $records[0];
+        $this->assertSame('[Comet Alert] Stale/replayed success ignored', $message);
+        $this->assertSame('same_job_guid', $context['stale_because'] ?? null);
+        $this->assertSame($resolvingGuid, $context['last_event_guid'] ?? null);
+    }
+
+    public function test_the_timestamp_arm_is_reported_as_itself_on_the_resolved_path(): void
+    {
+        // Pins the not_strictly_newer arm at the second of the three sites.
+        $this->captureLogRecords();
+        $this->linkedAsset();
+        $t0 = now()->subHour()->timestamp;
+
+        $this->postEvent($this->jobCompletedEvent(['status' => \Comet\Def::JOB_STATUS_FAILED_ERROR, 'end' => $t0]))
+            ->assertJsonPath('status', 'alert_created');
+        $this->postEvent($this->jobCompletedEvent([
+            'status' => \Comet\Def::JOB_STATUS_STOP_SUCCESS, 'end' => $t0 + 60, 'guid' => 'bbbbbbbb-0000-4000-8000-0000000000b2',
+        ]))->assertOk();
+        $this->assertSame(AlertStatus::Resolved, Alert::sole()->fresh()->status);
+
+        // A DIFFERENT GUID that is older: the GUID arm cannot match, so this
+        // must traverse the timestamp arm.
+        $this->postEvent($this->jobCompletedEvent([
+            'status' => \Comet\Def::JOB_STATUS_STOP_SUCCESS, 'end' => $t0 - 3600, 'guid' => 'dddddddd-0000-4000-8000-0000000000d1',
+        ]))->assertOk()->assertJsonPath('status', 'stale_ignored');
+
+        $records = $this->recordsMatching('info', 'Stale/replayed success ignored');
+        $this->assertCount(1, $records);
+        $this->assertSame('not_strictly_newer', $records[0][1]['stale_because'] ?? null);
     }
 
     public function test_a_replayed_guid_on_the_failure_path_is_refused_without_claiming_newer_or_equal_state(): void
     {
-        Log::spy();
+        $this->captureLogRecords();
         $this->linkedAsset();
         $t0 = now()->subHour()->timestamp;
         $guid = 'cccccccc-0000-4000-8000-00000000cafe';
@@ -426,16 +495,42 @@ class CometWebhookAlertTest extends TestCase
             'status' => \Comet\Def::JOB_STATUS_FAILED_ERROR, 'end' => $t0, 'guid' => $guid,
         ]))->assertJsonPath('status', 'alert_created');
 
-        // Replayed GUID, 9999s newer: the recorded state is neither newer nor equal.
+        // Replayed GUID, 9999s newer: the recorded state is neither newer nor
+        // equal. FAILED_ABANDONED is the vendor's own "stopped unexpectedly or
+        // manually marked abandoned" status, so a second record for one job
+        // GUID carrying a different status and end time is traffic Comet
+        // really produces, not a synthetic payload.
         $this->postEvent($this->jobCompletedEvent([
-            'status' => \Comet\Def::JOB_STATUS_FAILED_WARNING, 'end' => $t0 + 9999, 'guid' => $guid,
+            'status' => \Comet\Def::JOB_STATUS_FAILED_ABANDONED, 'end' => $t0 + 9999, 'guid' => $guid,
         ]))->assertOk()->assertJsonPath('status', 'stale_ignored');
 
-        Log::shouldHaveReceived('info')
-            ->withArgs(fn ($message, $context = []) => str_contains($message, 'Stale/replayed failure event ignored')
-                && ! str_contains($message, 'newer or equal state already recorded')
-                && ($context['stale_because'] ?? null) === 'same_job_guid')
-            ->atLeast()->once();
+        $records = $this->recordsMatching('info', 'failure event ignored');
+        $this->assertCount(1, $records);
+        [$message, $context] = $records[0];
+        $this->assertSame('[Comet Alert] Stale/replayed failure event ignored', $message);
+        $this->assertSame('same_job_guid', $context['stale_because'] ?? null);
+        $this->assertSame($t0 + 9999, $context['event_time'] ?? null);
+        $this->assertSame($t0, $context['last_event_time'] ?? null);
+    }
+
+    public function test_the_timestamp_arm_is_reported_as_itself_on_the_failure_path(): void
+    {
+        // Pins the not_strictly_newer arm at the third site.
+        $this->captureLogRecords();
+        $this->linkedAsset();
+        $t0 = now()->subHour()->timestamp;
+
+        $this->postEvent($this->jobCompletedEvent([
+            'status' => \Comet\Def::JOB_STATUS_FAILED_ERROR, 'end' => $t0, 'guid' => 'cccccccc-0000-4000-8000-0000000000c2',
+        ]))->assertJsonPath('status', 'alert_created');
+
+        $this->postEvent($this->jobCompletedEvent([
+            'status' => \Comet\Def::JOB_STATUS_FAILED_WARNING, 'end' => $t0 - 3600, 'guid' => 'eeeeeeee-0000-4000-8000-0000000000e1',
+        ]))->assertOk()->assertJsonPath('status', 'stale_ignored');
+
+        $records = $this->recordsMatching('info', 'failure event ignored');
+        $this->assertCount(1, $records);
+        $this->assertSame('not_strictly_newer', $records[0][1]['stale_because'] ?? null);
     }
 
     public function test_success_for_one_protected_item_does_not_resolve_another_items_failure(): void

@@ -285,15 +285,21 @@ class CometAlertService
 
         $stale = $this->staleAgainst($existing, $identity);
         if ($stale !== null) {
-            // No reason is stated here: staleAgainst() refuses for two reasons
-            // and only one of them is a time comparison, so any clause about
-            // recorded state would be false on a replayed GUID (#3232). The
-            // reason travels in stale_because, which is accurate on both arms.
+            // No reason is stated in the message: staleAgainst() refuses for
+            // two reasons and only one of them is a time comparison, so any
+            // clause about recorded state would be false on a replayed GUID
+            // (#3232). stale_because carries the reason and is accurate on
+            // both arms; the watermark fields it was judged against travel
+            // beside it so a reader can check the refusal from the record
+            // alone rather than trusting the label.
             Log::info('[Comet Alert] Stale/replayed failure event ignored', [
                 'alert_id' => $existing->id,
                 'source_alert_id' => $identity['series_key'],
                 'event_time' => $eventTime,
                 'stale_because' => $stale,
+                'last_event_time' => $existing->metadata['last_event_time'] ?? null,
+                'last_event_guid' => $existing->metadata['last_event_guid'] ?? null,
+                'event_guid' => $identity['guid'],
             ]);
 
             return CometJobEventOutcome::staleIgnored($existing);
@@ -367,15 +373,18 @@ class CometAlertService
             if ($isOpen) {
                 // The mirror image of the original defect: a stale/replayed
                 // success must never present a broken backup as recovered.
-                // Reason deliberately unstated — see staleAgainst() and #3232:
-                // a replayed GUID is refused without any timestamp comparison
-                // and can be newer than the failure, so stale_because carries
-                // the reason instead of the message.
-                Log::warning('[Comet Alert] Stale success rejected, alert stays open', [
+                // Reason deliberately unstated in the message — see
+                // staleAgainst() and #3232 — and carried in stale_because with
+                // its comparands, because a replayed GUID is refused without
+                // any timestamp comparison and can postdate the failure.
+                Log::warning('[Comet Alert] Stale/replayed success rejected, alert stays open', [
                     'alert_id' => $existing->id,
                     'source_alert_id' => $identity['series_key'],
                     'event_time' => $eventTime,
                     'stale_because' => $stale,
+                    'last_event_time' => $existing->metadata['last_event_time'] ?? null,
+                    'last_event_guid' => $existing->metadata['last_event_guid'] ?? null,
+                    'event_guid' => $identity['guid'],
                 ]);
             } else {
                 Log::info('[Comet Alert] Stale/replayed success ignored', [
@@ -383,6 +392,9 @@ class CometAlertService
                     'source_alert_id' => $identity['series_key'],
                     'event_time' => $eventTime,
                     'stale_because' => $stale,
+                    'last_event_time' => $existing->metadata['last_event_time'] ?? null,
+                    'last_event_guid' => $existing->metadata['last_event_guid'] ?? null,
+                    'event_guid' => $identity['guid'],
                 ]);
             }
 
