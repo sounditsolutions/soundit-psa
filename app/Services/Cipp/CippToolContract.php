@@ -1858,6 +1858,19 @@ class CippToolContract
         // never reports on it. If upstream ever mixed the sentinel with real
         // rows, that drop COULD hide a field and this paragraph would be wrong.
         //
+        // That premise is the producer's three writes, documented on
+        // shapeTenantMailboxRules above (Push-ListMailboxRulesQueue.ps1,
+        // verified 2026-07-16): real rules, the all-clear, or the error
+        // sentinel -- the all-clear branch assigns the whole $Rules column.
+        // Note this is the EMPTY sentinel ('No rules found'), not the ERROR
+        // sentinel ('Could not connect to tenant'). The error sentinel CAN
+        // arrive mixed with real rows under AllTenants aggregation, which is
+        // what CippTenantMailboxRulesTest::test_the_error_sentinel_is_detected_
+        // among_real_rules_too pins -- and it hard-errors before any drop, so
+        // it never reaches this filter. Do not read that test as evidence
+        // about the all-clear row: they are different constants on different
+        // paths.
+        //
         // An operator who trusted a named cause would go and edit constants
         // that are not wrong. row_count is that post-filter count.
         // The wording is "never resolved", not "absent": resolveKey() is an
