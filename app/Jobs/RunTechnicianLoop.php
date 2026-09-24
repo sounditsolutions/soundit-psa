@@ -36,7 +36,7 @@ class RunTechnicianLoop implements ShouldQueue
     {
         TechnicianConfig::recordWorkerSeen();
 
-        $ticket = Ticket::find($this->ticketId);
+        $ticket = Ticket::automationVisible()->find($this->ticketId);
 
         if (! $ticket) {
             Log::warning('[Technician] Ticket not found', ['ticket_id' => $this->ticketId]);

@@ -27,6 +27,7 @@ class SubmissionLedgerTest extends TestCase
         Setting::setValue('contact_intake_enabled', '1');
         $data = $this->payload();
         $data['message'] = str_repeat('😀', 16000);
+        $data['inquiry'] = str_repeat('a', 64);
         app(SubmissionLedger::class)->accept('website', $data);
         $stored = DB::table('contact_submissions')->value('payload');
         $this->assertGreaterThan(65535, strlen($stored)); // TEXT is insufficient.
@@ -46,6 +47,18 @@ class SubmissionLedgerTest extends TestCase
         });
         \Illuminate\Support\Facades\Schema::swap($schema);
         (require database_path('migrations/2026_09_24_221000_create_contact_submission_ledger.php'))->up();
+    }
+
+    public function test_inquiry_is_preserved_and_changes_conflict(): void
+    {
+        Setting::setValue('contact_intake_enabled', '1');
+        $data = $this->payload() + ['inquiry' => 'future_unknown-slug'];
+        $first = app(SubmissionLedger::class)->accept('website', $data);
+        $this->assertFalse($first['conflict']);
+        $this->assertSame('future_unknown-slug', ContactSubmission::firstOrFail()->payload['inquiry']);
+        $data['inquiry'] = 'different';
+        $this->assertTrue(app(SubmissionLedger::class)->accept('website', $data)['conflict']);
+        $this->assertSame('future_unknown-slug', ContactSubmission::firstOrFail()->payload['inquiry']);
     }
 
     public function test_flag_off_refuses_ledger_write(): void

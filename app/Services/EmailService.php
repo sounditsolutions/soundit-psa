@@ -1636,6 +1636,10 @@ PROMPT;
      */
     public function sendTicketReplyNote(Ticket $ticket, TicketNote $note, ?string $toEmail = null, array $ccEmails = []): ?Email
     {
+        if ($ticket->fresh()?->isUnverifiedContactIntake() || $note->fresh()?->isUnverifiedContactIntake()) {
+            throw new \DomainException('Unverified contact intake.');
+        }
+
         $mailbox = Setting::getValue('graph_mailbox');
         $toEmail = $toEmail ?: $ticket->contact?->email;
 

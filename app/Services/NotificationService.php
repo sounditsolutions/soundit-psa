@@ -54,6 +54,10 @@ class NotificationService
      */
     public function notifyNoteAdded(Ticket $ticket, TicketNote $note, int $authorUserId): void
     {
+        if ($note->isUnverifiedContactIntake() || $ticket->isUnverifiedContactIntake()) {
+            return;
+        }
+
         if (! $ticket->assignee_id || $ticket->assignee_id === $authorUserId) {
             return;
         }
@@ -595,6 +599,10 @@ class NotificationService
      */
     private function notifyPortalContact(Ticket $ticket, string $eventType, ?string $context = null): void
     {
+        if ($ticket->isUnverifiedContactIntake()) {
+            return;
+        }
+
         if (! $ticket->contact_id) {
             return;
         }

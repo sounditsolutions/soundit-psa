@@ -27,7 +27,7 @@ class GenerateTicketResolution implements ShouldQueue
 
     public function handle(TicketResolutionDrafter $drafter): void
     {
-        $ticket = Ticket::find($this->ticketId);
+        $ticket = Ticket::automationVisible()->find($this->ticketId);
 
         if (! $ticket) {
             return;

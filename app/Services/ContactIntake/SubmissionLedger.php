@@ -25,6 +25,7 @@ final class SubmissionLedger
             'message' => ['required', 'string', 'max:16000'],
             'phone' => ['nullable', 'string', 'max:50'],
             'company' => ['nullable', 'string', 'max:200'],
+            'inquiry' => ['nullable', 'string', 'regex:/\A[a-z0-9_-]{1,64}\z/'],
             'submitted_at' => ['required', 'date_format:Y-m-d\TH:i:s\Z'],
         ])->validate();
         if (! preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/', $integrationId)
