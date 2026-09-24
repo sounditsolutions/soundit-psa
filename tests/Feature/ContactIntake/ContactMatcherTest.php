@@ -30,6 +30,8 @@ class ContactMatcherTest extends TestCase
         $this->assertSame('existing_client', $matched['kind']);
         $this->assertEqualsCanonicalizing([$one->id, $two->id], $matched['ticket_ids']);
         $this->assertSame('domain_only', $matcher->match('other@example.test')['reason']);
+        Person::create(['first_name' => 'Synthetic', 'last_name' => 'Consumer', 'client_id' => $client->id, 'email' => 'synthetic-existing@gmail.com']);
+        $this->assertSame('new_prospect', $matcher->match('synthetic-new@gmail.com')['kind']);
         $person->update(['is_active' => false]);
         $this->assertSame('inactive_identity', $matcher->match($email)['reason']);
         Person::create(['first_name' => 'Synthetic', 'last_name' => 'Other', 'client_id' => Client::factory()->create()->id, 'email' => $email]);

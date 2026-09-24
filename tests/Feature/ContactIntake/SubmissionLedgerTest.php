@@ -22,6 +22,32 @@ class SubmissionLedgerTest extends TestCase
             'submitted_at' => '2026-09-24T12:00:00Z'];
     }
 
+    public function test_non_bmp_payload_exceeds_text_but_fits_declared_mysql_column(): void
+    {
+        Setting::setValue('contact_intake_enabled', '1');
+        $data = $this->payload();
+        $data['message'] = str_repeat('😀', 16000);
+        app(SubmissionLedger::class)->accept('website', $data);
+        $stored = DB::table('contact_submissions')->value('payload');
+        $this->assertGreaterThan(65535, strlen($stored)); // TEXT is insufficient.
+        $this->assertSame($data['message'], ContactSubmission::firstOrFail()->payload['message']);
+        $connection = new \Illuminate\Database\MySqlConnection(new \PDO('sqlite::memory:'));
+        $connection->setSchemaGrammar(new \Illuminate\Database\Schema\Grammars\MySqlGrammar($connection));
+        $schema = \Mockery::mock(\Illuminate\Database\Schema\Builder::class);
+        $schema->shouldReceive('create')->twice()->andReturnUsing(function ($name, $callback) use ($connection, $stored) {
+            $blueprint = new \Illuminate\Database\Schema\Blueprint($connection, $name);
+            $blueprint->create();
+            $callback($blueprint);
+            if ($name === 'contact_submissions') {
+                $sql = implode(' ', $blueprint->toSql());
+                $this->assertStringContainsString('`payload` mediumtext', $sql);
+                $this->assertLessThanOrEqual(16777215, strlen($stored));
+            }
+        });
+        \Illuminate\Support\Facades\Schema::swap($schema);
+        (require database_path('migrations/2026_09_24_221000_create_contact_submission_ledger.php'))->up();
+    }
+
     public function test_flag_off_refuses_ledger_write(): void
     {
         try {

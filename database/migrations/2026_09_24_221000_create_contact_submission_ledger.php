@@ -18,7 +18,7 @@ return new class extends Migration
             $table->uuid('receipt')->unique();
             $table->string('payload_hash', 64);
             $table->string('identity_hash', 64)->index();
-            $table->text('payload');
+            $table->mediumText('payload');
             $table->string('state', 24)->default('pending')->index();
             $table->unsignedInteger('attempts')->default(0);
             $table->unsignedInteger('conflicts')->default(0);

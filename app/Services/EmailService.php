@@ -40,10 +40,7 @@ use Soundasleep\Html2Text;
 
 class EmailService
 {
-    private const FREE_EMAIL_DOMAINS = [
-        'gmail.com', 'outlook.com', 'hotmail.com', 'yahoo.com', 'live.com',
-        'icloud.com', 'aol.com', 'protonmail.com', 'me.com', 'msn.com',
-    ];
+    private const FREE_EMAIL_DOMAINS = \App\Support\FreeEmailDomains::ALL;
 
     private const GRAPH_SELECT_FIELDS = 'id,internetMessageId,conversationId,from,toRecipients,ccRecipients,subject,bodyPreview,body,hasAttachments,importance,receivedDateTime,internetMessageHeaders';
 

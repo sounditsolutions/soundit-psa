@@ -50,8 +50,9 @@ final class ContactMatcher
             return array_replace($result, ['reason' => 'phone_only']);
         }
         $domain = explode('@', $email, 2)[1] ?? '';
-        // Domain/company are suggestions, not association authority (including free mail).
-        if ($domain !== '' && Person::withTrashed()->whereEmailDomain($domain)->exists()) {
+        // Shared consumer-mail domains are not organisation matches.
+        if ($domain !== '' && ! in_array($domain, \App\Support\FreeEmailDomains::ALL, true)
+            && Person::withTrashed()->whereEmailDomain($domain)->exists()) {
             return array_replace($result, ['reason' => 'domain_only']);
         }
         if (filled($company) && Client::withTrashed()->whereRaw('LOWER(name) = ?', [mb_strtolower(trim($company))])->exists()) {

@@ -4,6 +4,7 @@ namespace App\Services\ContactIntake;
 
 use App\Models\ContactSubmission;
 use App\Support\ContactIntakeConfig;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
@@ -33,12 +34,19 @@ final class SubmissionLedger
         // Canonical field order; the hash retains the original claimed values.
         ksort($data);
         $payloadHash = hash('sha256', json_encode($data, JSON_THROW_ON_ERROR));
-        $identityHash = hash('sha256', mb_strtolower(trim($data['email'])));
+        $identityHash = hash_hmac('sha256', mb_strtolower(trim($data['email'])), app('encrypter')->getKey());
 
         return DB::transaction(function () use ($integrationId, $data, $payloadHash, $identityHash) {
             // Unique insert arbitrates absent rows; lockForUpdate serializes existing rows.
             // Every future processor must lock this identity before lookup/create, too.
-            DB::table('contact_intake_identities')->insertOrIgnore(['identity_hash' => $identityHash]);
+            try {
+                DB::table('contact_intake_identities')->insert(['identity_hash' => $identityHash]);
+            } catch (UniqueConstraintViolationException $e) {
+                // Only duplicate identity is expected; all other database errors escape.
+                if (! DB::table('contact_intake_identities')->where('identity_hash', $identityHash)->exists()) {
+                    throw $e;
+                }
+            }
             DB::table('contact_intake_identities')->where('identity_hash', $identityHash)->lockForUpdate()->firstOrFail();
 
             $candidate = new ContactSubmission([
@@ -53,7 +61,14 @@ final class SubmissionLedger
                 'updated_at' => now(),
             ]);
             // Model cast encrypts before query-builder insertion (which runs no casts).
-            DB::table('contact_submissions')->insertOrIgnore($candidate->getAttributes());
+            try {
+                DB::table('contact_submissions')->insert($candidate->getAttributes());
+            } catch (UniqueConstraintViolationException $e) {
+                if (! ContactSubmission::where('integration_id', $integrationId)
+                    ->where('submission_id', strtolower($data['submission_id']))->exists()) {
+                    throw $e;
+                }
+            }
             $row = ContactSubmission::where('integration_id', $integrationId)
                 ->where('submission_id', strtolower($data['submission_id']))->lockForUpdate()->firstOrFail();
             $conflict = ! hash_equals($row->payload_hash, $payloadHash);
