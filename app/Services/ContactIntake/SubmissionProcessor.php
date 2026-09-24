@@ -50,20 +50,15 @@ final class SubmissionProcessor
                 $clientId = $identity['client']->id;
                 $personId = $identity['person']->id;
             }
-            // Distinct submissions to an identity this integration created are distinct
-            // inquiries, not dedupe. The original pre-existing-ticket rule still applies
-            // to ordinary tickets; a prior form ticket is never an automatic continuation.
+            // Earlier open form tickets count too; provenance remains contained.
             $ticket = $match['kind'] === 'existing_ticket'
                 ? Ticket::findOrFail($match['ticket_ids'][0]) : null;
-            if ($ticket?->contact_intake_origin) {
-                $ticket = null;
-            }
             $body = $this->body($data);
             if (! $ticket) {
                 $ticket = new Ticket([
                     'client_id' => $clientId, 'contact_id' => $personId,
                     'subject' => 'Web form inquiry', 'description' => $body,
-                    'source' => TicketSource::Manual, 'type' => TicketType::ServiceRequest,
+                    'source' => TicketSource::WebForm, 'type' => TicketType::ServiceRequest,
                     'status' => TicketStatus::New, 'priority' => TicketPriority::P3,
                     'opened_at' => $data['submitted_at'],
                 ]);

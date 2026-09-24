@@ -34,7 +34,7 @@ class SubmissionProcessorTest extends TestCase
         return ContactSubmission::latest('id')->firstOrFail();
     }
 
-    public function test_distinct_submissions_reuse_one_prospect_with_two_contained_tickets(): void
+    public function test_later_submission_reuses_the_sole_open_form_ticket(): void
     {
         Bus::fake();
         $processor = app(SubmissionProcessor::class);
@@ -42,18 +42,21 @@ class SubmissionProcessorTest extends TestCase
         $two = $processor->process($this->accept()->id);
         $this->assertSame('processed', $one->state);
         $this->assertSame('processed', $two->state);
-        $this->assertNotSame($one->ticket_id, $two->ticket_id);
+        $this->assertSame($one->ticket_id, $two->ticket_id);
+        $this->assertNotSame($one->ticket_note_id, $two->ticket_note_id);
         $this->assertDatabaseCount('clients', 1);
         $this->assertDatabaseCount('people', 1);
-        $this->assertDatabaseCount('tickets', 2);
+        $this->assertDatabaseCount('tickets', 1);
+        $this->assertDatabaseCount('ticket_notes', 2);
         $this->assertSame(ClientStage::Prospect, Client::sole()->stage);
         $this->assertFalse(Person::sole()->portal_enabled);
         $this->assertNull(Person::sole()->password);
         $ticket = Ticket::findOrFail($one->ticket_id);
         $this->assertTrue($ticket->isUnverifiedContactIntake());
+        $this->assertSame(\App\Enums\TicketSource::WebForm, $ticket->source);
         $this->assertStringContainsString('Inquiry: future-slug', $ticket->description);
         $this->assertSame($one->ticket_id, $processor->process($one->id)->ticket_id);
-        $this->assertDatabaseCount('tickets', 2);
+        $this->assertDatabaseCount('tickets', 1);
         Bus::assertNothingDispatched();
     }
 
