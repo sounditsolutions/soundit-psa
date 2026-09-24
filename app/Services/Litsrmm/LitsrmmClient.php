@@ -288,6 +288,16 @@ class LitsrmmClient
         // an id-keyed map is. A wrapper's key names a field, not the row
         // beneath it.
         //
+        // WHY THE KEY AND NOT THE EMPTINESS: under assoc:true, json_decode
+        // gives {} and [] the SAME value. json_decode('{}', true) ===
+        // json_decode('[]', true) is true, and array_is_list() returns true
+        // for both. So an empty object and an empty list are indistinguishable
+        // here and no predicate can separate them -- which is why {"clients":[]}
+        // defeated an emptiness test. (Decoding without assoc would keep them
+        // apart, as {} becomes a stdClass, but this client decodes at :467 with
+        // assoc:true and every caller expects arrays.) Asking whether a value
+        // belongs under its key sidesteps the ambiguity instead of losing to it.
+        //
         // Only the values that pass are mapped. So one null or scalar element
         // drops that element and keeps the rest of the collection. The envelope
         // is refused only when it is non-empty and nothing in it is a row. An
