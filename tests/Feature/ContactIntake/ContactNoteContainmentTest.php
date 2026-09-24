@@ -31,6 +31,29 @@ class ContactNoteContainmentTest extends TestCase
         return $note;
     }
 
+    public function test_form_note_edits_preserve_private_zero_time_provenance(): void
+    {
+        $observer = new \App\Observers\TicketNoteObserver(app(\App\Services\PrepayService::class));
+        $note = $this->note('FORM_CONTENT', true, true);
+        $note->exists = true;
+        $note->syncOriginal();
+        $note->forceFill(['contact_intake_origin' => false, 'is_private' => false, 'is_billable' => true, 'time_minutes' => 60, 'contract_id' => 123]);
+        $observer->saving($note);
+        $this->assertTrue($note->contact_intake_origin);
+        $this->assertTrue($note->is_private);
+        $this->assertFalse($note->is_billable);
+        $this->assertSame(0, $note->time_minutes);
+        $this->assertNull($note->contract_id);
+        $this->assertNull(app(\App\Services\PrepayService::class)->debitFromTicketNote($note));
+
+        $ordinary = $this->note('ORDINARY_PRIVATE_CONTROL', true);
+        $ordinary->time_minutes = 60;
+        $ordinary->is_billable = true;
+        $observer->saving($ordinary);
+        $this->assertSame(60, $ordinary->time_minutes);
+        $this->assertTrue($ordinary->is_billable);
+    }
+
     public function test_notes_context_excludes_unverified_form_material_but_preserves_ordinary_private_notes(): void
     {
         $ticket = new Ticket;
