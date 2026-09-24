@@ -1829,22 +1829,34 @@ class CippToolContract
 
         // States what was observed and stops there. The earlier wording named
         // DEFAULT_FIELDS/FIELD_ALIASES drift as the cause, which this function
-        // cannot establish: five of the six callers (shapeEvents,
-        // shapeMessageTrace, shapeMailQuarantine, shapeMailboxRules,
-        // shapeTenantMailboxRules) can filter rows BEFORE calling projectRows.
-        // MEASURED, not assumed: every one of those filters is CONDITIONAL --
-        // shapeEvents only when filtered_by_days is an int, shapeMessageTrace
-        // on a non-empty sender/recipient, shapeMailQuarantine on a non-empty
-        // recipient, shapeMailboxRules only when a mailbox was requested. And
-        // shapeTenantMailboxRules' sentinel drop CANNOT hide a field: the
-        // sentinel is a row with no resolvable identity whose name is
-        // 'No rules found', and 'name' is itself a DEFAULT_FIELDS entry, so a
-        // dropped sentinel removes no key the guard tracks. So the reachable
-        // case is: when one of the four conditional filters is active, $rows is
-        // a subset of the response and a field carried only by dropped rows
-        // never resolves here while the constants are correct. An operator who
-        // trusted a named cause would go and edit constants that are not wrong.
-        // row_count is that post-filter count.
+        // cannot establish: four callers can filter rows BEFORE calling
+        // projectRows, so $rows may be a SUBSET of the upstream response and a
+        // field carried only by dropped rows never resolves here while both
+        // constants are correct.
+        //
+        // MEASURED, not assumed, per caller:
+        //   shapeEvents          only when filtered_by_days is an int
+        //   shapeMessageTrace    only on a non-empty sender/recipient
+        //   shapeMailQuarantine  only on a non-empty recipient
+        //   shapeMailboxRules    whenever a mailbox was requested -- which is
+        //                        EVERY call that reaches it, because the relay
+        //                        and cippQueryWithUser both refuse the tool
+        //                        without a user_id. Conditional at function
+        //                        scope, effectively always armed in production;
+        //                        it just normally drops nothing.
+        //
+        // shapeTenantMailboxRules is a DIFFERENT case and the argument is
+        // narrower than it first looks. Its sentinel drop DOES remove a row
+        // carrying a tracked key ('name' is in DEFAULT_FIELDS for that tool).
+        // What makes it harmless is that Push-ListMailboxRulesQueue writes the
+        // all-clear sentinel as the WHOLE payload -- @(@{ Name = 'No rules
+        // found' }) -- never mixed with real rules, so the drop leaves zero
+        // rows and the $rows !== [] guard at the call site means projectRows
+        // never reports on it. If upstream ever mixed the sentinel with real
+        // rows, that drop COULD hide a field and this paragraph would be wrong.
+        //
+        // An operator who trusted a named cause would go and edit constants
+        // that are not wrong. row_count is that post-filter count.
         // The wording is "never resolved", not "absent": resolveKey() is an
         // exact-case array_key_exists over FIELD_ALIASES[$field] ?? [$field],
         // so a row CAN carry the field under a casing that has no alias and
