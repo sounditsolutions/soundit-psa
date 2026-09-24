@@ -1838,12 +1838,15 @@ class CippToolContract
         //   shapeEvents          only when filtered_by_days is an int
         //   shapeMessageTrace    only on a non-empty sender/recipient
         //   shapeMailQuarantine  only on a non-empty recipient
-        //   shapeMailboxRules    whenever a mailbox was requested -- which is
-        //                        EVERY call that reaches it, because the relay
+        //   shapeMailboxRules    whenever a mailbox was requested. The relay
         //                        and cippQueryWithUser both refuse the tool
-        //                        without a user_id. Conditional at function
-        //                        scope, effectively always armed in production;
-        //                        it just normally drops nothing.
+        //                        without a user_id, so on THOSE transports it
+        //                        is armed on every call -- it just normally
+        //                        drops nothing. That is a property of the two
+        //                        transports, NOT of this function: shape() is
+        //                        public and takes caller-supplied args, so a
+        //                        direct caller can reach here unarmed. Treat
+        //                        it as conditional.
         //
         // shapeTenantMailboxRules is a DIFFERENT case and the argument is
         // narrower than it first looks. Its sentinel drop DOES remove a row
