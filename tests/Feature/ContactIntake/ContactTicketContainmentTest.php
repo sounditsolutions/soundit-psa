@@ -34,6 +34,30 @@ class ContactTicketContainmentTest extends TestCase
         $this->assertTrue($held->fresh()->contact_intake_origin);
     }
 
+    public function test_action_gate_executes_normal_but_holds_form_ticket(): void
+    {
+        Bus::fake();
+        \App\Models\User::factory()->create();
+        \App\Models\Setting::setValue('technician_action_tiers', json_encode(['send_ack' => 'auto']));
+        $ticket = Ticket::factory()->create();
+        $executions = 0;
+        $dispatch = function () use ($ticket, &$executions) {
+            return app(\App\Services\Technician\TechnicianActionGate::class)->dispatch(
+                actionType: 'send_ack', ticketId: $ticket->id, clientId: $ticket->client_id,
+                contentHash: str_repeat('a', 64), summary: 'Synthetic', runId: null,
+                executor: function () use (&$executions) {
+                    $executions++;
+                },
+            );
+        };
+        $this->assertSame('executed', $dispatch()->status);
+        $this->assertSame(1, $executions);
+        $ticket->forceFill(['contact_intake_origin' => true])->save();
+        $this->assertSame('held', $dispatch()->status);
+        $this->assertSame(1, $executions);
+        $this->assertDatabaseHas('technician_action_logs', ['ticket_id' => $ticket->id, 'result_status' => 'held']);
+    }
+
     public function test_context_refuses_whole_form_ticket_with_normal_positive_control(): void
     {
         Bus::fake();

@@ -46,7 +46,7 @@ class BriefingAssembler
         // before it is compared against the stored *_at columns.
         $endOfLocalDayUtc = $localNow->copy()->endOfDay()->setTimezone('UTC');
 
-        $openTickets = Ticket::open()
+        $openTickets = Ticket::automationVisible()->open()
             ->assignedTo($technician->id)
             ->with(['client', 'categoryNode.parent.parent'])
             ->orderBy('priority_order')
@@ -130,7 +130,7 @@ class BriefingAssembler
      */
     private function slaRiskToday(int $technicianId, Carbon $endOfLocalDayUtc): Collection
     {
-        return Ticket::open()
+        return Ticket::automationVisible()->open()
             ->assignedTo($technicianId)
             ->whereNull('resolved_at')
             ->where(function ($q) use ($endOfLocalDayUtc) {

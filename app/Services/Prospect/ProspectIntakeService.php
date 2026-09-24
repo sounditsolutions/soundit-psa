@@ -120,6 +120,52 @@ class ProspectIntakeService
     }
 
     /**
+     * Contact intake primitive, called inside the submission transaction. The conditional
+     * identity UPDATE arbitrates ownership; a losing candidate is rolled back at the
+     * savepoint, including its Person. No SELECT lock is the correctness boundary.
+     *
+     * @return array{client: Client, person: Person}
+     */
+    public function provisionContactIdentity(string $identityHash, array $data): array
+    {
+        try {
+            return DB::transaction(function () use ($identityHash, $data) {
+                $client = new Client(['name' => ($data['company'] ?? null) ?: $data['name'], 'is_active' => true]);
+                $client->stage = ClientStage::Prospect;
+                $client->save();
+                $parts = $this->splitName($data['name']);
+                $person = Person::create([
+                    'client_id' => $client->id, 'person_type' => PersonType::User,
+                    'first_name' => $parts['first'], 'last_name' => $parts['last'],
+                    'email' => mb_strtolower(trim($data['email'])),
+                    'phone' => PhoneNumber::normalize($data['phone'] ?? ''),
+                    'is_active' => true, 'portal_enabled' => false,
+                ]);
+                $changed = DB::table('contact_intake_identities')->where('identity_hash', $identityHash)
+                    ->whereNull('prospect_client_id')->whereNull('person_id')
+                    ->update(['prospect_client_id' => $client->id, 'person_id' => $person->id]);
+                if ($changed !== 1) {
+                    throw new \LogicException('contact_identity_owned');
+                }
+
+                return compact('client', 'person');
+            });
+        } catch (\LogicException $e) {
+            if ($e->getMessage() !== 'contact_identity_owned') {
+                throw $e;
+            }
+            $owner = DB::table('contact_intake_identities')->where('identity_hash', $identityHash)->first();
+            $client = Client::findOrFail($owner?->prospect_client_id);
+            $person = Person::where('client_id', $client->id)->findOrFail($owner?->person_id);
+            if (! $client->is_active || ! $person->is_active) {
+                throw new \DomainException('Inactive contact identity.');
+            }
+
+            return compact('client', 'person');
+        }
+    }
+
+    /**
      * Convert a Prospect to an Active client.
      *
      * Flips `stage` → Active. All attached tickets, notes, and calls retain

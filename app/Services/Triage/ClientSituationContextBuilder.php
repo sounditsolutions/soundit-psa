@@ -66,6 +66,10 @@ class ClientSituationContextBuilder
 
     public function build(Ticket $ticket): string
     {
+        if ($ticket->isUnverifiedContactIntake()) {
+            throw new \DomainException('Unverified contact intake.');
+        }
+
         $clientId = $ticket->client_id;
         if (! $clientId) {
             return '';
@@ -167,7 +171,7 @@ class ClientSituationContextBuilder
     private function openTickets(int $clientId, Ticket $current): string
     {
         try {
-            $q = Ticket::forClient($clientId)->open()->where('id', '!=', $current->id);
+            $q = Ticket::automationVisible()->forClient($clientId)->open()->where('id', '!=', $current->id);
 
             $count = (clone $q)->count();
             if ($count === 0) {
@@ -362,7 +366,7 @@ class ClientSituationContextBuilder
      */
     private function inMotionHumanSiblings(int $clientId, Ticket $current): string
     {
-        $siblings = Ticket::forClient($clientId)->open()
+        $siblings = Ticket::automationVisible()->forClient($clientId)->open()
             ->where('id', '!=', $current->id)
             ->orderBy('priority')->orderBy('opened_at')
             ->with(['assignee', 'categoryNode.parent.parent'])
@@ -434,7 +438,7 @@ class ClientSituationContextBuilder
 
             // ── Part A: recurring-pattern detector ─────────────────────────────
             // Bounded per-client aggregate (90-day window, both open + closed).
-            $allRecent = Ticket::forClient($clientId)
+            $allRecent = Ticket::automationVisible()->forClient($clientId)
                 ->where('opened_at', '>=', now()->subDays(90))
                 ->get(['subject', 'opened_at']);
 
@@ -474,7 +478,7 @@ class ClientSituationContextBuilder
             }
 
             // ── Part B: detailed closed history (fix-reuse) ────────────────────
-            $closed = Ticket::forClient($clientId)
+            $closed = Ticket::automationVisible()->forClient($clientId)
                 ->closed()
                 ->where('id', '!=', $current->id)
                 ->orderByRaw('COALESCE(resolved_at, closed_at, updated_at) DESC')
@@ -558,7 +562,7 @@ class ClientSituationContextBuilder
     private function timeSensitive(int $clientId, Ticket $current): string
     {
         try {
-            $breaching = Ticket::forClient($clientId)->breaching()->get(['id', 'due_at']);
+            $breaching = Ticket::automationVisible()->forClient($clientId)->breaching()->get(['id', 'due_at']);
             $breachingCount = $breaching->count();
 
             $unfollowed = PhoneCall::forClient($clientId)->unfollowedUp()->count();
