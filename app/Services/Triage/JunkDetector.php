@@ -207,7 +207,7 @@ class JunkDetector
         }
 
         // Real conversation happening (3+ notes)
-        if ($ticket->notes()->count() >= 3) {
+        if ($ticket->notes()->automationVisible()->count() >= 3) {
             return true;
         }
 
@@ -481,7 +481,7 @@ class JunkDetector
         }
 
         // Try first note's linked email
-        $firstNote = $ticket->notes()->whereNotNull('email_id')->first();
+        $firstNote = $ticket->notes()->automationVisible()->whereNotNull('email_id')->first();
         if ($firstNote?->email) {
             return $firstNote->email->from_address;
         }

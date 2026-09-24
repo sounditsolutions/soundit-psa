@@ -139,7 +139,7 @@ final class TicketTimeline
      */
     private function noteQuery(bool $models): \Illuminate\Database\Eloquent\Builder
     {
-        return $models ? TicketNote::withTrashed() : TicketNote::query();
+        return $models ? TicketNote::withTrashed() : TicketNote::automationVisible();
     }
 
     /**

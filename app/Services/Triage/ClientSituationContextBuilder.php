@@ -378,7 +378,7 @@ class ClientSituationContextBuilder
         $systemTypes = array_map(fn (NoteType $t) => $t->value, NoteType::systemGenerated());
 
         $humanNoteAt = [];
-        TicketNote::query()
+        TicketNote::automationVisible()
             ->whereIn('ticket_id', $siblings->modelKeys())
             ->where('who_type', WhoType::Agent->value)
             ->where('ai_authored', false)

@@ -192,7 +192,7 @@ class ConversationReviewer
 
         // Check for human notes in the last 4 hours
         // Includes: staff notes (author_id set, not system user) and portal/email replies (who_type = EndUser)
-        $humanNote = $ticket->notes()
+        $humanNote = $ticket->notes()->automationVisible()
             ->where('noted_at', '>=', $fourHoursAgo)
             ->whereNotIn('note_type', [
                 NoteType::AiTriage->value,

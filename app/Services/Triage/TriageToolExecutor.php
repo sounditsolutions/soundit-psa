@@ -374,7 +374,7 @@ class TriageToolExecutor
             return ['error' => 'Ticket not found or belongs to a different client'];
         }
 
-        $notes = TicketNote::where('ticket_id', $ticket->id)
+        $notes = TicketNote::automationVisible()->where('ticket_id', $ticket->id)
             ->orderBy('noted_at')
             ->limit(20)
             ->get();

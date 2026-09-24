@@ -311,7 +311,7 @@ class ContactResolver
         }
 
         // Include first few note bodies for email extraction
-        $notes = $ticket->notes()->limit(5)->get();
+        $notes = $ticket->notes()->automationVisible()->limit(5)->get();
         foreach ($notes as $note) {
             if ($note->body) {
                 $parts[] = strip_tags($note->body);

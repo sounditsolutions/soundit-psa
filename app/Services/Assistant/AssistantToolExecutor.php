@@ -514,7 +514,7 @@ class AssistantToolExecutor
 
         \App\Services\Mcp\TicketToolActivityContext::current()?->validated($ticket);
 
-        $notes = TicketNote::where('ticket_id', $ticketId)
+        $notes = TicketNote::automationVisible()->where('ticket_id', $ticketId)
             ->with('attachments')
             ->orderByDesc('noted_at')
             ->limit(10)
@@ -886,7 +886,7 @@ class AssistantToolExecutor
         // Latest notes, not oldest: fetch the newest 20 then present them
         // chronologically. The old ASC+limit dropped the tail on busy tickets,
         // so "what did the client say last" could be absent entirely (psa-m7re).
-        $query = TicketNote::where('ticket_id', $ticket->id);
+        $query = TicketNote::automationVisible()->where('ticket_id', $ticket->id);
         try {
             $page = \App\Support\HistoryPage::read($query, 'noted_at', 'note',
                 'notes:'.$ticket->id.':'.$this->clientId, $input, 20);
@@ -1065,7 +1065,7 @@ class AssistantToolExecutor
     {
         return match ($attachment->attachable_type) {
             Ticket::class => (int) $attachment->attachable_id === $ticketId,
-            TicketNote::class => TicketNote::where('id', $attachment->attachable_id)
+            TicketNote::class => TicketNote::automationVisible()->where('id', $attachment->attachable_id)
                 ->where('ticket_id', $ticketId)->exists(),
             default => false,
         };
