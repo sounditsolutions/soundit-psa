@@ -416,19 +416,20 @@ class AssetHealthService
             $notes[] = 'reboot pending';
         }
 
+        $provenance = \App\Services\Tactical\TacticalFieldMap::storedUptime($asset);
         $uptimeDays = $asset->last_boot_at !== null
             ? (int) $asset->last_boot_at->diffInDays(now())
             : 0;
         if ($asset->last_boot_at !== null && $uptimeDays >= self::LONG_UPTIME_DAYS) {
             $points -= self::PENALTY_LONG_UPTIME;
-            $notes[] = "up {$uptimeDays}d (patches may be pending)";
+            $notes[] = "reported uptime {$uptimeDays}d ({$provenance['uptime_state']}; patches may be pending). ".$provenance['freshness_note'];
         }
 
         $points = -min(-$points, self::PATCH_CAP);
 
         if ($points === 0) {
             $detail = $asset->last_boot_at
-                ? 'Rebooted '.$asset->last_boot_at->diffForHumans()
+                ? 'Reported boot '.$asset->last_boot_at->diffForHumans()." ({$provenance['uptime_state']}). ".$provenance['freshness_note']
                 : 'No reboot pending';
 
             return $this->factor('patch', 'Patch / reboot', 'ok', 0, $detail);

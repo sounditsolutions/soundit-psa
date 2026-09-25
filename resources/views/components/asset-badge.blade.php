@@ -147,7 +147,10 @@
         // Status + uptime
         html += '<br><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + data.status_color + ';"></span> ';
         html += esc(data.status);
-        if (data.uptime) html += ' &middot; Up ' + esc(data.uptime);
+        if (data.uptime) {
+            html += ' &middot; Reported uptime ' + esc(data.uptime) + ' (' + esc(data.uptime_state) + ')';
+            html += '<br>' + esc(data.freshness_note);
+        }
         if (data.needs_reboot) html += ' <i class="bi bi-arrow-repeat text-warning" title="Reboot needed"></i>';
 
         if (data.contract) html += '<br><small class="text-muted"><i class="bi bi-file-earmark-text me-1"></i>' + esc(data.contract) + '</small>';
