@@ -9,10 +9,10 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 
-/** Internal foundation only; no HTTP route or CRM writer calls this yet. */
+/** Durable receipt before asynchronous CRM processing. */
 final class SubmissionLedger
 {
-    /** @return array{receipt: string, conflict: bool} */
+    /** @return array{receipt: string, conflict: bool, duplicate: bool} */
     public function accept(string $integrationId, array $input): array
     {
         if (! ContactIntakeConfig::enabled()) {
@@ -62,9 +62,11 @@ final class SubmissionLedger
                 'updated_at' => now(),
             ]);
             // Model cast encrypts before query-builder insertion (which runs no casts).
+            $duplicate = false;
             try {
                 DB::table('contact_submissions')->insert($candidate->getAttributes());
             } catch (UniqueConstraintViolationException $e) {
+                $duplicate = true;
                 if (! ContactSubmission::where('integration_id', $integrationId)
                     ->where('submission_id', strtolower($data['submission_id']))->exists()) {
                     throw $e;
@@ -75,9 +77,10 @@ final class SubmissionLedger
             $conflict = ! hash_equals($row->payload_hash, $payloadHash);
             if ($conflict) {
                 $row->increment('conflicts');
+                IntakeNotifications::record($row, 'conflict');
             }
 
-            return ['receipt' => $row->receipt, 'conflict' => $conflict];
+            return ['receipt' => $row->receipt, 'conflict' => $conflict, 'duplicate' => $duplicate];
         }, 3);
     }
 }

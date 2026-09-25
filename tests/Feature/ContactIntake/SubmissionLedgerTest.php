@@ -79,10 +79,11 @@ class SubmissionLedgerTest extends TestCase
         $data = $this->payload();
         $first = $service->accept('website', $data);
         $this->assertFalse($first['conflict']);
-        $this->assertSame($first, $service->accept('website', array_reverse($data, true)));
+        $this->assertFalse($first['duplicate']);
+        $this->assertSame(array_replace($first, ['duplicate' => true]), $service->accept('website', array_reverse($data, true)));
         $changed = $data;
         $changed['message'] = 'Changed message';
-        $this->assertSame(['receipt' => $first['receipt'], 'conflict' => true], $service->accept('website', $changed));
+        $this->assertSame(['receipt' => $first['receipt'], 'conflict' => true, 'duplicate' => true], $service->accept('website', $changed));
         $this->assertSame($data['message'], ContactSubmission::firstOrFail()->payload['message']);
         $this->assertSame(1, ContactSubmission::firstOrFail()->conflicts);
         $this->assertStringNotContainsString('Synthetic inquiry', DB::table('contact_submissions')->value('payload'));
