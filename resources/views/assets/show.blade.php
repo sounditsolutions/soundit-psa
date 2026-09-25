@@ -393,14 +393,10 @@
                             <td>
                                 @if($asset->last_boot_at)
                                     @php
-                                        $diff = $asset->last_boot_at->diff(now());
-                                        $parts = [];
-                                        if ($diff->days > 0) $parts[] = $diff->days . 'd';
-                                        if ($diff->h > 0) $parts[] = $diff->h . 'h';
-                                        if (empty($parts)) $parts[] = $diff->i . 'm';
-                                        $uptimeStr = implode(' ', $parts);
+                                        $uptimeReport = \App\Services\Tactical\TacticalFieldMap::storedUptime($asset);
                                     @endphp
-                                    {{ $uptimeStr }}
+                                    {{ $uptimeReport['uptime'] }} ({{ $uptimeReport['uptime_state'] }})
+                                    <br><small class="text-muted">{{ $uptimeReport['freshness_note'] }}</small>
                                     @if($asset->needs_reboot)
                                         <span class="badge bg-warning text-dark ms-2"><i class="bi bi-arrow-clockwise me-1"></i>Reboot needed</span>
                                     @endif

@@ -1051,6 +1051,8 @@ class TriageToolExecutor
                 : $agent['logged_in_username'],
             'needs_reboot' => $agent['needs_reboot'] ?? false,
             'uptime' => $uptime,
+            'boot_time' => $agent['boot_time'] ?? null,
+            ...TacticalFieldMap::uptimeProvenance($agent['status'] ?? null, $agent['last_seen'] ?? null),
             // psa-0pb9m: coverage answers "is this device actually monitored?"
             // separately from "is it healthy?" — zero checks reads UNMONITORED
             // and verified requires explicit passing evidence.

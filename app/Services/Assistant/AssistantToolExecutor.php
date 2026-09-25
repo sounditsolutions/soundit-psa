@@ -1359,6 +1359,7 @@ class AssistantToolExecutor
             'warranty_start' => $asset->warranty_start?->toDateString(),
             'warranty_end' => $asset->warranty_end?->toDateString(),
             'last_boot_at' => $asset->last_boot_at?->toDateTimeString(),
+            ...\App\Services\Tactical\TacticalFieldMap::storedUptime($asset),
             'needs_reboot' => $asset->needs_reboot,
             'is_active' => $asset->is_active,
             'ninja_id' => $asset->ninja_id,

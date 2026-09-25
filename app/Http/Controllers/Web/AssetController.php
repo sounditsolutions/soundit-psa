@@ -1434,22 +1434,7 @@ class AssetController extends Controller
             default => '#6c757d',
         };
 
-        // Compute uptime from last_boot_at
-        $uptime = null;
-        if ($asset->last_boot_at) {
-            $diff = $asset->last_boot_at->diff(now());
-            $parts = [];
-            if ($diff->days > 0) {
-                $parts[] = $diff->days.'d';
-            }
-            if ($diff->h > 0) {
-                $parts[] = $diff->h.'h';
-            }
-            if (empty($parts)) {
-                $parts[] = $diff->i.'m';
-            }
-            $uptime = implode(' ', $parts);
-        }
+        $uptime = \App\Services\Tactical\TacticalFieldMap::storedUptime($asset);
 
         // Determine RMM source and URL
         $rmm = null;
@@ -1471,7 +1456,7 @@ class AssetController extends Controller
             'status' => $statusLabel,
             'status_color' => $statusColor,
             'last_seen' => $asset->last_seen_at?->diffForHumans(),
-            'uptime' => $uptime,
+            ...$uptime,
             'needs_reboot' => $asset->needs_reboot,
             'contract' => $contract
                 ? ($contract->contract_number.' - '.$contract->name)

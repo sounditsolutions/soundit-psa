@@ -108,6 +108,45 @@ class TacticalFieldMap
     }
 
     /**
+     * A heartbeat is not a boot report. Producer: tacticalrmm natsapi/svc.go
+     *
+     * @ e56ebd3e48e99de59f34d4bd7600c127a6f02cf2: hello writes last_seen;
+     * agent-agentinfo writes boot_time independently. No boot-report timestamp
+     * is exposed. Require both arguments: callers must choose live or stored
+     * agent evidence explicitly, never infer status from PSA's sync clock.
+     *
+     * @return array{uptime_state: string, freshness_note: string, agent_status: mixed, agent_last_seen: ?string}
+     */
+    public static function uptimeProvenance(mixed $status, ?string $lastSeen): array
+    {
+        $state = $status === 'online' ? 'vendor_reported' : 'unverified';
+        $note = $state === 'vendor_reported'
+            ? 'Boot time comes from the agent’s periodic info report, which may be older than its last heartbeat, so a very recent reboot may not show yet.'
+            : ($lastSeen !== null && $lastSeen !== ''
+                ? "The agent last reported at {$lastSeen}; a reboot after that will not show in this uptime."
+                : 'The agent’s last report time is unknown; a reboot since its last report will not show in this uptime.');
+
+        return [
+            'uptime_state' => $state,
+            'freshness_note' => $note,
+            'agent_status' => $status,
+            'agent_last_seen' => $lastSeen,
+        ];
+    }
+
+    /** Stored reads use only the linked Tactical status, never rmm_online. */
+    public static function storedUptime(\App\Models\Asset $asset): array
+    {
+        return [
+            'uptime' => self::uptimeFromBootTime($asset->last_boot_at?->toIso8601String()),
+            ...self::uptimeProvenance(
+                $asset->tacticalAsset?->status,
+                $asset->tacticalAsset?->last_seen_at?->toIso8601String(),
+            ),
+        ];
+    }
+
+    /**
      * Summarize a getAgentChecks LIST to explicit per-status counts.
      *
      * This is for the getAgentChecks endpoint, which returns a LIST of checks each
