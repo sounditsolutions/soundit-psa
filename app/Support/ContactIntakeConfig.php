@@ -12,6 +12,18 @@ final class ContactIntakeConfig
         return Setting::getValue('contact_intake_enabled', '0') === '1';
     }
 
+    public static function ownerId(): ?int
+    {
+        $configured = Setting::getValue('contact_intake_owner_id');
+        if ($configured !== null && $configured !== '') {
+            return \App\Models\User::whereKey($configured)->where('is_active', true)->value('id');
+        }
+        // Default Chet is resolved only when unique; never select an arbitrary user.
+        $users = \App\Models\User::where('name', 'Chet')->where('is_active', true)->pluck('id');
+
+        return $users->count() === 1 ? $users->sole() : null;
+    }
+
     public static function signingKey(string $keyId): ?string
     {
         $keys = json_decode(Setting::getEncrypted('contact_intake_keys', '{}'), true, 16, JSON_THROW_ON_ERROR);

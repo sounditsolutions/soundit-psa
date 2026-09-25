@@ -21,6 +21,9 @@ class TicketNoteObserver
         if ($note->exists && $note->getRawOriginal('contact_intake_origin')) {
             $note->contact_intake_origin = true;
         }
+        if (! $note->exists && $note->ticket?->isUnverifiedContactIntake()) {
+            $note->contact_intake_origin = true;
+        }
         if ($note->contact_intake_origin) {
             $note->is_private = true;
             $note->is_billable = false;

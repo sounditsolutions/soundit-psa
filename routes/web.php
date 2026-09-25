@@ -128,6 +128,10 @@ if (app()->environment('local')) {
 
 // Authenticated routes
 Route::middleware('auth')->group(function () {
+    Route::get('/contact-intake', [\App\Http\Controllers\Web\ContactIntakeController::class, 'index'])->name('contact-intake.index');
+    Route::get('/contact-intake/{id}', [\App\Http\Controllers\Web\ContactIntakeController::class, 'show'])->name('contact-intake.show');
+    Route::post('/contact-intake/{id}/action', [\App\Http\Controllers\Web\ContactIntakeController::class, 'act'])->name('contact-intake.act');
+    Route::post('/contact-intake/{id}/draft', [\App\Http\Controllers\Web\ContactIntakeController::class, 'draft'])->middleware('throttle:6,1')->name('contact-intake.draft');
     Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
     Route::get('/dashboard/activity', [DashboardController::class, 'activity'])->name('dashboard.activity');
     Route::post('/dashboard/refresh-profitability', [DashboardController::class, 'refreshProfitability'])->name('dashboard.refresh-profitability');

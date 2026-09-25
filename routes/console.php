@@ -4,6 +4,9 @@ use App\Support\AppTimezone;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\Schedule;
 
+Schedule::command('contact-intake:drain')->everyMinute()->withoutOverlapping()->runInBackground()
+    ->when(fn () => \App\Support\ContactIntakeConfig::enabled());
+
 // NinjaRMM alert reconciliation — catch missed RESET webhooks
 Schedule::command('ninja:reconcile-alerts')
     ->everyFifteenMinutes()

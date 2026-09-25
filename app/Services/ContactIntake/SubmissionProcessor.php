@@ -38,8 +38,17 @@ final class SubmissionProcessor
             DB::table('contact_intake_identities')->where('identity_hash', $row->identity_hash)->lockForUpdate()->firstOrFail();
             $data = $row->payload;
             $match = $this->matcher->match($data['email'], $data['phone'] ?? null, $data['company'] ?? null);
+            if ($row->resolved_client_id) {
+                $client = \App\Models\Client::where('is_active', true)->findOrFail($row->resolved_client_id);
+                $person = $row->resolved_person_id
+                    ? \App\Models\Person::where('client_id', $client->id)->where('is_active', true)->findOrFail($row->resolved_person_id) : null;
+                $match = ['kind' => 'existing_client', 'client_id' => $client->id, 'person_id' => $person?->id, 'ticket_ids' => []];
+            } elseif ($row->approve_new_prospect) {
+                $match = ['kind' => 'new_prospect', 'client_id' => null, 'person_id' => null, 'ticket_ids' => []];
+            }
             if ($match['kind'] === 'exception') {
                 $row->update(['state' => 'quarantined', 'exception_reason' => $match['reason']]);
+                IntakeNotifications::record($row, 'quarantined');
 
                 return $row->fresh();
             }
@@ -61,6 +70,7 @@ final class SubmissionProcessor
                     'source' => TicketSource::WebForm, 'type' => TicketType::ServiceRequest,
                     'status' => TicketStatus::New, 'priority' => TicketPriority::P3,
                     'opened_at' => $data['submitted_at'],
+                    'assignee_id' => ContactIntakeConfig::ownerId(),
                 ]);
                 $ticket->forceFill(['contact_intake_origin' => true])->save();
             }
@@ -71,7 +81,10 @@ final class SubmissionProcessor
                 'time_minutes' => 0, 'is_billable' => false, 'noted_at' => $data['submitted_at'],
             ]);
             $note->forceFill(['contact_intake_origin' => true])->save();
-            $row->update(['state' => 'processed', 'ticket_id' => $ticket->id, 'ticket_note_id' => $note->id]);
+            $related = array_values(array_filter($match['ticket_ids'], fn ($id) => $id !== $ticket->id));
+            $row->update(['state' => 'processed', 'ticket_id' => $ticket->id, 'ticket_note_id' => $note->id,
+                'related_ticket_ids' => json_encode($related, JSON_THROW_ON_ERROR)]);
+            IntakeNotifications::record($row, 'processed');
 
             return $row->fresh();
         }, 3);
