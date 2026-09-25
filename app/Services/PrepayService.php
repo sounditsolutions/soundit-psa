@@ -416,6 +416,10 @@ class PrepayService
      */
     public function debitFromTicketNote(TicketNote $note): ?PrepayTransaction
     {
+        if ($note->contact_intake_origin || $note->ticket?->isUnverifiedContactIntake()) {
+            return null;
+        }
+
         $ticket = $note->ticket;
 
         if (! $ticket) {

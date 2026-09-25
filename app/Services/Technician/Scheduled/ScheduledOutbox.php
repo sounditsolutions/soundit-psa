@@ -17,7 +17,7 @@ final class ScheduledOutbox
                 return $item !== null;
             }
             $row = DB::table('scheduled_authorizations')->find($item->authorization_id);
-            if (! $row || ! Ticket::find($row->ticket_id)) {
+            if (! $row || ! Ticket::automationVisible()->find($row->ticket_id)) {
                 DB::table('scheduled_note_outbox')->where('id', $id)->update(['delivery_error' => 'ticket_missing']);
 
                 return false;

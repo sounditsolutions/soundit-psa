@@ -78,7 +78,7 @@ class EmergencySweep
     {
         $coverageStart = TechnicianConfig::coverageStartAt();
 
-        Ticket::query()
+        Ticket::automationVisible()
             ->open()
             ->whereHas('client', fn ($q) => $q->operational())
             ->each(function (Ticket $ticket) use ($coverageStart): void {
@@ -191,7 +191,7 @@ class EmergencySweep
         // representative ticket (guard a deleted/missing ticket).
         $e->refresh();
         if ($e->max_hold_sent_at === null && ! $this->anyoneReachable()) {
-            $ticket = Ticket::find($e->ticket_id);
+            $ticket = Ticket::automationVisible()->find($e->ticket_id);
             if ($ticket !== null) {
                 $this->maxHold->send($e, $ticket);
             }
@@ -223,7 +223,7 @@ class EmergencySweep
 
         $systemTypes = array_map(fn (NoteType $t) => $t->value, NoteType::systemGenerated());
 
-        foreach (Ticket::query()->whereIn('id', $ticketIds)->get() as $ticket) {
+        foreach (Ticket::automationVisible()->whereIn('id', $ticketIds)->get() as $ticket) {
             // (a) the operator/agent responded after the alert.
             if ($ticket->responded_at !== null && $ticket->responded_at->gt($alertedAt)) {
                 return true;
@@ -236,7 +236,7 @@ class EmergencySweep
         }
 
         // (b) a genuine human Agent note (non-AI, non-system) since the alert.
-        return TicketNote::query()
+        return TicketNote::automationVisible()
             ->whereIn('ticket_id', $ticketIds)
             ->where('who_type', WhoType::Agent->value)
             ->where('ai_authored', false)

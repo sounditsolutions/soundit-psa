@@ -60,6 +60,24 @@ class Ticket extends Model
         'reported_by',
     ];
 
+    /** Set only by the intake writer; ordinary mass assignment cannot change trust. */
+    public function isUnverifiedContactIntake(): bool
+    {
+        return (bool) $this->contact_intake_origin && $this->contact_intake_verified_at === null;
+    }
+
+    public function scopeAutomationVisible(Builder $query): Builder
+    {
+        return $query->where(fn (Builder $q) => $q
+            ->where('tickets.contact_intake_origin', false)
+            ->orWhereNotNull('tickets.contact_intake_verified_at'));
+    }
+
+    public function scopePortalVisible(Builder $query): Builder
+    {
+        return $query->automationVisible();
+    }
+
     protected function casts(): array
     {
         return [
@@ -68,6 +86,8 @@ class Ticket extends Model
             // TicketObserver::updating() from execution context, so no mass-
             // assignment path (request input, tool input) can forge ownership.
             'category_source' => TicketCategoryChangeSource::class,
+            'contact_intake_origin' => 'boolean',
+            'contact_intake_verified_at' => 'datetime',
             'status' => TicketStatus::class,
             'priority' => TicketPriority::class,
             'type' => TicketType::class,

@@ -556,7 +556,7 @@ class StaffHuntressActionToolExecutor
                 return new TechnicianApprovalResult('gate_declined');
             }
 
-            $ticket = Ticket::find((int) ($payload['ticket_id'] ?? 0));
+            $ticket = Ticket::automationVisible()->find((int) ($payload['ticket_id'] ?? 0));
             if (! $ticket || (int) $ticket->client_id !== (int) $client->id) {
                 $run->releaseClaim();
 
@@ -1022,7 +1022,7 @@ class StaffHuntressActionToolExecutor
             throw new HuntressWriteScopeException('ticket_id is required for staged Huntress actions');
         }
 
-        $ticket = Ticket::find($ticketId);
+        $ticket = Ticket::automationVisible()->find($ticketId);
         if (! $ticket || (int) $ticket->client_id !== $clientId) {
             throw new HuntressWriteScopeException('Ticket not found or belongs to a different client');
         }

@@ -253,7 +253,7 @@ class SendReplyTool
      */
     private function hasUnaddressedClientReply(Ticket $ticket): bool
     {
-        $latestClientReply = $ticket->notes()
+        $latestClientReply = $ticket->notes()->automationVisible()
             ->where('note_type', NoteType::Reply->value)
             ->where('ai_authored', false)
             ->where('who_type', WhoType::EndUser->value)

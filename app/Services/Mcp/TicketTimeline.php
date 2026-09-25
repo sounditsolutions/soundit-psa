@@ -18,6 +18,10 @@ final class TicketTimeline
 
     public function page(Ticket $ticket, array $input = [], bool $models = false): array
     {
+        if (! $models && $ticket->isUnverifiedContactIntake()) {
+            throw new \DomainException('Unverified contact intake.');
+        }
+
         $limit = $input['limit'] ?? 20;
         if (! is_int($limit) || $limit < 1 || $limit > 50) {
             throw new InvalidArgumentException('limit must be an integer from 1 to 50');
@@ -139,7 +143,7 @@ final class TicketTimeline
      */
     private function noteQuery(bool $models): \Illuminate\Database\Eloquent\Builder
     {
-        return $models ? TicketNote::withTrashed() : TicketNote::query();
+        return $models ? TicketNote::withTrashed() : TicketNote::automationVisible();
     }
 
     /**

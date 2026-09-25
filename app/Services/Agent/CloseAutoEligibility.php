@@ -81,7 +81,7 @@ class CloseAutoEligibility
     {
         $cutoff = now()->subDays(AgentConfig::autoQuietDays());
 
-        return TicketNote::withTrashed()
+        return TicketNote::withTrashed()->automationVisible()
             ->where('ticket_id', $ticket->id)
             ->where('who_type', WhoType::EndUser->value)
             ->where('created_at', '>=', $cutoff)

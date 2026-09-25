@@ -22,10 +22,7 @@ use Illuminate\Support\Str;
 
 class EmailController extends Controller
 {
-    private const FREE_EMAIL_DOMAINS = [
-        'gmail.com', 'outlook.com', 'hotmail.com', 'yahoo.com', 'live.com',
-        'icloud.com', 'aol.com', 'protonmail.com', 'me.com', 'msn.com',
-    ];
+    private const FREE_EMAIL_DOMAINS = \App\Support\FreeEmailDomains::ALL;
 
     public function __construct(
         private readonly EmailService $emailService,

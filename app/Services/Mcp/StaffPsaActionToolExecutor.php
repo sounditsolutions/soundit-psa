@@ -2098,7 +2098,7 @@ class StaffPsaActionToolExecutor
             return ['error' => 'Email item not found'];
         }
 
-        $ticket = Ticket::find((int) ($arguments['ticket_id'] ?? 0));
+        $ticket = Ticket::automationVisible()->find((int) ($arguments['ticket_id'] ?? 0));
         if (! $ticket) {
             return ['error' => 'Ticket not found'];
         }
@@ -2257,7 +2257,7 @@ class StaffPsaActionToolExecutor
             return ['error' => 'Phone call not found'];
         }
 
-        $ticket = Ticket::find((int) ($arguments['ticket_id'] ?? 0));
+        $ticket = Ticket::automationVisible()->find((int) ($arguments['ticket_id'] ?? 0));
         if (! $ticket) {
             return ['error' => 'Ticket not found'];
         }
@@ -2708,7 +2708,7 @@ class StaffPsaActionToolExecutor
             // (the secondary now carries parent_ticket_id), so this is the ONLY
             // place an exact retry can be recognised — answer it idempotently here
             // instead of as an error.
-            $merged = Ticket::find($primaryId);
+            $merged = Ticket::automationVisible()->find($primaryId);
             if ($merged && (int) $merged->client_id === $clientId
                 && $this->alreadyExecuted('merge_ticket', $merged->id, $this->contentHash('merge_ticket', $merged->id, "{$secondaryId}:{$reason}"))) {
                 return $this->idempotentResult('merge_ticket', $merged);
@@ -2789,7 +2789,7 @@ class StaffPsaActionToolExecutor
         if ($ticketId === null) {
             return ['error' => 'ticket_id is required for asset merges'];
         }
-        $ticket = Ticket::find($ticketId);
+        $ticket = Ticket::automationVisible()->find($ticketId);
         if (! $ticket || (int) $ticket->client_id !== $clientId) {
             return ['error' => 'Ticket not found or belongs to a different client'];
         }
@@ -2982,7 +2982,7 @@ class StaffPsaActionToolExecutor
         if ($ticketId === null) {
             return ['error' => 'ticket_id is required for staged asset merges'];
         }
-        $ticket = Ticket::find($ticketId);
+        $ticket = Ticket::automationVisible()->find($ticketId);
         if (! $ticket || (int) $ticket->client_id !== $clientId) {
             return ['error' => 'Ticket not found or belongs to a different client'];
         }
@@ -3125,7 +3125,7 @@ class StaffPsaActionToolExecutor
             return ['error' => 'ticket_id is required'];
         }
 
-        $ticket = Ticket::with(['contact', 'assets'])->find($ticketId);
+        $ticket = Ticket::automationVisible()->with(['contact', 'assets'])->find($ticketId);
         if (! $ticket || ($clientId instanceof UnlinkedTicketScope
             ? $ticket->client_id !== null
             : ($ticket->client_id === null || (int) $ticket->client_id !== $clientId))) {
@@ -3144,8 +3144,8 @@ class StaffPsaActionToolExecutor
             return ['error' => 'Cannot merge a ticket into itself'];
         }
 
-        $primary = Ticket::find($primaryId);
-        $secondary = Ticket::find($secondaryId);
+        $primary = Ticket::automationVisible()->find($primaryId);
+        $secondary = Ticket::automationVisible()->find($secondaryId);
         if (! $primary || ! $secondary) {
             return ['error' => 'Ticket not found'];
         }

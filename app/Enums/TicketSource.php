@@ -5,6 +5,7 @@ namespace App\Enums;
 enum TicketSource: string
 {
     case Manual = 'manual';
+    case WebForm = 'web_form';
     case Email = 'email';
     case Phone = 'phone';
     case Chat = 'chat';
@@ -22,6 +23,7 @@ enum TicketSource: string
     {
         return match ($this) {
             self::Manual => 'Manual',
+            self::WebForm => 'Web Form',
             self::Email => 'Email',
             self::Phone => 'Phone',
             self::Chat => 'Chat',

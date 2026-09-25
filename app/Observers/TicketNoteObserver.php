@@ -15,6 +15,24 @@ class TicketNoteObserver
         private readonly PrepayService $prepayService,
     ) {}
 
+    public function saving(TicketNote $note): void
+    {
+        // An ordinary edit cannot erase source provenance, even after verification.
+        if ($note->exists && $note->getRawOriginal('contact_intake_origin')) {
+            $note->contact_intake_origin = true;
+        }
+        if (! $note->exists && $note->ticket?->isUnverifiedContactIntake()) {
+            $note->contact_intake_origin = true;
+        }
+        if ($note->contact_intake_origin) {
+            $note->is_private = true;
+            $note->is_billable = false;
+            $note->time_minutes = 0;
+            $note->contract_id = null;
+            $note->email_id = null;
+        }
+    }
+
     public function created(TicketNote $note): void
     {
         $this->emitClientReplySignal($note);
@@ -40,7 +58,7 @@ class TicketNoteObserver
 
     private function syncPrepayDebit(TicketNote $note): void
     {
-        if (! $note->time_minutes) {
+        if ($note->contact_intake_origin || ! $note->time_minutes) {
             return;
         }
 
@@ -56,7 +74,7 @@ class TicketNoteObserver
 
     private function emitClientReplySignal(TicketNote $note): void
     {
-        if ($note->note_type !== NoteType::Reply || $note->is_private || $note->who_type !== WhoType::EndUser) {
+        if ($note->contact_intake_origin || $note->note_type !== NoteType::Reply || $note->is_private || $note->who_type !== WhoType::EndUser) {
             return;
         }
 

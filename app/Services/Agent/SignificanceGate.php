@@ -92,7 +92,7 @@ class SignificanceGate
             "Last updated: {$ageDays} day(s) ago",
         ];
 
-        $lastNote = $ticket->notes()
+        $lastNote = $ticket->notes()->automationVisible()
             ->orderByDesc('noted_at')
             ->first();
 

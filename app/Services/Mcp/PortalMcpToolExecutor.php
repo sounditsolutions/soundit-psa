@@ -258,7 +258,7 @@ class PortalMcpToolExecutor
      */
     private function ticketScope(): Builder
     {
-        $query = Ticket::query()->where('client_id', $this->clientId);
+        $query = Ticket::portalVisible()->where('client_id', $this->clientId);
 
         if (! $this->companyWideAccess) {
             // A null contact id with no company-wide access matches nothing (safe).

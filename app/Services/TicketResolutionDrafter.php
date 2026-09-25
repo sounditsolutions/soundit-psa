@@ -49,6 +49,9 @@ PROMPT;
      */
     public function draft(Ticket $ticket, string $triggeredBy = 'manual'): ?string
     {
+        if ($ticket->fresh()?->isUnverifiedContactIntake()) {
+            return null;
+        }
         if (! $this->hasSubstance($ticket)) {
             return null;
         }
@@ -136,7 +139,7 @@ PROMPT;
      */
     private function hasSubstance(Ticket $ticket): bool
     {
-        return $ticket->notes()->where('note_type', 'reply')->exists()
+        return $ticket->notes()->automationVisible()->where('note_type', 'reply')->exists()
             || $ticket->phoneCalls()->where('transcription_status', 'completed')->whereNotNull('call_summary')->exists();
     }
 }

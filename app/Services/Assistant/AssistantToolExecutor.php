@@ -83,6 +83,10 @@ class AssistantToolExecutor
 
     public function execute(string $toolName, array $input): mixed
     {
+        if ($this->ticket?->isUnverifiedContactIntake()) {
+            return ['error' => 'Unverified contact intake.'];
+        }
+
         $logInput = $input;
         if ($toolName === 'wiki_add_fact' && array_key_exists('statement', $logInput)) {
             $logInput['statement'] = '[wiki fact statement withheld]';
@@ -327,7 +331,7 @@ class AssistantToolExecutor
         // with a confident under-count (psa-6usr). Staff already see every
         // ticket on the web dashboard, so removing it widens no access boundary;
         // the real client-lock lives on the portal executor, which is untouched.
-        return Ticket::query();
+        return Ticket::automationVisible();
     }
 
     private function priorityOrderSql(): string
@@ -476,7 +480,7 @@ class AssistantToolExecutor
 
         // categoryNode.parent.parent: the taxonomy tree is depth <= 3, so this
         // loads the whole ancestor chain pathString() walks in one pass.
-        $ticketQuery = Ticket::with(['client:id,name,stage', 'assignee:id,name', 'contact', 'categoryNode.parent.parent', 'assets']);
+        $ticketQuery = Ticket::automationVisible()->with(['client:id,name,stage', 'assignee:id,name', 'contact', 'categoryNode.parent.parent', 'assets']);
 
         // Two branches, and NEITHER is getAsset/getPerson parity — those refuse
         // outright on a null client, which this read cannot do: the unscoped
@@ -514,7 +518,7 @@ class AssistantToolExecutor
 
         \App\Services\Mcp\TicketToolActivityContext::current()?->validated($ticket);
 
-        $notes = TicketNote::where('ticket_id', $ticketId)
+        $notes = TicketNote::automationVisible()->where('ticket_id', $ticketId)
             ->with('attachments')
             ->orderByDesc('noted_at')
             ->limit(10)
@@ -705,7 +709,7 @@ class AssistantToolExecutor
             return ['error' => 'confidence must be a number between 0 and 1'];
         }
 
-        $ticket = Ticket::with('client')->find((int) $ticketId);
+        $ticket = Ticket::automationVisible()->with('client')->find((int) $ticketId);
         if (! $ticket) {
             return ['error' => 'Ticket not found'];
         }
@@ -745,7 +749,7 @@ class AssistantToolExecutor
         //   unscoped — the staff board keeps its cross-client read, including
         //              the client_id IS NULL unresolved-intake tickets that
         //              are reachable nowhere else (psa-6usr).
-        $ticketQuery = Ticket::with('client:id,stage');
+        $ticketQuery = Ticket::automationVisible()->with('client:id,stage');
 
         if ($this->clientId) {
             $ticketQuery->where('client_id', $this->clientId);
@@ -839,7 +843,7 @@ class AssistantToolExecutor
 
         $query = $input['query'] ?? '';
 
-        $builder = Ticket::where('client_id', $this->clientId)
+        $builder = Ticket::automationVisible()->where('client_id', $this->clientId)
             ->search($query)
             ->orderByDesc('created_at');
 
@@ -877,7 +881,7 @@ class AssistantToolExecutor
         // externally-synced tickets (psa-gq0f).
         $ticket = Ticket::resolveReference($ticketId, $this->clientId);
 
-        if (! $ticket) {
+        if (! $ticket || $ticket->isUnverifiedContactIntake()) {
             return ['error' => 'Ticket not found or belongs to a different client'];
         }
 
@@ -886,7 +890,7 @@ class AssistantToolExecutor
         // Latest notes, not oldest: fetch the newest 20 then present them
         // chronologically. The old ASC+limit dropped the tail on busy tickets,
         // so "what did the client say last" could be absent entirely (psa-m7re).
-        $query = TicketNote::where('ticket_id', $ticket->id);
+        $query = TicketNote::automationVisible()->where('ticket_id', $ticket->id);
         try {
             $page = \App\Support\HistoryPage::read($query, 'noted_at', 'note',
                 'notes:'.$ticket->id.':'.$this->clientId, $input, 20);
@@ -988,7 +992,7 @@ class AssistantToolExecutor
 
         // CLIENT-SCOPED: cross-client ticket_id resolves to null → refused.
         $ticket = Ticket::resolveReference($ticketId, $this->clientId);
-        if (! $ticket) {
+        if (! $ticket || $ticket->isUnverifiedContactIntake()) {
             return ['error' => 'Ticket not found or belongs to a different client'];
         }
 
@@ -1065,7 +1069,7 @@ class AssistantToolExecutor
     {
         return match ($attachment->attachable_type) {
             Ticket::class => (int) $attachment->attachable_id === $ticketId,
-            TicketNote::class => TicketNote::where('id', $attachment->attachable_id)
+            TicketNote::class => TicketNote::automationVisible()->where('id', $attachment->attachable_id)
                 ->where('ticket_id', $ticketId)->exists(),
             default => false,
         };
@@ -1125,7 +1129,7 @@ class AssistantToolExecutor
         }
 
         // CLIENT-SCOPED: verify the ticket belongs to this client
-        $ticket = Ticket::where('id', $ticketId)
+        $ticket = Ticket::automationVisible()->where('id', $ticketId)
             ->where('client_id', $this->clientId)
             ->first();
 

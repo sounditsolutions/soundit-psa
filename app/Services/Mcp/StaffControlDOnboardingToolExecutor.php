@@ -228,7 +228,7 @@ class StaffControlDOnboardingToolExecutor
         }
 
         $ticketId = $this->positiveInt($arguments['ticket_id'] ?? null);
-        $ticket = $ticketId !== null ? Ticket::find($ticketId) : null;
+        $ticket = $ticketId !== null ? Ticket::automationVisible()->find($ticketId) : null;
         if (! $ticket || (int) $ticket->client_id !== $clientId) {
             $this->auditAttempt($tool, 'rejected', $clientId, null, $contentHash, 'ticket_id is required and must belong to this client.', $actorLabel);
 
@@ -468,7 +468,7 @@ class StaffControlDOnboardingToolExecutor
             }
 
             $client = Client::find((int) ($payload['client_id'] ?? 0));
-            $ticket = Ticket::find((int) ($payload['ticket_id'] ?? 0));
+            $ticket = Ticket::automationVisible()->find((int) ($payload['ticket_id'] ?? 0));
             $step = (string) ($payload['step'] ?? '');
             if (! $client || (int) $client->id !== (int) $run->client_id || ! $ticket || (int) $ticket->client_id !== (int) $client->id
                 || ! in_array($step, [self::STEP_ORGANIZATION, self::STEP_CODE], true)) {
