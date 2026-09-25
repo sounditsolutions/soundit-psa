@@ -84,8 +84,17 @@ class UptimeProvenanceTest extends TestCase
         }
     }
 
-    #[DataProvider('statuses')]
-    public function test_stored_read_surfaces_use_stored_tactical_status(?string $status, string $state): void
+    public static function storedStatuses(): array
+    {
+        return [
+            ...self::statuses(),
+            'stale online' => ['online', 'unverified', 120],
+            'undated online' => ['online', 'unverified', null],
+        ];
+    }
+
+    #[DataProvider('storedStatuses')]
+    public function test_stored_read_surfaces_use_stored_tactical_status(?string $status, string $state, ?int $ageMinutes = 0): void
     {
         $asset = $this->asset();
         if ($status !== null) {
@@ -93,10 +102,11 @@ class UptimeProvenanceTest extends TestCase
                 'asset_id' => $asset->id, 'agent_id' => 'synthetic-agent',
                 'hostname' => $asset->hostname, 'status' => $status,
                 'last_seen_at' => now()->subHours(2),
+                'synced_at' => $ageMinutes !== null ? now()->subMinutes($ageMinutes) : null,
             ]);
         }
         $expected = TacticalFieldMap::storedUptime($asset);
-        $this->assertSame($state, $expected['uptime_state']);
+        $this->assertSame($state, $expected['uptime_state'], 'Stored online needs a recent sync; stale or undated status must be unverified');
         $results = [
             (new AssistantToolExecutor(clientId: $asset->client_id))->execute('get_asset', ['asset_id' => $asset->id]),
             app(AssetController::class)->quickLook($asset)->getData(true),

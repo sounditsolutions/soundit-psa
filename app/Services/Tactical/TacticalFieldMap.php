@@ -113,7 +113,8 @@ class TacticalFieldMap
      * @ e56ebd3e48e99de59f34d4bd7600c127a6f02cf2: hello writes last_seen;
      * agent-agentinfo writes boot_time independently. No boot-report timestamp
      * is exposed. Require both arguments: callers must choose live or stored
-     * agent evidence explicitly, never infer status from PSA's sync clock.
+     * agent evidence explicitly. Stored callers must also bound status recency;
+     * PSA's sync clock is never a boot-report observation timestamp.
      *
      * @return array{uptime_state: string, freshness_note: string, agent_status: mixed, agent_last_seen: ?string}
      */
@@ -134,15 +135,22 @@ class TacticalFieldMap
         ];
     }
 
-    /** Stored reads use only the linked Tactical status, never rmm_online. */
+    /** Stored online status counts only within the shared status-recency window. */
     public static function storedUptime(\App\Models\Asset $asset): array
     {
+        $agent = $asset->tacticalAsset;
+        $recent = $agent?->synced_at !== null
+            && $agent->synced_at->gte(now()->subMinutes(EndpointInsight::STALE_AFTER_MINUTES));
+        $provenance = self::uptimeProvenance(
+            $recent ? $agent?->status : null,
+            $agent?->last_seen_at?->toIso8601String(),
+        );
+        // Keep the observed status visible even when too old to qualify uptime.
+        $provenance['agent_status'] = $agent?->status;
+
         return [
             'uptime' => self::uptimeFromBootTime($asset->last_boot_at?->toIso8601String()),
-            ...self::uptimeProvenance(
-                $asset->tacticalAsset?->status,
-                $asset->tacticalAsset?->last_seen_at?->toIso8601String(),
-            ),
+            ...$provenance,
         ];
     }
 
