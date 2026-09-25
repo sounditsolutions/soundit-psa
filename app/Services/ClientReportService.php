@@ -79,18 +79,18 @@ PROMPT;
         // Tickets resolved/closed during the week. resolved_at is the reliable
         // "done" marker — it is back-filled when a ticket is closed without a
         // prior resolve, so it covers both Resolved and Closed terminal states.
-        $closed = Ticket::forClient($client->id)
+        $closed = Ticket::automationVisible()->forClient($client->id)
             ->whereIn('status', [TicketStatus::Resolved, TicketStatus::Closed])
             ->whereBetween('resolved_at', [$start, $end])
             ->with('categoryNode.parent.parent')
             ->orderBy('resolved_at')
             ->get();
 
-        $openedCount = Ticket::forClient($client->id)
+        $openedCount = Ticket::automationVisible()->forClient($client->id)
             ->whereBetween('opened_at', [$start, $end])
             ->count();
 
-        $currentlyOpen = Ticket::forClient($client->id)->open()->count();
+        $currentlyOpen = Ticket::automationVisible()->forClient($client->id)->open()->count();
 
         $tickets = $closed->map(function (Ticket $t): array {
             $responseMins = ($t->opened_at && $t->responded_at)

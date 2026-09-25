@@ -568,7 +568,7 @@ class CippWriteScopeResolver
             throw new CippWriteScopeException('ticket_id is required for staged CIPP write actions');
         }
 
-        $ticket = Ticket::find($ticketId);
+        $ticket = Ticket::automationVisible()->find($ticketId);
         if (! $ticket || (int) $ticket->client_id !== $clientId) {
             throw new CippWriteScopeException('Ticket not found or belongs to a different client');
         }

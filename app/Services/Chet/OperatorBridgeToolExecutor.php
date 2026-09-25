@@ -106,6 +106,9 @@ class OperatorBridgeToolExecutor
         $ticket = null;
         if (isset($input['ticket_id']) && is_numeric($input['ticket_id']) && (int) $input['ticket_id'] > 0) {
             $ticket = Ticket::with('client')->find((int) $input['ticket_id']);
+            if ($ticket?->isUnverifiedContactIntake()) {
+                return ['error' => 'Contact intake requires staff verification.'];
+            }
         }
 
         $recipientId = TechnicianConfig::operatorRecipientFor($category);

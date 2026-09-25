@@ -30,7 +30,7 @@ class CloseResolvedTickets extends Command
         $dryRun = $this->option('dry-run');
         $cutoff = now()->subDays($days);
 
-        $tickets = Ticket::where('status', TicketStatus::Resolved)
+        $tickets = Ticket::automationVisible()->where('status', TicketStatus::Resolved)
             ->where('resolved_at', '<=', $cutoff)
             ->get();
 

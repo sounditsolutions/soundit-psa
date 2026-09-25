@@ -89,7 +89,7 @@ class TriageReviewOpen extends Command
     {
         $systemUserId = TriageConfig::systemUserId();
 
-        return Ticket::open()
+        return Ticket::automationVisible()->open()
             ->orderBy('priority_order') // P1 first
             ->orderBy('updated_at')     // Oldest first within priority
             ->limit($limit * 2) // Fetch extra to account for filtering
