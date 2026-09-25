@@ -35,6 +35,9 @@ class DraftPipeline
 
     public function run(Ticket $ticket): void
     {
+        if ($ticket->fresh()?->isUnverifiedContactIntake()) {
+            return;
+        }
         // Fail-closed: no AI, AI globally disabled, or budget reached → hold (v2 adds isEnabled()).
         if (! AiConfig::isConfigured() || ! AiConfig::isEnabled()) {
             return;
@@ -109,7 +112,7 @@ class DraftPipeline
      */
     private function hasUnaddressedClientReply(Ticket $ticket): bool
     {
-        $latestClientReply = $ticket->notes()
+        $latestClientReply = $ticket->notes()->automationVisible()
             ->where('note_type', NoteType::Reply->value)
             ->where('ai_authored', false)
             ->where('who_type', WhoType::EndUser->value)
@@ -133,7 +136,7 @@ class DraftPipeline
     /** True when a real (non-AI) client/human Reply note exists — distinct from the bot's ack. */
     private function hasClientSubstance(Ticket $ticket): bool
     {
-        return $ticket->notes()
+        return $ticket->notes()->automationVisible()
             ->where('note_type', NoteType::Reply)
             ->where('ai_authored', false)
             ->exists();
