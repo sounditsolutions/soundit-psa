@@ -243,14 +243,19 @@ class TechnicianCockpitController extends Controller
             // them why. Counts are deliberately not quoted here: the reproducible
             // enumeration lives in the test docblock and in census2.py, because a
             // bare figure in a comment cannot be reconciled later.
-            'gate_declined' => $result->message ?? 'This action was not confirmed as carried out, and no reason reached this page.',
+            // filled(), not ??: `??` only substitutes null, so a site constructing
+            // TechnicianApprovalResult('gate_declined', message: '') rendered an EMPTY
+            // error banner (#3909). No site does today (0 of 25 message-carrying
+            // constructions in app/), so this closes the hole rather than fixing a
+            // live defect. The text is unchanged.
+            'gate_declined' => filled($result->message) ? $result->message : 'This action was not confirmed as carried out, and no reason reached this page.',
             // Unreachable from any status this codebase constructs (measured: the
             // set of constructed statuses and the set handled above are equal), so
             // this arm is the fail-closed default for a status added later. Same
             // text, and it consults $result->message first for the same reason the
             // arm above does: without that, a future status that DOES carry a
             // message would render "no reason reached this page" over the top of one.
-            default => $result->message ?? 'This action was not confirmed as carried out, and no reason reached this page.',
+            default => filled($result->message) ? $result->message : 'This action was not confirmed as carried out, and no reason reached this page.',
         };
 
         return $this->actionResponse(
