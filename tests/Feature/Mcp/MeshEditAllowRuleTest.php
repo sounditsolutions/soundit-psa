@@ -1339,7 +1339,7 @@ class MeshEditAllowRuleTest extends TestCase
         $this->travel(30)->hours();
 
         $this->actingAs($actor)->post(route('cockpit.approve', $duplicate))->assertSessionHas('error');
-        $this->assertStringContainsString('this proposal changes nothing and no upstream call was made', (string) session('error'));
+        $this->assertStringContainsString('this proposal changes nothing and no PATCH was sent', (string) session('error'));
         $this->assertSame(TechnicianRunState::Done, $duplicate->fresh()->state);
         $this->assertTrue($record->fresh()->expires_at->equalTo($expiry));
     }

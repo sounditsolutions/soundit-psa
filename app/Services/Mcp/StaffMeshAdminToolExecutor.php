@@ -1194,10 +1194,9 @@ class StaffMeshAdminToolExecutor
 
             // The refusal text IS the outcome here — an expiry that passed
             // while the card waited, a duplicate brake, a tenant that no longer
-            // matches. A message-less gate_declined renders the cockpit's
-            // generic "the Technician declined (it may be paused). Try again.",
-            // which is not what happened and tells the approver to do the one
-            // thing that cannot work; the specific reason names the re-stage
+            // matches. A message-less gate_declined renders the generic
+            // gate_declined fallback in TechnicianCockpitController::approve(),
+            // which names no reason; the specific reason names the re-stage
             // they actually need.
             if (isset($result['error'])) {
                 $run->releaseClaim();
@@ -2876,7 +2875,7 @@ class StaffMeshAdminToolExecutor
         // send a second PATCH for a lifetime the PSA already holds. Nothing to
         // enforce differently means nothing to send.
         if (self::sameInstant($previous, $expiresAt)) {
-            $message = "Rule '{$target['rule_id']}' (sender '{$target['sender']}') already ".self::expiryPhrase($previous).' in the PSA; this proposal changes nothing and no upstream call was made.';
+            $message = "Rule '{$target['rule_id']}' (sender '{$target['sender']}') already ".self::expiryPhrase($previous).' in the PSA; this proposal changes nothing and no PATCH was sent.';
             $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
 
             return ['success' => true, 'idempotent' => true, 'message' => $message];

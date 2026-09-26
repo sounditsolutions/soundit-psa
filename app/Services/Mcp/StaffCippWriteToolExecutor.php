@@ -1777,13 +1777,13 @@ class StaffCippWriteToolExecutor
             }
 
             if ($this->quarantineRowReleased($row)) {
-                $this->auditAttempt($tool, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Message already released upstream; treated as satisfied without an upstream call.", $actorLabel);
+                $this->auditAttempt($tool, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Message already released upstream; no release was sent.", $actorLabel);
 
                 return [
                     'success' => true,
                     'idempotent' => true,
                     'already_released' => true,
-                    'message' => 'Message is already released upstream; no upstream call was made.',
+                    'message' => 'Message is already released upstream.',
                 ];
             }
         }
@@ -1965,7 +1965,7 @@ class StaffCippWriteToolExecutor
      * (tool identity, client, ticket, parameter shape); a quarantine release
      * is additionally re-verified against the LIVE tenant quarantine — a
      * message that has vanished refuses execution, and one already released
-     * upstream satisfies the approved intent without an upstream call.
+     * upstream satisfies the approved intent with no release sent.
      */
     private function approveEmailSecurityStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
     {
@@ -2023,7 +2023,7 @@ class StaffCippWriteToolExecutor
                 }
 
                 if ($this->quarantineRowReleased($row)) {
-                    $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Message already released upstream — approved release satisfied without an upstream call.", $this->approverLabel($approverId), $run->id, $approverId);
+                    $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Message already released upstream — approved release satisfied; no release was sent.", $this->approverLabel($approverId), $run->id, $approverId);
                     $run->advanceTo(TechnicianRunState::Done);
 
                     return new TechnicianApprovalResult('executed');

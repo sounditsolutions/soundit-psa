@@ -510,19 +510,19 @@ class StaffTacticalActionToolExecutor
         }
 
         if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
-            $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $asset, $contentHash, "Duplicate {$tool} suppressed before upstream call.", $actorLabel);
+            $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $asset, $contentHash, "Duplicate {$tool} suppressed; no {$tool} was sent.", $actorLabel);
 
             return [
                 'success' => true,
                 'idempotent' => true,
-                'message' => 'Already executed identical Tactical action recently; no upstream call was made.',
+                'message' => "Already executed identical Tactical action recently; no {$tool} was sent.",
             ];
         }
 
         if ($this->cooldownActive($tool, $asset, $ticket, self::COOLDOWNS[$tool] ?? 0)) {
-            $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $asset, $contentHash, "{$tool} cooldown active; upstream call refused.", $actorLabel);
+            $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $asset, $contentHash, "{$tool} cooldown active; no {$tool} was sent.", $actorLabel);
 
-            return ['error' => "{$tool} cooldown active for this target; no upstream call was made."];
+            return ['error' => "{$tool} cooldown active for this target; no {$tool} was sent."];
         }
 
         $token = $this->confirmTokenFor($action, $asset, $params, null);
