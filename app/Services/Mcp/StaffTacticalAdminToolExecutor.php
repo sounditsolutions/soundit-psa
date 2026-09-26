@@ -1097,9 +1097,9 @@ class StaffTacticalAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => 'Already updated this Tactical script recently; no script update was sent.'];
         }
         if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
-            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Tactical script update cooldown active; upstream call refused.', $actorLabel);
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Tactical script update cooldown active; no script update was sent.', $actorLabel);
 
-            return ['error' => 'tactical_update_script cooldown active; no upstream call was made.'];
+            return ['error' => 'tactical_update_script cooldown active; no script update was sent.'];
         }
 
         try {
@@ -1156,9 +1156,9 @@ class StaffTacticalAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => 'Already deleted this Tactical script recently; no script delete was sent.'];
         }
         if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
-            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Tactical script delete cooldown active; upstream call refused.', $actorLabel);
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Tactical script delete cooldown active; no script delete was sent.', $actorLabel);
 
-            return ['error' => 'tactical_delete_script cooldown active; no upstream call was made.'];
+            return ['error' => 'tactical_delete_script cooldown active; no script delete was sent.'];
         }
 
         try {
@@ -1306,9 +1306,9 @@ class StaffTacticalAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => 'Already created an identical Tactical automation policy recently; no automation-policy create was sent.'];
         }
         if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
-            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Automation-policy create cooldown active; upstream call refused.', $actorLabel);
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Automation-policy create cooldown active; no automation-policy create was sent.', $actorLabel);
 
-            return ['error' => 'tactical_create_automation_policy cooldown active; no upstream call was made.'];
+            return ['error' => 'tactical_create_automation_policy cooldown active; no automation-policy create was sent.'];
         }
 
         try {
@@ -1395,9 +1395,9 @@ class StaffTacticalAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => 'Already updated this Tactical automation policy recently; no automation-policy update was sent.'];
         }
         if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
-            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Automation-policy update cooldown active; upstream call refused.', $actorLabel);
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Automation-policy update cooldown active; no automation-policy update was sent.', $actorLabel);
 
-            return ['error' => 'tactical_update_automation_policy cooldown active; no upstream call was made.'];
+            return ['error' => 'tactical_update_automation_policy cooldown active; no automation-policy update was sent.'];
         }
 
         try {
@@ -1447,9 +1447,9 @@ class StaffTacticalAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => 'Already deleted this Tactical automation policy recently; no automation-policy delete was sent.'];
         }
         if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
-            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Automation-policy delete cooldown active; upstream call refused.', $actorLabel);
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Automation-policy delete cooldown active; no automation-policy delete was sent.', $actorLabel);
 
-            return ['error' => 'tactical_delete_automation_policy cooldown active; no upstream call was made.'];
+            return ['error' => 'tactical_delete_automation_policy cooldown active; no automation-policy delete was sent.'];
         }
 
         try {
@@ -1540,9 +1540,9 @@ class StaffTacticalAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => 'Already assigned this Tactical automation policy recently; no assignment was sent.'];
         }
         if ($this->cooldownActiveForContent($tool, $clientId, $contentHash, self::COOLDOWNS[$tool])) {
-            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Automation-policy assignment cooldown active; upstream call refused.', $actorLabel);
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Automation-policy assignment cooldown active; no assignment was sent.', $actorLabel);
 
-            return ['error' => 'tactical_assign_automation_policy cooldown active for this client; no upstream call was made.'];
+            return ['error' => 'tactical_assign_automation_policy cooldown active for this client; no assignment was sent.'];
         }
 
         try {
@@ -1844,9 +1844,9 @@ class StaffTacticalAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => 'Already created an identical Tactical check recently; no check create was sent.'];
         }
         if ($this->cooldownActive($tool, $targetClientId, self::COOLDOWNS[$tool])) {
-            $this->auditAttempt($tool, 'blocked', $targetClientId, $contentHash, 'Tactical check create cooldown active; upstream call refused.', $actorLabel);
+            $this->auditAttempt($tool, 'blocked', $targetClientId, $contentHash, 'Tactical check create cooldown active; no check create was sent.', $actorLabel);
 
-            return ['error' => 'tactical_create_check cooldown active; no upstream call was made.'];
+            return ['error' => 'tactical_create_check cooldown active; no check create was sent.'];
         }
 
         try {
@@ -1919,9 +1919,9 @@ class StaffTacticalAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => 'Already created an identical Tactical agent task recently; no task create was sent.'];
         }
         if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
-            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Agent task create cooldown active; upstream call refused.', $actorLabel);
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Agent task create cooldown active; no task create was sent.', $actorLabel);
 
-            return ['error' => 'tactical_create_agent_task cooldown active for this client; no upstream call was made.'];
+            return ['error' => 'tactical_create_agent_task cooldown active for this client; no task create was sent.'];
         }
 
         try {
@@ -1987,9 +1987,9 @@ class StaffTacticalAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => 'Already created an identical Tactical policy task recently; no task create was sent.'];
         }
         if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
-            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Policy task create cooldown active; upstream call refused.', $actorLabel);
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Policy task create cooldown active; no task create was sent.', $actorLabel);
 
-            return ['error' => 'tactical_create_policy_task cooldown active; no upstream call was made.'];
+            return ['error' => 'tactical_create_policy_task cooldown active; no task create was sent.'];
         }
 
         try {
@@ -2072,9 +2072,9 @@ class StaffTacticalAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => 'Already updated this Tactical task recently; no task update was sent.'];
         }
         if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
-            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Task update cooldown active; upstream call refused.', $actorLabel);
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Task update cooldown active; no task update was sent.', $actorLabel);
 
-            return ['error' => 'tactical_update_task cooldown active; no upstream call was made.'];
+            return ['error' => 'tactical_update_task cooldown active; no task update was sent.'];
         }
 
         try {
@@ -2118,9 +2118,9 @@ class StaffTacticalAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => 'Already deleted this Tactical task recently; no task delete was sent.'];
         }
         if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
-            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Task delete cooldown active; upstream call refused.', $actorLabel);
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Task delete cooldown active; no task delete was sent.', $actorLabel);
 
-            return ['error' => 'tactical_delete_task cooldown active; no upstream call was made.'];
+            return ['error' => 'tactical_delete_task cooldown active; no task delete was sent.'];
         }
 
         try {
@@ -2172,9 +2172,9 @@ class StaffTacticalAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => 'Already ran this Tactical agent task recently; no task run was sent.'];
         }
         if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
-            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Agent task run cooldown active; upstream call refused.', $actorLabel);
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Agent task run cooldown active; no task run was sent.', $actorLabel);
 
-            return ['error' => 'tactical_run_agent_task cooldown active for this client; no upstream call was made.'];
+            return ['error' => 'tactical_run_agent_task cooldown active for this client; no task run was sent.'];
         }
 
         try {
@@ -2236,9 +2236,9 @@ class StaffTacticalAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => 'Already ran this Tactical policy task on that agent recently; no task run was sent.'];
         }
         if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
-            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Policy task single-agent run cooldown active; upstream call refused.', $actorLabel);
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Policy task single-agent run cooldown active; no task run was sent.', $actorLabel);
 
-            return ['error' => 'tactical_run_policy_task_on_agent cooldown active for this client; no upstream call was made.'];
+            return ['error' => 'tactical_run_policy_task_on_agent cooldown active for this client; no task run was sent.'];
         }
 
         try {
@@ -2506,9 +2506,9 @@ class StaffTacticalAdminToolExecutor
                 return ['success' => true, 'idempotent' => true, 'message' => 'Already created an identical patch policy recently; no patch-policy create was sent.'];
             }
             if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
-                $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Patch-policy create cooldown active; upstream call refused.', $actorLabel);
+                $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Patch-policy create cooldown active; no patch-policy create was sent.', $actorLabel);
 
-                return ['error' => 'tactical_create_patch_policy cooldown active for this client; no upstream call was made.'];
+                return ['error' => 'tactical_create_patch_policy cooldown active for this client; no patch-policy create was sent.'];
             }
 
             $this->client->createPatchPolicy($payload);
@@ -2556,9 +2556,9 @@ class StaffTacticalAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => 'Already updated this patch policy recently; no patch-policy update was sent.'];
         }
         if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
-            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Patch-policy update cooldown active; upstream call refused.', $actorLabel);
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Patch-policy update cooldown active; no patch-policy update was sent.', $actorLabel);
 
-            return ['error' => 'tactical_update_patch_policy cooldown active for this client; no upstream call was made.'];
+            return ['error' => 'tactical_update_patch_policy cooldown active for this client; no patch-policy update was sent.'];
         }
 
         try {
@@ -2604,9 +2604,9 @@ class StaffTacticalAdminToolExecutor
             return ['success' => true, 'idempotent' => true, 'message' => 'Already deleted this patch policy recently; no patch-policy delete was sent.'];
         }
         if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
-            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Patch-policy delete cooldown active; upstream call refused.', $actorLabel);
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Patch-policy delete cooldown active; no patch-policy delete was sent.', $actorLabel);
 
-            return ['error' => 'tactical_delete_patch_policy cooldown active for this client; no upstream call was made.'];
+            return ['error' => 'tactical_delete_patch_policy cooldown active for this client; no patch-policy delete was sent.'];
         }
 
         try {
@@ -3835,9 +3835,9 @@ class StaffTacticalAdminToolExecutor
                 return ['success' => true, 'idempotent' => true, 'message' => 'Already reset this Tactical patch-policy scope recently; no reset was sent.'];
             }
             if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
-                $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Patch-policy reset cooldown active; upstream call refused.', $actorLabel);
+                $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Patch-policy reset cooldown active; no reset was sent.', $actorLabel);
 
-                return ['error' => 'tactical_reset_patch_policies cooldown active for this client; no upstream call was made.'];
+                return ['error' => 'tactical_reset_patch_policies cooldown active for this client; no reset was sent.'];
             }
         }
 
@@ -5316,9 +5316,9 @@ class StaffTacticalAdminToolExecutor
                 return ['success' => true, 'idempotent' => true, 'message' => 'Already ran this Tactical policy task for all affected agents recently; no task run was sent.'];
             }
             if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
-                $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Policy task all-agents run cooldown active; upstream call refused.', $actorLabel);
+                $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Policy task all-agents run cooldown active; no task run was sent.', $actorLabel);
 
-                return ['error' => 'tactical_run_policy_task_all cooldown active; no upstream call was made.'];
+                return ['error' => 'tactical_run_policy_task_all cooldown active; no task run was sent.'];
             }
         }
 

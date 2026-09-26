@@ -32,6 +32,11 @@ use Tests\TestCase;
  * script-create arms send nothing before the predicate; their old sentence is
  * true, and the two controls below pin it unchanged.
  *
+ * The cooldown arms of the same twenty methods were reworded the same way,
+ * but no case here reaches them: every COOLDOWNS value is 0, so
+ * cooldownActive() returns false before it reads anything and no public
+ * entry can arrive at a cooldown arm without a change to that constant.
+ *
  * Each case enters through execute() (or approveStagedRun() for the one arm
  * only approval reaches), runs the same call twice, and asserts on the SECOND
  * call: the full message, the exact request log, and the audit summary. The
