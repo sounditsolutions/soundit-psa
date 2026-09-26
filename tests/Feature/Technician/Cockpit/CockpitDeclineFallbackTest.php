@@ -223,16 +223,23 @@ class CockpitDeclineFallbackTest extends TestCase
     public function test_an_empty_string_message_gets_the_fallback_and_not_a_blank_banner(): void
     {
         // #3909: `??` only substitutes null, so a site passing '' rendered an EMPTY
-        // error banner — worse than the fallback, and invisible to every control in
-        // this file because they all assert absences. No site passes '' today
-        // (0 of 25 message-carrying constructions in app/), so this pins the guard
-        // rather than reporting a live defect. filled() is what closes it.
+        // error banner on this branch — worse than the fallback. filled() closes it.
+        //
+        // WHAT THE "no site does this today" CLAIM RESTS ON: zero of the 25
+        // message-carrying TechnicianApprovalResult constructions in app/ pass a
+        // literal ''. That is a floor, not a proof — it counts LITERALS, so a message
+        // built at runtime can still be empty without any '' in the source
+        // ($e->getMessage() on an exception with no message is the realistic route,
+        // and several arms are reached from catch blocks). So this pins a guard
+        // against a reachable shape, not against a shape proven unreachable.
         //
         // SCOPE: filled() is applied to the two arms this change owns. Six sibling
         // arms in the same match still use `??` and still render an empty banner for
         // '' — scheduled, offboarding_admission, offboarding_admission_unconfirmed,
-        // executed, recipient_invalid, executed_with_fault. Those are statuses this
-        // change does not touch; filed rather than silently half-fixed.
+        // executed, recipient_invalid, executed_with_fault. Filed as #3940 (two of
+        // them carry "do not retry, reconcile" and "escalate to a human", which are
+        // the worst sentences to lose). An earlier version of this comment said the
+        // gap was "filed" before it was; #3940 is that filing.
         $actor = User::factory()->create(['name' => 'Chet']);
         $run = $this->heldReplyRun($actor);
         $this->bindApprovalResult(new TechnicianApprovalResult('gate_declined', message: ''));
@@ -267,6 +274,25 @@ class CockpitDeclineFallbackTest extends TestCase
         $this->assertStringContainsString('expiry is in the past', $flash);
         // The fallback must not be appended to a forwarded reason.
         $this->assertStringNotContainsString('no reason reached this page', $flash);
+    }
+
+    public function test_an_empty_string_message_on_the_default_arm_also_gets_the_fallback(): void
+    {
+        // Round 1 of #3939 (diff:4, context:4, contract:2): I changed BOTH arms to
+        // filled() but only tested one, so reverting the `default` arm to `??` left
+        // the whole suite green. Verified by doing exactly that before writing this.
+        // An untested half of my own fix is the same defect as an untested fix.
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $run = $this->heldReplyRun($actor);
+        $this->bindApprovalResult(new TechnicianApprovalResult('a_status_added_later', message: ''));
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('cockpit.approve', $run), ['body' => 'We will get the printer back online.'])
+            ->assertSessionHas('error');
+
+        $flash = (string) session('error');
+        $this->assertNotSame('', trim($flash), 'an empty message must not render an empty banner on the default arm');
+        $this->assertFallbackClaimsNothing($flash);
     }
 
     public function test_the_default_arm_carries_the_same_bounded_text(): void
