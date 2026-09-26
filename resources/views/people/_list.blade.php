@@ -14,12 +14,15 @@
     // On a Client's page the sidebar Details card renders its own "Email" row (the
     // Client's address) beside this list, so an unqualified "Email" column here is
     // what made a Person's email look like the Client's. Qualify the label in that
-    // context only. On people.index the Client column already names each row's owner,
-    // and the Client's own address appears only inside that badge's hover popover
-    // (x-client-badge builds a data-bs-content with an "Email:" line), never as a
-    // labelled field beside the list -- so there is no second visible "Email" label to
-    // confuse this one with and the plain label stays. Keyed on the same prefilter the
-    // Client column is keyed on below.
+    // context only. On people.index the Client column names the owner of each row that
+    // has one (client_id is nullable; the badge renders "-" for a Person with none),
+    // and the Client's own address reaches that response only inside the badge's
+    // data-bs-content popover attribute, never as a labelled field in the page body --
+    // so nothing beside this list is labelled as a Client email and the plain label
+    // stays. (Opening a popover does reveal a labelled "Email:" line; the distinction
+    // is the resting page, which is what makes a column header ambiguous.) Keyed on
+    // the same prefilter the Client column is keyed on below; both branches of this
+    // ternary are covered by tests/Feature/Clients/ClientPersonEmailLabelTest.php.
     $emailLabel = isset($prefilter['client_id']) ? 'Person email' : 'Email';
 @endphp
 
