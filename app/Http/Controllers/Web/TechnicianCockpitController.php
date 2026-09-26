@@ -227,14 +227,24 @@ class TechnicianCockpitController extends Controller
             // technician_action_logs — DigestBuilder reads only result_status
             // 'executed'. Pointing the approver at a record that may not exist and
             // that they cannot open would trade one false sentence for another.
-            'gate_declined' => $result->message ?? 'Refused — the Technician declined this action and gave no reason.',
+            //
+            // Nor does it say the Technician "declined", "refused" or "gave no
+            // reason". Some message-less sites are not refusals at all: the Tactical
+            // bus dispatch (StaffTacticalActionToolExecutor::executeClaimedRun) and
+            // the agent removal (StaffTacticalAdminToolExecutor::approveStagedRun)
+            // return this status after the upstream call was made and failed, where
+            // the action may have landed. Others had a reason and dropped it before
+            // returning, or wrote it to an audit row. What is true on every path is
+            // narrower: nothing confirmed the action as carried out, and no reason
+            // reached this page.
+            'gate_declined' => $result->message ?? 'This action was not confirmed as carried out, and no reason reached this page.',
             // Unreachable from any status this codebase constructs (measured: the
             // set of constructed statuses and the set handled above are equal), so
             // this arm is the fail-closed default for a status added later. Same
             // text, and it consults $result->message first for the same reason the
             // arm above does: without that, a future status that DOES carry a
-            // message would render "gave no reason" over the top of one.
-            default => $result->message ?? 'Refused — the Technician declined this action and gave no reason.',
+            // message would render "no reason reached this page" over the top of one.
+            default => $result->message ?? 'This action was not confirmed as carried out, and no reason reached this page.',
         };
 
         return $this->actionResponse(

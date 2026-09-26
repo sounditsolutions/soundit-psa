@@ -24,7 +24,10 @@ use Tests\TestCase;
  * line, so whatever it says is asserted on behalf of all of them.
  *
  * These controls pin what the fallback must NOT claim, which is the whole point
- * of the change: it may not name a mechanism (a pause), may not prescribe an
+ * of the change: it may not name a mechanism (a pause, or a refusal by the
+ * Technician — some sites return after the upstream call was made and failed),
+ * may not claim the Technician gave no reason (some sites dropped or audited
+ * one), may not prescribe an
  * action (a retry), may not claim an effect (that nothing was sent), and may not
  * point at the audit row (23 of the 46 return before anything is audited, and no
  * operator surface renders technician_action_logs).
@@ -111,7 +114,7 @@ class CockpitDeclineFallbackTest extends TestCase
         $this->app->instance(TechnicianApprovalService::class, $double);
     }
 
-    /** The four things the fallback is forbidden to say, asserted as absences. */
+    /** The things the fallback is forbidden to say, asserted as absences. */
     private function assertFallbackClaimsNothing(string $flash): void
     {
         // The mechanism claim. A decline is not evidence the Technician is paused;
@@ -129,9 +132,17 @@ class CockpitDeclineFallbackTest extends TestCase
         // no operator-facing surface renders technician_action_logs.
         $this->assertStringNotContainsStringIgnoringCase('audit', $flash);
         $this->assertStringNotContainsStringIgnoringCase('action log', $flash);
-        // And it must still say the one true thing, so deleting the fallback
+        // The refusal claim. The Tactical bus dispatch and agent removal return
+        // this status after the upstream call was made and failed, so "declined"
+        // or "refused" is a mechanism claim that is false there; and some sites
+        // had a reason and dropped or audited it, so "gave no reason" is false there.
+        $this->assertStringNotContainsStringIgnoringCase('declined', $flash);
+        $this->assertStringNotContainsStringIgnoringCase('refused', $flash);
+        $this->assertStringNotContainsStringIgnoringCase('gave no reason', $flash);
+        // And it must still say the true thing, so deleting the fallback
         // entirely cannot satisfy this control.
-        $this->assertStringContainsStringIgnoringCase('declined', $flash);
+        $this->assertStringContainsStringIgnoringCase('not confirmed', $flash);
+        $this->assertStringContainsStringIgnoringCase('no reason reached this page', $flash);
     }
 
     public function test_a_message_less_gate_declined_states_no_mechanism_no_retry_and_no_effect(): void
@@ -174,7 +185,7 @@ class CockpitDeclineFallbackTest extends TestCase
         $flash = (string) session('error');
         $this->assertStringContainsString('expiry is in the past', $flash);
         // The fallback must not be appended to a forwarded reason.
-        $this->assertStringNotContainsString('gave no reason', $flash);
+        $this->assertStringNotContainsString('no reason reached this page', $flash);
     }
 
     public function test_the_default_arm_carries_the_same_bounded_text(): void
@@ -201,7 +212,8 @@ class CockpitDeclineFallbackTest extends TestCase
     {
         // The default arm reads $result->message first for the same reason the
         // gate_declined arm does: without it, a future status that does carry an
-        // operator-facing reason would have "gave no reason" rendered over it.
+        // operator-facing reason would have "no reason reached this page" rendered
+        // over it.
         $actor = User::factory()->create(['name' => 'Chet']);
         $run = $this->heldReplyRun($actor);
 
@@ -216,7 +228,7 @@ class CockpitDeclineFallbackTest extends TestCase
 
         $flash = (string) session('error');
         $this->assertStringContainsString('A later status explaining itself.', $flash);
-        $this->assertStringNotContainsString('gave no reason', $flash);
+        $this->assertStringNotContainsString('no reason reached this page', $flash);
     }
 
     public function test_a_neighbouring_status_is_not_flattened_onto_the_decline_text(): void
@@ -241,7 +253,7 @@ class CockpitDeclineFallbackTest extends TestCase
             ->assertSessionHas('error');
 
         $flash = (string) session('error');
-        $this->assertStringNotContainsString('gave no reason', $flash);
+        $this->assertStringNotContainsString('no reason reached this page', $flash);
         $this->assertStringNotContainsStringIgnoringCase('declined', $flash);
         $this->assertStringContainsString('post-condition', $flash);
     }
