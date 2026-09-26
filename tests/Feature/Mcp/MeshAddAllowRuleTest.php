@@ -1263,10 +1263,11 @@ class MeshAddAllowRuleTest extends TestCase
 
         $response = $this->actingAs($actor)->post(route('cockpit.approve', $run));
 
-        // And the approver reads WHY. A message-less gate_declined renders
-        // "the Technician declined (it may be paused). Try again." — a false
-        // account of the refusal that sends them clicking the same button
-        // instead of re-staging with a date that means something.
+        // And the approver reads WHY. A message-less gate_declined renders the
+        // cockpit's generic fallback — #3901 replaced "the Technician declined
+        // (it may be paused). Try again.", whose retry instruction sent the
+        // approver clicking the same button, with a sentence that claims no
+        // mechanism; either way it carries no reason, so this arm forwards one.
         $response->assertSessionHas('error');
         $this->assertStringContainsString('is in the past', (string) session('error'));
         $this->assertStringContainsString('stage a new proposal with a valid expiry', (string) session('error'));
