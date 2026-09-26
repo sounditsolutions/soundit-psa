@@ -126,7 +126,7 @@ class CippWriteReverseDefaultTest extends TestCase
 
     private function isWrite(string $url): bool
     {
-        foreach (['/api/EditGroup', '/api/ExecSharePointPerms', '/api/EditUser', '/api/ExecBulkLicense'] as $endpoint) {
+        foreach (['/api/EditGroup', '/api/ExecSharePointPerms', '/api/EditUser', '/api/ExecBulkLicense', '/api/ExecResetPass', '/api/AddUser', '/api/ExecDisableUser'] as $endpoint) {
             if (str_contains($url, $endpoint)) {
                 return true;
             }
@@ -178,9 +178,9 @@ class CippWriteReverseDefaultTest extends TestCase
         return compact('client', 'person', 'successor', 'ticket', 'licenseType');
     }
 
-    private function callTool(string $name, array $arguments): TestResponse
+    private function callTool(string $name, array $arguments, ?string $grant = null): TestResponse
     {
-        $token = McpConfig::rotateStaffToken(allowedTools: [$name], label: 'opsbot');
+        $token = McpConfig::rotateStaffToken(allowedTools: [$grant ?? $name], label: 'opsbot');
 
         return $this->withHeaders(['Authorization' => 'Bearer '.$token])
             ->postJson('/api/mcp/staff', [
@@ -483,5 +483,102 @@ class CippWriteReverseDefaultTest extends TestCase
 
         $this->assertSame($t['hedge'], $error);
         $this->assertErrorAudited($error, 1, $t['endpoint']);
+    }
+
+    // ----- catches outside the routed tools: a transport failure after send -----
+
+    private function resetArgs(array $f, bool $staged): array
+    {
+        return array_filter([
+            'client_id' => $f['client']->id, 'person_id' => $f['person']->id, 'confirm_upn' => 'alex@acme.example',
+            'ticket_id' => $staged ? $f['ticket']->id : null, 'staged' => $staged ? true : null,
+            'reason' => 'User locked out; identity verified by phone.',
+        ], fn ($v) => $v !== null);
+    }
+
+    private function createUserArgs(array $f, bool $staged): array
+    {
+        return array_filter([
+            'client_id' => $f['client']->id, 'username' => 'newhire', 'display_name' => 'New Hire',
+            'given_name' => 'New', 'surname' => 'Hire', 'confirm_upn' => 'newhire@acme.onmicrosoft.com',
+            'ticket_id' => $staged ? $f['ticket']->id : null,
+            'reason' => 'Onboarding a verified new starter for this client.',
+        ], fn ($v) => $v !== null);
+    }
+
+    public function test_password_reset_direct_connection_failure_hedges_and_returns_no_password(): void
+    {
+        $this->configure();
+        $f = $this->fixture();
+        $this->mode = 'connection';
+
+        $error = $this->runDirect(['name' => 'cipp_reset_user_password', 'args' => $this->resetArgs($f, staged: false)]);
+
+        $this->assertSame('CIPP write failed for cipp_reset_user_password; the password reset may or may not have applied — verify the user in CIPP before retrying. No password was returned.', $error);
+        $this->assertErrorAudited($error, 1, 'ExecResetPass');
+    }
+
+    public function test_password_reset_staged_connection_failure_hedges_and_keeps_the_proposal_open(): void
+    {
+        $approver = $this->configure();
+        $f = $this->fixture();
+        $staged = $this->callTool('cipp_reset_user_password', $this->resetArgs($f, staged: true), grant: 'cipp_reset_user_password:staged');
+        $this->assertFalse((bool) $staged->json('result.isError'), (string) $staged->json('result.content.0.text'));
+        $this->mode = 'connection';
+
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun(TechnicianRun::sole(), $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame('CIPP write failed for cipp_stage_reset_user_password; the password reset may or may not have applied — verify the user in CIPP before retrying. No password was returned. The proposal is still open.', $result->message);
+        $this->assertNull($result->secret);
+        $this->assertErrorAudited((string) $result->message, 1, 'ExecResetPass');
+        $this->assertSame(TechnicianRunState::AwaitingApproval, TechnicianRun::sole()->state);
+    }
+
+    public function test_create_user_direct_connection_failure_hedges(): void
+    {
+        $this->configure();
+        $f = $this->fixture();
+        $this->mode = 'connection';
+
+        $error = $this->runDirect(['name' => 'cipp_create_user', 'args' => $this->createUserArgs($f, staged: false)]);
+
+        $this->assertSame('CIPP write failed for cipp_create_user; the account creation may or may not have applied — verify whether the account exists in CIPP before retrying. No password was returned.', $error);
+        $this->assertErrorAudited($error, 1, 'AddUser');
+    }
+
+    public function test_create_user_staged_connection_failure_hedges(): void
+    {
+        $approver = $this->configure();
+        $f = $this->fixture();
+        $staged = json_decode((string) $this->callTool('cipp_stage_create_user', $this->createUserArgs($f, staged: true))
+            ->json('result.content.0.text'), true);
+        $this->assertTrue($staged['success'] ?? false, json_encode($staged));
+        $this->mode = 'connection';
+
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun(TechnicianRun::findOrFail($staged['run_id']), $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame('CIPP write failed for cipp_stage_create_user; the account creation may or may not have applied — verify whether the account exists in CIPP before retrying. No password was returned.', $result->message);
+        $this->assertErrorAudited((string) $result->message, 1, 'AddUser');
+    }
+
+    /** The generic staged tail (sign-in, sessions, MFA, mailbox, role, rule, wipe) shares one catch. */
+    public function test_generic_staged_connection_failure_hedges_instead_of_the_endpoint_message(): void
+    {
+        $approver = $this->configure();
+        $f = $this->fixture();
+        $staged = json_decode((string) $this->callTool('cipp_stage_disable_user_sign_in', [
+            'client_id' => $f['client']->id, 'person_id' => $f['person']->id, 'confirm_upn' => 'alex@acme.example',
+            'ticket_id' => $f['ticket']->id, 'reason' => 'Compromised account; block sign-in pending review.',
+        ])->json('result.content.0.text'), true);
+        $this->assertTrue($staged['success'] ?? false, json_encode($staged));
+        $this->mode = 'connection';
+
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun(TechnicianRun::findOrFail($staged['run_id']), $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame('CIPP write failed for cipp_stage_disable_user_sign_in; the change may or may not have applied — verify the result in CIPP before retrying.', $result->message);
+        $this->assertErrorAudited((string) $result->message, 1, 'ExecDisableUser');
     }
 }

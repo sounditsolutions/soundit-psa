@@ -1002,6 +1002,11 @@ class StaffCippWriteToolExecutor
                 if (in_array($directTool, self::UNCONFIRMABLE_WRITE_TOOLS, true)) {
                     return $this->declined($this->writeFailureMessage($run->action_type, $e, withCause: true));
                 }
+                // The write may have landed (#3709). The exception's own text
+                // names the endpoint and gives the approver nothing to verify.
+                if ($e instanceof CippWriteUnconfirmedException) {
+                    return $this->declined($this->writeFailureMessage($run->action_type, $e));
+                }
 
                 return $this->declined($e->getMessage());
             }
@@ -1168,6 +1173,10 @@ class StaffCippWriteToolExecutor
             }
             $this->auditAttempt($tool, 'error', $client->id, $ticket, $person, null, $contentHash, $this->safeFailureSummary($tool, $e), $actorLabel);
 
+            if ($e instanceof CippWriteUnconfirmedException) {
+                return ['error' => $this->writeFailureMessage($tool, $e).' No password was returned.'];
+            }
+
             return ['error' => "CIPP password reset failed for {$tool}; no password was returned."];
         }
 
@@ -1292,6 +1301,10 @@ class StaffCippWriteToolExecutor
                 }
                 $run->releaseClaim();
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $person, null, $contentHash, $this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
+
+                if ($e instanceof CippWriteUnconfirmedException) {
+                    return $this->declined($this->writeFailureMessage($run->action_type, $e).' No password was returned. The proposal is still open.');
+                }
 
                 return $this->declined('CIPP password reset failed; no password was returned. The proposal is still open — retry or deny it.');
             }
@@ -2547,6 +2560,10 @@ class StaffCippWriteToolExecutor
         } catch (CippClientException $e) {
             $this->auditAttempt($tool, 'error', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($tool, $e), $actorLabel);
 
+            if ($e instanceof CippWriteUnconfirmedException) {
+                return ['error' => $this->writeFailureMessage($tool, $e).' No password was returned.'];
+            }
+
             return ['error' => "CIPP user creation failed for {$tool}; no account was reported created."];
         }
 
@@ -2803,6 +2820,10 @@ class StaffCippWriteToolExecutor
             } catch (CippClientException $e) {
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
+
+                if ($e instanceof CippWriteUnconfirmedException) {
+                    return $this->declined($this->writeFailureMessage($run->action_type, $e).' No password was returned.');
+                }
 
                 return $this->declined($e->getMessage());
             }
@@ -7069,6 +7090,11 @@ class StaffCippWriteToolExecutor
      * too: these endpoints' 4xx semantics have not been checked at the vendor
      * source the way ExecBulkLicense's were.
      *
+     * The password-reset, create-user and generic staged catches call it for a
+     * CippWriteUnconfirmedException only, so a write that may have landed is
+     * not reported there as a plain failure. Their other arms keep their own
+     * sentences.
+     *
      * @param  bool  $withCause  append a not-sent exception's own message
      *                           (the staged toast); the direct path keeps it in
      *                           the audit row only
@@ -7079,6 +7105,8 @@ class StaffCippWriteToolExecutor
             'cipp_set_group_membership' => ['the membership change', 'the group membership'],
             'cipp_reassign_onedrive' => ['the OneDrive permission change', 'the OneDrive permissions'],
             'cipp_edit_user' => ['the user edit', "the user's current state"],
+            'cipp_reset_user_password' => ['the password reset', 'the user'],
+            'cipp_create_user' => ['the account creation', 'whether the account exists'],
             default => ['the change', 'the result'],
         };
 
