@@ -3,6 +3,7 @@
 namespace Tests\Feature\Technician\Cockpit;
 
 use App\Enums\PersonType;
+use App\Http\Controllers\Web\TechnicianCockpitController;
 use App\Enums\TechnicianRunState;
 use App\Models\Client;
 use App\Models\Person;
@@ -21,49 +22,40 @@ use Tests\TestCase;
  * TechnicianCockpitController::approve() renders `$result->message ?? <fallback>`
  * on 'gate_declined', and the same fallback on the match's `default` arm.
  *
- * DENOMINATOR, enumerated rather than asserted (review round 1, contract:5 and
- * contract:6 — the first draft quoted "46 reach this line" and "23 of 46
- * unaudited" with no list, and neither reproduced as written). Re-derived by
- * scratch/cockpit-fallback-3901/census2.py, which prints every site it counts:
+ * NO COUNTS ARE QUOTED HERE. Rounds 1 and 2 both carried figures ("46 reach this
+ * line", "23 of 46 unaudited") that did not reproduce as written, and round 2's
+ * attempt to fix them by citing an out-of-tree script (census2.py) only moved the
+ * problem: production cannot cite an instrument that does not ship. The denominator
+ * is not load-bearing for this test. What is load-bearing is that SOME arms reach
+ * this line with no message, which the cases below demonstrate directly.
  *
- *   46  message-less `new TechnicianApprovalResult('gate_declined')` in app/
- *   23  with no audit write earlier in the enclosing method
+ * Two claims that earlier versions of this docblock made are WITHDRAWN as false,
+ * recorded here because the withdrawal is the useful part:
+ *   - "no operator surface renders technician_action_logs" — false. TicketToolActivity
+ *     reads that table and TicketTimeline renders it on the staff ticket page.
+ *     The original probe grepped views for the table name, which cannot match,
+ *     because Blade renders a presented DTO.
+ *   - "approve() dispatches only approveAndSend, approveClose, approveMerge and
+ *     approveAssetMerge" — false. It dispatches 13 service methods; the four named
+ *     were the ones the census happened to look at.
  *
- * Both figures are the instrument's, and the instrument has a known limit: it
- * walks back lexically, so for the 2 sites inside a `catch` block (Cipp 2022,
- * 2053) an earlier audit line sits on the success path and may never have run.
- * Those are counted audited and may not be. The figure is a floor, not a count.
+ * These controls pin what the fallback must NOT claim: no mechanism (no pause, no
+ * refusal — some sites return after the upstream call was made and failed), no
+ * prescribed action (no retry), no effect claim (not "nothing was sent"), and no
+ * pointer at the audit row (those surfaces withhold the diagnostic payload, so it
+ * would not carry a reason).
  *
- * NOT all 46 reach this line: approve() dispatches only approveAndSend,
- * approveClose, approveMerge and approveAssetMerge. The intakeMerge sites
- * (TechnicianApprovalService 390, 402) are rendered by the cockpit's own
- * intakeMerge() match with its own separate fallback text, and approve()'s
- * action-type match aborts 422 for intake_route. Those are out of scope here
- * and their wording is untouched.
- *
- * These controls pin what the fallback must NOT claim, which is the whole point
- * of the change: it may not name a mechanism (a pause, or a refusal by the
- * Technician — some sites return after the upstream call was made and failed),
- * may not claim the Technician gave no reason (some sites dropped or audited
- * one), may not prescribe an
- * action (a retry), may not claim an effect (that nothing was sent), and may not
- * point at the audit row (23 of the 46 return before anything is audited, and no
- * operator surface renders technician_action_logs).
- *
- * Both arms are covered because both carry the string. The `default` arm is
- * unreachable from any status this codebase constructs — the set of constructed
- * statuses equals the set the match handles — so the only honest way to exercise
- * it is to bind a service double that returns an unknown status. That is a
- * deliberate statement about a fail-closed arm, not a claim that production can
- * produce it today.
+ * The `default` arm is exercised through a bound service double returning an
+ * unknown status. That is a statement about a fail-closed arm, not a claim that
+ * production can produce one today.
  */
 class CockpitDeclineFallbackTest extends TestCase
 {
     /**
-     * The one sentence both arms render. Pinned exactly so that a new claim in
-     * vocabulary the deny-list below does not happen to name still fails.
+     * Read from production rather than restated, so the two cannot drift and so a
+     * copy edit does not have to be made twice.
      */
-    private const EXPECTED_FALLBACK = 'This action was not confirmed as carried out, and no reason reached this page.';
+    private const EXPECTED_FALLBACK = TechnicianCockpitController::NO_REASON_FALLBACK;
 
     use RefreshDatabase;
 
@@ -144,8 +136,12 @@ class CockpitDeclineFallbackTest extends TestCase
         // The mechanism claim. A decline is not evidence the Technician is paused;
         // only the kill-switch arms make that even arguable.
         $this->assertStringNotContainsStringIgnoringCase('paused', $flash);
-        // The prescribed action. False on every arm measured: clearing a kill
-        // switch, configuring an integration or re-staging is what is required.
+        // The prescribed action. Unverifiable from this frame, and false on the arms
+        // that were read: clearing a kill switch, configuring an integration or
+        // re-staging is what is required. NOT "false on every arm" — rounds 1 and 2
+        // both quoted a whole-population claim that no instrument here supports
+        // (round 2, context:13: on the Tactical bus-dispatch arm a retry might even
+        // succeed, which is its own hazard and not one this line can speak to).
         $this->assertStringNotContainsStringIgnoringCase('try again', $flash);
         $this->assertStringNotContainsStringIgnoringCase('retry', $flash);
         // The effect claim. Whether an upstream call had already left is a
@@ -166,10 +162,11 @@ class CockpitDeclineFallbackTest extends TestCase
         $this->assertStringNotContainsStringIgnoringCase('declined', $flash);
         $this->assertStringNotContainsStringIgnoringCase('refused', $flash);
         $this->assertStringNotContainsStringIgnoringCase('gave no reason', $flash);
-        // And it must still say the true thing, so deleting the fallback
-        // entirely cannot satisfy this control.
-        $this->assertStringContainsStringIgnoringCase('not confirmed', $flash);
-        $this->assertStringContainsStringIgnoringCase('no reason reached this page', $flash);
+        // The confirmation claim, dropped in round 3. "Not confirmed as carried
+        // out" cannot be checked from this frame either: executed_with_fault means
+        // the write LANDED, and the Tactical arms return after the call was made.
+        $this->assertStringNotContainsStringIgnoringCase('not confirmed', $flash);
+        $this->assertStringNotContainsStringIgnoringCase('carried out', $flash);
 
         // EXACT MATCH (round 1, diff:5 / context:11). Everything above is a
         // deny-list, and a deny-list only forbids the vocabulary it happens to
@@ -201,6 +198,48 @@ class CockpitDeclineFallbackTest extends TestCase
         $this->assertFallbackClaimsNothing($flash);
     }
 
+    public function test_the_json_path_real_operators_use_carries_the_same_bounded_text(): void
+    {
+        // Round 2 (context:6, contract:15): every case above asserts the session
+        // flash, and the real cockpit NEVER takes that branch. index.blade.php
+        // posts with Accept: application/json, so actionResponse() returns JSON
+        // and the flash path is the JS-less fallback only. The wording controls
+        // were therefore pinned on a branch no operator sees. This drives the
+        // branch they do see.
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $run = $this->heldReplyRun($actor);
+        $this->bindApprovalResult(new TechnicianApprovalResult('gate_declined'));
+
+        $response = $this->actingAs(User::factory()->create())
+            ->postJson(route('cockpit.approve', $run), ['body' => 'We will get the printer back online.']);
+
+        $response->assertOk()->assertJsonPath('ok', false)
+            // The structured keys that carry the facts the deleted prose asserted.
+            ->assertJsonPath('status', 'gate_declined');
+
+        $this->assertFallbackClaimsNothing((string) $response->json('message'));
+    }
+
+    public function test_an_empty_string_message_gets_the_fallback_and_not_a_blank_banner(): void
+    {
+        // Round 2 (diff:6): `?? ` only catches null, so a site passing '' rendered
+        // an EMPTY error banner — strictly worse than the fallback, and invisible
+        // to every control here because they all assert on absences. No site passes
+        // '' today (measured: 0 of 25 message-carrying constructions), so this pins
+        // the guard rather than reporting a live defect. filled() is what fixes it.
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $run = $this->heldReplyRun($actor);
+        $this->bindApprovalResult(new TechnicianApprovalResult('gate_declined', message: ''));
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('cockpit.approve', $run), ['body' => 'We will get the printer back online.'])
+            ->assertSessionHas('error');
+
+        $flash = (string) session('error');
+        $this->assertNotSame('', trim($flash), 'an empty message must not render an empty banner');
+        $this->assertFallbackClaimsNothing($flash);
+    }
+
     public function test_a_gate_declined_that_does_carry_a_reason_still_forwards_it(): void
     {
         // The change must not swallow the specific reasons that DO get forwarded:
@@ -221,7 +260,7 @@ class CockpitDeclineFallbackTest extends TestCase
         $flash = (string) session('error');
         $this->assertStringContainsString('expiry is in the past', $flash);
         // The fallback must not be appended to a forwarded reason.
-        $this->assertStringNotContainsString('no reason reached this page', $flash);
+        $this->assertStringNotContainsString(TechnicianCockpitController::NO_REASON_FALLBACK, $flash);
     }
 
     public function test_the_default_arm_carries_the_same_bounded_text(): void
@@ -248,7 +287,7 @@ class CockpitDeclineFallbackTest extends TestCase
     {
         // The default arm reads $result->message first for the same reason the
         // gate_declined arm does: without it, a future status that does carry an
-        // operator-facing reason would have "no reason reached this page" rendered
+        // operator-facing reason would have the no-reason fallback rendered
         // over it.
         $actor = User::factory()->create(['name' => 'Chet']);
         $run = $this->heldReplyRun($actor);
@@ -264,7 +303,7 @@ class CockpitDeclineFallbackTest extends TestCase
 
         $flash = (string) session('error');
         $this->assertStringContainsString('A later status explaining itself.', $flash);
-        $this->assertStringNotContainsString('no reason reached this page', $flash);
+        $this->assertStringNotContainsString(TechnicianCockpitController::NO_REASON_FALLBACK, $flash);
     }
 
     public function test_a_neighbouring_status_is_not_flattened_onto_the_decline_text(): void
@@ -273,7 +312,9 @@ class CockpitDeclineFallbackTest extends TestCase
         // an attractive thing to reuse: flattening a neighbour onto it would trade a
         // specific true account for a generic one. 'executed_with_fault' is the
         // sharpest neighbour — the write LANDED and violated its post-condition — so
-        // rendering "declined" over it would be the opposite of what happened.
+        // rendering the no-reason fallback over it would replace a true specific
+        // account with silence (round 2, diff:14: this said "rendering 'declined'",
+        // wording that no longer exists anywhere in the change).
         //
         // Nothing else in the suite pinned this string: existing tests assert the
         // executed_with_fault AUDIT ROW, never the text the approver reads. That gap
@@ -289,7 +330,7 @@ class CockpitDeclineFallbackTest extends TestCase
             ->assertSessionHas('error');
 
         $flash = (string) session('error');
-        $this->assertStringNotContainsString('no reason reached this page', $flash);
+        $this->assertStringNotContainsString(TechnicianCockpitController::NO_REASON_FALLBACK, $flash);
         $this->assertStringNotContainsStringIgnoringCase('declined', $flash);
         $this->assertStringContainsString('post-condition', $flash);
     }
@@ -308,6 +349,6 @@ class CockpitDeclineFallbackTest extends TestCase
         $this->actingAs(User::factory()->create())
             ->post(route('cockpit.approve', $run), ['body' => 'We will get the printer back online.'])
             ->assertSessionHas('error')
-            ->assertSessionMissing('status');
+            ->assertSessionMissing('success');
     }
 }

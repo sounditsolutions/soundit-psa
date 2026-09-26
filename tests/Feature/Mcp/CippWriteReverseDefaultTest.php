@@ -584,8 +584,9 @@ class CippWriteReverseDefaultTest extends TestCase
 
     /**
      * The email-security staged catch returned a message-less decline, which
-     * the cockpit renders as its generic fallback (#3901: "This action was not
-     * confirmed as carried out, and no reason reached this page.").
+     * the cockpit renders as its generic no-reason fallback
+     * (TechnicianCockpitController::NO_REASON_FALLBACK, #3901) — named, not quoted,
+     * so this comment cannot go stale when the sentence is edited.
      */
     public function test_email_security_staged_connection_failure_hedges_instead_of_could_not_send(): void
     {
