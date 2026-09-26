@@ -20,9 +20,19 @@ use Tests\TestCase;
  * page. The Client's own field label is deliberately unchanged: it is not the
  * ambiguous half, and renaming it would cost retraining for no gain.
  *
- * On people.index no Client Email is on screen and the Client column already
- * names the owner, so the plain "Email" label stays there. Both directions are
- * asserted, so a change that qualified every list would fail here.
+ * On people.index the Client column already names each row's owner, and the
+ * Client's own address appears only inside that badge's hover popover, never as
+ * a labelled field beside the list, so the plain "Email" label stays there. Both
+ * directions are asserted, so a change that qualified every list would fail here.
+ *
+ * WHICH TEST PINS WHICH FILE. clients.show renders the Overview tab's own
+ * hard-coded People card; the shared partial is included only by the People tab
+ * (clients.show gates it on $activeTab === 'people'). So the first test below
+ * cannot see people/_list.blade.php at all, and only
+ * test_client_people_tab_list_names_the_email_as_the_persons pins it. Its kill
+ * check is a revert of people/_list.blade.php ALONE: without the assertDontSee
+ * pair in that test, the Overview card -- which renders on the same response --
+ * satisfies every positive assertion and the reverted partial goes unnoticed.
  */
 class ClientPersonEmailLabelTest extends TestCase
 {
@@ -88,8 +98,22 @@ class ClientPersonEmailLabelTest extends TestCase
         $response = $this->actingAs($user)->get(route('clients.people', $client));
 
         $response->assertOk();
-        $response->assertSee('<th>Person email</th>', false);
-        $response->assertSee('<span class="data-label">Person email</span>', false);
+
+        // The Overview pane is in the DOM on this response too (it is hidden by
+        // CSS, not omitted), and it carries its own hard-coded People card. So
+        // the qualified label legitimately appears twice here: once from that
+        // card and once from the shared partial. Asserting the count is what
+        // distinguishes "both rendered it" from "only the hard-coded one did".
+        $this->assertSame(2, substr_count($response->getContent(), '<th>Person email</th>'));
+        $this->assertSame(2, substr_count($response->getContent(), '<span class="data-label">Person email</span>'));
+
+        // The kill check for this test: reverting people/_list.blade.php alone
+        // leaves the Overview card's copy in place, so the assertions above still
+        // pass on one of the two, but the partial re-emits the unqualified label
+        // and these fail. Without this pair the test pins nothing in that file.
+        $response->assertDontSee('<th>Email</th>', false);
+        $response->assertDontSee('<span class="data-label">Email</span>', false);
+
         // Same screen, same sidebar: the Client's row is still plain.
         $response->assertSee('<th class="text-muted">Email</th>', false);
     }
@@ -108,7 +132,9 @@ class ClientPersonEmailLabelTest extends TestCase
         $response->assertSee('art@vandelay.test', false);
         $response->assertSee('<th>Client</th>', false);
 
-        // No Client Email is on this screen, so the label is not qualified here.
+        // The Client's address is on this response only inside the Client badge's
+        // hover popover (a data-bs-content attribute), not as a labelled field, so
+        // there is no competing visible "Email" label and this one is not qualified.
         $response->assertSee('<th>Email</th>', false);
         $response->assertDontSee('<th>Person email</th>', false);
         $response->assertSee('<span class="data-label">Email</span>', false);
