@@ -26,12 +26,22 @@ class TechnicianCockpitController extends Controller
     private const UNDO_WINDOW_MINUTES = 5;
 
     /**
-     * Rendered when a decline carries no message. One constant, referenced by the
-     * guard test, so the sentence is not copied into a second literal or quoted
-     * verbatim in comments that then go stale (the defect #3901 r2 had to clean up
-     * in four files).
+     * Rendered on the gate_declined and default arms of approve() when the result
+     * carries no message. One constant so the sentence is not copied into a second
+     * literal or quoted verbatim in comments that then go stale (the defect #3901
+     * r2 had to clean up in four files).
+     *
+     * It describes THIS FRAME, not the producer. Round 3 (diff:1, context:3,
+     * context:4, contract:2) caught the previous attempt, 'No reason was provided
+     * for this outcome.', asserting that nothing supplied a reason — which is false
+     * on the arms that HAVE one and drop it: StaffTacticalActionToolExecutor::
+     * executeClaimedRun discards $result after a failed dispatch,
+     * StaffTacticalAdminToolExecutor::approveStagedRun discards $result['error'],
+     * and StaffCippWriteToolExecutor::approveEmailSecurityStagedRun drops a
+     * CippWriteScopeException message. That is the same claim the guard test
+     * forbids as 'gave no reason', in the passive voice.
      */
-    public const NO_REASON_FALLBACK = 'No reason was provided for this outcome.';
+    public const NO_REASON_FALLBACK = 'No reason for this outcome reached this page.';
 
     public function index(CockpitQuery $query, \App\Services\Technician\Cockpit\CockpitRecipientView $recipients, TechnicianDisclosure $disclosure)
     {
@@ -214,20 +224,27 @@ class TechnicianCockpitController extends Controller
             // specific recoverable reason (typed-id mismatch, identity drift,
             // lost mapping, kill-switch, cooldown) — surface it when provided.
             //
-            // #3901: when it is NOT provided, this line has nothing to say. Two
-            // earlier attempts explained the silence and both were false on some
-            // arm ("may be paused … Try again"; then "Refused — the Technician
-            // declined"; then "was not confirmed as carried out"). G-14 step 1
-            // applies: delete the explanatory clause rather than assert it, because
-            // the facts it tried to carry are already structured — actionResponse()
-            // sends `ok` and `status`, and picks the error channel — and because
-            // whether the upstream call left is a property of each site, not of
-            // this line. So the fallback now states only what this frame can
-            // verify: no reason arrived with the result.
+            // #3901: when it is NOT provided, this line has nothing to say. Three
+            // earlier attempts explained the silence and each was false on some arm
+            // ("may be paused … Try again"; "Refused — the Technician declined";
+            // "was not confirmed as carried out"). G-14 step 1 applies: delete the
+            // explanatory clause rather than assert it, because whether the upstream
+            // call left, and whether anyone supplied a reason, are properties of each
+            // site and not of this frame.
+            //
+            // The wording is deliberately about THIS PAGE rather than about the
+            // producer. "No reason was provided" (round 3) claimed nothing supplied
+            // one, which is false on the arms that drop a reason they hold.
+            //
+            // NOT claimed as a G-14 step-1 justification: that ok+status make the
+            // facts visible to an operator. They are in the JSON envelope, but #3920
+            // records that the cockpit's optimistic mode discards the server payload
+            // entirely, so on close-run approvals nothing here reaches the operator.
+            // The clause is deleted because it is unverifiable, which is step 1's
+            // other limb, not because something else displays it.
             //
             // Whose reason is missing is answered by the per-site issues, not here
-            // (#3863, #582, #1115, #3330 for surfacing the gate outcome), and the client
-            // that renders this on the JSON path is #3920.
+            // (#3863, #582, #1115, #3330 for surfacing the gate outcome).
             'gate_declined' => filled($result->message) ? $result->message : self::NO_REASON_FALLBACK,
             // Fail-closed default for a status added later. It consults the message
             // first so a future status that DOES carry one is not overwritten.

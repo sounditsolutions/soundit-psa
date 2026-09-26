@@ -22,12 +22,19 @@ use Tests\TestCase;
  * TechnicianCockpitController::approve() renders `$result->message ?? <fallback>`
  * on 'gate_declined', and the same fallback on the match's `default` arm.
  *
- * NO COUNTS ARE QUOTED HERE. Rounds 1 and 2 both carried figures ("46 reach this
- * line", "23 of 46 unaudited") that did not reproduce as written, and round 2's
- * attempt to fix them by citing an out-of-tree script (census2.py) only moved the
- * problem: production cannot cite an instrument that does not ship. The denominator
- * is not load-bearing for this test. What is load-bearing is that SOME arms reach
- * this line with no message, which the cases below demonstrate directly.
+ * NO POPULATION COUNT IS QUOTED HERE. Rounds 1 and 2 both carried figures ("46
+ * reach this line", "23 of 46 unaudited") that did not reproduce as written, and
+ * round 2's attempt to fix them by citing an out-of-tree script (census2.py) only
+ * moved the problem: production cannot cite an instrument that does not ship. The
+ * denominator is not load-bearing for this test. What is load-bearing is that SOME
+ * arms reach this line with no message, which the cases below demonstrate directly.
+ *
+ * The rule is about UNREPRODUCIBLE population figures, not about arithmetic (round
+ * 3, diff:8 and contract:7 read the earlier wording as forbidding all counts and
+ * then found counts). Two small counts do appear below and both are re-derivable
+ * from the tree in one grep: "0 of 25 message-carrying constructions" pass '', and
+ * six sibling arms still use `??`. Where a number is named, it is named with the
+ * command that reproduces it.
  *
  * Two claims that earlier versions of this docblock made are WITHDRAWN as false,
  * recorded here because the withdrawal is the useful part:
@@ -52,10 +59,17 @@ use Tests\TestCase;
 class CockpitDeclineFallbackTest extends TestCase
 {
     /**
-     * Read from production rather than restated, so the two cannot drift and so a
-     * copy edit does not have to be made twice.
+     * SPELLED OUT, deliberately not read from production.
+     *
+     * Round 3 (diff:2, context:1, contract:1) caught this as
+     * `= TechnicianCockpitController::NO_REASON_FALLBACK`, which made the exact-match
+     * assertion compare production to itself: any wording edit passed, so the pin
+     * that the whole control exists to provide was gone while its comment still
+     * claimed 'any new claim, in any wording, fails here'. An independent literal is
+     * the only version of this control that can fail. The cost — a deliberate copy
+     * edit has to be made in two places — is the point, not an oversight.
      */
-    private const EXPECTED_FALLBACK = TechnicianCockpitController::NO_REASON_FALLBACK;
+    private const EXPECTED_FALLBACK = 'No reason for this outcome reached this page.';
 
     use RefreshDatabase;
 
@@ -162,11 +176,18 @@ class CockpitDeclineFallbackTest extends TestCase
         $this->assertStringNotContainsStringIgnoringCase('declined', $flash);
         $this->assertStringNotContainsStringIgnoringCase('refused', $flash);
         $this->assertStringNotContainsStringIgnoringCase('gave no reason', $flash);
-        // The confirmation claim, dropped in round 3. "Not confirmed as carried
-        // out" cannot be checked from this frame either: executed_with_fault means
-        // the write LANDED, and the Tactical arms return after the call was made.
+        // The confirmation claim, dropped in round 3. "Not confirmed as carried out"
+        // cannot be checked from this frame either: the Tactical arms return after
+        // the call was made and may have landed.
         $this->assertStringNotContainsStringIgnoringCase('not confirmed', $flash);
         $this->assertStringNotContainsStringIgnoringCase('carried out', $flash);
+        // The producer-side claim, in either voice. "Gave no reason" above forbids
+        // the active form; round 3 (context:4, contract:2) caught 'No reason was
+        // provided' making the same claim passively and slipping past it. Several
+        // sites HAVE a reason and drop it, so nothing here may say none existed —
+        // only that none arrived.
+        $this->assertStringNotContainsStringIgnoringCase('was provided', $flash);
+        $this->assertStringNotContainsStringIgnoringCase('no reason was', $flash);
 
         // EXACT MATCH (round 1, diff:5 / context:11). Everything above is a
         // deny-list, and a deny-list only forbids the vocabulary it happens to
@@ -227,6 +248,15 @@ class CockpitDeclineFallbackTest extends TestCase
         // to every control here because they all assert on absences. No site passes
         // '' today (measured: 0 of 25 message-carrying constructions), so this pins
         // the guard rather than reporting a live defect. filled() is what fixes it.
+        //
+        // SCOPE, stated because round 3 (contract:8) is right that it is partial:
+        // filled() is applied to the two arms this PR owns. Six sibling arms in the
+        // same match still use `??` and still render an empty banner for '' —
+        // scheduled, offboarding_admission, offboarding_admission_unconfirmed,
+        // executed, recipient_invalid, executed_with_fault. That is a pre-existing
+        // defect on statuses this change does not touch, and widening a two-line
+        // wording fix into a seven-arm refactor is how it stops being reviewable.
+        // Filed rather than silently half-fixed.
         $actor = User::factory()->create(['name' => 'Chet']);
         $run = $this->heldReplyRun($actor);
         $this->bindApprovalResult(new TechnicianApprovalResult('gate_declined', message: ''));
