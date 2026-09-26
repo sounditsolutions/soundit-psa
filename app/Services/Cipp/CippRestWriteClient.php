@@ -295,13 +295,13 @@ class CippRestWriteClient
         ?string $licenseSkuId,
     ): array {
         if (trim($username) === '') {
-            throw new CippClientException('New user username (UPN local part) is required');
+            throw new CippWriteNotSentException('New user username (UPN local part) is required');
         }
         if (trim($domain) === '') {
-            throw new CippClientException('New user UPN domain is required');
+            throw new CippWriteNotSentException('New user UPN domain is required');
         }
         if (trim($displayName) === '') {
-            throw new CippClientException('New user display name is required');
+            throw new CippWriteNotSentException('New user display name is required');
         }
 
         $body = [
@@ -374,7 +374,7 @@ class CippRestWriteClient
     public function setMailboxDelegate(string $tenantFilter, string $mailboxUserPrincipalName, string $trusteeUserPrincipalName, string $permission, string $operation, bool $autoMap): array
     {
         if (trim($trusteeUserPrincipalName) === '') {
-            throw new CippClientException('Mailbox delegate trustee UPN is required');
+            throw new CippWriteNotSentException('Mailbox delegate trustee UPN is required');
         }
 
         $body = [
@@ -401,7 +401,7 @@ class CippRestWriteClient
             $permission === 'send_as' && $operation === 'remove' => 'RemoveSendAs',
             $permission === 'send_on_behalf' && $operation === 'grant' => 'AddSendOnBehalf',
             $permission === 'send_on_behalf' && $operation === 'remove' => 'RemoveSendOnBehalf',
-            default => throw new CippClientException("Unsupported mailbox delegate permission/operation {$permission}/{$operation}"),
+            default => throw new CippWriteNotSentException("Unsupported mailbox delegate permission/operation {$permission}/{$operation}"),
         };
 
         $body[$bucket] = $entry;
@@ -453,10 +453,10 @@ class CippRestWriteClient
     public function removeDirectoryRoleMember(string $tenantFilter, string $roleId, string $roleName, string $userId, string $userPrincipalName): array
     {
         if (trim($roleId) === '') {
-            throw new CippClientException('Directory role id is required');
+            throw new CippWriteNotSentException('Directory role id is required');
         }
         if (trim($userId) === '') {
-            throw new CippClientException('Directory role member user id is required');
+            throw new CippWriteNotSentException('Directory role member user id is required');
         }
 
         return $this->send('api/ExecRemoveAdminRole', [
@@ -584,13 +584,13 @@ class CippRestWriteClient
     public function removeMailboxRule(string $tenantFilter, string $userPrincipalName, string $ruleId, string $ruleName): array
     {
         if (trim($userPrincipalName) === '') {
-            throw new CippClientException('Mailbox owner UPN is required');
+            throw new CippWriteNotSentException('Mailbox owner UPN is required');
         }
         if (trim($ruleId) === '') {
-            throw new CippClientException('Mailbox rule id is required');
+            throw new CippWriteNotSentException('Mailbox rule id is required');
         }
         if (trim($ruleName) === '') {
-            throw new CippClientException('Mailbox rule name is required');
+            throw new CippWriteNotSentException('Mailbox rule name is required');
         }
 
         return $this->send('api/ExecRemoveMailboxRule', [
@@ -616,7 +616,7 @@ class CippRestWriteClient
     public function releaseQuarantineMessage(string $tenantFilter, string $identity): array
     {
         if (trim($identity) === '') {
-            throw new CippClientException('Quarantine message identity is required');
+            throw new CippWriteNotSentException('Quarantine message identity is required');
         }
 
         $response = $this->send('api/ExecQuarantineManagement', [
@@ -645,15 +645,15 @@ class CippRestWriteClient
     public function addTenantAllowListEntry(string $tenantFilter, string $listType, string $entry, string $notes): array
     {
         if (trim($tenantFilter) === '' || strcasecmp(trim($tenantFilter), 'AllTenants') === 0) {
-            throw new CippClientException('Tenant allow-list writes require a single resolved tenant');
+            throw new CippWriteNotSentException('Tenant allow-list writes require a single resolved tenant');
         }
 
         if (trim($entry) === '') {
-            throw new CippClientException('Tenant allow-list entry value is required');
+            throw new CippWriteNotSentException('Tenant allow-list entry value is required');
         }
 
         if (! in_array($listType, ['Sender', 'Url'], true)) {
-            throw new CippClientException("Unsupported tenant allow-list type {$listType}");
+            throw new CippWriteNotSentException("Unsupported tenant allow-list type {$listType}");
         }
 
         $response = $this->send('api/AddTenantAllowBlockList', [
@@ -804,19 +804,19 @@ class CippRestWriteClient
         string $operation,
     ): array {
         if (trim($groupId) === '') {
-            throw new CippClientException('Group membership group id is required');
+            throw new CippWriteNotSentException('Group membership group id is required');
         }
         if (trim($userId) === '') {
-            throw new CippClientException('Group membership user id is required');
+            throw new CippWriteNotSentException('Group membership user id is required');
         }
         if (trim($userPrincipalName) === '') {
-            throw new CippClientException('Group membership user UPN is required');
+            throw new CippWriteNotSentException('Group membership user UPN is required');
         }
         if (! in_array($operation, ['add', 'remove'], true)) {
-            throw new CippClientException("Unsupported group membership operation {$operation}");
+            throw new CippWriteNotSentException("Unsupported group membership operation {$operation}");
         }
         if (! in_array($groupType, self::GROUP_MEMBERSHIP_TYPES, true)) {
-            throw new CippClientException("Unsupported group type {$groupType}");
+            throw new CippWriteNotSentException("Unsupported group type {$groupType}");
         }
 
         $response = $this->send('api/EditGroup', [
@@ -845,12 +845,12 @@ class CippRestWriteClient
             }
         }
 
+        // Unknown, not "not applied": in CIPP-API 7c756b0d Invoke-EditGroup adds
+        // "Error - …" for any non-2xx Graph bulk sub-response or failed Exchange
+        // cmdlet and does not say which status it was, so a server-side timeout
+        // reads the same as a refusal.
         if (! $hasSuccess || $failure !== null) {
-            throw new CippClientException(
-                'CIPP accepted the request but did not confirm the group membership change;'
-                .' it may or may not have applied — verify the group membership in CIPP before retrying.'
-                .($failure !== null ? ' Upstream: '.mb_substr($failure, 0, 300) : '')
-            );
+            throw new CippWriteUnconfirmedException('api/EditGroup', CippWriteUnconfirmedException::UNKNOWN, $failure);
         }
 
         return ['success' => true, 'status' => (int) $response['status']];
@@ -894,7 +894,7 @@ class CippRestWriteClient
     public function wipeDevice(string $tenantFilter, string $deviceId, string $action): array
     {
         if (trim($deviceId) === '') {
-            throw new CippClientException('Intune device id is required');
+            throw new CippWriteNotSentException('Intune device id is required');
         }
 
         $body = match ($action) {
@@ -910,7 +910,7 @@ class CippRestWriteClient
                 'GUID' => $deviceId,
                 'Action' => 'retire',
             ],
-            default => throw new CippClientException("Unsupported device wipe action {$action}"),
+            default => throw new CippWriteNotSentException("Unsupported device wipe action {$action}"),
         };
 
         return $this->send('api/ExecDeviceAction', $body);
@@ -937,10 +937,10 @@ class CippRestWriteClient
     public function reassignOneDriveOwnership(string $tenantFilter, string $ownerUserPrincipalName, string $successorUserPrincipalName): array
     {
         if (trim($ownerUserPrincipalName) === '') {
-            throw new CippClientException('OneDrive owner UPN is required');
+            throw new CippWriteNotSentException('OneDrive owner UPN is required');
         }
         if (trim($successorUserPrincipalName) === '') {
-            throw new CippClientException('OneDrive successor UPN is required');
+            throw new CippWriteNotSentException('OneDrive successor UPN is required');
         }
 
         $response = $this->send('api/ExecSharePointPerms', [
@@ -955,11 +955,12 @@ class CippRestWriteClient
             ? implode(' ', array_map(static fn (mixed $entry): string => is_scalar($entry) ? (string) $entry : (string) json_encode($entry), $results))
             : (string) $results;
 
+        // Unknown: in CIPP-API 7c756b0d Set-CIPPSharePointPerms turns any
+        // exception from its two SharePoint POSTs into "Failed to change access
+        // …", including one raised after the first POST. No upstream line is
+        // kept; it carries the OneDrive URL.
         if (stripos($text, 'Successfully') === false || stripos($text, 'Failed') !== false) {
-            throw new CippClientException(
-                'CIPP accepted the request but did not confirm the OneDrive permission change;'
-                .' it may or may not have applied — verify the OneDrive permissions in CIPP before retrying.'
-            );
+            throw new CippWriteUnconfirmedException('api/ExecSharePointPerms', CippWriteUnconfirmedException::UNKNOWN);
         }
 
         return ['success' => true, 'status' => (int) $response['status']];
@@ -1015,7 +1016,7 @@ class CippRestWriteClient
         ?string $managerUserPrincipalName,
     ): array {
         if (trim($userId) === '') {
-            throw new CippClientException('Target CIPP user object id is required');
+            throw new CippWriteNotSentException('Target CIPP user object id is required');
         }
 
         $upn = trim($userPrincipalName);
@@ -1023,11 +1024,11 @@ class CippRestWriteClient
         $localPart = $at === false ? '' : substr($upn, 0, $at);
         $domain = $at === false ? '' : substr($upn, $at + 1);
         if ($localPart === '' || $domain === '') {
-            throw new CippClientException('Target UPN is malformed; refresh the CIPP contact sync before editing this user.');
+            throw new CippWriteNotSentException('Target UPN is malformed; refresh the CIPP contact sync before editing this user.');
         }
 
         if ($setFields === [] && $clearProperties === [] && ($managerUserPrincipalName === null || trim($managerUserPrincipalName) === '')) {
-            throw new CippClientException('User edit requires at least one change');
+            throw new CippWriteNotSentException('User edit requires at least one change');
         }
 
         $body = [
@@ -1065,18 +1066,20 @@ class CippRestWriteClient
             }
         }
 
+        // Unknown on both arms: in CIPP-API 7c756b0d Set-CIPPUser catches any
+        // exception from its Graph PATCH (a timeout included) into "Failed to
+        // edit user. …", and the manager step runs after that PATCH.
         if ($failure !== null) {
-            throw new CippClientException(
-                "CIPP write api/EditUser reported failure: {$failure}"
-                .($editConfirmed ? ' The profile edit itself was already reported applied — verify the user\'s current state in CIPP before retrying.' : '')
+            throw new CippWriteUnconfirmedException(
+                'api/EditUser',
+                CippWriteUnconfirmedException::UNKNOWN,
+                $failure,
+                confirmedPart: $editConfirmed ? 'profile edit' : null,
             );
         }
 
         if (! $editConfirmed) {
-            throw new CippClientException(
-                'CIPP accepted the request but did not confirm the user edit;'
-                .' it may or may not have applied — verify the user\'s current state in CIPP before retrying.'
-            );
+            throw new CippWriteUnconfirmedException('api/EditUser', CippWriteUnconfirmedException::UNKNOWN);
         }
 
         return ['success' => true, 'status' => (int) $response['status']];
@@ -1142,30 +1145,54 @@ class CippRestWriteClient
         return ['status' => $response->status(), 'body' => strlen($response->body()) <= 16384 ? $response->json() : null];
     }
 
+    /**
+     * The one write transport. Its failures split by whether the request was
+     * handed to the HTTP client:
+     *  - endpointUrl(), safeRequestOptions() and getToken() run first and
+     *    throw CippWriteNotSentException;
+     *  - anything thrown by ->post() itself (a ConnectionException on a read
+     *    timeout, a reset or a refused connection) becomes
+     *    CippWriteUnconfirmedException UNKNOWN with noAnswer, because CIPP may
+     *    have received the request;
+     *  - a failed() status becomes CippWriteHttpException.
+     */
     private function send(string $endpoint, array $body, bool $captureBody = false): array
     {
         $url = $this->endpointUrl($endpoint);
         $options = $this->safeRequestOptions($url);
         $token = $this->getToken();
 
-        $response = Http::timeout(60)
-            ->acceptJson()
-            ->asJson()
-            ->withOptions($options)
-            ->withToken($token)
-            ->post($url, $body);
+        try {
+            $response = Http::timeout(60)
+                ->acceptJson()
+                ->asJson()
+                ->withOptions($options)
+                ->withToken($token)
+                ->post($url, $body);
+        } catch (\Throwable $e) {
+            // The exception text can carry the request URL, so it stays on
+            // $previous and is not copied into the message.
+            throw new CippWriteUnconfirmedException($endpoint, CippWriteUnconfirmedException::UNKNOWN, noAnswer: true, previous: $e);
+        }
 
-        if ($response->failed()) {
-            throw new CippWriteHttpException($response->status());
+        try {
+            $status = $response->status();
+            $failed = $response->failed();
+            $decoded = $captureBody && ! $failed ? $response->json() : null;
+        } catch (\Throwable $e) {
+            throw new CippWriteUnconfirmedException($endpoint, CippWriteUnconfirmedException::UNKNOWN, previous: $e);
+        }
+
+        if ($failed) {
+            throw new CippWriteHttpException($status);
         }
 
         if ($captureBody) {
-            // Opt-in: only the password-reset wrapper reads the upstream body (the temp
-            // password comes back in Results.copyField). All other callers discard it.
-            return ['success' => true, 'status' => $response->status(), 'body' => $response->json()];
+            // Opt-in: only callers that read Results capture the body.
+            return ['success' => true, 'status' => $status, 'body' => $decoded];
         }
 
-        return ['success' => true, 'status' => $response->status()];
+        return ['success' => true, 'status' => $status];
     }
 
     /**
@@ -1222,7 +1249,7 @@ class CippRestWriteClient
         $applicationId = (string) (($this->config['application_id'] ?? null) ?: $clientId);
 
         if ($tenantId === '' || $clientId === '' || $clientSecret === '') {
-            throw new CippClientException('CIPP REST write client credentials are not configured');
+            throw new CippWriteNotSentException('CIPP REST write client credentials are not configured');
         }
 
         $cacheKey = $this->tokenCacheKey($tenantId, $clientId, $applicationId);
@@ -1245,15 +1272,15 @@ class CippRestWriteClient
                 ->throw();
         } catch (RequestException $e) {
             Log::error('[CippRestWriteClient] Token request failed', ['error' => $e->getMessage()]);
-            throw new CippClientException("CIPP REST write OAuth token request failed: {$e->getMessage()}", $e->getCode(), $e);
+            throw new CippWriteNotSentException("CIPP REST write OAuth token request failed: {$e->getMessage()}", $e->getCode(), $e);
         } catch (\Throwable $e) {
             Log::error('[CippRestWriteClient] Token request failed', ['error' => $e->getMessage()]);
-            throw new CippClientException("CIPP REST write OAuth token request failed: {$e->getMessage()}", (int) $e->getCode(), $e);
+            throw new CippWriteNotSentException("CIPP REST write OAuth token request failed: {$e->getMessage()}", (int) $e->getCode(), $e);
         }
 
         $token = $response->json('access_token');
         if (! is_string($token) || $token === '') {
-            throw new CippClientException('CIPP REST write OAuth response missing access_token');
+            throw new CippWriteNotSentException('CIPP REST write OAuth response missing access_token');
         }
 
         $expiresIn = (int) ($response->json('expires_in') ?? 3600);
@@ -1271,7 +1298,7 @@ class CippRestWriteClient
     {
         $apiUrl = (string) ($this->config['api_url'] ?? '');
         if ($apiUrl === '') {
-            throw new CippClientException('CIPP API URL is not configured');
+            throw new CippWriteNotSentException('CIPP API URL is not configured');
         }
 
         return rtrim($apiUrl, '/').'/'.ltrim($endpoint, '/');
@@ -1284,7 +1311,7 @@ class CippRestWriteClient
     {
         $rejection = SafeUrlInspector::reject($url, $this->resolver);
         if ($rejection !== null) {
-            throw new CippClientException(str_replace('Tactical API URL', 'CIPP API URL', $rejection));
+            throw new CippWriteNotSentException(str_replace('Tactical API URL', 'CIPP API URL', $rejection));
         }
 
         $parts = parse_url($url);
@@ -1300,12 +1327,12 @@ class CippRestWriteClient
         $resolver = $this->resolver;
         $ips = $resolver($host);
         if ($ips === false || ! is_array($ips) || $ips === []) {
-            throw new CippClientException("CIPP API host '{$host}' did not resolve (refused for safety).");
+            throw new CippWriteNotSentException("CIPP API host '{$host}' did not resolve (refused for safety).");
         }
 
         foreach ($ips as $ip) {
             if (! SafeUrlInspector::ipIsSafe($ip)) {
-                throw new CippClientException("CIPP API host '{$host}' resolved to a private or reserved address ({$ip}); refused.");
+                throw new CippWriteNotSentException("CIPP API host '{$host}' resolved to a private or reserved address ({$ip}); refused.");
             }
         }
 

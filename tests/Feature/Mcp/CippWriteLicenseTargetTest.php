@@ -1559,19 +1559,17 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertSame('gate_declined', $result->status);
         $this->assertStringNotContainsString(self::TENANT, (string) $result->message);
         $this->assertStringNotContainsString('cipp.internal', (string) $result->message);
-        // The fixture's relay text SAYS "returned 500", but the shape it throws is
-        // a bare CippClientException, and on this path the real client raises that
-        // only from endpointUrl/safeRequestOptions/getToken - all before ->post().
-        // A real 500 here is CippWriteHttpException(500), covered separately. So
-        // "not applied" is the correct sentence for THIS shape; the relay text is
-        // kept because redaction is what this test exists to pin.
-        $this->assertStringContainsString('was not applied', (string) $result->message);
-        $this->assertStringNotContainsString('may or may not have applied', (string) $result->message);
+        // The fixture throws a bare CippClientException, which carries no evidence
+        // of whether the write was sent, so the sentence hedges (#3709). The relay
+        // text is kept because redaction is what this test exists to pin.
+        $this->assertStringContainsString('may or may not have applied', (string) $result->message);
+        $this->assertStringNotContainsString('was not applied', (string) $result->message);
 
         // And the cause is NOT lost — it moved, it did not vanish. A sanitizer
         // that also blinds the audit trail trades one defect for a worse one.
         $summary = (string) TechnicianActionLog::where('result_status', 'error')->latest('id')->value('summary');
-        $this->assertStringContainsString('failed before completion', $summary);
+        $this->assertStringContainsString('cipp_stage_assign_tenant_user_license failed: ', $summary);
+        $this->assertStringNotContainsString('failed before completion', $summary);
         $this->assertStringContainsString('ExecAddLicense', $summary);
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
     }
@@ -1608,10 +1606,9 @@ class CippWriteLicenseTargetTest extends TestCase
         $body = (string) $response->json('result.content.0.text');
         $this->assertStringNotContainsString(self::TENANT, $body);
         $this->assertStringNotContainsString('cipp.internal', $body);
-        // Same shape as the staged arm: a bare CippClientException is pre-POST on
-        // this path whatever its text claims, so the sentence is "not applied".
-        $this->assertStringContainsString('was not applied', $body);
-        $this->assertStringNotContainsString('may or may not have applied', $body);
+        // Same shape as the staged arm: a bare CippClientException hedges.
+        $this->assertStringContainsString('may or may not have applied', $body);
+        $this->assertStringNotContainsString('was not applied', $body);
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
         $this->assertStringContainsString(
             'ExecAddLicense',

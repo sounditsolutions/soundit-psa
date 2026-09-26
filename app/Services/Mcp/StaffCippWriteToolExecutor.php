@@ -14,6 +14,7 @@ use App\Services\Cipp\CippClientException;
 use App\Services\Cipp\CippRestWriteClient;
 use App\Services\Cipp\CippToolContract;
 use App\Services\Cipp\CippWriteHttpException;
+use App\Services\Cipp\CippWriteNotSentException;
 use App\Services\Cipp\CippWriteScopeException;
 use App\Services\Cipp\CippWriteScopeResolver;
 use App\Services\Cipp\CippWriteUnconfirmedException;
@@ -130,6 +131,19 @@ class StaffCippWriteToolExecutor
      */
     private const GROUP_MEMBERSHIP_TOOLS = [
         'cipp_set_group_membership',
+    ];
+
+    /**
+     * Writes whose client method reads the answer body and can report
+     * "sent, not confirmed". Their failures get writeFailureMessage() instead
+     * of the upstream text or the generic sentence.
+     *
+     * @var array<int, string>
+     */
+    private const UNCONFIRMABLE_WRITE_TOOLS = [
+        'cipp_set_group_membership',
+        'cipp_reassign_onedrive',
+        'cipp_edit_user',
     ];
 
     /**
@@ -985,6 +999,16 @@ class StaffCippWriteToolExecutor
                 if ($licenseAction = self::LICENSE_WRITE_ACTIONS[$directTool] ?? null) {
                     return $this->declined($this->licenseWriteFailureMessage($run->action_type, $licenseAction, $e));
                 }
+                if (in_array($directTool, self::UNCONFIRMABLE_WRITE_TOOLS, true)) {
+                    return $this->declined($this->writeFailureMessage($run->action_type, $e, withCause: true));
+                }
+                // The write may have landed (#3709): an HTTP status, like an
+                // unconfirmed answer, comes back only after the POST. The
+                // exception's own text names the endpoint and gives the approver
+                // nothing to verify.
+                if ($e instanceof CippWriteUnconfirmedException || $e instanceof CippWriteHttpException) {
+                    return $this->declined($this->writeFailureMessage($run->action_type, $e));
+                }
 
                 return $this->declined($e->getMessage());
             }
@@ -1058,6 +1082,9 @@ class StaffCippWriteToolExecutor
 
             if ($licenseAction = self::LICENSE_WRITE_ACTIONS[$tool] ?? null) {
                 return ['error' => $this->licenseWriteFailureMessage($tool, $licenseAction, $e)];
+            }
+            if (in_array($tool, self::UNCONFIRMABLE_WRITE_TOOLS, true)) {
+                return ['error' => $this->writeFailureMessage($tool, $e)];
             }
 
             return ['error' => "CIPP write failed for {$tool}; no response body returned."];
@@ -1148,7 +1175,9 @@ class StaffCippWriteToolExecutor
             }
             $this->auditAttempt($tool, 'error', $client->id, $ticket, $person, null, $contentHash, $this->safeFailureSummary($tool, $e), $actorLabel);
 
-            return ['error' => "CIPP password reset failed for {$tool}; no password was returned."];
+            // Only a not-sent refusal says the reset was not applied (#3709): an
+            // HTTP status comes back after ExecResetPass was posted.
+            return ['error' => $this->writeFailureMessage($tool, $e).' No password can be shown.'];
         }
 
         $claims->releaseOnAnswer($claim['id'], $upstream);
@@ -1273,7 +1302,9 @@ class StaffCippWriteToolExecutor
                 $run->releaseClaim();
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $person, null, $contentHash, $this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
 
-                return $this->declined('CIPP password reset failed; no password was returned. The proposal is still open — retry or deny it.');
+                // Only a not-sent refusal says the reset was not applied (#3709).
+                // Not "password was …": declined() redacts that shape as a credential.
+                return $this->declined($this->writeFailureMessage($run->action_type, $e).' No password can be shown. The proposal is still open.');
             }
 
             $claims->releaseOnAnswer($claim['id'], $upstream);
@@ -2005,7 +2036,11 @@ class StaffCippWriteToolExecutor
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
-                return new TechnicianApprovalResult('gate_declined');
+                // A message-less decline renders the cockpit's "Could not send … Try
+                // again.", which is false for a write that may have landed (#3709).
+                // Every exception gets writeFailureMessage(), which says "not
+                // applied" only for CippWriteNotSentException.
+                return $this->declined($this->writeFailureMessage($run->action_type, $e));
             }
 
             $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed for ".$this->emailSecurityAuditTarget($directTool, $params).'.', $this->approverLabel($approverId), $run->id, $approverId);
@@ -2527,7 +2562,9 @@ class StaffCippWriteToolExecutor
         } catch (CippClientException $e) {
             $this->auditAttempt($tool, 'error', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($tool, $e), $actorLabel);
 
-            return ['error' => "CIPP user creation failed for {$tool}; no account was reported created."];
+            // Only a not-sent refusal says no account was created (#3709): an
+            // HTTP status comes back after AddUser was posted.
+            return ['error' => $this->writeFailureMessage($tool, $e).' No password can be shown.'];
         }
 
         $parsed = $this->parseCreateUserResponse($upstream);
@@ -2784,7 +2821,9 @@ class StaffCippWriteToolExecutor
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
-                return $this->declined($e->getMessage());
+                // Only a not-sent refusal says no account was created (#3709).
+                // Not "password was …": declined() redacts that shape as a credential.
+                return $this->declined($this->writeFailureMessage($run->action_type, $e).' No password can be shown.');
             }
 
             $parsed = $this->parseCreateUserResponse($upstream);
@@ -3134,14 +3173,7 @@ class StaffCippWriteToolExecutor
         } catch (CippClientException $e) {
             $this->auditAttempt($tool, 'error', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($tool, $e), $actorLabel);
 
-            // This catch cannot tell whether the POST left. Some of these throws
-            // are raised before any request is sent: setGroupMembership's input
-            // validation, and send()'s endpointUrl(), safeRequestOptions() and
-            // getToken(). Others are raised after it: send() checks the status only
-            // after posting, and the group endpoint returns HTTP 200 even when it
-            // reports per-member failure. So this string must not claim the
-            // directory was left untouched.
-            return ['error' => "CIPP write failed for {$tool}; the membership change may or may not have applied — verify the group membership in CIPP before retrying."];
+            return ['error' => $this->writeFailureMessage($tool, $e)];
         }
 
         $this->auditAttempt($tool, 'executed', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: {$tool} executed — ".$this->groupMembershipAuditDetail((string) $params['operation'], $group['name'], (string) $params['group_id']).": {$reason}", $actorLabel);
@@ -3399,7 +3431,7 @@ class StaffCippWriteToolExecutor
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
-                return $this->declined($e->getMessage());
+                return $this->declined($this->writeFailureMessage($run->action_type, $e, withCause: true));
             }
 
             $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — ".$this->groupMembershipAuditDetail((string) $params['operation'], $group['name'], (string) $params['group_id']).'.', $this->approverLabel($approverId), $run->id, $approverId);
@@ -7014,37 +7046,79 @@ class StaffCippWriteToolExecutor
      * safeFailureSummary().
      *
      * Both licence methods send() to api/ExecBulkLicense and read the answer
-     * in CippRestWriteClient::confirmLicenseWrite(). So:
-     *  - CippWriteUnconfirmedException: the request left. NOT_APPLIED means
-     *    CIPP named a reason it made no write; UNKNOWN means it may have.
-     *  - CippWriteHttpException: raised only by send()'s failed() check, after
-     *    ->post(). A 5xx is unknown. A 4xx is "not applied" on this endpoint
-     *    only: in CIPP-API 7c756b0d the script sets BadRequest only in its
-     *    outer catch, reached by the user-lookup throws before any write, and
-     *    a 401/403/429 from the function host or its auth layer is returned
-     *    before the script runs. Do not copy this to another endpoint unchecked.
-     *  - any other CippClientException: raised by endpointUrl(),
-     *    safeRequestOptions() or getToken(), all before ->post(), so nothing
-     *    was sent.
-     * This covers only the types that reach a CippClientException catch. A
-     * ConnectionException is not one and does not reach it (#3712, #3709).
+     * in CippRestWriteClient::confirmLicenseWrite(). "Not applied" is said only
+     * on positive evidence (#3709):
+     *  - CippWriteNotSentException: nothing was sent.
+     *  - CippWriteUnconfirmedException NOT_APPLIED: CIPP named a reason it made
+     *    no write.
+     *  - CippWriteHttpException 4xx: on this endpoint only. In CIPP-API
+     *    7c756b0d the script sets BadRequest only in its outer catch, reached
+     *    by the user-lookup throws before any write, and a 401/403/429 from
+     *    the function host or its auth layer is returned before the script
+     *    runs. Do not copy this to another endpoint unchecked.
+     * Every other exception hedges, including one of a type added later.
      */
     private function licenseWriteFailureMessage(string $tool, string $action, CippClientException $e): string
     {
-        if ($e instanceof CippWriteUnconfirmedException) {
-            if ($e->outcome === CippWriteUnconfirmedException::NOT_APPLIED) {
-                return "CIPP write failed for {$tool}; CIPP reported it could not identify the user and made no licence change, so the licence {$action} was not applied.";
-            }
+        if ($e instanceof CippWriteUnconfirmedException && $e->outcome === CippWriteUnconfirmedException::NOT_APPLIED) {
+            return "CIPP write failed for {$tool}; CIPP reported it could not identify the user and made no licence change, so the licence {$action} was not applied.";
+        }
 
+        if ($e instanceof CippWriteNotSentException
+            || ($e instanceof CippWriteHttpException && $e->status >= 400 && $e->status < 500)) {
+            return "CIPP write failed for {$tool}; the licence {$action} was not applied.";
+        }
+
+        if ($e instanceof CippWriteUnconfirmedException && $e->noAnswer) {
+            return "The licence {$action} for {$tool} got no answer from CIPP; it may or may not have applied — verify the user's licences in CIPP before retrying.";
+        }
+
+        if ($e instanceof CippWriteUnconfirmedException) {
             return "The licence {$action} for {$tool} was sent to CIPP but not confirmed; it may or may not have applied — verify the user's licences in CIPP before retrying."
                 .($e->usageLocationMayHaveChanged ? " CIPP may already have set the user's usage location." : '');
         }
 
-        if ($e instanceof CippWriteHttpException && $e->status >= 500) {
-            return "CIPP write failed for {$tool}; the licence {$action} may or may not have applied — verify the user's licences in CIPP before retrying.";
+        return "CIPP write failed for {$tool}; the licence {$action} may or may not have applied — verify the user's licences in CIPP before retrying.";
+    }
+
+    /**
+     * The operator sentence for a failed non-licence CIPP write. "Not applied"
+     * is said only on CippWriteNotSentException; every other exception,
+     * including one of a type added later, hedges (#3709). An HTTP 4xx hedges
+     * too: these endpoints' 4xx semantics have not been checked at the vendor
+     * source the way ExecBulkLicense's were.
+     *
+     * The password-reset and create-user catches, direct and staged, and the
+     * email-security staged catch call it for every exception. The generic
+     * staged catch calls it for a CippWriteUnconfirmedException or a
+     * CippWriteHttpException, both raised after the POST; its other exceptions
+     * keep their own text.
+     *
+     * @param  bool  $withCause  append a not-sent exception's own message
+     *                           (the staged toast); the direct path keeps it in
+     *                           the audit row only
+     */
+    private function writeFailureMessage(string $tool, CippClientException $e, bool $withCause = false): string
+    {
+        [$change, $where] = match (self::STAGED_TO_DIRECT[$tool] ?? $tool) {
+            'cipp_set_group_membership' => ['the membership change', 'the group membership'],
+            'cipp_reassign_onedrive' => ['the OneDrive permission change', 'the OneDrive permissions'],
+            'cipp_edit_user' => ['the user edit', "the user's current state"],
+            'cipp_reset_user_password' => ['the password reset', 'the user'],
+            'cipp_create_user' => ['the account creation', 'whether the account exists'],
+            default => ['the change', 'the result'],
+        };
+
+        if ($e instanceof CippWriteNotSentException) {
+            return "CIPP write failed for {$tool}; nothing was sent to CIPP, so {$change} was not applied."
+                .($withCause ? ' '.$e->getMessage() : '');
         }
 
-        return "CIPP write failed for {$tool}; the licence {$action} was not applied.";
+        $confirmed = $e instanceof CippWriteUnconfirmedException && $e->confirmedPart !== null
+            ? " CIPP reported the {$e->confirmedPart} applied."
+            : '';
+
+        return "CIPP write failed for {$tool}; {$change} may or may not have applied — verify {$where} in CIPP before retrying.".$confirmed;
     }
 
     /** @param  mixed  $upstream  the licence client method's return */
@@ -7054,21 +7128,16 @@ class StaffCippWriteToolExecutor
     }
 
     /**
-     * The audit summary for a caught CippClientException (#3745).
+     * The audit summary for a caught CippClientException (#3745, #3709).
      *
-     * Both types below are thrown only after ->post(), so their summaries say
-     * nothing about when the failure happened:
-     *  - CippWriteUnconfirmedException: its own message, which names the
-     *    endpoint and the outcome, (unknown) or (not_applied).
      *  - CippWriteHttpException: the HTTP status, read from the exception's
      *    status field. Its message says "failed", which a 5xx does not show.
-     *
-     * Any other CippClientException keeps "failed before completion". On the
-     * licence methods that type is thrown only before ->post(). Some other
-     * methods still throw it after the send (setGroupMembership,
-     * reassignOneDriveOwnership, editUser, and guardReportedFailure()'s
-     * callers), where the phrase says more than is known. Those throws are not
-     * changed here; #3709 covers the first three.
+     *  - CippWriteUnconfirmedException: its own message, which names the
+     *    endpoint and the outcome, (unknown) or (not_applied).
+     *  - CippWriteNotSentException: "failed before completion", the one type
+     *    for which that is known.
+     *  - any other CippClientException: "failed", which says nothing about
+     *    when.
      */
     private function safeFailureSummary(string $tool, CippClientException $e): string
     {
@@ -7082,7 +7151,11 @@ class StaffCippWriteToolExecutor
             return "{$tool}: {$detail}";
         }
 
-        return "{$tool} failed before completion: {$detail}";
+        if ($e instanceof CippWriteNotSentException) {
+            return "{$tool} failed before completion: {$detail}";
+        }
+
+        return "{$tool} failed: {$detail}";
     }
 
     /**
