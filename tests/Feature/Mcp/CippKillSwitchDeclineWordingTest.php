@@ -12,7 +12,15 @@ use Tests\TestCase;
  * These five arms were adjudicated on 2026-09-26 as TRUE on every path: each
  * checks the kill switch, writes an audit row, and declines before any client
  * call (measured, with a positive control finding 7 `->client->` calls past the
- * kill switch in the same method). The list was closed with no wording change.
+ * kill switch in the same method). No wording change was needed on those five.
+ *
+ * "Five" is the count of kill-switch arms that decline WITH A SENTENCE, not the
+ * count of kill-switch arms (round 2, contract:12). A SIXTH exists:
+ * approveEmailSecurityStagedRun checks the kill switch and returns a message-less
+ * gate_declined, so the operator gets the cockpit's generic no-reason fallback
+ * instead of a CIPP sentence. That arm is NOT adjudicated here and its shape is
+ * not endorsed — it is the #3901 defect, and the wider tripwire below exists to
+ * make a seventh of either kind visible.
  *
  * The gap Jeeves named is that nothing pinned them, so a later edit could put an
  * effect claim back into a message that currently has none, and no control would
@@ -88,32 +96,42 @@ class CippKillSwitchDeclineWordingTest extends TestCase
         // failed). It now extracts the argument from the production source.
         $source = $this->methodSource($method);
 
-        $matched = preg_match(
-            "/\\\$this->declined\('(Technician kill-switch engaged;[^']*)'\)/",
+        // ALL kill-switch literals in the method, not the first (round 2,
+        // contract:13: preg_match stops at one, so a second arm added below the
+        // first would never be inspected). `(?:[^'\\\\]|\\\\.)*` also tolerates an
+        // escaped apostrophe, which `[^']*` would truncate mid-sentence and then
+        // silently pass the deny-list on the fragment.
+        $matched = preg_match_all(
+            "/\\\$this->declined\('(Technician kill-switch engaged;(?:[^'\\\\]|\\\\.)*)'\)/",
             $source,
             $m
         );
-        $this->assertSame(1, $matched, "{$method} must contain a kill-switch declined() literal to inspect.");
-        $actual = $m[1];
+        $this->assertGreaterThanOrEqual(
+            1,
+            $matched,
+            "{$method} must contain a kill-switch declined() literal to inspect."
+        );
 
-        // The property, stated independently of the exact sentence: a refusal on
-        // this path may say the write was refused, and may not make a claim about
-        // upstream state or tell the approver to repeat the action. The kill switch
-        // has to be cleared first, so a retry instruction would be false here.
-        foreach (['try again', 'retry', 'nothing was sent', 'no changes were made', 'no upstream call was made'] as $forbidden) {
-            $this->assertStringNotContainsStringIgnoringCase(
-                $forbidden,
-                $actual,
-                "{$method}'s kill-switch decline must not claim '{$forbidden}'."
-            );
+        foreach ($m[1] as $actual) {
+            // The property, stated independently of the exact sentence: a refusal on
+            // this path may say the write was refused, and may not make a claim about
+            // upstream state or tell the approver to repeat the action. The kill switch
+            // has to be cleared first, so a retry instruction would be false here.
+            foreach (['try again', 'retry', 'nothing was sent', 'no changes were made', 'no upstream call was made'] as $forbidden) {
+                $this->assertStringNotContainsStringIgnoringCase(
+                    $forbidden,
+                    $actual,
+                    "{$method}'s kill-switch decline must not claim '{$forbidden}'."
+                );
+            }
+
+            // And it must still name the refusal, so deleting the message does not pass.
+            $this->assertStringContainsStringIgnoringCase('refused', $actual);
+            $this->assertStringContainsStringIgnoringCase('kill-switch', $actual);
         }
-
-        // And it must still name the refusal, so deleting the message does not pass.
-        $this->assertStringContainsStringIgnoringCase('refused', $actual);
-        $this->assertStringContainsStringIgnoringCase('kill-switch', $actual);
     }
 
-    public function test_the_arm_count_is_pinned_so_a_sixth_cannot_arrive_unread(): void
+    public function test_a_new_kill_switch_arm_of_either_shape_cannot_arrive_unread(): void
     {
         // Round 1 (diff:4, contract:7, context:10): the first version counted
         // copies of ONE literal spelling of declined('Technician kill-switch
@@ -139,14 +157,29 @@ class CippKillSwitchDeclineWordingTest extends TestCase
         );
         $this->assertSame(5, $declinedArms, 'Five CIPP kill-switch arms decline with an adjudicated sentence; read any new one before it ships.');
 
-        // The wider anchor. 11 = the 5 above + approveEmailSecurityStagedRun's
-        // message-less arm + 5 non-staged MCP write guards that return
+        // The wider anchor. 11 = the 5 sentence arms above + approveEmailSecurity-
+        // StagedRun's message-less arm + 5 non-staged MCP write guards that return
         // ['error' => ...] rather than a TechnicianApprovalResult.
-        $killSwitchChecks = preg_match_all('/killSwitchEngaged\(/', $source);
+        //
+        // Round 2 (context:10, contract:8) argued this count sweeps in comments and
+        // the method definition. MEASURED, and it does not: all 11 matches are
+        // `if (TechnicianConfig::killSwitchEngaged()) {` call sites in this file,
+        // and the definition lives in TechnicianConfig, not here. The regex is
+        // anchored on that statement form anyway, so a mention in a comment cannot
+        // move it.
+        //
+        // The fair half of that finding is kept: this DOES trip on a refactor that
+        // changes no arm. That is the intended trade — the failure message tells the
+        // next person what to check and how to re-baseline, which is cheap; missing
+        // a new unread arm is not.
+        $killSwitchChecks = preg_match_all(
+            '/if \(TechnicianConfig::killSwitchEngaged\(\)\) \{/',
+            $source
+        );
         $this->assertSame(
             11,
             $killSwitchChecks,
-            'A kill-switch check was added or removed in this executor. Read its arm: if it declines with a sentence, adjudicate the wording and pin it above; if it returns message-less, it renders the cockpit fallback (#3901) instead.'
+            'A kill-switch check was added, removed or reshaped in this executor. Read its arm: if it declines with a sentence, adjudicate the wording and add it to the provider above; if it returns message-less, it renders the cockpit no-reason fallback (#3901) instead. If the change was a pure refactor, re-baseline this number.'
         );
     }
 }

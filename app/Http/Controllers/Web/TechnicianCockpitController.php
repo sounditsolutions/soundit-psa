@@ -25,6 +25,14 @@ class TechnicianCockpitController extends Controller
 {
     private const UNDO_WINDOW_MINUTES = 5;
 
+    /**
+     * Rendered when a decline carries no message. One constant, referenced by the
+     * guard test, so the sentence is not copied into a second literal or quoted
+     * verbatim in comments that then go stale (the defect #3901 r2 had to clean up
+     * in four files).
+     */
+    public const NO_REASON_FALLBACK = 'No reason was provided for this outcome.';
+
     public function index(CockpitQuery $query, \App\Services\Technician\Cockpit\CockpitRecipientView $recipients, TechnicianDisclosure $disclosure)
     {
         $drafts = $query->pendingDrafts();
@@ -206,51 +214,24 @@ class TechnicianCockpitController extends Controller
             // specific recoverable reason (typed-id mismatch, identity drift,
             // lost mapping, kill-switch, cooldown) — surface it when provided.
             //
-            // #3901: when it is NOT provided, the fallback says only what is true
-            // on every path that reaches it. It asserts no mechanism and prescribes
-            // no action. The previous text claimed the Technician "may be paused"
-            // and told the approver to "Try again". The retry instruction is false
-            // on every arm measured (the operator has to clear a kill switch,
-            // configure an integration, or re-stage) and the pause claim is false
-            // wherever the cause is not the kill switch.
+            // #3901: when it is NOT provided, this line has nothing to say. Two
+            // earlier attempts explained the silence and both were false on some
+            // arm ("may be paused … Try again"; then "Refused — the Technician
+            // declined"; then "was not confirmed as carried out"). G-14 step 1
+            // applies: delete the explanatory clause rather than assert it, because
+            // the facts it tried to carry are already structured — actionResponse()
+            // sends `ok` and `status`, and picks the error channel — and because
+            // whether the upstream call left is a property of each site, not of
+            // this line. So the fallback now states only what this frame can
+            // verify: no reason arrived with the result.
             //
-            // It also does not say "nothing was sent": that is itself an effect
-            // claim, and whether an upstream call had already left is a property of
-            // each arm, not of this line.
-            //
-            // Nor does it say the Technician "declined", "refused" or "gave no
-            // reason". Several message-less sites are not refusals at all, and
-            // several had a reason and dropped it:
-            //   - StaffTacticalActionToolExecutor::executeClaimedRun returns this
-            //     status AFTER $this->bus->dispatch(), discarding $result->message;
-            //     the call was made and the action may have landed.
-            //   - StaffTacticalAdminToolExecutor::approveStagedRun does the same
-            //     after executeAgentRemoval(), discarding $result['error'].
-            //   - StaffCippWriteToolExecutor::approveEmailSecurityStagedRun drops a
-            //     CippWriteScopeException message that its own sibling arm forwards.
-            // What is true on every path is narrower: nothing confirmed the action
-            // as carried out, and no reason reached this page.
-            //
-            // It does not name the audit row, but NOT because no row exists and NOT
-            // because nothing renders it — both of those were claimed here in review
-            // round 1 and both are false. The rows ARE surfaced: TicketToolActivity
-            // reads technician_action_logs and TicketTimeline renders it on the staff
-            // ticket page, and get_ticket_tool_history exposes the same rows. The
-            // real reason is narrower and survives that correction: those surfaces
-            // deliberately WITHHOLD the diagnostic payload ('Failure or refusal
-            // recorded; diagnostic payload withheld'), so a pointer would send the
-            // approver to a row that confirms a refusal happened without telling
-            // them why. Counts are deliberately not quoted here: the reproducible
-            // enumeration lives in the test docblock and in census2.py, because a
-            // bare figure in a comment cannot be reconciled later.
-            'gate_declined' => $result->message ?? 'This action was not confirmed as carried out, and no reason reached this page.',
-            // Unreachable from any status this codebase constructs (measured: the
-            // set of constructed statuses and the set handled above are equal), so
-            // this arm is the fail-closed default for a status added later. Same
-            // text, and it consults $result->message first for the same reason the
-            // arm above does: without that, a future status that DOES carry a
-            // message would render "no reason reached this page" over the top of one.
-            default => $result->message ?? 'This action was not confirmed as carried out, and no reason reached this page.',
+            // Whose reason is missing is answered by the per-site issues, not here
+            // (#3863, #582, #1115, #3330 for surfacing the gate outcome), and the client
+            // that renders this on the JSON path is #3904.
+            'gate_declined' => filled($result->message) ? $result->message : self::NO_REASON_FALLBACK,
+            // Fail-closed default for a status added later. It consults the message
+            // first so a future status that DOES carry one is not overwritten.
+            default => filled($result->message) ? $result->message : self::NO_REASON_FALLBACK,
         };
 
         return $this->actionResponse(
