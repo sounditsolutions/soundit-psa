@@ -2142,4 +2142,46 @@ class CippRestWriteClientTest extends TestCase
         $this->assertStringNotContainsString('cipp.example.test', $thrown->getMessage(), 'the transport text carries the URL');
         $this->assertSame(1, $writes, 'the request was handed to the client');
     }
+
+    /**
+     * safeRequestOptions() resolves the host a second time after
+     * SafeUrlInspector::reject() has passed it, and refuses if that answer is
+     * unsafe or empty. A resolver that changes its answer between the two
+     * lookups (DNS rebinding) is the only way to reach those two throws.
+     *
+     * @return array<string, array{0: array<int, string>|false, 1: string}>
+     */
+    public static function rebindAnswers(): array
+    {
+        return [
+            'second answer private' => [['10.0.0.5'], 'private or reserved address'],
+            'second answer empty' => [false, 'did not resolve'],
+        ];
+    }
+
+    /** @param  array<int, string>|false  $second */
+    #[\PHPUnit\Framework\Attributes\DataProvider('rebindAnswers')]
+    public function test_dns_rebind_between_checks_is_not_sent(array|false $second, string $expect): void
+    {
+        Http::swap(new \Illuminate\Http\Client\Factory);
+        Http::preventStrayRequests();
+        Http::fake();
+        $calls = 0;
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test', 'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client', 'client_secret' => 'write-secret',
+        ], Cache::store(), function (string $host) use (&$calls, $second): array|false {
+            return ++$calls === 1 ? ['93.184.216.34'] : $second;
+        });
+
+        try {
+            $this->callWrite($client, 'license');
+            $this->fail('expected a not-sent refusal');
+        } catch (CippClientException $e) {
+            $this->assertInstanceOf(CippWriteNotSentException::class, $e);
+            $this->assertStringContainsString($expect, $e->getMessage());
+        }
+        $this->assertSame(2, $calls, 'the second lookup is the one that refused');
+        $this->assertSame(0, Http::recorded()->count());
+    }
 }

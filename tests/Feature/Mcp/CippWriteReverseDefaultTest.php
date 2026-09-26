@@ -65,6 +65,8 @@ class CippWriteReverseDefaultTest extends TestCase
     /** @var array<string, mixed> */
     private array $writeBody = [];
 
+    private int $writeStatus = 200;
+
     private function configure(bool $credentials = true): User
     {
         Setting::setValue('cipp_enabled', '1');
@@ -113,7 +115,7 @@ class CippWriteReverseDefaultTest extends TestCase
                     return \GuzzleHttp\Promise\Create::promiseFor(new \GuzzleHttp\Psr7\Response(200, ['Content-Type' => 'application/json'], $stream));
                 }
 
-                return Http::response($this->writeBody);
+                return Http::response($this->writeBody, $this->writeStatus);
             }
 
             return Http::response('unexpected', 599);
@@ -462,5 +464,24 @@ class CippWriteReverseDefaultTest extends TestCase
 
         $this->assertSame("The licence assignment for cipp_assign_user_license was sent to CIPP but not confirmed; it may or may not have applied — verify the user's licences in CIPP before retrying.", $error);
         $this->assertErrorAudited($error, 1, 'ExecBulkLicense');
+    }
+
+    /**
+     * A 4xx on these endpoints hedges: their 4xx semantics have not been read
+     * at the vendor source the way ExecBulkLicense's were (Invoke-EditUser,
+     * for one, answers 500 from a catch that may follow a write).
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('directTools')]
+    public function test_direct_http_4xx_hedges_on_an_unchecked_endpoint(string $kind): void
+    {
+        $this->configure();
+        $t = $this->tool($kind, $this->fixture(), staged: false);
+        $this->writeStatus = 400;
+        $this->writeBody = ['Results' => self::UPSTREAM_MARKER];
+
+        $error = $this->runDirect($t);
+
+        $this->assertSame($t['hedge'], $error);
+        $this->assertErrorAudited($error, 1, $t['endpoint']);
     }
 }
