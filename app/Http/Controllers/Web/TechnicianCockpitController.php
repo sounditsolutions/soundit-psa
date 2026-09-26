@@ -245,9 +245,9 @@ class TechnicianCockpitController extends Controller
             // bare figure in a comment cannot be reconciled later.
             // filled(), not ??: `??` only substitutes null, so a site constructing
             // TechnicianApprovalResult('gate_declined', message: '') rendered an EMPTY
-            // error banner (#3909). No site does today (0 of 25 message-carrying
-            // constructions in app/), so this closes the hole rather than fixing a
-            // live defect. The text is unchanged.
+            // error banner (#3909). No count is quoted here — the comment above forbids
+            // it, and a bare figure cannot be reconciled later; the enumeration and
+            // its limits are in CockpitDeclineFallbackTest. The text is unchanged.
             'gate_declined' => filled($result->message) ? $result->message : 'This action was not confirmed as carried out, and no reason reached this page.',
             // Unreachable from any status this codebase constructs (measured: the
             // set of constructed statuses and the set handled above are equal), so
