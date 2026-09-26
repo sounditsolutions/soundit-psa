@@ -3,8 +3,8 @@
 namespace Tests\Feature\Technician\Cockpit;
 
 use App\Enums\PersonType;
-use App\Http\Controllers\Web\TechnicianCockpitController;
 use App\Enums\TechnicianRunState;
+use App\Http\Controllers\Web\TechnicianCockpitController;
 use App\Models\Client;
 use App\Models\Person;
 use App\Models\Setting;
