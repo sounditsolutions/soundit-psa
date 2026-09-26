@@ -2041,11 +2041,9 @@ class StaffCippWriteToolExecutor
 
                 // A message-less decline renders the cockpit's "Could not send … Try
                 // again.", which is false for a write that may have landed (#3709).
-                if ($e instanceof CippWriteUnconfirmedException) {
-                    return $this->declined($this->writeFailureMessage($run->action_type, $e));
-                }
-
-                return new TechnicianApprovalResult('gate_declined');
+                // Every exception gets writeFailureMessage(), which says "not
+                // applied" only for CippWriteNotSentException.
+                return $this->declined($this->writeFailureMessage($run->action_type, $e));
             }
 
             $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed for ".$this->emailSecurityAuditTarget($directTool, $params).'.', $this->approverLabel($approverId), $run->id, $approverId);
@@ -7098,10 +7096,10 @@ class StaffCippWriteToolExecutor
      * too: these endpoints' 4xx semantics have not been checked at the vendor
      * source the way ExecBulkLicense's were.
      *
-     * The password-reset, create-user, email-security staged and generic staged
-     * catches call it for a CippWriteUnconfirmedException only, so a write that
-     * may have landed is not reported there as a plain failure. Their other arms
-     * keep their own sentences.
+     * The password-reset, create-user and generic staged catches call it for a
+     * CippWriteUnconfirmedException only, so a write that may have landed is not
+     * reported there as a plain failure. Their other arms keep their own
+     * sentences. The email-security staged catch calls it for every exception.
      *
      * @param  bool  $withCause  append a not-sent exception's own message
      *                           (the staged toast); the direct path keeps it in

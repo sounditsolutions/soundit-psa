@@ -606,6 +606,32 @@ class CippWriteReverseDefaultTest extends TestCase
         $this->assertSame(TechnicianRunState::AwaitingApproval, TechnicianRun::sole()->state);
     }
 
+    /**
+     * The same catch on a post-send HTTP 5xx (c3:v1:1): CIPP's front end can
+     * answer 504 after Exchange applied the entry, so the approver gets the
+     * hedge, never the cockpit's message-less "Could not send … Try again."
+     */
+    public function test_email_security_staged_http_5xx_hedges_instead_of_could_not_send(): void
+    {
+        $approver = $this->configure();
+        $f = $this->fixture();
+        $staged = json_decode((string) $this->callTool('cipp_stage_add_tenant_allow_entry', [
+            'client_id' => $f['client']->id, 'list_type' => 'Sender', 'entry' => 'billing@vendor.example',
+            'confirm_entry' => 'billing@vendor.example', 'ticket_id' => $f['ticket']->id,
+            'reason' => 'Recurring false positive; hold the tenant-wide allow for approval.',
+        ])->json('result.content.0.text'), true);
+        $this->assertNotEmpty($staged['run_id'] ?? null, json_encode($staged));
+        $this->writeStatus = 504;
+        $this->writeBody = ['Results' => self::UPSTREAM_MARKER];
+
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun(TechnicianRun::findOrFail($staged['run_id']), $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertNotNull($result->message, 'a message-less decline renders as "Could not send … Try again."');
+        $this->assertSame('CIPP write failed for cipp_stage_add_tenant_allow_entry; the change may or may not have applied — verify the result in CIPP before retrying.', $result->message);
+        $this->assertErrorAudited((string) $result->message, 1, 'AddTenantAllowBlockList');
+    }
+
     /** @return array<string, array{0: string, 1: int}> */
     public static function resetRefusals(): array
     {
