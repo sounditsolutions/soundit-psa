@@ -1307,7 +1307,7 @@ class StaffCippWriteToolExecutor
                     return $this->declined($this->writeFailureMessage($run->action_type, $e).' No password can be shown. The proposal is still open.');
                 }
 
-                return $this->declined('CIPP password reset failed; no password was returned. The proposal is still open — retry or deny it.');
+                return $this->declined('CIPP password reset failed; no password can be shown. The proposal is still open — retry or deny it.');
             }
 
             $claims->releaseOnAnswer($claim['id'], $upstream);
@@ -2038,6 +2038,12 @@ class StaffCippWriteToolExecutor
             } catch (CippClientException $e) {
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
+
+                // A message-less decline renders the cockpit's "Could not send … Try
+                // again.", which is false for a write that may have landed (#3709).
+                if ($e instanceof CippWriteUnconfirmedException) {
+                    return $this->declined($this->writeFailureMessage($run->action_type, $e));
+                }
 
                 return new TechnicianApprovalResult('gate_declined');
             }
@@ -7092,10 +7098,10 @@ class StaffCippWriteToolExecutor
      * too: these endpoints' 4xx semantics have not been checked at the vendor
      * source the way ExecBulkLicense's were.
      *
-     * The password-reset, create-user and generic staged catches call it for a
-     * CippWriteUnconfirmedException only, so a write that may have landed is
-     * not reported there as a plain failure. Their other arms keep their own
-     * sentences.
+     * The password-reset, create-user, email-security staged and generic staged
+     * catches call it for a CippWriteUnconfirmedException only, so a write that
+     * may have landed is not reported there as a plain failure. Their other arms
+     * keep their own sentences.
      *
      * @param  bool  $withCause  append a not-sent exception's own message
      *                           (the staged toast); the direct path keeps it in

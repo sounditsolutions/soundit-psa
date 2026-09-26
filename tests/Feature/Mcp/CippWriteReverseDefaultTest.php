@@ -126,7 +126,7 @@ class CippWriteReverseDefaultTest extends TestCase
 
     private function isWrite(string $url): bool
     {
-        foreach (['/api/EditGroup', '/api/ExecSharePointPerms', '/api/EditUser', '/api/ExecBulkLicense', '/api/ExecResetPass', '/api/AddUser', '/api/ExecDisableUser'] as $endpoint) {
+        foreach (['/api/EditGroup', '/api/ExecSharePointPerms', '/api/EditUser', '/api/ExecBulkLicense', '/api/ExecResetPass', '/api/AddUser', '/api/ExecDisableUser', '/api/AddTenantAllowBlockList'] as $endpoint) {
             if (str_contains($url, $endpoint)) {
                 return true;
             }
@@ -580,5 +580,63 @@ class CippWriteReverseDefaultTest extends TestCase
         $this->assertSame('gate_declined', $result->status);
         $this->assertSame('CIPP write failed for cipp_stage_disable_user_sign_in; the change may or may not have applied — verify the result in CIPP before retrying.', $result->message);
         $this->assertErrorAudited((string) $result->message, 1, 'ExecDisableUser');
+    }
+
+    /**
+     * The email-security staged catch returned a message-less decline, which
+     * the cockpit renders as "Could not send … Try again."
+     */
+    public function test_email_security_staged_connection_failure_hedges_instead_of_could_not_send(): void
+    {
+        $approver = $this->configure();
+        $f = $this->fixture();
+        $staged = json_decode((string) $this->callTool('cipp_stage_add_tenant_allow_entry', [
+            'client_id' => $f['client']->id, 'list_type' => 'Sender', 'entry' => 'billing@vendor.example',
+            'confirm_entry' => 'billing@vendor.example', 'ticket_id' => $f['ticket']->id,
+            'reason' => 'Recurring false positive; hold the tenant-wide allow for approval.',
+        ])->json('result.content.0.text'), true);
+        $this->assertNotEmpty($staged['run_id'] ?? null, json_encode($staged));
+        $this->mode = 'connection';
+
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun(TechnicianRun::findOrFail($staged['run_id']), $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame('CIPP write failed for cipp_stage_add_tenant_allow_entry; the change may or may not have applied — verify the result in CIPP before retrying.', $result->message);
+        $this->assertErrorAudited((string) $result->message, 1, 'AddTenantAllowBlockList');
+        $this->assertSame(TechnicianRunState::AwaitingApproval, TechnicianRun::sole()->state);
+    }
+
+    /** @return array<string, array{0: string, 1: int}> */
+    public static function resetRefusals(): array
+    {
+        return ['not sent' => ['private', 0], 'http 400' => ['http400', 1]];
+    }
+
+    /**
+     * The reset catch's other arm. declined() redacts "password was …" as a
+     * credential, so this sentence must reach the approver intact.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('resetRefusals')]
+    public function test_password_reset_staged_refusal_reads_intact_through_the_redactor(string $arm, int $writes): void
+    {
+        $approver = $this->configure();
+        $f = $this->fixture();
+        $staged = $this->callTool('cipp_reset_user_password', $this->resetArgs($f, staged: true), grant: 'cipp_reset_user_password:staged');
+        $this->assertFalse((bool) $staged->json('result.isError'), (string) $staged->json('result.content.0.text'));
+        if ($arm === 'private') {
+            $this->hostPrivate = true;
+        } else {
+            $this->writeStatus = 400;
+            $this->writeBody = ['Results' => self::UPSTREAM_MARKER];
+        }
+
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun(TechnicianRun::sole(), $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame('CIPP password reset failed; no password can be shown. The proposal is still open — retry or deny it.', $result->message);
+        $this->assertStringNotContainsString('REDACTED', (string) $result->message);
+        $this->assertNull($result->secret);
+        $this->assertErrorAudited((string) $result->message, $writes, 'ExecResetPass');
+        $this->assertSame(TechnicianRunState::AwaitingApproval, TechnicianRun::sole()->state);
     }
 }
