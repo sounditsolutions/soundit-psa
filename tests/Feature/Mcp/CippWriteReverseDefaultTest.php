@@ -632,34 +632,117 @@ class CippWriteReverseDefaultTest extends TestCase
         $this->assertErrorAudited((string) $result->message, 1, 'AddTenantAllowBlockList');
     }
 
-    /** @return array<string, array{0: string, 1: int}> */
+    /**
+     * An HTTP status comes back only after the POST, so a 5xx on the
+     * create-user and generic staged catches hedges as the email-security one
+     * does (#3709).
+     */
+    public function test_create_user_direct_http_5xx_hedges(): void
+    {
+        $this->configure();
+        $f = $this->fixture();
+        $this->writeStatus = 504;
+        $this->writeBody = ['Results' => self::UPSTREAM_MARKER];
+
+        $error = $this->runDirect(['name' => 'cipp_create_user', 'args' => $this->createUserArgs($f, staged: false)]);
+
+        $this->assertSame('CIPP write failed for cipp_create_user; the account creation may or may not have applied — verify whether the account exists in CIPP before retrying. No password can be shown.', $error);
+        $this->assertErrorAudited($error, 1, 'AddUser');
+    }
+
+    public function test_create_user_staged_http_5xx_hedges(): void
+    {
+        $approver = $this->configure();
+        $f = $this->fixture();
+        $staged = json_decode((string) $this->callTool('cipp_stage_create_user', $this->createUserArgs($f, staged: true))
+            ->json('result.content.0.text'), true);
+        $this->assertTrue($staged['success'] ?? false, json_encode($staged));
+        $this->writeStatus = 504;
+        $this->writeBody = ['Results' => self::UPSTREAM_MARKER];
+
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun(TechnicianRun::findOrFail($staged['run_id']), $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame('CIPP write failed for cipp_stage_create_user; the account creation may or may not have applied — verify whether the account exists in CIPP before retrying. No password can be shown.', $result->message);
+        $this->assertErrorAudited((string) $result->message, 1, 'AddUser');
+    }
+
+    public function test_generic_staged_http_5xx_hedges_instead_of_the_status_message(): void
+    {
+        $approver = $this->configure();
+        $f = $this->fixture();
+        $staged = json_decode((string) $this->callTool('cipp_stage_disable_user_sign_in', [
+            'client_id' => $f['client']->id, 'person_id' => $f['person']->id, 'confirm_upn' => 'alex@acme.example',
+            'ticket_id' => $f['ticket']->id, 'reason' => 'Compromised account; block sign-in pending review.',
+        ])->json('result.content.0.text'), true);
+        $this->assertTrue($staged['success'] ?? false, json_encode($staged));
+        $this->writeStatus = 504;
+        $this->writeBody = ['Results' => self::UPSTREAM_MARKER];
+
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun(TechnicianRun::findOrFail($staged['run_id']), $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame('CIPP write failed for cipp_stage_disable_user_sign_in; the change may or may not have applied — verify the result in CIPP before retrying.', $result->message);
+        $this->assertErrorAudited((string) $result->message, 1, 'ExecDisableUser');
+        $this->assertSame(TechnicianRunState::AwaitingApproval, TechnicianRun::sole()->state);
+    }
+
+    /** @return array<string, array{0: string, 1: int, 2: string}> */
     public static function resetRefusals(): array
     {
-        return ['not sent' => ['private', 0], 'http 400' => ['http400', 1]];
+        return [
+            'not sent' => ['private', 0, 'nothing was sent to CIPP, so the password reset was not applied.'],
+            'http 400' => ['http400', 1, 'the password reset may or may not have applied — verify the user in CIPP before retrying.'],
+            'http 504' => ['http504', 1, 'the password reset may or may not have applied — verify the user in CIPP before retrying.'],
+        ];
+    }
+
+    private function failResetWrite(string $arm): void
+    {
+        if ($arm === 'private') {
+            $this->hostPrivate = true;
+        } else {
+            $this->writeStatus = $arm === 'http400' ? 400 : 504;
+            $this->writeBody = ['Results' => self::UPSTREAM_MARKER];
+        }
     }
 
     /**
-     * The reset catch's other arm. declined() redacts "password was …" as a
-     * credential, so this sentence must reach the approver intact.
+     * The direct reset catch: only the not-sent arm says the reset was not
+     * applied. A 5xx may follow a password CIPP already changed.
      */
     #[\PHPUnit\Framework\Attributes\DataProvider('resetRefusals')]
-    public function test_password_reset_staged_refusal_reads_intact_through_the_redactor(string $arm, int $writes): void
+    public function test_password_reset_direct_refusal_hedges_unless_nothing_was_sent(string $arm, int $writes, string $clause): void
+    {
+        $this->configure();
+        $f = $this->fixture();
+        $this->failResetWrite($arm);
+
+        $error = $this->runDirect(['name' => 'cipp_reset_user_password', 'args' => $this->resetArgs($f, staged: false)]);
+
+        $this->assertSame("CIPP write failed for cipp_reset_user_password; {$clause} No password can be shown.", $error);
+        $this->assertErrorAudited($error, $writes, 'ExecResetPass');
+    }
+
+    /**
+     * The staged reset catch's other arms. Only the not-sent arm may say the
+     * reset was not applied: an HTTP status comes back after ExecResetPass was
+     * posted. declined() redacts "password was …" as a credential, so each
+     * sentence must reach the approver intact.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('resetRefusals')]
+    public function test_password_reset_staged_refusal_reads_intact_through_the_redactor(string $arm, int $writes, string $clause): void
     {
         $approver = $this->configure();
         $f = $this->fixture();
         $staged = $this->callTool('cipp_reset_user_password', $this->resetArgs($f, staged: true), grant: 'cipp_reset_user_password:staged');
         $this->assertFalse((bool) $staged->json('result.isError'), (string) $staged->json('result.content.0.text'));
-        if ($arm === 'private') {
-            $this->hostPrivate = true;
-        } else {
-            $this->writeStatus = 400;
-            $this->writeBody = ['Results' => self::UPSTREAM_MARKER];
-        }
+        $this->failResetWrite($arm);
 
         $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun(TechnicianRun::sole(), $approver->id);
 
         $this->assertSame('gate_declined', $result->status);
-        $this->assertSame('CIPP password reset failed; no password can be shown. The proposal is still open — retry or deny it.', $result->message);
+        $this->assertSame("CIPP write failed for cipp_stage_reset_user_password; {$clause} No password can be shown. The proposal is still open.", $result->message);
         $this->assertStringNotContainsString('REDACTED', (string) $result->message);
         $this->assertNull($result->secret);
         $this->assertErrorAudited((string) $result->message, $writes, 'ExecResetPass');

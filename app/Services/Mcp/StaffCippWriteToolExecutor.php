@@ -1002,9 +1002,11 @@ class StaffCippWriteToolExecutor
                 if (in_array($directTool, self::UNCONFIRMABLE_WRITE_TOOLS, true)) {
                     return $this->declined($this->writeFailureMessage($run->action_type, $e, withCause: true));
                 }
-                // The write may have landed (#3709). The exception's own text
-                // names the endpoint and gives the approver nothing to verify.
-                if ($e instanceof CippWriteUnconfirmedException) {
+                // The write may have landed (#3709): an HTTP status, like an
+                // unconfirmed answer, comes back only after the POST. The
+                // exception's own text names the endpoint and gives the approver
+                // nothing to verify.
+                if ($e instanceof CippWriteUnconfirmedException || $e instanceof CippWriteHttpException) {
                     return $this->declined($this->writeFailureMessage($run->action_type, $e));
                 }
 
@@ -1173,11 +1175,9 @@ class StaffCippWriteToolExecutor
             }
             $this->auditAttempt($tool, 'error', $client->id, $ticket, $person, null, $contentHash, $this->safeFailureSummary($tool, $e), $actorLabel);
 
-            if ($e instanceof CippWriteUnconfirmedException) {
-                return ['error' => $this->writeFailureMessage($tool, $e).' No password can be shown.'];
-            }
-
-            return ['error' => "CIPP password reset failed for {$tool}; no password was returned."];
+            // Only a not-sent refusal says the reset was not applied (#3709): an
+            // HTTP status comes back after ExecResetPass was posted.
+            return ['error' => $this->writeFailureMessage($tool, $e).' No password can be shown.'];
         }
 
         $claims->releaseOnAnswer($claim['id'], $upstream);
@@ -1302,12 +1302,9 @@ class StaffCippWriteToolExecutor
                 $run->releaseClaim();
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $person, null, $contentHash, $this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
 
-                if ($e instanceof CippWriteUnconfirmedException) {
-                    // Not "password was …": declined() redacts that shape as a credential.
-                    return $this->declined($this->writeFailureMessage($run->action_type, $e).' No password can be shown. The proposal is still open.');
-                }
-
-                return $this->declined('CIPP password reset failed; no password can be shown. The proposal is still open — retry or deny it.');
+                // Only a not-sent refusal says the reset was not applied (#3709).
+                // Not "password was …": declined() redacts that shape as a credential.
+                return $this->declined($this->writeFailureMessage($run->action_type, $e).' No password can be shown. The proposal is still open.');
             }
 
             $claims->releaseOnAnswer($claim['id'], $upstream);
@@ -2565,11 +2562,9 @@ class StaffCippWriteToolExecutor
         } catch (CippClientException $e) {
             $this->auditAttempt($tool, 'error', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($tool, $e), $actorLabel);
 
-            if ($e instanceof CippWriteUnconfirmedException) {
-                return ['error' => $this->writeFailureMessage($tool, $e).' No password can be shown.'];
-            }
-
-            return ['error' => "CIPP user creation failed for {$tool}; no account was reported created."];
+            // Only a not-sent refusal says no account was created (#3709): an
+            // HTTP status comes back after AddUser was posted.
+            return ['error' => $this->writeFailureMessage($tool, $e).' No password can be shown.'];
         }
 
         $parsed = $this->parseCreateUserResponse($upstream);
@@ -2826,12 +2821,9 @@ class StaffCippWriteToolExecutor
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
-                if ($e instanceof CippWriteUnconfirmedException) {
-                    // Not "password was …": declined() redacts that shape as a credential.
-                    return $this->declined($this->writeFailureMessage($run->action_type, $e).' No password can be shown.');
-                }
-
-                return $this->declined($e->getMessage());
+                // Only a not-sent refusal says no account was created (#3709).
+                // Not "password was …": declined() redacts that shape as a credential.
+                return $this->declined($this->writeFailureMessage($run->action_type, $e).' No password can be shown.');
             }
 
             $parsed = $this->parseCreateUserResponse($upstream);
@@ -7096,10 +7088,11 @@ class StaffCippWriteToolExecutor
      * too: these endpoints' 4xx semantics have not been checked at the vendor
      * source the way ExecBulkLicense's were.
      *
-     * The password-reset, create-user and generic staged catches call it for a
-     * CippWriteUnconfirmedException only, so a write that may have landed is not
-     * reported there as a plain failure. Their other arms keep their own
-     * sentences. The email-security staged catch calls it for every exception.
+     * The password-reset and create-user catches, direct and staged, and the
+     * email-security staged catch call it for every exception. The generic
+     * staged catch calls it for a CippWriteUnconfirmedException or a
+     * CippWriteHttpException, both raised after the POST; its other exceptions
+     * keep their own text.
      *
      * @param  bool  $withCause  append a not-sent exception's own message
      *                           (the staged toast); the direct path keeps it in
