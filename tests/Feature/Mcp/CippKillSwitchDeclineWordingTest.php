@@ -88,29 +88,39 @@ class CippKillSwitchDeclineWordingTest extends TestCase
         // failed). It now extracts the argument from the production source.
         $source = $this->methodSource($method);
 
-        $matched = preg_match(
-            "/\\\$this->declined\('(Technician kill-switch engaged;[^']*)'\)/",
+        // ALL kill-switch literals in the method, not just the first (#3926).
+        // preg_match stops at one, so a second arm added below it would never be
+        // inspected; and `[^']*` truncates at an escaped apostrophe, which would then
+        // pass the deny-list below on a fragment of the sentence rather than the
+        // sentence. `(?:[^'\\\\]|\\\\.)*` tolerates the escape.
+        $matched = preg_match_all(
+            "/\\\$this->declined\('(Technician kill-switch engaged;(?:[^'\\\\]|\\\\.)*)'\)/",
             $source,
             $m
         );
-        $this->assertSame(1, $matched, "{$method} must contain a kill-switch declined() literal to inspect.");
-        $actual = $m[1];
+        $this->assertGreaterThanOrEqual(
+            1,
+            $matched,
+            "{$method} must contain a kill-switch declined() literal to inspect."
+        );
 
-        // The property, stated independently of the exact sentence: a refusal on
-        // this path may say the write was refused, and may not make a claim about
-        // upstream state or tell the approver to repeat the action. The kill switch
-        // has to be cleared first, so a retry instruction would be false here.
-        foreach (['try again', 'retry', 'nothing was sent', 'no changes were made', 'no upstream call was made'] as $forbidden) {
-            $this->assertStringNotContainsStringIgnoringCase(
-                $forbidden,
-                $actual,
-                "{$method}'s kill-switch decline must not claim '{$forbidden}'."
-            );
+        foreach ($m[1] as $actual) {
+            // The property, stated independently of the exact sentence: a refusal on
+            // this path may say the write was refused, and may not make a claim about
+            // upstream state or tell the approver to repeat the action. The kill switch
+            // has to be cleared first, so a retry instruction would be false here.
+            foreach (['try again', 'retry', 'nothing was sent', 'no changes were made', 'no upstream call was made'] as $forbidden) {
+                $this->assertStringNotContainsStringIgnoringCase(
+                    $forbidden,
+                    $actual,
+                    "{$method}'s kill-switch decline must not claim '{$forbidden}'."
+                );
+            }
+
+            // And it must still name the refusal, so deleting the message does not pass.
+            $this->assertStringContainsStringIgnoringCase('refused', $actual);
+            $this->assertStringContainsStringIgnoringCase('kill-switch', $actual);
         }
-
-        // And it must still name the refusal, so deleting the message does not pass.
-        $this->assertStringContainsStringIgnoringCase('refused', $actual);
-        $this->assertStringContainsStringIgnoringCase('kill-switch', $actual);
     }
 
     public function test_the_arm_count_is_pinned_so_a_sixth_cannot_arrive_unread(): void

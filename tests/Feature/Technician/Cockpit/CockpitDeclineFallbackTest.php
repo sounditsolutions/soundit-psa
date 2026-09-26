@@ -18,37 +18,35 @@ use Tests\TestCase;
 /**
  * #3901 — the cockpit's fallback text for a decline that carries no message.
  *
- * TechnicianCockpitController::approve() renders `$result->message ?? <fallback>`
- * on 'gate_declined', and the same fallback on the match's `default` arm.
+ * TechnicianCockpitController::approve() renders the forwarded message when there
+ * is one, and this fallback on 'gate_declined' and on the match's `default` arm.
  *
- * DENOMINATOR, enumerated rather than asserted (review round 1, contract:5 and
- * contract:6 — the first draft quoted "46 reach this line" and "23 of 46
- * unaudited" with no list, and neither reproduced as written). Re-derived by
- * scratch/cockpit-fallback-3901/census2.py, which prints every site it counts:
+ * NO POPULATION COUNT IS QUOTED HERE. Earlier drafts of this docblock carried
+ * "46 reach this line" and "23 of 46 unaudited", which did not reproduce as
+ * written, and then tried to rescue them by citing an out-of-tree script
+ * (census2.py) that does not ship. The denominator is not load-bearing for this
+ * test: what matters is that SOME arms reach this line with no message, which the
+ * cases below demonstrate directly.
  *
- *   46  message-less `new TechnicianApprovalResult('gate_declined')` in app/
- *   23  with no audit write earlier in the enclosing method
+ * Two claims those drafts made are WITHDRAWN as false. The withdrawal is the
+ * useful part, so it is recorded rather than quietly deleted:
+ *   - "no operator surface renders technician_action_logs" — FALSE.
+ *     TicketToolActivity reads that table and TicketTimeline renders it on the
+ *     staff ticket page; get_ticket_tool_history exposes the same rows. The probe
+ *     behind the claim grepped resources/views/ for the table name, which cannot
+ *     match, because Blade renders a presented DTO. A zero from a probe that
+ *     could not have seen the thing is not evidence of absence.
+ *   - "approve() dispatches only approveAndSend, approveClose, approveMerge and
+ *     approveAssetMerge" — FALSE. It dispatches 13 service methods; those four
+ *     were simply the ones the census had looked at.
  *
- * Both figures are the instrument's, and the instrument has a known limit: it
- * walks back lexically, so for the 2 sites inside a `catch` block (Cipp 2022,
- * 2053) an earlier audit line sits on the success path and may never have run.
- * Those are counted audited and may not be. The figure is a floor, not a count.
- *
- * NOT all 46 reach this line: approve() dispatches only approveAndSend,
- * approveClose, approveMerge and approveAssetMerge. The intakeMerge sites
- * (TechnicianApprovalService 390, 402) are rendered by the cockpit's own
- * intakeMerge() match with its own separate fallback text, and approve()'s
- * action-type match aborts 422 for intake_route. Those are out of scope here
- * and their wording is untouched.
- *
- * These controls pin what the fallback must NOT claim, which is the whole point
- * of the change: it may not name a mechanism (a pause, or a refusal by the
- * Technician — some sites return after the upstream call was made and failed),
- * may not claim the Technician gave no reason (some sites dropped or audited
- * one), may not prescribe an
- * action (a retry), may not claim an effect (that nothing was sent), and may not
- * point at the audit row (23 of the 46 return before anything is audited, and no
- * operator surface renders technician_action_logs).
+ * These controls pin what the fallback must NOT claim: it may not name a mechanism
+ * (a pause, or a refusal by the Technician — some sites return after the upstream
+ * call was made and failed), may not claim the Technician gave no reason (some
+ * sites dropped or audited one), may not prescribe an action (a retry), may not
+ * claim an effect (that nothing was sent), and may not point at the audit row —
+ * not because nothing renders it, but because those surfaces withhold the
+ * diagnostic payload, so the pointer would not carry a reason.
  *
  * Both arms are covered because both carry the string. The `default` arm is
  * unreachable from any status this codebase constructs — the set of constructed
@@ -201,6 +199,53 @@ class CockpitDeclineFallbackTest extends TestCase
         $this->assertFallbackClaimsNothing($flash);
     }
 
+    public function test_the_json_path_real_operators_use_carries_the_same_bounded_text(): void
+    {
+        // #3919: every other case here asserts the SESSION FLASH, and the real
+        // cockpit never takes that branch. resources/views/cockpit/index.blade.php
+        // posts with Accept: application/json, so actionResponse() returns JSON and
+        // the flash path is the JS-less fallback only. The wording controls were
+        // therefore pinned on a branch no operator sees. This drives the one they do.
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $run = $this->heldReplyRun($actor);
+        $this->bindApprovalResult(new TechnicianApprovalResult('gate_declined'));
+
+        $response = $this->actingAs(User::factory()->create())
+            ->postJson(route('cockpit.approve', $run), ['body' => 'We will get the printer back online.']);
+
+        $response->assertOk()
+            ->assertJsonPath('ok', false)
+            ->assertJsonPath('status', 'gate_declined');
+
+        $this->assertFallbackClaimsNothing((string) $response->json('message'));
+    }
+
+    public function test_an_empty_string_message_gets_the_fallback_and_not_a_blank_banner(): void
+    {
+        // #3909: `??` only substitutes null, so a site passing '' rendered an EMPTY
+        // error banner — worse than the fallback, and invisible to every control in
+        // this file because they all assert absences. No site passes '' today
+        // (0 of 25 message-carrying constructions in app/), so this pins the guard
+        // rather than reporting a live defect. filled() is what closes it.
+        //
+        // SCOPE: filled() is applied to the two arms this change owns. Six sibling
+        // arms in the same match still use `??` and still render an empty banner for
+        // '' — scheduled, offboarding_admission, offboarding_admission_unconfirmed,
+        // executed, recipient_invalid, executed_with_fault. Those are statuses this
+        // change does not touch; filed rather than silently half-fixed.
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $run = $this->heldReplyRun($actor);
+        $this->bindApprovalResult(new TechnicianApprovalResult('gate_declined', message: ''));
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('cockpit.approve', $run), ['body' => 'We will get the printer back online.'])
+            ->assertSessionHas('error');
+
+        $flash = (string) session('error');
+        $this->assertNotSame('', trim($flash), 'an empty message must not render an empty banner');
+        $this->assertFallbackClaimsNothing($flash);
+    }
+
     public function test_a_gate_declined_that_does_carry_a_reason_still_forwards_it(): void
     {
         // The change must not swallow the specific reasons that DO get forwarded:
@@ -308,6 +353,8 @@ class CockpitDeclineFallbackTest extends TestCase
         $this->actingAs(User::factory()->create())
             ->post(route('cockpit.approve', $run), ['body' => 'We will get the printer back online.'])
             ->assertSessionHas('error')
-            ->assertSessionMissing('status');
+            // 'success', not 'status': actionResponse() flashes only 'success' or
+            // 'error', so asserting the absence of 'status' could never fail (#3924).
+            ->assertSessionMissing('success');
     }
 }
