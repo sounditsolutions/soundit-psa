@@ -4,6 +4,8 @@ namespace Tests\Unit\Cipp;
 
 use App\Services\Cipp\CippClientException;
 use App\Services\Cipp\CippRestWriteClient;
+use App\Services\Cipp\CippWriteNotSentException;
+use App\Services\Cipp\CippWriteUnconfirmedException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use ReflectionClass;
@@ -1230,9 +1232,10 @@ class CippRestWriteClientTest extends TestCase
 
             try {
                 $client->reassignOneDriveOwnership('acme.onmicrosoft.com', 'alex@acme.example', 'sam@acme.example');
-                $this->fail('Expected CippClientException for unconfirmed Results: '.json_encode($body));
-            } catch (CippClientException $e) {
-                $this->assertStringContainsString('did not confirm the OneDrive permission change', $e->getMessage());
+                $this->fail('Expected CippWriteUnconfirmedException for unconfirmed Results: '.json_encode($body));
+            } catch (CippWriteUnconfirmedException $e) {
+                $this->assertSame(CippWriteUnconfirmedException::UNKNOWN, $e->outcome);
+                $this->assertSame('api/ExecSharePointPerms', $e->endpoint);
             }
         }
     }
@@ -1320,9 +1323,10 @@ class CippRestWriteClientTest extends TestCase
 
             try {
                 $this->emailSecurityClient()->setGroupMembership('acme.onmicrosoft.com', '3f2504e0-4f89-11d3-9a0c-0305e82c3301', 'Sales Team', 'Microsoft 365', 'user-123', 'alex@acme.example', 'add');
-                $this->fail('Expected CippClientException for body: '.json_encode($body));
-            } catch (CippClientException $e) {
-                $this->assertStringContainsString('did not confirm the group membership change', $e->getMessage());
+                $this->fail('Expected CippWriteUnconfirmedException for body: '.json_encode($body));
+            } catch (CippWriteUnconfirmedException $e) {
+                $this->assertSame(CippWriteUnconfirmedException::UNKNOWN, $e->outcome);
+                $this->assertSame('api/EditGroup', $e->endpoint);
             }
         }
     }
@@ -1539,6 +1543,7 @@ class CippRestWriteClientTest extends TestCase
             [
                 'body' => ['Results' => ['Failed to edit user. Insufficient privileges to complete the operation.']],
                 'expect' => 'Failed to edit user',
+                'confirmed' => null,
             ],
             // Partial: the edit applied but the manager step failed — the
             // error must say the profile PATCH itself already applied.
@@ -1547,12 +1552,14 @@ class CippRestWriteClientTest extends TestCase
                     'Success. The user has been edited.',
                     "Failed to set alex@acme.example's manager: Resource 'boss@acme.example' does not exist.",
                 ]],
-                'expect' => 'already reported applied',
+                'expect' => 'manager',
+                'confirmed' => 'profile edit',
             ],
             // No positive marker at all: fail closed rather than assume.
             [
                 'body' => ['Results' => []],
-                'expect' => 'did not confirm the user edit',
+                'expect' => 'was sent but not confirmed (unknown)',
+                'confirmed' => null,
             ],
         ];
 
@@ -1580,9 +1587,11 @@ class CippRestWriteClientTest extends TestCase
                     [],
                     'boss@acme.example',
                 );
-                $this->fail('Expected CippClientException for body: '.json_encode($case['body']));
-            } catch (CippClientException $e) {
+                $this->fail('Expected CippWriteUnconfirmedException for body: '.json_encode($case['body']));
+            } catch (CippWriteUnconfirmedException $e) {
+                $this->assertSame(CippWriteUnconfirmedException::UNKNOWN, $e->outcome);
                 $this->assertStringContainsString($case['expect'], $e->getMessage(), json_encode($case['body']));
+                $this->assertSame($case['confirmed'], $e->confirmedPart, json_encode($case['body']));
             }
         }
     }
@@ -1680,13 +1689,15 @@ class CippRestWriteClientTest extends TestCase
         return [$thrown, $this->countWritePosts($endpoint)];
     }
 
+    /**
+     * A post-send throw carries the "sent" type with outcome UNKNOWN; the
+     * operator sentence is built from that by the executor (#3709).
+     */
     private function assertClaimsNeitherOutcome(CippClientException $e): void
     {
-        $message = $e->getMessage();
-        $this->assertStringNotContainsString('not applied', $message);
-        $this->assertStringNotContainsString('treat it as', $message);
-        $this->assertStringContainsString('may or may not have applied', $message);
-        $this->assertStringContainsString('verify', $message);
+        $this->assertInstanceOf(CippWriteUnconfirmedException::class, $e);
+        $this->assertSame(CippWriteUnconfirmedException::UNKNOWN, $e->outcome);
+        $this->assertStringNotContainsString('not applied', $e->getMessage());
     }
 
     public function test_group_membership_error_line_leaves_the_write_sent_and_claims_neither_outcome(): void
@@ -1974,5 +1985,161 @@ class CippRestWriteClientTest extends TestCase
         $this->assertStringNotContainsString("\n", (string) $e->upstreamLine);
         $this->assertStringNotContainsString(str_repeat('A', 300), $e->getMessage());
         $this->assertInstanceOf(CippClientException::class, $e);
+    }
+
+    /*
+     * #3709: the not-sent / sent split, per converted throw and per send()
+     * refusal, through the real send() under Http::fake.
+     */
+
+    /** @return array<string, array{0: string, 1: string, 2: array<int, string>}> */
+    public static function postSendThrows(): array
+    {
+        return [
+            'group membership' => ['group', 'EditGroup', ['Error - could not add member']],
+            'onedrive' => ['onedrive', 'ExecSharePointPerms', ['Failed to change access for sam@example.test']],
+            'edit user failed line' => ['edit', 'EditUser', ['Failed to edit user. Insufficient privileges.']],
+            'edit user no marker' => ['edit', 'EditUser', ['Queued the request']],
+        ];
+    }
+
+    private function callWrite(CippRestWriteClient $client, string $kind): mixed
+    {
+        return match ($kind) {
+            'group' => $client->setGroupMembership('example.onmicrosoft.com', 'gid', 'Group', 'Security', 'uid', 'alex@example.test', 'add'),
+            'onedrive' => $client->reassignOneDriveOwnership('example.onmicrosoft.com', 'owner@example.test', 'successor@example.test'),
+            'edit' => $client->editUser('example.onmicrosoft.com', 'uid', 'alex@example.test', ['jobTitle' => 'Ops'], [], null),
+            'license' => $client->assignUserLicense('example.onmicrosoft.com', 'uid', 'sku-1'),
+        };
+    }
+
+    /** @param  array<int, string>  $results */
+    #[\PHPUnit\Framework\Attributes\DataProvider('postSendThrows')]
+    public function test_post_send_throw_is_unconfirmed_unknown_after_one_write(string $kind, string $endpoint, array $results): void
+    {
+        $client = $this->denialClient(200, $results);
+        [$thrown, $writes] = $this->captureDenial($endpoint, fn () => $this->callWrite($client, $kind));
+
+        $this->assertInstanceOf(CippWriteUnconfirmedException::class, $thrown);
+        $this->assertSame(CippWriteUnconfirmedException::UNKNOWN, $thrown->outcome);
+        $this->assertSame('api/'.$endpoint, $thrown->endpoint);
+        $this->assertFalse($thrown->noAnswer);
+        $this->assertSame(1, $writes, 'the write POST left before this throw');
+    }
+
+    /** @return array<string, array{0: string, 1: string, 2: array<string, string>, 3: callable|null}> */
+    public static function preSendRefusals(): array
+    {
+        $write = ['api_url' => 'https://cipp.example.test', 'tenant_id' => 'tenant-1', 'client_id' => 'write-client', 'client_secret' => 'write-secret'];
+
+        return [
+            'credentials unconfigured' => [$write, 'public', 'credentials are not configured', ['client_secret' => '']],
+            'api url unconfigured' => [$write, 'public', 'API URL is not configured', ['api_url' => '']],
+            'host resolves private' => [$write, 'private', 'private or reserved address', []],
+            'host does not resolve' => [$write, 'none', 'could not be resolved', []],
+        ];
+    }
+
+    /** @param  array<string, string>  $config  @param  array<string, string>  $override */
+    #[\PHPUnit\Framework\Attributes\DataProvider('preSendRefusals')]
+    public function test_pre_send_refusal_is_not_sent_and_makes_no_request(array $config, string $dns, string $expect, array $override): void
+    {
+        foreach (['group', 'onedrive', 'edit', 'license'] as $kind) {
+            Http::swap(new \Illuminate\Http\Client\Factory);
+            Http::preventStrayRequests();
+            Http::fake();
+            $client = new CippRestWriteClient(array_merge($config, $override), Cache::store(), fn (string $host): array|false => match ($dns) {
+                'public' => ['93.184.216.34'],
+                'private' => ['10.0.0.5'],
+                'none' => false,
+            });
+
+            try {
+                $this->callWrite($client, $kind);
+                $this->fail("{$kind}: expected a not-sent refusal");
+            } catch (CippClientException $e) {
+                $this->assertInstanceOf(CippWriteNotSentException::class, $e, $kind);
+                $this->assertStringContainsString($expect, $e->getMessage(), $kind);
+            }
+            $this->assertSame(0, Http::recorded()->count(), "{$kind}: no request of any kind may leave");
+        }
+    }
+
+    public function test_oauth_failure_is_not_sent_and_no_write_leaves(): void
+    {
+        Http::swap(new \Illuminate\Http\Client\Factory);
+        Http::preventStrayRequests();
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['error' => 'invalid_client'], 401),
+            'cipp.example.test/api/*' => Http::response(['Results' => ['Success - x']]),
+        ]);
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test', 'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client', 'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        [$thrown, $writes] = $this->captureDenial('EditGroup', fn () => $this->callWrite($client, 'group'));
+
+        $this->assertInstanceOf(CippWriteNotSentException::class, $thrown);
+        $this->assertSame(0, $writes);
+    }
+
+    public function test_write_method_input_validation_is_not_sent(): void
+    {
+        Http::swap(new \Illuminate\Http\Client\Factory);
+        Http::preventStrayRequests();
+        Http::fake();
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test', 'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client', 'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $calls = [
+            fn () => $client->setGroupMembership('t', '', 'G', 'Security', 'uid', 'a@x.test', 'add'),
+            fn () => $client->reassignOneDriveOwnership('t', '', 'b@x.test'),
+            fn () => $client->editUser('t', 'uid', 'a@x.test', [], [], null),
+        ];
+        foreach ($calls as $i => $call) {
+            try {
+                $call();
+                $this->fail("case {$i}: expected a not-sent refusal");
+            } catch (CippClientException $e) {
+                $this->assertInstanceOf(CippWriteNotSentException::class, $e, "case {$i}");
+            }
+        }
+        $this->assertSame(0, Http::recorded()->count());
+    }
+
+    /** @return array<string, array{0: string, 1: string}> */
+    public static function everyKind(): array
+    {
+        return [
+            'group' => ['group', 'EditGroup'], 'onedrive' => ['onedrive', 'ExecSharePointPerms'],
+            'edit' => ['edit', 'EditUser'], 'license' => ['license', 'ExecBulkLicense'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('everyKind')]
+    public function test_connection_exception_after_send_is_unconfirmed_no_answer(string $kind, string $endpoint): void
+    {
+        Http::swap(new \Illuminate\Http\Client\Factory);
+        Http::preventStrayRequests();
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/*' => Http::failedConnection('cURL error 28: Operation timed out for https://cipp.example.test/api/'.$endpoint),
+        ]);
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test', 'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client', 'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        [$thrown, $writes] = $this->captureDenial($endpoint, fn () => $this->callWrite($client, $kind));
+
+        $this->assertInstanceOf(CippWriteUnconfirmedException::class, $thrown);
+        $this->assertSame(CippWriteUnconfirmedException::UNKNOWN, $thrown->outcome);
+        $this->assertTrue($thrown->noAnswer);
+        $this->assertInstanceOf(\Illuminate\Http\Client\ConnectionException::class, $thrown->getPrevious());
+        $this->assertStringNotContainsString('cipp.example.test', $thrown->getMessage(), 'the transport text carries the URL');
+        $this->assertSame(1, $writes, 'the request was handed to the client');
     }
 }
