@@ -1174,7 +1174,7 @@ class StaffCippWriteToolExecutor
             $this->auditAttempt($tool, 'error', $client->id, $ticket, $person, null, $contentHash, $this->safeFailureSummary($tool, $e), $actorLabel);
 
             if ($e instanceof CippWriteUnconfirmedException) {
-                return ['error' => $this->writeFailureMessage($tool, $e).' No password was returned.'];
+                return ['error' => $this->writeFailureMessage($tool, $e).' No password can be shown.'];
             }
 
             return ['error' => "CIPP password reset failed for {$tool}; no password was returned."];
@@ -1303,7 +1303,8 @@ class StaffCippWriteToolExecutor
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $person, null, $contentHash, $this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
 
                 if ($e instanceof CippWriteUnconfirmedException) {
-                    return $this->declined($this->writeFailureMessage($run->action_type, $e).' No password was returned. The proposal is still open.');
+                    // Not "password was …": declined() redacts that shape as a credential.
+                    return $this->declined($this->writeFailureMessage($run->action_type, $e).' No password can be shown. The proposal is still open.');
                 }
 
                 return $this->declined('CIPP password reset failed; no password was returned. The proposal is still open — retry or deny it.');
@@ -2561,7 +2562,7 @@ class StaffCippWriteToolExecutor
             $this->auditAttempt($tool, 'error', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($tool, $e), $actorLabel);
 
             if ($e instanceof CippWriteUnconfirmedException) {
-                return ['error' => $this->writeFailureMessage($tool, $e).' No password was returned.'];
+                return ['error' => $this->writeFailureMessage($tool, $e).' No password can be shown.'];
             }
 
             return ['error' => "CIPP user creation failed for {$tool}; no account was reported created."];
@@ -2822,7 +2823,8 @@ class StaffCippWriteToolExecutor
                 $run->releaseClaim();
 
                 if ($e instanceof CippWriteUnconfirmedException) {
-                    return $this->declined($this->writeFailureMessage($run->action_type, $e).' No password was returned.');
+                    // Not "password was …": declined() redacts that shape as a credential.
+                    return $this->declined($this->writeFailureMessage($run->action_type, $e).' No password can be shown.');
                 }
 
                 return $this->declined($e->getMessage());

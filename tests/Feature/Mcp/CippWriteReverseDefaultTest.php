@@ -514,7 +514,7 @@ class CippWriteReverseDefaultTest extends TestCase
 
         $error = $this->runDirect(['name' => 'cipp_reset_user_password', 'args' => $this->resetArgs($f, staged: false)]);
 
-        $this->assertSame('CIPP write failed for cipp_reset_user_password; the password reset may or may not have applied — verify the user in CIPP before retrying. No password was returned.', $error);
+        $this->assertSame('CIPP write failed for cipp_reset_user_password; the password reset may or may not have applied — verify the user in CIPP before retrying. No password can be shown.', $error);
         $this->assertErrorAudited($error, 1, 'ExecResetPass');
     }
 
@@ -529,7 +529,7 @@ class CippWriteReverseDefaultTest extends TestCase
         $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun(TechnicianRun::sole(), $approver->id);
 
         $this->assertSame('gate_declined', $result->status);
-        $this->assertSame('CIPP write failed for cipp_stage_reset_user_password; the password reset may or may not have applied — verify the user in CIPP before retrying. No password was returned. The proposal is still open.', $result->message);
+        $this->assertSame('CIPP write failed for cipp_stage_reset_user_password; the password reset may or may not have applied — verify the user in CIPP before retrying. No password can be shown. The proposal is still open.', $result->message);
         $this->assertNull($result->secret);
         $this->assertErrorAudited((string) $result->message, 1, 'ExecResetPass');
         $this->assertSame(TechnicianRunState::AwaitingApproval, TechnicianRun::sole()->state);
@@ -543,7 +543,7 @@ class CippWriteReverseDefaultTest extends TestCase
 
         $error = $this->runDirect(['name' => 'cipp_create_user', 'args' => $this->createUserArgs($f, staged: false)]);
 
-        $this->assertSame('CIPP write failed for cipp_create_user; the account creation may or may not have applied — verify whether the account exists in CIPP before retrying. No password was returned.', $error);
+        $this->assertSame('CIPP write failed for cipp_create_user; the account creation may or may not have applied — verify whether the account exists in CIPP before retrying. No password can be shown.', $error);
         $this->assertErrorAudited($error, 1, 'AddUser');
     }
 
@@ -559,7 +559,7 @@ class CippWriteReverseDefaultTest extends TestCase
         $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun(TechnicianRun::findOrFail($staged['run_id']), $approver->id);
 
         $this->assertSame('gate_declined', $result->status);
-        $this->assertSame('CIPP write failed for cipp_stage_create_user; the account creation may or may not have applied — verify whether the account exists in CIPP before retrying. No password was returned.', $result->message);
+        $this->assertSame('CIPP write failed for cipp_stage_create_user; the account creation may or may not have applied — verify whether the account exists in CIPP before retrying. No password can be shown.', $result->message);
         $this->assertErrorAudited((string) $result->message, 1, 'AddUser');
     }
 
