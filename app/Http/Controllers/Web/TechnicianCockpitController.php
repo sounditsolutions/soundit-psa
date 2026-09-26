@@ -227,7 +227,7 @@ class TechnicianCockpitController extends Controller
             //
             // Whose reason is missing is answered by the per-site issues, not here
             // (#3863, #582, #1115, #3330 for surfacing the gate outcome), and the client
-            // that renders this on the JSON path is #3904.
+            // that renders this on the JSON path is #3920.
             'gate_declined' => filled($result->message) ? $result->message : self::NO_REASON_FALLBACK,
             // Fail-closed default for a status added later. It consults the message
             // first so a future status that DOES carry one is not overwritten.
