@@ -666,8 +666,8 @@ class CippWriteOffboardingExecuteTest extends TestCase
         $this->app->instance(CippRestWriteClient::class, $approveClient);
 
         // A recoverable decline (typed device id mismatch) must reach the
-        // cockpit as its specific reason — not the generic "Could not send"
-        // dead end (psa-zjpd deep-review finding 2).
+        // cockpit as its specific reason — not the generic message-less fallback
+        // dead end (psa-zjpd deep-review finding 2; its wording is #3901's).
         $mismatch = $this->actingAs($actor)->postJson(route('cockpit.approve', $run), [
             'confirm_device_id' => 'ffffffff-0000-0000-0000-000000000000',
         ]);

@@ -79,6 +79,23 @@ class CippKillSwitchDeclineWordingTest extends TestCase
     #[\PHPUnit\Framework\Attributes\DataProvider('killSwitchArms')]
     public function test_the_kill_switch_arm_claims_no_effect_and_prescribes_no_retry(string $method, string $expected): void
     {
+        // Round 1 (diff:3, context:9, contract:9) caught this test asserting
+        // against $expected — the test's OWN data-provider literal — and never
+        // reading the executor at all. All 35 of its assertions passed no matter
+        // what production contained. Proved by mutation before rewriting: an
+        // effect claim and a retry instruction injected into the real declined()
+        // literal at :964 left this case green (only the exact-match case above
+        // failed). It now extracts the argument from the production source.
+        $source = $this->methodSource($method);
+
+        $matched = preg_match(
+            "/\\\$this->declined\('(Technician kill-switch engaged;[^']*)'\)/",
+            $source,
+            $m
+        );
+        $this->assertSame(1, $matched, "{$method} must contain a kill-switch declined() literal to inspect.");
+        $actual = $m[1];
+
         // The property, stated independently of the exact sentence: a refusal on
         // this path may say the write was refused, and may not make a claim about
         // upstream state or tell the approver to repeat the action. The kill switch
@@ -86,31 +103,50 @@ class CippKillSwitchDeclineWordingTest extends TestCase
         foreach (['try again', 'retry', 'nothing was sent', 'no changes were made', 'no upstream call was made'] as $forbidden) {
             $this->assertStringNotContainsStringIgnoringCase(
                 $forbidden,
-                $expected,
+                $actual,
                 "{$method}'s kill-switch decline must not claim '{$forbidden}'."
             );
         }
 
         // And it must still name the refusal, so deleting the message does not pass.
-        $this->assertStringContainsStringIgnoringCase('refused', $expected);
-        $this->assertStringContainsStringIgnoringCase('kill-switch', $expected);
+        $this->assertStringContainsStringIgnoringCase('refused', $actual);
+        $this->assertStringContainsStringIgnoringCase('kill-switch', $actual);
     }
 
     public function test_the_arm_count_is_pinned_so_a_sixth_cannot_arrive_unread(): void
     {
-        // The adjudication covered five CIPP kill-switch decline arms. If a sixth
-        // approval path is added, this fails and its arm gets read rather than
-        // inheriting an unexamined message.
+        // Round 1 (diff:4, contract:7, context:10): the first version counted
+        // copies of ONE literal spelling of declined('Technician kill-switch
+        // engaged;...'), and claimed in its own comment that a sixth approval
+        // path could not arrive unread. That was false in two directions. A new
+        // arm using double quotes, a constant, sprintf, or the message-less
+        // `new TechnicianApprovalResult('gate_declined')` form adds no match; and
+        // one such arm ALREADY existed at the reviewed tip — approveEmailSecurity-
+        // StagedRun's kill-switch check audits and returns message-less, so it
+        // renders the cockpit fallback rather than a CIPP sentence.
+        //
+        // So the tripwire is re-anchored on the thing that actually matters: how
+        // many kill-switch checks exist in this executor, whatever each one goes
+        // on to return. Adding a kill-switch branch in ANY shape fails this.
         $reflection = new \ReflectionClass(StaffCippWriteToolExecutor::class);
         $file = $reflection->getFileName();
         $source = file_get_contents((string) $file);
         $this->assertNotFalse($source);
 
-        $matches = preg_match_all(
+        $declinedArms = preg_match_all(
             "/\\\$this->declined\('Technician kill-switch engaged;/",
             $source
         );
+        $this->assertSame(5, $declinedArms, 'Five CIPP kill-switch arms decline with an adjudicated sentence; read any new one before it ships.');
 
-        $this->assertSame(5, $matches, 'Five CIPP kill-switch decline arms were adjudicated; read any new one before it ships.');
+        // The wider anchor. 11 = the 5 above + approveEmailSecurityStagedRun's
+        // message-less arm + 5 non-staged MCP write guards that return
+        // ['error' => ...] rather than a TechnicianApprovalResult.
+        $killSwitchChecks = preg_match_all('/killSwitchEngaged\(/', $source);
+        $this->assertSame(
+            11,
+            $killSwitchChecks,
+            'A kill-switch check was added or removed in this executor. Read its arm: if it declines with a sentence, adjudicate the wording and pin it above; if it returns message-less, it renders the cockpit fallback (#3901) instead.'
+        );
     }
 }

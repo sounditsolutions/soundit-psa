@@ -2036,8 +2036,11 @@ class StaffCippWriteToolExecutor
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
-                // A message-less decline renders the cockpit's "Could not send … Try
-                // again.", which is false for a write that may have landed (#3709).
+                // A message-less decline renders the cockpit's generic fallback
+                // (#3901 replaced the old "Could not send … Try again." with
+                // "This action was not confirmed as carried out, and no reason
+                // reached this page."), which still tells the approver nothing
+                // about a write that may have landed (#3709).
                 // Every exception gets writeFailureMessage(), which says "not
                 // applied" only for CippWriteNotSentException.
                 return $this->declined($this->writeFailureMessage($run->action_type, $e));

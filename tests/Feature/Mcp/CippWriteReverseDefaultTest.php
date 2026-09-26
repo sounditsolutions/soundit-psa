@@ -584,7 +584,8 @@ class CippWriteReverseDefaultTest extends TestCase
 
     /**
      * The email-security staged catch returned a message-less decline, which
-     * the cockpit renders as "Could not send … Try again."
+     * the cockpit renders as its generic fallback (#3901: "This action was not
+     * confirmed as carried out, and no reason reached this page.").
      */
     public function test_email_security_staged_connection_failure_hedges_instead_of_could_not_send(): void
     {
@@ -609,7 +610,7 @@ class CippWriteReverseDefaultTest extends TestCase
     /**
      * The same catch on a post-send HTTP 5xx (c3:v1:1): CIPP's front end can
      * answer 504 after Exchange applied the entry, so the approver gets the
-     * hedge, never the cockpit's message-less "Could not send … Try again."
+     * hedge, never the cockpit's message-less generic fallback (#3901).
      */
     public function test_email_security_staged_http_5xx_hedges_instead_of_could_not_send(): void
     {
@@ -627,7 +628,7 @@ class CippWriteReverseDefaultTest extends TestCase
         $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun(TechnicianRun::findOrFail($staged['run_id']), $approver->id);
 
         $this->assertSame('gate_declined', $result->status);
-        $this->assertNotNull($result->message, 'a message-less decline renders as "Could not send … Try again."');
+        $this->assertNotNull($result->message, 'a message-less decline renders the generic cockpit fallback (#3901), which carries no reason');
         $this->assertSame('CIPP write failed for cipp_stage_add_tenant_allow_entry; the change may or may not have applied — verify the result in CIPP before retrying.', $result->message);
         $this->assertErrorAudited((string) $result->message, 1, 'AddTenantAllowBlockList');
     }

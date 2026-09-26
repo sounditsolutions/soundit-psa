@@ -19,9 +19,27 @@ use Tests\TestCase;
  * #3901 — the cockpit's fallback text for a decline that carries no message.
  *
  * TechnicianCockpitController::approve() renders `$result->message ?? <fallback>`
- * on 'gate_declined', and the same fallback on the match's `default` arm. 46
- * message-less `new TechnicianApprovalResult('gate_declined')` sites reach that
- * line, so whatever it says is asserted on behalf of all of them.
+ * on 'gate_declined', and the same fallback on the match's `default` arm.
+ *
+ * DENOMINATOR, enumerated rather than asserted (review round 1, contract:5 and
+ * contract:6 — the first draft quoted "46 reach this line" and "23 of 46
+ * unaudited" with no list, and neither reproduced as written). Re-derived by
+ * scratch/cockpit-fallback-3901/census2.py, which prints every site it counts:
+ *
+ *   46  message-less `new TechnicianApprovalResult('gate_declined')` in app/
+ *   23  with no audit write earlier in the enclosing method
+ *
+ * Both figures are the instrument's, and the instrument has a known limit: it
+ * walks back lexically, so for the 2 sites inside a `catch` block (Cipp 2022,
+ * 2053) an earlier audit line sits on the success path and may never have run.
+ * Those are counted audited and may not be. The figure is a floor, not a count.
+ *
+ * NOT all 46 reach this line: approve() dispatches only approveAndSend,
+ * approveClose, approveMerge and approveAssetMerge. The intakeMerge sites
+ * (TechnicianApprovalService 390, 402) are rendered by the cockpit's own
+ * intakeMerge() match with its own separate fallback text, and approve()'s
+ * action-type match aborts 422 for intake_route. Those are out of scope here
+ * and their wording is untouched.
  *
  * These controls pin what the fallback must NOT claim, which is the whole point
  * of the change: it may not name a mechanism (a pause, or a refusal by the
@@ -41,6 +59,12 @@ use Tests\TestCase;
  */
 class CockpitDeclineFallbackTest extends TestCase
 {
+    /**
+     * The one sentence both arms render. Pinned exactly so that a new claim in
+     * vocabulary the deny-list below does not happen to name still fails.
+     */
+    private const EXPECTED_FALLBACK = 'This action was not confirmed as carried out, and no reason reached this page.';
+
     use RefreshDatabase;
 
     private function heldReplyRun(User $actor): TechnicianRun
@@ -125,11 +149,14 @@ class CockpitDeclineFallbackTest extends TestCase
         $this->assertStringNotContainsStringIgnoringCase('try again', $flash);
         $this->assertStringNotContainsStringIgnoringCase('retry', $flash);
         // The effect claim. Whether an upstream call had already left is a
-        // property of each of the 46 arms, and 31 of them are unread.
+        // property of each arm, and most are unread.
         $this->assertStringNotContainsStringIgnoringCase('nothing was sent', $flash);
         $this->assertStringNotContainsStringIgnoringCase('was not sent', $flash);
-        // The audit pointer. 23 of the 46 return before any audit row exists and
-        // no operator-facing surface renders technician_action_logs.
+        // The audit pointer. Not because no row exists or nothing renders it —
+        // TicketToolActivity reads technician_action_logs and TicketTimeline
+        // renders it on the staff ticket page (round 1, contract:4 corrected the
+        // first draft's claim that no surface does). Because those surfaces
+        // withhold the diagnostic payload, so the pointer would not carry a reason.
         $this->assertStringNotContainsStringIgnoringCase('audit', $flash);
         $this->assertStringNotContainsStringIgnoringCase('action log', $flash);
         // The refusal claim. The Tactical bus dispatch and agent removal return
@@ -143,6 +170,15 @@ class CockpitDeclineFallbackTest extends TestCase
         // entirely cannot satisfy this control.
         $this->assertStringContainsStringIgnoringCase('not confirmed', $flash);
         $this->assertStringContainsStringIgnoringCase('no reason reached this page', $flash);
+
+        // EXACT MATCH (round 1, diff:5 / context:11). Everything above is a
+        // deny-list, and a deny-list only forbids the vocabulary it happens to
+        // name: 'blocked by the kill switch', 'disabled', 're-approve', 'resend'
+        // would all pass it. The fallback is a single fixed sentence, so pinning
+        // it exactly is available and is strictly stronger — any new claim, in
+        // any wording, fails here. The deny-list is kept because it says WHY each
+        // phrase is forbidden, which a bare assertSame would lose.
+        $this->assertSame(self::EXPECTED_FALLBACK, $flash);
     }
 
     public function test_a_message_less_gate_declined_states_no_mechanism_no_retry_and_no_effect(): void

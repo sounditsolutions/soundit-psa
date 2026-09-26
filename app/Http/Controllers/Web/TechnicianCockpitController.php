@@ -209,34 +209,40 @@ class TechnicianCockpitController extends Controller
             // #3901: when it is NOT provided, the fallback says only what is true
             // on every path that reaches it. It asserts no mechanism and prescribes
             // no action. The previous text claimed the Technician "may be paused"
-            // and told the approver to "Try again": 46 message-less decline sites
-            // reach this line, and on the ones measured the retry instruction is
-            // false on all of them (the operator has to clear a kill switch,
-            // configure an integration, or re-stage) while the pause claim is false
+            // and told the approver to "Try again". The retry instruction is false
+            // on every arm measured (the operator has to clear a kill switch,
+            // configure an integration, or re-stage) and the pause claim is false
             // wherever the cause is not the kill switch.
             //
-            // It also does not say "nothing was sent", and deliberately so: that is
-            // itself an effect claim, and it would be attached to all 46 sites
-            // including the 31 whose arms nobody has read. Whether an upstream call
-            // had already left is a property of each arm, not of this line.
-            //
-            // It does not name the audit row either. 23 of the 46 return before
-            // anything is audited (every arm in TechnicianApprovalService::
-            // approveMerge and ::approveAssetMerge returns before the gate is
-            // dispatched at all), and no operator-facing surface renders
-            // technician_action_logs — DigestBuilder reads only result_status
-            // 'executed'. Pointing the approver at a record that may not exist and
-            // that they cannot open would trade one false sentence for another.
+            // It also does not say "nothing was sent": that is itself an effect
+            // claim, and whether an upstream call had already left is a property of
+            // each arm, not of this line.
             //
             // Nor does it say the Technician "declined", "refused" or "gave no
-            // reason". Some message-less sites are not refusals at all: the Tactical
-            // bus dispatch (StaffTacticalActionToolExecutor::executeClaimedRun) and
-            // the agent removal (StaffTacticalAdminToolExecutor::approveStagedRun)
-            // return this status after the upstream call was made and failed, where
-            // the action may have landed. Others had a reason and dropped it before
-            // returning, or wrote it to an audit row. What is true on every path is
-            // narrower: nothing confirmed the action as carried out, and no reason
-            // reached this page.
+            // reason". Several message-less sites are not refusals at all, and
+            // several had a reason and dropped it:
+            //   - StaffTacticalActionToolExecutor::executeClaimedRun returns this
+            //     status AFTER $this->bus->dispatch(), discarding $result->message;
+            //     the call was made and the action may have landed.
+            //   - StaffTacticalAdminToolExecutor::approveStagedRun does the same
+            //     after executeAgentRemoval(), discarding $result['error'].
+            //   - StaffCippWriteToolExecutor::approveEmailSecurityStagedRun drops a
+            //     CippWriteScopeException message that its own sibling arm forwards.
+            // What is true on every path is narrower: nothing confirmed the action
+            // as carried out, and no reason reached this page.
+            //
+            // It does not name the audit row, but NOT because no row exists and NOT
+            // because nothing renders it — both of those were claimed here in review
+            // round 1 and both are false. The rows ARE surfaced: TicketToolActivity
+            // reads technician_action_logs and TicketTimeline renders it on the staff
+            // ticket page, and get_ticket_tool_history exposes the same rows. The
+            // real reason is narrower and survives that correction: those surfaces
+            // deliberately WITHHOLD the diagnostic payload ('Failure or refusal
+            // recorded; diagnostic payload withheld'), so a pointer would send the
+            // approver to a row that confirms a refusal happened without telling
+            // them why. Counts are deliberately not quoted here: the reproducible
+            // enumeration lives in the test docblock and in census2.py, because a
+            // bare figure in a comment cannot be reconciled later.
             'gate_declined' => $result->message ?? 'This action was not confirmed as carried out, and no reason reached this page.',
             // Unreachable from any status this codebase constructs (measured: the
             // set of constructed statuses and the set handled above are equal), so
