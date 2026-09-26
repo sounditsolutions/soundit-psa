@@ -205,8 +205,36 @@ class TechnicianCockpitController extends Controller
             // psa-zjpd deep-review: a held destructive action can decline for a
             // specific recoverable reason (typed-id mismatch, identity drift,
             // lost mapping, kill-switch, cooldown) — surface it when provided.
-            'gate_declined' => $result->message ?? 'Could not send — the Technician declined (it may be paused). Try again.',
-            default => 'Could not send — the Technician declined (it may be paused). Try again.',
+            //
+            // #3901: when it is NOT provided, the fallback says only what is true
+            // on every path that reaches it. It asserts no mechanism and prescribes
+            // no action. The previous text claimed the Technician "may be paused"
+            // and told the approver to "Try again": 46 message-less decline sites
+            // reach this line, and on the ones measured the retry instruction is
+            // false on all of them (the operator has to clear a kill switch,
+            // configure an integration, or re-stage) while the pause claim is false
+            // wherever the cause is not the kill switch.
+            //
+            // It also does not say "nothing was sent", and deliberately so: that is
+            // itself an effect claim, and it would be attached to all 46 sites
+            // including the 31 whose arms nobody has read. Whether an upstream call
+            // had already left is a property of each arm, not of this line.
+            //
+            // It does not name the audit row either. 23 of the 46 return before
+            // anything is audited (every arm in TechnicianApprovalService::
+            // approveMerge and ::approveAssetMerge returns before the gate is
+            // dispatched at all), and no operator-facing surface renders
+            // technician_action_logs — DigestBuilder reads only result_status
+            // 'executed'. Pointing the approver at a record that may not exist and
+            // that they cannot open would trade one false sentence for another.
+            'gate_declined' => $result->message ?? 'Refused — the Technician declined this action and gave no reason.',
+            // Unreachable from any status this codebase constructs (measured: the
+            // set of constructed statuses and the set handled above are equal), so
+            // this arm is the fail-closed default for a status added later. Same
+            // text, and it consults $result->message first for the same reason the
+            // arm above does: without that, a future status that DOES carry a
+            // message would render "gave no reason" over the top of one.
+            default => $result->message ?? 'Refused — the Technician declined this action and gave no reason.',
         };
 
         return $this->actionResponse(
