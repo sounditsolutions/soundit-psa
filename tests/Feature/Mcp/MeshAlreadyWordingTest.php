@@ -234,4 +234,23 @@ class MeshAlreadyWordingTest extends TestCase
         $this->assertSame($expected, $result->message);
         $this->assertSame($expected, $this->latestBlocked('mesh_remove_allow_rule'));
     }
+
+    /** TRUE arm: the create dedup answers before any read. */
+    public function test_add_duplicate_sends_nothing_and_keeps_its_sentence(): void
+    {
+        $args = ['sender' => 'billing@vendor.example', 'confirm_domain' => 'vendor.example'];
+        $first = $this->stage('mesh_stage_add_allow_rule', $args);
+        $second = $this->stage('mesh_stage_add_allow_rule', $args);
+
+        $this->history = [];
+        $this->assertSame('executed', $this->approve($first)->status);
+        $this->assertContains('POST '.self::RULES, $this->requests(), 'the recorder must see the first approval\'s create');
+
+        $this->history = [];
+        $result = $this->approve($second);
+
+        $this->assertSame([], $this->requests(), 'the duplicate must send nothing');
+        $this->assertSame('This allow rule was already created recently; no upstream call was made.', $result->message);
+        $this->assertSame('Duplicate Mesh allow rule suppressed before upstream call.', $this->latestBlocked('mesh_add_allow_rule'));
+    }
 }
