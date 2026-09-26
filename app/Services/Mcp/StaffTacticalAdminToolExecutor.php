@@ -3399,11 +3399,20 @@ class StaffTacticalAdminToolExecutor
         // fleet, so a target the approver never read is refused, not written. A
         // proposal carrying no pinned id is refused too: it cannot show that the
         // target the approver read and the one resolved now are the same client.
+        //
+        // Both refusals below name the WRITE, not the upstream connection (#3879).
+        // They are reached only after clientCustomFieldTarget ->
+        // resolveUpstreamTacticalClient has already sent GET /clients/ to pin the
+        // target, so "no upstream call was made" was false here: a read is an
+        // upstream call. What these arms do establish is that the custom-field
+        // write never went out, which is the fact an approver acts on. This is the
+        // same convention patchResetScope and tacticalClientSiteTarget already use
+        // ("no reset was sent", "no assignment was sent").
         $stagedClientId = $this->positiveInteger($arguments['staged_upstream_client_id'] ?? null);
         if ($run !== null && $stagedClientId !== $target['upstream_client_id']) {
             $message = $stagedClientId === null
-                ? 'This proposal recorded no upstream Tactical client id, so the approved target cannot be confirmed; no upstream call was made. Deny it in the cockpit, then stage the write again: a proposal awaiting approval is never rewritten in place, so the replacement is read and approved on its own proposal.'
-                : "The approved proposal targeted Tactical client #{$stagedClientId}, but '{$target['upstream_client_name']}' (#{$target['upstream_client_id']}) is what this PSA client's mapping resolves to now; the approved target changed and no upstream call was made. Deny this proposal in the cockpit, then stage the write again so '{$target['upstream_client_name']}' (#{$target['upstream_client_id']}) is read and approved on its own proposal.";
+                ? 'This proposal recorded no upstream Tactical client id, so the approved target cannot be confirmed; no custom-field write was sent. Deny it in the cockpit, then stage the write again: a proposal awaiting approval is never rewritten in place, so the replacement is read and approved on its own proposal.'
+                : "The approved proposal targeted Tactical client #{$stagedClientId}, but '{$target['upstream_client_name']}' (#{$target['upstream_client_id']}) is what this PSA client's mapping resolves to now; the approved target changed and no custom-field write was sent. Deny this proposal in the cockpit, then stage the write again so '{$target['upstream_client_name']}' (#{$target['upstream_client_id']}) is read and approved on its own proposal.";
             $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $message, $actorLabel, $run?->id, $approverId);
 
             return ['error' => $message];
@@ -3660,6 +3669,9 @@ class StaffTacticalAdminToolExecutor
     {
         $siteKey = is_string($client->tactical_site_id) ? trim($client->tactical_site_id) : '';
         $clientName = $siteKey === '' ? '' : trim(explode('|', $siteKey, 2)[0]);
+        // THE ONE PRE-READ ARM. This returns before getClients(), so it is the only
+        // refusal here entitled to say nothing reached Tactical (#3879). Every arm
+        // below it follows the read and names the WRITE instead.
         if ($clientName === '') {
             return ['error' => 'Client has no Tactical site mapping; no upstream call was made.'];
         }
@@ -3667,7 +3679,7 @@ class StaffTacticalAdminToolExecutor
         try {
             $candidates = $this->client->getClients();
         } catch (TacticalClientException) {
-            return ['error' => 'Could not read Tactical clients to resolve the custom-field target; no upstream call was made.'];
+            return ['error' => 'Could not read Tactical clients to resolve the custom-field target; no custom-field write was sent.'];
         }
 
         $matches = [];
@@ -3678,14 +3690,14 @@ class StaffTacticalAdminToolExecutor
 
             $id = $this->positiveInteger($candidate['id'] ?? null);
             if ($id === null) {
-                return ['error' => "A Tactical client named '{$clientName}' has no numeric id; no upstream call was made."];
+                return ['error' => "A Tactical client named '{$clientName}' has no numeric id; no custom-field write was sent."];
             }
 
             $matches[] = ['id' => $id, 'name' => (string) ($candidate['name'] ?? $clientName)];
         }
 
         if ($matches === []) {
-            return ['error' => "Tactical client '{$clientName}' was not found; no upstream call was made."];
+            return ['error' => "Tactical client '{$clientName}' was not found; no custom-field write was sent."];
         }
 
         // Exact-case first (#1291). Upstream names are unique case-sensitively, so
@@ -3707,7 +3719,7 @@ class StaffTacticalAdminToolExecutor
             ));
 
             return ['error' => "Tactical client name '{$clientName}' is ambiguous: it matches ".count($matches)
-                ." upstream clients — {$described}. Upstream client names are unique only case-sensitively, so this cannot be resolved from the stored name pair; no upstream call was made."];
+                ." upstream clients — {$described}. Upstream client names are unique only case-sensitively, so this cannot be resolved from the stored name pair; no custom-field write was sent."];
         }
 
         return $matches[0];
