@@ -422,16 +422,40 @@ class VersionService
             // <email> <epoch> <tz>" is read as the header -- a WRONG VALUE, not a null,
             // which is the one outcome this row must never produce.
             //
-            // REACHABILITY, stated honestly: no object git writes can trigger this.
-            // `git commit` and `git commit-tree` always emit a committer header, and
-            // `git fsck` REFUSES a commit without one ("missingCommitter"), so for any
-            // real commit the loop returned at the genuine header before ever reaching
-            // the message. The reproduction needed an object forged with
-            // `git hash-object --literally`. So this is hardening against a forged or
-            // corrupt object, not a defect reachable through ordinary git use. It is two
-            // lines and it makes the parser's bound match what the docblock claims, so
-            // it is worth having -- but do not cite it as a live wrong-value fix.
-            if ($line === '') {
+            // REACHABILITY, corrected by measurement after a review round falsified an
+            // earlier version of this comment. git never AUTHORS such a commit: `git
+            // commit` and `git commit-tree` always emit a committer header. But git will
+            // happily WRITE one it merely received. `git fsck` is an audit that reports
+            // "missingCommitter" after the fact, NOT a write gate, and
+            // transfer/fetch/receive.fsckObjects all default to false. MEASURED end to
+            // end: a bare remote accepted a pushed committer-less commit (rc 0), and an
+            // ordinary `git clone` + `git fetch` wrote it into the consumer's objects/ as
+            // a LOOSE object -- exactly the storage this function reads -- with no
+            // complaint. With `fetch.fsckObjects=true` the same fetch refused it (rc 128,
+            // object absent), which is the control proving the default is what lets it in.
+            //
+            // So the honest scope is "git never authors one", not "git never writes one":
+            // the forging is unusual, the DELIVERY is ordinary git use, and it depends on
+            // the upstream's receive-side fsck rather than on anything this repo controls.
+            // Pre-fix, that git-written object made the About page show 2023-11-14 for
+            // HEAD. Still do not cite this as a defect anyone has hit in production -- no
+            // such object is known upstream -- but it is more than a theoretical forgery.
+            //
+            // The justification for the stop is grammatical, not that it "matches the
+            // docblock": git's commit header ends at the first empty line, so reading
+            // past it is simply wrong. (The docblock bound was rewritten in the same
+            // change as this guard, so citing their agreement would be circular.) Note
+            // also what this CANNOT do: nothing here verifies the object hash, so a
+            // forger able to write a loose object can write a genuine committer header
+            // and get any date they like. This removes one wrong-value route; it is not
+            // a defence against forgery in general.
+            // rtrim the CR, do not compare to '' alone: a forged object with CRLF
+            // endings leaves "\r" as the separator line. MEASURED -- with a bare
+            // `$line === ''` test that line did not stop the scan, and an LF-only
+            // message line "committer bot <b@x> 1700000000 +0000" was then read as the
+            // header and returned 2023-11-14T22:13:20Z: the same wrong value this guard
+            // exists to prevent, through a one-byte variation of the same object.
+            if (rtrim($line, "\r") === '') {
                 return null;
             }
 

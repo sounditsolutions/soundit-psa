@@ -39,12 +39,27 @@ class VersionReadTest extends TestCase
     protected function tearDown(): void
     {
         // #4096: guard the read, do not assume setUp got this far. $fixture is a typed
-        // property with no default, and PHPUnit calls tearDown even when setUp threw --
-        // so on any failure before the assignment above, reading it raises "Typed
-        // property ... must not be accessed before initialization" and that Error
-        // REPLACES the real failure in the report. REPRODUCED: the unguarded read throws,
-        // the guarded one does not. isset() is false for an uninitialised typed property,
-        // which is why it is the honest test here rather than a null comparison.
+        // property with no default and PHPUnit calls tearDown even when setUp threw, so
+        // on any failure before the assignment above the unguarded read raises "Typed
+        // property ... must not be accessed before initialization".
+        //
+        // WHAT THAT ERROR ACTUALLY COSTS, corrected by measurement -- an earlier version
+        // of this comment said it REPLACES the real failure in the report, and that is
+        // FALSE for PHPUnit 11.5.53. runBare() records a teardown Throwable only
+        // `if (!isset($e) || $e instanceof SkippedWithMessageException)`, so when setUp
+        // throws, the Error is discarded and the real failure is what gets reported.
+        // MEASURED with a throwaway test: setUp threw "THE REAL SETUP FAILURE" and that
+        // is exactly what PHPUnit printed.
+        //
+        // The real harm is that the Error fires BEFORE parent::tearDown(), so Laravel's
+        // teardown never runs -- no $app->flush(), no Mockery::close(), no
+        // HandleExceptions::flushState() -- and that state leaks into the next test.
+        // MEASURED: with the unguarded read, a probe's post-read teardown line was never
+        // reached. The one path where the Error DOES replace the outcome is a setUp that
+        // calls markTestSkipped(): measured, that turns a clean skip into an error.
+        //
+        // isset() is false for an uninitialised typed property, which is why it is the
+        // honest test here rather than a null comparison.
         if (! isset($this->fixture) || $this->fixture === '') {
             parent::tearDown();
 
@@ -56,7 +71,13 @@ class VersionReadTest extends TestCase
         // live bug. It is removed because the fixture holds a link to the repository's
         // real public/, and any future tearDown rewritten with a recursive PHP delete
         // that tests is_dir() without is_link() WOULD follow it and empty that
-        // directory. Deleting the link first means that shape cannot appear later.
+        // directory (measured: that shape emptied the target).
+        //
+        // Deleting the link first REDUCES THE CHANCE of that; it does not prevent it.
+        // Nothing enforces these three lines -- dropping them survives every control in
+        // this file, which is recorded as a deliberate mutant survivor -- so the same
+        // rewrite that introduces the destructive shape could delete them too. Treat this
+        // as a convention, not a guarantee.
         if (is_link($this->fixture.'/public')) {
             unlink($this->fixture.'/public');
         }
@@ -497,13 +518,18 @@ class VersionReadTest extends TestCase
         // #4095. The scan used to walk the whole object, so a MESSAGE line beginning
         // "committer ..." was taken as the header and produced a WRONG VALUE rather than
         // an Unknown. REPRODUCED before the fix: this exact object yielded
-        // 2023-11-14 for a commit whose real date is 2026.
+        // 2023-11-14T22:13:20Z.
         //
-        // SCOPE, stated exactly: this object has NO committer header at all, which is
-        // why the message line is reachable. `git fsck` rejects such a commit
-        // ("missingCommitter") and neither `git commit` nor `git commit-tree` can emit
-        // one, so this models a FORGED or CORRUPT object -- not a squashed or quoted
-        // commit, which always carries its own header and was never affected.
+        // This object has NO committer header at all, which is why the message line is
+        // reachable -- so null is its ONLY correct answer. (An earlier version of this
+        // comment called 2026 its "real date"; 1790485588 is the AUTHOR epoch, and
+        // keeping author and committer apart is the whole point of this file.)
+        //
+        // SCOPE: git never AUTHORS such a commit, but it does WRITE one it received --
+        // fsck is an audit, not a write gate, and fetch/receive fsckObjects default to
+        // false. Measured: a plain clone+fetch stored exactly this shape as a loose
+        // object. So it models a forged object delivered by ordinary git use, not a
+        // squashed or quoted commit, which always carries its own header.
         $this->headAt(self::SHA_A);
         $dir = $this->fixture.'/.git/objects/'.substr(self::SHA_A, 0, 2);
         mkdir($dir, 0755, true);
@@ -516,8 +542,6 @@ class VersionReadTest extends TestCase
         $date = $this->service()->current()['commit_date'];
 
         $this->assertNull($date, 'the header ends at the blank line; the message is not the header');
-        // Named explicitly so the pre-fix answer cannot return by another route.
-        $this->assertNotSame('2023-11-14T22:13:20Z', $date);
     }
 
     public function test_a_real_committer_header_is_still_read_when_the_message_also_has_one(): void
@@ -538,15 +562,45 @@ class VersionReadTest extends TestCase
         $this->assertSame('2026-09-27T05:06:28Z', $this->service()->current()['commit_date']);
     }
 
+    public function test_a_crlf_forged_object_does_not_have_its_message_read_as_the_header(): void
+    {
+        // #4095 follow-up, found by review round 1b on PR #4105 and MEASURED before
+        // fixing: the stop originally tested `$line === ''`, but a CRLF-separated object
+        // leaves "\r" as the separator line, which is not '', so the scan continued into
+        // the message. An LF-only message line then matched and returned
+        // 2023-11-14T22:13:20Z -- the same wrong value the LF control above forbids,
+        // through a one-byte variation of the same forged object.
+        $this->headAt(self::SHA_A);
+        $dir = $this->fixture.'/.git/objects/'.substr(self::SHA_A, 0, 2);
+        mkdir($dir, 0755, true);
+        $body = "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\r\n"
+            ."author A <a@x> 1790485588 +0000\r\n"
+            ."\r\n"
+            ."committer bot <b@x> 1700000000 +0000\n";
+        file_put_contents($dir.'/'.substr(self::SHA_A, 2), gzcompress('commit '.strlen($body)."\0".$body));
+
+        $this->assertNull(
+            $this->service()->current()['commit_date'],
+            'the header ends at the first empty line whether it is LF- or CRLF-separated'
+        );
+    }
+
     public function test_teardown_does_not_read_the_fixture_path_before_setup_assigned_it(): void
     {
         // #4096. PHPUnit calls tearDown even when setUp throws, and $fixture is a typed
-        // property with no default -- so an unguarded read raises "must not be accessed
-        // before initialization" and that Error REPLACES the real failure in the report.
+        // property with no default, so an unguarded read raises "must not be accessed
+        // before initialization" -- which skips the rest of tearDown, including
+        // parent::tearDown() and Laravel's whole state flush. (It does NOT replace the
+        // reported failure except when setUp skips; see the tearDown comment.)
         //
-        // Asserted on the PROPERTY OF THE GUARD rather than by making setUp throw: a
-        // test that breaks its own setUp cannot then report anything. isset() is false
-        // for an uninitialised typed property, which is the behaviour the guard rests on.
+        // WHAT THIS CONTROL DOES AND DOES NOT PROVE: it asserts the property of the
+        // guard -- that isset() is false on an uninitialised typed property and that the
+        // guarded tearDown returns without throwing. It does NOT run PHPUnit's runBare(),
+        // so it cannot observe what gets reported; the reporting behaviour above was
+        // established by running a throwaway test in a child process, and a control that
+        // asserts on such a subprocess report is the honest way to cover it (tracked,
+        // not built here). This instrument is enough to kill the remove-guard and
+        // compare-to-null mutants, which is its purpose.
         $fresh = new \ReflectionClass(self::class);
         $uninitialised = $fresh->newInstanceWithoutConstructor();
         $prop = new \ReflectionProperty(self::class, 'fixture');
@@ -562,17 +616,19 @@ class VersionReadTest extends TestCase
         $tearDown = new \ReflectionMethod(self::class, 'tearDown');
         $tearDown->setAccessible(true);
 
+        // Match on the MESSAGE, not merely on \Error: parent::tearDown() running against
+        // a half-built object can itself raise an unrelated \Error (a TypeError, or
+        // another uninitialised property inside PHPUnit or Laravel), and blaming that on
+        // this defect would point a maintainer at a guard that is working correctly.
         try {
             $tearDown->invoke($uninitialised);
-        } catch (\Error $e) {
-            $this->fail('tearDown read the fixture path before setUp assigned it: '.$e->getMessage());
         } catch (\Throwable $e) {
-            // Anything from parent::tearDown() on a half-built object is not this defect;
-            // only the typed-property Error is.
-            $this->assertStringNotContainsString('must not be accessed before initialization', $e->getMessage());
+            if (str_contains($e->getMessage(), 'must not be accessed before initialization')
+                && str_contains($e->getMessage(), 'fixture')) {
+                $this->fail('tearDown read the fixture path before setUp assigned it: '.$e->getMessage());
+            }
+            // Anything else is collateral from tearing down a half-built object, not #4096.
         }
-
-        $this->assertTrue(true, 'the guard returned without reading the unset path');
     }
 
     public function test_a_linked_worktree_reads_its_commit_object_through_commondir(): void
