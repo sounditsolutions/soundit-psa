@@ -21,10 +21,11 @@ class TicketNoteObserver
         if ($note->exists && $note->getRawOriginal('contact_intake_origin')) {
             $note->contact_intake_origin = true;
         }
-        if (! $note->exists && $note->ticket?->isUnverifiedContactIntake()) {
-            $note->contact_intake_origin = true;
-        }
-        if ($note->contact_intake_origin) {
+        // Provenance is stamped ONLY by the intake writer (SubmissionProcessor), never by
+        // ticket state: a staff, system or inbound-email note on an unverified intake ticket
+        // is not visitor text (r1 diff:2/7/8). Containment applies while unverified; after
+        // staff verification the note behaves like any internal note (ruling 2026-09-24).
+        if ($note->contact_intake_origin && $note->contact_intake_verified_at === null) {
             $note->is_private = true;
             $note->is_billable = false;
             $note->time_minutes = 0;
@@ -58,7 +59,7 @@ class TicketNoteObserver
 
     private function syncPrepayDebit(TicketNote $note): void
     {
-        if ($note->contact_intake_origin || ! $note->time_minutes) {
+        if ($note->isUnverifiedContactIntake() || ! $note->time_minutes) {
             return;
         }
 

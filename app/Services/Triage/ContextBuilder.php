@@ -21,6 +21,9 @@ use Illuminate\Support\Facades\Log;
  */
 class ContextBuilder
 {
+    /** Returned in place of any context for an unverified web-form ticket (containment). */
+    public const UNVERIFIED_WITHHELD = '[Unverified web-form ticket: its content is withheld from this context until staff verify it.]';
+
     private const MAX_TICKET_BODY = 5_000;
 
     private const MAX_NOTES = 10;
@@ -52,8 +55,10 @@ class ContextBuilder
      */
     public static function buildForTicket(Ticket $ticket, bool $skipNotes = false, bool $includeClientSituation = false): string
     {
+        // Degrade, never throw (r1 diff:14): staff-facing callers such as AssistantService do
+        // not catch, and a form ticket must not crash them. Nothing of the ticket is returned.
         if ($ticket->isUnverifiedContactIntake()) {
-            throw new \DomainException('Unverified contact intake.');
+            return self::UNVERIFIED_WITHHELD;
         }
 
         $eagerLoads = [
@@ -150,7 +155,7 @@ class ContextBuilder
     public static function buildConversationContext(Ticket $ticket, int $limit = 20, bool $publicOnly = true): string
     {
         if ($ticket->isUnverifiedContactIntake()) {
-            throw new \DomainException('Unverified contact intake.');
+            return self::UNVERIFIED_WITHHELD;
         }
 
         $query = $ticket->notes()
@@ -252,7 +257,7 @@ class ContextBuilder
     public static function buildMultimodalContent(Ticket $ticket): array
     {
         if ($ticket->isUnverifiedContactIntake()) {
-            throw new \DomainException('Unverified contact intake.');
+            return [['type' => 'text', 'text' => self::UNVERIFIED_WITHHELD]];
         }
 
         $ticket->loadMissing([

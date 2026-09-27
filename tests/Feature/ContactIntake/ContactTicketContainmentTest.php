@@ -64,8 +64,11 @@ class ContactTicketContainmentTest extends TestCase
         $ticket = Ticket::factory()->create(['subject' => 'NORMAL_CONTEXT_CONTROL']);
         $this->assertStringContainsString('NORMAL_CONTEXT_CONTROL', ContextBuilder::buildForTicket($ticket));
         $ticket->forceFill(['contact_intake_origin' => true])->save();
-        $this->expectException(\DomainException::class);
-        $this->expectExceptionMessage('Unverified contact intake.');
-        ContextBuilder::buildForTicket($ticket);
+        // r2 diff:14: withheld, not thrown — and nothing of the ticket reaches the context.
+        $context = ContextBuilder::buildForTicket($ticket);
+        $this->assertSame(ContextBuilder::UNVERIFIED_WITHHELD, $context);
+        $this->assertStringNotContainsString('NORMAL_CONTEXT_CONTROL', $context);
+        $this->assertStringNotContainsString('NORMAL_CONTEXT_CONTROL', ContextBuilder::buildConversationContext($ticket, 20, false));
+        $this->assertStringNotContainsString('NORMAL_CONTEXT_CONTROL', json_encode(ContextBuilder::buildMultimodalContent($ticket)));
     }
 }

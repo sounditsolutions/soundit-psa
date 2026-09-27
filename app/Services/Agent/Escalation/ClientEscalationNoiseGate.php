@@ -99,7 +99,9 @@ class ClientEscalationNoiseGate
     /** @return array<string, mixed>|null */
     private function humanEngagedSibling(int $clientId, Ticket $current): ?array
     {
-        $assigned = Ticket::forClient($clientId)
+        // An unverified web-form ticket is auto-assigned to the intake owner; that is not a
+        // human engaging this client, and must not suppress a real escalation (r1 cr:12).
+        $assigned = Ticket::automationVisible()->forClient($clientId)
             ->open()
             ->where('id', '!=', $current->id)
             ->whereNotNull('assignee_id')
@@ -119,7 +121,7 @@ class ClientEscalationNoiseGate
         $systemTypes = array_map(fn (NoteType $t) => $t->value, NoteType::systemGenerated());
 
         $note = TicketNote::automationVisible()
-            ->whereHas('ticket', fn ($q) => $q
+            ->whereHas('ticket', fn ($q) => $q->automationVisible()
                 ->forClient($clientId)
                 ->open()
                 ->where('id', '!=', $current->id))

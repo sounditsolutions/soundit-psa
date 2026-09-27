@@ -20,8 +20,9 @@ class WikiTicketContext
     /** Bounded, pre-redacted mining context for one closed ticket. */
     public function build(Ticket $ticket): string
     {
+        // Degrade, never throw (r1 diff:14): contribute nothing for an unverified form ticket.
         if ($ticket->isUnverifiedContactIntake()) {
-            throw new \DomainException('Unverified contact intake.');
+            return '';
         }
 
         $parts = [];

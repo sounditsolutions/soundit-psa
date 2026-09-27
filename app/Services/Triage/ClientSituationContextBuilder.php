@@ -66,8 +66,9 @@ class ClientSituationContextBuilder
 
     public function build(Ticket $ticket): string
     {
+        // Degrade, never throw (r1 diff:14): contribute nothing for an unverified form ticket.
         if ($ticket->isUnverifiedContactIntake()) {
-            throw new \DomainException('Unverified contact intake.');
+            return '';
         }
 
         $clientId = $ticket->client_id;

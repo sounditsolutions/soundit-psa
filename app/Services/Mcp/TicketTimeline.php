@@ -19,7 +19,9 @@ final class TicketTimeline
     public function page(Ticket $ticket, array $input = [], bool $models = false): array
     {
         if (! $models && $ticket->isUnverifiedContactIntake()) {
-            throw new \DomainException('Unverified contact intake.');
+            // InvalidArgumentException is the refusal every caller of page() already handles
+            // (r1 diff:14); a DomainException escaped them as a 500.
+            throw new InvalidArgumentException('This ticket is an unverified web-form intake; its timeline is withheld until staff verify it.');
         }
 
         $limit = $input['limit'] ?? 20;

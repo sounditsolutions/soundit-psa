@@ -45,10 +45,6 @@ class TicketObserver
      */
     public function created(Ticket $ticket): void
     {
-        if ($ticket->isUnverifiedContactIntake()) {
-            return;
-        }
-
         // Taxonomy audit for a category set AT creation (so-0ftg CREATE path):
         // mirrors updated()'s change log — same seam, so every create surface
         // (web form, MCP create_ticket, imports) is captured without opting in.
@@ -63,6 +59,13 @@ class TicketObserver
                     'error' => $e->getMessage(),
                 ]);
             }
+        }
+
+        // Contact-intake containment starts AFTER the audit-only log above (C-51): an
+        // unverified web-form ticket is still audited, but emits no signal, notification
+        // or automatic dispatch until staff verify it.
+        if ($ticket->isUnverifiedContactIntake()) {
+            return;
         }
 
         try {
@@ -189,10 +192,6 @@ class TicketObserver
 
     public function updated(Ticket $ticket): void
     {
-        if ($ticket->isUnverifiedContactIntake()) {
-            return;
-        }
-
         // Taxonomy change log (so-0ftg Part 4): every tickets.category_id move
         // is recorded here — the one seam ALL writers pass through (triage
         // mapping, web UI, future MCP tools) — so Phase-1 mapping refinement
@@ -232,6 +231,13 @@ class TicketObserver
                     'error' => $e->getMessage(),
                 ]);
             }
+        }
+
+        // Contact-intake containment starts AFTER the two audit-only logs above (C-51,
+        // r1 diff:11): the change log is recorded for every ticket, but an unverified
+        // web-form ticket triggers no callback, mining or automatic drafting.
+        if ($ticket->isUnverifiedContactIntake()) {
+            return;
         }
 
         // T2T callback — only for HelpdeskButton tickets, on a status change.

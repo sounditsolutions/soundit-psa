@@ -27,7 +27,9 @@ final class IntakeNotifications
             return 0;
         }
         $count = 0;
-        foreach (DB::table('contact_intake_notifications')->whereNull('sent_at')->orderBy('id')->limit(100)->get() as $item) {
+        // lazyById walks EVERY unsent row in id-ordered pages. A fixed first-100 window let
+        // 100 undeliverable alerts (no active recipient) hide every later one forever (r1 diff:6).
+        foreach (DB::table('contact_intake_notifications')->whereNull('sent_at')->lazyById(100) as $item) {
             $row = ContactSubmission::findOrFail($item->contact_submission_id);
             $ticket = $row->ticket_id ? Ticket::find($row->ticket_id) : null;
             $recipient = $ticket?->assignee_id ?? ContactIntakeConfig::ownerId();

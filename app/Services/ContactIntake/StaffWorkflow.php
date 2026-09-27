@@ -57,7 +57,9 @@ final class StaffWorkflow
                     $ticket = Ticket::whereKey($row->ticket_id)->lockForUpdate()->firstOrFail();
                     // Whole-ticket clearance requires EVERY form note to be cleared. A later
                     // unverified follow-up cannot be implicitly verified by an earlier row.
-                    if ($ticket->isUnverifiedContactIntake() && ! $ticket->notes()->where('contact_intake_origin', true)
+                    // withoutTrashed(): Ticket::notes() is withTrashed(), but the per-row path
+                    // above cannot load a trashed note, so counting one here held forever (r1 cr:3).
+                    if ($ticket->isUnverifiedContactIntake() && ! $ticket->notes()->withoutTrashed()->where('contact_intake_origin', true)
                         ->whereNull('contact_intake_verified_at')->exists()) {
                         $ticket->forceFill(['contact_intake_verified_at' => now()])->saveQuietly();
                     }
