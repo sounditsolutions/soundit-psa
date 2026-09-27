@@ -387,6 +387,48 @@ class PsaActionToolsTest extends TestCase
         $this->assertNull($ticket->fresh()->responded_at);
     }
 
+    /** G-14: a held ticket in scope gets a true refusal from ticketForClient, not "not found". */
+    public function test_held_ticket_in_scope_is_refused_as_held_not_as_missing(): void
+    {
+        $token = $this->token(['set_ticket_status']);
+        $ticket = $this->ticketWithContact();
+        $ticket->forceFill(['contact_intake_origin' => true])->save();
+        $before = $ticket->fresh()->status;
+
+        $response = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::InProgress->value,
+            'reason' => 'Probe.',
+        ]);
+
+        $response->assertOk();
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('unverified web-form intake held for staff verification', $text);
+        $this->assertStringNotContainsString('not found', $text);
+        $this->assertSame($before, $ticket->fresh()->status);
+    }
+
+    /** The held-ticket refusal is scoped: under another client it reads as not-found, revealing nothing. */
+    public function test_held_ticket_refusal_is_not_visible_across_clients(): void
+    {
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact();
+        $ticket->forceFill(['contact_intake_origin' => true])->save();
+        $other = Client::factory()->create();
+
+        $response = $this->callTool($token, 'send_email', [
+            'client_id' => $other->id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Probe.',
+            'body' => 'Body.',
+        ]);
+
+        $response->assertOk();
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('Ticket not found or belongs to a different client', $text);
+        $this->assertStringNotContainsString('unverified web-form intake', $text);
+    }
+
     public function test_direct_send_email_rejects_arbitrary_recipient_without_side_effects(): void
     {
         $token = $this->token(['send_email']);

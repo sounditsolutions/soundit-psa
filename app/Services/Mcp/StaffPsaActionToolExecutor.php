@@ -3200,11 +3200,16 @@ class StaffPsaActionToolExecutor
             return ['error' => 'ticket_id is required'];
         }
 
-        $ticket = Ticket::automationVisible()->with(['contact', 'assets'])->find($ticketId);
+        $ticket = Ticket::with(['contact', 'assets'])->find($ticketId);
         if (! $ticket || ($clientId instanceof UnlinkedTicketScope
             ? $ticket->client_id !== null
             : ($ticket->client_id === null || (int) $ticket->client_id !== $clientId))) {
             return ['error' => 'Ticket not found or belongs to a different client'];
+        }
+        // G-14: a held intake ticket in THIS scope exists; say so rather than "not found".
+        // Checked only after the client scope, so it reveals nothing across clients.
+        if ($ticket->isUnverifiedContactIntake()) {
+            return ['error' => 'This ticket is an unverified web-form intake held for staff verification; staff must verify it before any action on it.'];
         }
 
         TicketToolActivityContext::current()?->validated($ticket);
