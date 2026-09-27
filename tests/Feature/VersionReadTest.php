@@ -38,6 +38,29 @@ class VersionReadTest extends TestCase
 
     protected function tearDown(): void
     {
+        // #4096: guard the read, do not assume setUp got this far. $fixture is a typed
+        // property with no default, and PHPUnit calls tearDown even when setUp threw --
+        // so on any failure before the assignment above, reading it raises "Typed
+        // property ... must not be accessed before initialization" and that Error
+        // REPLACES the real failure in the report. REPRODUCED: the unguarded read throws,
+        // the guarded one does not. isset() is false for an uninitialised typed property,
+        // which is why it is the honest test here rather than a null comparison.
+        if (! isset($this->fixture) || $this->fixture === '') {
+            parent::tearDown();
+
+            return;
+        }
+
+        // Remove the symlink BEFORE the recursive delete. `rm -rf` does NOT follow a
+        // symlinked directory (verified: the real public/ survived), so this is not a
+        // live bug. It is removed because the fixture holds a link to the repository's
+        // real public/, and any future tearDown rewritten with a recursive PHP delete
+        // that tests is_dir() without is_link() WOULD follow it and empty that
+        // directory. Deleting the link first means that shape cannot appear later.
+        if (is_link($this->fixture.'/public')) {
+            unlink($this->fixture.'/public');
+        }
+
         exec('rm -rf '.escapeshellarg($this->fixture));
         parent::tearDown();
     }
@@ -467,6 +490,89 @@ class VersionReadTest extends TestCase
         file_put_contents($dir.'/'.substr(self::SHA_A, 2), gzcompress('commit '.strlen($body)."\0".$body));
 
         $this->assertNull($this->service()->current()['commit_date']);
+    }
+
+    public function test_a_committer_line_in_the_message_is_not_read_as_the_header(): void
+    {
+        // #4095. The scan used to walk the whole object, so a MESSAGE line beginning
+        // "committer ..." was taken as the header and produced a WRONG VALUE rather than
+        // an Unknown. REPRODUCED before the fix: this exact object yielded
+        // 2023-11-14 for a commit whose real date is 2026.
+        //
+        // SCOPE, stated exactly: this object has NO committer header at all, which is
+        // why the message line is reachable. `git fsck` rejects such a commit
+        // ("missingCommitter") and neither `git commit` nor `git commit-tree` can emit
+        // one, so this models a FORGED or CORRUPT object -- not a squashed or quoted
+        // commit, which always carries its own header and was never affected.
+        $this->headAt(self::SHA_A);
+        $dir = $this->fixture.'/.git/objects/'.substr(self::SHA_A, 0, 2);
+        mkdir($dir, 0755, true);
+        $body = "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n"
+            ."author Someone <someone@example.com> 1790485588 +0000\n"
+            ."\n"
+            ."committer bot <b@x> 1700000000 +0000\n";
+        file_put_contents($dir.'/'.substr(self::SHA_A, 2), gzcompress('commit '.strlen($body)."\0".$body));
+
+        $date = $this->service()->current()['commit_date'];
+
+        $this->assertNull($date, 'the header ends at the blank line; the message is not the header');
+        // Named explicitly so the pre-fix answer cannot return by another route.
+        $this->assertNotSame('2023-11-14T22:13:20Z', $date);
+    }
+
+    public function test_a_real_committer_header_is_still_read_when_the_message_also_has_one(): void
+    {
+        // Positive control for the stop above: stopping at the blank line must not make
+        // the reader miss the genuine header that precedes it. Without this, deleting the
+        // whole loop body would also pass the test above.
+        $this->headAt(self::SHA_A);
+        $dir = $this->fixture.'/.git/objects/'.substr(self::SHA_A, 0, 2);
+        mkdir($dir, 0755, true);
+        $body = "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n"
+            ."author Someone <someone@example.com> 1790485588 +0000\n"
+            ."committer Someone <someone@example.com> 1790485588 +0000\n"
+            ."\n"
+            ."committer bot <b@x> 1700000000 +0000\n";
+        file_put_contents($dir.'/'.substr(self::SHA_A, 2), gzcompress('commit '.strlen($body)."\0".$body));
+
+        $this->assertSame('2026-09-27T05:06:28Z', $this->service()->current()['commit_date']);
+    }
+
+    public function test_teardown_does_not_read_the_fixture_path_before_setup_assigned_it(): void
+    {
+        // #4096. PHPUnit calls tearDown even when setUp throws, and $fixture is a typed
+        // property with no default -- so an unguarded read raises "must not be accessed
+        // before initialization" and that Error REPLACES the real failure in the report.
+        //
+        // Asserted on the PROPERTY OF THE GUARD rather than by making setUp throw: a
+        // test that breaks its own setUp cannot then report anything. isset() is false
+        // for an uninitialised typed property, which is the behaviour the guard rests on.
+        $fresh = new \ReflectionClass(self::class);
+        $uninitialised = $fresh->newInstanceWithoutConstructor();
+        $prop = new \ReflectionProperty(self::class, 'fixture');
+
+        $this->assertSame('string', (string) $prop->getType(), 'a typed property is what makes this fail');
+        $this->assertFalse(
+            $prop->isInitialized($uninitialised),
+            'precondition: the property really is uninitialised before setUp assigns it'
+        );
+
+        // The guarded tearDown must not throw on that object. Unguarded, this line is
+        // the Error the issue describes.
+        $tearDown = new \ReflectionMethod(self::class, 'tearDown');
+        $tearDown->setAccessible(true);
+
+        try {
+            $tearDown->invoke($uninitialised);
+        } catch (\Error $e) {
+            $this->fail('tearDown read the fixture path before setUp assigned it: '.$e->getMessage());
+        } catch (\Throwable $e) {
+            // Anything from parent::tearDown() on a half-built object is not this defect;
+            // only the typed-property Error is.
+            $this->assertStringNotContainsString('must not be accessed before initialization', $e->getMessage());
+        }
+
+        $this->assertTrue(true, 'the guard returned without reading the unset path');
     }
 
     public function test_a_linked_worktree_reads_its_commit_object_through_commondir(): void
