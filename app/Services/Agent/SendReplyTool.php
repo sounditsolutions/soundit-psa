@@ -130,6 +130,14 @@ class SendReplyTool
             return "Left ticket #{$ticket->id} (nothing unaddressed to reply to).";
         }
 
+        // A contained client reply cannot be answered: the drafter's context excludes it, and a
+        // run recorded now would mark it addressed for good once staff verify it (c1:v2:1).
+        // Its noted_at is the backdated submission time, so no time cutoff applies (c2:v2:1).
+        // Wait for verification instead of drafting blind.
+        if ($this->hasUnverifiedContainedClientReply($ticket)) {
+            return "Left ticket #{$ticket->id} (a client message awaits staff verification; no reply drafted).";
+        }
+
         $body = null;
         $to = null;
         $tokensUsed = 0;
@@ -253,7 +261,8 @@ class SendReplyTool
      */
     private function hasUnaddressedClientReply(Ticket $ticket): bool
     {
-        $latestClientReply = $ticket->notes()->automationVisible()
+        // Contained web-form replies count: only noted_at is read, never the body (r2 diff:1).
+        $latestClientReply = $ticket->notes()
             ->where('note_type', NoteType::Reply->value)
             ->where('ai_authored', false)
             ->where('who_type', WhoType::EndUser->value)
@@ -269,8 +278,35 @@ class SendReplyTool
             return $latestReplyRun === null; // intake: draft once
         }
 
+        // A web-form reply first becomes answerable when staff verify it; its noted_at is the
+        // backdated submission time, so it is unaddressed if verified after our latest draft.
         return $latestReplyRun === null
             || $latestReplyRun->created_at === null
-            || $latestReplyRun->created_at->lt($latestClientReply->noted_at);
+            || $latestReplyRun->created_at->lt($latestClientReply->noted_at)
+            || $this->hasIntakeReplyVerifiedAfter($ticket, $latestReplyRun->created_at);
+    }
+
+    /** True while any untrashed unverified web-form client reply exists on the ticket. */
+    private function hasUnverifiedContainedClientReply(Ticket $ticket): bool
+    {
+        return $ticket->notes()->withoutTrashed()
+            ->where('note_type', NoteType::Reply->value)
+            ->where('ai_authored', false)
+            ->where('who_type', WhoType::EndUser->value)
+            ->where('contact_intake_origin', true)
+            ->whereNull('contact_intake_verified_at')
+            ->exists();
+    }
+
+    /** True when a web-form client reply was verified after the given reply-draft time. */
+    private function hasIntakeReplyVerifiedAfter(Ticket $ticket, \DateTimeInterface $since): bool
+    {
+        return $ticket->notes()->withoutTrashed()
+            ->where('note_type', NoteType::Reply->value)
+            ->where('ai_authored', false)
+            ->where('who_type', WhoType::EndUser->value)
+            ->where('contact_intake_origin', true)
+            ->where('contact_intake_verified_at', '>', $since)
+            ->exists();
     }
 }

@@ -416,7 +416,9 @@ class PrepayService
      */
     public function debitFromTicketNote(TicketNote $note): ?PrepayTransaction
     {
-        if ($note->isUnverifiedContactIntake() || $note->ticket?->isUnverifiedContactIntake()) {
+        // Note-level only (r2 diff:6): a contained note already carries no time, and staff
+        // billable time on a held ticket debits prepay exactly as it would be invoiced.
+        if ($note->isUnverifiedContactIntake()) {
             return null;
         }
 

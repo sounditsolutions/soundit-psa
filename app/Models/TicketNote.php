@@ -99,11 +99,12 @@ class TicketNote extends Model
 
     /**
      * Filter to notes visible in the client portal.
-     * Excludes private notes and system-generated note types.
+     * Excludes private notes, system-generated note types and unverified contact-intake
+     * notes; a verified intake note is portal-eligible like any other (r2 diff:7).
      */
     public function scopePortalVisible(Builder $query): Builder
     {
-        return $query->where('contact_intake_origin', false)->where('is_private', false)
+        return $query->automationVisible()->where('is_private', false)
             ->whereNotIn('note_type', array_map(
                 fn (NoteType $t) => $t->value,
                 NoteType::systemGenerated(),

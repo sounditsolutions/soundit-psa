@@ -364,6 +364,29 @@ class PsaActionToolsTest extends TestCase
         }
     }
 
+    /** c1:v3:1 — refused before the note, responded_at and audit writes, never reported as sent. */
+    public function test_direct_send_email_refuses_unverified_form_ticket_before_any_write(): void
+    {
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact();
+        $ticket->forceFill(['contact_intake_origin' => true, 'responded_at' => null])->save();
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNote')->never());
+
+        $response = $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Client asked for confirmation.',
+            'body' => 'Body.',
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('unverified web-form intake', (string) $response->json('result.content.0.text'));
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->count());
+        $this->assertSame(0, TechnicianActionLog::where('ticket_id', $ticket->id)->where('action_type', 'send_email')->count());
+        $this->assertNull($ticket->fresh()->responded_at);
+    }
+
     public function test_direct_send_email_rejects_arbitrary_recipient_without_side_effects(): void
     {
         $token = $this->token(['send_email']);

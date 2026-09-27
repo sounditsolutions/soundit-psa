@@ -206,8 +206,8 @@ class JunkDetector
             return true;
         }
 
-        // Real conversation happening (3+ notes)
-        if ($ticket->notes()->automationVisible()->count() >= 3) {
+        // Real conversation happening (3+ notes); contained web-form notes count (r2 diff:1)
+        if ($ticket->notes()->count() >= 3) {
             return true;
         }
 

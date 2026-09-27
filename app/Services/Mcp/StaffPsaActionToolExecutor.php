@@ -2453,6 +2453,12 @@ class StaffPsaActionToolExecutor
             return $ticket;
         }
 
+        // Refuse before the note, responded_at and audit writes (c1:v3:1): EmailService would
+        // refuse the send anyway, and a swallowed refusal after those writes reads as success.
+        if ($ticket->isUnverifiedContactIntake()) {
+            return ['error' => 'send_email refused: this ticket is an unverified web-form intake; staff must verify it before any email is sent.'];
+        }
+
         try {
             $resolved = $this->recipients->resolve(
                 $ticket,

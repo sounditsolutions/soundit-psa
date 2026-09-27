@@ -7,6 +7,7 @@ use App\Enums\TicketStatus;
 use App\Http\Controllers\Controller;
 use App\Models\Ticket;
 use App\Models\TicketNote;
+use App\Services\ContactIntakeContainedException;
 use App\Services\EmailService;
 use App\Services\TicketService;
 use App\Support\AppTimezone;
@@ -88,6 +89,11 @@ class TicketNoteController extends Controller
                         $flashType = 'warning';
                         $flashMessage = 'Reply added, but email is not configured — the client was not notified.';
                     }
+                } catch (ContactIntakeContainedException) {
+                    // A containment refusal, not a delivery failure: never tell staff to mail
+                    // unverified intake by hand (c1:v3:1).
+                    $flashType = 'warning';
+                    $flashMessage = 'Reply added, but not emailed: outbound mail is withheld from unverified web-form intake until staff verify it.';
                 } catch (\Throwable $e) {
                     Log::warning('[TicketNote] Failed to send reply email', [
                         'ticket' => $ticket->id,

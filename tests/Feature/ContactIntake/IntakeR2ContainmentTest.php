@@ -18,6 +18,9 @@ use App\Models\TicketCategoryChangeLog;
 use App\Models\TicketNote;
 use App\Models\User;
 use App\Services\Agent\Escalation\ClientEscalationNoiseGate;
+use App\Services\Agent\SendReplyTool;
+use App\Services\Technician\TechnicianDraft;
+use App\Services\Technician\TechnicianReplyDrafter;
 use App\Services\Mcp\TicketTimeline;
 use App\Services\Triage\ContextBuilder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -140,5 +143,97 @@ class IntakeR2ContainmentTest extends TestCase
         $this->upload($person, $ticket, $visible->id)->assertOk();
         $this->assertSame(TicketNote::class, Attachment::latest('id')->firstOrFail()->attachable_type);
         $this->assertSame($visible->id, (int) Attachment::latest('id')->firstOrFail()->attachable_id);
+    }
+
+    /** c1:v2:1 — a contained client reply is neither drafted against blind nor marked addressed. */
+    public function test_send_reply_waits_for_verification_of_a_contained_client_reply(): void
+    {
+        User::factory()->create();
+        $this->mock(TechnicianReplyDrafter::class, fn ($m) => $m->shouldReceive('draft')->once()
+            ->andReturn(new TechnicianDraft('Synthetic verified reply.', null, 0)));
+        $ticket = Ticket::factory()->create(['status' => TicketStatus::InProgress]);
+        $contained = new TicketNote(['ticket_id' => $ticket->id, 'body' => 'x', 'note_type' => NoteType::Reply,
+            'who_type' => WhoType::EndUser, 'ai_authored' => false, 'is_private' => true, 'noted_at' => now()->subMinute()]);
+        $contained->forceFill(['contact_intake_origin' => true])->save();
+
+        $this->assertSame("Left ticket #{$ticket->id} (a client message awaits staff verification; no reply drafted).",
+            app(SendReplyTool::class)->execute($ticket, ['reason' => 'Synthetic']));
+        $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->count());
+
+        // Positive control: once verified, the same message is still unaddressed and is drafted.
+        $contained->forceFill(['contact_intake_verified_at' => now()])->save();
+        $this->assertStringContainsString('held for approval', app(SendReplyTool::class)->execute($ticket, ['reason' => 'Synthetic']));
+        $this->assertSame(1, TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'send_reply')->count());
+    }
+
+    /** c2:v2:1 — a contained reply backdated before our last draft (quarantine, then resolve) still blocks. */
+    public function test_backdated_contained_reply_blocks_drafting_until_verified(): void
+    {
+        User::factory()->create();
+        $this->mock(TechnicianReplyDrafter::class, fn ($m) => $m->shouldReceive('draft')->twice()
+            ->andReturn(new TechnicianDraft('Synthetic first reply.', null, 0), new TechnicianDraft('Synthetic second reply.', null, 0)));
+        $ticket = Ticket::factory()->create(['status' => TicketStatus::InProgress]);
+        $plainReply = fn () => TicketNote::create(['ticket_id' => $ticket->id, 'body' => 'plain', 'note_type' => NoteType::Reply,
+            'who_type' => WhoType::EndUser, 'ai_authored' => false, 'is_private' => false, 'noted_at' => now()]);
+        $tool = fn () => app(SendReplyTool::class)->execute($ticket, ['reason' => 'Synthetic']);
+        $runs = fn () => TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'send_reply')->count();
+
+        $plainReply();
+        $this->travel(5)->minutes();
+        $this->assertStringContainsString('held for approval', $tool());
+        $this->assertSame(1, $runs());
+
+        // Written hours later, stamped with a submission time that predates the draft above.
+        $this->travel(4)->hours();
+        $contained = new TicketNote(['ticket_id' => $ticket->id, 'body' => 'x', 'note_type' => NoteType::Reply,
+            'who_type' => WhoType::EndUser, 'ai_authored' => false, 'is_private' => true, 'noted_at' => now()->subHours(5)]);
+        $contained->forceFill(['contact_intake_origin' => true])->save();
+        $this->travel(1)->hours();
+        $plainReply();
+        $this->travel(1)->minutes();
+
+        $this->assertSame("Left ticket #{$ticket->id} (a client message awaits staff verification; no reply drafted).", $tool());
+        $this->assertSame(1, $runs());
+
+        // Positive control: once verified, the ticket is drafted against.
+        $contained->forceFill(['contact_intake_verified_at' => now()])->save();
+        $this->travel(1)->minutes();
+        $this->assertStringContainsString('held for approval', $tool());
+    }
+
+    /** c2:v2:1 — a backdated contained reply verified after our last draft is still unaddressed. */
+    public function test_backdated_contained_reply_is_drafted_after_verification_without_a_later_message(): void
+    {
+        User::factory()->create();
+        $this->mock(TechnicianReplyDrafter::class, fn ($m) => $m->shouldReceive('draft')->twice()
+            ->andReturn(new TechnicianDraft('Synthetic first reply.', null, 0), new TechnicianDraft('Synthetic second reply.', null, 0)));
+        $ticket = Ticket::factory()->create(['status' => TicketStatus::InProgress]);
+        $tool = fn () => app(SendReplyTool::class)->execute($ticket, ['reason' => 'Synthetic']);
+
+        TicketNote::create(['ticket_id' => $ticket->id, 'body' => 'plain', 'note_type' => NoteType::Reply,
+            'who_type' => WhoType::EndUser, 'ai_authored' => false, 'is_private' => false, 'noted_at' => now()]);
+        $this->travel(5)->minutes();
+        $this->assertStringContainsString('held for approval', $tool());
+
+        $this->travel(4)->hours();
+        $contained = new TicketNote(['ticket_id' => $ticket->id, 'body' => 'x', 'note_type' => NoteType::Reply,
+            'who_type' => WhoType::EndUser, 'ai_authored' => false, 'is_private' => true, 'noted_at' => now()->subHours(5)]);
+        $contained->forceFill(['contact_intake_origin' => true])->save();
+        $this->travel(1)->minutes();
+        $this->assertSame("Left ticket #{$ticket->id} (nothing unaddressed to reply to).", $tool());
+
+        $contained->forceFill(['contact_intake_verified_at' => now()])->save();
+        $this->travel(1)->minutes();
+        $this->assertStringContainsString('held for approval', $tool());
+    }
+
+    /** c1:v3:1 — the web reply path reports a containment refusal, not a delivery failure. */
+    public function test_staff_reply_on_unverified_form_ticket_reports_containment_not_delivery_failure(): void
+    {
+        $user = User::factory()->create();
+        $ticket = $this->formTicket();
+        $this->actingAs($user)->post(route('tickets.notes.store', $ticket), [
+            'body' => 'Synthetic staff reply', 'note_type' => 'reply', 'is_private' => '0', 'to_email' => 'visitor@example.test',
+        ])->assertSessionHas('warning', 'Reply added, but not emailed: outbound mail is withheld from unverified web-form intake until staff verify it.');
     }
 }

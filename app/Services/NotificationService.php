@@ -26,6 +26,10 @@ class NotificationService
      */
     public function notifyTicketCreated(Ticket $ticket): void
     {
+        if ($ticket->isUnverifiedContactIntake()) {
+            return;
+        }
+
         $ticket->loadMissing('client');
         $context = ($ticket->client?->name ?? 'Unknown client').' — '.($ticket->source?->label() ?? 'Manual');
 
@@ -54,9 +58,12 @@ class NotificationService
      */
     public function notifyNoteAdded(Ticket $ticket, TicketNote $note, int $authorUserId): void
     {
-        if ($note->isUnverifiedContactIntake() || $ticket->isUnverifiedContactIntake()) {
+        // A held ticket is contained as a whole. A contained note on an ordinary ticket is not
+        // hidden: the assignee is told a client wrote, but its body never leaves the PSA (r2 diff:1).
+        if ($ticket->isUnverifiedContactIntake()) {
             return;
         }
+        $contained = $note->isUnverifiedContactIntake();
 
         if (! $ticket->assignee_id || $ticket->assignee_id === $authorUserId) {
             return;
@@ -75,11 +82,11 @@ class NotificationService
             $event->value,
             $ticket->id,
             $authorUserId,
-            Str::limit($note->body, 200),
+            $contained ? 'Unverified web-form message; content withheld until staff verify it.' : Str::limit($note->body, 200),
         );
 
         // Notify portal contact when a staff member adds a public reply
-        if (! $note->is_private && $note->note_type === NoteType::Reply && $ticket->contact_id) {
+        if (! $contained && ! $note->is_private && $note->note_type === NoteType::Reply && $ticket->contact_id) {
             $this->notifyPortalContact($ticket, 'staff_reply', Str::limit($note->body, 500));
         }
     }

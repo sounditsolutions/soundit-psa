@@ -75,7 +75,7 @@ class TicketNoteObserver
 
     private function emitClientReplySignal(TicketNote $note): void
     {
-        if ($note->contact_intake_origin || $note->note_type !== NoteType::Reply || $note->is_private || $note->who_type !== WhoType::EndUser) {
+        if ($note->isUnverifiedContactIntake() || $note->note_type !== NoteType::Reply || $note->is_private || $note->who_type !== WhoType::EndUser) {
             return;
         }
 
