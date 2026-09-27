@@ -35,7 +35,7 @@ class RecalculateTicketSla extends Command
         $clearMissing = (bool) $this->option('clear-missing');
 
         // Only tickets attached to a contract can carry contract-derived SLA.
-        $query = Ticket::query()
+        $query = Ticket::automationVisible()
             ->whereNotNull('contract_id')
             ->with('contract');
 

@@ -77,7 +77,7 @@ class MineTicketKnowledge implements ShouldQueue
             return;
         }
 
-        $ticket = Ticket::find($this->ticketId);
+        $ticket = Ticket::automationVisible()->find($this->ticketId);
 
         // ── Gate 2: ticket must exist, have a resolution, not be a merge closure ──
         if (! $ticket) {

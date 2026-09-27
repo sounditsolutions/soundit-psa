@@ -45,7 +45,7 @@ class SendPortalNotification implements ShouldQueue
             return;
         }
 
-        $ticket = Ticket::find($this->ticketId);
+        $ticket = Ticket::portalVisible()->find($this->ticketId);
         if (! $ticket) {
             return;
         }

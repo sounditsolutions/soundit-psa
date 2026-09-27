@@ -26,7 +26,7 @@ class SendT2TCallback implements ShouldQueue
 
     public function handle(): void
     {
-        $ticket = Ticket::with(['client', 'contact', 'assignee'])->find($this->ticketId);
+        $ticket = Ticket::automationVisible()->with(['client', 'contact', 'assignee'])->find($this->ticketId);
 
         if (! $ticket) {
             Log::warning('[T2T] Callback: ticket not found', ['ticket_id' => $this->ticketId]);

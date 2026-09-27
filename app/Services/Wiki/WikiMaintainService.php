@@ -174,10 +174,10 @@ class WikiMaintainService
     {
         $cutoff = now()->subDays(WikiConfig::staleOpenTicketDays());
 
-        $candidates = Ticket::query()
+        $candidates = Ticket::automationVisible()
             ->whereNotIn('status', $this->closedTicketStatuses()) // open tickets only
             ->where('updated_at', '<', $cutoff)
-            ->whereHas('notes') // substantive content exists
+            ->whereHas('notes', fn ($q) => $q->automationVisible()) // substantive visible content exists
             ->whereNotExists(function ($q) {
                 $q->select(DB::raw(1))
                     ->from('wiki_runs')

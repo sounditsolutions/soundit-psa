@@ -869,7 +869,7 @@ class StaffCalendarToolExecutor
                 return $this->declined("Calendar owner {$upn} is no longer on the allowlist; the staged write was refused. Add it back (or deny and re-stage) if this is still intended.");
             }
 
-            $ticket = Ticket::find((int) ($payload['ticket_id'] ?? 0));
+            $ticket = Ticket::automationVisible()->find((int) ($payload['ticket_id'] ?? 0));
             if ($ticket === null) {
                 $run->releaseClaim();
 
@@ -1099,7 +1099,7 @@ class StaffCalendarToolExecutor
             return ['error' => 'ticket_id is required (the ticket this calendar action traces to) and must be a positive integer.'];
         }
 
-        $ticket = Ticket::find($ticketId);
+        $ticket = Ticket::automationVisible()->find($ticketId);
         if ($ticket === null) {
             return ['error' => "ticket_id {$ticketId} does not resolve to an existing ticket."];
         }

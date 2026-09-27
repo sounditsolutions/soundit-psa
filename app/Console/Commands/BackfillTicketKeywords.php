@@ -27,7 +27,7 @@ class BackfillTicketKeywords extends Command
         $openStatuses = ['new', 'in_progress', 'pending_client', 'pending_vendor'];
         $cutoff = now()->subDays(30);
 
-        $query = Ticket::query()
+        $query = Ticket::automationVisible()
             ->where(function ($q) use ($openStatuses, $cutoff) {
                 $q->whereIn('status', $openStatuses)
                     ->orWhere(function ($r) use ($cutoff) {

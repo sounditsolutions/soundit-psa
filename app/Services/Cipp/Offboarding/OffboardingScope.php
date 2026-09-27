@@ -36,7 +36,7 @@ class OffboardingScope
     public function approver(int $id, TechnicianRun $run): void
     {
         $this->reader($id, $run);
-        $ticket = Ticket::find($run->ticket_id);
+        $ticket = Ticket::automationVisible()->findOrFail($run->ticket_id);
         // Bearer-token proposals and human approval are separate principal types. Also
         // refuse the ticket's recorded human requester; never compare token IDs to user IDs.
         if ($ticket->created_by === $id) {
@@ -49,7 +49,7 @@ class OffboardingScope
     public function reader(int $id, TechnicianRun $run): void
     {
         $user = User::find($id);
-        $ticket = Ticket::find($run->ticket_id);
+        $ticket = Ticket::automationVisible()->find($run->ticket_id);
         if (! $user || ! $user->is_active || ! $ticket || ! $run->client_id
             || $ticket->client_id !== $run->client_id
             || (! $user->isAdmin() && (! $user->isTech() || $ticket->assignee_id !== $id))) {
