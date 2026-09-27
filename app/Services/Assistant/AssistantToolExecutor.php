@@ -881,8 +881,12 @@ class AssistantToolExecutor
         // externally-synced tickets (psa-gq0f).
         $ticket = Ticket::resolveReference($ticketId, $this->clientId);
 
-        if (! $ticket || $ticket->isUnverifiedContactIntake()) {
+        if (! $ticket) {
             return ['error' => 'Ticket not found or belongs to a different client'];
+        }
+
+        if ($ticket->isUnverifiedContactIntake()) {
+            return ['error' => 'Unverified contact intake.'];
         }
 
         \App\Services\Mcp\TicketToolActivityContext::current()?->validated($ticket);
@@ -992,8 +996,11 @@ class AssistantToolExecutor
 
         // CLIENT-SCOPED: cross-client ticket_id resolves to null → refused.
         $ticket = Ticket::resolveReference($ticketId, $this->clientId);
-        if (! $ticket || $ticket->isUnverifiedContactIntake()) {
+        if (! $ticket) {
             return ['error' => 'Ticket not found or belongs to a different client'];
+        }
+        if ($ticket->isUnverifiedContactIntake()) {
+            return ['error' => 'Unverified contact intake.'];
         }
 
         \App\Services\Mcp\TicketToolActivityContext::current()?->validated($ticket);

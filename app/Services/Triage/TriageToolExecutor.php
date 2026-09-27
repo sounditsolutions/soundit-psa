@@ -374,8 +374,12 @@ class TriageToolExecutor
         // externally-synced tickets (psa-gq0f).
         $ticket = Ticket::resolveReference($ticketId, $this->clientId);
 
-        if (! $ticket || $ticket->isUnverifiedContactIntake()) {
+        if (! $ticket) {
             return ['error' => 'Ticket not found or belongs to a different client'];
+        }
+
+        if ($ticket->isUnverifiedContactIntake()) {
+            return ['error' => 'Unverified contact intake.'];
         }
 
         $notes = TicketNote::automationVisible()->where('ticket_id', $ticket->id)

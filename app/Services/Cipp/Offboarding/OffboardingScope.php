@@ -48,6 +48,9 @@ class OffboardingScope
     /** Local staff ACL: admins, or the technician assigned to this same-client ticket. */
     public function reader(int $id, TechnicianRun $run): void
     {
+        if (Ticket::find($run->ticket_id)?->isUnverifiedContactIntake()) {
+            throw new RuntimeException('The ticket is an unverified contact intake held for staff verification; offboarding is refused until it is verified.');
+        }
         $user = User::find($id);
         $ticket = Ticket::automationVisible()->find($run->ticket_id);
         if (! $user || ! $user->is_active || ! $ticket || ! $run->client_id
