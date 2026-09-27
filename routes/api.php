@@ -23,6 +23,8 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('/health', [HealthController::class, 'index']);
 
+Route::post('/intake/contact-submissions', \App\Http\Controllers\Api\ContactSubmissionController::class);
+
 // NinjaRMM webhooks — no auth available from Ninja's side
 Route::post('webhooks/ninja', [NinjaWebhookController::class, 'handle']);
 

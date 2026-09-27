@@ -94,6 +94,12 @@
                 <i class="bi bi-shield-lock sidebar-icon"></i>
                 <span class="sidebar-label">Phone Directory</span>
             </a>
+            @if(auth()->user()->is_active && (auth()->user()->isAdmin() || auth()->user()->isTech()))
+            <a href="{{ route('contact-intake.index') }}" class="sidebar-link {{ request()->routeIs('contact-intake.*') ? 'active' : '' }}"
+               @if(request()->routeIs('contact-intake.*')) aria-current="page" @endif>
+                <i class="bi bi-inbox sidebar-icon"></i><span class="sidebar-label">Contact intake</span>
+            </a>
+            @endif
             <a href="{{ route('emails.index') }}"
                class="sidebar-link {{ request()->routeIs('emails.*') ? 'active' : '' }}"
                @if(request()->routeIs('emails.*')) aria-current="page" @endif
