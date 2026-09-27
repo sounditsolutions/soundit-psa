@@ -363,6 +363,9 @@ class TicketService
 
     public function mergeTickets(Ticket $primary, Ticket $secondary, int $mergedByUserId): void
     {
+        if ($primary->fresh()?->isUnverifiedContactIntake() || $secondary->fresh()?->isUnverifiedContactIntake()) {
+            throw new \InvalidArgumentException('Contact intake requires staff verification before merge.');
+        }
         // Guards
         if ($primary->id === $secondary->id) {
             throw new \InvalidArgumentException('Cannot merge a ticket into itself.');

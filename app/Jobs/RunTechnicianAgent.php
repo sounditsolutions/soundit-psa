@@ -60,7 +60,7 @@ class RunTechnicianAgent implements ShouldQueue
         }
 
         // 2. Ticket must exist.
-        $ticket = Ticket::find($this->ticketId);
+        $ticket = Ticket::automationVisible()->find($this->ticketId);
         if (! $ticket) {
             return;
         }

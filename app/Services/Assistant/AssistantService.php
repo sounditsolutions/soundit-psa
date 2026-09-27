@@ -251,7 +251,7 @@ PROMPT;
                 $prompt .= "\n\n".ContextBuilder::buildForTicket($ticket);
 
                 // Include most recent AI triage note if available
-                $triageNote = $ticket->notes()
+                $triageNote = $ticket->notes()->automationVisible()
                     ->where('note_type', NoteType::AiTriage)
                     ->orderByDesc('noted_at')
                     ->first();

@@ -72,6 +72,10 @@ class TechnicianActionGate
         $ticket = $actionType === 'propose_close' ? Ticket::find($ticketId) : null;
         $tier = $this->classifier->classify($actionType, $confidence, $ticket);
 
+        if (Ticket::find($ticketId)?->isUnverifiedContactIntake()) {
+            return $this->result('held', $tier, $this->audit($actionType, $tier, 'held', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, approvedRecipients: $approvedRecipients));
+        }
+
         // Kill-switch (pre-execution barrier) — fail-closed.
         if (TechnicianConfig::killSwitchEngaged()) {
             return $this->result('held', $tier, $this->audit($actionType, $tier, 'held', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, approvedRecipients: $approvedRecipients));
@@ -124,12 +128,15 @@ class TechnicianActionGate
         // (e.g. the acknowledgment email) is performed by the caller AFTER this
         // returns 'executed', never inside this transaction.
         $log = DB::transaction(function () use ($executor, $actionType, $tier, $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, $attributedApproverId, $approvedRecipients): TechnicianActionLog {
+            if (Ticket::whereKey($ticketId)->lockForUpdate()->first()?->isUnverifiedContactIntake()) {
+                return $this->audit($actionType, $tier, 'held', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, approvedRecipients: $approvedRecipients);
+            }
             $executor();
 
             return $this->audit($actionType, $tier, 'executed', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, $attributedApproverId, $approvedRecipients);
         });
 
-        return $this->result('executed', $tier, $log);
+        return $this->result($log->result_status, $tier, $log);
     }
 
     private function result(string $status, TechnicianTier $tier, TechnicianActionLog $log): TechnicianActionResult

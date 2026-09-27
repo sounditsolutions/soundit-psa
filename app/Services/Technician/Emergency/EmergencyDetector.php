@@ -15,6 +15,10 @@ class EmergencyDetector
 {
     public function assess(Ticket $ticket, int $aiSeverity = 0): EmergencyAssessment
     {
+        if ($ticket->isUnverifiedContactIntake()) {
+            return new EmergencyAssessment(false, 0, [], '');
+        }
+
         // CO-12: clamp the AI-raised severity to a sane band BEFORE it can influence
         // anything. Guards the future AI-raise path against injected severity
         // inflation (or a negative underflow); rule signals still floor on top.

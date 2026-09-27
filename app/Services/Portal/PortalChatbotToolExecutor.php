@@ -239,7 +239,7 @@ class PortalChatbotToolExecutor
      */
     private function ticketScope()
     {
-        $query = Ticket::where('client_id', $this->clientId);
+        $query = Ticket::portalVisible()->where('client_id', $this->clientId);
 
         if (! $this->companyWideAccess) {
             // Null personId with no company-wide access matches nothing (safe).

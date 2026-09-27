@@ -29,7 +29,7 @@ class PortalTicketController extends Controller
         $person = $request->attributes->get('portal_person');
         $clientId = $request->attributes->get('portal_client_id');
 
-        $query = Ticket::where('client_id', $clientId);
+        $query = Ticket::portalVisible()->where('client_id', $clientId);
         if (! $person->company_wide_access) {
             $query->where('contact_id', $person->id);
         }
@@ -230,6 +230,8 @@ class PortalTicketController extends Controller
 
     private function authorizePortalAccess(Ticket $ticket, int $clientId, $person): void
     {
+        abort_if($ticket->isUnverifiedContactIntake(), 404);
+
         if ($ticket->client_id !== $clientId) {
             abort(403);
         }

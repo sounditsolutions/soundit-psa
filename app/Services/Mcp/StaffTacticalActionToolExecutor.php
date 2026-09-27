@@ -288,7 +288,7 @@ class StaffTacticalActionToolExecutor
             }
 
             $asset = Asset::with('tacticalAsset')->find((int) ($payload['asset_id'] ?? 0));
-            $ticket = Ticket::find((int) ($payload['ticket_id'] ?? 0));
+            $ticket = Ticket::automationVisible()->find((int) ($payload['ticket_id'] ?? 0));
             if (! $asset || ! $ticket || (int) $ticket->client_id !== (int) $run->client_id) {
                 $run->releaseClaimTo($releaseState);
 
@@ -1022,7 +1022,7 @@ class StaffTacticalActionToolExecutor
             return $required ? ['error' => 'ticket_id is required for staged Tactical actions'] : null;
         }
 
-        $ticket = Ticket::find($ticketId);
+        $ticket = Ticket::automationVisible()->find($ticketId);
         if (! $ticket || (int) $ticket->client_id !== $clientId) {
             return ['error' => 'Ticket not found or belongs to a different client'];
         }

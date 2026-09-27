@@ -474,7 +474,7 @@ class TriagePipeline
         }
 
         // Update ticket notes that defaulted to billable=true before classification
-        $notes = TicketNote::where('ticket_id', $ticket->id)
+        $notes = TicketNote::automationVisible()->where('ticket_id', $ticket->id)
             ->where('is_billable', '!=', $shouldBeBillable)
             ->whereNotNull('time_minutes')
             ->where('time_minutes', '>', 0)

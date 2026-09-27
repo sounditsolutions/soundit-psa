@@ -28,7 +28,7 @@ class RunTriagePipeline implements ShouldQueue
     {
         // Use pessimistic locking to prevent concurrent runs on same ticket
         $ticket = DB::transaction(function () {
-            $ticket = Ticket::where('id', $this->ticketId)->lockForUpdate()->first();
+            $ticket = Ticket::automationVisible()->where('id', $this->ticketId)->lockForUpdate()->first();
 
             if (! $ticket) {
                 Log::warning('[Triage] Ticket not found', ['ticket_id' => $this->ticketId]);

@@ -105,7 +105,7 @@ class WikiBackfillService
      */
     private function candidates(?int $clientId, int $batch): \Illuminate\Support\Collection
     {
-        return Ticket::query()
+        return Ticket::automationVisible()
             ->whereIn('status', [
                 \App\Enums\TicketStatus::Closed->value,
                 \App\Enums\TicketStatus::Resolved->value,

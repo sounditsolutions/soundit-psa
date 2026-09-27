@@ -17,7 +17,7 @@ class PortalDashboardController extends Controller
         $person = $request->attributes->get('portal_person');
         $clientId = $request->attributes->get('portal_client_id');
 
-        $ticketQuery = Ticket::where('client_id', $clientId);
+        $ticketQuery = Ticket::portalVisible()->where('client_id', $clientId);
         if (! $person->company_wide_access) {
             $ticketQuery->where('contact_id', $person->id);
         }

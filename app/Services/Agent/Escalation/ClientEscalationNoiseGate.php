@@ -118,7 +118,7 @@ class ClientEscalationNoiseGate
 
         $systemTypes = array_map(fn (NoteType $t) => $t->value, NoteType::systemGenerated());
 
-        $note = TicketNote::query()
+        $note = TicketNote::automationVisible()
             ->whereHas('ticket', fn ($q) => $q
                 ->forClient($clientId)
                 ->open()

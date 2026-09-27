@@ -24,6 +24,9 @@ class ReplyDraftService
      */
     public function generateDraft(Ticket $ticket, ?string $instructions = null, ?string $techName = null): array
     {
+        if ($ticket->fresh()?->isUnverifiedContactIntake()) {
+            throw new \RuntimeException('Use the explicit contact intake staff draft workflow.');
+        }
         if (! AiConfig::isConfigured()) {
             throw new \RuntimeException('AI is not configured. Set it up in Settings > Integrations.');
         }

@@ -20,12 +20,16 @@ class WikiTicketContext
     /** Bounded, pre-redacted mining context for one closed ticket. */
     public function build(Ticket $ticket): string
     {
+        if ($ticket->isUnverifiedContactIntake()) {
+            throw new \DomainException('Unverified contact intake.');
+        }
+
         $parts = [];
         $parts[] = 'TICKET #'.$ticket->id.': '.$ticket->subject;
         $parts[] = "DESCRIPTION:\n".$this->clip((string) $ticket->description, self::MAX_BODY);
         $parts[] = "RESOLUTION:\n".$this->clip((string) $ticket->resolution, self::MAX_BODY);
 
-        $notes = $ticket->notes()
+        $notes = $ticket->notes()->automationVisible()
             ->whereIn('note_type', ['reply', 'ai_triage'])
             ->orderByDesc('noted_at')
             ->limit(self::MAX_NOTES)

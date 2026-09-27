@@ -52,6 +52,10 @@ class ContextBuilder
      */
     public static function buildForTicket(Ticket $ticket, bool $skipNotes = false, bool $includeClientSituation = false): string
     {
+        if ($ticket->isUnverifiedContactIntake()) {
+            throw new \DomainException('Unverified contact intake.');
+        }
+
         $eagerLoads = [
             'client',
             'contact',
@@ -61,7 +65,7 @@ class ContextBuilder
         ];
 
         if (! $skipNotes) {
-            $eagerLoads['notes'] = fn ($q) => $q->orderByDesc('noted_at')->limit(self::MAX_NOTES);
+            $eagerLoads['notes'] = fn ($q) => $q->automationVisible()->orderByDesc('noted_at')->limit(self::MAX_NOTES);
             $eagerLoads[] = 'notes.author';
             $eagerLoads[] = 'notes.email';
         }
@@ -145,7 +149,12 @@ class ContextBuilder
      */
     public static function buildConversationContext(Ticket $ticket, int $limit = 20, bool $publicOnly = true): string
     {
+        if ($ticket->isUnverifiedContactIntake()) {
+            throw new \DomainException('Unverified contact intake.');
+        }
+
         $query = $ticket->notes()
+            ->automationVisible()
             ->with(['author', 'email'])
             ->orderBy('noted_at', 'asc')
             ->limit($limit);
@@ -242,9 +251,13 @@ class ContextBuilder
      */
     public static function buildMultimodalContent(Ticket $ticket): array
     {
+        if ($ticket->isUnverifiedContactIntake()) {
+            throw new \DomainException('Unverified contact intake.');
+        }
+
         $ticket->loadMissing([
             'attachments',
-            'notes' => fn ($q) => $q->orderBy('noted_at', 'asc')->limit(self::MAX_NOTES),
+            'notes' => fn ($q) => $q->automationVisible()->orderBy('noted_at', 'asc')->limit(self::MAX_NOTES),
             'notes.author',
             'notes.email',
             'notes.attachments',
@@ -282,6 +295,9 @@ class ContextBuilder
 
         // Notes with interleaved images (chronological order)
         foreach ($ticket->notes as $note) {
+            if ($note->isUnverifiedContactIntake()) {
+                continue;
+            }
             $author = $note->author?->name ?? $note->author_name ?? 'System';
             $date = $note->noted_at?->toDateTimeString() ?? $note->created_at->toDateTimeString();
             $type = $note->note_type?->label() ?? 'Note';
@@ -772,6 +788,9 @@ class ContextBuilder
         $lines = ['## Recent Notes (newest first)'];
 
         foreach ($ticket->notes as $note) {
+            if ($note->isUnverifiedContactIntake()) {
+                continue;
+            }
             $author = $note->author?->name ?? $note->author_name ?? 'System';
             $date = $note->noted_at?->toDateTimeString() ?? $note->created_at->toDateTimeString();
             $type = $note->note_type?->label() ?? 'Note';

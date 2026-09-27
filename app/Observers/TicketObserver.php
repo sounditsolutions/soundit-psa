@@ -45,6 +45,10 @@ class TicketObserver
      */
     public function created(Ticket $ticket): void
     {
+        if ($ticket->isUnverifiedContactIntake()) {
+            return;
+        }
+
         // Taxonomy audit for a category set AT creation (so-0ftg CREATE path):
         // mirrors updated()'s change log — same seam, so every create surface
         // (web form, MCP create_ticket, imports) is captured without opting in.
@@ -105,6 +109,10 @@ class TicketObserver
      */
     public function updating(Ticket $ticket): void
     {
+        if ($ticket->getRawOriginal('contact_intake_origin')) {
+            $ticket->contact_intake_origin = true;
+        }
+
         if ($ticket->isDirty('category_id')) {
             $ticket->category_source = TicketCategoryChangeLog::attributionSource();
         }
@@ -181,6 +189,10 @@ class TicketObserver
 
     public function updated(Ticket $ticket): void
     {
+        if ($ticket->isUnverifiedContactIntake()) {
+            return;
+        }
+
         // Taxonomy change log (so-0ftg Part 4): every tickets.category_id move
         // is recorded here — the one seam ALL writers pass through (triage
         // mapping, web UI, future MCP tools) — so Phase-1 mapping refinement

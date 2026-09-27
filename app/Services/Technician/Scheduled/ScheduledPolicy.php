@@ -111,7 +111,7 @@ final class ScheduledPolicy
 
     public function ticket(TechnicianRun $run): void
     {
-        $ticket = Ticket::find($run->ticket_id);
+        $ticket = Ticket::automationVisible()->find($run->ticket_id);
         if (! $ticket || (int) $ticket->client_id !== (int) $run->client_id || ! $run->client_id) {
             throw new InvalidArgumentException('ticket_binding_changed');
         }
