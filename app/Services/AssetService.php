@@ -35,6 +35,10 @@ class AssetService
         'servosity_dr_backup_id' => ['servosity_backup_enabled', 'servosity_backup_password'],
         'm365_device_id' => ['m365_compliance_state', 'm365_is_compliant', 'm365_enrollment_type', 'm365_os_version', 'm365_last_sync_at', 'm365_device_owner_type', 'm365_defender_status', 'm365_defender_version', 'm365_last_scan_at', 'm365_synced_at'],
         'screenconnect_session_id' => ['screenconnect_online', 'screenconnect_client_version', 'screenconnect_last_seen_at', 'screenconnect_synced_at'],
+        // Not unique (see the LITSRMM migration), but an identity all the same:
+        // LitsrmmAssetSyncService follows it first, so a merge must carry it to
+        // the survivor or the link is stranded on the tombstone.
+        'litsrmm_device_id' => ['litsrmm_synced_at'],
     ];
 
     /** Plain descriptive fields carried onto the survivor only where it is blank. */

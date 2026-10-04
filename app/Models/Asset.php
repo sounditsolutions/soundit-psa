@@ -90,6 +90,8 @@ class Asset extends Model
         'autoelevate_agent_version',
         'autoelevate_last_checked_in_at',
         'autoelevate_synced_at',
+        'litsrmm_device_id',
+        'litsrmm_synced_at',
     ];
 
     protected function casts(): array
@@ -129,6 +131,7 @@ class Asset extends Model
             'screenconnect_synced_at' => 'datetime',
             'autoelevate_last_checked_in_at' => 'datetime',
             'autoelevate_synced_at' => 'datetime',
+            'litsrmm_synced_at' => 'datetime',
         ];
     }
 

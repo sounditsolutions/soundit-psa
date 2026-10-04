@@ -2380,6 +2380,17 @@ class IntegrationsController extends Controller
         }
     }
 
+    public function syncLitsrmmDevices(\App\Services\Litsrmm\LitsrmmAssetSyncService $sync)
+    {
+        if (! \App\Support\LitsrmmConfig::isAvailable()) {
+            return back()->with('error', 'LITSRMM is switched off or not configured. Nothing was read.');
+        }
+
+        $result = $sync->sync();
+
+        return back()->with($result->errors > 0 ? 'error' : 'success', \App\Services\Litsrmm\LitsrmmAssetSyncService::describe($result));
+    }
+
     public function syncControlDDevices()
     {
         if (! ControlDConfig::isConfigured()) {

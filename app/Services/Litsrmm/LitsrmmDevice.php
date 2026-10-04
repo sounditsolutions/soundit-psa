@@ -2,6 +2,7 @@
 
 namespace App\Services\Litsrmm;
 
+use App\Support\LitsrmmSerial;
 use DateTimeImmutable;
 use DateTimeZone;
 
@@ -36,13 +37,6 @@ final class LitsrmmDevice
     /** Five values, not a boolean: "offline" is a recorded fact, not "unknown". */
     public const AVAILABILITY_STATES = ['online', 'offline', 'overdue', 'dormant', 'retired'];
 
-    /**
-     * Vendor placeholder serials that firmware reports when no real serial was
-     * burned in. The vendor names both as placeholders that occur in real
-     * data; the capture carries the first. They are REAL values in the payload and are kept in $serial; they are only withheld from
-     * matchableSerial(). Compared trimmed and case-insensitively.
-     */
-    public const PLACEHOLDER_SERIALS = ['system serial number', 'default string'];
 
     private const REQUIRED = ['id', 'clientId', 'clientName', 'hostname', 'enrollmentState', 'availabilityState'];
 
@@ -134,25 +128,25 @@ final class LitsrmmDevice
 
     /**
      * The serial, if it can identify a machine at all: null when the vendor
-     * reports none, a blank string, or a firmware placeholder.
+     * reports none, a blank string, a firmware placeholder ("System Serial
+     * Number", "Default string", "To be filled by O.E.M." and their family),
+     * or a value too short or too repetitive to be one. The rule is
+     * App\Support\LitsrmmSerial, which is the list the vendor's own RMM
+     * refuses, so both sides of the integration withhold the same values.
+     * A placeholder is still REAL data and stays in $serial.
      *
      * Even a non-placeholder serial is NOT a key: the vendor says serial
      * uniqueness is luck, not a guarantee. Nothing may key a device on this
-     * value; `id` is the identity.
+     * value; `id` is the identity. It may only propose a first link, which
+     * the asset sync then refuses when it is ambiguous.
      */
     public function matchableSerial(): ?string
     {
-        if ($this->serial === null) {
+        if (LitsrmmSerial::identity($this->serial) === null) {
             return null;
         }
 
-        $trimmed = trim($this->serial);
-
-        if ($trimmed === '' || in_array(strtolower($trimmed), self::PLACEHOLDER_SERIALS, true)) {
-            return null;
-        }
-
-        return $trimmed;
+        return trim((string) $this->serial);
     }
 
     /**

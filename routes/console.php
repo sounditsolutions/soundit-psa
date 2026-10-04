@@ -27,6 +27,17 @@ Schedule::command('level:sync-devices')
     ->withoutOverlapping()
     ->runInBackground();
 
+// LITSRMM device sync — every 4 hours for mapped clients: creates and updates
+// assets from the RMM, and keeps the LITSRMM server/workstation seats. Skipped
+// while the integration is switched off or unconfigured, and while no client is
+// mapped (a run then would only sweep, and there is nothing to sweep).
+Schedule::command('litsrmm:sync-devices')
+    ->everyFourHours()
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->when(fn () => \App\Support\LitsrmmConfig::isAvailable()
+        && \App\Models\Client::whereNotNull('litsrmm_client_id')->exists());
+
 // Mesh license sync — daily
 Schedule::command('mesh:sync-licenses')
     ->dailyAt('04:30')

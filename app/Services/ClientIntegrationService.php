@@ -354,7 +354,7 @@ class ClientIntegrationService
                 'icon' => 'bi-pc-display',
                 'column' => 'litsrmm_client_id',
                 'cast' => 'string',
-                'licenseVendor' => null,
+                'licenseVendor' => \App\Services\Litsrmm\LitsrmmAssetSyncService::LICENSE_VENDOR,
                 'configCheck' => fn () => LitsrmmConfig::isAvailable(),
                 'fetchEntities' => fn () => app(LitsrmmClient::class)->getClients(),
                 'entityId' => fn ($e) => $e['id'] ?? '',

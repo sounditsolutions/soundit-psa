@@ -505,6 +505,65 @@ class LitsrmmClient
     }
 
     /**
+     * One device plus the `inventory` its agent reported: `GET /v1/devices/{id}`.
+     * READ ONLY.
+     *
+     * The list carries no CPU, RAM, disk or IP; this is where they come from,
+     * the same list-then-detail shape as LevelClient::getDevice(). Each entry
+     * of `inventory` is `{collectedAt, payload}` keyed by category (hardware,
+     * disks, network, system). A category never collected is ABSENT from it,
+     * and a device without the vendor's agent has an empty inventory. That is
+     * a normal answer. A body WITHOUT the field is not, and is refused: it
+     * cannot say whether the machine reported nothing.
+     *
+     * The id is refused before any request unless it is 1-64 letters, digits
+     * or hyphens. It becomes a path segment, and a slash, dot or percent sign
+     * in it could aim the credentialed request at a different route.
+     *
+     * An answer about a different device is refused. Writing another
+     * machine's hardware onto an asset is the one mistake this read must
+     * never make possible.
+     *
+     * A 404 keeps its code, so a caller can tell "the device left between the
+     * list and this read" from a failure. 401 and 403 get the same distinct
+     * refusals as the list.
+     *
+     * @return array{device: LitsrmmDevice, inventory: array<string, mixed>}
+     *
+     * @throws LitsrmmClientException
+     */
+    public function getDevice(string $id): array
+    {
+        if (preg_match('/^[A-Za-z0-9-]{1,64}$/', $id) !== 1) {
+            throw new LitsrmmClientException('LITSRMM device id is not a plain identifier');
+        }
+
+        try {
+            $response = $this->get("v1/devices/{$id}");
+        } catch (LitsrmmClientException $e) {
+            throw self::deviceReadRefusal($e);
+        }
+
+        if (! array_key_exists('inventory', $response)) {
+            throw new LitsrmmClientException('LITSRMM /v1/devices/{id} response has no inventory field');
+        }
+
+        $inventory = $response['inventory'];
+
+        if (! is_array($inventory) || ($inventory !== [] && array_is_list($inventory))) {
+            throw new LitsrmmClientException('LITSRMM /v1/devices/{id} inventory is not an object');
+        }
+
+        $device = LitsrmmDevice::fromArray($response);
+
+        if ($device->id !== $id) {
+            throw new LitsrmmClientException('LITSRMM /v1/devices/{id} answered about a different device');
+        }
+
+        return ['device' => $device, 'inventory' => $inventory];
+    }
+
+    /**
      * 400, 401 and 403 mean three different things on /v1/devices and are
      * reported as three different refusals, each carrying the HTTP status as
      * its code. The vendor made 401 and 403 distinct on purpose: 401 is a

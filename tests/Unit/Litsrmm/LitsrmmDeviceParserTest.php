@@ -97,6 +97,13 @@ class LitsrmmDeviceParserTest extends TestCase
             'the other vendor-named placeholder' => ['Default string'],
             'case and padding' => ['  DEFAULT STRING '],
             'blank' => ['   '],
+            // The vendor's own RMM refuses these too (server/src/rmm/serial.ts);
+            // App\Support\LitsrmmSerial is the same list, so both sides agree.
+            'OEM filler' => ['To be filled by O.E.M.'],
+            'not specified' => ['Not Specified'],
+            'a lone zero' => ['0'],
+            'too short to identify anything' => ['A1B'],
+            'one character repeated' => ['0000000000'],
         ];
     }
 

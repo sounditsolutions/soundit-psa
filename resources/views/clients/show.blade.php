@@ -1076,6 +1076,14 @@
                                     @endif
                                 </div>
                                 @endif
+                                @if($vendor === 'litsrmm')
+                                <form method="POST" action="{{ route('clients.litsrmm.sync', $client) }}">
+                                    @csrf
+                                    <button type="submit" class="btn btn-outline-primary btn-sm mt-2">
+                                        <i class="bi bi-arrow-repeat me-1"></i>Sync devices
+                                    </button>
+                                </form>
+                                @endif
                                 <form method="POST" action="{{ route('clients.integrations.unlink', [$client, $vendor]) }}"
                                       onsubmit="return confirm('Unlink {{ $int['label'] }} \'{{ addslashes($int['entity_display']) }}\'?{{ $int['license_count'] > 0 ? ' This will deactivate synced licenses for this vendor.' : '' }}')">
                                     @csrf

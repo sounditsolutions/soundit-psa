@@ -251,6 +251,30 @@ class ClientIntegrationController extends Controller
      * Push Comet backup credentials to Tactical client custom fields.
      * Tactical PUT /clients/{id}/ requires {client: {id, name}, custom_fields: [...]} at top level.
      */
+    /**
+     * "Sync devices" on the client page's LITSRMM card: this client only. The
+     * refusals come first and read nothing, so a switched-off integration or
+     * an unlinked client never reaches the vendor.
+     */
+    public function syncLitsrmm(Client $client, \App\Services\Litsrmm\LitsrmmAssetSyncService $sync)
+    {
+        if (! \App\Support\LitsrmmConfig::isEnabled()) {
+            return back()->with('error', 'The LITSRMM integration is switched off. Nothing was read.');
+        }
+
+        if (! \App\Support\LitsrmmConfig::isConfigured()) {
+            return back()->with('error', 'LITSRMM has no API key or base URL. Nothing was read.');
+        }
+
+        if (blank($client->litsrmm_client_id)) {
+            return back()->with('error', "{$client->name} is not linked to LITSRMM. Nothing was read.");
+        }
+
+        $result = $sync->sync($client);
+
+        return back()->with($result->errors > 0 ? 'error' : 'success', \App\Services\Litsrmm\LitsrmmAssetSyncService::describe($result));
+    }
+
     private function pushCometCredsToTactical(Client $client): void
     {
         if (! \App\Support\TacticalConfig::isEnabled() || ! $client->tactical_site_id) {

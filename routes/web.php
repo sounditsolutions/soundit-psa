@@ -173,6 +173,7 @@ Route::middleware('auth')->group(function () {
     // the controld_onboard_client verb. 404 unless the onboarding switch + six defaults.
     Route::post('/clients/{client}/controld/onboard', [\App\Http\Controllers\Web\ClientControlDOnboardingController::class, 'stage'])->middleware(['admin', 'throttle:10,1'])->name('clients.controld.onboard');
     Route::post('/clients/{client}/comet/provision-user', [ClientIntegrationController::class, 'provisionCometUser'])->name('clients.comet.provision-user');
+    Route::post('/clients/{client}/litsrmm/sync', [ClientIntegrationController::class, 'syncLitsrmm'])->middleware('throttle:10,1')->name('clients.litsrmm.sync');
     Route::post('/clients/{client}/tactical/provision', [ClientIntegrationController::class, 'provisionTactical'])->name('clients.tactical.provision');
     // #3737: creates a customer in the accounting system, so Admin-only and throttled
     // like the Control D onboarding route above (the Comet/Tactical provision routes are not gated).
@@ -396,6 +397,7 @@ Route::middleware('auth')->group(function () {
     // the card rather than changed here.
     Route::post('/settings/integrations/litsrmm', [IntegrationsController::class, 'updateLitsrmm'])->middleware('admin')->name('settings.integrations.litsrmm.update');
     Route::post('/settings/integrations/litsrmm/test', [IntegrationsController::class, 'testLitsrmm'])->middleware('admin')->name('settings.integrations.litsrmm.test');
+    Route::post('/settings/integrations/litsrmm/sync-devices', [IntegrationsController::class, 'syncLitsrmmDevices'])->middleware('admin')->name('settings.integrations.litsrmm.sync-devices');
     Route::post('/settings/integrations/screenconnect', [IntegrationsController::class, 'updateScreenConnect'])->name('settings.integrations.screenconnect.update');
     Route::post('/settings/integrations/tactical', [IntegrationsController::class, 'updateTactical'])->name('settings.integrations.tactical.update');
     Route::post('/settings/integrations/tactical/test', [IntegrationsController::class, 'testTactical'])->name('settings.integrations.tactical.test');

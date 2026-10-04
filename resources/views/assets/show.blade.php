@@ -460,7 +460,15 @@
                                     @endif
                                     Tactical
                                 @endif
-                                @if(!$asset->ninja_id && !$asset->level_id && !$asset->screenconnect_session_id && !$asset->tacticalAsset)
+                                {{-- Plain text, not a link: the PSA reaches LITSRMM at an address
+                                     (often loopback) that means nothing in a technician's browser. --}}
+                                @if($asset->litsrmm_device_id)
+                                    @if($asset->ninja_id || $asset->level_id || $asset->screenconnect_session_id || $asset->tacticalAsset)
+                                        <span class="text-muted mx-1">|</span>
+                                    @endif
+                                    LITSRMM
+                                @endif
+                                @if(!$asset->ninja_id && !$asset->level_id && !$asset->screenconnect_session_id && !$asset->tacticalAsset && !$asset->litsrmm_device_id)
                                     <span class="text-muted">-</span>
                                 @endif
                             </td>
@@ -472,6 +480,8 @@
                                     {{ $asset->ninja_synced_at->diffForHumans() }}
                                 @elseif($asset->level_synced_at)
                                     {{ $asset->level_synced_at->diffForHumans() }}
+                                @elseif($asset->litsrmm_synced_at)
+                                    {{ $asset->litsrmm_synced_at->diffForHumans() }}
                                 @else
                                     <span class="text-muted">Never</span>
                                 @endif
