@@ -281,9 +281,12 @@ class StaffMeshAdminToolExecutor
      * Both verbs reach a PSA record only through its recorded mesh_rule_id
      * (removeAllowRuleTarget(), editAllowRuleTarget()), so for this record
      * the edit verb refuses the rule as FOREIGN and the remove verb, which
-     * also removes foreign rules, leaves this record open.
+     * also removes foreign rules, leaves this record open. The expiry job
+     * never removes a rule with no expiry (MeshAllowRule::scopeReapable), so
+     * nothing in the PSA closes the record: it keeps answering for its
+     * sender until a human clears it (#5497 item 4).
      */
-    private const PERMANENT_UNTIL_NO_ID = 'the PSA holds no upstream rule id for it, so mesh_edit_allow_rule cannot give it a date and mesh_remove_allow_rule would not close this record; check the rule in the Mesh portal';
+    private const PERMANENT_UNTIL_NO_ID = 'the PSA holds no upstream rule id for it, so mesh_edit_allow_rule cannot give it a date, mesh_remove_allow_rule would not close this record, and the expiry job never removes a rule with no expiry; this PSA record keeps blocking new allow rules for this sender until someone checks the rule in the Mesh portal and clears the record by hand';
 
     private const COMMENT_PREFIX = 'PSA allow';
 
@@ -481,32 +484,21 @@ class StaffMeshAdminToolExecutor
                 return ['error' => $message];
             }
 
-            if ($created->state === MeshAllowRule::STATE_REAPED || $created->state === MeshAllowRule::STATE_REMOVED) {
-                // PROVED ABSENT IS NOT AN IDEMPOTENT SUCCESS. The reaper only
-                // writes STATE_REAPED after a detail GET returned 404, and
-                // executeRemoveAllowRule() only writes STATE_REMOVED after
-                // ruleAbsent() proved the same (#5410), so this is the one
-                // branch where the PSA KNOWS no allow is in force.
-                // Answering it success:true/idempotent:true asserted an effect
-                // that does not exist on the machine-readable channel while
-                // only the prose said otherwise — and a caller that branches on
-                // that channel (approveStagedRun does, for idempotent outcomes)
-                // would record the sender as handled. The strictly LESS certain
-                // case above — no PSA row at all — is already refused; the
-                // certain one cannot be greener than the unknown one.
-                //
-                // Refused rather than re-staged deliberately: staging is a
-                // WEAKENING write, and whether a proved-absent sender should be
-                // re-stageable inside the 24-hour post-execution window is a
-                // design choice to take on its own evidence, not a side effect
-                // of fixing this classification.
-                $proof = $created->state === MeshAllowRule::STATE_REMOVED
-                    ? 'an approved mesh_remove_allow_rule has since proved it absent upstream'
-                    : 'the PSA has since proved it absent upstream';
-                $message = "An allow rule for '{$target['sender']}' was created for this client recently as PSA record #{$created->id}, but {$proof} (state '{$created->state}'), so NO allow is in force for this sender and nothing was staged now. Wait for the 24-hour post-execution dedup window to elapse and stage it again, or create the rule by hand in the Mesh portal.";
-                $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $baseHash, $message, $actorLabel);
+            // b5c (#5487, #5497 items 1-3): the dedup key says only that a
+            // create was audited 'executed' inside the window. Whether an
+            // allow is in force NOW depends on the record, so only an ACTIVE
+            // record with its upstream id (measured live, and reachable by
+            // the verbs) is answered as an idempotent success. Every other
+            // state is a refusal, with an audited blocked row: proved absent
+            // (removed, reaped) is not a success (b5b ruling), and an
+            // unmeasured one (unresolved, reap_failed, or active with its id
+            // cleared by display_id_lost) is not one either. The certain case
+            // cannot be greener than the unknown one above.
+            $refusal = self::recordRefusal($created, "An allow rule for '{$target['sender']}' was created for this client recently as PSA record #{$created->id}", false);
+            if ($refusal !== null) {
+                $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $baseHash, $refusal, $actorLabel);
 
-                return ['error' => $message];
+                return ['error' => $refusal];
             }
 
             return [
@@ -517,13 +509,13 @@ class StaffMeshAdminToolExecutor
                 'run_id' => $this->executedRunId('mesh_add_allow_rule', $clientId, $baseHash),
                 'sender' => $target['sender'],
                 'expires_at' => self::expiryValue($created->expires_at),
-                // #5410: a record with no upstream id cannot be reached by
-                // either verb PERMANENT_UNTIL names (permanentUntil()). A
-                // proved-absent record (removed or reaped) never reaches this
-                // answer; it is refused above.
                 'message' => 'This allow rule was already created recently: PSA record #'.$created->id.' is '
                     .match (true) {
-                        $created->isPermanent() => 'PERMANENT (it has no automatic expiry; '.self::permanentUntil($created).')',
+                        $created->isPermanent() => 'PERMANENT (it has no automatic expiry; '.self::PERMANENT_UNTIL.')',
+                        // #5497 item 3: an ACTIVE row past its date has not
+                        // been reaped yet; "set to expire" a past date reads
+                        // as a rule that is already gone.
+                        ! $created->expires_at->isFuture() => 'past its expiry ('.$created->expires_at->toDayDateTimeString().' UTC) but not yet removed by the expiry job, so it stays in force until that job removes it',
                         default => 'set to expire '.$created->expires_at->toDayDateTimeString().' UTC',
                     }
                     .", state '{$created->state}'"
@@ -536,6 +528,14 @@ class StaffMeshAdminToolExecutor
         // whatever its age. Creating a second identical rule would leave a
         // duplicate the reaper cannot distinguish by sender alone.
         $live = $this->liveAllowRule($clientId, $target['sender']);
+        // #5490: an ACTIVE record whose id display_id_lost cleared is not a
+        // measured allow; it is refused, not answered "already allowed".
+        $liveRefusal = $live === null ? null : self::recordRefusal($live, "An allow rule for '{$target['sender']}' is recorded for this client as PSA record #{$live->id}", false);
+        if ($liveRefusal !== null) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $baseHash, $liveRefusal, $actorLabel);
+
+            return ['error' => $liveRefusal];
+        }
         if ($live !== null) {
             return [
                 'success' => true,
@@ -548,7 +548,7 @@ class StaffMeshAdminToolExecutor
                 // unrecorded date" would read as a PSA bookkeeping gap rather
                 // than as the deliberate answer it is. Say permanent.
                 'message' => $live->isPermanent()
-                    ? "'{$target['sender']}' is already allowed for this client PERMANENTLY (PSA record #{$live->id}; it has no automatic expiry; ".self::permanentUntil($live).'); no proposal was staged.'
+                    ? "'{$target['sender']}' is already allowed for this client PERMANENTLY (PSA record #{$live->id}; it has no automatic expiry; ".self::PERMANENT_UNTIL.'); no proposal was staged.'
                     : "'{$target['sender']}' is already allowed for this client until "
                         .$live->expires_at->toDayDateTimeString().'; no proposal was staged.',
             ];
@@ -765,6 +765,22 @@ class StaffMeshAdminToolExecutor
         }
 
         if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+            // #5497 item 1: the audit key says a create ran inside the window,
+            // not that its rule is in force now. A record in any state but
+            // ACTIVE-with-its-id is refused with what that state proves, as at
+            // staging (recordRefusal()); an error releases the claim, the same
+            // as the unsettled brake below.
+            $created = $this->latestAllowRule($clientId, $target['sender']);
+            $refusal = $created === null
+                // Unknown is a refusal here too, as at staging.
+                ? "An allow rule for '{$target['sender']}' was created for this client recently, but the PSA holds no record of it, so whether it is in force cannot be stated. Resolve it in the Mesh portal by hand. No upstream call was made and the lifetime on this proposal was NOT applied."
+                : self::recordRefusal($created, "An allow rule for '{$target['sender']}' was created for this client recently as PSA record #{$created->id}", true);
+            if ($refusal !== null) {
+                $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $refusal, $actorLabel, $run?->id, $approverId);
+
+                return ['error' => $refusal];
+            }
+
             $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, 'Duplicate Mesh allow rule suppressed before upstream call.', $actorLabel, $run?->id, $approverId);
 
             return ['success' => true, 'idempotent' => true, 'message' => 'This allow rule was already created recently; no upstream call was made.'];
@@ -776,6 +792,13 @@ class StaffMeshAdminToolExecutor
         // write: whichever is approved first, the other must not create a
         // duplicate rule the reaper cannot tell apart by sender alone.
         $live = $this->liveAllowRule($clientId, $target['sender']);
+        // #5490: as at staging, an id-less ACTIVE record is not a measured allow.
+        $liveRefusal = $live === null ? null : self::recordRefusal($live, "An allow rule for '{$target['sender']}' is recorded for this client as PSA record #{$live->id}", true);
+        if ($liveRefusal !== null) {
+            $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $liveRefusal, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $liveRefusal];
+        }
         if ($live !== null) {
             // #1133: the rule that exists carries the lifetime of whichever
             // proposal created it, NOT the one on the card being approved. This
@@ -784,7 +807,7 @@ class StaffMeshAdminToolExecutor
             // 'already allowed' alone leaves them believing their date holds.
             $message = "'{$target['sender']}' is already allowed for this client by PSA record #".$live->id
                 .($live->isPermanent()
-                    ? ' PERMANENTLY (that record has no automatic expiry; '.self::permanentUntil($live).')'
+                    ? ' PERMANENTLY (that record has no automatic expiry; '.self::PERMANENT_UNTIL.')'
                     : ' until '.$live->expires_at->toDayDateTimeString().' UTC')
                 .'; no upstream call was made and the lifetime on this proposal was NOT applied.';
             $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
@@ -1789,17 +1812,82 @@ class StaffMeshAdminToolExecutor
     }
 
     /**
-     * What ends THIS permanent record (G-14, #5410). PERMANENT_UNTIL names the
-     * remove and edit verbs, and both find a PSA record only by its recorded
-     * mesh_rule_id, so it is true only of a record that has one. A record
-     * whose id was never recovered, or was cleared by the edit verb's
-     * display_id_lost path, gets PERMANENT_UNTIL_NO_ID instead.
+     * The refusal for a PSA record that does NOT show an allow in force for
+     * its sender, or null for the one record that does: ACTIVE, with its
+     * upstream rule id (b5c: #5486, #5487, #5490, #5495, #5497 items 1-2).
+     *
+     * Every answer that says "already created" or "already allowed" is
+     * success:true/idempotent:true on the machine-readable channel, and a
+     * caller that branches on it records the sender as handled. That is true
+     * only of a record whose rule was MEASURED live and is still reachable by
+     * the verbs PERMANENT_UNTIL names, so every other state is refused here,
+     * each saying exactly what its state proves:
+     *
+     *  - removed / reaped: ONE recorded rule id was proved absent (ruleAbsent()
+     *    after the DELETE). Nothing checked the tenant for any other rule
+     *    for the sender, so the text never says no allow is in force.
+     *  - unresolved: whether the rule exists, or its scope, was never proved.
+     *  - reap_failed: a removal ran and did not prove the rule absent.
+     *  - active without an id: only executeEditAllowRule()'s display_id_lost
+     *    path writes this. Mesh stopped returning the rule under its id,
+     *    and the rule may be re-keyed or gone.
+     *
+     * $opener names the record ("... created recently as PSA record #N" from
+     * the dedup arms, "... is recorded as PSA record #N" from the live ones);
+     * $atApproval picks the tail, since nothing is staged at approval.
      */
-    private static function permanentUntil(MeshAllowRule $record): string
+    private static function recordRefusal(MeshAllowRule $record, string $opener, bool $atApproval): ?string
     {
-        return trim((string) $record->mesh_rule_id) === ''
-            ? self::PERMANENT_UNTIL_NO_ID
-            : self::PERMANENT_UNTIL;
+        $hasId = trim((string) $record->mesh_rule_id) !== '';
+        if ($record->state === MeshAllowRule::STATE_ACTIVE && $hasId) {
+            return null;
+        }
+
+        $state = "(state '{$record->state}')";
+        $expiry = $record->expires_at?->toDayDateTimeString().' UTC';
+        $pastExpiry = $record->expires_at !== null && ! $record->expires_at->isFuture();
+        $oneIdOnly = 'That proves only that the rule this record tracked is gone; the PSA has not checked whether any other rule for this sender is in force on the tenant.';
+
+        $body = match (true) {
+            $record->state === MeshAllowRule::STATE_REMOVED => "an approved mesh_remove_allow_rule has since proved it absent upstream {$state}. {$oneIdOnly}",
+            $record->state === MeshAllowRule::STATE_REAPED => "the expiry job has since proved it absent upstream after its expiry {$state}. {$oneIdOnly}",
+            $record->state === MeshAllowRule::STATE_REAP_FAILED => "an earlier removal of it did not prove it absent {$state}, so whether the rule is still live upstream is unknown. "
+                .match (true) {
+                    $record->isPermanent() && $hasId => 'It is PERMANENT, so the expiry job never retries the removal. While Mesh still returns the rule under its recorded id, an approved mesh_remove_allow_rule can retry it; if the rule is already gone, neither verb can reach it and the PSA record has to be cleared by hand.',
+                    // An approved edit's display_id_lost clears the id and keeps
+                    // reap_failed, so there may be no recorded id to retry under;
+                    // MeshAllowRuleReaper::settleUnexpired() can write one back.
+                    $record->isPermanent() => "It is PERMANENT, so the expiry job never retries the removal, and the PSA holds no upstream rule id for it, so neither verb can reach it now. The expiry job does look this record up by sender and comment: once exactly one rule in Mesh matches, it records that rule's id here and an approved mesh_remove_allow_rule can retry the removal; if the rule is already gone, the PSA record has to be cleared by hand.",
+                    $pastExpiry => 'Its expiry ('.$expiry.') has passed, so the expiry job retries the removal.',
+                    default => 'The expiry job retries the removal once its expiry ('.$expiry.') passes.',
+                },
+            $record->state === MeshAllowRule::STATE_ACTIVE => "Mesh stopped returning the rule under its recorded id after an approved mesh_edit_allow_rule, and that id was cleared {$state}, so whether the rule is still in force upstream is unknown: Mesh may have re-keyed it or it may be gone. "
+                .match (true) {
+                    $record->isPermanent() => 'It is PERMANENT, and '.self::PERMANENT_UNTIL_NO_ID.'.',
+                    $pastExpiry => 'Its expiry ('.$expiry.') has passed, so the expiry job tries to re-identify the rule by sender and comment and remove it.',
+                    default => 'Once its expiry ('.$expiry.') passes, the expiry job tries to re-identify the rule by sender and comment and remove it.',
+                },
+            // STATE_UNRESOLVED, and any state this code does not know, which is
+            // never an allow in force.
+            default => "whether that rule is live upstream was never proved {$state}, so it is not answered as already in place. "
+                .match (true) {
+                    $pastExpiry => 'Its expiry ('.$expiry.') has passed, so the expiry job tries to identify the rule and remove it.',
+                    // #5495: the same recovery the unsettled brake names.
+                    (bool) $record->scope_proved => 'Its scope WAS confirmed when it was created, so the expiry job only has to identify it: once one rule in Mesh carries its sender and comment, the record goes active with that id and the remove and edit verbs can reach it. '
+                        .($hasId ? '' : 'Until then the PSA holds no upstream rule id for it, so neither verb can.'),
+                    default => 'Mesh never confirmed its scope, so identifying the rule does not settle this record. It closes when the PSA proves the rule removed: an approved mesh_remove_allow_rule can do that once the record carries its upstream id, and the expiry job does it after the record\'s expiry passes'
+                        .($record->isPermanent() ? ' (this record is PERMANENT, so it first needs a date from mesh_edit_allow_rule, which also needs the id)' : '')
+                        .'; otherwise someone has to check the rule in the Mesh portal and clear the PSA record by hand.',
+                },
+        };
+
+        $tail = $atApproval
+            ? ' No upstream call was made and the lifetime on this proposal was NOT applied.'
+            : (in_array($record->state, [MeshAllowRule::STATE_REMOVED, MeshAllowRule::STATE_REAPED], true)
+                ? ' Nothing was staged now. If the sender still needs allowing, check its rules in the Mesh portal, then stage it again once the 24-hour post-execution dedup window has elapsed.'
+                : ' Nothing was staged now.');
+
+        return rtrim("{$opener}, but {$body}").$tail;
     }
 
     /** The same fact in words, for a human reading an approval card (#1133 criterion 5). */
@@ -3115,8 +3203,30 @@ class StaffMeshAdminToolExecutor
             $message = "The PSA now enforces the new expiry for allow rule '{$target['rule_id']}' (sender '{$target['sender']}'): {$transition}. "
                 ."But after the update Mesh no longer returns a rule under id '{$target['rule_id']}' on this tenant, so whether the portal shows the new date could not be confirmed and the upstream side was NOT retried. "
                 .'Mesh may keep showing the old expiry while the PSA enforces the new one. '
-                ."PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared so the expiry job re-identifies the rule by sender and comment when it is due. "
-                .'Check the rule in the Mesh portal.';
+                // #5491: only a DATED record is ever due (scopeReapable needs
+                // a non-null expiry), so only that arm may promise the expiry
+                // job's re-identification; the permanent arm says what is
+                // actually true of an id-less permanent record. Only an ACTIVE
+                // one is never visited: scopeUnsettledUnexpired() selects a
+                // permanent UNRESOLVED or REAP_FAILED row, and
+                // MeshAllowRuleReaper::settleUnexpired() writes back an id it
+                // finds by sender and comment, after which both verbs reach it.
+                // Writing the id back does NOT change the row's state: the
+                // unsettled brake (unsettledAllowRule()) selects on state alone,
+                // settleUnexpired() never settles a reap_failed row, and an
+                // UNRESOLVED row that had an id to edit is scope-unproved, so it
+                // is never settled either. The text therefore says the id only
+                // makes the record reachable, and that the block lasts until a
+                // removal is proved against it or it is cleared by hand.
+                .($expiresAt === null
+                    ? ($record->state === MeshAllowRule::STATE_ACTIVE
+                        ? "PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared. The record is now PERMANENT, so the expiry job never visits it, and with no recorded id neither mesh_remove_allow_rule nor mesh_edit_allow_rule can reach it. "
+                            .'Check the rule in the Mesh portal; until someone clears this PSA record by hand, it blocks new allow rules for this sender.'
+                        : "PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared. The record is now PERMANENT (state '{$record->state}'), so the expiry job never removes it, and while it has no recorded id neither mesh_remove_allow_rule nor mesh_edit_allow_rule can reach it. "
+                            ."The expiry job does look a record in this state up by sender and comment: if exactly one rule in Mesh matches, it records that rule's id here again, which only makes the record reachable by both verbs; it does not lift the block. "
+                            .'This record keeps blocking new allow rules for this sender until the PSA proves a removal against it (an approved mesh_remove_allow_rule, once the id is back) or someone clears it by hand. Check the rule in the Mesh portal.')
+                    : "PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared so the expiry job re-identifies the rule by sender and comment when it is due. "
+                        .'Check the rule in the Mesh portal.');
         } elseif ($after === null) {
             $fault = 'display_unmeasured';
             $message = "The PSA now enforces the new expiry for allow rule '{$target['rule_id']}' (sender '{$target['sender']}'): {$transition}. "

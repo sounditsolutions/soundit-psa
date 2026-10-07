@@ -30,7 +30,9 @@ use Tests\TestCase;
  *           emitting arm, so reverting any one of them fails here.
  *
  * Every state below is reached through the verbs themselves (stage, approve,
- * remove, edit, reaper), not hand-written, except where a test says so.
+ * remove, edit), not hand-written, except where a test says so. No test in
+ * this file runs the reaper (b5c #5497 item 8); MeshAllowRuleBurnerB5cTest
+ * reaches the reaped and unresolved states through it.
  * Synthetic data only (G-13): example.test senders, no client names.
  */
 class MeshAllowRuleBurnerB5bTest extends TestCase
@@ -45,7 +47,9 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
 
     private const PERMANENT_UNTIL = 'it stays until someone removes it (mesh_remove_allow_rule) or gives it a date (mesh_edit_allow_rule)';
 
-    private const PERMANENT_UNTIL_NO_ID = 'the PSA holds no upstream rule id for it, so mesh_edit_allow_rule cannot give it a date and mesh_remove_allow_rule would not close this record; check the rule in the Mesh portal';
+    private const PERMANENT_UNTIL_NO_ID = 'the PSA holds no upstream rule id for it, so mesh_edit_allow_rule cannot give it a date, mesh_remove_allow_rule would not close this record, and the expiry job never removes a rule with no expiry; this PSA record keeps blocking new allow rules for this sender until someone checks the rule in the Mesh portal and clears the record by hand';
+
+    private const ONE_ID_ONLY = 'That proves only that the rule this record tracked is gone; the PSA has not checked whether any other rule for this sender is in force on the tenant.';
 
     private function configureMesh(): void
     {
@@ -238,8 +242,7 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
      * then removed by an approved mesh_remove_allow_rule (proved 404, record
      * STATE_REMOVED), and the same sender is re-staged inside the 24-hour
      * post-execution window. The answer must not tell the caller the rule
-     * "stays until someone removes it": it was removed, and no allow is in
-     * force. Proved absent is not an idempotent success, so it is refused as
+     * "stays until someone removes it": it was removed. Proved absent is not an idempotent success, so it is refused as
      * a reaped record is: no success, no idempotent, no expires_at.
      */
     public function test_the_dedup_answer_for_a_removed_record_says_removed_not_permanent(): void
@@ -279,11 +282,18 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
         $this->assertArrayNotHasKey('success', $answer);
         $this->assertArrayNotHasKey('idempotent', $answer);
         $this->assertArrayNotHasKey('expires_at', $answer);
-        $error = $answer['error'] ?? json_encode($answer);
+        // #5485: the refusal is on the error key itself, never found only
+        // inside a JSON encoding of some other key.
+        $this->assertArrayHasKey('error', $answer, json_encode($answer));
+        $error = $answer['error'];
+        // #5486: the removal proved ONE recorded id absent, so the text says
+        // that and never that no allow is in force for the sender.
         $this->assertStringContainsString(
-            'as PSA record #'.$record->id.", but an approved mesh_remove_allow_rule has since proved it absent upstream (state 'removed'), so NO allow is in force for this sender and nothing was staged now.",
+            'as PSA record #'.$record->id.", but an approved mesh_remove_allow_rule has since proved it absent upstream (state 'removed'). ".self::ONE_ID_ONLY.' Nothing was staged now.',
             $error,
         );
+        $this->assertStringNotContainsString('NO allow is in force', $error);
+        $this->assertStringNotContainsString('create the rule by hand', $error);
         $this->assertStringNotContainsString('PERMANENT', $error);
         $this->assertStringNotContainsString('stays until', $error);
         $this->assertSame($runsBefore, TechnicianRun::count(), 'nothing was staged');
@@ -295,7 +305,8 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
      * dated rule is created cleanly, then an approved mesh_edit_allow_rule
      * makes it permanent and Mesh stops returning its id after the PATCH
      * (display_id_lost clears mesh_rule_id). Re-staged inside 24 hours, the
-     * dedup answer must not offer the edit or remove verb as what ends it,
+     * dedup answer is a refusal (b5c #5490: the PSA no longer knows the rule
+     * exists) and must not offer the edit or remove verb as what ends it,
      * and the two verbs are then called to show that claim is true: the edit
      * is refused as FOREIGN and the removal card labels it FOREIGN.
      */
@@ -310,18 +321,23 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
 
         $answer = $this->restage($fixture);
 
-        $this->assertStringContainsString('already created recently', $answer['message']);
-        $this->assertStringContainsString('PSA record #'.$record->id.' is PERMANENT (it has no automatic expiry; '.self::PERMANENT_UNTIL_NO_ID.')', $answer['message']);
-        $this->assertStringContainsString("state 'active'", $answer['message']);
-        $this->assertStringNotContainsString(self::PERMANENT_UNTIL, $answer['message']);
+        // b5c #5490: the PSA no longer knows the rule exists, so this is a
+        // refusal, never success/idempotent/'already created'.
+        $this->assertArrayNotHasKey('success', $answer);
+        $this->assertArrayNotHasKey('idempotent', $answer);
+        $this->assertArrayHasKey('error', $answer, json_encode($answer));
+        $this->assertStringNotContainsString('already created', $answer['error']);
+        $this->assertStringContainsString("PSA record #{$record->id}, but Mesh stopped returning the rule under its recorded id after an approved mesh_edit_allow_rule, and that id was cleared (state 'active')", $answer['error']);
+        $this->assertStringContainsString('It is PERMANENT, and '.self::PERMANENT_UNTIL_NO_ID.'.', $answer['error']);
+        $this->assertStringNotContainsString(self::PERMANENT_UNTIL, $answer['error']);
 
         $this->assertTheVerbsCannotReachTheRecord($fixture, $write, $record);
     }
 
     /**
      * The same id-less permanent record after the 24-hour window: the live
-     * brakes answer it now, at staging and at approval, and neither may offer
-     * the verbs either. Card B was staged before the record existed, as two
+     * brakes answer it now, at staging and at approval: both refuse (b5c
+     * #5490) and neither may offer the verbs. Card B was staged before the record existed, as two
      * technicians raising one sender on two tickets would.
      */
     public function test_the_live_answers_for_a_permanent_record_without_an_id_do_not_offer_the_verbs(): void
@@ -335,15 +351,23 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
         $record = $this->idLessPermanentRecord($actor, $write, $fixture);
         $this->travel(25)->hours();
 
+        // b5c #5490: neither live brake says 'already allowed' over a record
+        // whose rule the PSA no longer measures; both refuse.
         $staged = $this->restage($fixture);
-        $this->assertTrue($staged['idempotent']);
-        $this->assertStringContainsString('already allowed for this client PERMANENTLY (PSA record #'.$record->id.'; it has no automatic expiry; '.self::PERMANENT_UNTIL_NO_ID.')', $staged['message']);
+        $this->assertArrayNotHasKey('idempotent', $staged);
+        $this->assertArrayHasKey('error', $staged, json_encode($staged));
+        $this->assertStringNotContainsString('already allowed', $staged['error']);
+        $this->assertStringContainsString("is recorded for this client as PSA record #{$record->id}, but Mesh stopped returning the rule under its recorded id", $staged['error']);
+        $this->assertStringContainsString('It is PERMANENT, and '.self::PERMANENT_UNTIL_NO_ID.'. Nothing was staged now.', $staged['error']);
 
         $write->shouldNotReceive('createAllowRule');
         $this->actingAs($actor)->post(route('cockpit.approve', $cardB))->assertSessionHas('error');
         $executed = (string) session('error');
-        $this->assertStringContainsString('already allowed for this client by PSA record #'.$record->id.' PERMANENTLY (that record has no automatic expiry; '.self::PERMANENT_UNTIL_NO_ID.')', $executed);
+        $this->assertStringNotContainsString('already allowed', $executed);
+        $this->assertStringContainsString("is recorded for this client as PSA record #{$record->id}, but Mesh stopped returning the rule under its recorded id", $executed);
+        $this->assertStringEndsWith('It is PERMANENT, and '.self::PERMANENT_UNTIL_NO_ID.'. No upstream call was made and the lifetime on this proposal was NOT applied.', $executed);
         $this->assertStringNotContainsString(self::PERMANENT_UNTIL, $executed);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $cardB->fresh()->state, 'a refusal releases the card; nothing was written');
     }
 
     /**
@@ -352,7 +376,7 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
      * id-unrecoverable path audits executed_with_fault, which the dedup brake
      * ignores), so this ONE row is hand-written: a clean create's record is
      * set back to unresolved with no id. It pins the arm for the day a path
-     * does reach it.
+     * does reach it: a refusal, never an idempotent success (b5c #5487).
      */
     public function test_the_dedup_answer_for_an_unresolved_record_without_an_id_does_not_offer_the_verbs(): void
     {
@@ -366,9 +390,16 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
 
         $answer = $this->restage($fixture);
 
-        $this->assertStringContainsString('PSA record #'.$record->id.' is PERMANENT (it has no automatic expiry; '.self::PERMANENT_UNTIL_NO_ID.')', $answer['message']);
-        $this->assertStringContainsString("state 'unresolved'", $answer['message']);
-        $this->assertStringNotContainsString(self::PERMANENT_UNTIL, $answer['message']);
+        // b5c #5487: whether the rule exists was never proved, so this is a
+        // refusal, never an idempotent 'already created'. #5495: a
+        // scope-proved record names the identify pass, as the brake does.
+        $this->assertArrayNotHasKey('success', $answer);
+        $this->assertArrayNotHasKey('idempotent', $answer);
+        $this->assertArrayHasKey('error', $answer, json_encode($answer));
+        $this->assertStringNotContainsString('already created', $answer['error']);
+        $this->assertStringContainsString("PSA record #{$record->id}, but whether that rule is live upstream was never proved (state 'unresolved')", $answer['error']);
+        $this->assertStringContainsString('the expiry job only has to identify it', $answer['error']);
+        $this->assertStringNotContainsString(self::PERMANENT_UNTIL, $answer['error']);
     }
 
     /**
@@ -504,7 +535,7 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
         );
     }
 
-    /** The clean permanent create: the audit summary was pinned, the returned message tail was not. */
+    /** The clean permanent create: its audit summary, the text an operator reads. */
     public function test_the_executed_answer_for_a_permanent_rule_states_its_whole_message(): void
     {
         $this->configureMesh();
@@ -519,23 +550,14 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
 
         $this->assertSame('executed', $result->status);
         // approveStagedRun() drops the message of a clean execution (the
-        // cockpit shows its generic text), so the audit summary is pinned
-        // here and the returned message is read below by calling
-        // executeAllowRule() itself on a second proposal.
+        // cockpit shows its generic text), so the audit summary is the
+        // operator-visible text and is the one pinned. b5c #5497 item 6: the
+        // returned message tail was once pinned here by calling the private
+        // executeAllowRule() through reflection; no operator path emits it,
+        // so that pin is gone rather than kept as false coverage.
         $summary = "Created Mesh allow rule for '".self::SENDER."' scoped to this client; PERMANENT — no automatic expiry; ".self::PERMANENT_UNTIL.'.';
         $this->assertSame($summary.' Mesh rule id rule-b5b-exec.', TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'executed')->sole()->summary);
-
-        $executor = new \ReflectionMethod(StaffMeshAdminToolExecutor::class, 'executeAllowRule');
-        $second = $this->stageAdd(['client' => $fixture['client'], 'ticket' => $this->anotherTicket($fixture)], ['sender' => 'orders@vendor.example.test']);
-        $payload = json_decode(\Illuminate\Support\Facades\Crypt::decryptString($second->proposed_meta['encrypted_payload']), true);
-        $write->shouldReceive('createAllowRule')->once()->andReturn(['added_for' => [self::TENANT]]);
-        $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'rule-b5b-exec2']);
-        $answer = $executor->invoke(app(StaffMeshAdminToolExecutor::class), $payload['arguments'], $fixture['client']->id, 'test', $second, $actor->id);
-        $this->assertSame(
-            "Created Mesh allow rule for 'orders@vendor.example.test' scoped to this client; PERMANENT — no automatic expiry; ".self::PERMANENT_UNTIL.'.'
-                .' Mesh does not expire rules on its own and the PSA expiry job skips a rule with no date.',
-            $answer['message'],
-        );
+        $this->assertNull($result->message, 'a clean execution carries no message to the cockpit');
     }
 
     /** Both PERMANENT arms of reconcileUnacknowledgedCreate(): found on re-read, and not found. */

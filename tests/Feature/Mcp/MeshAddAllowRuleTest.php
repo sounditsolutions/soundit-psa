@@ -194,6 +194,8 @@ class MeshAddAllowRuleTest extends TestCase
             'description' => $definition['description'],
             'expires_at' => $definition['inputSchema']['properties']['expires_at']['description'],
             'staged alias description' => $stagedAlias['description'],
+            // #5497 item 7: the alias's own expires_at schema text too.
+            'staged alias expires_at' => $stagedAlias['input_schema']['properties']['expires_at']['description'],
         ] as $label => $text) {
             $this->assertDoesNotMatchRegularExpression(
                 $defaultLifetime,
@@ -706,7 +708,7 @@ class MeshAddAllowRuleTest extends TestCase
 
     /**
      * The reaper writes STATE_REAPED only after a detail GET returned 404, so
-     * this is the one branch where the PSA has PROVED no allow is in force.
+     * the PSA has PROVED its recorded rule absent (that one id; b5c #5486).
      * Answering it success:true/idempotent:true put that certainty on the
      * machine-readable channel as an effect that does not exist, while only the
      * prose said otherwise — and the strictly LESS certain case (no PSA row at
@@ -762,9 +764,17 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertArrayNotHasKey('success', $second);
         $this->assertArrayNotHasKey('idempotent', $second);
         $this->assertStringContainsString('#'.$record->id, $second['error']);
-        $this->assertStringContainsString("state 'reaped'", $second['error']);
-        $this->assertStringContainsString('NO allow is in force for this sender', $second['error']);
-        $this->assertStringContainsString('nothing was staged', $second['error']);
+        // #5488: the REAPED arm's own proof, whole, so a swap or merge with
+        // the REMOVED arm fails here; and it never names the remove verb.
+        // #5486: the 404 proved ONE recorded id absent, so the text says
+        // exactly that and never "NO allow is in force".
+        $this->assertStringContainsString(
+            'as PSA record #'.$record->id.", but the expiry job has since proved it absent upstream after its expiry (state 'reaped'). "
+                .'That proves only that the rule this record tracked is gone; the PSA has not checked whether any other rule for this sender is in force on the tenant. Nothing was staged now.',
+            $second['error'],
+        );
+        $this->assertStringNotContainsString('mesh_remove_allow_rule', $second['error']);
+        $this->assertStringNotContainsString('NO allow is in force', $second['error']);
 
         // Nothing staged, and the refusal is on the audit trail as a refusal.
         $this->assertSame(1, TechnicianRun::count());
