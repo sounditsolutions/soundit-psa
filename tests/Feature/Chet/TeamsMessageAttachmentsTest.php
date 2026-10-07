@@ -19,9 +19,12 @@ use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Log\Events\MessageLogged;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Testing\TestResponse;
+use Monolog\Handler\NullHandler;
 use Monolog\Handler\TestHandler;
 use Monolog\Level;
 use Monolog\LogRecord;
@@ -61,10 +64,16 @@ class TeamsMessageAttachmentsTest extends TestCase
 
     private ?MockHandler $queue = null;
 
+    /** @var list<MessageLogged> every record Laravel's Logger wrapper wrote, on any logger (#5622) */
+    private array $logged = [];
+
     protected function setUp(): void
     {
         parent::setUp();
         Http::preventStrayRequests();
+        Event::listen(MessageLogged::class, function (MessageLogged $logged): void {
+            $this->logged[] = $logged;
+        });
         TeamsPersonaConfig::flush();
         Setting::setValue('teams_bot_enabled', '0');
         Setting::setValue('teams_chet_routing_enabled', '1');
@@ -319,6 +328,26 @@ class TeamsMessageAttachmentsTest extends TestCase
         $this->assertTrue((bool) $r->json('result.isError'));
         $this->assertStringContainsString('HTTP 403', $text);
         $this->assertStringContainsString('Chat.Read.All application permission', $text);
+        $this->assertOperatorResult(self::PERMISSION_REFUSAL_403, $r);
+    }
+
+    /**
+     * #5621: the operator text on the 401/403 arms, pinned whole. assertOperatorResult()
+     * compares the decoded JSON-RPC response with exactly this one error, so any added text,
+     * content part or key fails, needle or not.
+     */
+    private const PERMISSION_REFUSAL_403 = "Teams refused the message read (HTTP 403): the PSA's Microsoft Graph app registration needs the Chat.Read.All application permission with admin consent to read chat images. Ask the operator to grant it; nothing was read.";
+
+    private const PERMISSION_REFUSAL_401 = "Teams refused the message read (HTTP 401): the PSA's Microsoft Graph app registration needs the Chat.Read.All application permission with admin consent to read chat images. Ask the operator to grant it; nothing was read.";
+
+    private const TOKEN_REFRESH_FAILED_401 = "Teams message read failed: Microsoft Graph answered HTTP 401 and the PSA's Graph token refresh then failed, so no fresh token was obtained; nothing was read.";
+
+    private function assertOperatorResult(string $error, TestResponse $r): void
+    {
+        $this->assertSame(['jsonrpc' => '2.0', 'id' => 1, 'result' => [
+            'content' => [['type' => 'text', 'text' => (string) json_encode(['error' => $error])]],
+            'isError' => true,
+        ]], json_decode((string) $r->getContent(), true), 'the whole operator result');
     }
 
     /** Graph's own 401 error text in the fixture; never in the record or the operator text. */
@@ -357,8 +386,28 @@ class TeamsMessageAttachmentsTest extends TestCase
     private function vendorNeedles(): array
     {
         return [self::GRAPH_401_MARKER, 'InvalidAuthenticationToken', self::IDP_MARKER, 'AADSTS', 'invalid_client',
-            'synthetic-tenant', self::SECRET_FIXTURE, 'client_secret', 'login.microsoftonline.com', 'graph.microsoft.com'];
+            'synthetic-tenant', self::SECRET_FIXTURE, 'client_secret', 'login.microsoftonline.com', 'graph.microsoft.com',
+            ...$this->credentialNeedles()];
     }
+
+    /**
+     * #5621: the access tokens the fixtures issue, the header that carries them, and the app's
+     * client_id. test_the_credential_needles_are_on_the_wire_and_the_scans_fire_on_them shows
+     * each is sent and that each scan fires on it.
+     *
+     * @return list<string>
+     */
+    private function credentialNeedles(): array
+    {
+        return [self::ISSUED_ACCESS_FIXTURE, self::REFRESHED_ACCESS_FIXTURE, 'Bearer', 'Authorization', self::CLIENT_ID];
+    }
+
+    /** Synthetic access tokens the scripted token endpoint issues (first token, then the refresh). */
+    private const ISSUED_ACCESS_FIXTURE = 'b4h-synthetic-issued-access';
+
+    private const REFRESHED_ACCESS_FIXTURE = 'b4h-synthetic-refreshed-access';
+
+    private const CLIENT_ID = 'synthetic-client';
 
     /**
      * $records: the records to scan. The token-refresh arm scans every record. The permission
@@ -386,13 +435,16 @@ class TeamsMessageAttachmentsTest extends TestCase
         }
     }
 
-    /** A record as LogManager's formatter (LineFormatter with stack traces) writes it. */
+    /**
+     * A record as LogManager's formatter (LineFormatter with stack traces) writes it, with the
+     * checkout path replaced by '<base>' so a needle never matches the host's path (#5618).
+     */
     private function render(LogRecord $record): string
     {
         /** @var \Monolog\Formatter\FormatterInterface $formatter */
         $formatter = (fn () => $this->formatter())->call(app('log'));
 
-        return $formatter->format($record);
+        return str_replace([base_path(), str_replace('/', '\\/', base_path())], '<base>', $formatter->format($record));
     }
 
     /**
@@ -442,6 +494,50 @@ class TeamsMessageAttachmentsTest extends TestCase
         $this->assertContains('$.result.content.1.text{json}.detail', $hits);
     }
 
+    /**
+     * #5621 positive control: each credential needle is sent (the issued and refreshed bearers
+     * on the Graph requests, the client_id in the token form), and both scans fire on it: the
+     * operator-text walk and the rendered record.
+     */
+    public function test_the_credential_needles_are_on_the_wire_and_the_scans_fire_on_them(): void
+    {
+        $this->graph(
+            $this->graph401(),
+            new Response(200, [], (string) json_encode(['access_token' => self::REFRESHED_ACCESS_FIXTURE, 'expires_in' => 3600])),
+            $this->graph401(),
+        );
+        $this->fetch([]);
+
+        $wire = '';
+        foreach ($this->history as $sent) {
+            $wire .= ' Authorization: '.$sent['request']->getHeaderLine('Authorization').' '.$sent['request']->getBody();
+        }
+        $this->assertSame(['Bearer '.self::ISSUED_ACCESS_FIXTURE, 'Bearer '.self::REFRESHED_ACCESS_FIXTURE], array_values(array_filter(array_map(
+            fn (array $h) => $h['request']->getHeaderLine('Authorization'), $this->history,
+        ))));
+
+        $leakyResponse = TestResponse::fromBaseResponse(response()->json(['jsonrpc' => '2.0', 'id' => 1, 'result' => [
+            'content' => [['type' => 'text', 'text' => json_encode(['error' => 'HTTP 401 ('.$wire.')'])]], 'isError' => true,
+        ]]));
+        $leakyRecord = new LogRecord(new \DateTimeImmutable, 'testing', Level::Warning, 'm', ['error' => $wire]);
+        foreach ($this->credentialNeedles() as $needle) {
+            $this->assertContains($needle, $this->vendorNeedles(), 'assertNoVendorText() scans for it');
+            $this->assertStringContainsString($needle, $wire, 'the needle is on the wire');
+            $this->assertNotEmpty(array_filter($this->operatorStrings($leakyResponse), fn (string $s) => str_contains($s, $needle)), "the operator scan fires on '{$needle}'");
+            $this->assertStringContainsString($needle, $this->render($leakyRecord), "the record scan fires on '{$needle}'");
+        }
+    }
+
+    /** #5622 control: an on-demand logger bypasses the TestHandler; the MessageLogged list sees it. */
+    public function test_the_record_list_sees_an_on_demand_logger(): void
+    {
+        $logs = $this->captureLogs();
+        Log::build(['driver' => 'monolog', 'handler' => NullHandler::class])->warning('b4h on-demand probe');
+
+        $this->assertSame([], $logs->getRecords());
+        $this->assertSame([['warning', 'b4h on-demand probe']], array_map(fn (MessageLogged $m) => [$m->level, $m->message], $this->logged));
+    }
+
     private function graph401(): Response
     {
         return new Response(401, [], (string) json_encode(['error' => ['code' => 'InvalidAuthenticationToken', 'message' => self::GRAPH_401_MARKER]]));
@@ -482,7 +578,14 @@ class TeamsMessageAttachmentsTest extends TestCase
             [Level::Error, 'Graph API request failed', ['method' => 'GET', 'status' => 401, 'token_refresh' => 'failed']],
             [Level::Warning, self::ATTACHMENT_READ_FAILED, $failures[0]->context],
         ], array_map(fn (LogRecord $rec) => [$rec->level, $rec->message, $rec->context], $logs->getRecords()));
+        // #5622: and Laravel's logger wrote nothing else, on any channel or on-demand logger.
+        $this->assertSame(
+            array_map(fn (LogRecord $rec) => [$rec->level->toPsrLogLevel(), $rec->message, $rec->context], $logs->getRecords()),
+            array_map(fn (MessageLogged $m) => [$m->level, $m->message, $m->context], $this->logged),
+            'every record Laravel\'s logger wrote',
+        );
         $this->assertNoVendorText($logs->getRecords(), $r);
+        $this->assertOperatorResult(self::TOKEN_REFRESH_FAILED_401, $r);
 
         $this->assertTrue((bool) $r->json('result.isError'));
         $this->assertSame(0, $this->queue->count(), 'positive control: the 401 and the failed refresh both ran');
@@ -498,7 +601,7 @@ class TeamsMessageAttachmentsTest extends TestCase
         $logs = $this->captureLogs();
         $this->graph(
             $this->graph401(),
-            new Response(200, [], (string) json_encode(['access_token' => 'synthetic-token-2', 'expires_in' => 3600])),
+            new Response(200, [], (string) json_encode(['access_token' => self::REFRESHED_ACCESS_FIXTURE, 'expires_in' => 3600])),
             $this->graph401(),
         );
 
@@ -513,6 +616,7 @@ class TeamsMessageAttachmentsTest extends TestCase
         $this->assertNoVendorText($failures, $r);
 
         $this->assertSame(0, $this->queue->count(), 'positive control: the refresh succeeded and the retry ran');
+        $this->assertOperatorResult(self::PERMISSION_REFUSAL_401, $r);
         $this->assertStringContainsString('HTTP 401', $text);
         $this->assertStringContainsString('application permission', $text);
         $this->assertStringNotContainsString('token refresh', $text);
@@ -661,20 +765,30 @@ class TeamsMessageAttachmentsTest extends TestCase
     {
         $this->history = [];
         $this->queue = new MockHandler([
-            new Response(200, [], (string) json_encode(['access_token' => 'synthetic-token', 'expires_in' => 3600])),
+            new Response(200, [], (string) json_encode(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => 3600])),
             ...$responses,
         ]);
         $stack = HandlerStack::create($this->queue);
         $stack->push(Middleware::history($this->history));
 
-        $this->app->instance(GraphClient::class, new GraphClient([
+        $this->app->instance(GraphClient::class, $graph = new GraphClient([
             'tenant_id' => 'synthetic-tenant',
-            'client_id' => 'synthetic-client',
+            'client_id' => self::CLIENT_ID,
             'client_secret' => self::SECRET_FIXTURE,
             'request_timeout' => 5,
             'token_timeout' => 5,
             'handler' => $stack,
         ], cache()->store('array')));
+
+        // #5612: both of GraphClient's constructor clients carry the scripted stack, so a request
+        // they send is in $this->history and an assertSame([], $this->history) means no request.
+        // The per-call nextLink clients are covered in GraphTokenRefreshFailedExceptionTest.
+        foreach (['http', 'authHttp'] as $property) {
+            $client = (new \ReflectionProperty(GraphClient::class, $property))->getValue($graph);
+            $this->assertSame($stack, $client->getConfig('handler'), "GraphClient::\${$property} must use the scripted handler");
+        }
+        $this->assertSame($graph, app(GraphClient::class), 'the tool resolves this client');
+        $this->assertSame([], $this->history, 'nothing was sent while building the client');
     }
 
     /** @return array<int, string> the Graph request paths sent (token leg excluded) */

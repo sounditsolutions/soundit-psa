@@ -1197,37 +1197,14 @@ class EmailItemAttachmentTest extends TestCase
 
     // ── #5393 / #5533: #5144 keeps throwFromGuzzle's record on every other Graph call ──
     //
-    // NOT C-56-clean. GraphClient::throwFromGuzzle() writes 'Graph API request failed' at ERROR
-    // with exactly four context keys: method, endpoint, status and error. 'endpoint' is the
-    // request path, which holds the raw mailbox whenever the caller passed one (the 'message
-    // read (expand)' row). 'error' is Guzzle's exception message, which holds the full request
-    // URI and the start of Graph's response body (its error code and text). Under C-56 a vendor
-    // failure record carries status only. That runtime fix is #5533, open: GraphClient.php is
-    // outside this test-only change. Until it lands, GRAPH_FAILURE_RECORD_CARRIERS names each
-    // known carrier, the tests assert each one is still present (so the fix must flip them to
-    // absence checks rather than leave them silently true), and every other needle, key and
-    // part of the record is scanned.
+    // GraphClient::throwFromGuzzle() writes 'Graph API request failed' at ERROR with exactly two
+    // context keys, method and status (#5533, C-56). It used to carry 'endpoint' (the request
+    // path, which holds the raw mailbox on the 'message read (expand)' row) and 'error' (Guzzle's
+    // message: the request URI and the start of Graph's response body); the tests below require
+    // that no forbiddenNeedles() needle is in any part of the record.
 
     /**
-     * #5533 known residual: [forbiddenNeedles() label => the context keys that carry it today].
-     * When GraphClient's record is made status-only, these assertions fail; the follow-up then
-     * deletes this map and the record is scanned like any other.
-     */
-    private const GRAPH_FAILURE_RECORD_CARRIERS = [
-        'graph error text' => ['error'],
-        'graph error text prefix' => ['error'],
-        'graph error code InternalServerError' => ['error'],
-    ];
-
-    /** The extra #5533 carriers when the request path holds the mailbox. */
-    private const GRAPH_FAILURE_RECORD_MAILBOX_CARRIERS = [
-        'mailbox' => ['endpoint', 'error'],
-        'mailbox local part' => ['endpoint', 'error'],
-    ];
-
-    /**
-     * The 'Graph API request failed' record's leaks, keyed like GRAPH_FAILURE_RECORD_CARRIERS:
-     * which context keys carry each needle. The message and extra are scanned whole; the context
+     * The 'Graph API request failed' record's leaks: which context keys carry each needle. The message and extra are scanned whole; the context
      * key by key (each value through walk()), so a needle in a new key, or in a key not named in
      * the map, is reported under that key.
      *
@@ -1293,12 +1270,27 @@ class EmailItemAttachmentTest extends TestCase
         $record = $failed[0];
         $this->assertSame(Level::Error, $record->level);
         $this->assertSame([$method, 500], [$record->context['method'] ?? null, $record->context['status'] ?? null]);
-        // #5533 known residual: exactly these keys today, and exactly these carriers. Any new key
-        // or any other needle in any key fails here.
-        $this->assertSame(['method', 'endpoint', 'status', 'error'], array_keys($record->context));
-        $known = self::GRAPH_FAILURE_RECORD_CARRIERS + ($pathHoldsMailbox ? self::GRAPH_FAILURE_RECORD_MAILBOX_CARRIERS : []);
-        ksort($known);
-        $this->assertSame($known, $this->graphFailureLeaks($record), '#5533: the record\'s leaks changed; if GraphClient is now status-only, flip these to absence checks');
+        // #5533: exactly method and status, and no needle anywhere in the record. Any new key or
+        // any needle in any part fails here.
+        $this->assertSame(['method' => $method, 'status' => 500], $record->context);
+        $this->assertSame([], $this->graphFailureLeaks($record), '#5533: the record carries no forbidden needle');
+        // Positive control: the failure this record reports did carry the needles, in the request
+        // path ($pathHoldsMailbox) and in Graph's body; the record leaves them out.
+        $sent = end($this->history);
+        $this->assertStringContainsString(self::GRAPH_ERROR_TEXT, (string) $sent['response']->getBody());
+        $this->assertSame($pathHoldsMailbox, str_contains($uri, self::MAILBOX));
+    }
+
+    /** #5533 control: graphFailureLeaks() reports a needle under the key that carries it. */
+    public function test_the_graph_failure_scan_reports_each_carrier_key(): void
+    {
+        $record = new LogRecord(new \DateTimeImmutable, 'testing', Level::Error, 'Graph API request failed', [
+            'method' => 'GET', 'endpoint' => 'users/'.self::MAILBOX.'/messages/MSG-1', 'status' => 500, 'error' => self::GRAPH_ERROR_TEXT,
+        ]);
+        $leaks = $this->graphFailureLeaks($record);
+
+        $this->assertSame(['endpoint'], $leaks['mailbox'] ?? null);
+        $this->assertSame(['error'], $leaks['graph error text'] ?? null);
     }
 
     public function test_message_read_failure_records_carry_only_the_known_5533_leaks(): void
@@ -1314,10 +1306,11 @@ class EmailItemAttachmentTest extends TestCase
             [['ERROR', 'Graph API request failed'], ['WARNING', '[AttachmentService] Failed to fetch email attachments']],
             array_map(fn (LogRecord $r) => [$r->level->getName(), $r->message], $records),
         );
-        $graphKnown = self::GRAPH_FAILURE_RECORD_CARRIERS + self::GRAPH_FAILURE_RECORD_MAILBOX_CARRIERS;
-        ksort($graphKnown);
-        $this->assertSame($graphKnown, $this->graphFailureLeaks($records[0]), '#5533 known residual (GraphClient record)');
-        // #5533 known residual (AttachmentService::downloadEmailAttachments' message-read catch).
+        // #5533: GraphClient's record is status-only.
+        $this->assertSame(['method' => 'GET', 'status' => 500], $records[0]->context);
+        $this->assertSame([], $this->graphFailureLeaks($records[0]), '#5533: GraphClient record');
+        // Known residual, still open (AttachmentService::downloadEmailAttachments' message-read
+        // catch logs the GraphClientException message, which holds the endpoint; b4g's batch).
         $this->assertSame(['email_id', 'graph_id', 'error'], array_keys($records[1]->context));
         $this->assertSame(
             ['mailbox' => ['error'], 'mailbox local part' => ['error']],
