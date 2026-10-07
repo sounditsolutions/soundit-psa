@@ -63,12 +63,19 @@ class MeshC56ReadSitesTest extends TestCase
     private const MESH_ID_2 = '8d4b1f6a-2c9e-4a73-b5d0-6e7f8a9b0c1d';
 
     /**
-     * How both instruments render a record's context (#5438): '/' and
-     * non-ASCII letters stay as written, so a client name carrying either is
-     * still a substring of the rendered record. JSON still escapes a double
-     * quote, a backslash and a control character.
+     * How renderContext() encodes a record's context for both instruments
+     * (#5438, #5465): '/', non-ASCII letters and U+2028/U+2029 stay as
+     * written; an invalid UTF-8 byte becomes U+FFFD and a NAN becomes 0, so
+     * one such value no longer blanks the whole context (json_encode()
+     * would otherwise return false). JSON still escapes a double quote, a
+     * backslash and a control character, so a name containing one of those
+     * is not matched when it sits in context.
      */
-    private const JSON_FLAGS = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE;
+    private const JSON_FLAGS = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_LINE_TERMINATORS
+        | JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR;
+
+    /** Every level Laravel's logger exposes (#5467). */
+    private const LEVELS = ['debug', 'info', 'notice', 'warning', 'error', 'critical', 'alert', 'emergency'];
 
     /** Body marker; a fresh suffix per process. */
     private static string $marker = '';
@@ -95,14 +102,20 @@ class MeshC56ReadSitesTest extends TestCase
     /**
      * A Monolog handler pushed onto the default channel's own logger in
      * setUp() (#5428): it also sees a record written through that Monolog
-     * logger outside Laravel's wrapper (getLogger(), or a withName() clone
-     * taken after setUp()), which never dispatches MessageLogged. withName()
-     * clones the logger with the handler list it has at that moment, so a
-     * clone taken before the push (during boot, say) does not carry this
-     * handler; test_a_withname_clone_carries_only_the_handlers_it_was_cloned_with
-     * drives both halves.
+     * logger outside Laravel's wrapper (getLogger() directly, or a withName()
+     * clone taken after setUp()), which never dispatches MessageLogged.
+     * withName() clones the logger with the handler list it has at that
+     * moment, so a clone taken before the push does not carry this handler.
+     * All three are driven against THIS handler (#5468):
+     * test_the_setup_handler_sees_a_direct_write_but_not_a_clone_taken_before_the_push
+     * (direct getLogger() write; $preSetUpClone, taken in setUp() just before
+     * the push) and test_a_withname_clone_carries_only_the_handlers_it_was_cloned_with
+     * (clones taken after setUp()).
      */
     private TestHandler $monolog;
+
+    /** A withName() clone of the default channel's Monolog logger, taken in setUp() BEFORE the TestHandler push (#5468). */
+    private \Monolog\Logger $preSetUpClone;
 
     /** Request paths bindRealSync()'s scripted Mesh received, in order. @var list<string> */
     private array $syncRequestPaths = [];
@@ -135,9 +148,10 @@ class MeshC56ReadSitesTest extends TestCase
 
         Http::preventStrayRequests();
         Event::listen(MessageLogged::class, function (MessageLogged $e): void {
-            $this->logged[] = ['level' => $e->level, 'message' => $e->message.' '.json_encode($e->context, self::JSON_FLAGS)];
+            $this->logged[] = ['level' => $e->level, 'message' => $e->message.' '.self::renderContext($e->context)];
         });
         $this->monolog = new TestHandler;
+        $this->preSetUpClone = Log::driver()->getLogger()->withName('probe-pre-setup');
         Log::driver()->getLogger()->pushHandler($this->monolog);
     }
 
@@ -447,12 +461,13 @@ class MeshC56ReadSitesTest extends TestCase
     }
 
     /**
-     * Positive controls for assertNoClientNames() (#5423, #5428, #5430): it
-     * fails on a real record carrying a client name in another letter case,
-     * and each of its two arms is driven ALONE, so deleting either arm fails
-     * here. Per route, the record's holder is checked first (level and
-     * re-cased name) and the instrument that must NOT see it is checked
-     * empty; then the failure message names the arm that caught it.
+     * Positive controls for assertNoClientNames() (#5423, #5428, #5430,
+     * #5466): it fails on a real record carrying a client name in another
+     * letter case, and each of its two arms is driven ALONE, so deleting
+     * either arm fails here. Per route, assertCaughtOnRoute() reads each
+     * instrument's records exactly (the holder holds exactly the record, at
+     * its level and as written; the other holds nothing), then the failure
+     * message names the arm that caught it.
      *   - Log::channel('null'): another LogManager channel; its Monolog logger
      *     has no TestHandler, so only the listener (allLogs()) sees it.
      *   - withName() on the default channel's Monolog logger, taken after
@@ -464,113 +479,140 @@ class MeshC56ReadSitesTest extends TestCase
     {
         $client = $this->mappedClient();
         $this->assertNoClientNames([$client]);
+        $check = fn () => $this->assertNoClientNames([$client]);
+        $up = strtoupper($client->name);
+        $down = strtolower($client->name);
 
-        foreach ([
-            'channel(null), upper-cased, warning' => [
-                fn () => Log::channel('null')->warning('[Probe] '.strtoupper($client->name)),
-                'warning [Probe] '.strtoupper($client->name), true, false, 'MessageLogged records',
-            ],
-            'withName(), lower-cased, debug' => [
-                fn () => Log::driver()->getLogger()->withName('probe')->debug('[Probe] '.strtolower($client->name)),
-                'debug [Probe] '.strtolower($client->name), false, true, 'default-channel Monolog records',
-            ],
-            'facade, upper-cased, error' => [
-                fn () => Log::error('[Probe] '.strtoupper($client->name)),
-                'error [Probe] '.strtoupper($client->name), true, true, 'MessageLogged records',
-            ],
-        ] as $route => [$write, $expected, $listenerSees, $handlerSees, $arm]) {
-            $this->logged = [];
-            $this->monolog->clear();
-            $write();
-            if ($listenerSees) {
-                $this->assertStringContainsString($expected, $this->allLogs(), "{$route}: positive control: the listener holds the record at its level");
-            } else {
-                $this->assertSame([], $this->logged, "{$route}: the listener did not see the record");
-            }
-            if ($handlerSees) {
-                $this->assertStringContainsString($expected, $this->monologLogs(), "{$route}: positive control: the TestHandler holds the record at its level");
-            } else {
-                $this->assertSame('', $this->monologLogs(), "{$route}: the TestHandler did not see the record");
-            }
-            try {
-                $this->assertNoClientNames([$client]);
-            } catch (\PHPUnit\Framework\AssertionFailedError $e) {
-                $this->assertStringContainsString("{$arm}: a client name reached the logs", $e->getMessage(), "{$route}: the {$arm} arm caught it");
+        $this->assertCaughtOnRoute('channel(null), upper-cased, warning', fn () => Log::channel('null')->warning('[Probe] '.$up),
+            "warning [Probe] {$up} []", true, false, $check, 'MessageLogged records: a client name reached the logs');
+        $this->assertCaughtOnRoute('withName(), lower-cased, debug', fn () => Log::driver()->getLogger()->withName('probe')->debug('[Probe] '.$down),
+            "debug [Probe] {$down} []", false, true, $check, 'default-channel Monolog records: a client name reached the logs');
+        $this->assertCaughtOnRoute('facade, upper-cased, error', fn () => Log::error('[Probe] '.$up),
+            "error [Probe] {$up} []", true, true, $check, 'MessageLogged records: a client name reached the logs');
+    }
 
-                continue;
+    /**
+     * The write routes the two instruments are claimed to see (#5467), each
+     * as [writer(level, message), via, listener sees, TestHandler sees].
+     *
+     * @return array<string, array{string, string, bool, bool}>
+     */
+    public static function writeRoutes(): array
+    {
+        return [
+            'channel(null), level method' => ['null', 'method', true, false],
+            'channel(null), log()' => ['null', 'log', true, false],
+            'channel(null), write()' => ['null', 'write', true, false],
+            'facade, level method' => ['facade', 'method', true, true],
+            'facade, log()' => ['facade', 'log', true, true],
+            'facade, write()' => ['facade', 'write', true, true],
+            'withName() clone, level method' => ['withName', 'method', false, true],
+            'withName() clone, log()' => ['withName', 'log', false, true],
+            'getLogger() direct, level method' => ['getLogger', 'method', false, true],
+            'getLogger() direct, log()' => ['getLogger', 'log', false, true],
+        ];
+    }
+
+    /**
+     * #5467, #5468: at EVERY level the logger exposes, and through the
+     * generic log()/write() entries, each route's record reaches exactly the
+     * instruments claimed (read as 'level text', so a record dropped or moved
+     * to another level fails), and both assertNoClientNames() and
+     * assertNoVendorTextInLogs() fail on it through each instrument that
+     * holds it: where both hold it, the listener's records are then cleared
+     * and the TestHandler arm must catch it too. (Monolog's own Logger has no
+     * write(), so the two raw-Monolog routes drive the level method and
+     * log() only.)
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('writeRoutes')]
+    public function test_both_assertions_fail_at_every_level_and_generic_entry_on_each_route(string $target, string $via, bool $listenerSees, bool $handlerSees): void
+    {
+        $client = $this->mappedClient();
+        $up = strtoupper($client->name);
+        foreach (self::LEVELS as $level) {
+            $message = "[Probe] {$up} ".self::$marker;
+            $logger = match ($target) {
+                'null' => Log::channel('null'),
+                'facade' => Log::getFacadeRoot(),
+                'withName' => Log::driver()->getLogger()->withName('probe'),
+                'getLogger' => Log::driver()->getLogger(),
+            };
+            $write = fn () => self::writeVia($logger, $via, $level, $message);
+            $expected = "{$level} {$message} []";
+            $arms = array_keys(array_filter(['MessageLogged records' => $listenerSees, 'default-channel Monolog records' => $handlerSees]));
+            $vendorArms = ['MessageLogged records' => 'every MessageLogged record', 'default-channel Monolog records' => 'every default-channel Monolog record'];
+
+            $this->assertCaughtOnRoute("{$target} {$via} {$level}, names", $write, $expected, $listenerSees, $handlerSees,
+                fn () => $this->assertNoClientNames([$client]), "{$arms[0]}: a client name reached the logs");
+            $this->assertCaughtOnRoute("{$target} {$via} {$level}, vendor text", $write, $expected, $listenerSees, $handlerSees,
+                fn () => $this->assertNoVendorTextInLogs(), "{$vendorArms[$arms[0]]}: vendor body leaked");
+            if (count($arms) === 2) {
+                // Both hold it: with the listener's records cleared, the
+                // TestHandler arm alone must catch the same record.
+                $this->logged = [];
+                $this->assertSame([$expected], $this->monologLines(), "{$target} {$via} {$level}: the TestHandler still holds the record");
+                $this->assertArmFails(fn () => $this->assertNoClientNames([$client]), 'default-channel Monolog records: a client name reached the logs', "{$target} {$via} {$level}");
+                $this->assertArmFails(fn () => $this->assertNoVendorTextInLogs(), 'every default-channel Monolog record: vendor body leaked', "{$target} {$via} {$level}");
             }
-            $this->fail("positive control: a re-cased client name written via {$route} passed assertNoClientNames()");
         }
     }
 
     /**
-     * Positive controls for assertNoVendorTextInLogs() (#5434): the vendor
-     * body marker and an upper-cased Mesh id, each written on a route only
-     * ONE instrument sees, fail it through that instrument's arm.
+     * Positive controls for assertNoVendorTextInLogs() (#5434, #5466): the
+     * vendor body marker and an upper-cased Mesh id, each written on a route
+     * only ONE instrument sees, fail it through that instrument's arm. Per
+     * route, assertCaughtOnRoute() reads that the holder holds exactly the
+     * record at 'error' and that the other instrument holds nothing.
      */
     public function test_the_vendor_text_assertion_fails_on_each_route(): void
     {
         $this->assertNoVendorTextInLogs();
 
         $routes = [
-            'channel(null)' => [fn (string $t) => Log::channel('null')->error('[Probe] '.$t), 'every MessageLogged record'],
-            'withName()' => [fn (string $t) => Log::driver()->getLogger()->withName('probe')->error('[Probe] '.$t), 'every default-channel Monolog record'],
+            'channel(null)' => [fn (string $t) => Log::channel('null')->error('[Probe] '.$t), true, false, 'every MessageLogged record'],
+            'withName()' => [fn (string $t) => Log::driver()->getLogger()->withName('probe')->error('[Probe] '.$t), false, true, 'every default-channel Monolog record'],
         ];
         $payloads = [
             'vendor body' => [self::$marker, 'vendor body leaked'],
             'Mesh id, upper-cased' => [strtoupper(self::MESH_ID), 'request path (Mesh id, raw) leaked'],
         ];
-        foreach ($routes as $route => [$write, $arm]) {
+        foreach ($routes as $route => [$write, $listenerSees, $handlerSees, $arm]) {
             foreach ($payloads as $what => [$text, $why]) {
-                $this->logged = [];
-                $this->monolog->clear();
-                $write($text);
-                $this->assertStringContainsString($text, $this->allLogs()."\n".$this->monologLogs(), "{$route}, {$what}: positive control: an instrument holds it");
-                try {
-                    $this->assertNoVendorTextInLogs();
-                } catch (\PHPUnit\Framework\AssertionFailedError $e) {
-                    $this->assertStringContainsString("{$arm}: {$why}", $e->getMessage(), "{$route}, {$what}: the {$arm} arm caught it");
-
-                    continue;
-                }
-                $this->fail("positive control: {$what} written via {$route} passed assertNoVendorTextInLogs()");
+                $this->assertCaughtOnRoute("{$route}, {$what}", fn () => $write($text), "error [Probe] {$text} []",
+                    $listenerSees, $handlerSees, fn () => $this->assertNoVendorTextInLogs(), "{$arm}: {$why}");
             }
         }
     }
 
     /**
-     * #5438: a name carrying '/' and a non-ASCII letter, logged as a CONTEXT
-     * value on each instrument's own route (and re-cased on one), is still
-     * caught: both instruments render context with JSON_FLAGS, where plain
-     * json_encode() would write 'A\/B' and 'Caf\u00e9'.
+     * #5438, #5466: a name carrying '/' and a non-ASCII letter, logged as a
+     * CONTEXT value on each instrument's own route (and re-cased on one), is
+     * still caught by that instrument's arm: the record is read exactly on
+     * its holder, at 'warning' and with the name unescaped (plain
+     * json_encode() would write 'A\/B' and 'Caf\u00e9'), and the other
+     * instrument is read empty.
      */
     public function test_the_no_client_names_assertion_matches_a_name_with_a_slash_or_non_ascii_letter_in_context(): void
     {
         $client = $this->mappedClient(self::MESH_ID, 'Synthetic A/B Café 5e2a');
         $this->assertNoClientNames([$client]);
+        $check = fn () => $this->assertNoClientNames([$client]);
+        $upper = mb_strtoupper($client->name);
 
-        foreach ([
-            'channel(null), upper-cased' => fn () => Log::channel('null')->warning('[Probe]', ['client' => mb_strtoupper($client->name)]),
-            'withName(), as written' => fn () => Log::driver()->getLogger()->withName('probe')->warning('[Probe]', ['client' => $client->name]),
-        ] as $route => $write) {
-            $this->logged = [];
-            $this->monolog->clear();
-            $write();
-            $this->assertNotSame('', $this->allLogs().$this->monologLogs(), "{$route}: positive control: an instrument holds the record");
-            try {
-                $this->assertNoClientNames([$client]);
-            } catch (\PHPUnit\Framework\AssertionFailedError) {
-                continue;
-            }
-            $this->fail("positive control: a name with '/' and 'é' in context via {$route} passed assertNoClientNames()");
-        }
+        $this->assertCaughtOnRoute('channel(null), upper-cased',
+            fn () => Log::channel('null')->warning('[Probe]', ['client' => $upper]),
+            'warning [Probe] {"client":"'.$upper.'"}', true, false, $check, 'MessageLogged records: a client name reached the logs');
+        $this->assertCaughtOnRoute('withName(), as written',
+            fn () => Log::driver()->getLogger()->withName('probe')->warning('[Probe]', ['client' => $client->name]),
+            'warning [Probe] {"client":"'.$client->name.'"}', false, true, $check, 'default-channel Monolog records: a client name reached the logs');
     }
 
     /**
      * #5433: withName() clones the logger with the handlers it has at that
      * moment. A clone taken before a handler is pushed does not carry it; one
-     * taken after does. (setUp() pushes the TestHandler, so the same holds
-     * for it against a clone taken during boot.)
+     * taken after does. Driven here with a $late handler; the same pair for
+     * the setUp() handler itself is driven by
+     * test_the_setup_handler_sees_a_direct_write_but_not_a_clone_taken_before_the_push.
      */
     public function test_a_withname_clone_carries_only_the_handlers_it_was_cloned_with(): void
     {
@@ -581,13 +623,143 @@ class MeshC56ReadSitesTest extends TestCase
         try {
             $after = $logger->withName('probe-after');
             $before->info('[Probe] cloned before the push');
-            $after->info('[Probe] cloned after the push');
+            $after->notice('[Probe] cloned after the push');
         } finally {
-            $this->assertSame($late, $logger->popHandler(), 'the late handler is removed again');
+            // Restore only; the check is below, so a throw above is never
+            // replaced by this one (#5464).
+            $popped = $logger->popHandler();
         }
 
-        $this->assertSame(['[Probe] cloned after the push'], array_map(fn ($r) => $r->message, $late->getRecords()), 'only the clone taken after the push reached the late handler');
-        $this->assertCount(2, $this->monolog->getRecords(), 'positive control: both clones, taken after setUp(), carry the setUp() TestHandler');
+        $this->assertSame($late, $popped, 'the late handler is removed again');
+        $this->assertSame(['notice [Probe] cloned after the push'], self::levelMessages($late), 'only the clone taken after the push reached the late handler');
+        $this->assertSame(
+            ['info [Probe] cloned before the push', 'notice [Probe] cloned after the push'],
+            self::levelMessages($this->monolog),
+            'positive control (#5469): each clone, taken after setUp(), wrote its own record, at its level, to the setUp() TestHandler',
+        );
+    }
+
+    /**
+     * #5468: the setUp() TestHandler itself, both halves. A write through
+     * getLogger() directly reaches it (and not the listener: no
+     * MessageLogged); a withName() clone taken in setUp() just before the
+     * push ($preSetUpClone, standing in for one taken during boot) does not
+     * reach it, nor the listener. A write through the clone at the same
+     * moment does reach the logger's other handlers: a positive control
+     * that the clone really wrote.
+     */
+    public function test_the_setup_handler_sees_a_direct_write_but_not_a_clone_taken_before_the_push(): void
+    {
+        $client = $this->mappedClient();
+        $this->assertCaughtOnRoute('getLogger() direct, info', fn () => Log::driver()->getLogger()->info('[Probe] '.$client->name),
+            "info [Probe] {$client->name} []", false, true, fn () => $this->assertNoClientNames([$client]),
+            'default-channel Monolog records: a client name reached the logs');
+
+        $this->logged = [];
+        $this->monolog->clear();
+        $witness = new TestHandler;
+        $this->preSetUpClone->pushHandler($witness);
+        try {
+            $this->preSetUpClone->info('[Probe] cloned before the setUp() push');
+        } finally {
+            $popped = $this->preSetUpClone->popHandler();
+        }
+        $this->assertSame($witness, $popped, 'the witness is removed again');
+        $this->assertSame(['info [Probe] cloned before the setUp() push'], self::levelMessages($witness), 'positive control: the clone wrote');
+        $this->assertSame([], $this->monolog->getRecords(), 'a clone taken before the setUp() push does not reach the setUp() TestHandler');
+        $this->assertSame([], $this->logged, 'nor the listener');
+    }
+
+    /** @return list<string> a TestHandler's records, 'level message' each */
+    private static function levelMessages(TestHandler $handler): array
+    {
+        return array_map(fn ($r) => strtolower($r->level->getName()).' '.$r->message, $handler->getRecords());
+    }
+
+    /**
+     * Context shapes plain json_encode() hides (#5465), each as [context
+     * builder over the client name, the rendered fragment that must appear].
+     *
+     * @return array<string, array{\Closure(string): array<mixed>, \Closure(string): string}>
+     */
+    public static function hiddenContexts(): array
+    {
+        return [
+            // json_encode() writes a Throwable as {}.
+            'a Throwable whose message carries the name' => [
+                fn (string $n) => ['exception' => new \RuntimeException('failed for '.$n)],
+                fn (string $n) => '"message":"failed for '.$n.'"',
+            ],
+            'a name only in the previous exception' => [
+                fn (string $n) => ['exception' => new \LogicException('outer', 0, new \RuntimeException('inner '.$n))],
+                fn (string $n) => '"message":"inner '.$n.'"',
+            ],
+            // json_encode() writes only public properties; a Stringable's string form is not one.
+            'a Stringable object' => [
+                fn (string $n) => ['who' => new class($n) implements \Stringable
+                {
+                    public function __construct(private string $n) {}
+
+                    public function __toString(): string
+                    {
+                        return 'client '.$this->n;
+                    }
+                }],
+                fn (string $n) => '"string":"client '.$n.'"',
+            ],
+            // Without the substitute/partial flags json_encode() returns false and the context renders as ''.
+            'the name beside an invalid UTF-8 value' => [
+                fn (string $n) => ['client' => $n, 'raw' => "bad \xC3\x28 byte"],
+                fn (string $n) => '"client":"'.$n.'"',
+            ],
+            // Without the substitute flag the partial output writes that whole string as null.
+            'the name in a string carrying an invalid UTF-8 byte' => [
+                fn (string $n) => ['client' => $n." \xC3\x28"],
+                fn (string $n) => '"client":"'.$n." \u{FFFD}(".'"',
+            ],
+            'the name beside a NAN' => [
+                fn (string $n) => ['client' => $n, 'ratio' => NAN],
+                fn (string $n) => '"client":"'.$n.'"',
+            ],
+            // Without JSON_UNESCAPED_LINE_TERMINATORS U+2028 is written as \u2028.
+            'a name carrying U+2028' => [
+                fn (string $n) => ['client' => $n."\u{2028}"],
+                fn (string $n) => '"client":"'.$n."\u{2028}".'"',
+            ],
+        ];
+    }
+
+    /**
+     * #5465: each shape of context plain json_encode() hides is rendered by
+     * BOTH instruments so the name is seen: on each instrument's own route
+     * the holder holds one record at 'error' whose text carries the
+     * fragment, the other holds nothing, and assertNoClientNames() fails
+     * through the holder's arm. (For U+2028 the client's stored name carries
+     * the separator, so the match is on the name as written.)
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('hiddenContexts')]
+    public function test_the_instruments_render_context_that_plain_json_encode_hides(\Closure $context, \Closure $fragment): void
+    {
+        $client = $this->mappedClient(self::MESH_ID, 'Synthetic Client Name 3b8f');
+        $name = $client->name;
+        if (str_contains($fragment('X'), "\u{2028}")) {
+            $client->update(['name' => $name."\u{2028}"]);
+        }
+        $routes = [
+            'channel(null)' => [fn () => Log::channel('null')->error('[Probe]', $context($name)), true, 'MessageLogged records'],
+            'withName()' => [fn () => Log::driver()->getLogger()->withName('probe')->error('[Probe]', $context($name)), false, 'default-channel Monolog records'],
+        ];
+        foreach ($routes as $route => [$write, $listener, $arm]) {
+            $this->logged = [];
+            $this->monolog->clear();
+            $write();
+            [$holder, $other] = $listener ? [$this->listenerLines(), $this->monologLines()] : [$this->monologLines(), $this->listenerLines()];
+            $this->assertCount(1, $holder, "{$route}: the holder holds one record");
+            $this->assertStringStartsWith('error [Probe] {', $holder[0], "{$route}: at 'error', with its context rendered");
+            $this->assertStringContainsString($fragment($name), $holder[0], "{$route}: the hidden value is rendered");
+            $this->assertSame([], $other, "{$route}: the other instrument did not see it");
+            $this->assertArmFails(fn () => $this->assertNoClientNames([$client]), "{$arm}: a client name reached the logs", $route);
+        }
     }
 
     // ---- #5282: the exception handler and the previous chain ---------------------
@@ -908,21 +1080,34 @@ class MeshC56ReadSitesTest extends TestCase
     /**
      * No client name, in any letter case, in any record either instrument
      * captured (#5423), read from TWO instruments (#5428):
-     *   - the MessageLogged listener (allLogs()), which sees every write made
+     *   - the MessageLogged listener (allLogs()), which sees a write made
      *     through a channel LogManager::get() resolves, the default one or
-     *     another (Log::channel('null') is driven): get() wraps each in
-     *     Illuminate\Log\Logger with the event dispatcher;
+     *     another: get() wraps each in Illuminate\Log\Logger with the event
+     *     dispatcher. Driven on Log::channel('null') and the default channel
+     *     at all eight levels and through log() and write() (#5467);
      *   - the TestHandler on the default channel's Monolog logger, which also
      *     sees a write made through that logger outside Laravel's wrapper.
+     *     Driven at all eight levels through the facade (level method, log()
+     *     and write()) and through a withName() clone and a direct
+     *     getLogger() write (level method and log(); Monolog's Logger has no
+     *     write()) (#5467, #5468).
      * Each arm is driven alone by
      * test_the_no_client_names_assertion_fails_on_a_recased_name_on_each_route.
-     * Both render context with JSON_FLAGS, so a name with '/' or a non-ASCII
-     * letter is matched as written (#5438). Not covered: a write through
-     * another channel's Monolog logger outside the wrapper, a logger built
-     * outside LogManager, or a withName() clone of the default logger taken
-     * before setUp() pushed the TestHandler (none of these reaches either
-     * instrument); and a name containing a double quote, a backslash or a
-     * control character when it sits in context (JSON escapes those).
+     * Both render context with renderContext(), so a name with '/', a
+     * non-ASCII letter or U+2028 is matched as written (#5438), a name in a
+     * Throwable's message (or its previous chain) or a Stringable's string
+     * form in context is seen, and an invalid UTF-8 byte or NAN elsewhere in
+     * the context does not blank the record (#5465; each driven by
+     * test_the_instruments_render_context_that_plain_json_encode_hides).
+     * Not covered: a write through another channel's Monolog logger outside
+     * the wrapper, a logger built outside LogManager, or a withName() clone
+     * of the default logger taken before setUp() pushed the TestHandler (none
+     * of these reaches either instrument; the last is driven); a name
+     * containing a double quote, a backslash or a control character when it
+     * sits in context (JSON escapes those); a name split by an invalid UTF-8
+     * byte (U+FFFD replaces the byte); and a name held only in a non-public
+     * property of a context object that is neither a Throwable nor
+     * Stringable, or behind a JsonSerializable that omits it.
      *
      * @param  list<Client>  $clients
      */
@@ -956,9 +1141,51 @@ class MeshC56ReadSitesTest extends TestCase
     private function monologLogs(): string
     {
         return implode("\n", array_map(
-            fn ($r) => strtolower($r->level->getName()).' '.$r->message.' '.json_encode($r->context, self::JSON_FLAGS),
+            fn ($r) => strtolower($r->level->getName()).' '.$r->message.' '.self::renderContext($r->context),
             $this->monolog->getRecords(),
         ));
+    }
+
+    /**
+     * A record's context as both instruments render it (#5465): JSON_FLAGS
+     * over the context after expose() has replaced each object json_encode()
+     * would write as its public properties alone. A Throwable becomes its
+     * class, message and previous chain (json_encode() writes one as {}, so
+     * its message was unseen); any other object that is not JsonSerializable
+     * becomes its class plus its string form when Stringable, else its
+     * public properties (private and protected state is still not rendered).
+     *
+     * @param  array<mixed>  $context
+     */
+    private static function renderContext(array $context): string
+    {
+        return (string) json_encode(self::expose($context), self::JSON_FLAGS);
+    }
+
+    private static function expose(mixed $value, int $depth = 0): mixed
+    {
+        if ($depth > 16) {
+            return '[depth]';
+        }
+        if (is_array($value)) {
+            return array_map(fn ($v) => self::expose($v, $depth + 1), $value);
+        }
+        if ($value instanceof \Throwable) {
+            return [
+                'class' => $value::class,
+                'message' => $value->getMessage(),
+                'previous' => $value->getPrevious() === null ? null : self::expose($value->getPrevious(), $depth + 1),
+            ];
+        }
+        if (is_object($value) && ! $value instanceof \JsonSerializable) {
+            return [
+                'class' => $value::class,
+                'string' => $value instanceof \Stringable ? (string) $value : null,
+                'public' => self::expose(get_object_vars($value), $depth + 1),
+            ];
+        }
+
+        return $value;
     }
 
     /** The records whose text contains $needle, at any level; at least one must exist. */
@@ -968,5 +1195,58 @@ class MeshC56ReadSitesTest extends TestCase
         $this->assertNotSame([], $lines, "positive control: a record containing '{$needle}' was logged");
 
         return implode("\n", array_map(fn (array $r) => $r['level'].' '.$r['message'], $lines));
+    }
+
+    /**
+     * One positive-control step (#5466, #5467): clear both instruments, run
+     * $write, then read EACH instrument's records exactly, as 'level text'.
+     * The instrument that must hold the record holds exactly [$expected] (so
+     * its level and text are read, not a count), the one that must not see it
+     * holds nothing, and $assertion then fails with a message starting
+     * $caughtBy (the arm's name and the check that fired).
+     */
+    private function assertCaughtOnRoute(string $route, \Closure $write, string $expected, bool $listenerSees, bool $handlerSees, \Closure $assertion, string $caughtBy): void
+    {
+        $this->logged = [];
+        $this->monolog->clear();
+        $write();
+        $this->assertSame($listenerSees ? [$expected] : [], $this->listenerLines(), "{$route}: the listener's records");
+        $this->assertSame($handlerSees ? [$expected] : [], $this->monologLines(), "{$route}: the TestHandler's records");
+        $this->assertArmFails($assertion, $caughtBy, $route);
+    }
+
+    /** $assertion fails, with a message starting $caughtBy. */
+    private function assertArmFails(\Closure $assertion, string $caughtBy, string $route): void
+    {
+        try {
+            $assertion();
+        } catch (\PHPUnit\Framework\AssertionFailedError $e) {
+            $this->assertStringStartsWith($caughtBy, $e->getMessage(), "{$route}: the arm and check named '{$caughtBy}' caught it");
+
+            return;
+        }
+        $this->fail("positive control: {$route} passed the assertion");
+    }
+
+    /** @return list<string> the listener's records, 'level text' each */
+    private function listenerLines(): array
+    {
+        return array_map(fn (array $r) => $r['level'].' '.$r['message'], $this->logged);
+    }
+
+    /** @return list<string> the setUp() TestHandler's records, 'level text' each */
+    private function monologLines(): array
+    {
+        return $this->monologLogs() === '' ? [] : explode("\n", $this->monologLogs());
+    }
+
+    /** Write $message at $level through $via: the level method, log() or write(). */
+    private static function writeVia(object $logger, string $via, string $level, string $message, array $context = []): void
+    {
+        match ($via) {
+            'method' => $logger->{$level}($message, $context),
+            'log' => $logger->log($level, $message, $context),
+            'write' => $logger->write($level, $message, $context),
+        };
     }
 }
