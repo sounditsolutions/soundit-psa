@@ -942,10 +942,11 @@ class StaffMeshAdminToolExecutor
         // wrote about this sender after the card was staged is a fact the
         // approver was never shown, so the card is refused and CLOSED (the
         // fact is permanent, so every later click would be refused too). A
-        // card staged after the change was drafted against it and passes.
+        // card staged in a later second than the change was drafted against
+        // it and passes; a change in the staging second itself is refused.
         $changed = $run === null ? null : $this->changedSinceStaging($run, $clientId, $target['mesh_customer_id'], $target['sender'], $contentHash);
         if ($changed !== null) {
-            $message = "Since this card was staged, {$changed}, so the card was not approved against what the PSA now records for this sender and no rule was created."
+            $message = "{$changed}, so the card was not approved against what the PSA now records for this sender and no rule was created."
                 .' No upstream call was made and the lifetime on this proposal was NOT applied. '
                 .self::DEDUP_CARD_CLOSED
                 .' If the sender still needs allowing, check its rules in the Mesh portal and stage a new proposal; it is checked against what the PSA records when it is staged and again when it is approved.';
@@ -2079,7 +2080,8 @@ class StaffMeshAdminToolExecutor
 
     /**
      * What the PSA wrote about this sender's rule AFTER $run was staged, in
-     * words, or null when nothing was (b5c3: #5639, #5654). Asked only at
+     * words that open the refusal, or null when nothing was (b5c3: #5639,
+     * #5654). Asked only at
      * approval, after every other brake, so it decides only cards that would
      * otherwise reach createAllowRule.
      *
@@ -2101,9 +2103,11 @@ class StaffMeshAdminToolExecutor
      *    (removed_at) or reaped by the expiry job (reaped_at). This is the
      *    card a live brake refused and released while the record was
      *    unsettled, and the card staged before a named approver's removal.
-     *    Strictly after the staging instant (both are second-precision), so
-     *    a card staged in the same second as a removal, which was drafted
-     *    against it, is not refused.
+     *    At or after the staging second: both are second-precision, so a
+     *    removal later in the staging second cannot be told apart from one
+     *    just before it, and the tie errs toward refusing, as the create
+     *    fact's fallback does. The refusal then says it was the same second
+     *    rather than claiming the change came after the staging.
      */
     private function changedSinceStaging(TechnicianRun $run, int $clientId, string $tenant, string $sender, string $baseHash): ?string
     {
@@ -2140,8 +2144,8 @@ class StaffMeshAdminToolExecutor
                 ->first();
 
             return $record !== null
-                ? "another proposal for '{$sender}' on this client was approved and wrote PSA record #{$record->id} (now in state '{$record->state}')"
-                : "another proposal for '{$sender}' on this client was approved and its create left no PSA record";
+                ? "Since this card was staged, another proposal for '{$sender}' on this client was approved and wrote PSA record #{$record->id} (now in state '{$record->state}')"
+                : "Since this card was staged, another proposal for '{$sender}' on this client was approved and its create left no PSA record";
         }
 
         $ended = MeshAllowRule::query()
@@ -2149,8 +2153,8 @@ class StaffMeshAdminToolExecutor
             ->where('mesh_customer_id', $tenant)
             ->where('sender', $sender)
             ->where(fn ($q) => $q
-                ->where(fn ($r) => $r->where('state', MeshAllowRule::STATE_REMOVED)->where('removed_at', '>', $run->created_at))
-                ->orWhere(fn ($r) => $r->where('state', MeshAllowRule::STATE_REAPED)->where('reaped_at', '>', $run->created_at)))
+                ->where(fn ($r) => $r->where('state', MeshAllowRule::STATE_REMOVED)->where('removed_at', '>=', $run->created_at))
+                ->orWhere(fn ($r) => $r->where('state', MeshAllowRule::STATE_REAPED)->where('reaped_at', '>=', $run->created_at)))
             ->latest('id')
             ->first();
 
@@ -2158,9 +2162,17 @@ class StaffMeshAdminToolExecutor
             return null;
         }
 
-        return $ended->state === MeshAllowRule::STATE_REMOVED
+        // A same-second tie is refused (above) but not called "since": the
+        // PSA cannot say which came first.
+        $endedAt = $ended->state === MeshAllowRule::STATE_REMOVED ? $ended->removed_at : $ended->reaped_at;
+        $opener = $endedAt !== null && $run->created_at !== null
+            && \Illuminate\Support\Carbon::parse($endedAt)->format('Y-m-d H:i:s') === $run->created_at->format('Y-m-d H:i:s')
+            ? 'In the same second this card was staged (the PSA records these times only to the second, so it cannot say which came first), '
+            : 'Since this card was staged, ';
+
+        return $opener.($ended->state === MeshAllowRule::STATE_REMOVED
             ? "PSA record #{$ended->id} for '{$sender}' on this client was closed by an approved mesh_remove_allow_rule that proved its rule absent"
-            : "PSA record #{$ended->id} for '{$sender}' on this client was closed by the expiry job, which proved its rule absent";
+            : "PSA record #{$ended->id} for '{$sender}' on this client was closed by the expiry job, which proved its rule absent");
     }
 
     private function executedRunId(string $tool, ?int $clientId, string $contentHash): ?int
@@ -2579,6 +2591,10 @@ class StaffMeshAdminToolExecutor
                 ->values()
             : collect();
         $unlinked = $unlinkedCandidates->count() === 1 ? $unlinkedCandidates->first() : null;
+        // A PERMANENT active record is never visited by the expiry job (the
+        // reap pass needs an expiry, the settle pass an unsettled state), so
+        // the note makes no identify or re-check promise for it.
+        $unlinkedUnvisited = $unlinked !== null && $unlinked->state === MeshAllowRule::STATE_ACTIVE && $unlinked->isPermanent();
         // #5641: the record stays, and the live brake (active, unexpired)
         // or the unsettled brake still refuses a new allow rule for this
         // sender at approval on it, whatever its id. #5647: approval re-derives the target, so if the record gets
@@ -2587,7 +2603,10 @@ class StaffMeshAdminToolExecutor
         $unlinkedNote = $unlinked === null ? null
             : "The PSA holds no record under this rule id, but PSA record #{$unlinked->id} (state '{$unlinked->state}', no recorded rule id) carries this rule's sender and comment. "
                 .'The PSA cannot prove it tracks this rule, and the comment can be edited in the Mesh portal, so the rule may have been set up outside this system: removing it may break mail delivery that is working today. '
-                .'That record is NOT closed by this removal. It stays as it is, and while it does, a new allow rule for this sender is refused (when it is approved, if not already when it is staged); once this rule is gone the expiry job finds no rule to identify that record by, so it has to be cleared by hand.';
+                .'That record is NOT closed by this removal. It stays as it is, and while it does, a new allow rule for this sender is refused (when it is approved, if not already when it is staged); '
+                .($unlinkedUnvisited
+                    ? 'it is PERMANENT and active, so the expiry job never examines it, never records this rule\'s id on it and never clears it: it has to be cleared by hand.'
+                    : 'once this rule is gone the expiry job finds no rule to identify that record by, so it has to be cleared by hand.');
 
         return [
             'rule_id' => $ruleId,
@@ -2616,7 +2635,7 @@ class StaffMeshAdminToolExecutor
                 // happened): approval re-derives the target, so a record that
                 // gets this rule's id before then is closed after all.
                 : ($unlinkedNote !== null
-                    ? $unlinkedNote.' Approval re-checks this: if the expiry job records this rule\'s id on that record before the card is approved, approving closes the record as removed.'
+                    ? $unlinkedNote.($unlinkedUnvisited ? '' : ' Approval re-checks this: if the expiry job records this rule\'s id on that record before the card is approved, approving closes the record as removed.')
                     : 'This rule is FOREIGN: the PSA did not create it and holds no record of it. Somebody set it up outside this system, '
                         .'possibly deliberately and possibly for a reason this system cannot see — removing it may break mail delivery that is working today.'),
             'expiry_note' => is_scalar($row['date_expiry'] ?? null) && trim((string) $row['date_expiry']) !== ''

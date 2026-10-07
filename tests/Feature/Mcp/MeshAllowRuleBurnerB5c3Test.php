@@ -58,6 +58,8 @@ class MeshAllowRuleBurnerB5c3Test extends TestCase
 
     private const FOREIGN = 'This rule is FOREIGN: the PSA did not create it and holds no record of it.';
 
+    private const SAME_SECOND = 'In the same second this card was staged (the PSA records these times only to the second, so it cannot say which came first), ';
+
     private ?string $token = null;
 
     private int $creates = 0;
@@ -158,12 +160,12 @@ class MeshAllowRuleBurnerB5c3Test extends TestCase
     }
 
     /** Approve $card and assert the since-staging refusal: whole text, one audited blocked row, card closed, no create. */
-    private function assertRefusedSinceStaging(User $actor, TechnicianRun $card, string $change): void
+    private function assertRefusedSinceStaging(User $actor, TechnicianRun $card, string $change, string $opener = 'Since this card was staged, '): void
     {
         $creates = $this->creates;
         $blocked = $this->blocked();
         $this->approve($actor, $card)->assertSessionHas('error');
-        $expected = 'Since this card was staged, '.$change.self::SINCE_TAIL;
+        $expected = $opener.$change.self::SINCE_TAIL;
         $this->assertSame($expected, (string) session('error'));
         $this->assertSame($blocked + 1, $this->blocked());
         $this->assertSame($expected, TechnicianActionLog::where('result_status', 'blocked')->latest('id')->value('summary'));
@@ -354,6 +356,56 @@ class MeshAllowRuleBurnerB5c3Test extends TestCase
 
         $this->assertRefusedSinceStaging($actor, $cardC,
             "PSA record #{$record->id} for '".self::SENDER."' on this client was closed by an approved mesh_remove_allow_rule that proved its rule absent");
+    }
+
+    /**
+     * removed_at is second-precision, so a removal later in the staging
+     * second cannot be placed after the staging by clock. The tie is
+     * refused and closed, and the refusal says it was the same second. At
+     * the strict compare the card re-created the rule a named approver
+     * had just removed.
+     */
+    public function test_a_removal_in_the_staging_second_refuses_the_card(): void
+    {
+        $actor = $this->configure();
+        $client = $this->client();
+        $write = $this->write();
+
+        $this->approve($actor, $this->stageAdd($client))->assertSessionHas('success');
+        $record = MeshAllowRule::sole();
+        $record->forceFill(['state' => MeshAllowRule::STATE_REAP_FAILED])->save();
+        $this->travel(2)->days();
+        $this->freezeTime();
+        $cardC = $this->stageAdd($client);
+        $record->forceFill(['state' => MeshAllowRule::STATE_ACTIVE])->save();
+        $this->removeRecord($actor, $write, $client, $record);
+        $this->assertTrue($cardC->fresh()->created_at->equalTo($record->fresh()->removed_at), 'the removal lands in the staging second');
+
+        $this->assertRefusedSinceStaging($actor, $cardC,
+            "PSA record #{$record->id} for '".self::SENDER."' on this client was closed by an approved mesh_remove_allow_rule that proved its rule absent", self::SAME_SECOND);
+        $this->assertSame(1, $this->creates);
+    }
+
+    /** The same tie on the reap arm: reaped_at in the staging second refuses and closes the card. */
+    public function test_a_reap_in_the_staging_second_refuses_the_card(): void
+    {
+        $actor = $this->configure();
+        $client = $this->client();
+        $write = $this->write();
+
+        $this->approve($actor, $this->stageAdd($client, ['expires_at' => now()->addHours(2)->toIso8601String()]))->assertSessionHas('success');
+        $record = MeshAllowRule::sole();
+        $this->travel(2)->days();
+        $this->freezeTime();
+        $cardC = $this->stageAdd($client);
+        $write->shouldReceive('deleteRule')->once()->with($record->mesh_rule_id);
+        $write->shouldReceive('ruleAbsent')->once()->with($record->mesh_rule_id)->andReturn(true);
+        $this->assertSame(1, app(MeshAllowRuleReaper::class)->reap()['reaped']);
+        $this->assertTrue($cardC->fresh()->created_at->equalTo($record->fresh()->reaped_at), 'the reap lands in the staging second');
+
+        $this->assertRefusedSinceStaging($actor, $cardC,
+            "PSA record #{$record->id} for '".self::SENDER."' on this client was closed by the expiry job, which proved its rule absent", self::SAME_SECOND);
+        $this->assertSame(1, $this->creates);
     }
 
     /**
@@ -598,7 +650,11 @@ class MeshAllowRuleBurnerB5c3Test extends TestCase
 
         $card = $this->removalCard($client);
         $this->assertStringContainsString("The PSA holds no record under this rule id, but PSA record #{$record->id} (state 'active', no recorded rule id) carries this rule's sender and comment. ".self::CAVEAT, $card);
-        $this->assertStringContainsString(' Approval re-checks this: if the expiry job records this rule\'s id on that record before the card is approved, approving closes the record as removed.', $card);
+        $this->assertStringContainsString("That record is NOT closed by this removal. It stays as it is, and while it does, a new allow rule for this sender is refused (when it is approved, if not already when it is staged); it is PERMANENT and active, so the expiry job never examines it, never records this rule's id on it and never clears it: it has to be cleared by hand.", $card);
+        // A PERMANENT active record is never visited by the expiry job, so
+        // neither the identify promise nor the approval re-check is made.
+        $this->assertStringNotContainsString('Approval re-checks this', $card);
+        $this->assertStringNotContainsString('finds no rule to identify', $card);
         $this->assertStringNotContainsString('FOREIGN', $card);
     }
 
@@ -647,6 +703,10 @@ class MeshAllowRuleBurnerB5c3Test extends TestCase
             $record = $this->idLess($client, ['state' => $state]);
             $card = $this->removalCard($client);
             $this->assertStringContainsString("PSA record #{$record->id} (state '{$state}', no recorded rule id) carries this rule's sender and comment. ".self::CAVEAT, $card, $state);
+            // Swap control for the PERMANENT active arm: the settle pass does
+            // visit an unsettled record, so these keep the expiry-job text.
+            $this->assertStringContainsString('once this rule is gone the expiry job finds no rule to identify that record by, so it has to be cleared by hand. Approval re-checks this: if the expiry job records this rule\'s id on that record before the card is approved, approving closes the record as removed.', $card, $state);
+            $this->assertStringNotContainsString('never examines it', $card, $state);
         }
     }
 

@@ -760,11 +760,15 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
 
         // #5641 / #5640: the note keeps the delivery caveat and says the
         // record keeps refusing the sender (executed below) and needs a hand
-        // clear. #5647: the card alone adds that approval re-checks it.
+        // clear. The record is PERMANENT and active, so the expiry job never
+        // examines it and the card makes no approval re-check promise.
         $unlinked = "The PSA holds no record under this rule id, but PSA record #{$record->id} (state 'active', no recorded rule id) carries this rule's sender and comment. "
             .'The PSA cannot prove it tracks this rule, and the comment can be edited in the Mesh portal, so the rule may have been set up outside this system: removing it may break mail delivery that is working today. '
-            .'That record is NOT closed by this removal. It stays as it is, and while it does, a new allow rule for this sender is refused (when it is approved, if not already when it is staged); once this rule is gone the expiry job finds no rule to identify that record by, so it has to be cleared by hand.';
-        $this->assertStringContainsString($unlinked.' Approval re-checks this: if the expiry job records this rule\'s id on that record before the card is approved, approving closes the record as removed.', TechnicianRun::findOrFail($staged['run_id'])->proposed_content);
+            .'That record is NOT closed by this removal. It stays as it is, and while it does, a new allow rule for this sender is refused (when it is approved, if not already when it is staged); it is PERMANENT and active, so the expiry job never examines it, never records this rule\'s id on it and never clears it: it has to be cleared by hand.';
+        $card = TechnicianRun::findOrFail($staged['run_id'])->proposed_content;
+        $this->assertStringContainsString($unlinked, $card);
+        $this->assertStringNotContainsString('Approval re-checks this', $card);
+        $this->assertStringNotContainsString('finds no rule to identify', $card);
         $summary = TechnicianActionLog::where('action_type', 'mesh_remove_allow_rule')->where('result_status', 'executed')->sole()->summary;
         $this->assertStringEndsWith(' '.$unlinked, $summary);
         $this->assertStringNotContainsString('foreign', $summary);
