@@ -473,7 +473,12 @@ class StaffMeshAdminToolExecutor
         // under. Asking it with the lifetime-bearing hash could never be
         // answered yes for ANY input, which would silently delete the 24-hour
         // post-execution dedup window from the staging path.
-        if ($this->alreadyExecuted('mesh_add_allow_rule', $clientId, $baseHash)) {
+        // #5650: ONE read of the executed row, with one cutoff. Asking
+        // alreadyExecuted() and then executedRunId() computed the 24-hour
+        // cutoff twice, so a row could age out between them and the answer
+        // claimed the PSA holds no record while it named none.
+        $executed = $this->executedAudit('mesh_add_allow_rule', $clientId, $baseHash);
+        if ($executed !== null) {
             // #1133: this answer is given against the lifetime of whichever
             // proposal actually landed, NOT the one being staged now — the key
             // above excludes the expiry deliberately. Saying only "already
@@ -489,7 +494,7 @@ class StaffMeshAdminToolExecutor
             // #5566: the record is the one the matched create wrote (its
             // run), not the sender's newest record, which may belong to
             // another create or another tenant mapping.
-            $created = $this->executedAllowRecord($clientId, $baseHash);
+            $created = $this->executedAllowRecord($clientId, $executed);
             if ($created === null) {
                 // Unknown is a refusal. A write was audited as executed but no
                 // PSA row carries its lifetime, so nothing here can state what
@@ -523,7 +528,7 @@ class StaffMeshAdminToolExecutor
                 'idempotent' => true,
                 'ticket_id' => $ticket->id,
                 'ticket_display_id' => $ticket->display_id,
-                'run_id' => $this->executedRunId('mesh_add_allow_rule', $clientId, $baseHash),
+                'run_id' => $executed->run_id,
                 'sender' => $target['sender'],
                 'expires_at' => self::expiryValue($created->expires_at),
                 'message' => 'This allow rule was already created recently: PSA record #'.$created->id.' is '
@@ -783,7 +788,8 @@ class StaffMeshAdminToolExecutor
             return ['error' => $target['error']];
         }
 
-        if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+        $executed = $this->executedAudit($tool, $clientId, $contentHash);
+        if ($executed !== null) {
             // #5497 item 1: the audit key says a create ran inside the window,
             // not that its rule is in force now. A record in any state but
             // ACTIVE-with-its-id is refused with what that state proves, as at
@@ -797,7 +803,7 @@ class StaffMeshAdminToolExecutor
             // brake sees a missing, removed or reaped record, so the next
             // click created a second rule (or re-created one a named approver
             // had removed) with nobody told it would.
-            $created = $this->executedAllowRecord($clientId, $contentHash);
+            $created = $this->executedAllowRecord($clientId, $executed);
             $refusal = $created === null
                 // Unknown is a refusal here too, as at staging.
                 ? "An allow rule for '{$target['sender']}' was created for this client recently, but the PSA holds no record of it, so whether it is in force cannot be stated. Resolve it in the Mesh portal by hand. No upstream call was made and the lifetime on this proposal was NOT applied."
@@ -924,6 +930,29 @@ class StaffMeshAdminToolExecutor
             $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
 
             return ['error' => $message];
+        }
+
+        // b5c3 (#5639, #5654): every brake above is a question about the
+        // state NOW, and the dedup one only looks back 24 hours. None of them
+        // refuses a record that is gone (removed, reaped, never written), so a
+        // card staged BEFORE a create, a removal or a reap of this sender's
+        // rule reached createAllowRule once the window had passed: a second
+        // rule, or the re-creation of one a named approver removed, from a
+        // card drafted against a state that no longer holds. Whatever the PSA
+        // wrote about this sender after the card was staged is a fact the
+        // approver was never shown, so the card is refused and CLOSED (the
+        // fact is permanent, so every later click would be refused too). A
+        // card staged in a later second than the change was drafted against
+        // it and passes; a change in the staging second itself is refused.
+        $changed = $run === null ? null : $this->changedSinceStaging($run, $clientId, $target['mesh_customer_id'], $target['sender'], $contentHash);
+        if ($changed !== null) {
+            $message = "{$changed}, so the card was not approved against what the PSA now records for this sender and no rule was created."
+                .' No upstream call was made and the lifetime on this proposal was NOT applied. '
+                .self::DEDUP_CARD_CLOSED
+                .' If the sender still needs allowing, check its rules in the Mesh portal and stage a new proposal; it is checked against what the PSA records when it is staged and again when it is approved.';
+            $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $message, 'close_card' => true];
         }
 
         $comment = $this->requiredString($arguments, 'comment') ?? $this->generateComment();
@@ -1382,7 +1411,24 @@ class StaffMeshAdminToolExecutor
                 // then nothing stopped a second create. Same terminal state
                 // as the idempotent dedup answer, still on the error channel.
                 if (($result['close_card'] ?? false) === true) {
-                    $run->advanceTo(TechnicianRunState::Done);
+                    // #5652: compare-and-set, like the claim and the release.
+                    // Only a run this request still holds (Executing, under
+                    // this claim) is closed; a run something else released or
+                    // re-claimed meanwhile keeps that state rather than being
+                    // overwritten with Done.
+                    // The claim's own claimed_at is part of the compare, so a
+                    // later claim of the same run (Executing again) is not
+                    // taken for this one.
+                    if (TechnicianRun::query()->whereKey($run->getKey())
+                        ->where('state', TechnicianRunState::Executing->value)
+                        ->when(
+                            $run->claimed_at !== null,
+                            fn ($q) => $q->where('claimed_at', $run->claimed_at),
+                            fn ($q) => $q->whereNull('claimed_at'),
+                        )
+                        ->update(['state' => TechnicianRunState::Done->value]) === 1) {
+                        $run->state = TechnicianRunState::Done;
+                    }
                 } else {
                     $run->releaseClaim();
                 }
@@ -1675,18 +1721,19 @@ class StaffMeshAdminToolExecutor
      * naming that lifetime needs the row itself, a `reaped` one included
      * (#1133).
      *
-     * alreadyExecuted() answers on the content hash, so the record named in
-     * its answer must be the one that executed create wrote: the newest
-     * 'executed' row on that hash inside the window gives the run, and the
+     * The dedup answers on the content hash, so the record named in its
+     * answer must be the one that executed create wrote: $executed, the
+     * newest 'executed' row on that hash inside the window, read ONCE by the
+     * caller (#5650), gives the run, and the
      * record carries that run in technician_run_id. latestAllowRule() by
      * sender could name a record from another create (a sibling proposal, an
      * older tenant mapping) whose state and lifetime say nothing about this
      * one. A row audited against no run cannot be tied to a record and is
      * answered as no record, which is a refusal.
      */
-    private function executedAllowRecord(int $clientId, string $contentHash): ?MeshAllowRule
+    private function executedAllowRecord(int $clientId, TechnicianActionLog $executed): ?MeshAllowRule
     {
-        $runId = $this->executedRunId('mesh_add_allow_rule', $clientId, $contentHash);
+        $runId = $executed->run_id;
         if ($runId === null) {
             return null;
         }
@@ -1953,11 +2000,23 @@ class StaffMeshAdminToolExecutor
 
     private function alreadyExecuted(string $tool, ?int $clientId, string $contentHash): bool
     {
+        return $this->executedAudit($tool, $clientId, $contentHash) !== null;
+    }
+
+    /**
+     * The newest 'executed' audit row for this write inside the dedup window,
+     * or null. The window's cutoff is computed once, here; a caller that
+     * needs both "did it execute" and "which run" reads this row once rather
+     * than asking twice across a moving cutoff (#5650).
+     */
+    private function executedAudit(string $tool, ?int $clientId, string $contentHash): ?TechnicianActionLog
+    {
         return $this->actionLogQuery($tool, $clientId)
             ->where('content_hash', $contentHash)
             ->where('result_status', 'executed')
             ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
-            ->exists();
+            ->latest('id')
+            ->first();
     }
 
     /**
@@ -2019,14 +2078,108 @@ class StaffMeshAdminToolExecutor
         return false;
     }
 
+    /**
+     * What the PSA wrote about this sender's rule AFTER $run was staged, in
+     * words that open the refusal, or null when nothing was (b5c3: #5639,
+     * #5654). Asked only at
+     * approval, after every other brake, so it decides only cards that would
+     * otherwise reach createAllowRule.
+     *
+     * Two facts, neither bounded by the dedup window:
+     *  - a create for this write (the base key, so this tenant) that ran
+     *    after the card's own staging row: audited 'executed', or audited
+     *    'executed_with_fault' with no PSA record of its own (record_unwritable:
+     *    a rule may be live that nothing tracks). Either way a sibling card was
+     *    approved first, whatever became of its record since (removed, reaped,
+     *    or never written). Ordered by audit row id, not by clock, so a create
+     *    in the same second as the staging is still placed on the right side
+     *    of it. A fault that DID write a record is that record's business,
+     *    exactly as in faultedExecution(): the unsettled brake refuses it
+     *    while it is unsettled, and the second fact below once it is proved
+     *    absent, so the corrected retry the fault text promises stays
+     *    possible from a NEW proposal;
+     *  - a record for this sender on this tenant proved absent after the card
+     *    was staged: removed by an approved mesh_remove_allow_rule
+     *    (removed_at) or reaped by the expiry job (reaped_at). This is the
+     *    card a live brake refused and released while the record was
+     *    unsettled, and the card staged before a named approver's removal.
+     *    At or after the staging second: both are second-precision, so a
+     *    removal later in the staging second cannot be told apart from one
+     *    just before it, and the tie errs toward refusing, as the create
+     *    fact's fallback does. The refusal then says it was the same second
+     *    rather than claiming the change came after the staging.
+     */
+    private function changedSinceStaging(TechnicianRun $run, int $clientId, string $tenant, string $sender, string $baseHash): ?string
+    {
+        $stagedAuditId = TechnicianActionLog::query()
+            ->where('run_id', $run->id)
+            ->where('action_type', 'mesh_stage_add_allow_rule')
+            ->where('result_status', 'awaiting_approval')
+            ->min('id');
+
+        $recordedRunIds = MeshAllowRule::query()->where('client_id', $clientId)->whereNotNull('technician_run_id')->select('technician_run_id');
+        $create = $this->actionLogQuery('mesh_add_allow_rule', $clientId)
+            ->where('content_hash', $baseHash)
+            ->where(fn ($q) => $q
+                ->where('result_status', 'executed')
+                ->orWhere(fn ($f) => $f
+                    ->where('result_status', 'executed_with_fault')
+                    ->where(fn ($r) => $r->whereNull('run_id')->orWhereNotIn('run_id', $recordedRunIds))))
+            // No staging row (its audit write can fail without throwing):
+            // the run's own creation time stands in, inclusively, so a tie
+            // on that fallback errs toward refusing.
+            ->when(
+                $stagedAuditId !== null,
+                fn ($q) => $q->where('id', '>', $stagedAuditId),
+                fn ($q) => $q->where('created_at', '>=', $run->created_at),
+            )
+            ->latest('id')
+            ->first();
+
+        if ($create !== null) {
+            $record = $create->run_id === null ? null : MeshAllowRule::query()
+                ->where('client_id', $clientId)
+                ->where('technician_run_id', $create->run_id)
+                ->latest('id')
+                ->first();
+
+            return $record !== null
+                ? "Since this card was staged, another proposal for '{$sender}' on this client was approved and wrote PSA record #{$record->id} (now in state '{$record->state}')"
+                : "Since this card was staged, another proposal for '{$sender}' on this client was approved and its create left no PSA record";
+        }
+
+        $ended = MeshAllowRule::query()
+            ->where('client_id', $clientId)
+            ->where('mesh_customer_id', $tenant)
+            ->where('sender', $sender)
+            ->where(fn ($q) => $q
+                ->where(fn ($r) => $r->where('state', MeshAllowRule::STATE_REMOVED)->where('removed_at', '>=', $run->created_at))
+                ->orWhere(fn ($r) => $r->where('state', MeshAllowRule::STATE_REAPED)->where('reaped_at', '>=', $run->created_at)))
+            ->latest('id')
+            ->first();
+
+        if ($ended === null) {
+            return null;
+        }
+
+        // A same-second tie is refused (above) but not called "since": the
+        // PSA cannot say which came first.
+        $endedAt = $ended->state === MeshAllowRule::STATE_REMOVED ? $ended->removed_at : $ended->reaped_at;
+        $opener = $endedAt !== null && $run->created_at !== null
+            && \Illuminate\Support\Carbon::parse($endedAt)->format('Y-m-d H:i:s') === $run->created_at->format('Y-m-d H:i:s')
+            ? 'In the same second this card was staged (the PSA records these times only to the second, so it cannot say which came first), '
+            : 'Since this card was staged, ';
+
+        return $opener.($ended->state === MeshAllowRule::STATE_REMOVED
+            ? "PSA record #{$ended->id} for '{$sender}' on this client was closed by an approved mesh_remove_allow_rule that proved its rule absent"
+            : "PSA record #{$ended->id} for '{$sender}' on this client was closed by the expiry job, which proved its rule absent");
+    }
+
     private function executedRunId(string $tool, ?int $clientId, string $contentHash): ?int
     {
-        return $this->actionLogQuery($tool, $clientId)
-            ->where('content_hash', $contentHash)
-            ->where('result_status', 'executed')
-            ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
-            ->latest('id')
-            ->value('run_id');
+        $runId = $this->executedAudit($tool, $clientId, $contentHash)?->run_id;
+
+        return $runId === null ? null : (int) $runId;
     }
 
     /**
@@ -2409,21 +2562,51 @@ class StaffMeshAdminToolExecutor
 
         // #5570: no record under this id is not "no record". A PSA record
         // whose id display_id_lost cleared still matches this rule by sender
-        // and comment (the identity listAllowRules' psaRecordFor() uses), so
-        // the rule is not called foreign then. That record is NOT closed by
-        // this removal: the id is the only proof that ties them together.
-        $unlinked = $record === null && $comment !== ''
+        // and comment, so the rule is not called PSA-created-and-unknown then.
+        // That record is NOT closed by this removal: the id is the only proof
+        // that ties them together.
+        //
+        // #5648 / #5640: the match is narrowed to what could be the PSA's own
+        // write of THIS rule: this client, THIS tenant (the one the rule was
+        // just read from), a state in which the record still answers for a
+        // rule (removed and reaped records are closed), sender and comment
+        // compared case-exactly in PHP (MariaDB's default collation would
+        // not), and
+        // EXACTLY ONE such record; two or more are no match. The comment is
+        // free text in the Mesh portal, so the delivery caveat the FOREIGN
+        // label gives is kept in the unlinked note, never dropped.
+        $unlinkedCandidates = $record === null && $comment !== ''
             ? MeshAllowRule::query()
                 ->where('client_id', $clientId)
+                ->where('mesh_customer_id', $tenant)
                 ->whereNull('mesh_rule_id')
-                ->where('sender', $sender)
-                ->where('comment', $comment)
-                ->latest('id')
-                ->first()
-            : null;
+                ->whereIn('state', [MeshAllowRule::STATE_ACTIVE, MeshAllowRule::STATE_UNRESOLVED, MeshAllowRule::STATE_REAP_FAILED])
+                // Case-folded in SQL on every engine (SQLite's = is exact,
+                // MariaDB's default collation is not), so the PHP filter
+                // below is the one exact compare, the same everywhere.
+                ->whereRaw('LOWER(sender) = ?', [mb_strtolower($sender)])
+                ->whereRaw('LOWER(comment) = ?', [mb_strtolower($comment)])
+                ->get()
+                ->filter(static fn (MeshAllowRule $r): bool => $r->sender === $sender && $r->comment === $comment)
+                ->values()
+            : collect();
+        $unlinked = $unlinkedCandidates->count() === 1 ? $unlinkedCandidates->first() : null;
+        // A PERMANENT active record is never visited by the expiry job (the
+        // reap pass needs an expiry, the settle pass an unsettled state), so
+        // the note makes no identify or re-check promise for it.
+        $unlinkedUnvisited = $unlinked !== null && $unlinked->state === MeshAllowRule::STATE_ACTIVE && $unlinked->isPermanent();
+        // #5641: the record stays, and the live brake (active, unexpired)
+        // or the unsettled brake still refuses a new allow rule for this
+        // sender at approval on it, whatever its id. #5647: approval re-derives the target, so if the record gets
+        // this rule's id before then, approval closes it after all; the note
+        // says so rather than promising a state the approval may not keep.
         $unlinkedNote = $unlinked === null ? null
             : "The PSA holds no record under this rule id, but PSA record #{$unlinked->id} (state '{$unlinked->state}', no recorded rule id) carries this rule's sender and comment. "
-                .'That record is NOT closed by this removal: the PSA cannot prove it tracks this rule, so it stays as it is.';
+                .'The PSA cannot prove it tracks this rule, and the comment can be edited in the Mesh portal, so the rule may have been set up outside this system: removing it may break mail delivery that is working today. '
+                .'That record is NOT closed by this removal. It stays as it is, and while it does, a new allow rule for this sender is refused (when it is approved, if not already when it is staged); '
+                .($unlinkedUnvisited
+                    ? 'it is PERMANENT and active, so the expiry job never examines it, never records this rule\'s id on it and never clears it: it has to be cleared by hand.'
+                    : 'once this rule is gone the expiry job finds no rule to identify that record by, so it has to be cleared by hand.');
 
         return [
             'rule_id' => $ruleId,
@@ -2448,8 +2631,13 @@ class StaffMeshAdminToolExecutor
                         ? ', PERMANENT — it has no expiry, so nothing would have removed it automatically'
                         : ', due to expire '.$record->expires_at->toDayDateTimeString().' UTC')
                     .'), so removing it now ends it early and the PSA record is closed with it.'
-                : ($unlinkedNote ?? 'This rule is FOREIGN: the PSA did not create it and holds no record of it. Somebody set it up outside this system, '
-                    .'possibly deliberately and possibly for a reason this system cannot see — removing it may break mail delivery that is working today.'),
+                // #5647: card only (the executed summary states what
+                // happened): approval re-derives the target, so a record that
+                // gets this rule's id before then is closed after all.
+                : ($unlinkedNote !== null
+                    ? $unlinkedNote.($unlinkedUnvisited ? '' : ' Approval re-checks this: if the expiry job records this rule\'s id on that record before the card is approved, approving closes the record as removed.')
+                    : 'This rule is FOREIGN: the PSA did not create it and holds no record of it. Somebody set it up outside this system, '
+                        .'possibly deliberately and possibly for a reason this system cannot see — removing it may break mail delivery that is working today.'),
             'expiry_note' => is_scalar($row['date_expiry'] ?? null) && trim((string) $row['date_expiry']) !== ''
                 ? 'Mesh displays an expiry of '.trim((string) $row['date_expiry']).' on this rule (display only — Mesh does not act on it).'
                 : 'Mesh displays no expiry on this rule.',
@@ -3299,8 +3487,14 @@ class StaffMeshAdminToolExecutor
                             .'This record keeps blocking new allow rules for this sender until the PSA proves a removal against it (an approved mesh_remove_allow_rule, once the id is back) or someone clears it by hand. Check the rule in the Mesh portal.')
                     // #5563: reapOne() TRIES the sender+comment match; when
                     // nothing matches it records the row unresolved instead.
-                    : "PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared, so when it is due the expiry job tries to re-identify the rule by sender and comment and remove it. "
-                        .'If no rule in Mesh matches then, the record is marked unresolved and keeps blocking new allow rules for this sender. Check the rule in the Mesh portal.');
+                    // #5642: resolveRuleId() takes the FIRST listed match
+                    // (findRuleByComment), and an unreadable list marks the
+                    // row reap_failed (markFailed()). #5657: an unresolved or
+                    // reap_failed row refuses a new allow rule at APPROVAL
+                    // (unsettledAllowRule()); staging is not refused by it
+                    // once the dedup window has passed.
+                    : "PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared, so when it is due the expiry job tries to re-identify the rule by sender and comment and remove it (if more than one rule in Mesh matches, it takes the first one Mesh lists). "
+                        .'If no rule in Mesh matches then, the record is marked unresolved; if the rule list cannot be read, it is marked reap_failed and the removal is retried. Either way a new allow rule for this sender is then refused when it is approved. Check the rule in the Mesh portal.');
         } elseif ($after === null) {
             $fault = 'display_unmeasured';
             $message = "The PSA now enforces the new expiry for allow rule '{$target['rule_id']}' (sender '{$target['sender']}'): {$transition}. "
@@ -3707,7 +3901,7 @@ class StaffMeshAdminToolExecutor
             .'Per rule: rule_id (what mesh_edit_allow_rule and mesh_remove_allow_rule take), sender, scope (address or domain), action, active, comment, created_by, '
             .'permanent / expires_at, the expiry Mesh displays, any other date_* fields Mesh returns (verbatim, under mesh_dates), and whether the PSA created it '
             .'(psa_created, with the PSA record stored against this tenant: its psa_client_id, ticket_id, technician_run_id and state). '
-            .'psa_record_held_by_this_client says whether this client holds a PSA record with this rule_id, which is the lookup mesh_edit_allow_rule and mesh_remove_allow_rule use. When it is false they treat the rule as foreign, even where psa_created is true (a record another client stored against this tenant, or one matched by sender and comment). '
+            .'psa_record_held_by_this_client says whether this client holds a PSA record with this rule_id, which is the lookup mesh_edit_allow_rule and mesh_remove_allow_rule use. When it is false, mesh_edit_allow_rule refuses the rule as foreign even where psa_created is true (a record another client stored against this tenant, or one matched by sender and comment), and mesh_remove_allow_rule does not close any PSA record with it: its card calls the rule FOREIGN, unless exactly one of this client\'s records on this tenant with no recorded rule id, and not removed or reaped, matches it by sender and comment, in which case the card names that record and says it stays open. '
             .'permanent is true unless the PSA holds a record with an expiry that its reaper still works; Mesh does not expire rules itself, so a rule the PSA did not create is permanent whatever date Mesh displays. '
             .'Block rules are not listed (only counted). Also returns, as unsettled_psa_records, the PSA records that are unresolved or reap_failed: every one of this client\'s under any Mesh tenant, and any client\'s stored against this tenant (psa_client_id and stored_under_listed_tenant say which). '
             .'A Mesh read that fails (an HTTP error or no answer) is returned as an error, never as an empty list. Requires an explicit grant.',
@@ -3794,7 +3988,8 @@ class StaffMeshAdminToolExecutor
             .'STAGED ONLY: every call is held as a cockpit approval proposal. There is no immediate implementation — a bare (immediate) grant is refused with a pointer to `mesh_remove_allow_rule:staged`. '
             .'The rule is resolved only within this client’s own tenant, so an id belonging to another customer simply does not resolve. '
             .'ALLOW-ONLY: a rule Mesh reports as a BLOCK rule is refused, and so is one whose type Mesh does not state. '
-            .'It removes rules the PSA created AND rules it did not; a rule the PSA never wrote is labelled FOREIGN on the approval card, because removing it may break something a human set up on purpose. '
+            .'It removes rules the PSA created AND rules it did not; a rule the PSA holds no record of under its id is labelled FOREIGN on the approval card, because removing it may break something a human set up on purpose. '
+            .'If exactly one PSA record with no recorded rule id (not removed or reaped) matches the rule by sender and comment, the card names that record instead, keeps that warning, and says the record is NOT closed by the removal. '
             .'Success is proved by re-reading the rule and requiring a 404 — a rule still readable afterwards, or one whose absence cannot be measured, is reported as a fault and never as done. '
             .'Requires reason, ticket_id, and the rule’s sender typed back as confirmation.',
             self::removeAllowRuleProperties(),
@@ -3808,7 +4003,7 @@ class StaffMeshAdminToolExecutor
         return self::tool(
             'mesh_stage_remove_allow_rule',
             'Stage the removal of a Mesh Email Security allow rule for cockpit approval. STAGED ONLY — this is the only lane the verb has: approval re-resolves the client’s Mesh tenant and re-checks the rule’s ownership, its allow/block type and the typed sender confirmation against LIVE state before anything is deleted. '
-            .'The proposal names the sender the rule allows, how wide it is (one address vs a whole domain), whether the rule is PSA-TRACKED or FOREIGN, the expiry Mesh displays, the Mesh comment, and who Mesh records as its creator. '
+            .'The proposal names the sender the rule allows, how wide it is (one address vs a whole domain), whether the rule is PSA-TRACKED, FOREIGN, or matched by sender and comment to a PSA record with no recorded rule id (which the removal does not close), the expiry Mesh displays, the Mesh comment, and who Mesh records as its creator. '
             .'Removing an allow rule STRENGTHENS filtering for that sender — but a FOREIGN rule was put there by someone outside this system, and removing it can break mail that is being delivered today. '
             .'Requires a ticket, reason, the sender typed back, explicit grant, kill-switch and identical-content dedup. No staging cooldown: distinct rules may be staged back-to-back.',
             self::removeAllowRuleProperties(),
