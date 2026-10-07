@@ -1234,10 +1234,44 @@ class LitsrmmAssetSyncTest extends TestCase
         $this->assertSame(7, $this->licenses($this->client)['workstation']->quantity, 'three seats is the floor');
     }
 
-    public function test_devices_the_list_says_are_retired_explain_a_seat_drop(): void
+    public function test_devices_the_list_has_long_reported_retired_do_not_hide_a_seat_cut(): void
     {
-        // A seat that went because the vendor lists its device retired is not
-        // a short read.
+        // Devices retired on earlier runs back none of the seats held but stay
+        // on the list; a truncated read returning them with the two linked
+        // live devices must not cut 8 seats to 2.
+        $this->seatsMostlyUnlinked(8, 2);
+        $this->rows = array_slice($this->rows, 0, 2);
+        for ($n = 21; $n <= 26; $n++) {
+            $this->retiredDevice((string) $n);
+        }
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(8, $this->licenses($this->client)['workstation']->quantity, 'the seat is not cut');
+        $this->assertSame(1, $result->details['short_read_refused']);
+        $this->assertStringContainsString('(rule d:', $result->errorMessages[0]);
+        $this->assertSame(0, $this->detailRequests(), 'nothing of it is read in detail');
+    }
+
+    public function test_a_read_listing_only_retired_devices_does_not_zero_the_seats(): void
+    {
+        // A seats-only client: no link, and the read lists only retired devices.
+        $this->device('1', ['serial' => null]);
+        $this->service()->sync();
+        Asset::query()->update(['litsrmm_device_id' => null]);
+        $this->rows = [];
+        $this->retiredDevice('21');
+        $this->retiredDevice('22');
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(1, $this->licenses($this->client)['workstation']->quantity, 'the seat is not cut');
+        $this->assertSame(1, $result->details['short_read_refused']);
+        $this->assertStringContainsString('(rule d:', $result->errorMessages[0]);
+    }
+
+    public function test_a_retirement_wave_past_the_bound_goes_through_the_accept(): void
+    {
         $this->seatsMostlyUnlinked(10, 2);
         foreach (array_keys($this->rows) as $i) {
             if ($i >= 2) {
@@ -1245,10 +1279,16 @@ class LitsrmmAssetSyncTest extends TestCase
             }
         }
 
-        $result = $this->service()->sync();
+        $refused = $this->service()->sync();
 
-        $this->assertSame(0, $result->errors, implode('; ', $result->errorMessages));
+        $this->assertSame(10, $this->licenses($this->client)['workstation']->quantity, 'refused without the accept');
+        $this->assertSame(1, $refused->details['short_read_refused']);
+
+        $accepted = $this->service()->sync(null, [$this->client->id]);
+
+        $this->assertSame(0, $accepted->errors, implode('; ', $accepted->errorMessages));
         $this->assertSame(2, $this->licenses($this->client)['workstation']->quantity);
+        $this->assertSame(1, $accepted->details['short_read_accepted']);
     }
 
     public function test_a_small_client_whose_every_link_is_unlisted_is_refused(): void

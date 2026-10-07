@@ -66,10 +66,13 @@ use Illuminate\Support\Facades\Log;
  *          unlisted (this is what protects a client with RELEASE_FLOOR or
  *          fewer links, which (b) never refuses);
  *      (d) its LITSRMM seats (the total of its two seat quantities) are
- *          above 0, and the seats this read would write, plus the agent
- *          devices it lists as retired or half-retired (the vendor saying
- *          why a seat went), are 0, or fall short of the seats held by more
- *          than RELEASE_FLOOR AND by more than half of them.
+ *          above 0, and the seats this read would write are 0, or fall
+ *          short of the seats held by more than RELEASE_FLOOR AND by more
+ *          than half of them. A device the read lists as retired or
+ *          half-retired makes up none of that shortfall: a device retired
+ *          on an earlier run backs none of the seats held yet stays on the
+ *          list, so counting it would let a short read cut seats. A
+ *          retirement wave past the bound goes through --accept-short-read.
  *    The refusal is an error on the result (so the command exits FAILURE),
  *    counted in details['short_read_refused'], and a log line carrying the
  *    PSA client id, the rule and the counts only. A normal shrink inside
@@ -377,17 +380,15 @@ class LitsrmmAssetSyncService
             ->whereHas('licenseType', fn ($q) => $q->where('vendor', self::LICENSE_VENDOR))
             ->sum('quantity');
         $seatsRead = array_sum(self::seatCounts($rows));
-        // An agent device the read lists as retired or half-retired is the
-        // vendor saying why its seat went: it explains one seat of the drop.
-        $retiredListed = count(array_filter($rows, fn (LitsrmmDevice $d) => $d->agentVersion !== null
-            && ($d->isRetired() || $d->hasSplitRetiredState())));
-        $seatDrop = $seatsHeld - $seatsRead - $retiredListed;
+        // No allowance for devices the read lists as retired (rule (d)): one
+        // retired on an earlier run backs none of $seatsHeld.
+        $seatDrop = $seatsHeld - $seatsRead;
 
         $rule = match (true) {
             $rows === [] && ($linked > 0 || $seatsHeld > 0) => 'a',
             $unlisted > self::RELEASE_FLOOR && $unlisted * 2 > $linked => 'b',
             $linked > 0 && $unlisted === $linked => 'c',
-            $seatsHeld > 0 && ($seatsRead + $retiredListed === 0 || ($seatDrop > self::RELEASE_FLOOR && $seatDrop * 2 > $seatsHeld)) => 'd',
+            $seatsHeld > 0 && ($seatsRead === 0 || ($seatDrop > self::RELEASE_FLOOR && $seatDrop * 2 > $seatsHeld)) => 'd',
             default => null,
         };
 
