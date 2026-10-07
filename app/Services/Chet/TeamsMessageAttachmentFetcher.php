@@ -7,6 +7,7 @@ use App\Services\Assistant\AssistantToolExecutor;
 use App\Services\AttachmentService;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
+use App\Services\Graph\GraphTokenRefreshFailedException;
 use Closure;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -294,12 +295,19 @@ class TeamsMessageAttachmentFetcher
     private function graphFailure(\Throwable $e, string $chatId, string $what): array
     {
         $status = $e instanceof GraphClientException ? $e->getHttpStatus() : 0;
+        // #5398: a 401 whose token refresh failed is a token failure, not the permission
+        // refusal the 401/403 arm below names, so it gets its own record key and message.
+        $tokenRefreshFailed = $e instanceof GraphTokenRefreshFailedException;
 
         Log::warning('[ChetDataSurface] Teams message attachment read failed', [
             'chat_id' => $chatId,
             'stage' => $what,
             'status' => $status,
-        ]);
+        ] + ($tokenRefreshFailed ? ['token_refresh' => 'failed'] : []));
+
+        if ($tokenRefreshFailed) {
+            return ['error' => "Teams {$what} read failed: Microsoft Graph answered HTTP {$status} and the PSA's Graph token refresh then failed, so no fresh token was obtained; nothing was read."];
+        }
 
         return match ($status) {
             401, 403 => ['error' => "Teams refused the {$what} read (HTTP {$status}): the PSA's Microsoft Graph app registration needs the ".TeamsChatReadToolset::HOSTED_CONTENT_PERMISSION.' application permission with admin consent to read chat images. Ask the operator to grant it; nothing was read.'],

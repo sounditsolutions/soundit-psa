@@ -6,6 +6,7 @@ use App\Models\Attachment;
 use App\Models\Email;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
+use App\Services\Graph\GraphTokenRefreshFailedException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -190,11 +191,14 @@ class AttachmentService
 
     /**
      * Download all attachments from a Graph email and store them locally.
-     * Returns array of created Attachment models.
+     * Returns array of created Attachment models, empty when the message has none or none was
+     * stored. Returns null when the message read itself failed (#5394), so a caller can tell a
+     * failed read from an empty list and try the read again; a failed or refused ITEM is not a
+     * failed read and still yields an array.
      *
-     * @return Attachment[]
+     * @return Attachment[]|null
      */
-    public function downloadEmailAttachments(Email $email, GraphClient $graph, string $mailbox): array
+    public function downloadEmailAttachments(Email $email, GraphClient $graph, string $mailbox): ?array
     {
         if (! $email->graph_id) {
             return [];
@@ -209,7 +213,7 @@ class AttachmentService
                 'error' => $e->getMessage(),
             ]);
 
-            return [];
+            return null;
         }
 
         $attachments = [];
@@ -294,15 +298,19 @@ class AttachmentService
         try {
             $raw = $graph->getMessageAttachmentRaw($mailbox, $email->graph_id, $attachmentId);
         } catch (\Throwable $e) {
-            // #5136: getCode() is not an HTTP status for every Throwable (GraphClientException
-            // carries 0 for a connect/timeout or token failure). Report a status only when the
-            // exception carries an HTTP status; otherwise status is null, the exception class
-            // names what failed, and the reason claims no HTTP failure. Never the message (C-56).
+            // #5136: getCode() is not an HTTP status for every Throwable. A GraphClientException
+            // carrying a status > 0 is reported as fetch_failed with that status. Anything else
+            // (a GraphClientException with status 0, e.g. connect/timeout or a token failure at
+            // entry, or any other Throwable, whose code is not read) is reported as
+            // status_unknown: status null plus the exception class (#5399). Never the message (C-56).
+            // A 401 whose token refresh then failed also carries token_refresh => failed, so the
+            // record names the token failure as the cause (#5398).
             $httpStatus = $e instanceof GraphClientException ? $e->getHttpStatus() : 0;
             if ($httpStatus > 0) {
-                $this->warnSkipped($email, $ga, 'fetch_failed', ['status' => $httpStatus]);
+                $this->warnSkipped($email, $ga, 'fetch_failed', ['status' => $httpStatus]
+                    + ($e instanceof GraphTokenRefreshFailedException ? ['token_refresh' => 'failed'] : []));
             } else {
-                $this->warnSkipped($email, $ga, 'no_http_status', [
+                $this->warnSkipped($email, $ga, 'status_unknown', [
                     'status' => null,
                     'exception' => $e::class,
                 ]);

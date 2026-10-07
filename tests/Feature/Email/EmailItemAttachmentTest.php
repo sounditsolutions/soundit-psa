@@ -605,7 +605,7 @@ class EmailItemAttachmentTest extends TestCase
         $stored = app(AttachmentService::class)->downloadEmailAttachments($this->email(), $graph, self::MAILBOX);
 
         $this->assertSame([], $stored);
-        $context = $this->assertNotStoredWarning('no_http_status', 'ATT-ITEM-1');
+        $context = $this->assertNotStoredWarning('status_unknown', 'ATT-ITEM-1');
         $this->assertArrayHasKey('status', $context);
         $this->assertNull($context['status']);
         $this->assertSame(\App\Services\Graph\GraphClientException::class, $context['exception'] ?? null);
@@ -625,7 +625,7 @@ class EmailItemAttachmentTest extends TestCase
         $stored = app(AttachmentService::class)->downloadEmailAttachments($this->email(), $graph, self::MAILBOX);
 
         $this->assertSame([], $stored);
-        $context = $this->assertNotStoredWarning('no_http_status', 'ATT-ITEM-1');
+        $context = $this->assertNotStoredWarning('status_unknown', 'ATT-ITEM-1');
         $this->assertNull($context['status']);
         $this->assertSame(\RuntimeException::class, $context['exception'] ?? null);
     }

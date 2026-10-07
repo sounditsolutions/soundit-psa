@@ -776,12 +776,17 @@ PROMPT;
      * - PendingThirdParty excluded — client reply does not mean the third party responded
      *
      * $predownloadedAttachments: null means no download was attempted, so this method downloads
-     * when the email has a graph_id. An array, even an empty one, means the caller already ran
-     * downloadEmailAttachments() for this email, so it is used as-is and nothing is fetched again
-     * (#5143: a refused or failed item must not be fetched and warned about twice).
+     * when the email has a graph_id; a failed read there links no attachments (#5394: `?? []`).
+     * An array, even an empty one, is used as-is and nothing is fetched here (#5143: a refused
+     * or failed item must not be fetched and warned about twice). createTicketFromLockedEmail
+     * passes [] after a failed message read and re-reads after commit instead (#5394).
+     *
+     * Returns the client reply note, or null when none was created.
      */
-    public function linkEmailToTicket(Email $email, Ticket $ticket, ?array $predownloadedAttachments = null): void
+    public function linkEmailToTicket(Email $email, Ticket $ticket, ?array $predownloadedAttachments = null): ?TicketNote
     {
+        $note = null;
+
         // Mark as read so the email UI unread count stays meaningful
         $email->update(['ticket_id' => $ticket->id, 'is_read' => true]);
 
@@ -797,32 +802,23 @@ PROMPT;
                 $graph = app(GraphClient::class);
                 $mailbox = Setting::getValue('graph_mailbox');
                 if ($mailbox) {
-                    $emailAttachments = $attachmentService->downloadEmailAttachments($email, $graph, $mailbox);
+                    $emailAttachments = $attachmentService->downloadEmailAttachments($email, $graph, $mailbox) ?? [];
                 }
             }
 
             // Build body_html: use email HTML with CID replacement if we have inline attachments
-            $bodyHtml = null;
-            $hasInline = collect($emailAttachments)->contains(fn ($a) => $a->is_inline);
-            if ($hasInline && $email->body_html) {
-                $bodyHtml = $attachmentService->replaceCidReferences($email->body_html, $emailAttachments);
-                $bodyHtml = HtmlSanitizer::sanitize($bodyHtml);
-            }
+            $bodyHtml = $this->inlineBodyHtml($email, $emailAttachments, $attachmentService);
 
             // Forwarded customer emails arrive with the forwarder (a technician)
             // as the envelope sender. Recover the original sender so the note is
             // attributed to the customer, with a provenance line naming the forwarder.
             $authorName = $email->from_name ?? $email->from_address;
-            if (ForwardedEmailParser::isForwarded($email)) {
-                $sender = ForwardedEmailParser::parseOriginalSender($email);
-                if ($sender && $sender['email'] !== strtolower($email->from_address)) {
-                    $authorName = $sender['name'] ?? $sender['email'];
-                    $forwarder = $email->from_name ?? $email->from_address;
-                    $provenance = "[Forwarded into {$ticket->display_id} by {$forwarder}]";
-                    $body = $provenance."\n\n".($body !== '' ? $body : '[see attachments]');
-                    if ($bodyHtml !== null) {
-                        $bodyHtml = '<p>'.e($provenance).'</p>'.$bodyHtml;
-                    }
+            $forward = $this->forwardProvenance($email, $ticket);
+            if ($forward !== null) {
+                $authorName = $forward['author'];
+                $body = $forward['line']."\n\n".($body !== '' ? $body : '[see attachments]');
+                if ($bodyHtml !== null) {
+                    $bodyHtml = '<p>'.e($forward['line']).'</p>'.$bodyHtml;
                 }
             }
 
@@ -890,6 +886,47 @@ PROMPT;
                 'noted_at' => now(),
             ]);
         }
+
+        return $note;
+    }
+
+    /**
+     * The email's HTML with cid: references pointed at the stored inline attachments, sanitized;
+     * null when no attachment is inline or the email has no HTML.
+     *
+     * @param  array<\App\Models\Attachment>  $attachments
+     */
+    private function inlineBodyHtml(Email $email, array $attachments, AttachmentService $attachmentService): ?string
+    {
+        $hasInline = collect($attachments)->contains(fn ($a) => $a->is_inline);
+        if (! $hasInline || ! $email->body_html) {
+            return null;
+        }
+
+        return HtmlSanitizer::sanitize($attachmentService->replaceCidReferences($email->body_html, $attachments));
+    }
+
+    /**
+     * For a forwarded customer email whose original sender is not the forwarder: the note's
+     * author name and the provenance line naming the forwarder. Null otherwise.
+     *
+     * @return array{author: string, line: string}|null
+     */
+    private function forwardProvenance(Email $email, Ticket $ticket): ?array
+    {
+        if (! ForwardedEmailParser::isForwarded($email)) {
+            return null;
+        }
+        $sender = ForwardedEmailParser::parseOriginalSender($email);
+        if (! $sender || $sender['email'] === strtolower($email->from_address)) {
+            return null;
+        }
+        $forwarder = $email->from_name ?? $email->from_address;
+
+        return [
+            'author' => $sender['name'] ?? $sender['email'],
+            'line' => "[Forwarded into {$ticket->display_id} by {$forwarder}]",
+        ];
     }
 
     /**
@@ -1123,30 +1160,34 @@ PROMPT;
         // images (screenshots in Outlook), so gating on has_attachments
         // silently strips screenshot-only emails of their images.
         $attachmentService = app(AttachmentService::class);
+        $messageReadFailed = false;
         if ($email->graph_id) {
             $graph = app(GraphClient::class);
             $mailbox = Setting::getValue('graph_mailbox');
             if ($mailbox) {
                 $emailAttachments = $attachmentService->downloadEmailAttachments($email, $graph, $mailbox);
-
-                if (! empty($emailAttachments)) {
-                    $hasInline = collect($emailAttachments)->contains(fn ($a) => $a->is_inline);
-                    if ($hasInline && $email->body_html) {
-                        $descHtml = $attachmentService->replaceCidReferences($email->body_html, $emailAttachments);
-                        $descHtml = HtmlSanitizer::sanitize($descHtml);
-                        $ticket->update(['description_html' => $descHtml]);
-                    }
-
-                    foreach ($emailAttachments as $attachment) {
-                        $attachmentService->linkTo($attachment, 'App\\Models\\Ticket', $ticket->id);
-                    }
+                if ($emailAttachments === null) {
+                    $messageReadFailed = true;
+                    $emailAttachments = [];
                 }
+                $this->attachToNewTicket($email, $ticket, $emailAttachments, $attachmentService);
             }
         }
 
-        // null when no download was attempted above (no graph_id or no mailbox); an array
-        // (possibly empty) when it was, so linkEmailToTicket does not fetch again (#5143).
-        $this->linkEmailToTicket($email, $ticket, $emailAttachments ?? null);
+        // null when no download was attempted above (no graph_id or no mailbox). An array
+        // (possibly empty) otherwise, so linkEmailToTicket does not fetch (#5143); after a
+        // failed message read that array is [] and the read is retried after commit (#5394).
+        $note = $this->linkEmailToTicket($email, $ticket, $emailAttachments ?? null);
+
+        // #5394: the retry of a failed message read runs after the outermost transaction
+        // commits, so it never holds the email row lock (lockForUpdate in
+        // autoCreateTicketFromEmail) through Graph's 429 backoff or timeouts.
+        if ($messageReadFailed) {
+            $emailId = $email->id;
+            $ticketId = $ticket->id;
+            $noteId = $note?->id;
+            DB::afterCommit(fn () => $this->retryMessageReadAfterCommit($emailId, $ticketId, $noteId));
+        }
 
         // psa-vggw: link the sender's device(s) onto the ticket at creation so it
         // carries real asset context from the start (held-first, fail-soft). Skips when
@@ -1161,6 +1202,84 @@ PROMPT;
         ]);
 
         return $ticket;
+    }
+
+    /**
+     * A new ticket's share of a successful message read: the description's cid: images point at
+     * the stored inline attachments, and each attachment is linked to the ticket. The caller
+     * then links the same attachments to the client reply note when there is one, which
+     * replaces the ticket link (linkTo sets attachable_type/id), as on main before #5394.
+     *
+     * @param  array<\App\Models\Attachment>  $attachments
+     */
+    private function attachToNewTicket(Email $email, Ticket $ticket, array $attachments, AttachmentService $attachmentService): void
+    {
+        if ($attachments === []) {
+            return;
+        }
+
+        $descHtml = $this->inlineBodyHtml($email, $attachments, $attachmentService);
+        if ($descHtml !== null) {
+            $ticket->update(['description_html' => $descHtml]);
+        }
+
+        foreach ($attachments as $attachment) {
+            $attachmentService->linkTo($attachment, 'App\\Models\\Ticket', $ticket->id);
+        }
+    }
+
+    /**
+     * #5394: the one retry of a new ticket's failed message read, run after commit, with no
+     * email row lock held. A successful read goes through the same steps as a first-read
+     * success: attachToNewTicket, then the note's body_html as linkEmailToTicket builds it
+     * and the note links. A read that fails again, or returns no attachments, changes no data;
+     * the failed read writes downloadEmailAttachments' own records.
+     */
+    private function retryMessageReadAfterCommit(int $emailId, int $ticketId, ?int $noteId): void
+    {
+        try {
+            $email = Email::find($emailId);
+            $ticket = Ticket::find($ticketId);
+            $note = $noteId !== null ? TicketNote::find($noteId) : null;
+            $mailbox = Setting::getValue('graph_mailbox');
+            if (! $email || ! $ticket || ! $email->graph_id || ! $mailbox) {
+                return;
+            }
+
+            $attachmentService = app(AttachmentService::class);
+            $attachments = $attachmentService->downloadEmailAttachments($email, app(GraphClient::class), $mailbox) ?? [];
+            if ($attachments === []) {
+                return;
+            }
+
+            DB::transaction(function () use ($email, $ticket, $note, $attachments, $attachmentService): void {
+                $this->attachToNewTicket($email, $ticket, $attachments, $attachmentService);
+                if ($note === null) {
+                    return;
+                }
+
+                $bodyHtml = $this->inlineBodyHtml($email, $attachments, $attachmentService);
+                $forward = $this->forwardProvenance($email, $ticket);
+                if ($bodyHtml !== null && $forward !== null) {
+                    $bodyHtml = '<p>'.e($forward['line']).'</p>'.$bodyHtml;
+                }
+                if ($bodyHtml !== null) {
+                    $note->update(['body_html' => $bodyHtml]);
+                }
+
+                foreach ($attachments as $attachment) {
+                    $attachmentService->linkTo($attachment, 'App\\Models\\TicketNote', $note->id);
+                }
+            });
+        } catch (\Throwable $e) {
+            // The ticket is already committed; a failed retry must not fail the email. C-56:
+            // ids and the exception class only, never the message.
+            Log::warning('[EmailService] Attachment re-read after ticket creation failed', [
+                'email_id' => $emailId,
+                'ticket_id' => $ticketId,
+                'exception' => $e::class,
+            ]);
+        }
     }
 
     /**
