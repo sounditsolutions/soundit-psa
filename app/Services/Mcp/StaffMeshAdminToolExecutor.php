@@ -481,10 +481,12 @@ class StaffMeshAdminToolExecutor
                 return ['error' => $message];
             }
 
-            if ($created->state === MeshAllowRule::STATE_REAPED) {
+            if ($created->state === MeshAllowRule::STATE_REAPED || $created->state === MeshAllowRule::STATE_REMOVED) {
                 // PROVED ABSENT IS NOT AN IDEMPOTENT SUCCESS. The reaper only
-                // writes STATE_REAPED after a detail GET returned 404, so this
-                // is the one branch where the PSA KNOWS no allow is in force.
+                // writes STATE_REAPED after a detail GET returned 404, and
+                // executeRemoveAllowRule() only writes STATE_REMOVED after
+                // ruleAbsent() proved the same (#5410), so this is the one
+                // branch where the PSA KNOWS no allow is in force.
                 // Answering it success:true/idempotent:true asserted an effect
                 // that does not exist on the machine-readable channel while
                 // only the prose said otherwise — and a caller that branches on
@@ -498,7 +500,10 @@ class StaffMeshAdminToolExecutor
                 // re-stageable inside the 24-hour post-execution window is a
                 // design choice to take on its own evidence, not a side effect
                 // of fixing this classification.
-                $message = "An allow rule for '{$target['sender']}' was created for this client recently as PSA record #{$created->id}, but the PSA has since proved it absent upstream (state '{$created->state}'), so NO allow is in force for this sender and nothing was staged now. Wait for the 24-hour post-execution dedup window to elapse and stage it again, or create the rule by hand in the Mesh portal.";
+                $proof = $created->state === MeshAllowRule::STATE_REMOVED
+                    ? 'an approved mesh_remove_allow_rule has since proved it absent upstream'
+                    : 'the PSA has since proved it absent upstream';
+                $message = "An allow rule for '{$target['sender']}' was created for this client recently as PSA record #{$created->id}, but {$proof} (state '{$created->state}'), so NO allow is in force for this sender and nothing was staged now. Wait for the 24-hour post-execution dedup window to elapse and stage it again, or create the rule by hand in the Mesh portal.";
                 $this->auditAttempt($tool, 'blocked', $clientId, $ticket, $baseHash, $message, $actorLabel);
 
                 return ['error' => $message];
@@ -512,15 +517,12 @@ class StaffMeshAdminToolExecutor
                 'run_id' => $this->executedRunId('mesh_add_allow_rule', $clientId, $baseHash),
                 'sender' => $target['sender'],
                 'expires_at' => self::expiryValue($created->expires_at),
-                // #5410: the text is chosen per state. STATE_REMOVED is
-                // written only by executeRemoveAllowRule() after a proved
-                // 404, so no allow is in force and no lifetime applies. A
-                // record with no upstream id cannot be reached by either verb
-                // PERMANENT_UNTIL names (permanentUntil()). The idempotent
-                // success itself is unchanged here (the same 24h key matched).
+                // #5410: a record with no upstream id cannot be reached by
+                // either verb PERMANENT_UNTIL names (permanentUntil()). A
+                // proved-absent record (removed or reaped) never reaches this
+                // answer; it is refused above.
                 'message' => 'This allow rule was already created recently: PSA record #'.$created->id.' is '
                     .match (true) {
-                        $created->state === MeshAllowRule::STATE_REMOVED => 'REMOVED: an approved mesh_remove_allow_rule proved the rule absent upstream, so NO allow is in force for this sender',
                         $created->isPermanent() => 'PERMANENT (it has no automatic expiry; '.self::permanentUntil($created).')',
                         default => 'set to expire '.$created->expires_at->toDayDateTimeString().' UTC',
                     }

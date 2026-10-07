@@ -239,7 +239,8 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
      * STATE_REMOVED), and the same sender is re-staged inside the 24-hour
      * post-execution window. The answer must not tell the caller the rule
      * "stays until someone removes it": it was removed, and no allow is in
-     * force. The idempotent success channel is unchanged (out of scope here).
+     * force. Proved absent is not an idempotent success, so it is refused as
+     * a reaped record is: no success, no idempotent, no expires_at.
      */
     public function test_the_dedup_answer_for_a_removed_record_says_removed_not_permanent(): void
     {
@@ -267,17 +268,26 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
         $this->assertSame(MeshAllowRule::STATE_REMOVED, $record->fresh()->state);
 
         $runsBefore = TechnicianRun::count();
+        $blocked = static fn (): int => TechnicianActionLog::query()
+            ->where('action_type', 'mesh_stage_add_allow_rule')
+            ->where('result_status', 'blocked')
+            ->count();
+        $blockedBefore = $blocked();
         $answer = $this->restage($fixture);
 
-        $this->assertStringContainsString('already created recently', $answer['message']);
+        // The machine-readable channel: a proved-absent rule is not a success.
+        $this->assertArrayNotHasKey('success', $answer);
+        $this->assertArrayNotHasKey('idempotent', $answer);
+        $this->assertArrayNotHasKey('expires_at', $answer);
+        $error = $answer['error'] ?? json_encode($answer);
         $this->assertStringContainsString(
-            'PSA record #'.$record->id.' is REMOVED: an approved mesh_remove_allow_rule proved the rule absent upstream, so NO allow is in force for this sender',
-            $answer['message'],
+            'as PSA record #'.$record->id.", but an approved mesh_remove_allow_rule has since proved it absent upstream (state 'removed'), so NO allow is in force for this sender and nothing was staged now.",
+            $error,
         );
-        $this->assertStringContainsString("state 'removed'", $answer['message']);
-        $this->assertStringNotContainsString('PERMANENT', $answer['message']);
-        $this->assertStringNotContainsString('stays until', $answer['message']);
+        $this->assertStringNotContainsString('PERMANENT', $error);
+        $this->assertStringNotContainsString('stays until', $error);
         $this->assertSame($runsBefore, TechnicianRun::count(), 'nothing was staged');
+        $this->assertSame($blockedBefore + 1, $blocked(), 'the refusal is audited as a refusal');
     }
 
     /**
