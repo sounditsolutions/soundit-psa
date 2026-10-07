@@ -589,7 +589,7 @@ class EmailItemAttachmentLoggingTest extends TestCase
         // itself succeeded, so it writes no record of its own. Both of its record messages are
         // asserted absent; EmailRetryCorrectnessTest shows each one firing (#5446).
         foreach (['[EmailService] Attachment retry after ticket creation threw',
-            '[EmailService] Attachment retry after ticket creation skipped; ticket state changed since creation'] as $retryRecord) {
+            '[EmailService] Attachment retry after ticket creation skipped'] as $retryRecord) {
             $this->assertSame([], $this->withMessage($retryRecord));
         }
         $this->assertCount($firstReadFails ? 1 : 0, $this->withMessage('[AttachmentService] Failed to fetch email attachments'));

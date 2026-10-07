@@ -89,9 +89,23 @@ class AttachmentService
         ]);
 
         $path = "attachments/{$attachment->id}/{$sanitized}";
-        Storage::disk('local')->put($path, $content);
+        try {
+            Storage::disk('local')->put($path, $content);
+            $attachment->update(['storage_path' => $path]);
+        } catch (\Throwable $e) {
+            // #5553: no row is left naming the placeholder path while the real file sits at
+            // $path. Both are removed, best effort, and the failure is rethrown unchanged.
+            try {
+                Storage::disk('local')->delete($path);
+            } catch (\Throwable) {
+            }
+            try {
+                Attachment::withTrashed()->whereKey($attachment->id)->forceDelete();
+            } catch (\Throwable) {
+            }
 
-        $attachment->update(['storage_path' => $path]);
+            throw $e;
+        }
 
         Log::info('[Attachment] Stored from content', [
             'attachment_id' => $attachment->id,
