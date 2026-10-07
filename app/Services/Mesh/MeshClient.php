@@ -68,16 +68,25 @@ class MeshClient
     /**
      * Internal request method with auth header.
      * API-KEY header is added here — never logged. A failure is logged by
-     * method, endpoint path (see logPath(): no scheme, host or query, and
+     * method, endpoint path (see logPath(): no scheme, authority or query, and
      * everything after a customers/ segment replaced by <customer>), HTTP
      * status and exception class only: Guzzle's message quotes the request
      * URI and a summary of the vendor's response body (C-56), and the path
      * after customers/ carries a client's Mesh customer id (#5298/#5305,
-     * #5323). Only that log line is redacted. The request is not: Guzzle
-     * sends $endpoint's path unredacted (resolved against base_uri, or to
-     * its own scheme and host if it names them), but with $options['query']
-     * as its query, which REPLACES any query written into $endpoint (get()
-     * always passes one, [] by default). The rethrown MeshClientException is
+     * #5323). Only that log line is redacted. The request URI Guzzle builds
+     * is not (that is what MeshClientLogPathTest observes, at a handler; what
+     * a transport then puts on the wire is not observed there): $endpoint is
+     * resolved against base_uri by RFC 3986 reference resolution, so a
+     * relative path is merged with base_uri's path, dot segments are removed
+     * and the path is percent-encoded, the customer id included. An absolute
+     * endpoint brings its own scheme, user-info, host and port; a
+     * scheme-relative one (//host/...) brings its user-info, host and port
+     * but takes base_uri's scheme. Query: only when $options['query'] is set
+     * does Guzzle replace any query written into $endpoint with it; without
+     * that key the endpoint's own query is sent. get(), today this method's
+     * only caller, always sets it ([] by default), so from get() an
+     * endpoint's query never reaches the request (#5418, #5427). The
+     * rethrown MeshClientException is
      * NOT redacted: its message is 'Mesh API error: ' followed by Guzzle's
      * message, which can quote the full request URI (customer id included)
      * and vendor body text, so never log $e->getMessage() from it or from
@@ -107,7 +116,8 @@ class MeshClient
     /**
      * The endpoint as logged. Cut at the first '?' or '#' (strcspn, not
      * strtok, so a leading '?' still drops the query), strip any scheme and
-     * host (or a scheme-relative //host), then replace EVERYTHING after the
+     * authority (or a scheme-relative //authority: user-info, host and port
+     * alike), then replace EVERYTHING after the
      * first customers/ segment, at any depth (api/customers/,
      * api/v2/customers/, api/partners/x/customers/, an absolute URL), with
      * the literal <customer>: the Mesh customer id and every segment after
@@ -115,9 +125,9 @@ class MeshClient
      * <customer> is not PSR-3 {placeholder} syntax, so a channel with
      * replace_placeholders or PsrLogMessageProcessor cannot substitute a
      * context value into it (#5329). A bare api/customers/ is kept as is.
-     * Only the log line uses this; the request is built from $endpoint
-     * unredacted, with its query replaced by get()'s query option (see
-     * request()).
+     * Only the log line uses this; the request URI is built from $endpoint
+     * unredacted (see request() for how it is resolved, and when the query
+     * option replaces the endpoint's query).
      */
     private static function logPath(string $endpoint): string
     {

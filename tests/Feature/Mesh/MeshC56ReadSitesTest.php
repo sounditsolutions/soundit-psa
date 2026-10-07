@@ -22,6 +22,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Monolog\Handler\TestHandler;
 use Psr\Http\Message\RequestInterface;
 use Tests\TestCase;
 
@@ -83,6 +84,14 @@ class MeshC56ReadSitesTest extends TestCase
     /** @var list<array{level: string, message: string}> */
     private array $logged = [];
 
+    /**
+     * A Monolog handler pushed onto the default channel's own logger (#5428):
+     * it also sees a record written through that Monolog logger outside
+     * Laravel's wrapper (getLogger(), withName(): a clone keeps the
+     * handlers), which never dispatches MessageLogged.
+     */
+    private TestHandler $monolog;
+
     /** Request paths bindRealSync()'s scripted Mesh received, in order. @var list<string> */
     private array $syncRequestPaths = [];
 
@@ -116,6 +125,8 @@ class MeshC56ReadSitesTest extends TestCase
         Event::listen(MessageLogged::class, function (MessageLogged $e): void {
             $this->logged[] = ['level' => $e->level, 'message' => $e->message.' '.json_encode($e->context)];
         });
+        $this->monolog = new TestHandler;
+        Log::driver()->getLogger()->pushHandler($this->monolog);
     }
 
     protected function tearDown(): void
@@ -234,7 +245,7 @@ class MeshC56ReadSitesTest extends TestCase
         $this->assertSame(1, $result->errors);
         $log = $this->logsContaining('[MeshSync] Failed for client');
         $this->assertStringContainsString('[MeshSync] Failed for client '.$client->id.':', $log, 'the client is named by id');
-        $this->assertStringNotContainsString($client->name, $this->allLogs(), 'the client name is not logged');
+        $this->assertNoClientNames([$client]);
         $this->assertStatusOnly($log, 'license sync log');
         $this->assertStringContainsString('('.MeshClientException::class.')', $log, 'the class is named');
         $this->assertNoVendorText($this->allLogs(), 'every record');
@@ -293,7 +304,7 @@ class MeshC56ReadSitesTest extends TestCase
         $this->assertNoVendorText((string) session('success').(string) session('error'), 'sync flash');
         $log = $this->logsContaining('[MeshSync] Failed for client '.$client->id.':');
         $this->assertStatusOnly($log, 'sync log');
-        $this->assertStringNotContainsString($client->name, $this->allLogs());
+        $this->assertNoClientNames([$client]);
         $this->assertNoVendorText($this->allLogs(), 'every record');
     }
 
@@ -335,11 +346,17 @@ class MeshC56ReadSitesTest extends TestCase
 
     // ---- #5293: per-client failures reach the sync button -----------------------
 
-    public function test_the_sync_button_flashes_a_failure_when_every_client_fails(): void
+    /**
+     * Driven in both modes (#5424): the 503 arm and the status-less
+     * (connect-failure) arm of BOTH failure lines, MeshClient::request()'s
+     * and syncLicenses()', are pinned with their level and full text.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('modes')]
+    public function test_the_sync_button_flashes_a_failure_when_every_client_fails(string $mode): void
     {
         $a = $this->mappedClient();
         $b = $this->mappedClient(self::MESH_ID_2, 'Synthetic Client Name 9e4b');
-        $this->bindRealSync([self::MESH_ID, self::MESH_ID_2]);
+        $this->bindRealSync([self::MESH_ID, self::MESH_ID_2], $mode);
 
         $flash = $this->pressSync('error');
 
@@ -355,19 +372,20 @@ class MeshC56ReadSitesTest extends TestCase
         $this->assertSyncRequested([self::MESH_ID, self::MESH_ID_2]);
         // Every MeshClient and MeshSync failure record, level and full text:
         // one MeshClient line and one MeshSync line per failed client, all at
-        // 'error' (a demoted line fails here, #5404), and each MeshSync line
-        // is exactly the PSA client id plus the status phrase and class, so
-        // it carries no other client identifier (C-56, #5406).
+        // 'error' (a demoted line fails here, #5404, in either mode, #5424),
+        // and each MeshSync line is exactly the PSA client id plus the status
+        // phrase and class, so it carries no other client identifier (C-56,
+        // #5406).
         $this->assertSame([
-            $this->meshClientFailureRecord(),
-            $this->meshClientFailureRecord(),
+            $this->meshClientFailureRecord($mode),
+            $this->meshClientFailureRecord($mode),
         ], $this->recordsContaining('[MeshClient] '), 'MeshClient failure records');
         $this->assertSame(
-            $this->sorted([$this->meshSyncFailureRecord($a), $this->meshSyncFailureRecord($b)]),
+            $this->sorted([$this->meshSyncFailureRecord($a, $mode), $this->meshSyncFailureRecord($b, $mode)]),
             $this->recordsContaining('[MeshSync] Failed for client '),
             'MeshSync failure records: one per failed client, by PSA id only',
         );
-        $this->assertNoClientNames($this->allLogs(), [$a, $b]);
+        $this->assertNoClientNames([$a, $b]);
         $this->assertNoVendorText($this->allLogs(), 'every record');
     }
 
@@ -397,7 +415,7 @@ class MeshC56ReadSitesTest extends TestCase
             $this->recordsContaining('[MeshSync] Failed for client '),
             'MeshSync failure records: the failed client only, by PSA id only',
         );
-        $this->assertNoClientNames($this->allLogs(), [$ok, $bad]);
+        $this->assertNoClientNames([$ok, $bad]);
         $this->assertNoVendorText($this->allLogs(), 'every record');
     }
 
@@ -411,6 +429,37 @@ class MeshC56ReadSitesTest extends TestCase
 
         $this->assertSame('Mesh sync complete: 2 created, 0 updated.', $flash);
         $this->assertNull(session('error'), 'a clean sync flashes no error');
+    }
+
+    /**
+     * Positive controls for assertNoClientNames() (#5423, #5428): it fails on
+     * a real record carrying a client name in another letter case, written
+     * through the facade (seen by the listener) and through the Monolog
+     * logger's withName() clone (no MessageLogged; seen by the TestHandler
+     * only). Each record is real, logged at a different level, and the
+     * instrument that must catch it is shown to hold it first.
+     */
+    public function test_the_no_client_names_assertion_fails_on_a_recased_name_on_either_route(): void
+    {
+        $client = $this->mappedClient();
+        $this->assertNoClientNames([$client]);
+
+        foreach ([
+            'facade, upper-cased, warning' => fn () => Log::warning('[Probe] '.strtoupper($client->name)),
+            'withName(), lower-cased, debug' => fn () => Log::driver()->getLogger()->withName('probe')->debug('[Probe] '.strtolower($client->name)),
+        ] as $route => $write) {
+            $this->logged = [];
+            $this->monolog->clear();
+            $write();
+            $this->assertNotSame('', $this->monologLogs(), "{$route}: positive control: the TestHandler saw the record");
+            try {
+                $this->assertNoClientNames([$client]);
+            } catch (\PHPUnit\Framework\AssertionFailedError) {
+                continue;
+            }
+            $this->fail("positive control: a re-cased client name written via {$route} passed assertNoClientNames()");
+        }
+        $this->assertSame([], $this->logged, 'the withName() record dispatched no MessageLogged: only the TestHandler can see it');
     }
 
     // ---- #5282: the exception handler and the previous chain ---------------------
@@ -462,14 +511,15 @@ class MeshC56ReadSitesTest extends TestCase
     /**
      * The real MeshLicenseSyncService over a scripted MeshClient (bound as a
      * closure for the same reason as bindSync()). A customer read for a Mesh
-     * id in $failing answers HTTP 503; any other answers one billed license.
+     * id in $failing fails as $mode calls for (HTTP 503, or a connect failure
+     * with no status); any other answers one billed license.
      *
      * @param  list<string>  $failing
      */
-    private function bindRealSync(array $failing): void
+    private function bindRealSync(array $failing, string $mode = '503'): void
     {
         Setting::setEncrypted('mesh_api_key', self::$apiKey);
-        $this->mode = '503';
+        $this->mode = $mode;
         $mesh = $this->scriptedClient(function (RequestInterface $r) use ($failing) {
             $this->syncRequestPaths[] = $r->getUri()->getPath();
             foreach ($failing as $id) {
@@ -705,24 +755,59 @@ class MeshC56ReadSitesTest extends TestCase
         return $lines;
     }
 
-    /** MeshClient::request()'s failure record for one failed customer read (HTTP 503), as recordsContaining() renders it. */
-    private function meshClientFailureRecord(): string
+    /**
+     * MeshClient::request()'s failure record for one failed customer read,
+     * as recordsContaining() renders it: HTTP 503 or, for 'connect', the
+     * status-less arm (#5424).
+     */
+    private function meshClientFailureRecord(string $mode = '503'): string
     {
-        return 'error [MeshClient] GET api/customers/<customer> failed with HTTP 503 ('.ServerException::class.') []';
+        return $mode === 'connect'
+            ? 'error [MeshClient] GET api/customers/<customer> failed with no HTTP status ('.ConnectException::class.') []'
+            : 'error [MeshClient] GET api/customers/<customer> failed with HTTP 503 ('.ServerException::class.') []';
     }
 
-    /** syncLicenses()' failure record for $client after a 503 customer read, as recordsContaining() renders it. */
-    private function meshSyncFailureRecord(Client $client): string
+    /** syncLicenses()' failure record for $client after a failed customer read in $mode, as recordsContaining() renders it (#5424). */
+    private function meshSyncFailureRecord(Client $client, string $mode = '503'): string
     {
-        return 'error [MeshSync] Failed for client '.$client->id.': Mesh answered the customer read with HTTP 503 ('.MeshClientException::class.') []';
+        $reason = $mode === 'connect'
+            ? 'the customer read failed without an HTTP status from Mesh'
+            : 'Mesh answered the customer read with HTTP 503';
+
+        return 'error [MeshSync] Failed for client '.$client->id.': '.$reason.' ('.MeshClientException::class.') []';
+    }
+
+    /**
+     * No client name, in any letter case, in any record this test captured
+     * (#5423), read from TWO instruments (#5428): the MessageLogged listener
+     * (allLogs()) and the TestHandler on the default channel's Monolog
+     * logger, which also sees a record written through that logger outside
+     * Laravel's wrapper. Not covered: a record written to another channel or
+     * a logger built elsewhere (neither instrument is attached there).
+     *
+     * @param  list<Client>  $clients
+     */
+    private function assertNoClientNames(array $clients): void
+    {
+        $this->assertNoClientNamesIn($this->allLogs(), $clients, 'MessageLogged records');
+        $this->assertNoClientNamesIn($this->monologLogs(), $clients, 'default-channel Monolog records');
     }
 
     /** @param  list<Client>  $clients */
-    private function assertNoClientNames(string $text, array $clients): void
+    private function assertNoClientNamesIn(string $text, array $clients, string $where): void
     {
         foreach ($clients as $c) {
-            $this->assertStringNotContainsString($c->name, $text, 'a client name reached the logs');
+            $this->assertStringNotContainsStringIgnoringCase($c->name, $text, "{$where}: a client name reached the logs");
         }
+    }
+
+    /** Every record the default channel's Monolog logger handled, as 'level message context'. */
+    private function monologLogs(): string
+    {
+        return implode("\n", array_map(
+            fn ($r) => strtolower($r->level->getName()).' '.$r->message.' '.json_encode($r->context),
+            $this->monolog->getRecords(),
+        ));
     }
 
     /** The records whose text contains $needle, at any level; at least one must exist. */
