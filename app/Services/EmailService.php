@@ -1503,8 +1503,11 @@ PROMPT;
             // callback of a committed link, or from a refusal's discard or record. C-56: ids,
             // the stage, the exception class and counts only, never the message.
             // linked is true only when the link transaction committed its writes before the
-            // throw; then nothing is discarded. A discard that already ran is not run again.
-            $discard ??= $committed ? null : $this->discardRetryStored();
+            // throw; then nothing is discarded, and the record still counts what the retry stored.
+            // A discard that already ran is not run again.
+            $discard ??= $committed
+                ? ['stored_attachments' => count(array_unique(self::$retryStoredIds ?? []))] + self::NOTHING_DISCARDED
+                : $this->discardRetryStored();
             Log::warning('[EmailService] Attachment retry after ticket creation threw', [
                 'email_id' => $emailId,
                 'ticket_id' => $ticketId,

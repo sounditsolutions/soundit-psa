@@ -783,8 +783,8 @@ class EmailRetryCorrectnessTest extends TestCase
         $this->assertSame([
             'email_id' => $email->id, 'ticket_id' => $ticket->id, 'stage' => 'link', 'linked' => true,
             'exception' => \RuntimeException::class,
-            'stored_attachments' => 0, 'discarded_attachments' => 0, 'undiscarded_attachment_ids' => [],
-        ], $threw[0]->context);
+            'stored_attachments' => 1, 'discarded_attachments' => 0, 'undiscarded_attachment_ids' => [],
+        ], $threw[0]->context, 'linked true: one stored, none discarded');
         $a = Attachment::sole();
         $this->assertSame([TicketNote::class, TicketNote::where('email_id', $email->id)->sole()->id], [$a->attachable_type, $a->attachable_id]);
         $this->assertSame([$a->storage_path], $this->storedFiles(), 'the linked row\'s own file is kept');
