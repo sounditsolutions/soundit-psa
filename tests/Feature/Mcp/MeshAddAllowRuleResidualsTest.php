@@ -280,8 +280,24 @@ class MeshAddAllowRuleResidualsTest extends TestCase
         $this->travelTo($stagedAt, function () use ($fixture, $stagedAt, &$old) {
             $old = $this->stage($fixture, ['expires_at' => $stagedAt->copy()->addDays(90)->toIso8601String()]);
         });
+        // #5414: the hash is what decides between the two answers, so it is
+        // shown deciding. Collision control first: were the old run hashed
+        // as 'never', liveAwaitingRun() would match it and the omitted-key
+        // call would be told "Already staged" against a 90-day run, which is
+        // the silent lifetime substitution. Only the 'default' rewrite below
+        // turns that answer into the refusal this test pins, so deleting it
+        // fails the test.
+        $old->forceFill(['content_hash' => $this->proposalHash($clientId, 'never')])->save();
+        $collided = $this->decodedResult($this->callTool($this->stageArgs($fixture)));
+        $this->assertTrue($collided['idempotent'] ?? false, 'control: a never-hashed old run is matched as already staged, got: '.json_encode($collided));
+        $this->assertSame($old->id, $collided['run_id']);
+
+        // What 07806ab0 wrote for an omitted key. contentHash() itself is
+        // byte-identical at 07806ab0 and here (tool, client_id, target,
+        // ksorted params), and stageAllowRule() there passed the same two
+        // params (mesh_customer_id, expires_at), so the replica proved for
+        // 'never' above is the same function for 'default'.
         $old->forceFill(['content_hash' => $this->proposalHash($clientId, 'default')])->save();
-        $this->assertNotSame($this->proposalHash($clientId, 'default'), $this->proposalHash($clientId, 'never'));
 
         $response = $this->callTool($this->stageArgs($fixture));
 

@@ -256,12 +256,15 @@ class StaffMeshAdminToolExecutor
      * It is not the only way to ask: since the owner's 2026-10-05 ruling a
      * temporary rule is "an option, not a default", so an ABSENT key is
      * permanent too, and requestedExpiry() resolves both to the same NULL
-     * expiry. The word exists so that an explicit permanent is distinguishable
-     * where the vocabulary is recorded: the encrypted payload and the
-     * redacted card params carry it, and expiryValue() returns it in place of
-     * a bare null. It is a word, not a magic date, because a sentinel date is
-     * one the reaper would one day act on. A value that is SENT empty or null
-     * is still refused, never read as either answer.
+     * expiry. From then on the two are NOT told apart (#5411): the proposal
+     * hash, the encrypted payload, the redacted card params and the result
+     * all carry this word for an omitted key exactly as for an explicit one,
+     * because expiryValue() writes it for every NULL expiry. So 'never' in a
+     * record means "permanent", never "the caller typed never"
+     * (MeshAddAllowRuleTest::test_an_omitted_expiry_and_never_are_the_same_permanent_proposal).
+     * It is a word, not a magic date, because a sentinel date is one the
+     * reaper would one day act on. A value that is SENT empty or null is
+     * still refused, never read as either answer.
      */
     public const EXPIRY_NEVER = 'never';
 
@@ -272,6 +275,15 @@ class StaffMeshAdminToolExecutor
      * reaper removes it.
      */
     private const PERMANENT_UNTIL = 'it stays until someone removes it (mesh_remove_allow_rule) or gives it a date (mesh_edit_allow_rule)';
+
+    /**
+     * The same fact for a permanent record with NO upstream rule id (#5410).
+     * Both verbs reach a PSA record only through its recorded mesh_rule_id
+     * (removeAllowRuleTarget(), editAllowRuleTarget()), so for this record
+     * the edit verb refuses the rule as FOREIGN and the remove verb, which
+     * also removes foreign rules, leaves this record open.
+     */
+    private const PERMANENT_UNTIL_NO_ID = 'the PSA holds no upstream rule id for it, so mesh_edit_allow_rule cannot give it a date and mesh_remove_allow_rule would not close this record; check the rule in the Mesh portal';
 
     private const COMMENT_PREFIX = 'PSA allow';
 
@@ -500,10 +512,18 @@ class StaffMeshAdminToolExecutor
                 'run_id' => $this->executedRunId('mesh_add_allow_rule', $clientId, $baseHash),
                 'sender' => $target['sender'],
                 'expires_at' => self::expiryValue($created->expires_at),
+                // #5410: the text is chosen per state. STATE_REMOVED is
+                // written only by executeRemoveAllowRule() after a proved
+                // 404, so no allow is in force and no lifetime applies. A
+                // record with no upstream id cannot be reached by either verb
+                // PERMANENT_UNTIL names (permanentUntil()). The idempotent
+                // success itself is unchanged here (the same 24h key matched).
                 'message' => 'This allow rule was already created recently: PSA record #'.$created->id.' is '
-                    .($created->isPermanent()
-                        ? 'PERMANENT (it has no automatic expiry; '.self::PERMANENT_UNTIL.')'
-                        : 'set to expire '.$created->expires_at->toDayDateTimeString().' UTC')
+                    .match (true) {
+                        $created->state === MeshAllowRule::STATE_REMOVED => 'REMOVED: an approved mesh_remove_allow_rule proved the rule absent upstream, so NO allow is in force for this sender',
+                        $created->isPermanent() => 'PERMANENT (it has no automatic expiry; '.self::permanentUntil($created).')',
+                        default => 'set to expire '.$created->expires_at->toDayDateTimeString().' UTC',
+                    }
                     .", state '{$created->state}'"
                     .'. No new proposal was staged and the lifetime asked for here was NOT applied.',
             ];
@@ -526,7 +546,7 @@ class StaffMeshAdminToolExecutor
                 // unrecorded date" would read as a PSA bookkeeping gap rather
                 // than as the deliberate answer it is. Say permanent.
                 'message' => $live->isPermanent()
-                    ? "'{$target['sender']}' is already allowed for this client PERMANENTLY (PSA record #{$live->id}; it has no automatic expiry; ".self::PERMANENT_UNTIL.'); no proposal was staged.'
+                    ? "'{$target['sender']}' is already allowed for this client PERMANENTLY (PSA record #{$live->id}; it has no automatic expiry; ".self::permanentUntil($live).'); no proposal was staged.'
                     : "'{$target['sender']}' is already allowed for this client until "
                         .$live->expires_at->toDayDateTimeString().'; no proposal was staged.',
             ];
@@ -604,8 +624,9 @@ class StaffMeshAdminToolExecutor
                 'sender' => $target['sender'],
                 'client' => $target['client_name'],
                 // 'never' rather than a null: the card renders these values,
-                // and an absent field reads as "not recorded" where the whole
-                // point is that permanence was chosen deliberately (#1133).
+                // and an absent field reads as "not recorded" where the point
+                // is that the rule is permanent (#1133). Written for an
+                // omitted key too, so it does not say the caller typed it (#5411).
                 'expires_at' => self::expiryValue($expiresAt),
                 'expiry_note' => self::expiryPhrase($expiresAt),
                 'comment' => $comment,
@@ -761,7 +782,7 @@ class StaffMeshAdminToolExecutor
             // 'already allowed' alone leaves them believing their date holds.
             $message = "'{$target['sender']}' is already allowed for this client by PSA record #".$live->id
                 .($live->isPermanent()
-                    ? ' PERMANENTLY (that record has no automatic expiry; '.self::PERMANENT_UNTIL.')'
+                    ? ' PERMANENTLY (that record has no automatic expiry; '.self::permanentUntil($live).')'
                     : ' until '.$live->expires_at->toDayDateTimeString().' UTC')
                 .'; no upstream call was made and the lifetime on this proposal was NOT applied.';
             $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
@@ -1763,6 +1784,20 @@ class StaffMeshAdminToolExecutor
     private static function expiryValue(?\Illuminate\Support\Carbon $expiresAt): string
     {
         return $expiresAt?->toIso8601String() ?? self::EXPIRY_NEVER;
+    }
+
+    /**
+     * What ends THIS permanent record (G-14, #5410). PERMANENT_UNTIL names the
+     * remove and edit verbs, and both find a PSA record only by its recorded
+     * mesh_rule_id, so it is true only of a record that has one. A record
+     * whose id was never recovered, or was cleared by the edit verb's
+     * display_id_lost path, gets PERMANENT_UNTIL_NO_ID instead.
+     */
+    private static function permanentUntil(MeshAllowRule $record): string
+    {
+        return trim((string) $record->mesh_rule_id) === ''
+            ? self::PERMANENT_UNTIL_NO_ID
+            : self::PERMANENT_UNTIL;
     }
 
     /** The same fact in words, for a human reading an approval card (#1133 criterion 5). */

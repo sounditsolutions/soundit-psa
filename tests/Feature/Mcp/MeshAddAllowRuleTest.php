@@ -175,12 +175,28 @@ class MeshAddAllowRuleTest extends TestCase
         // 'the 90-day default if it is omitted'; the literal this used to pin
         // ('expires after 90 days') never appeared in it, so the old assertion
         // caught nothing. This one matches every spelling that text used.
+        $defaultLifetime = '/\b\d+\s*-?\s*days?\b|\bdefault\b[^.]*\b(lifetime|expiry)\b|\b(lifetime|expiry)\b[^.]*\bdefault\b|for the default/i';
+        // #5415: positive control, in this test, on the three pre-#5131
+        // spellings (StaffMeshAdminToolExecutor at ccb5bc38^, with
+        // DEFAULT_LIFETIME_DAYS = 90). A regex edited so it no longer matches
+        // them fails here instead of passing vacuously below.
+        foreach ([
+            'or omit it for the 90-day default. ',
+            'or the 90-day default if it is omitted, or NEVER if it is "never". ',
+            'Omit it for the default 90-day lifetime. ',
+        ] as $oldSpelling) {
+            $this->assertMatchesRegularExpression($defaultLifetime, $oldSpelling, "the regex must catch the old spelling '{$oldSpelling}'");
+        }
+        // #5415: the staged alias's description is checked as well; it is
+        // dispatch-reachable and was one of the texts that carried a default.
+        $stagedAlias = collect(\App\Services\Mcp\StaffMeshAdminToolExecutor::definitions())->keyBy('name')['mesh_stage_add_allow_rule'];
         foreach ([
             'description' => $definition['description'],
             'expires_at' => $definition['inputSchema']['properties']['expires_at']['description'],
+            'staged alias description' => $stagedAlias['description'],
         ] as $label => $text) {
             $this->assertDoesNotMatchRegularExpression(
-                '/\b\d+\s*-?\s*days?\b|\bdefault\b[^.]*\b(lifetime|expiry)\b|\b(lifetime|expiry)\b[^.]*\bdefault\b|for the default/i',
+                $defaultLifetime,
                 $text,
                 "the {$label} text must not advertise a default lifetime",
             );
@@ -705,7 +721,9 @@ class MeshAddAllowRuleTest extends TestCase
         // Dated on purpose (#5161): STATE_REAPED is only reachable for a dated
         // row (scopeReapable() requires a non-null expires_at), so the reaped
         // record below must be one the reaper could actually have produced.
-        $run = $this->stagedRun($fixture, ['expires_at' => now()->addDays(30)->toIso8601String()]);
+        // Two hours out (#5413): short enough that the reap below happens
+        // inside the 24-hour post-execution window with nothing hand-written.
+        $run = $this->stagedRun($fixture, ['expires_at' => now()->addHours(2)->toIso8601String()]);
 
         $write->shouldReceive('createAllowRule')->once()->andReturn(['added_for' => [self::TENANT]]);
         $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'r1']);
@@ -724,12 +742,14 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertSame(MeshAllowRule::STATE_REAPED, $record->state);
 
         // The 24-hour post-execution dedup window is measured from the
-        // 'executed' audit row; keep the re-stage inside it, as the original
-        // test did, so the proved-absent branch is the one reached.
-        TechnicianActionLog::query()
+        // 'executed' audit row. It was written at approval, three hours ago,
+        // and is left as written (#5413): the re-stage is inside the window
+        // because the rule lived two hours, not because a row was redated.
+        $executed = TechnicianActionLog::query()
             ->where('action_type', 'mesh_add_allow_rule')
             ->where('result_status', 'executed')
-            ->update(['created_at' => now()->subHour()]);
+            ->sole();
+        $this->assertTrue($executed->created_at->between(now()->subHours(24), now()->subHours(2)), 'the executed row is the one approval wrote, inside the window');
 
         $second = $this->decodedResult($this->callTool(
             $this->token(['mesh_add_allow_rule:staged']),
