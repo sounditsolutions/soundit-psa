@@ -562,7 +562,8 @@ class GraphClient
                         // record only when the token request itself failed; a response without
                         // access_token writes none. This arm never goes through throwFromGuzzle:
                         // its record would carry the endpoint (a mailbox) and Guzzle's message
-                        // (vendor text). With $logFailure it writes method and status only.
+                        // (vendor text). With $logFailure its record carries exactly three
+                        // fields: method, status (401) and token_refresh ('failed').
                         if ($logFailure) {
                             Log::error('Graph API request failed', [
                                 'method' => $method,

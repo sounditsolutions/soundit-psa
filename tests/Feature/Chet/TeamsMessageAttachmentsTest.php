@@ -17,7 +17,11 @@ use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Testing\TestResponse;
+use Monolog\Handler\TestHandler;
+use Monolog\Level;
+use Monolog\LogRecord;
 use Tests\TestCase;
 
 /**
@@ -295,26 +299,103 @@ class TeamsMessageAttachmentsTest extends TestCase
 
     public function test_a_403_names_the_graph_permission(): void
     {
-        $this->graph(new Response(403, [], (string) json_encode(['error' => ['code' => 'Forbidden', 'message' => 'synthetic']])));
+        $logs = $this->captureLogs();
+        $this->graph(new Response(403, [], (string) json_encode(['error' => ['code' => 'Forbidden', 'message' => self::GRAPH_401_MARKER]])));
 
         $r = $this->fetch([]);
         $text = (string) $r->json('result.content.0.text');
+
+        // #5449 control: the permission-refusal arm's record carries no token_refresh key.
+        $failures = $this->attachmentReadFailures($logs);
+        $this->assertCount(1, $failures);
+        $this->assertSame(Level::Warning, $failures[0]->level);
+        $this->assertSame(['chat_id' => self::CHAT, 'stage' => 'message', 'status' => 403], $failures[0]->context);
+        $this->assertNoVendorText($failures, $text);
 
         $this->assertTrue((bool) $r->json('result.isError'));
         $this->assertStringContainsString('HTTP 403', $text);
         $this->assertStringContainsString('Chat.Read.All application permission', $text);
     }
 
+    /** Graph's own 401 error text in the fixture; never in the record or the operator text. */
+    private const GRAPH_401_MARKER = 'B4C-SYNTHETIC-GRAPH-401-MARKER';
+
+    /** The identity provider's error text in the fixture; never in the record or the operator text. */
+    private const IDP_MARKER = 'AADSTS7000215-B4C-SYNTHETIC-IDP-MARKER invalid client secret provided';
+
+    private const ATTACHMENT_READ_FAILED = '[ChetDataSurface] Teams message attachment read failed';
+
+    /** Route every log channel into one TestHandler so a test reads each record and its level. */
+    private function captureLogs(): TestHandler
+    {
+        $handler = new TestHandler;
+        foreach (array_keys(config('logging.channels')) as $name) {
+            config(["logging.channels.{$name}" => [
+                'driver' => 'custom',
+                'via' => fn () => new \Monolog\Logger($name, [$handler]),
+            ]]);
+            Log::forgetChannel($name);
+        }
+
+        return $handler;
+    }
+
+    /** @return list<LogRecord> */
+    private function attachmentReadFailures(TestHandler $logs): array
+    {
+        return array_values(array_filter($logs->getRecords(), fn (LogRecord $r) => $r->message === self::ATTACHMENT_READ_FAILED));
+    }
+
+    /** Every string that must stay out of every record and the operator text on the 401 arms. */
+    private function vendorNeedles(): array
+    {
+        return [self::GRAPH_401_MARKER, 'InvalidAuthenticationToken', self::IDP_MARKER, 'AADSTS', 'invalid_client',
+            'synthetic-tenant', 'synthetic-secret-not-real', 'login.microsoftonline.com', 'graph.microsoft.com'];
+    }
+
+    /**
+     * $records: the records to scan. The token-refresh arm scans every record. The permission
+     * arms scan the fetcher's own record only: they reach GraphClient::throwFromGuzzle, whose
+     * shared ERROR record is outside this file's scope.
+     *
+     * @param  list<LogRecord>  $records
+     */
+    private function assertNoVendorText(array $records, string $text): void
+    {
+        $this->assertNotEmpty($records, 'positive control: the path under test wrote no record at all');
+        foreach ($this->vendorNeedles() as $needle) {
+            $this->assertStringNotContainsString($needle, $text, 'operator text');
+            foreach ($records as $r) {
+                $this->assertStringNotContainsString($needle, $r->level->getName().' '.$r->message.' '.json_encode($r->context).' '.json_encode($r->extra));
+            }
+        }
+    }
+
+    private function graph401(): Response
+    {
+        return new Response(401, [], (string) json_encode(['error' => ['code' => 'InvalidAuthenticationToken', 'message' => self::GRAPH_401_MARKER]]));
+    }
+
     /** #5398 (b4a r2): a token-refresh failure is not reported as a missing permission. */
     public function test_a_401_whose_token_refresh_fails_names_the_token_failure_not_a_permission(): void
     {
+        $logs = $this->captureLogs();
         $this->graph(
-            new Response(401, [], (string) json_encode(['error' => ['code' => 'InvalidAuthenticationToken', 'message' => 'synthetic']])),
-            new Response(400, [], (string) json_encode(['error' => 'invalid_client', 'error_description' => 'synthetic'])),
+            $this->graph401(),
+            new Response(400, [], (string) json_encode(['error' => 'invalid_client', 'error_description' => self::IDP_MARKER])),
         );
 
         $r = $this->fetch([]);
         $text = (string) $r->json('result.content.0.text');
+
+        // #5449: the fetcher's record names the token failure, at WARNING, with no vendor text.
+        $failures = $this->attachmentReadFailures($logs);
+        $this->assertCount(1, $failures);
+        $this->assertSame(Level::Warning, $failures[0]->level);
+        $this->assertSame([
+            'chat_id' => self::CHAT, 'stage' => 'message', 'status' => 401, 'token_refresh' => 'failed',
+        ], $failures[0]->context);
+        $this->assertNoVendorText($logs->getRecords(), $text);
 
         $this->assertTrue((bool) $r->json('result.isError'));
         $this->assertSame(0, $this->queue->count(), 'positive control: the 401 and the failed refresh both ran');
@@ -327,13 +408,21 @@ class TeamsMessageAttachmentsTest extends TestCase
     /** Control for the test above: a 401 that a fresh token did not cure is still the permission refusal. */
     public function test_a_401_after_a_successful_refresh_still_names_the_permission(): void
     {
+        $logs = $this->captureLogs();
         $this->graph(
-            new Response(401, [], '{}'),
+            $this->graph401(),
             new Response(200, [], (string) json_encode(['access_token' => 'synthetic-token-2', 'expires_in' => 3600])),
-            new Response(401, [], '{}'),
+            $this->graph401(),
         );
 
         $text = (string) $this->fetch([])->json('result.content.0.text');
+
+        // #5449 control: a 401 a fresh token did not cure is the permission arm; no token_refresh key.
+        $failures = $this->attachmentReadFailures($logs);
+        $this->assertCount(1, $failures);
+        $this->assertSame(Level::Warning, $failures[0]->level);
+        $this->assertSame(['chat_id' => self::CHAT, 'stage' => 'message', 'status' => 401], $failures[0]->context);
+        $this->assertNoVendorText($failures, $text);
 
         $this->assertSame(0, $this->queue->count(), 'positive control: the refresh succeeded and the retry ran');
         $this->assertStringContainsString('HTTP 401', $text);
