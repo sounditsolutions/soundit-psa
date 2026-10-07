@@ -380,8 +380,10 @@ class EmailItemAttachmentTest extends TestCase
      *    codes used by the fixtures (vendor text);
      *  - the message body (#5541): the item's name (which is the MIME Subject), MIME fragments
      *    (sender, sending IP, phishing URL) and the email's own subject and body.
-     * Not covered: a re-encoding not listed here (hex, a hash, any other transform), or a
-     * fragment shorter than every needle.
+     * Not covered: a re-encoding not listed here (hex, a hash, any other transform), a fragment
+     * shorter than every needle, or the item name's slug: '[Attachment] Stored from content'
+     * logs the stored filename ('urgent-verify-your-payroll-account.eml') today, so a slug
+     * needle would fail on that record.
      *
      * @return array<string, string>
      */
