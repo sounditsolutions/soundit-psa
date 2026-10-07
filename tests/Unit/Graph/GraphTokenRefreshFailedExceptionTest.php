@@ -728,8 +728,10 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
      *
      * With arguments on, the OUTER trace already prints the users/ endpoint, which holds the
      * mailbox (GraphClient::authenticatedRequest's frame). That exposure is not the chain's.
-     * #5614: the test pins that every string frame argument the previous link's trace prints is
-     * also printed by the outer link's trace, and that no vendor text appears anywhere. The
+     * #5614 / #5675: the test pins that every quoted string argument stringArguments() finds in
+     * the previous link's frames (include/require frames excluded; an argument containing a
+     * quote is split into pieces) is also found in the outer link's frames, and that no vendor
+     * text appears anywhere. The
      * previous link does add its own file:line and frames (getToken() and its caller); their
      * string arguments are what is compared. The render is untruncated; PHP's default
      * zend.exception_string_param_max_len (15) prints only 'users/support@e'.
@@ -812,6 +814,13 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
         );
         $this->assertSame(['m1', 'm2'], array_column($graph->getMailboxMessages(self::MAILBOX), 'id'), 'requestAbsolute() read page 2');
         $this->assertSame($next, (string) $this->history[1]['request']->getUri());
+        // #5662: client() resets the history, so read this pass's bearers before the next one.
+        $this->assertSame(
+            ['Bearer '.self::SEEDED_ACCESS_FIXTURE, 'Bearer '.self::SEEDED_ACCESS_FIXTURE],
+            array_map(fn (array $sent) => $sent['request']->getHeaderLine('Authorization'), $this->history),
+            'requestAbsolute(): both pages carry the seeded bearer',
+        );
+        $this->assertScriptedHandler($graph, 'after the requestAbsolute() reads');
 
         $graph = $this->client(null,
             new Response(200, [], (string) json_encode(['value' => [], '@odata.nextLink' => $next])),
@@ -820,10 +829,12 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
         $this->assertSame([], $graph->calendarView(self::MAILBOX, '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z'), 'requestJsonAbsolute() read page 2');
         $this->assertSame($next, (string) $this->history[1]['request']->getUri());
 
-        foreach ($this->history as $sent) {
-            $this->assertSame('Bearer '.self::SEEDED_ACCESS_FIXTURE, $sent['request']->getHeaderLine('Authorization'));
-        }
-        $this->assertScriptedHandler($graph, 'after the per-call reads');
+        $this->assertSame(
+            ['Bearer '.self::SEEDED_ACCESS_FIXTURE, 'Bearer '.self::SEEDED_ACCESS_FIXTURE],
+            array_map(fn (array $sent) => $sent['request']->getHeaderLine('Authorization'), $this->history),
+            'requestJsonAbsolute(): both pages carry the seeded bearer',
+        );
+        $this->assertScriptedHandler($graph, 'after the requestJsonAbsolute() reads');
     }
 
     /**
@@ -835,7 +846,13 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
         $e = $this->refreshFailure(self::echoingTokenResponse(400, ['error' => 'invalid_client']));
 
         $graphRequest = $this->history[0]['request'];
-        $wire = 'Authorization: '.$graphRequest->getHeaderLine('Authorization').' '.(string) $this->tokenRequests()[0]['request']->getBody();
+        // #5676: the wire is what the requests carry, header names included, with no text the
+        // test adds itself.
+        $headers = '';
+        foreach ($graphRequest->getHeaders() as $name => $values) {
+            $headers .= $name.': '.implode(', ', $values)."\n";
+        }
+        $wire = $headers.(string) $this->tokenRequests()[0]['request']->getBody();
         $this->assertSame('Bearer '.self::SEEDED_ACCESS_FIXTURE, $graphRequest->getHeaderLine('Authorization'));
         $this->assertStringContainsString('client_id='.self::CLIENT_ID, $wire);
 
@@ -843,8 +860,21 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
         foreach ($this->credentialNeedles() as $needle) {
             $this->assertContains($needle, $this->needles(), 'the scans use it');
             $this->assertStringContainsString($needle, $wire, 'the needle is on the wire');
-            $this->assertTrue(str_contains($leaky, $needle), "the reporter scan fires on '{$needle}'");
             $this->assertFalse(str_contains($this->reported($e), $needle), "the real chain carries no '{$needle}'");
+            // #5664: the helper the arm tests rely on fails on the leaky render, naming this needle.
+            try {
+                $this->assertCarriesNone([$needle], $leaky, 'the leaky render');
+                $this->fail("assertCarriesNone() did not fire on '{$needle}'");
+            } catch (\PHPUnit\Framework\AssertionFailedError $failure) {
+                $this->assertStringContainsString("the leaky render carries '{$needle}'", $failure->getMessage());
+            }
+        }
+        // #5664: and with the full needle list, as the arm tests call it.
+        try {
+            $this->assertCarriesNone($this->needles(), $leaky, 'the leaky render');
+            $this->fail('assertCarriesNone() did not fire on the full list');
+        } catch (\PHPUnit\Framework\AssertionFailedError $failure) {
+            $this->assertStringContainsString('the leaky render carries', $failure->getMessage());
         }
     }
 

@@ -323,7 +323,13 @@ class TeamsMessageAttachmentsTest extends TestCase
         $this->assertCount(1, $failures);
         $this->assertSame(Level::Warning, $failures[0]->level);
         $this->assertSame(['chat_id' => self::CHAT, 'stage' => 'message', 'status' => 403], $failures[0]->context);
-        $this->assertNoVendorText($failures, $r);
+        // #5660: every record on this arm, GraphClient's throwFromGuzzle record included, is
+        // pinned and scanned.
+        $this->assertEveryRecord([
+            [Level::Error, 'Graph API request failed', ['method' => 'GET', 'status' => 403]],
+            [Level::Warning, self::ATTACHMENT_READ_FAILED, $failures[0]->context],
+        ], $logs);
+        $this->assertNoVendorText($logs->getRecords(), $r);
 
         $this->assertTrue((bool) $r->json('result.isError'));
         $this->assertStringContainsString('HTTP 403', $text);
@@ -348,6 +354,22 @@ class TeamsMessageAttachmentsTest extends TestCase
             'content' => [['type' => 'text', 'text' => (string) json_encode(['error' => $error])]],
             'isError' => true,
         ]], json_decode((string) $r->getContent(), true), 'the whole operator result');
+    }
+
+    /**
+     * #5622 / #5660: exactly these records, at these levels with these contexts, and Laravel's
+     * logger wrote nothing else on any channel or on-demand logger.
+     *
+     * @param  list<array{0: Level, 1: string, 2: array<string, mixed>}>  $expected
+     */
+    private function assertEveryRecord(array $expected, TestHandler $logs): void
+    {
+        $this->assertSame($expected, array_map(fn (LogRecord $rec) => [$rec->level, $rec->message, $rec->context], $logs->getRecords()));
+        $this->assertSame(
+            array_map(fn (array $e) => [$e[0]->toPsrLogLevel(), $e[1], $e[2]], $expected),
+            array_map(fn (MessageLogged $m) => [$m->level, $m->message, $m->context], $this->logged),
+            'every record Laravel\'s logger wrote',
+        );
     }
 
     /** Graph's own 401 error text in the fixture; never in the record or the operator text. */
@@ -410,9 +432,8 @@ class TeamsMessageAttachmentsTest extends TestCase
     private const CLIENT_ID = 'synthetic-client';
 
     /**
-     * $records: the records to scan. The token-refresh arm scans every record. The permission
-     * arms scan the fetcher's own record only: they reach GraphClient::throwFromGuzzle, whose
-     * shared ERROR record is outside this file's scope.
+     * $records: the records to scan. The 401 and 403 arms pass every record they wrote,
+     * GraphClient's own ERROR records included (#5660).
      *
      * Each record is scanned as Laravel writes it, through LogManager's own formatter, so an
      * exception object in context renders with its trace and its [previous exception] chain
@@ -508,9 +529,14 @@ class TeamsMessageAttachmentsTest extends TestCase
         );
         $this->fetch([]);
 
+        // #5676: the wire is what the requests carry, header names included, with no text the
+        // test adds itself.
         $wire = '';
         foreach ($this->history as $sent) {
-            $wire .= ' Authorization: '.$sent['request']->getHeaderLine('Authorization').' '.$sent['request']->getBody();
+            foreach ($sent['request']->getHeaders() as $name => $values) {
+                $wire .= $name.': '.implode(', ', $values)."\n";
+            }
+            $wire .= $sent['request']->getBody()."\n";
         }
         $this->assertSame(['Bearer '.self::ISSUED_ACCESS_FIXTURE, 'Bearer '.self::REFRESHED_ACCESS_FIXTURE], array_values(array_filter(array_map(
             fn (array $h) => $h['request']->getHeaderLine('Authorization'), $this->history,
@@ -526,6 +552,22 @@ class TeamsMessageAttachmentsTest extends TestCase
             $this->assertNotEmpty(array_filter($this->operatorStrings($leakyResponse), fn (string $s) => str_contains($s, $needle)), "the operator scan fires on '{$needle}'");
             $this->assertStringContainsString($needle, $this->render($leakyRecord), "the record scan fires on '{$needle}'");
         }
+
+        // #5664: assertNoVendorText() itself, the helper the arm tests call, fails on each leaky
+        // input: on the operator text alone, and on the record alone.
+        $cleanResponse = TestResponse::fromBaseResponse(response()->json(['jsonrpc' => '2.0', 'id' => 1, 'result' => [
+            'content' => [['type' => 'text', 'text' => '{"error":"clean"}']], 'isError' => true,
+        ]]));
+        $cleanRecord = new LogRecord(new \DateTimeImmutable, 'testing', Level::Warning, 'm', ['status' => 401]);
+        foreach (['operator text' => [[$cleanRecord], $leakyResponse, 'operator text at '], 'record' => [[$leakyRecord], $cleanResponse, "the rendered 'm' record"]] as $what => [$records, $response, $expected]) {
+            try {
+                $this->assertNoVendorText($records, $response);
+                $this->fail("assertNoVendorText() did not fire on the leaky {$what}");
+            } catch (\PHPUnit\Framework\AssertionFailedError $failure) {
+                $this->assertStringContainsString($expected, $failure->getMessage(), $what);
+            }
+        }
+        $this->assertNoVendorText([$cleanRecord], $cleanResponse);
     }
 
     /** #5622 control: an on-demand logger bypasses the TestHandler; the MessageLogged list sees it. */
@@ -613,7 +655,13 @@ class TeamsMessageAttachmentsTest extends TestCase
         $this->assertCount(1, $failures);
         $this->assertSame(Level::Warning, $failures[0]->level);
         $this->assertSame(['chat_id' => self::CHAT, 'stage' => 'message', 'status' => 401], $failures[0]->context);
-        $this->assertNoVendorText($failures, $r);
+        // #5660: every record on this arm, GraphClient's throwFromGuzzle record included, is
+        // pinned and scanned; the refreshed bearer is live here.
+        $this->assertEveryRecord([
+            [Level::Error, 'Graph API request failed', ['method' => 'GET', 'status' => 401]],
+            [Level::Warning, self::ATTACHMENT_READ_FAILED, $failures[0]->context],
+        ], $logs);
+        $this->assertNoVendorText($logs->getRecords(), $r);
 
         $this->assertSame(0, $this->queue->count(), 'positive control: the refresh succeeded and the retry ran');
         $this->assertOperatorResult(self::PERMISSION_REFUSAL_401, $r);
@@ -787,7 +835,9 @@ class TeamsMessageAttachmentsTest extends TestCase
             $client = (new \ReflectionProperty(GraphClient::class, $property))->getValue($graph);
             $this->assertSame($stack, $client->getConfig('handler'), "GraphClient::\${$property} must use the scripted handler");
         }
-        $this->assertSame($graph, app(GraphClient::class), 'the tool resolves this client');
+        // #5668: that the fetcher resolves this instance is shown by the success-path test
+        // (test_fetch_returns_a_downscaled_base64_image_from_the_hosted_content), which reads
+        // its paths from $this->history and requires the scripted queue to be consumed.
         $this->assertSame([], $this->history, 'nothing was sent while building the client');
     }
 

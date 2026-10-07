@@ -31,9 +31,11 @@ namespace App\Services\Graph;
  * the chain through Laravel's exception handler and renders it with Laravel's log formatter,
  * messages and stack traces of both links (#5513, #5613), and finds no vendor text. A reporter
  * that prints frame arguments (zend.exception_ignore_args=Off) shows the users/ endpoint, which
- * holds the mailbox, in the trace; that frame is already in this exception's own trace, and
- * every string argument the chained link's trace prints is printed by the outer trace too
- * (#5614). A getToken() change that puts vendor text in its message must not chain.
+ * holds the mailbox, in the trace; that frame is already in this exception's own trace. The
+ * test compares the quoted string arguments of the two traces' frames, include/require frames
+ * excluded, as its stringArguments() splits them (an argument containing a quote is split),
+ * and finds none that only the chained link prints (#5614, #5675). A getToken() change that
+ * puts vendor text in its message must not chain.
  */
 class GraphTokenRefreshFailedException extends GraphClientException
 {

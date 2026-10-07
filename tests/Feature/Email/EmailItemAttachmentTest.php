@@ -1278,7 +1278,8 @@ class EmailItemAttachmentTest extends TestCase
         // path ($pathHoldsMailbox) and in Graph's body; the record leaves them out.
         $sent = end($this->history);
         $this->assertStringContainsString(self::GRAPH_ERROR_TEXT, (string) $sent['response']->getBody());
-        $this->assertSame($pathHoldsMailbox, str_contains($uri, self::MAILBOX));
+        // #5663: read the request actually sent, not the provider's $uri.
+        $this->assertSame($pathHoldsMailbox, str_contains((string) $sent['request']->getUri(), self::MAILBOX));
     }
 
     /** #5533 control: graphFailureLeaks() reports a needle under the key that carries it. */
