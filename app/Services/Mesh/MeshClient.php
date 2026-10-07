@@ -75,17 +75,19 @@ class MeshClient
      * after customers/ carries a client's Mesh customer id (#5298/#5305,
      * #5323). Only that log line is redacted. The request URI Guzzle builds
      * is not (that is what MeshClientLogPathTest observes, at a handler; what
-     * a transport then puts on the wire is not observed there): $endpoint is
-     * resolved against base_uri by RFC 3986 reference resolution, so a
-     * relative path is merged with base_uri's path, dot segments are removed
-     * and the path is percent-encoded, the customer id included. An absolute
+     * a transport then puts on the wire is not observed there). There the
+     * request path keeps the customer id as built: a well-formed uuid
+     * unchanged, a newline in an id as %0A. Read in the vendored Guzzle,
+     * not driven: that encoding is done when $endpoint is parsed as a PSR-7
+     * Uri, before and apart from its RFC 3986 resolution against base_uri.
+     * In that test (base_uri's path is '/') a relative endpoint takes
+     * base_uri's scheme and host under a '/'-rooted path; an absolute
      * endpoint brings its own scheme, user-info, host and port; a
      * scheme-relative one (//host/...) brings its user-info, host and port
-     * but takes base_uri's scheme. Query: only when $options['query'] is set
-     * does Guzzle replace any query written into $endpoint with it; without
-     * that key the endpoint's own query is sent. get(), today this method's
-     * only caller, always sets it ([] by default), so from get() an
-     * endpoint's query never reaches the request (#5418, #5427). The
+     * but takes base_uri's scheme. Query: get(), today this method's only
+     * caller, always sets $options['query'] ([] by default), which replaces
+     * any query written into $endpoint, so from get() an endpoint's query
+     * never reaches the request URI (#5418, #5427). The
      * rethrown MeshClientException is
      * NOT redacted: its message is 'Mesh API error: ' followed by Guzzle's
      * message, which can quote the full request URI (customer id included)
