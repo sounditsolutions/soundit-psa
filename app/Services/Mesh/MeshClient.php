@@ -85,9 +85,13 @@ class MeshClient
      * endpoint brings its own scheme, user-info, host and port; a
      * scheme-relative one (//host/...) brings its user-info, host and port
      * but takes base_uri's scheme. Query: get(), today this method's only
-     * caller, always sets $options['query'] ([] by default), which replaces
-     * any query written into $endpoint, so from get() an endpoint's query
-     * never reaches the request URI (#5418, #5427). The
+     * caller, always sets $options['query'] ([] by default). Measured in
+     * that test with get()'s default []: a query written into a relative
+     * or an absolute $endpoint does not reach the request URI, whose query
+     * is empty (#5418, #5427, #5474). Read in the vendored Guzzle, not
+     * driven: Client::applyOptions replaces the URI's query whenever the
+     * 'query' option is set, so a non-empty $params replaces an endpoint's
+     * query the same way (#5484). The
      * rethrown MeshClientException is
      * NOT redacted: its message is 'Mesh API error: ' followed by Guzzle's
      * message, which can quote the full request URI (customer id included)
