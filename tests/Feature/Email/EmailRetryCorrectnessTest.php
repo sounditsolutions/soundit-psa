@@ -17,6 +17,7 @@ use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Cache\ArrayStore;
 use Illuminate\Cache\Repository;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
@@ -289,6 +290,36 @@ class EmailRetryCorrectnessTest extends TestCase
         $this->assertSkipped('email_relinked', discarded: 0);
     }
 
+    public function test_the_link_re_check_takes_ticket_then_note_then_email_as_merge_tickets_does(): void
+    {
+        // TicketService::mergeTickets locks tickets, then moves their notes, then their emails.
+        // SQLite emits no FOR UPDATE, so the order is read from the link transaction's first
+        // statement against each of those tables.
+        $reading = false;
+        $tables = [];
+        $this->graph([$this->failedRead(), $this->readDuring(function () use (&$reading) {
+            $reading = true;
+        })]);
+        $outside = DB::transactionLevel(); // RefreshDatabase's own wrapping transaction
+        DB::listen(function (QueryExecuted $q) use (&$reading, &$tables, $outside) {
+            if ($reading && DB::transactionLevel() === $outside + 1
+                && preg_match('/^select .*? from "(\w+)"/', $q->sql, $m) && in_array($m[1], ['tickets', 'ticket_notes', 'emails'], true)) {
+                $tables[] = $m[1];
+            }
+        });
+        $email = $this->email();
+
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $a = Attachment::sole();
+        $this->assertSame(
+            [TicketNote::class, TicketNote::where('email_id', $email->id)->sole()->id],
+            [$a->attachable_type, $a->attachable_id],
+            'positive control: the link transaction ran and linked',
+        );
+        $this->assertSame(['tickets', 'ticket_notes', 'emails'], array_slice(array_values(array_unique($tables)), 0, 3));
+    }
+
     // ── #5454: no orphans when the retry links nothing; idempotent when it runs again ──
 
     public function test_a_failing_link_transaction_leaves_no_attachment_row_or_file(): void
@@ -345,6 +376,57 @@ class EmailRetryCorrectnessTest extends TestCase
         $this->assertSame(['download', false, 1], [$threw[0]->context['stage'], $threw[0]->context['linked'], $threw[0]->context['discarded_attachments']]);
         $this->assertSame(0, Attachment::withTrashed()->count());
         $this->assertSame([], $this->storedFiles());
+    }
+
+    public function test_a_discard_whose_lookup_throws_is_recorded_and_the_later_commit_callbacks_still_run(): void
+    {
+        $this->graph([$this->failedRead(), $this->read()]);
+        $notified = new \ArrayObject;
+        $this->app->instance(NotificationService::class, new class($notified) extends NotificationService
+        {
+            public function __construct(private \ArrayObject $notified) {}
+
+            public function notifyEmailAdded(Ticket $ticket, Email $email): void
+            {
+                $this->notified[] = $ticket->id;
+            }
+
+            public function notifyTicketCreated(Ticket $ticket): void {}
+        });
+        // The link transaction's first write throws (rolled back); then the discard's own read of
+        // the stored rows throws, as on a connection that has gone away.
+        $armed = false;
+        Ticket::updating(function (Ticket $t) use (&$armed) {
+            if ($t->isDirty('description_html') && $t->description_html !== null) {
+                $armed = true;
+                throw new \RuntimeException('B4B-SYNTHETIC-DEADLOCK');
+            }
+        });
+        DB::beforeExecuting(function (string $sql) use (&$armed) {
+            if ($armed && str_contains($sql, 'from "attachments"') && str_contains($sql, '"id" in (')) {
+                $armed = false;
+                throw new \RuntimeException('B4B-SYNTHETIC-CONNECTION-LOST');
+            }
+        });
+        $email = $this->email();
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertSame(2, $this->messageReads(), 'positive control: the retry read ran and stored');
+        $this->assertFalse($armed, 'positive control: the discard lookup was reached and threw');
+        $threw = $this->withMessage(self::THREW);
+        $this->assertCount(1, $threw);
+        $this->assertSame(Level::Warning, $threw[0]->level);
+        $this->assertSame([
+            'email_id' => $email->id, 'ticket_id' => $ticket->id, 'stage' => 'link', 'linked' => false,
+            'exception' => \RuntimeException::class, 'discarded_attachments' => 0,
+        ], $threw[0]->context, 'status-only: ids, stage, class, count');
+        foreach (['B4B-SYNTHETIC-DEADLOCK', 'B4B-SYNTHETIC-CONNECTION-LOST'] as $needle) {
+            $this->assertStringNotContainsString($needle, $this->text($threw[0]));
+        }
+        $this->assertSame([$ticket->id], $notified->getArrayCopy(), 'notifyEmailAdded, registered after the retry, still ran');
+        $this->assertSame($ticket->id, $email->fresh()->ticket_id);
+        $this->assertSame(1, Attachment::withTrashed()->count(), 'the row the failed lookup could not discard is left; the record counts 0 discarded');
     }
 
     /** Runs the retry again, with the creation-time baseline, as a duplicate after-commit delivery would. */

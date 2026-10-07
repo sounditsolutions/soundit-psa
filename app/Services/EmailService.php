@@ -1254,9 +1254,9 @@ PROMPT;
      * body_html, and the ids of the attachments linked to that ticket or note. Null when the
      * ticket no longer exists (deleted or soft-deleted). With $lock, the ticket and note rows
      * are read FOR UPDATE, so no other write to those rows lands until the caller's transaction
-     * ends. The attachment ids are read without a lock: a second retry for the same email is
-     * kept out by the email row lock the caller takes first, a writer that does not take that
-     * lock (BackfillEmailInlineImages) is not.
+     * ends. The attachment ids are read without a lock: a second retry for the same ticket is
+     * kept out by the ticket row lock both take first, a writer that does not take that lock
+     * (BackfillEmailInlineImages) is not.
      *
      * @return array{ticket: array<string, mixed>, note: array<string, mixed>|null, attachments: list<int>}|null
      */
@@ -1299,13 +1299,18 @@ PROMPT;
     /**
      * Why the retry must not write, or null when the email is still linked to the ticket and the
      * ticket, note and their attachments are exactly as the creating transaction left them.
+     * With $lock, the rows are read FOR UPDATE ticket first, then note, then email: the order
+     * TicketService::mergeTickets takes them (tickets, then their notes, then their emails), so
+     * a merge of this ticket and this re-check wait on the ticket row instead of each holding a
+     * row the other needs.
      */
-    private function retryChange(?Email $email, int $ticketId, ?int $noteId, array $baseline, bool $lock): ?string
+    private function retryChange(int $emailId, int $ticketId, ?int $noteId, array $baseline, bool $lock): ?string
     {
+        $now = $this->retryState($ticketId, $noteId, $lock);
+        $email = Email::whereKey($emailId)->when($lock, fn ($q) => $q->lockForUpdate())->first();
         if ($email === null || (int) $email->ticket_id !== $ticketId) {
             return 'email_relinked';
         }
-        $now = $this->retryState($ticketId, $noteId, $lock);
         if ($now === null) {
             return 'ticket_gone';
         }
@@ -1338,9 +1343,10 @@ PROMPT;
      * (forward provenance line included) and the note links. The after-commit RunTechnicianLoop
      * dispatch and notifyEmailAdded run after it (see createTicketFromLockedEmail, #5453).
      *
-     * #5447/#5460: it writes only if, re-checked under lockForUpdate on the email, ticket and
-     * note rows in one short transaction, the email is still linked to the ticket and the
-     * ticket's description/description_html, the note's ticket/email/body/body_html and the
+     * #5447/#5460: it writes only if, re-checked under lockForUpdate on the ticket, note and
+     * email rows (taken in that order, see retryChange) in one short transaction, the email is
+     * still linked to the ticket and the ticket's description/description_html, the note's
+     * ticket/email/body/body_html and the
      * attachments linked to either are exactly as the creating transaction left them
      * ($baseline). The same check runs once, unlocked, before the Graph read, so a retry that
      * would be refused anyway makes no Graph call. On a change it writes nothing and logs one
@@ -1368,7 +1374,7 @@ PROMPT;
             if (! $email || ! $email->graph_id || ! $mailbox) {
                 return;
             }
-            $change = $this->retryChange($email, $ticketId, $noteId, $baseline, lock: false);
+            $change = $this->retryChange($emailId, $ticketId, $noteId, $baseline, lock: false);
             if ($change !== null) {
                 $this->warnRetrySkipped($emailId, $ticketId, $change);
 
@@ -1398,11 +1404,11 @@ PROMPT;
                 DB::afterCommit(function () use (&$committed): void {
                     $committed = true;
                 });
-                $email = Email::whereKey($emailId)->lockForUpdate()->first();
-                $change = $this->retryChange($email, $ticketId, $noteId, $baseline, lock: true);
+                $change = $this->retryChange($emailId, $ticketId, $noteId, $baseline, lock: true);
                 if ($change !== null) {
                     return $change;
                 }
+                $email = Email::findOrFail($emailId);
                 $ticket = Ticket::findOrFail($ticketId);
                 $note = TicketNote::findOrFail($noteId);
 
@@ -1448,13 +1454,21 @@ PROMPT;
         }
     }
 
-    /** Force-deletes (row and stored file) the Attachment rows this retry stored; returns how many. */
+    /** Force-deletes (row and stored file) the Attachment rows this retry stored; returns how many. Does not throw. */
     private function discardRetryStored(): int
     {
         $ids = self::$retryStoredIds ?? [];
         self::$retryStoredIds = [];
         $discarded = 0;
-        foreach (\App\Models\Attachment::withTrashed()->whereIn('id', $ids)->get() as $attachment) {
+        try {
+            $stored = \App\Models\Attachment::withTrashed()->whereIn('id', $ids)->get();
+        } catch (\Throwable) {
+            // The catch arm calls this too; a throw here would escape the retry and stop the
+            // after-commit callbacks registered after it (see createTicketFromLockedEmail, #5453).
+            // Nothing was discarded; the WARNING carries 0.
+            return 0;
+        }
+        foreach ($stored as $attachment) {
             try {
                 $attachment->forceDelete();
                 $discarded++;
