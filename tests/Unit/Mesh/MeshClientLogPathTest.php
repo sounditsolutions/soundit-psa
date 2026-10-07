@@ -480,6 +480,7 @@ class MeshClientLogPathTest extends TestCase
         $this->assertSame('7b2e9d41', $this->idPieceIn('api/customers/'.substr($id, 0, 8)), 'the head');
         $this->assertSame('7b2e9d41', $this->idPieceIn('api/customers/'.substr($id, 0, 19).strtoupper(substr($id, 19))), 'mixed case');
         $this->assertSame('7b2e9d41', $this->idPieceIn('api/customers/7B2E9D41%2D5C3A'), 'percent-encoded dash, upper-cased');
+        $this->assertSame('9d415c3a', $this->idPieceIn('api/customers/9D41%2D5C3A'), 'a run held only across a percent-encoded dash');
         $this->assertSame('7b2e9d41', $this->idPieceIn('api/customers/7b2e9d41%0A5c3a'), 'the newline row, split by %0A');
         $this->assertNull($this->idPieceIn('api/customers/'.substr($id, 0, 7)), 'seven characters are not named');
         $this->assertNull($this->idPieceIn('api/customers/<customer>'), 'the redacted path');
