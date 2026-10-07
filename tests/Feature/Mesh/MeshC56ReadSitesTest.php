@@ -677,15 +677,16 @@ class MeshC56ReadSitesTest extends TestCase
     }
 
     /**
-     * Context shapes plain json_encode() hides (#5465), each as [context
-     * builder over the client name, the rendered fragment that must appear].
+     * Context shapes plain json_encode() hides, plus the two Throwable shapes
+     * it shows that expose() must keep (#5465), each as [context builder over
+     * the client name, the rendered fragment that must appear].
      *
      * @return array<string, array{\Closure(string): array<mixed>, \Closure(string): string}>
      */
     public static function hiddenContexts(): array
     {
         return [
-            // json_encode() writes a Throwable as {}.
+            // json_encode() writes a Throwable as its public properties alone: {} for this one.
             'a Throwable whose message carries the name' => [
                 fn (string $n) => ['exception' => new \RuntimeException('failed for '.$n)],
                 fn (string $n) => '"message":"failed for '.$n.'"',
@@ -693,6 +694,32 @@ class MeshC56ReadSitesTest extends TestCase
             'a name only in the previous exception' => [
                 fn (string $n) => ['exception' => new \LogicException('outer', 0, new \RuntimeException('inner '.$n))],
                 fn (string $n) => '"message":"inner '.$n.'"',
+            ],
+            // json_encode() writes these two; expose() must not drop them.
+            "a name only in a Throwable's public property" => [
+                fn (string $n) => ['exception' => new class($n) extends \RuntimeException
+                {
+                    public function __construct(public string $client)
+                    {
+                        parent::__construct('failed');
+                    }
+                }],
+                fn (string $n) => '"public":{"client":"'.$n.'"}',
+            ],
+            "a name only in a JsonSerializable Throwable's jsonSerialize()" => [
+                fn (string $n) => ['exception' => new class($n) extends \RuntimeException implements \JsonSerializable
+                {
+                    public function __construct(private string $c)
+                    {
+                        parent::__construct('failed');
+                    }
+
+                    public function jsonSerialize(): mixed
+                    {
+                        return ['client' => $this->c];
+                    }
+                }],
+                fn (string $n) => '"json":{"client":"'.$n.'"}',
             ],
             // json_encode() writes only public properties; a Stringable's string form is not one.
             'a Stringable object' => [
@@ -730,8 +757,10 @@ class MeshC56ReadSitesTest extends TestCase
     }
 
     /**
-     * #5465: each shape of context plain json_encode() hides is rendered by
-     * BOTH instruments so the name is seen: on each instrument's own route
+     * #5465: each shape of context plain json_encode() hides, and each
+     * Throwable shape it shows (a public property, jsonSerialize() output),
+     * is rendered by BOTH instruments so the name is seen: on each
+     * instrument's own route
      * the holder holds one record at 'error' whose text carries the
      * fragment, the other holds nothing, and assertNoClientNames() fails
      * through the holder's arm. (For U+2028 the client's stored name carries
@@ -1095,8 +1124,9 @@ class MeshC56ReadSitesTest extends TestCase
      * test_the_no_client_names_assertion_fails_on_a_recased_name_on_each_route.
      * Both render context with renderContext(), so a name with '/', a
      * non-ASCII letter or U+2028 is matched as written (#5438), a name in a
-     * Throwable's message (or its previous chain) or a Stringable's string
-     * form in context is seen, and an invalid UTF-8 byte or NAN elsewhere in
+     * Throwable's message (or its previous chain), public properties or
+     * jsonSerialize() output, or a Stringable's string form in context is
+     * seen, and an invalid UTF-8 byte or NAN elsewhere in
      * the context does not blank the record (#5465; each driven by
      * test_the_instruments_render_context_that_plain_json_encode_hides).
      * Not covered: a write through another channel's Monolog logger outside
@@ -1106,8 +1136,9 @@ class MeshC56ReadSitesTest extends TestCase
      * containing a double quote, a backslash or a control character when it
      * sits in context (JSON escapes those); a name split by an invalid UTF-8
      * byte (U+FFFD replaces the byte); and a name held only in a non-public
-     * property of a context object that is neither a Throwable nor
-     * Stringable, or behind a JsonSerializable that omits it.
+     * property of a context object (other than a Throwable's message and
+     * previous chain, or what a Stringable's string form shows), or behind a
+     * JsonSerializable that omits it.
      *
      * @param  list<Client>  $clients
      */
@@ -1148,12 +1179,15 @@ class MeshC56ReadSitesTest extends TestCase
 
     /**
      * A record's context as both instruments render it (#5465): JSON_FLAGS
-     * over the context after expose() has replaced each object json_encode()
-     * would write as its public properties alone. A Throwable becomes its
-     * class, message and previous chain (json_encode() writes one as {}, so
-     * its message was unseen); any other object that is not JsonSerializable
-     * becomes its class plus its string form when Stringable, else its
-     * public properties (private and protected state is still not rendered).
+     * over the context after expose() has replaced each Throwable, and each
+     * other object json_encode() would write as its public properties alone.
+     * A Throwable becomes its class, message, previous chain, public
+     * properties and, when JsonSerializable, its jsonSerialize() output
+     * (json_encode() writes one as its public properties or jsonSerialize()
+     * output alone, so its message was unseen); any other object that is not
+     * JsonSerializable becomes its class, its string form when Stringable,
+     * and its public properties. Private and protected state is still not
+     * rendered.
      *
      * @param  array<mixed>  $context
      */
@@ -1175,6 +1209,8 @@ class MeshC56ReadSitesTest extends TestCase
                 'class' => $value::class,
                 'message' => $value->getMessage(),
                 'previous' => $value->getPrevious() === null ? null : self::expose($value->getPrevious(), $depth + 1),
+                'public' => self::expose(get_object_vars($value), $depth + 1),
+                'json' => $value instanceof \JsonSerializable ? self::expose($value->jsonSerialize(), $depth + 1) : null,
             ];
         }
         if (is_object($value) && ! $value instanceof \JsonSerializable) {
