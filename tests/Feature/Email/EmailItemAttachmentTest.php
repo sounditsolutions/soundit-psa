@@ -57,6 +57,9 @@ class EmailItemAttachmentTest extends TestCase
     /** Graph's error text in the failing fixtures; it must never reach a log record (C-56). */
     private const GRAPH_ERROR_TEXT = 'The specified object was not found in the store.';
 
+    /** A non-Graph Throwable's message; it must not reach a log record either (C-56, #5400). */
+    private const NON_GRAPH_DETAIL = 'non-graph failure detail MSG-1';
+
     /** @var array<int, array{request: \Psr\Http\Message\RequestInterface}> */
     private array $history = [];
 
@@ -84,10 +87,18 @@ class EmailItemAttachmentTest extends TestCase
     }
 
     /**
-     * Point EVERY configured channel (the default stack included) at one TestHandler, so a record
-     * is captured whether it goes through the facade's level methods, log()/write(), or a logger
-     * returned by channel()/stack()/getLogger() (#5138). The handler's level is DEBUG, so every
-     * level is kept, and the assertions read each record's level.
+     * Send every log record the Log manager can produce to one TestHandler (#5138, #5402):
+     *  - every configured channel (the default stack included) is rewritten, for this test only,
+     *    to a custom driver whose only handler is the TestHandler;
+     *  - the Log facade is swapped to a LogManager whose every resolved logger has the
+     *    TestHandler as its only handler. That covers what the config rewrite cannot reach: an
+     *    on-demand Log::build([...]) logger, a Log::channel() name missing from
+     *    config/logging.php (the manager's emergency logger, together with its own
+     *    'Unable to create configured logger' record), and the stack() of either.
+     * A logger the code builds itself, outside the Log manager (new Monolog\Logger(...)), is not
+     * captured. What is driven is listed in test_capture_sees_every_write_shape_at_its_level;
+     * the handler's level is DEBUG, so every level is kept and the assertions read each
+     * record's level.
      */
     private function captureAllLogChannels(): void
     {
@@ -100,6 +111,40 @@ class EmailItemAttachmentTest extends TestCase
             ]]);
             Log::forgetChannel($name);
         }
+
+        Log::swap(new class($this->app, $handler) extends \Illuminate\Log\LogManager
+        {
+            public function __construct($app, private readonly TestHandler $capture)
+            {
+                parent::__construct($app);
+            }
+
+            protected function get($name, ?array $config = null)
+            {
+                return $this->captured(parent::get($name, $config));
+            }
+
+            protected function createEmergencyLogger()
+            {
+                return $this->captured(parent::createEmergencyLogger());
+            }
+
+            // One handler, not one per stacked channel: a record is captured exactly once.
+            public function stack(array $channels, $channel = null)
+            {
+                return $this->captured(parent::stack($channels, $channel));
+            }
+
+            private function captured($logger)
+            {
+                $monolog = $logger instanceof \Illuminate\Log\Logger ? $logger->getLogger() : $logger;
+                if ($monolog instanceof \Monolog\Logger && $monolog->getHandlers() !== [$this->capture]) {
+                    $monolog->setHandlers([$this->capture]);
+                }
+
+                return $logger;
+            }
+        });
     }
 
     /** @return list<LogRecord> */
@@ -249,15 +294,77 @@ class EmailItemAttachmentTest extends TestCase
         return $w->context;
     }
 
-    /** No record at any level carries the mailbox (raw or encoded) or Graph's error text. */
-    private function assertNoLeakInLogs(): void
+    /**
+     * No record at any level carries the mailbox (raw or encoded), Graph's error text, or any of
+     * $alsoAbsent. Each record is read through render(), so a needle is seen in the message, in
+     * context or extra at any depth, inside an object or a Throwable (and its previous chain),
+     * and beside bytes that json_encode() refuses (#5392).
+     *
+     * @param  list<string>  $alsoAbsent
+     */
+    private function assertNoLeakInLogs(array $alsoAbsent = []): void
     {
         foreach ($this->records() as $r) {
-            $text = $r->message.' '.json_encode($r->context);
-            foreach ([self::MAILBOX, rawurlencode(self::MAILBOX), self::GRAPH_ERROR_TEXT] as $needle) {
+            $text = $this->render($r);
+            foreach ([self::MAILBOX, rawurlencode(self::MAILBOX), self::GRAPH_ERROR_TEXT, ...$alsoAbsent] as $needle) {
                 $this->assertStringNotContainsString($needle, $text, "{$r->level->getName()} record leaks");
             }
         }
+    }
+
+    /**
+     * Everything a log formatter could print for $r, as one string: the message, a walk of
+     * context and extra (render-walk: array keys and values, Throwable class, message, code and
+     * previous chain, JsonSerializable output, __toString, and every property of any other
+     * object, private ones included), and Monolog's own LineFormatter output for the record.
+     * Strings are kept byte for byte, so invalid UTF-8 cannot blank the text out.
+     */
+    private function render(LogRecord $r): string
+    {
+        $seen = new \SplObjectStorage;
+
+        return $r->message
+            ."\n".$this->walk($r->context, $seen)
+            ."\n".$this->walk($r->extra, $seen)
+            ."\n".(new \Monolog\Formatter\LineFormatter(null, null, true))->format($r);
+    }
+
+    private function walk(mixed $value, \SplObjectStorage $seen, int $depth = 0): string
+    {
+        if ($depth > 12) {
+            return '';
+        }
+        if (is_string($value)) {
+            return $value;
+        }
+        if ($value === null || is_scalar($value)) {
+            return var_export($value, true);
+        }
+        if (is_array($value)) {
+            $out = '';
+            foreach ($value as $k => $v) {
+                $out .= $k.'='.$this->walk($v, $seen, $depth + 1).' ';
+            }
+
+            return $out;
+        }
+        if (! is_object($value) || $seen->contains($value)) {
+            return '';
+        }
+        $seen->attach($value);
+        $out = $value::class.' ';
+        if ($value instanceof \Throwable) {
+            $out .= $value->getMessage().' '.$value->getCode().' '.$this->walk($value->getPrevious(), $seen, $depth + 1).' ';
+        }
+        if ($value instanceof \JsonSerializable) {
+            $out .= $this->walk($value->jsonSerialize(), $seen, $depth + 1).' ';
+        }
+        if ($value instanceof \Stringable) {
+            $out .= (string) $value.' ';
+        }
+
+        // (array) cast exposes private and protected properties too.
+        return $out.$this->walk((array) $value, $seen, $depth + 1);
     }
 
     /** @param  array<int, LogRecord>  $records */
@@ -322,7 +429,11 @@ class EmailItemAttachmentTest extends TestCase
         $this->assertStringEndsWith('.eml', $a->filename);
     }
 
-    /** @return array<string, array{0: Response}> */
+    /**
+     * Each row is [the failing $value response, the HTTP status the not-stored WARNING must carry].
+     *
+     * @return array<string, array{0: Response, 1: int}>
+     */
     public static function failingValueResponses(): array
     {
         return [
@@ -609,9 +720,7 @@ class EmailItemAttachmentTest extends TestCase
         $this->assertArrayHasKey('status', $context);
         $this->assertNull($context['status']);
         $this->assertSame(\App\Services\Graph\GraphClientException::class, $context['exception'] ?? null);
-        foreach ($this->records() as $r) {
-            $this->assertStringNotContainsString('timed out', $r->message.' '.json_encode($r->context));
-        }
+        $this->assertNoLeakInLogs(['timed out']);
     }
 
     public function test_non_graph_throwable_reports_its_class_not_its_code(): void
@@ -620,7 +729,7 @@ class EmailItemAttachmentTest extends TestCase
         // not an HTTP status and must not be reported as one.
         $graph = \Mockery::mock(GraphClient::class);
         $graph->shouldReceive('getMessageAttachments')->andReturn([$this->itemAttachment()]);
-        $graph->shouldReceive('getMessageAttachmentRaw')->andThrow(new \RuntimeException('boom', 503));
+        $graph->shouldReceive('getMessageAttachmentRaw')->andThrow(new \RuntimeException(self::NON_GRAPH_DETAIL, 503));
 
         $stored = app(AttachmentService::class)->downloadEmailAttachments($this->email(), $graph, self::MAILBOX);
 
@@ -628,11 +737,18 @@ class EmailItemAttachmentTest extends TestCase
         $context = $this->assertNotStoredWarning('status_unknown', 'ATT-ITEM-1');
         $this->assertNull($context['status']);
         $this->assertSame(\RuntimeException::class, $context['exception'] ?? null);
+        // #5400: the exception's message reaches no record, under any context key, at any level.
+        $this->assertNoLeakInLogs([self::NON_GRAPH_DETAIL]);
     }
 
     // ── #5140: the slash replacement keeps a word separator; no path survives either way ──
 
-    /** @return array<string, array{0: string, 1: string}> */
+    /**
+     * [item name, stored filename]. A separator between two words becomes '-', so both words
+     * are kept; a '..' segment slugs to nothing and is dropped (#5401).
+     *
+     * @return array<string, array{0: string, 1: string}>
+     */
     public static function itemNamesWithSeparators(): array
     {
         return [
@@ -643,7 +759,7 @@ class EmailItemAttachmentTest extends TestCase
     }
 
     #[DataProvider('itemNamesWithSeparators')]
-    public function test_item_name_with_a_path_separator_keeps_every_part(string $name, string $expected): void
+    public function test_item_name_with_a_path_separator_keeps_its_words_and_drops_dot_segments(string $name, string $expected): void
     {
         $graph = $this->graph([
             $this->expandResponse([$this->itemAttachment(['name' => $name])]),
@@ -653,23 +769,170 @@ class EmailItemAttachmentTest extends TestCase
         $stored = app(AttachmentService::class)->downloadEmailAttachments($this->email(), $graph, self::MAILBOX);
 
         $this->assertSame($expected, $stored[0]->filename);
+        $this->assertStringNotContainsString('/', $stored[0]->filename);
+        $this->assertStringNotContainsString('\\', $stored[0]->filename);
+        $this->assertStringNotContainsString('..', $stored[0]->filename);
     }
 
-    // ── #5138: the controls see a context-less record and a channel/stack record ──
+    // ── #5138 / #5396 / #5400 / #5402: the capture sees every write shape it claims ──
 
-    public function test_capture_sees_contextless_and_channel_records_at_their_level(): void
+    public function test_capture_sees_every_write_shape_at_its_level(): void
     {
-        // Positive control for captureAllLogChannels(): each write shape the old per-signature
-        // spy missed must land here with its own level, or the absence assertions prove nothing.
-        Log::error(self::NOT_STORED);
-        Log::channel('stack')->error(self::NOT_STORED, ['reason' => 'x']);
-        Log::stack(['single'])->critical(self::NOT_STORED);
-        Log::write('notice', self::NOT_STORED);
-        Log::getLogger()->debug(self::NOT_STORED);
+        // Positive control for captureAllLogChannels(): each shape must land here once, with its
+        // own level, or the absence assertions prove nothing for it. The on-demand logger's
+        // file must stay unwritten: its real handler was replaced, not added to.
+        $onDemandPath = storage_path('logs/email-item-attachment-capture-ondemand.log');
+        @unlink($onDemandPath);
 
-        $this->assertSame(
-            ['ERROR', 'ERROR', 'CRITICAL', 'NOTICE', 'DEBUG'],
-            array_map(fn (LogRecord $r) => $r->level->getName(), $this->records()),
-        );
+        Log::error('facade level method');
+        Log::channel('stack')->error('configured channel', ['reason' => 'x']);
+        Log::stack(['single'])->critical('stack of one');
+        Log::stack(['single', 'stack'])->info('stack of two, captured once');
+        Log::write('notice', 'facade write');
+        Log::log('warning', 'facade log');
+        Log::channel('single')->log('alert', 'channel log');
+        Log::getLogger()->debug('getLogger');
+        Log::channel('single')->withName('renamed')->info('withName');
+        Log::build(['driver' => 'single', 'path' => $onDemandPath])->warning('on-demand build');
+        Log::channel('not-in-logging-config')->error('unconfigured channel');
+
+        $this->assertSame([
+            ['ERROR', 'facade level method'],
+            ['ERROR', 'configured channel'],
+            ['CRITICAL', 'stack of one'],
+            ['INFO', 'stack of two, captured once'],
+            ['NOTICE', 'facade write'],
+            ['WARNING', 'facade log'],
+            ['ALERT', 'channel log'],
+            ['DEBUG', 'getLogger'],
+            ['INFO', 'withName'],
+            ['WARNING', 'on-demand build'],
+            ['EMERGENCY', 'Unable to create configured logger. Using emergency logger.'],
+            ['ERROR', 'unconfigured channel'],
+        ], array_map(fn (LogRecord $r) => [$r->level->getName(), $r->message], $this->records()));
+        $this->assertFileDoesNotExist($onDemandPath);
+    }
+
+    // ── #5392: assertNoLeakInLogs sees a needle in every carrier ──
+
+    /** @return array<string, array{0: \Closure}> */
+    public static function plantedLeaks(): array
+    {
+        $mailbox = self::MAILBOX;
+        $graphText = self::GRAPH_ERROR_TEXT;
+
+        return [
+            // The standard Laravel shape: json_encode renders a Throwable as {}.
+            'exception-in-context' => [fn () => Log::debug('fetch failed', [
+                'exception' => new \App\Services\Graph\GraphClientException('Graph API error: GET users/'.rawurlencode($mailbox).'/messages/MSG-1 returned 404', 404),
+            ])],
+            'previous-exception' => [fn () => Log::debug('fetch failed', [
+                'exception' => new \RuntimeException('wrapped', 0, new \RuntimeException($graphText)),
+            ])],
+            'private-object-property' => [fn () => Log::debug('fetch failed', [
+                'target' => new class($mailbox)
+                {
+                    public function __construct(private readonly string $mailbox) {}
+                },
+            ])],
+            // json_encode returns false on malformed UTF-8; the old check then read '' for context.
+            'invalid-utf8-beside-it' => [fn () => Log::debug('fetch failed', ['detail' => $mailbox."\xB1\x31"])],
+            // Processors fill extra; the old check never read it.
+            'record-extra' => [function () use ($mailbox) {
+                $logger = Log::getLogger();
+                $logger->pushProcessor(fn (LogRecord $r) => $r->with(extra: ['mailbox' => $mailbox]));
+                $logger->debug('fetch failed');
+                $logger->popProcessor();
+            }],
+            // Control rows: the base capture and json_encode check already saw these three.
+            'nested-array' => [fn () => Log::debug('fetch failed', ['a' => ['b' => ['c' => $mailbox]]])],
+            'facade-log' => [fn () => Log::log('debug', 'fetch failed', ['mailbox' => $mailbox])],
+            'stack-of-two' => [fn () => Log::stack(['single', 'stack'])->debug('fetch failed', ['mailbox' => $mailbox])],
+            // Loggers the config-only capture never saw (#5402).
+            'on-demand-logger' => [fn () => Log::build(['driver' => 'single', 'path' => storage_path('logs/email-item-attachment-capture-ondemand.log')])->debug('fetch failed', ['mailbox' => $mailbox])],
+            'unconfigured-channel' => [fn () => Log::channel('not-in-logging-config')->debug('fetch failed', ['mailbox' => $mailbox])],
+        ];
+    }
+
+    #[DataProvider('plantedLeaks')]
+    public function test_no_leak_check_catches_a_planted_needle(\Closure $plant): void
+    {
+        $this->assertNoLeakInLogs(); // nothing logged yet: the check passes on a clean capture
+
+        $plant();
+
+        $this->assertNotSame([], $this->records(), 'positive control: the planted record was captured');
+        $caught = false;
+        try {
+            $this->assertNoLeakInLogs();
+        } catch (\PHPUnit\Framework\ExpectationFailedException) {
+            $caught = true;
+        }
+        $this->assertTrue($caught, 'assertNoLeakInLogs missed a planted needle');
+    }
+
+    public function test_no_leak_check_catches_a_caller_supplied_needle(): void
+    {
+        Log::debug('fetch failed', ['exception' => new \RuntimeException(self::NON_GRAPH_DETAIL)]);
+
+        $this->assertNoLeakInLogs(); // not a default needle
+        $this->expectException(\PHPUnit\Framework\ExpectationFailedException::class);
+        $this->assertNoLeakInLogs([self::NON_GRAPH_DETAIL]);
+    }
+
+    // ── #5393: #5144 keeps throwFromGuzzle's record on every other Graph call ──
+
+    /** @return array<string, array{0: \Closure, 1: list<Response>, 2: string}> */
+    public static function otherGraphCallFailures(): array
+    {
+        $fail = fn () => new Response(500, [], json_encode(['error' => ['code' => 'InternalServerError', 'message' => self::GRAPH_ERROR_TEXT]]));
+
+        return [
+            'get' => [fn (GraphClient $g) => $g->get('users/MSG-OWNER/messages'), [$fail()], 'GET'],
+            'post' => [fn (GraphClient $g) => $g->post('users/MSG-OWNER/sendMail', ['x' => 1]), [$fail()], 'POST'],
+            'patch' => [fn (GraphClient $g) => $g->patch('users/MSG-OWNER/messages/MSG-1', ['isRead' => true]), [$fail()], 'PATCH'],
+            'delete' => [fn (GraphClient $g) => $g->delete('users/MSG-OWNER/messages/MSG-1'), [$fail()], 'DELETE'],
+            'getRaw' => [fn (GraphClient $g) => $g->getRaw('users/MSG-OWNER/photo/$value'), [$fail()], 'GET'],
+            'message read (expand)' => [fn (GraphClient $g) => $g->getMessageAttachments(self::MAILBOX, 'MSG-1'), [$fail()], 'GET'],
+            'calendar event' => [fn (GraphClient $g) => $g->getEvent('MSG-OWNER', 'EVT-1'), [$fail()], 'GET'],
+            // The nextLink page goes through requestAbsolute, which relies on throwFromGuzzle's default.
+            'nextLink page' => [fn (GraphClient $g) => $g->getAllPages('users/MSG-OWNER/messages'), [
+                new Response(200, ['Content-Type' => 'application/json'], json_encode(['value' => [], '@odata.nextLink' => 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/messages?$skip=10'])),
+                $fail(),
+            ], 'GET'],
+        ];
+    }
+
+    #[DataProvider('otherGraphCallFailures')]
+    public function test_other_graph_call_failure_still_writes_the_request_failed_error(\Closure $call, array $responses, string $method): void
+    {
+        $graph = $this->graph($responses);
+
+        try {
+            $call($graph);
+            $this->fail('the failing Graph call did not throw');
+        } catch (\App\Services\Graph\GraphClientException $e) {
+            $this->assertSame(500, $e->getHttpStatus());
+        }
+
+        $failed = array_values(array_filter($this->records(), fn (LogRecord $r) => $r->message === 'Graph API request failed'));
+        $this->assertCount(1, $failed, 'records: '.$this->describe($this->records()));
+        $this->assertSame(Level::Error, $failed[0]->level);
+        $this->assertSame([$method, 500], [$failed[0]->context['method'] ?? null, $failed[0]->context['status'] ?? null]);
+    }
+
+    public function test_item_value_read_failure_is_the_one_call_without_the_request_failed_error(): void
+    {
+        // Contrast row for the provider above: only the item $value read passes logFailure: false.
+        $graph = $this->graph([new Response(500, [], json_encode(['error' => ['message' => self::GRAPH_ERROR_TEXT]]))]);
+
+        try {
+            $graph->getMessageAttachmentRaw(self::MAILBOX, 'MSG-1', 'ATT-ITEM-1');
+            $this->fail('the failing $value read did not throw');
+        } catch (\App\Services\Graph\GraphClientException $e) {
+            $this->assertSame(500, $e->getHttpStatus());
+        }
+
+        $this->assertSame([], $this->records(), $this->describe($this->records()));
     }
 }
