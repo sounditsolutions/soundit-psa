@@ -60,14 +60,17 @@ class GraphWebhookController extends Controller
                     'subject' => $message['subject'] ?? '',
                 ]);
             } catch (GraphClientException $e) {
+                // #5731 / C-56: the HTTP status and the exception class only. The resource
+                // (users/{mailbox}/messages/{id}) and the exception message stay out of the record.
                 Log::error('[GraphWebhook] Failed to fetch message', [
-                    'resource' => $resource,
-                    'error' => $e->getMessage(),
+                    'status' => $e->getHttpStatus(),
+                    'exception' => $e::class,
                 ]);
             } catch (\Throwable $e) {
+                // #5731 / C-56: the exception class only. This arm's message is not GraphClient's
+                // (an import or database failure can carry any text), so it is not logged.
                 Log::error('[GraphWebhook] Failed to import message', [
-                    'resource' => $resource,
-                    'error' => $e->getMessage(),
+                    'exception' => $e::class,
                 ]);
             }
         }

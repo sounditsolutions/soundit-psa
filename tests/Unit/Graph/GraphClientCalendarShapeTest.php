@@ -58,6 +58,30 @@ class GraphClientCalendarShapeTest extends TestCase
         $client->getSchedule('charlie@soundit.co', ['charlie@soundit.co', 'justin@soundit.co'], '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z');
     }
 
+    /**
+     * #5732: through getSchedule(), the drift message a caller receives names the row and the
+     * request position, never the mailbox (the MCP calendar tool surfaces this message).
+     */
+    public function test_get_schedule_drift_messages_carry_no_mailbox(): void
+    {
+        $errored = $this->scheduleRow('b4k1.second@synthetic.test');
+        $errored['error'] = ['message' => 'x', 'responseCode' => 'y'];
+        $cases = [
+            'per-mailbox error' => [[$this->scheduleRow('b4k1.first@synthetic.test'), $errored], 'Microsoft Graph getSchedule returned an error for the mailbox in row 1; its availability is unknown, so the whole free/busy read is refused rather than shown as free.'],
+            'missing mailbox' => [[$this->scheduleRow('b4k1.first@synthetic.test')], 'Microsoft Graph getSchedule did not return availability for requested mailbox 1 (zero-based position in the request) — a grid missing a requested mailbox must not be read as complete.'],
+        ];
+        foreach ($cases as $name => [$rows, $expected]) {
+            $client = $this->client([new Response(200, [], json_encode(['value' => $rows]))]);
+            try {
+                $client->getSchedule('b4k1.first@synthetic.test', ['b4k1.first@synthetic.test', 'b4k1.second@synthetic.test'], '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z');
+                $this->fail("{$name}: expected drift");
+            } catch (GraphShapeDriftException $e) {
+                $this->assertSame($expected, $e->getMessage(), $name);
+                $this->assertStringNotContainsString('synthetic.test', $e->getMessage(), $name);
+            }
+        }
+    }
+
     public function test_get_schedule_screams_on_a_row_with_no_availability_data(): void
     {
         // A row carrying only scheduleId used to project as availability_view=null + busy_blocks=[]

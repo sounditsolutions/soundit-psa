@@ -33,13 +33,17 @@ final class CalendarGraphShapes
      *  - the top-level not the documented `{value:[...]}` object, or `value` not a genuine JSON list;
      *  - a row not an object, or lacking a non-empty string scheduleId;
      *  - ANY present per-mailbox `error` (freeBusyError) — availability UNKNOWN, refuse the whole
-     *    read and name the mailbox (Fork-3 "no partial grid");
+     *    read and name the row (Fork-3 "no partial grid");
      *  - a row missing the availability-bearing fields (a non-empty string availabilityView AND a
      *    list scheduleItems) — a row with only scheduleId must SCREAM, never project as
      *    availability_view=null + busy_blocks=[] (which reads as all-clear);
      *  - a malformed busy block (non-object, no string status, or a start/end that is not a
      *    dateTimeTimeZone object with a string dateTime);
      *  - a requested mailbox missing, an unrequested mailbox present, or a duplicate.
+     *
+     * #5732 / C-56: no message carries a mailbox address. A row is named by its zero-based
+     * position in the response's value list ("row N"), and a missing mailbox by its zero-based
+     * position in $requestedUpns, so a caller that holds the request can still tell which one.
      *
      * @param  list<string>  $requestedUpns  the mailboxes asked for (already allowlist-proven)
      * @return list<array<string, mixed>>
@@ -56,19 +60,21 @@ final class CalendarGraphShapes
         /** @var array<string, true> $seen scheduleId (lowercased) => present */
         $seen = [];
         $rows = [];
-        foreach ($response->value as $row) {
-            $rows[] = self::assertScheduleRow($row, $seen);
+        foreach ($response->value as $index => $row) {
+            $rows[] = self::assertScheduleRow($row, $index, $seen);
         }
 
         // Reconcile 1:1 with the requested set — no missing, no unrequested extras.
-        /** @var array<string, string> $requested lowercased => original */
+        // #5732: a missing mailbox is named by its zero-based position in $requestedUpns, never
+        // by its address.
+        /** @var array<string, int> $requested lowercased => first position in $requestedUpns */
         $requested = [];
-        foreach ($requestedUpns as $upn) {
-            $requested[mb_strtolower(trim((string) $upn))] = (string) $upn;
+        foreach (array_values($requestedUpns) as $i => $upn) {
+            $requested[mb_strtolower(trim((string) $upn))] ??= $i;
         }
-        foreach ($requested as $key => $upn) {
+        foreach ($requested as $key => $i) {
             if (! isset($seen[$key])) {
-                throw new GraphShapeDriftException("Microsoft Graph getSchedule did not return availability for requested mailbox {$upn} — a grid missing a requested mailbox must not be read as complete.");
+                throw new GraphShapeDriftException("Microsoft Graph getSchedule did not return availability for requested mailbox {$i} (zero-based position in the request) — a grid missing a requested mailbox must not be read as complete.");
             }
         }
         foreach (array_keys($seen) as $key) {
@@ -84,43 +90,48 @@ final class CalendarGraphShapes
      * @param  array<string, true>  $seen
      * @return array<string, mixed>
      */
-    private static function assertScheduleRow(mixed $row, array &$seen): array
+    private static function assertScheduleRow(mixed $row, int $index, array &$seen): array
     {
+        // #5732 / C-56: messages name the row by its zero-based position in the response's value
+        // list, never by its scheduleId (the mailbox address). GraphShapeDriftException is a
+        // GraphClientException, and a caller may surface its message.
+        $at = "row {$index}";
+
         if (! $row instanceof stdClass) {
-            throw new GraphShapeDriftException('Microsoft Graph getSchedule returned a scheduleInformation entry that is not an object.');
+            throw new GraphShapeDriftException("Microsoft Graph getSchedule returned a scheduleInformation entry ({$at}) that is not an object.");
         }
 
         $scheduleId = $row->scheduleId ?? null;
         if (! is_string($scheduleId) || trim($scheduleId) === '') {
-            throw new GraphShapeDriftException('Microsoft Graph getSchedule returned a scheduleInformation row without a string scheduleId — the mailbox it describes cannot be identified.');
+            throw new GraphShapeDriftException("Microsoft Graph getSchedule returned a scheduleInformation row ({$at}) without a string scheduleId — the mailbox it describes cannot be identified.");
         }
 
         // ANY present error means availability is UNKNOWN for that mailbox — never read it as free.
         if (isset($row->error) && $row->error !== null) {
-            throw new GraphShapeDriftException("Microsoft Graph getSchedule returned an error for mailbox {$scheduleId}; its availability is unknown, so the whole free/busy read is refused rather than shown as free.");
+            throw new GraphShapeDriftException("Microsoft Graph getSchedule returned an error for the mailbox in {$at}; its availability is unknown, so the whole free/busy read is refused rather than shown as free.");
         }
 
         // REQUIRE the availability-bearing fields. A row with only scheduleId would otherwise
         // project as availability_view=null + busy_blocks=[] and read as all-clear.
         if (! isset($row->availabilityView) || ! is_string($row->availabilityView) || $row->availabilityView === '') {
-            throw new GraphShapeDriftException("Microsoft Graph getSchedule row for {$scheduleId} has no non-empty availabilityView string — a degraded row must not read as free.");
+            throw new GraphShapeDriftException("Microsoft Graph getSchedule {$at} has no non-empty availabilityView string — a degraded row must not read as free.");
         }
         if (! isset($row->scheduleItems) || ! is_array($row->scheduleItems) || ! array_is_list($row->scheduleItems)) {
-            throw new GraphShapeDriftException("Microsoft Graph getSchedule row for {$scheduleId} has a scheduleItems that is not a JSON list.");
+            throw new GraphShapeDriftException("Microsoft Graph getSchedule {$at} has a scheduleItems that is not a JSON list.");
         }
         foreach ($row->scheduleItems as $item) {
-            self::assertScheduleItem($item, $scheduleId);
+            self::assertScheduleItem($item, $at);
         }
 
         // workingHours is OPTIONAL (a mailbox may omit it) but IS consumed by the projection, so a
         // present shape is proven; absence is not drift. (isset() is false for a null value.)
         if (isset($row->workingHours)) {
-            self::assertWorkingHours($row->workingHours, $scheduleId);
+            self::assertWorkingHours($row->workingHours, $at);
         }
 
         $key = mb_strtolower(trim($scheduleId));
         if (isset($seen[$key])) {
-            throw new GraphShapeDriftException("Microsoft Graph getSchedule returned mailbox {$scheduleId} more than once — an ambiguous grid must not be read as complete.");
+            throw new GraphShapeDriftException("Microsoft Graph getSchedule returned the mailbox in {$at} more than once — an ambiguous grid must not be read as complete.");
         }
         $seen[$key] = true;
 
@@ -128,22 +139,22 @@ final class CalendarGraphShapes
     }
 
     /** Validate the consumed nested shape of one busy block (status + start/end windows). */
-    private static function assertScheduleItem(mixed $item, string $scheduleId): void
+    private static function assertScheduleItem(mixed $item, string $at): void
     {
         if (! $item instanceof stdClass) {
-            throw new GraphShapeDriftException("Microsoft Graph getSchedule busy block for {$scheduleId} is not an object.");
+            throw new GraphShapeDriftException("Microsoft Graph getSchedule busy block in {$at} is not an object.");
         }
         if (! isset($item->status) || ! is_string($item->status)) {
-            throw new GraphShapeDriftException("Microsoft Graph getSchedule busy block for {$scheduleId} has no string status.");
+            throw new GraphShapeDriftException("Microsoft Graph getSchedule busy block in {$at} has no string status.");
         }
-        self::assertDateTimeTimeZone($item->start ?? null, $scheduleId, 'start');
-        self::assertDateTimeTimeZone($item->end ?? null, $scheduleId, 'end');
+        self::assertDateTimeTimeZone($item->start ?? null, $at, 'start');
+        self::assertDateTimeTimeZone($item->end ?? null, $at, 'end');
     }
 
-    private static function assertDateTimeTimeZone(mixed $dt, string $scheduleId, string $which): void
+    private static function assertDateTimeTimeZone(mixed $dt, string $at, string $which): void
     {
         if (! $dt instanceof stdClass || ! isset($dt->dateTime) || ! is_string($dt->dateTime)) {
-            throw new GraphShapeDriftException("Microsoft Graph getSchedule busy block for {$scheduleId} has a malformed {$which} (expected a dateTimeTimeZone object with a string dateTime).");
+            throw new GraphShapeDriftException("Microsoft Graph getSchedule busy block in {$at} has a malformed {$which} (expected a dateTimeTimeZone object with a string dateTime).");
         }
     }
 
@@ -155,28 +166,28 @@ final class CalendarGraphShapes
      * the whole block or any field (must-fix psa-abl0i.5 #3 "validate workingHours shape").
      * Source: MS Graph v1.0 workingHours — https://learn.microsoft.com/en-us/graph/api/resources/workinghours
      */
-    private static function assertWorkingHours(mixed $wh, string $scheduleId): void
+    private static function assertWorkingHours(mixed $wh, string $at): void
     {
         if (! $wh instanceof stdClass) {
-            throw new GraphShapeDriftException("Microsoft Graph getSchedule workingHours for {$scheduleId} is present but is not an object.");
+            throw new GraphShapeDriftException("Microsoft Graph getSchedule workingHours in {$at} is present but is not an object.");
         }
         if (isset($wh->daysOfWeek)) {
             if (! is_array($wh->daysOfWeek) || ! array_is_list($wh->daysOfWeek)) {
-                throw new GraphShapeDriftException("Microsoft Graph getSchedule workingHours.daysOfWeek for {$scheduleId} is not a JSON list.");
+                throw new GraphShapeDriftException("Microsoft Graph getSchedule workingHours.daysOfWeek in {$at} is not a JSON list.");
             }
             foreach ($wh->daysOfWeek as $day) {
                 if (! is_string($day)) {
-                    throw new GraphShapeDriftException("Microsoft Graph getSchedule workingHours.daysOfWeek for {$scheduleId} has a non-string day.");
+                    throw new GraphShapeDriftException("Microsoft Graph getSchedule workingHours.daysOfWeek in {$at} has a non-string day.");
                 }
             }
         }
         foreach (['startTime', 'endTime'] as $field) {
             if (isset($wh->{$field}) && ! is_string($wh->{$field})) {
-                throw new GraphShapeDriftException("Microsoft Graph getSchedule workingHours.{$field} for {$scheduleId} is present but is not a string.");
+                throw new GraphShapeDriftException("Microsoft Graph getSchedule workingHours.{$field} in {$at} is present but is not a string.");
             }
         }
         if (isset($wh->timeZone) && ! $wh->timeZone instanceof stdClass) {
-            throw new GraphShapeDriftException("Microsoft Graph getSchedule workingHours.timeZone for {$scheduleId} is present but is not an object.");
+            throw new GraphShapeDriftException("Microsoft Graph getSchedule workingHours.timeZone in {$at} is present but is not an object.");
         }
     }
 

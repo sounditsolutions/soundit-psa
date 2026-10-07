@@ -177,7 +177,8 @@ class CalendarGraphShapesTest extends TestCase
         CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['charlie@soundit.co']);
     }
 
-    public function test_per_mailbox_error_refuses_the_whole_read_and_names_it(): void
+    /** #5732: the per-mailbox error names the row by position, not by the mailbox address. */
+    public function test_per_mailbox_error_refuses_the_whole_read_and_names_its_row(): void
     {
         $row = $this->scheduleRow('justin@soundit.co');
         $row->error = (object) ['message' => 'ErrorMailboxMoveInProgress', 'responseCode' => 'MailboxMoveInProgress'];
@@ -188,7 +189,93 @@ class CalendarGraphShapesTest extends TestCase
             );
             $this->fail('Expected drift for a per-mailbox error');
         } catch (GraphShapeDriftException $e) {
-            $this->assertStringContainsString('justin@soundit.co', $e->getMessage());
+            $this->assertSame('Microsoft Graph getSchedule returned an error for the mailbox in row 1; its availability is unknown, so the whole free/busy read is refused rather than shown as free.', $e->getMessage());
+            $this->assertStringNotContainsString('justin', $e->getMessage());
+        }
+    }
+
+    /**
+     * #5732: [mutate row 1 (or the request), exact message]. Every getSchedule drift that used to
+     * interpolate {$upn} or {$scheduleId}; the row under test is the second of two, so 'row 1'
+     * and position 1 are the identifiers, and the mailbox is in no message.
+     *
+     * @return array<string, array{0: \Closure(object): void, 1: string}>
+     */
+    public static function rowDrifts(): array
+    {
+        $g = 'Microsoft Graph getSchedule ';
+        $wh = fn (array $fields) => function (object $row) use ($fields): void {
+            foreach ($fields as $k => $v) {
+                $row->workingHours->{$k} = $v;
+            }
+        };
+
+        return [
+            'per-mailbox error' => [fn (object $r) => $r->error = (object) ['responseCode' => 'ErrorMailboxMoveInProgress'], $g.'returned an error for the mailbox in row 1; its availability is unknown, so the whole free/busy read is refused rather than shown as free.'],
+            'no availabilityView' => [function (object $r): void {
+                unset($r->availabilityView);
+            }, $g.'row 1 has no non-empty availabilityView string — a degraded row must not read as free.'],
+            'scheduleItems not a list' => [fn (object $r) => $r->scheduleItems = (object) ['a' => 'b'], $g.'row 1 has a scheduleItems that is not a JSON list.'],
+            'busy block not an object' => [fn (object $r) => $r->scheduleItems = ['busy'], $g.'busy block in row 1 is not an object.'],
+            'busy block without status' => [fn (object $r) => $r->scheduleItems[0]->status = null, $g.'busy block in row 1 has no string status.'],
+            'busy block start malformed' => [fn (object $r) => $r->scheduleItems[0]->start = 'x', $g.'busy block in row 1 has a malformed start (expected a dateTimeTimeZone object with a string dateTime).'],
+            'busy block end malformed' => [fn (object $r) => $r->scheduleItems[0]->end = (object) ['timeZone' => 'UTC'], $g.'busy block in row 1 has a malformed end (expected a dateTimeTimeZone object with a string dateTime).'],
+            'workingHours not an object' => [fn (object $r) => $r->workingHours = 'x', $g.'workingHours in row 1 is present but is not an object.'],
+            'daysOfWeek not a list' => [$wh(['daysOfWeek' => (object) ['x' => 'monday']]), $g.'workingHours.daysOfWeek in row 1 is not a JSON list.'],
+            'non-string day' => [$wh(['daysOfWeek' => [1]]), $g.'workingHours.daysOfWeek in row 1 has a non-string day.'],
+            'startTime not a string' => [$wh(['startTime' => ['x']]), $g.'workingHours.startTime in row 1 is present but is not a string.'],
+            'endTime not a string' => [$wh(['endTime' => 1700]), $g.'workingHours.endTime in row 1 is present but is not a string.'],
+            'timeZone not an object' => [$wh(['timeZone' => 'UTC']), $g.'workingHours.timeZone in row 1 is present but is not an object.'],
+            'duplicate mailbox' => [fn (object $r) => $r->scheduleId = 'B4K1.First@Synthetic.test', $g.'returned the mailbox in row 1 more than once — an ambiguous grid must not be read as complete.'],
+            'missing requested mailbox' => [fn (object $r) => $r->scheduleId = 'b4k1.first@synthetic.test', ''],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('rowDrifts')]
+    public function test_a_row_drift_message_names_the_row_by_position_and_no_mailbox(\Closure $mutate, string $expected): void
+    {
+        $first = 'b4k1.first@synthetic.test';
+        $second = 'b4k1.second@synthetic.test';
+        $row = $this->scheduleRow($second);
+        $row = $this->wire($row); // decode first so nested fields are stdClass and mutable
+        $mutate($row);
+        if ($expected === '') {
+            // Only the mutated row is returned, and it answers for the first mailbox, so the second
+            // requested mailbox is missing: the reconciliation names it by its request position.
+            $rows = [$row];
+            $expected = 'Microsoft Graph getSchedule did not return availability for requested mailbox 1 (zero-based position in the request) — a grid missing a requested mailbox must not be read as complete.';
+        } else {
+            $rows = [$this->scheduleRow($first), $row];
+        }
+
+        try {
+            CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse($rows), [$first, $second]);
+            $this->fail('Expected drift');
+        } catch (GraphShapeDriftException $e) {
+            $this->assertSame($expected, $e->getMessage());
+            foreach (['@', 'synthetic.test', 'b4k1.', 'first', 'second'] as $needle) {
+                $this->assertStringNotContainsString($needle, $e->getMessage());
+            }
+        }
+    }
+
+    /** #5732: the row position counts the response's value list from zero, and so does the request position. */
+    public function test_the_row_and_request_positions_are_zero_based(): void
+    {
+        $row = $this->scheduleRow('b4k1.only@synthetic.test');
+        $row->error = (object) [];
+        try {
+            CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['b4k1.only@synthetic.test']);
+            $this->fail('Expected drift');
+        } catch (GraphShapeDriftException $e) {
+            $this->assertStringContainsString('in row 0;', $e->getMessage());
+        }
+
+        try {
+            CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([]), ['b4k1.only@synthetic.test', 'b4k1.other@synthetic.test']);
+            $this->fail('Expected drift');
+        } catch (GraphShapeDriftException $e) {
+            $this->assertStringContainsString('requested mailbox 0 (zero-based', $e->getMessage());
         }
     }
 

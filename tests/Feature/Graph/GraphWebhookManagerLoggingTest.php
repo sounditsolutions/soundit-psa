@@ -17,6 +17,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\FlattensLogContext;
 use Tests\TestCase;
 
 /**
@@ -27,9 +28,15 @@ use Tests\TestCase;
  * G-5: GraphClient runs over a scripted MockHandler, Http::preventStrayRequests() is on, and
  * every value is synthetic (G-13). Records are read from MessageLogged, which sees every level
  * and every channel written through Laravel's logger.
+ *
+ * #5733 / #5737: the 'any record' scan reads each context through FlattensLogContext, not
+ * json_encode(): a 'users/' value is matched unescaped and a Throwable in context is rendered
+ * (class, message, chain). test_the_any_record_scan_fails_on_a_planted_record shows both
+ * plants turn the scan red.
  */
 class GraphWebhookManagerLoggingTest extends TestCase
 {
+    use FlattensLogContext;
     use RefreshDatabase;
 
     private const MAILBOX = 'support@example.test';
@@ -111,11 +118,23 @@ class GraphWebhookManagerLoggingTest extends TestCase
         return $out;
     }
 
+    /** @return list<array{0: string, 1: list<string>}> [level message, needles] for each record that carries one */
+    private function recordsCarryingANeedle(): array
+    {
+        $out = [];
+        foreach ($this->logged as $m) {
+            $carried = self::carried($m->message.' '.self::flattenForScan($m->context));
+            if ($carried !== []) {
+                $out[] = ["{$m->level} {$m->message}", $carried];
+            }
+        }
+
+        return $out;
+    }
+
     private function assertNoNeedleInAnyRecord(): void
     {
-        foreach ($this->logged as $m) {
-            $this->assertSame([], self::carried($m->message.' '.json_encode($m->context)), "'{$m->message}' at {$m->level}");
-        }
+        $this->assertSame([], $this->recordsCarryingANeedle());
     }
 
     public function test_a_failed_create_logs_status_and_class_only(): void
@@ -194,5 +213,33 @@ class GraphWebhookManagerLoggingTest extends TestCase
         $old = json_encode(['mailbox' => self::MAILBOX, 'error' => 'Graph API error: POST subscriptions returned 400']);
         $this->assertContains(self::MAILBOX, self::carried((string) $old));
         $this->assertContains('Graph API error', self::carried((string) $old));
+    }
+
+    /**
+     * #5733 / #5737 positive control: after a real failing create, a planted record with the
+     * endpoint in its context, or with a Guzzle exception object in its context, turns the
+     * 'any record' scan red. json_encode() sees neither: it escapes the slash, and it renders
+     * the exception as {}.
+     */
+    public function test_the_any_record_scan_fails_on_a_planted_record(): void
+    {
+        $manager = $this->manager(self::graphError(400));
+        try {
+            $manager->createSubscription();
+        } catch (GraphClientException) {
+        }
+        $this->assertSame([], $this->recordsCarryingANeedle(), 'clean before the plant');
+        $real = count($this->logged);
+
+        $endpoint = ['method' => 'POST', 'status' => 400, 'endpoint' => 'users/'.self::SUBSCRIPTION_ID.'/x'];
+        $thrown = ['method' => 'POST', 'status' => 0, 'error' => new \GuzzleHttp\Exception\ConnectException(
+            'refused for https://example.test/v1.0/users/'.self::SUBSCRIPTION_ID, new \GuzzleHttp\Psr7\Request('POST', 'subscriptions'),
+        )];
+        foreach (['endpoint in context' => $endpoint, 'Throwable in context' => $thrown] as $name => $context) {
+            $this->assertNotContains('users/', self::carried((string) json_encode($context)), "{$name}: json_encode cannot see it");
+            $this->logged = array_slice($this->logged, 0, $real);
+            $this->logged[] = new MessageLogged('error', 'Graph API request failed', $context);
+            $this->assertSame([['error Graph API request failed', ['users/']]], $this->recordsCarryingANeedle(), $name);
+        }
     }
 }

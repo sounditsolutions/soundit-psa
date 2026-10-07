@@ -39,15 +39,16 @@ use Tests\TestCase;
 /**
  * GraphTokenRefreshFailedException carries getToken()'s failure twice: as the public
  * $tokenFailure and, since #5461, as getPrevious(). Both reach whatever reads the exception
- * (a reporter walks getPrevious()), so on each of getToken()'s three failure arms neither
+ * (a reporter walks getPrevious()), so on each of getToken()'s four failure arms neither
  * message may carry the token URL, the tenant, the secret, Graph's 401 text or the identity
  * provider's text (#5450, C-56).
  *
- * getToken() throws a GraphClientException on four arms (#5511): a GuzzleException with a
- * response (message "(HTTP n)"), a GuzzleException without one (message "(<exception class>)"),
- * a returned response without access_token (a fixed string; #5620), and a returned response
- * whose access_token is not a string or whose expires_in is not numeric (a fixed string naming
- * the field; #5659). tokenFailures() names the arm of each case; the response arm gets two
+ * getToken() throws a GraphClientException on four arms (#5511), and their messages differ
+ * (#5741): a GuzzleException with a response (message "(HTTP n)", the only arm with a status),
+ * a GuzzleException without one (message "(<exception class>)"), a returned response without
+ * access_token (a fixed string with no status; #5620), and a returned response whose
+ * access_token is not a string or whose expires_in is not numeric (a fixed string with no
+ * status that names the field; #5659). tokenFailures() names the arm of each case; the response arm gets two
  * inputs, the no-response arm three, built by Guzzle's own curl handler (#5616), and the
  * malformed arm five.
  *
@@ -109,9 +110,10 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
         //    it, so a raw request that escapes the scripted handler fails instead of leaving the
         //    box. That is asserted here.
         // 3. client() checks, before the first request, that both of GraphClient's constructor
-        //    clients carry the scripted handler. A test that makes requests checks again after
-        //    them through assertScriptedHandler() (refreshFailure() does so for every refresh
-        //    case; #5669). The per-call clients are covered by
+        //    clients carry the scripted handler. Every test that builds a client and makes
+        //    requests checks again after them through assertScriptedHandler(): refreshFailure()
+        //    for every refresh case (#5669), and the redirect, not-cached, isHealthy and
+        //    per-call tests directly (#5740). The per-call clients are covered by
         //    test_the_per_call_clients_use_the_scripted_handler (#5612).
         Http::preventStrayRequests();
         $this->assertSame(
@@ -459,7 +461,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('tokenFailures')]
-    public function test_the_token_failure_message_is_status_only_on_each_get_token_arm(\Closure $tokenFailure, string $expected, string $arm): void
+    public function test_the_token_failure_message_has_its_arms_shape_on_each_get_token_arm(\Closure $tokenFailure, string $expected, string $arm): void
     {
         $e = $this->refreshFailure($tokenFailure());
 
@@ -541,6 +543,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
         $this->assertCount(2, $this->tokenRequests(), 'followed: the 302 and the request to its Location');
         $this->assertSame('hop=1', $this->tokenRequests()[1]['request']->getUri()->getQuery());
         $this->assertSame('Bearer '.self::ISSUED_ACCESS_FIXTURE, end($this->history)['request']->getHeaderLine('Authorization'));
+        $this->assertScriptedHandler($graph, 'followed: after the requests');
 
         foreach ([
             'redirect loop' => [array_fill(0, 6, new Response(302, ['Location' => self::TOKEN_URL], '')), TooManyRedirectsException::class],
@@ -556,6 +559,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
                 $this->assertSame('response', self::armOf($e->tokenFailure->getMessage()), $name);
             }
             $this->assertCount(count($responses), $this->tokenRequests(), "{$name}: positive control: every hop was sent");
+            $this->assertScriptedHandler($graph, "{$name}: after the requests");
             $this->assertSame(
                 ['Graph API token request failed', ['status' => 302, 'exception' => $class]],
                 [$this->logs->getRecords()[0]->message, $this->logs->getRecords()[0]->context],
@@ -623,6 +627,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
             $this->assertFalse($graph->isHealthy(), $name);
             $this->assertCount(1, $this->tokenRequests(), "{$name}: positive control: the token request ran");
             $this->assertFalse($this->cache->has('graph_api_token'), "{$name}: nothing cached");
+            $this->assertScriptedHandler($graph, "{$name}: after the token request");
         }
     }
 
@@ -630,7 +635,9 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
      * #5517 positive control: the secret needle can fire. On the response arm the exception
      * getToken() caught (read from the outermost layer of the client's stack, #5617) carries
      * the secret, the tenant and the identity provider's text, so copying that message anywhere
-     * a test reads trips the scan.
+     * a test reads trips the scan. On the malformed arm nothing is thrown, so the control reads
+     * the 200 body getToken() decoded: it echoes the secret and carries the identity provider's
+     * marker, and the array-token case carries MALFORMED_VALUE_MARKER (#5727).
      */
     public function test_the_token_fixtures_carry_the_secret_into_what_get_token_catches(): void
     {
@@ -641,6 +648,18 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
 
             if ($arm === 'no-token' || $arm === 'malformed') {
                 $this->assertNull($token['error'], $name);
+                if ($arm === 'malformed') {
+                    // #5727: the decoded 200 body carries the needles the malformed-arm scans look for.
+                    $body = (string) $token['response']->getBody();
+                    $this->assertSame(200, $token['response']->getStatusCode(), $name);
+                    $carried = ['client_secret='.self::SECRET_FIXTURE, self::IDP_MARKER];
+                    if (str_contains($name, 'array access_token')) {
+                        $carried[] = self::MALFORMED_VALUE_MARKER;
+                    }
+                    foreach ($carried as $needle) {
+                        $this->assertTrue(str_contains($body, $needle), "{$name}: the malformed 200 body carries '{$needle}'");
+                    }
+                }
 
                 continue;
             }
@@ -667,8 +686,10 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
     }
 
     /**
-     * #5516 / #5512: read every record on each arm. getToken()'s ERROR record is status-only
-     * (none on the no-token arm), and GraphClient's refresh-failure record carries exactly
+     * #5516 / #5512: read every record on each arm. getToken()'s ERROR record is the one the
+     * provider pins for the arm: status and exception class on the response and no-response
+     * arms (status null on the latter), status, field and PHP type on the malformed arm, and
+     * none on the no-token arm (#5741). GraphClient's refresh-failure record carries exactly
      * method, status 401 and token_refresh 'failed'. Records are scanned as Laravel renders
      * them, not as json_encode() sees them (#5510).
      *
@@ -708,7 +729,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('tokenFailures')]
-    public function test_the_token_failure_is_chained_as_previous_with_a_status_only_message(\Closure $tokenFailure, string $expected): void
+    public function test_the_token_failure_is_chained_as_previous_with_its_arms_message(\Closure $tokenFailure, string $expected): void
     {
         $e = $this->refreshFailure($tokenFailure());
 
