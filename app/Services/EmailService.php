@@ -1174,19 +1174,33 @@ PROMPT;
             }
         }
 
+        // #5394: a failed FIRST read is retried once, after the outermost transaction commits.
+        // Only that retry is off the lock: the first read above still runs inside
+        // autoCreateTicketFromEmail's transaction, under its lockForUpdate on the email row, so
+        // it holds that lock through Graph's 429 backoff or timeouts, as does the read
+        // linkEmailToTicket makes on the vendor-dedup branch above. The retry itself holds no
+        // lock during its Graph read.
+        //
+        // #5453: the retry is registered BEFORE linkEmailToTicket registers its own after-commit
+        // work (the RunTechnicianLoop dispatch and notifyEmailAdded). After-commit callbacks run
+        // in registration order, so that work runs after the retry has finished and sees the
+        // retry's attachments, description_html and note body_html, as it sees a first-read
+        // success's. The note id and the baseline the retry checks against are not known yet;
+        // they are filled in below, before commit, and read when the callback runs.
+        $retry = null;
+        if ($messageReadFailed) {
+            $retry = (object) ['emailId' => $email->id, 'ticketId' => $ticket->id, 'noteId' => null, 'baseline' => null];
+            DB::afterCommit(fn () => $this->retryMessageReadAfterCommit(
+                $retry->emailId, $retry->ticketId, $retry->noteId, $retry->baseline ?? [],
+            ));
+        }
+
         // null when no download was attempted above (no graph_id or no mailbox). An array
         // (possibly empty) otherwise, so linkEmailToTicket does not fetch (#5143); after a
         // failed message read that array is [] and the read is retried after commit (#5394).
         $note = $this->linkEmailToTicket($email, $ticket, $emailAttachments ?? null);
-
-        // #5394: the retry of a failed message read runs after the outermost transaction
-        // commits, so it never holds the email row lock (lockForUpdate in
-        // autoCreateTicketFromEmail) through Graph's 429 backoff or timeouts.
-        if ($messageReadFailed) {
-            $emailId = $email->id;
-            $ticketId = $ticket->id;
-            $noteId = $note?->id;
-            DB::afterCommit(fn () => $this->retryMessageReadAfterCommit($emailId, $ticketId, $noteId));
+        if ($retry !== null) {
+            $retry->noteId = $note?->id;
         }
 
         // psa-vggw: link the sender's device(s) onto the ticket at creation so it
@@ -1194,6 +1208,12 @@ PROMPT;
         // a vendor-specific hostname link (e.g. Zorus, above) already attached an asset;
         // the later async triage run then simply skips an already-linked ticket.
         AssetMatcher::matchAtIntake($ticket);
+
+        // #5447/#5460: what the retry must still find before it writes, taken as the last
+        // write of this transaction.
+        if ($retry !== null) {
+            $retry->baseline = $this->retryBaseline($retry->ticketId, $retry->noteId);
+        }
 
         Log::info('[EmailService] Auto-created ticket from email', [
             'email_id' => $email->id,
@@ -1229,34 +1249,164 @@ PROMPT;
     }
 
     /**
-     * #5394: the one retry of a new ticket's failed message read, run after commit, with no
-     * email row lock held. A successful read goes through the same steps as a first-read
-     * success: attachToNewTicket, then the note's body_html as linkEmailToTicket builds it
-     * and the note links. A read that fails again, or returns no attachments, changes no data;
-     * the failed read writes downloadEmailAttachments' own records.
+     * #5447/#5460: the state the after-commit retry must still find before it writes: the
+     * ticket's description and description_html, the client note's ticket, email, body and
+     * body_html, and the ids of the attachments linked to that ticket or note. Null when the
+     * ticket no longer exists (deleted or soft-deleted). With $lock, the ticket and note rows
+     * are read FOR UPDATE, so no other write to those rows lands until the caller's transaction
+     * ends. The attachment ids are read without a lock: a second retry for the same email is
+     * kept out by the email row lock the caller takes first, a writer that does not take that
+     * lock (BackfillEmailInlineImages) is not.
+     *
+     * @return array{ticket: array<string, mixed>, note: array<string, mixed>|null, attachments: list<int>}|null
      */
-    private function retryMessageReadAfterCommit(int $emailId, int $ticketId, ?int $noteId): void
+    private function retryState(int $ticketId, ?int $noteId, bool $lock = false): ?array
     {
+        $ticket = DB::table('tickets')->where('id', $ticketId)->whereNull('deleted_at')
+            ->when($lock, fn ($q) => $q->lockForUpdate())
+            ->first(['description', 'description_html']);
+        if ($ticket === null) {
+            return null;
+        }
+
+        $note = $noteId === null ? null : DB::table('ticket_notes')->where('id', $noteId)->whereNull('deleted_at')
+            ->when($lock, fn ($q) => $q->lockForUpdate())
+            ->first(['ticket_id', 'email_id', 'body', 'body_html']);
+
+        $attachments = \App\Models\Attachment::query()
+            ->where(fn ($q) => $q->where(fn ($t) => $t->where('attachable_type', Ticket::class)->where('attachable_id', $ticketId))
+                ->when($noteId !== null, fn ($n) => $n->orWhere(fn ($t) => $t->where('attachable_type', TicketNote::class)->where('attachable_id', $noteId))))
+            ->orderBy('id')->pluck('id')->map(fn ($id) => (int) $id)->all();
+
+        return [
+            'ticket' => (array) $ticket,
+            'note' => $note === null ? null : (array) $note,
+            'attachments' => $attachments,
+        ];
+    }
+
+    /**
+     * The baseline for retryState: taken inside the creating transaction, after every write
+     * createTicketFromLockedEmail makes to the ticket and note.
+     *
+     * @return array<string, mixed>
+     */
+    private function retryBaseline(int $ticketId, ?int $noteId): array
+    {
+        return $this->retryState($ticketId, $noteId) ?? [];
+    }
+
+    /**
+     * Why the retry must not write, or null when the email is still linked to the ticket and the
+     * ticket, note and their attachments are exactly as the creating transaction left them.
+     */
+    private function retryChange(?Email $email, int $ticketId, ?int $noteId, array $baseline, bool $lock): ?string
+    {
+        if ($email === null || (int) $email->ticket_id !== $ticketId) {
+            return 'email_relinked';
+        }
+        $now = $this->retryState($ticketId, $noteId, $lock);
+        if ($now === null) {
+            return 'ticket_gone';
+        }
+        if ($now['note'] === null) {
+            return 'client_note_missing';
+        }
+        foreach (['ticket' => 'ticket_changed', 'note' => 'note_changed', 'attachments' => 'attachments_changed'] as $key => $reason) {
+            if (($baseline[$key] ?? null) !== $now[$key]) {
+                return $reason;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Ids of the Attachment rows created while a retry runs; null when none is running. A retry
+     * saves and restores the value around itself, so one nested inside another's Graph read
+     * (as a second delivery could be) leaves the outer one's list intact.
+     */
+    private static ?array $retryStoredIds = null;
+
+    /** The event dispatcher the created-listener is on; re-registered when it is replaced. */
+    private static ?\WeakReference $retryListenerDispatcher = null;
+
+    /**
+     * #5394: the one retry of a new ticket's failed message read, run after commit. Its Graph
+     * read holds no lock and no transaction. What it writes on success matches a first-read
+     * success: attachToNewTicket, then the note's body_html as linkEmailToTicket builds it
+     * (forward provenance line included) and the note links. The after-commit RunTechnicianLoop
+     * dispatch and notifyEmailAdded run after it (see createTicketFromLockedEmail, #5453).
+     *
+     * #5447/#5460: it writes only if, re-checked under lockForUpdate on the email, ticket and
+     * note rows in one short transaction, the email is still linked to the ticket and the
+     * ticket's description/description_html, the note's ticket/email/body/body_html and the
+     * attachments linked to either are exactly as the creating transaction left them
+     * ($baseline). The same check runs once, unlocked, before the Graph read, so a retry that
+     * would be refused anyway makes no Graph call. On a change it writes nothing and logs one
+     * status-only WARNING naming the reason. Run a second time, it finds the first run's
+     * attachments linked and refuses, so it creates no duplicate rows or files.
+     *
+     * #5454: the Attachment rows and files its read stores are force-deleted (row and file)
+     * when it then links nothing: a refused re-check, a failed (rolled back) link transaction,
+     * or a throw while storing. A force-delete that itself fails is not retried; the WARNING
+     * carries the count actually discarded. A read that fails again, or returns no
+     * attachments, stores nothing and writes nothing here; downloadEmailAttachments writes the
+     * failed read's own records.
+     *
+     * @param  array<string, mixed>  $baseline  retryBaseline() as the creating transaction left it
+     */
+    private function retryMessageReadAfterCommit(int $emailId, int $ticketId, ?int $noteId, array $baseline): void
+    {
+        $stage = 'lookup';
+        $committed = false;
+        $outerStoredIds = self::$retryStoredIds;
+        self::$retryStoredIds = [];
         try {
             $email = Email::find($emailId);
-            $ticket = Ticket::find($ticketId);
-            $note = $noteId !== null ? TicketNote::find($noteId) : null;
             $mailbox = Setting::getValue('graph_mailbox');
-            if (! $email || ! $ticket || ! $email->graph_id || ! $mailbox) {
+            if (! $email || ! $email->graph_id || ! $mailbox) {
+                return;
+            }
+            $change = $this->retryChange($email, $ticketId, $noteId, $baseline, lock: false);
+            if ($change !== null) {
+                $this->warnRetrySkipped($emailId, $ticketId, $change);
+
                 return;
             }
 
+            $stage = 'download';
+            $dispatcher = \App\Models\Attachment::getEventDispatcher();
+            if ($dispatcher !== null && self::$retryListenerDispatcher?->get() !== $dispatcher) {
+                self::$retryListenerDispatcher = \WeakReference::create($dispatcher);
+                \App\Models\Attachment::created(function (\App\Models\Attachment $a): void {
+                    if (self::$retryStoredIds !== null) {
+                        self::$retryStoredIds[] = $a->id;
+                    }
+                });
+            }
             $attachmentService = app(AttachmentService::class);
             $attachments = $attachmentService->downloadEmailAttachments($email, app(GraphClient::class), $mailbox) ?? [];
             if ($attachments === []) {
                 return;
             }
 
-            DB::transaction(function () use ($email, $ticket, $note, $attachments, $attachmentService): void {
-                $this->attachToNewTicket($email, $ticket, $attachments, $attachmentService);
-                if ($note === null) {
-                    return;
+            $stage = 'link';
+            $change = DB::transaction(function () use ($emailId, $ticketId, $noteId, $baseline, $attachments, $attachmentService, &$committed): ?string {
+                // First in this transaction's after-commit order: a later callback that throws
+                // after the commit must not discard attachments that are now linked.
+                DB::afterCommit(function () use (&$committed): void {
+                    $committed = true;
+                });
+                $email = Email::whereKey($emailId)->lockForUpdate()->first();
+                $change = $this->retryChange($email, $ticketId, $noteId, $baseline, lock: true);
+                if ($change !== null) {
+                    return $change;
                 }
+                $ticket = Ticket::findOrFail($ticketId);
+                $note = TicketNote::findOrFail($noteId);
+
+                $this->attachToNewTicket($email, $ticket, $attachments, $attachmentService);
 
                 $bodyHtml = $this->inlineBodyHtml($email, $attachments, $attachmentService);
                 $forward = $this->forwardProvenance($email, $ticket);
@@ -1270,16 +1420,61 @@ PROMPT;
                 foreach ($attachments as $attachment) {
                     $attachmentService->linkTo($attachment, 'App\\Models\\TicketNote', $note->id);
                 }
+
+                return null;
             });
+            if ($change !== null) {
+                $this->warnRetrySkipped($emailId, $ticketId, $change, $this->discardRetryStored());
+            }
         } catch (\Throwable $e) {
-            // The ticket is already committed; a failed retry must not fail the email. C-56:
-            // ids and the exception class only, never the message.
-            Log::warning('[EmailService] Attachment re-read after ticket creation failed', [
+            // The ticket is already committed; a failed retry must not fail the email. A failed
+            // Graph read never reaches here: downloadEmailAttachments catches it, logs it and
+            // returns null. This arm is a throw from a lookup, from storing what the read
+            // returned, or from the link transaction (rolled back). C-56: ids, the stage and
+            // the exception class only, never the message.
+            // linked is true only when the link transaction had committed before the throw (a
+            // later after-commit callback threw); then nothing is discarded.
+            $discarded = $committed ? 0 : $this->discardRetryStored();
+            Log::warning('[EmailService] Attachment retry after ticket creation threw', [
                 'email_id' => $emailId,
                 'ticket_id' => $ticketId,
+                'stage' => $stage,
+                'linked' => $committed,
                 'exception' => $e::class,
+                'discarded_attachments' => $discarded,
             ]);
+        } finally {
+            self::$retryStoredIds = $outerStoredIds;
         }
+    }
+
+    /** Force-deletes (row and stored file) the Attachment rows this retry stored; returns how many. */
+    private function discardRetryStored(): int
+    {
+        $ids = self::$retryStoredIds ?? [];
+        self::$retryStoredIds = [];
+        $discarded = 0;
+        foreach (\App\Models\Attachment::withTrashed()->whereIn('id', $ids)->get() as $attachment) {
+            try {
+                $attachment->forceDelete();
+                $discarded++;
+            } catch (\Throwable) {
+                // Counted as not discarded; the WARNING carries the count.
+            }
+        }
+
+        return $discarded;
+    }
+
+    /** C-56: status only — ids, the reason code and a count. No mailbox, body or vendor text. */
+    private function warnRetrySkipped(int $emailId, int $ticketId, string $reason, int $discarded = 0): void
+    {
+        Log::warning('[EmailService] Attachment retry after ticket creation skipped; ticket state changed since creation', [
+            'email_id' => $emailId,
+            'ticket_id' => $ticketId,
+            'reason' => $reason,
+            'discarded_attachments' => $discarded,
+        ]);
     }
 
     /**
