@@ -12,10 +12,13 @@ use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Cache\ArrayStore;
 use Illuminate\Cache\Repository;
+use Illuminate\Log\Events\MessageLogged;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Monolog\Handler\TestHandler;
 use Monolog\LogRecord;
+use Tests\Support\FlattensLogContext;
 use Tests\TestCase;
 
 /**
@@ -24,12 +27,18 @@ use Tests\TestCase;
  * logs that message, so it must not carry what GraphClient's own record leaves out.
  * getHttpStatus() and getResponseBody() are unchanged.
  *
- * #5661: throwFromGuzzle's record on a failure with no response (status 0) is pinned too.
+ * #5661: throwFromGuzzle's record on a failure with no response (status 0) is pinned too: the
+ * method, status 0 and the Guzzle exception class (#5673), nothing else. It is read from the
+ * configured channels' TestHandler and from a MessageLogged listener, which also sees an
+ * on-demand or stacked logger (#5742, as #5622), and scanned through FlattensLogContext so a
+ * 'users/' value or a Throwable in context is visible (#5733).
  *
  * G-5: a scripted MockHandler, Http::preventStrayRequests(), synthetic values only (G-13).
  */
 class GraphClientExceptionMessageTest extends TestCase
 {
+    use FlattensLogContext;
+
     private const MAILBOX = 'support@example.test';
 
     private const GRAPH_ERROR_TEXT = 'B4J-SYNTHETIC-GRAPH-ERROR-TEXT';
@@ -38,6 +47,9 @@ class GraphClientExceptionMessageTest extends TestCase
     private array $history = [];
 
     private TestHandler $logs;
+
+    /** @var list<MessageLogged> every record Laravel's Logger wrapper wrote, on any logger (#5742) */
+    private array $logged = [];
 
     protected function setUp(): void
     {
@@ -52,6 +64,9 @@ class GraphClientExceptionMessageTest extends TestCase
             ]]);
             Log::forgetChannel($name);
         }
+        Event::listen(MessageLogged::class, function (MessageLogged $m): void {
+            $this->logged[] = $m;
+        });
     }
 
     private function graph(Response|\Throwable ...$responses): GraphClient
@@ -156,11 +171,29 @@ class GraphClientExceptionMessageTest extends TestCase
         }
     }
 
+    /** @return list<array{0: string, 1: list<string>}> [level message, needles] for each MessageLogged record that carries one */
+    private function recordsCarryingANeedle(): array
+    {
+        $out = [];
+        foreach ($this->logged as $m) {
+            $carried = self::carried($m->message.' '.self::flattenForScan($m->context));
+            if (str_contains(self::flattenForScan($m->context), 'cURL')) {
+                $carried[] = 'cURL';
+            }
+            if ($carried !== []) {
+                $out[] = ["{$m->level} {$m->message}", $carried];
+            }
+        }
+
+        return $out;
+    }
+
     /**
-     * #5661: on a failure with no response, throwFromGuzzle's record is status-only like the
-     * response arm's; Guzzle's message (cURL text and the request URI) is in no part of it.
+     * #5661 / #5673: on a failure with no response, throwFromGuzzle writes exactly one record:
+     * the method, status 0 and the Guzzle exception class. Guzzle's message (cURL text and the
+     * request URI) is in no part of it, and no other record is written on any logger (#5742).
      */
-    public function test_the_no_response_record_is_status_only(): void
+    public function test_the_no_response_record_is_method_status_zero_and_exception_class(): void
     {
         $graph = $this->graph(new ConnectException('cURL error 7: refused for https://graph.microsoft.com/v1.0/users/'.self::MAILBOX.'/messages/MSG-1', new Request('GET', 'x')));
         try {
@@ -174,9 +207,39 @@ class GraphClientExceptionMessageTest extends TestCase
             [['ERROR', 'Graph API request failed', ['method' => 'GET', 'status' => 0, 'exception' => ConnectException::class]]],
             array_map(fn (LogRecord $r) => [$r->level->getName(), $r->message, $r->context], $records),
         );
-        $this->assertSame([], self::carried(json_encode($records[0]->toArray()) ?: ''));
-        $this->assertFalse(str_contains(json_encode($records[0]->toArray()) ?: '', 'cURL'));
+        $this->assertSame(
+            [['error', 'Graph API request failed', ['method' => 'GET', 'status' => 0, 'exception' => ConnectException::class]]],
+            array_map(fn (MessageLogged $m) => [$m->level, $m->message, $m->context], $this->logged),
+            'every record on any logger (#5742)',
+        );
+        $this->assertSame([], $this->recordsCarryingANeedle());
         $this->assertNotNull($this->history[0]['error'] ?? null, 'positive control: the request was rejected without a response');
+    }
+
+    /**
+     * #5742 positive control: a record written through an on-demand stack, outside the
+     * configured channels, reaches the MessageLogged list and the scan.
+     */
+    public function test_the_record_list_sees_an_on_demand_logger(): void
+    {
+        Log::stack(['single'])->error('Graph API request failed', ['endpoint' => 'users/'.self::MAILBOX.'/messages']);
+        $this->assertSame(['error Graph API request failed'], array_map(fn (MessageLogged $m) => "{$m->level} {$m->message}", $this->logged));
+        $this->assertSame([['error Graph API request failed', [self::MAILBOX, 'support@', 'users/']]], $this->recordsCarryingANeedle());
+    }
+
+    /**
+     * #5733 positive control: the scan goes red on the endpoint in a context and on the Guzzle
+     * exception in a context. json_encode() sees neither ('\/' escaping; a Throwable is {}).
+     */
+    public function test_the_record_scan_fails_on_an_endpoint_or_a_throwable_in_context(): void
+    {
+        $endpoint = ['method' => 'GET', 'status' => 0, 'endpoint' => 'users/x/messages'];
+        $thrown = ['method' => 'GET', 'status' => 0, 'error' => new ConnectException('cURL error 7: refused for users/x/messages', new Request('GET', 'x'))];
+        foreach (['endpoint' => [$endpoint, ['users/']], 'Throwable' => [$thrown, ['users/', 'cURL']]] as $name => [$context, $expected]) {
+            $this->assertSame([], self::carried((string) json_encode($context)), "{$name}: json_encode cannot see it");
+            $this->logged = [new MessageLogged('error', 'Graph API request failed', $context)];
+            $this->assertSame([['error Graph API request failed', $expected]], $this->recordsCarryingANeedle(), $name);
+        }
     }
 
     /** Control: the needle scan fires on the message shape #5679 removed. */

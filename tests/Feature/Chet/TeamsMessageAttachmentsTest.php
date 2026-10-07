@@ -64,6 +64,9 @@ class TeamsMessageAttachmentsTest extends TestCase
 
     private ?MockHandler $queue = null;
 
+    /** The client graph() installed; mcp() checks the container still resolves it (#5726). */
+    private ?GraphClient $scripted = null;
+
     /** @var list<MessageLogged> every record Laravel's Logger wrapper wrote, on any logger (#5622) */
     private array $logged = [];
 
@@ -204,7 +207,9 @@ class TeamsMessageAttachmentsTest extends TestCase
         ]);
         OperatorInbox::create(['conversation_id' => self::CHAT, 'text' => 'legacy row', 'ts' => now()]);
 
+        $this->graph(); // #5726: the poll reads the inbox rows only; the scripted client sees no request
         $out = $this->decoded($this->mcp('poll_operator_messages', [], ['poll_operator_messages']));
+        $this->assertSame([], $this->history, 'the poll made no token or Graph request');
         [$withImage, $legacy] = $out['messages'];
 
         $this->assertSame([[
@@ -571,6 +576,29 @@ class TeamsMessageAttachmentsTest extends TestCase
     }
 
     /** #5622 control: an on-demand logger bypasses the TestHandler; the MessageLogged list sees it. */
+    /**
+     * #5726 positive control: a GraphClient rebound after graph() (so the tool would read
+     * through a client with no scripted queue) fails mcp()'s guard before the request is sent.
+     */
+    public function test_the_per_call_guard_fails_when_the_tool_would_resolve_another_client(): void
+    {
+        $this->graph();
+        $this->app->instance(GraphClient::class, new GraphClient([
+            'tenant_id' => 'synthetic-tenant', 'client_id' => self::CLIENT_ID, 'client_secret' => self::SECRET_FIXTURE,
+            'request_timeout' => 5, 'token_timeout' => 5,
+        ], cache()->store('array')));
+
+        try {
+            $this->fetch([]);
+        } catch (\PHPUnit\Framework\AssertionFailedError $e) {
+            $this->assertStringContainsString('the tool resolves this client (before the tool request)', $e->getMessage());
+            $this->assertSame(0, McpAuditLog::count(), 'no tool request was sent');
+
+            return;
+        }
+        $this->fail('the guard did not fire on a rebound GraphClient');
+    }
+
     public function test_the_record_list_sees_an_on_demand_logger(): void
     {
         $logs = $this->captureLogs();
@@ -819,7 +847,7 @@ class TeamsMessageAttachmentsTest extends TestCase
         $stack = HandlerStack::create($this->queue);
         $stack->push(Middleware::history($this->history));
 
-        $this->app->instance(GraphClient::class, $graph = new GraphClient([
+        $this->app->instance(GraphClient::class, $this->scripted = $graph = new GraphClient([
             'tenant_id' => 'synthetic-tenant',
             'client_id' => self::CLIENT_ID,
             'client_secret' => self::SECRET_FIXTURE,
@@ -835,9 +863,8 @@ class TeamsMessageAttachmentsTest extends TestCase
             $client = (new \ReflectionProperty(GraphClient::class, $property))->getValue($graph);
             $this->assertSame($stack, $client->getConfig('handler'), "GraphClient::\${$property} must use the scripted handler");
         }
-        // #5668: that the fetcher resolves this instance is shown by the success-path test
-        // (test_fetch_returns_a_downscaled_base64_image_from_the_hosted_content), which reads
-        // its paths from $this->history and requires the scripted queue to be consumed.
+        // #5668 / #5726: that the tool resolves this instance is checked per call, in mcp(),
+        // just before and just after every tool request, in every test that installs a client.
         $this->assertSame([], $this->history, 'nothing was sent while building the client');
     }
 
@@ -854,10 +881,24 @@ class TeamsMessageAttachmentsTest extends TestCase
     {
         $token = McpConfig::rotateStaffToken(allowedTools: $grants, label: 'chet');
 
-        return $this->withHeaders(['Authorization' => 'Bearer '.$token])->postJson('/api/mcp/staff', [
+        // #5726: the per-test guard, at call time. The tool resolves GraphClient from the
+        // container during the request, so the container must still hand out the scripted
+        // client when the request starts and when it ends; a test asserting an absence (no
+        // request, a refusal before any Graph call) is then about the scripted client.
+        $this->assertResolvesTheScriptedClient('before the tool request');
+        $response = $this->withHeaders(['Authorization' => 'Bearer '.$token])->postJson('/api/mcp/staff', [
             'jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/call',
             'params' => ['name' => $tool, 'arguments' => $args],
         ]);
+        $this->assertResolvesTheScriptedClient('after the tool request');
+
+        return $response;
+    }
+
+    private function assertResolvesTheScriptedClient(string $when): void
+    {
+        $this->assertNotNull($this->scripted, "graph() installs a scripted client before any tool request ({$when})");
+        $this->assertSame($this->scripted, app(GraphClient::class), "the tool resolves this client ({$when})");
     }
 
     private function decoded(TestResponse $r): array
