@@ -454,7 +454,7 @@ class GraphClient
 
         if (json_last_error() !== JSON_ERROR_NONE) {
             throw new GraphClientException(
-                "Invalid JSON response from Graph API: {$method} {$endpoint}",
+                "Invalid JSON response from Graph API: {$method} returned {$response->getStatusCode()}",
                 $response->getStatusCode(),
             );
         }
@@ -481,7 +481,7 @@ class GraphClient
         $decoded = json_decode($body);
         if (json_last_error() !== JSON_ERROR_NONE) {
             throw new GraphClientException(
-                "Invalid JSON response from Graph API: {$method} {$endpoint}",
+                "Invalid JSON response from Graph API: {$method} returned {$response->getStatusCode()}",
                 $response->getStatusCode(),
             );
         }
@@ -519,7 +519,7 @@ class GraphClient
         $decoded = json_decode($body);
         if (json_last_error() !== JSON_ERROR_NONE) {
             throw new GraphClientException(
-                "Invalid JSON response from Graph API: GET {$url}",
+                "Invalid JSON response from Graph API: GET returned {$response->getStatusCode()}",
                 $response->getStatusCode(),
             );
         }
@@ -560,8 +560,8 @@ class GraphClient
                     } catch (GraphClientException $tokenFailure) {
                         // #5398: Graph answered 401 and the refresh failed. getToken() writes a
                         // record only when the token request itself failed; a response without
-                        // access_token writes none. This arm never goes through throwFromGuzzle,
-                        // whose exception message carries the endpoint (a mailbox). With
+                        // access_token writes none. This arm never goes through throwFromGuzzle.
+                        // With
                         // $logFailure its record carries exactly three fields: method, status
                         // (401) and token_refresh ('failed').
                         if ($logFailure) {
@@ -601,7 +601,7 @@ class GraphClient
         }
 
         // Should never reach here, but satisfy static analysis
-        throw new GraphClientException("Max retries exceeded: {$method} {$endpoint}");
+        throw new GraphClientException("Max retries exceeded: {$method}");
     }
 
     /**
@@ -634,7 +634,7 @@ class GraphClient
 
         if (json_last_error() !== JSON_ERROR_NONE) {
             throw new GraphClientException(
-                "Invalid JSON response from Graph API: {$method} {$url}",
+                "Invalid JSON response from Graph API: {$method} returned {$response->getStatusCode()}",
                 $response->getStatusCode(),
             );
         }
@@ -729,17 +729,21 @@ class GraphClient
             $responseBody = json_decode((string) $e->getResponse()->getBody(), true);
         }
 
-        // #5533 / C-56: status only. The endpoint holds the mailbox on users/ paths, and Guzzle's
-        // message holds the request URI and the start of Graph's response body.
+        // #5533 / #5679 / C-56: the record and the exception message are status only. The endpoint
+        // holds the mailbox on users/ paths (and the nextLink URL on requestAbsolute), and Guzzle's
+        // message holds the request URI and the start of Graph's response body. Graph's decoded
+        // body stays on getResponseBody() for a caller that reads it on purpose.
+        // #5673: with no response (status 0) the exception class is the only cause the record
+        // can carry; it is a class name, never Guzzle's text.
         if ($log) {
             Log::error('Graph API request failed', [
                 'method' => $method,
                 'status' => $statusCode,
-            ]);
+            ] + ($statusCode === 0 ? ['exception' => $e::class] : []));
         }
 
         throw new GraphClientException(
-            "Graph API error: {$method} {$endpoint} returned {$statusCode}",
+            "Graph API error: {$method} returned {$statusCode}",
             $statusCode,
             $responseBody,
         );
