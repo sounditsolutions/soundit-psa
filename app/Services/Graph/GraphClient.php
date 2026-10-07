@@ -173,7 +173,8 @@ class GraphClient
      * throwFromGuzzle's error record. Two shared records can still be written on this path: a
      * 429 backoff WARNING (endpoint with its users/ segment redacted, attempt, wait; #5391) and,
      * when the token request itself fails, the token-request ERROR (HTTP status and exception
-     * class only; #5397). A token response without access_token writes no record. A 401 whose
+     * class only; #5397), or the malformed-token-response ERROR (status, field and type only;
+     * #5659). A token response without access_token writes no record. A 401 whose
      * token refresh then fails is thrown as GraphTokenRefreshFailedException, status 401 (#5398).
      */
     public function getMessageAttachmentRaw(string $mailbox, string $messageId, string $attachmentId): string
@@ -558,12 +559,12 @@ class GraphClient
                     try {
                         $freshToken = $this->getToken();
                     } catch (GraphClientException $tokenFailure) {
-                        // #5398: Graph answered 401 and the refresh failed. getToken() writes a
-                        // record only when the token request itself failed; a response without
-                        // access_token writes none. This arm never goes through throwFromGuzzle.
-                        // With
-                        // $logFailure its record carries exactly three fields: method, status
-                        // (401) and token_refresh ('failed').
+                        // #5398: Graph answered 401 and the refresh failed. getToken() writes its
+                        // own record when the token request itself failed or its response was
+                        // malformed (#5659); a response without access_token writes none. This
+                        // arm never goes through throwFromGuzzle. With $logFailure its record
+                        // carries exactly three fields: method, status (401) and token_refresh
+                        // ('failed').
                         if ($logFailure) {
                             Log::error('Graph API request failed', [
                                 'method' => $method,
