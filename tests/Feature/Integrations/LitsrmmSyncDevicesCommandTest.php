@@ -105,4 +105,20 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
             ->expectsOutputToContain('switched off')
             ->assertFailed();
     }
+
+    public function test_assets_marked_inactive_are_reported_apart_from_released_links(): void
+    {
+        // #5361: a retired device's asset leaves the billed list; the operator
+        // reading a supervised run must see how many, not a merged count.
+        $this->mapClient();
+        $result = new SyncResult;
+        $result->deactivated = 2;
+        $result->details['retired'] = 6;
+        $this->syncReturns($result);
+
+        $this->artisan('litsrmm:sync-devices')
+            ->expectsOutputToContain('2 deactivated')
+            ->expectsOutputToContain('Marked inactive (device retired): 6')
+            ->assertSuccessful();
+    }
 }

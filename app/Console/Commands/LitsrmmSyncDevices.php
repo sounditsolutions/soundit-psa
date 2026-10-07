@@ -66,6 +66,12 @@ class LitsrmmSyncDevices extends Command
         $this->newLine();
         $this->info("Done: {$result->summary()}");
 
+        // Counted apart from "deactivated" (released links): these assets left
+        // the active, billed list this run.
+        if (($result->details['retired'] ?? 0) > 0) {
+            $this->warn("  Marked inactive (device retired): {$result->details['retired']}");
+        }
+
         foreach ($result->skippedMessages as $message) {
             $this->warn("  Skipped: {$message}");
         }

@@ -8,6 +8,7 @@ use App\Models\Client;
 use App\Models\License;
 use App\Models\LicenseType;
 use App\Models\Setting;
+use App\Models\TacticalAsset;
 use App\Models\User;
 use App\Services\AssetService;
 use App\Services\Litsrmm\LitsrmmAssetSyncService;
@@ -17,6 +18,8 @@ use GuzzleHttp\Middleware;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Psr\Http\Message\RequestInterface;
 use Tests\TestCase;
 
@@ -26,9 +29,10 @@ use Tests\TestCase;
  * LITSRMM is an RMM of record, so unlike AutoElevate or Control D it CREATES
  * assets, as LevelSyncService does. It takes its safeguards from
  * AutoElevateAssetSyncService instead of Level: every match is scoped to the
- * one mapped client; a guess is refused rather than made; a failed read
- * changes nothing; a device that leaves loses only OUR link and never the
- * asset; a deleted asset is never revived.
+ * one mapped client; a guess is refused rather than made; a failed list read,
+ * or a list too short to believe, changes nothing; a failed detail read costs
+ * only that device's hardware; a device that leaves loses only OUR link and
+ * never the asset; a deleted asset is never revived.
  *
  * Every response comes from a fake transport routed by path, so nothing here
  * reaches a real host and no test depends on request order.
@@ -524,7 +528,8 @@ class LitsrmmAssetSyncTest extends TestCase
         $this->assertFalse((bool) $asset->fresh()->is_active);
         $this->assertFalse($asset->fresh()->trashed());
         $this->assertSame(0, $this->detailRequests());
-        $this->assertSame(1, $result->deactivated);
+        $this->assertSame(1, $result->details['retired'], '#5361: an asset made inactive is counted on its own');
+        $this->assertSame(0, $result->deactivated, '#5361: and not folded into the released links');
     }
 
     public function test_a_half_retired_device_is_left_exactly_as_it_was(): void
@@ -879,5 +884,322 @@ class LitsrmmAssetSyncTest extends TestCase
         $this->assertSame(1, $result->errors);
         $this->assertStringContainsString('not mapped', $result->errorMessages[0]);
         $this->assertSame(0, count($this->history), 'nothing is read for it');
+    }
+
+    // ---- #5343: a short or empty list is not the truth ----
+
+    /** @return list<Asset> one linked asset per device number, with a known last_user */
+    private function linkedAssets(int $count): array
+    {
+        $assets = [];
+        for ($n = 1; $n <= $count; $n++) {
+            $row = $this->device((string) $n);
+            $assets[] = Asset::factory()->create(['client_id' => $this->client->id, 'hostname' => "WORKSTATION-{$n}", 'litsrmm_device_id' => $row['id'], 'last_user' => 'before']);
+        }
+
+        return $assets;
+    }
+
+    public function test_an_empty_list_leaves_every_link_and_seat_untouched(): void
+    {
+        $assets = $this->linkedAssets(2);
+        $this->service()->sync();
+        $this->assertSame(2, $this->licenses($this->client)['workstation']->quantity);
+
+        $this->rows = [];
+        $result = $this->service()->sync();
+
+        foreach ($assets as $asset) {
+            $this->assertNotNull($asset->fresh()->litsrmm_device_id, 'an empty answer releases nothing');
+            $this->assertTrue((bool) $asset->fresh()->is_active);
+        }
+        $seat = $this->licenses($this->client)['workstation'];
+        $this->assertSame(2, $seat->quantity, 'nor zeroes a seat');
+        $this->assertSame('active', $seat->status);
+        $this->assertSame(0, $result->deactivated);
+        $this->assertSame(1, $result->errors, 'a refusal is never a silent pass');
+        $this->assertSame(1, $result->details['short_read_refused']);
+        $this->assertStringContainsString('too short', $result->errorMessages[0]);
+    }
+
+    public function test_an_empty_list_with_live_seats_but_no_links_is_refused(): void
+    {
+        $this->device('1', ['serial' => null]);
+        $this->service()->sync();
+        Asset::query()->update(['litsrmm_device_id' => null]);
+
+        $this->rows = [];
+        $result = $this->service()->sync();
+
+        $this->assertSame(1, $this->licenses($this->client)['workstation']->quantity);
+        $this->assertSame(1, $result->errors);
+    }
+
+    public function test_an_empty_list_for_a_client_with_nothing_linked_is_not_refused(): void
+    {
+        // Positive control: the guard refuses a read that contradicts what we
+        // hold, not every empty answer.
+        $result = $this->service()->sync();
+
+        $this->assertSame(0, $result->errors, implode('; ', $result->errorMessages));
+        $this->assertSame(0, $this->licenses($this->client)['workstation']->quantity);
+    }
+
+    public function test_a_short_list_past_the_bound_is_refused(): void
+    {
+        $assets = $this->linkedAssets(5);
+        $this->rows = array_slice($this->rows, 0, 1);
+        $this->rows[0]['lastUser'] = 'changed';
+
+        $result = $this->service()->sync();
+
+        foreach ($assets as $asset) {
+            $this->assertNotNull($asset->fresh()->litsrmm_device_id);
+            $this->assertSame('before', $asset->fresh()->last_user, 'nothing of a refused client is written');
+        }
+        $this->assertNull($this->licenses($this->client)['workstation'], 'no seat is written either');
+        $this->assertSame(0, $this->detailRequests(), 'nor read in detail');
+        $this->assertSame(1, $result->errors);
+        $this->assertSame(0, $result->deactivated);
+    }
+
+    public function test_a_shrink_within_the_bound_still_releases(): void
+    {
+        $assets = $this->linkedAssets(5);
+        $this->rows = array_slice($this->rows, 0, 2);
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(0, $result->errors, implode('; ', $result->errorMessages));
+        $this->assertSame(3, $result->deactivated, 'three is the floor, so three links still release');
+        $this->assertNull($assets[4]->fresh()->litsrmm_device_id);
+        $this->assertNotNull($assets[0]->fresh()->litsrmm_device_id);
+        $this->assertSame(2, $this->licenses($this->client)['workstation']->quantity);
+    }
+
+    public function test_half_of_a_large_estate_leaving_still_releases(): void
+    {
+        // Past the floor but not past half: a real decommissioning wave.
+        $this->linkedAssets(8);
+        $this->rows = array_slice($this->rows, 0, 4);
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(0, $result->errors, implode('; ', $result->errorMessages));
+        $this->assertSame(4, $result->deactivated);
+    }
+
+    public function test_a_refused_client_is_logged_by_its_psa_id_and_counts_only(): void
+    {
+        Log::spy();
+        $this->linkedAssets(2);
+        $this->rows = [];
+
+        $this->service()->sync();
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn ($message, $context = []) => str_contains($message, 'too short')
+                && $context === ['client_id' => $this->client->id, 'listed' => 0, 'linked' => 2, 'unlisted' => 2])
+            ->once();
+    }
+
+    // ---- #5341 / #5342: an asset a person made inactive ----
+
+    public function test_a_person_made_inactive_asset_is_not_taken_over_by_hostname(): void
+    {
+        // A replacement PC reusing the name of a decommissioned one.
+        $old = Asset::factory()->create(['client_id' => $this->client->id, 'hostname' => 'FRONTDESK', 'serial_number' => null, 'is_active' => false, 'cpu' => 'Old CPU']);
+        $row = $this->device('1', ['hostname' => 'FRONTDESK', 'serial' => '5CD123ABC']);
+        $this->details[$row['id']] = self::inventory();
+
+        $result = $this->service()->sync();
+
+        $old->refresh();
+        $this->assertNull($old->litsrmm_device_id);
+        $this->assertNull($old->serial_number);
+        $this->assertSame('Old CPU', $old->cpu);
+        $this->assertSame(1, $result->created, 'the new machine gets its own, active asset');
+        $this->assertTrue((bool) Asset::where('litsrmm_device_id', $row['id'])->sole()->is_active);
+    }
+
+    public function test_a_person_made_inactive_asset_is_not_taken_by_a_serialless_device_either(): void
+    {
+        $old = Asset::factory()->create(['client_id' => $this->client->id, 'hostname' => 'FRONTDESK', 'serial_number' => null, 'is_active' => false]);
+        $this->device('1', ['hostname' => 'FRONTDESK', 'serial' => null]);
+
+        $result = $this->service()->sync();
+
+        $this->assertNull($old->fresh()->litsrmm_device_id);
+        $this->assertSame(1, $result->created);
+    }
+
+    public function test_an_inactive_asset_behind_a_retired_device_is_never_stamped(): void
+    {
+        // The retirement UPDATE's is_active guard: a stamp here would let the
+        // next serial match reactivate an asset a person made inactive.
+        $row = $this->device('1', ['enrollmentState' => 'retired', 'availabilityState' => 'retired', 'retiredAt' => '2026-09-30T10:00:00.000Z']);
+        $asset = Asset::factory()->create(['client_id' => $this->client->id, 'serial_number' => 'SN1REAL0', 'is_active' => false, 'litsrmm_device_id' => $row['id']]);
+
+        $result = $this->service()->sync();
+
+        $this->assertNull($asset->fresh()->litsrmm_retired_at);
+        $this->assertFalse((bool) $asset->fresh()->is_active);
+        $this->assertSame(0, $result->details['retired']);
+
+        $this->rows = [];
+        $this->device('1');
+        $this->service()->sync();
+
+        $this->assertFalse((bool) $asset->fresh()->is_active, 'and so it is never reactivated');
+    }
+
+    public function test_a_retired_link_retaken_by_a_live_device_is_not_stamped(): void
+    {
+        // The $kept branch the old UPDATE credited: a live device that takes
+        // the asset back rewrites its link, so the retired id no longer names
+        // it and it stays active with no stamp.
+        $old = $this->device('1', ['enrollmentState' => 'retired', 'availabilityState' => 'retired', 'retiredAt' => '2026-09-30T10:00:00.000Z']);
+        $asset = Asset::factory()->create(['client_id' => $this->client->id, 'hostname' => 'WORKSTATION-1', 'serial_number' => 'SN1REAL0', 'litsrmm_device_id' => $old['id']]);
+        $new = $this->device('2', ['hostname' => 'WORKSTATION-1', 'serial' => 'SN1REAL0']);
+
+        $result = $this->service()->sync();
+
+        $this->assertSame($new['id'], $asset->fresh()->litsrmm_device_id);
+        $this->assertNull($asset->fresh()->litsrmm_retired_at);
+        $this->assertSame(0, $result->details['retired']);
+    }
+
+    // ---- #5350: a detail read that fails ----
+
+    public function test_a_device_that_left_before_its_detail_read_is_left_alone_and_not_an_error(): void
+    {
+        $row = $this->device('1', ['lastUser' => 'changed']);
+        $asset = Asset::factory()->create(['client_id' => $this->client->id, 'litsrmm_device_id' => $row['id'], 'last_user' => 'before', 'cpu' => 'Known CPU']);
+        $this->details[$row['id']] = 404;
+
+        $result = $this->service()->sync();
+
+        $asset->refresh();
+        $this->assertSame($row['id'], $asset->litsrmm_device_id, 'its link is kept');
+        $this->assertSame('before', $asset->last_user, 'nothing is written for it');
+        $this->assertSame(0, $result->errors, 'a device leaving is not a failure');
+        $this->assertSame(1, $result->skipped);
+        $this->assertSame(0, $result->deactivated);
+    }
+
+    public function test_a_new_device_that_left_before_its_detail_read_is_not_created(): void
+    {
+        $row = $this->device('1');
+        $this->details[$row['id']] = 404;
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(0, Asset::count());
+        $this->assertSame(0, $result->created);
+        $this->assertSame(1, $result->skipped);
+    }
+
+    // ---- #5360: what the scheduled path must still see ----
+
+    public function test_a_failed_detail_read_is_logged_status_only_by_psa_client_id(): void
+    {
+        Log::spy();
+        $row = $this->device('1');
+        $this->details[$row['id']] = 500;
+
+        $this->service()->sync();
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmAssetSync] device detail read failed'
+                && $context === ['client_id' => $this->client->id, 'status' => 500])
+            ->once();
+    }
+
+    public function test_a_refused_guess_is_logged_by_psa_client_id_and_reason_only(): void
+    {
+        Log::spy();
+        Asset::factory()->create(['client_id' => $this->client->id, 'hostname' => 'WORKSTATION-1', 'serial_number' => null]);
+        Asset::factory()->create(['client_id' => $this->client->id, 'hostname' => 'workstation-1', 'serial_number' => null]);
+        $this->device('1', ['serial' => null]);
+
+        $this->service()->sync();
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmAssetSync] device not written'
+                && $context === ['client_id' => $this->client->id, 'reason' => 'ambiguous_match'])
+            ->once();
+    }
+
+    public function test_a_malformed_category_reaches_the_result(): void
+    {
+        $row = $this->device('1');
+        $inventory = self::inventory();
+        $inventory['disks'] = 'nonsense';
+        $this->details[$row['id']] = $inventory;
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(1, $result->errors);
+        $this->assertStringContainsString('disks', $result->errorMessages[0]);
+        $this->assertStringContainsString('disks', LitsrmmAssetSyncService::describe($result));
+    }
+
+    // ---- #5361: assets made inactive are counted on their own ----
+
+    public function test_retired_assets_and_released_links_are_counted_apart(): void
+    {
+        $retired = ['enrollmentState' => 'retired', 'availabilityState' => 'retired', 'retiredAt' => '2026-09-30T10:00:00.000Z'];
+        $a = $this->device('1', $retired);
+        $b = $this->device('2', $retired);
+        $this->device('3');
+        Asset::factory()->create(['client_id' => $this->client->id, 'litsrmm_device_id' => $a['id']]);
+        Asset::factory()->create(['client_id' => $this->client->id, 'litsrmm_device_id' => $b['id']]);
+        Asset::factory()->create(['client_id' => $this->client->id, 'litsrmm_device_id' => '8f14e45f-ceea-467a-9f38-000000000099']);
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(2, $result->details['retired']);
+        $this->assertSame(1, $result->deactivated, 'only the released link');
+        $this->assertStringContainsString('2 asset(s) marked inactive', LitsrmmAssetSyncService::describe($result));
+        $this->assertStringContainsString('1 deactivated', LitsrmmAssetSyncService::describe($result));
+    }
+
+    public function test_describe_says_nothing_of_retirement_when_none_happened(): void
+    {
+        $this->device('1');
+
+        $result = $this->service()->sync();
+
+        $this->assertStringNotContainsString('marked inactive', LitsrmmAssetSyncService::describe($result));
+    }
+
+    // ---- #5368: another RMM's live link keeps an asset active ----
+
+    /** @return array<string, array{0: \Closure(): array<string, mixed>}> */
+    public static function otherRmmLinks(): array
+    {
+        return [
+            'level' => [fn () => ['level_id' => 'level-fixture-01']],
+            'ninja' => [fn () => ['ninja_id' => 4242]],
+            'tactical' => [fn () => ['tactical_asset_id' => TacticalAsset::create(['agent_id' => 'agent-fixture-01', 'hostname' => 'WORKSTATION-1'])->id]],
+        ];
+    }
+
+    #[DataProvider('otherRmmLinks')]
+    public function test_a_retired_device_does_not_deactivate_an_asset_another_rmm_links(\Closure $link): void
+    {
+        $row = $this->device('1', ['enrollmentState' => 'retired', 'availabilityState' => 'retired', 'retiredAt' => '2026-09-30T10:00:00.000Z']);
+        $asset = Asset::factory()->create(array_merge(['client_id' => $this->client->id, 'hostname' => 'WORKSTATION-1', 'is_active' => true, 'litsrmm_device_id' => $row['id']], $link()));
+
+        $result = $this->service()->sync();
+
+        $asset->refresh();
+        $this->assertTrue((bool) $asset->is_active, 'another RMM still reports it');
+        $this->assertNull($asset->litsrmm_retired_at);
+        $this->assertSame($row['id'], $asset->litsrmm_device_id, 'our link is kept, not released');
+        $this->assertSame(0, $result->details['retired']);
+        $this->assertSame(0, $result->deactivated);
+        $this->assertSame(1, $result->skipped);
+        $this->assertStringContainsString('another RMM', $result->skippedMessages[0]);
     }
 }
