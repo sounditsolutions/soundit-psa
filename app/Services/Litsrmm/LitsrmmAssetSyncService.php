@@ -44,16 +44,44 @@ use Illuminate\Support\Facades\Log;
  *    reported as skipped, not as an error. It still counts for seats, which
  *    come from the list. A hardware category in a shape we do not
  *    read is drift: it is logged and recorded as an error.
- *  - A SHORT LIST IS NOT THE TRUTH (#5343). A client is refused, and nothing
+ *  - MANY 404s ARE A DEGRADED READ, NOT DEVICES LEAVING (#5578). When more
+ *    than one of a client's detail reads answers 404 AND more than half of
+ *    them do, the client is treated as read degraded: an error on the result
+ *    (so the command exits FAILURE), a log line carrying the PSA client id
+ *    and the counts only, and nothing of that client is written (no asset,
+ *    no link released, no retirement, no seat). A single 404 stays a skip.
+ *  - A SHORT LIST IS NOT THE TRUTH (#5343, #5575, #5576). Only links on
+ *    assets the sync has not retired count as "linked" here: a retired asset
+ *    keeps its link whatever the read says. A linked asset is "unlisted" when
+ *    the read does not list its device id AND no live device of the read
+ *    carries the asset's real serial (that would be the same machine
+ *    re-enrolled under a new id, #5577). A client is refused, and nothing
  *    of it is read in detail or written (no asset, no link released, no
- *    retirement, no seat), when either:
- *      (a) the read lists none of its devices while it has an asset carrying
- *          a LITSRMM link or a LITSRMM seat with a quantity above 0; or
+ *    retirement, no seat), when any of these holds, checked in this order:
+ *      (a) the read lists none of its devices while it has a linked asset or
+ *          a LITSRMM seat with a quantity above 0;
  *      (b) more than RELEASE_FLOOR of its linked assets, AND more than half
- *          of them, name a device id the read does not list at all.
- *    The refusal is an error on the result (so the command exits FAILURE)
- *    and a log line carrying the PSA client id and the counts only. A normal
- *    shrink inside that bound still releases.
+ *          of them, are unlisted;
+ *      (c) it has at least one linked asset and every one of them is
+ *          unlisted (this is what protects a client with RELEASE_FLOOR or
+ *          fewer links, which (b) never refuses);
+ *      (d) its LITSRMM seats (the total of its two seat quantities) are
+ *          above 0, and the seats this read would write, plus the agent
+ *          devices it lists as retired or half-retired (the vendor saying
+ *          why a seat went), are 0, or fall short of the seats held by more
+ *          than RELEASE_FLOOR AND by more than half of them.
+ *    The refusal is an error on the result (so the command exits FAILURE),
+ *    counted in details['short_read_refused'], and a log line carrying the
+ *    PSA client id, the rule and the counts only. A normal shrink inside
+ *    that bound still releases and still writes the seats.
+ *  - A REAL SHRINK THE BOUND REFUSES HAS ONE WAY THROUGH (#5577). An admin
+ *    who has checked that a refused client's change is real (a re-enrollment
+ *    wave, a decommission) re-runs `litsrmm:sync-devices
+ *    --accept-short-read=<PSA client id>`. That run, and only for the ids it
+ *    names, syncs the client as if the bound had not fired; it is counted in
+ *    details['short_read_accepted'] and logged with the PSA client id. Nothing
+ *    stores it: the next run applies the bound again. The schedule and the
+ *    Sync buttons never pass it. It does not override a degraded detail read.
  *  - A DEVICE THAT LEAVES loses only our link (litsrmm_device_id,
  *    litsrmm_synced_at), except on an asset the sync retired (below). The
  *    asset, its hardware facts and every other vendor's link stay:
@@ -61,10 +89,17 @@ use Illuminate\Support\Facades\Log;
  *  - A RETIRED DEVICE also marks its asset inactive, REVERSIBLY: is_active
  *    false and litsrmm_retired_at set, so it no longer looks live, and the
  *    link kept. Those assets are counted in details['retired'], never in
- *    `deactivated`. An asset that still carries another RMM's link
- *    (level_id, ninja_id or tactical_asset_id) is not marked inactive: it
- *    keeps is_active, gets no litsrmm_retired_at, keeps our link, and every
- *    run that reads its device retired reports it as skipped (#5368). The same device coming back, or the machine re-enrolled under
+ *    `deactivated`. An active asset that carries a LIVE link of another RMM
+ *    is not marked inactive: it keeps is_active, gets no litsrmm_retired_at,
+ *    keeps our link, and every run that reads its device retired reports it
+ *    as skipped (#5368). A link is live when its RMM is available for the
+ *    asset's client (Client::availableRmms(): the client is mapped to it and
+ *    the integration is switched on and configured, #5581) and the asset
+ *    carries that RMM's link: a non-empty level_id, a ninja_id, or a
+ *    Tactical link in either direction (assets.tactical_asset_id, or a
+ *    tactical_assets row whose asset_id names the asset, #5591). A column
+ *    left behind by an RMM the client no longer uses does not hold the
+ *    asset. The same device coming back, or the machine re-enrolled under
  *    a new device id (matched by its real serial, or by hostname while the
  *    asset still carries the old link), reactivates it. A person changing
  *    is_active ends the sync's claim (Asset clears litsrmm_retired_at and the
@@ -98,15 +133,13 @@ class LitsrmmAssetSyncService
     public const LICENSE_VENDOR = 'litsrmm';
 
     /**
-     * #5343: a read may release at most this many of a client's links to
-     * device ids it does not list at all, or at most half of them, whichever
-     * is larger. Past both, the read is treated as short and the client is
-     * refused (see the class docblock).
+     * #5343 / #5575: a read may release at most this many of a client's links
+     * to device ids it does not list at all, or at most half of them,
+     * whichever is larger; and may lower a client's seats by at most this
+     * many, or at most half, whichever is larger. Past both, the read is
+     * treated as short and the client is refused (see the class docblock).
      */
     public const RELEASE_FLOOR = 3;
-
-    /** Other RMMs' link columns on assets (#5368): a link here keeps an asset active. */
-    public const OTHER_RMM_LINKS = ['level_id', 'ninja_id', 'tactical_asset_id'];
 
     public function __construct(private readonly LitsrmmClient $litsrmm) {}
 
@@ -138,6 +171,10 @@ class LitsrmmAssetSyncService
             $message .= " {$result->details['retired']} asset(s) marked inactive because their device is retired.";
         }
 
+        if (($result->details['short_read_accepted'] ?? 0) > 0) {
+            $message .= " {$result->details['short_read_accepted']} client(s) synced past the short-read bound because the operator accepted it for this run.";
+        }
+
         if ($result->errorMessages !== []) {
             $message .= ' Errors: '.implode('; ', $result->errorMessages).'.';
         }
@@ -155,9 +192,10 @@ class LitsrmmAssetSyncService
      * the estate-wide sweeps (links and seats of clients no longer mapped)
      * belong to a full run only.
      */
-    public function sync(?Client $only = null): SyncResult
+    public function sync(?Client $only = null, array $acceptShortRead = []): SyncResult
     {
         $result = new SyncResult;
+        $accepted = array_map('intval', $acceptShortRead);
 
         $clients = Client::query()
             ->whereNotNull('litsrmm_client_id')
@@ -167,7 +205,7 @@ class LitsrmmAssetSyncService
             ->get();
 
         if ($only !== null && $clients->isEmpty()) {
-            $result->recordError("{$only->name} is not mapped to LITSRMM, or is not an active client; nothing was read.");
+            $result->recordError("client {$only->id} is not mapped to LITSRMM, or is not an active client; nothing was read.");
 
             return $result;
         }
@@ -182,8 +220,10 @@ class LitsrmmAssetSyncService
             $devices = $this->litsrmm->getDevices();
         } catch (LitsrmmClientException $e) {
             // Nothing is touched: not the links, not the seats, not the sweeps.
-            Log::warning('[LitsrmmAssetSync] device list read failed', ['error' => $e->getMessage()]);
-            $result->recordError("Failed to read LITSRMM devices: {$e->getMessage()}");
+            // Status-only (C-56): the kind of failure and the HTTP status.
+            $failure = self::failure($e);
+            Log::warning('[LitsrmmAssetSync] device list read failed', $failure);
+            $result->recordError('Failed to read LITSRMM devices ('.self::describeFailure($failure).'); nothing was changed');
 
             return $result;
         }
@@ -198,11 +238,15 @@ class LitsrmmAssetSyncService
         foreach ($clients as $client) {
             $rows = $byVendorClient[strtolower($client->litsrmm_client_id)] ?? [];
 
-            if ($this->refuseShortRead($client, $rows, $result)) {
+            if ($this->refuseShortRead($client, $rows, $result, in_array($client->id, $accepted, true))) {
                 continue;
             }
 
-            [$hardware, $left] = $this->readHardware($client, $rows, $result);
+            [$hardware, $left, $degraded] = $this->readHardware($client, $rows, $result);
+
+            if ($degraded) {
+                continue;
+            }
 
             DB::transaction(function () use ($client, $rows, $hardware, $left, $result) {
                 $this->syncClient($client, $rows, $hardware, $left, $result);
@@ -234,18 +278,7 @@ class LitsrmmAssetSyncService
      */
     private function syncSeats(Client $client, array $rows): void
     {
-        $counts = ['rmm_server' => 0, 'rmm_workstation' => 0];
-
-        foreach ($rows as $device) {
-            if ($device->agentVersion === null || $device->isRetired() || $device->hasSplitRetiredState()) {
-                continue;
-            }
-
-            $isServer = str_contains(mb_strtolower($device->osName ?? ''), 'server');
-            $counts[$isServer ? 'rmm_server' : 'rmm_workstation']++;
-        }
-
-        foreach ($counts as $sku => $quantity) {
+        foreach (self::seatCounts($rows) as $sku => $quantity) {
             $type = LicenseType::firstOrCreate(
                 ['vendor' => self::LICENSE_VENDOR, 'vendor_sku_id' => $sku],
                 ['name' => $sku === 'rmm_server' ? 'LITSRMM — Server' : 'LITSRMM — Workstation', 'is_active' => true],
@@ -264,6 +297,29 @@ class LitsrmmAssetSyncService
     }
 
     /**
+     * The seats a read holds, by SKU (see syncSeats()). refuseShortRead()
+     * compares their total with the seats already held (rule (d)).
+     *
+     * @param  list<LitsrmmDevice>  $rows
+     * @return array{rmm_server: int, rmm_workstation: int}
+     */
+    private static function seatCounts(array $rows): array
+    {
+        $counts = ['rmm_server' => 0, 'rmm_workstation' => 0];
+
+        foreach ($rows as $device) {
+            if ($device->agentVersion === null || $device->isRetired() || $device->hasSplitRetiredState()) {
+                continue;
+            }
+
+            $isServer = str_contains(mb_strtolower($device->osName ?? ''), 'server');
+            $counts[$isServer ? 'rmm_server' : 'rmm_workstation']++;
+        }
+
+        return $counts;
+    }
+
+    /**
      * Full runs only: links on assets, and seats, of clients that are no
      * longer mapped (or no longer operational, for links).
      */
@@ -274,55 +330,95 @@ class LitsrmmAssetSyncService
     }
 
     /**
-     * #5343: whether this successful read is too short to act on for $client
-     * (rule (a) or (b) in the class docblock). A refused client is recorded as
-     * an error and logged with its PSA id and the counts, and nothing of it is
+     * Whether this successful read is too short to act on for $client: rules
+     * (a)-(d) in the class docblock, checked in that order. A refused client
+     * is recorded as an error, counted in details['short_read_refused'] and
+     * logged with its PSA id, the rule and the counts, and nothing of it is
      * read in detail or written. Only links that the release step could clear
      * count: an asset the sync retired keeps its link whatever the read says.
      *
+     * $accept is the admin's per-run acknowledgement (#5577): a refusal that
+     * would fire is logged and counted as accepted instead, and the client is
+     * synced.
+     *
      * @param  list<LitsrmmDevice>  $rows
      */
-    private function refuseShortRead(Client $client, array $rows, SyncResult $result): bool
+    private function refuseShortRead(Client $client, array $rows, SyncResult $result, bool $accept = false): bool
     {
-        $linkIds = Asset::where('client_id', $client->id)
+        $links = Asset::where('client_id', $client->id)
             ->whereNotNull('litsrmm_device_id')
             ->whereNull('litsrmm_retired_at')
-            ->pluck('litsrmm_device_id')
-            ->map(fn ($id) => strtolower($id))
-            ->all();
+            ->get(['id', 'litsrmm_device_id', 'serial_number']);
 
         $listed = [];
+        $liveSerials = [];
         foreach ($rows as $device) {
             $listed[strtolower($device->id)] = true;
+            $serial = LitsrmmSerial::identity($device->serial);
+            if ($serial !== null && ! $device->isRetired()) {
+                $liveSerials[$serial] = true;
+            }
         }
 
-        $unlisted = count(array_filter($linkIds, fn ($id) => ! isset($listed[$id])));
+        // A link to an unlisted device on an asset whose real serial a live
+        // device of this read carries is that machine re-enrolled under a new
+        // id, not a machine gone: it is not counted as unlisted.
+        $linked = $links->count();
+        $unlisted = $links->filter(function (Asset $a) use ($listed, $liveSerials) {
+            if (isset($listed[strtolower($a->litsrmm_device_id)])) {
+                return false;
+            }
+            $serial = LitsrmmSerial::identity($a->serial_number);
 
-        if ($rows === []) {
-            $hasSeats = License::where('client_id', $client->id)
-                ->where('quantity', '>', 0)
-                ->whereHas('licenseType', fn ($q) => $q->where('vendor', self::LICENSE_VENDOR))
-                ->exists();
-            $refuse = $linkIds !== [] || $hasSeats;
-        } else {
-            $refuse = $unlisted > self::RELEASE_FLOOR && $unlisted * 2 > count($linkIds);
-        }
+            return $serial === null || ! isset($liveSerials[$serial]);
+        })->count();
 
-        if (! $refuse) {
+        $seatsHeld = (int) License::where('client_id', $client->id)
+            ->whereHas('licenseType', fn ($q) => $q->where('vendor', self::LICENSE_VENDOR))
+            ->sum('quantity');
+        $seatsRead = array_sum(self::seatCounts($rows));
+        // An agent device the read lists as retired or half-retired is the
+        // vendor saying why its seat went: it explains one seat of the drop.
+        $retiredListed = count(array_filter($rows, fn (LitsrmmDevice $d) => $d->agentVersion !== null
+            && ($d->isRetired() || $d->hasSplitRetiredState())));
+        $seatDrop = $seatsHeld - $seatsRead - $retiredListed;
+
+        $rule = match (true) {
+            $rows === [] && ($linked > 0 || $seatsHeld > 0) => 'a',
+            $unlisted > self::RELEASE_FLOOR && $unlisted * 2 > $linked => 'b',
+            $linked > 0 && $unlisted === $linked => 'c',
+            $seatsHeld > 0 && ($seatsRead + $retiredListed === 0 || ($seatDrop > self::RELEASE_FLOOR && $seatDrop * 2 > $seatsHeld)) => 'd',
+            default => null,
+        };
+
+        if ($rule === null) {
             return false;
         }
 
-        Log::warning('[LitsrmmAssetSync] client refused: device list too short to act on', [
+        $context = [
             'client_id' => $client->id,
+            'rule' => $rule,
             'listed' => count($rows),
-            'linked' => count($linkIds),
+            'linked' => $linked,
             'unlisted' => $unlisted,
-        ]);
+            'seats_held' => $seatsHeld,
+            'seats_read' => $seatsRead,
+        ];
+
+        if ($accept) {
+            Log::warning('[LitsrmmAssetSync] client short read accepted by the operator for this run', $context);
+            $result->details['short_read_accepted'] = ($result->details['short_read_accepted'] ?? 0) + 1;
+
+            return false;
+        }
+
+        Log::warning('[LitsrmmAssetSync] client refused: short read', $context);
         $result->details['short_read_refused'] = ($result->details['short_read_refused'] ?? 0) + 1;
         $result->recordError(
-            "{$client->name}: the device list is too short to act on (it lists ".count($rows)
-            ." device(s); {$unlisted} of its ".count($linkIds).' linked asset(s) name a device it does not list);'
-            .' nothing of this client was changed'
+            "client {$client->id}: refused as a short read (rule {$rule}: the read lists ".count($rows)
+            ." device(s); {$unlisted} of {$linked} linked asset(s) unlisted and not re-enrolled by serial;"
+            ." seats {$seatsHeld} held, {$seatsRead} read); nothing of this client was changed."
+            ." If the change is real, re-run litsrmm:sync-devices --accept-short-read={$client->id}"
         );
 
         return true;
@@ -348,36 +444,43 @@ class LitsrmmAssetSyncService
      * half-retired one is left alone, so none of them is read.
      *
      * A 404 is the device leaving between the list and this read: it goes in
-     * $left, and syncClient() leaves that device alone. Any other failure is
-     * an error and is logged with the PSA client id and the HTTP status only;
-     * the device's list facts are still written. A malformed category is
-     * drift: logged, and recorded as an error.
+     * $left, and syncClient() leaves that device alone. When more than one
+     * read answers 404 AND more than half of them do, that is not devices
+     * leaving but a degraded read (#5578): an error, a log line with the PSA
+     * client id and the counts, and $degraded true, so sync() writes nothing
+     * of the client. Any other failure is an error and is logged with the PSA
+     * client id and the kind of failure only (an HTTP status, or none); the
+     * device's list facts are still written. A malformed category is drift:
+     * logged with the PSA client id and a count, and recorded as an error.
      *
      * @param  list<LitsrmmDevice>  $rows
-     * @return array{0: array<string, LitsrmmHardware>, 1: array<string, true>} device id => hardware; device ids that answered 404
+     * @return array{0: array<string, LitsrmmHardware>, 1: array<string, true>, 2: bool} device id => hardware; device ids that answered 404; whether the read is degraded
      */
     private function readHardware(Client $client, array $rows, SyncResult $result): array
     {
         $hardware = [];
         $left = [];
+        $reads = 0;
 
         foreach ($rows as $device) {
             if ($device->agentVersion === null || $device->isRetired() || $device->hasSplitRetiredState()) {
                 continue;
             }
 
+            $reads++;
+
             try {
                 $hardware[$device->id] = LitsrmmHardware::fromInventory($this->litsrmm->getDevice($device->id)['inventory']);
 
                 // Drift: the vendor sent a category in a shape we do not read.
                 if ($hardware[$device->id]->malformed !== []) {
+                    $count = count($hardware[$device->id]->malformed);
                     Log::warning('[LitsrmmAssetSync] device detail has malformed inventory categories (drift)', [
                         'client_id' => $client->id,
-                        'device' => $device->id,
-                        'categories' => $hardware[$device->id]->malformed,
+                        'malformed_categories' => $count,
                     ]);
-                    $result->recordError("{$device->hostname}: inventory categories in a shape this sync does not read, not refreshed: "
-                        .implode(', ', $hardware[$device->id]->malformed));
+                    $result->recordError("client {$client->id}: a device's detail read sent {$count} inventory "
+                        .'categor'.($count === 1 ? 'y' : 'ies').' in a shape this sync does not read; those were not refreshed');
                 }
             } catch (LitsrmmClientException $e) {
                 if ($e->getCode() === 404) {
@@ -386,16 +489,52 @@ class LitsrmmAssetSyncService
                     continue;
                 }
 
-                Log::warning('[LitsrmmAssetSync] device detail read failed', [
-                    'client_id' => $client->id,
-                    'status' => $e->getCode(),
-                ]);
+                $failure = self::failure($e);
+                Log::warning('[LitsrmmAssetSync] device detail read failed', ['client_id' => $client->id] + $failure);
                 // The list facts are still written; only the hardware is stale.
-                $result->recordError("{$device->hostname}: hardware not refreshed ({$e->getMessage()})");
+                $result->recordError("client {$client->id}: a device's hardware was not refreshed (detail read failed: "
+                    .self::describeFailure($failure).'); its list facts were still written');
             }
         }
 
-        return [$hardware, $left];
+        $notFound = count($left);
+        $degraded = $notFound > 1 && $notFound * 2 > $reads;
+
+        if ($degraded) {
+            Log::warning('[LitsrmmAssetSync] client refused: degraded detail read', [
+                'client_id' => $client->id,
+                'reads' => $reads,
+                'not_found' => $notFound,
+            ]);
+            $result->details['degraded_detail_read'] = ($result->details['degraded_detail_read'] ?? 0) + 1;
+            $result->recordError("client {$client->id}: {$notFound} of {$reads} device detail reads answered 404;"
+                .' treated as a degraded read, so nothing of this client was changed');
+        }
+
+        return [$hardware, $left, $degraded];
+    }
+
+    /**
+     * Status-only facts of a failed vendor call (C-56): never its message.
+     * 'kind' is 'http' with the HTTP status the client saw, or
+     * 'no_http_status' for a failure that carries none (a transport failure,
+     * or a response the client refused for its shape).
+     *
+     * @return array{kind: string, status?: int}
+     */
+    private static function failure(LitsrmmClientException $e): array
+    {
+        $code = $e->getCode();
+
+        return $code >= 100 && $code <= 599
+            ? ['kind' => 'http', 'status' => $code]
+            : ['kind' => 'no_http_status'];
+    }
+
+    /** @param  array{kind: string, status?: int}  $failure */
+    private static function describeFailure(array $failure): string
+    {
+        return $failure['kind'] === 'http' ? "HTTP {$failure['status']}" : 'no HTTP status';
     }
 
     /**
@@ -509,16 +648,9 @@ class LitsrmmAssetSyncService
         }
         if ($retiredIds !== []) {
             // #5368: an asset another RMM still links is that RMM's to retire.
-            // It stays active, keeps our link, and is reported.
-            $held = Asset::where('client_id', $client->id)
-                ->whereIn('litsrmm_device_id', $retiredIds)
-                ->where('is_active', true)
-                ->where(function ($q) {
-                    foreach (self::OTHER_RMM_LINKS as $column) {
-                        $q->orWhereNotNull($column);
-                    }
-                })
-                ->get();
+            // It stays active, keeps our link, and is reported. Only a live
+            // link counts (#5581, #5591; see heldByAnotherRmm()).
+            $held = $this->heldByAnotherRmm($client, $retiredIds);
             foreach ($held as $asset) {
                 $kept[$asset->id] = true;
                 $this->recordSkip($result, $client, 'retired_but_other_rmm_link', "{$asset->hostname}: its LITSRMM device is retired but another RMM still links this asset; left active");
@@ -526,10 +658,8 @@ class LitsrmmAssetSyncService
 
             $retire = Asset::where('client_id', $client->id)
                 ->whereIn('litsrmm_device_id', $retiredIds)
-                ->where('is_active', true);
-            foreach (self::OTHER_RMM_LINKS as $column) {
-                $retire->whereNull($column);
-            }
+                ->where('is_active', true)
+                ->when($held->isNotEmpty(), fn ($q) => $q->whereNotIn('id', $held->modelKeys()));
             $result->details['retired'] = ($result->details['retired'] ?? 0)
                 + $retire->update(['is_active' => false, 'litsrmm_retired_at' => now()]);
         }
@@ -542,6 +672,47 @@ class LitsrmmAssetSyncService
             ->whereNull('litsrmm_retired_at')
             ->when($kept !== [], fn ($q) => $q->whereNotIn('id', array_keys($kept)))
             ->update(self::clearedColumns());
+    }
+
+    /**
+     * #5368: active assets of $client behind a retired device ($retiredIds)
+     * that another RMM still links LIVE. An RMM's link is live only while
+     * that RMM is available for the client (Client::availableRmms(): mapped,
+     * switched on and configured, #5581); a column an RMM the client no
+     * longer uses left behind does not count. Level: a non-empty level_id.
+     * Ninja: a ninja_id. Tactical: assets.tactical_asset_id, or a
+     * tactical_assets row whose asset_id names the asset, since the two
+     * directions populate independently (#5591).
+     *
+     * @param  list<string>  $retiredIds
+     * @return Collection<int, Asset>
+     */
+    private function heldByAnotherRmm(Client $client, array $retiredIds): Collection
+    {
+        $live = $client->availableRmms();
+
+        if ($live === []) {
+            return new Collection;
+        }
+
+        return Asset::where('client_id', $client->id)
+            ->whereIn('litsrmm_device_id', $retiredIds)
+            ->where('is_active', true)
+            ->where(function ($q) use ($live) {
+                if (in_array('level', $live, true)) {
+                    $q->orWhere(fn ($l) => $l->whereNotNull('level_id')->where('level_id', '!=', ''));
+                }
+                if (in_array('ninja', $live, true)) {
+                    $q->orWhereNotNull('ninja_id');
+                }
+                if (in_array('tactical', $live, true)) {
+                    $q->orWhereNotNull('tactical_asset_id')
+                        ->orWhereExists(fn ($t) => $t->select(DB::raw(1))
+                            ->from('tactical_assets')
+                            ->whereColumn('tactical_assets.asset_id', 'assets.id'));
+                }
+            })
+            ->get();
     }
 
     /**

@@ -14,6 +14,7 @@ use App\Services\SyncResult;
 use Illuminate\Console\Scheduling\Event;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Log;
 use Mockery;
 use Tests\TestCase;
 
@@ -105,6 +106,27 @@ class LitsrmmSyncControlsTest extends TestCase
 
         Setting::setValue('litsrmm_enabled', '0');
         $this->assertFalse($this->event()->filtersPass($this->app), 'switched off means off');
+    }
+
+    /** #5360: a failed scheduled run leaves a fixed log line; a clean one does not. */
+    public function test_a_failed_scheduled_run_writes_one_status_only_log_line(): void
+    {
+        Log::spy();
+        $event = $this->event();
+
+        $event->finish($this->app, 0);
+        Log::shouldNotHaveReceived('error');
+
+        $event->finish($this->app, 1);
+        Log::shouldHaveReceived('error')
+            ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmSyncDevices] scheduled run failed' && $context === [])
+            ->once();
+    }
+
+    public function test_the_scheduled_output_is_not_written_to_a_file(): void
+    {
+        // The skip lines it prints carry hostnames (C-56).
+        $this->assertSame('/dev/null', $this->event()->output);
     }
 
     // ---- the client page ----

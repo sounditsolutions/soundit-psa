@@ -33,13 +33,17 @@ Schedule::command('level:sync-devices')
 // (litsrmm_sync_schedule_enabled), after a supervised manual run. Also skipped
 // while the integration is switched off or unconfigured, and while no client
 // is mapped (a run then would only sweep, and there is nothing to sweep).
+// A failed run (non-zero exit) writes one fixed log line (#5360). Its output
+// is not appended to a file, because the skip lines it prints carry
+// hostnames. The sync writes its own log lines, by PSA client id only.
 Schedule::command('litsrmm:sync-devices')
     ->everyFourHours()
     ->withoutOverlapping()
     ->runInBackground()
     ->when(fn () => \App\Support\LitsrmmConfig::isScheduleEnabled()
         && \App\Support\LitsrmmConfig::isAvailable()
-        && \App\Models\Client::whereNotNull('litsrmm_client_id')->exists());
+        && \App\Models\Client::whereNotNull('litsrmm_client_id')->exists())
+    ->onFailure(fn () => \Illuminate\Support\Facades\Log::error('[LitsrmmSyncDevices] scheduled run failed'));
 
 // Mesh license sync — daily
 Schedule::command('mesh:sync-licenses')
