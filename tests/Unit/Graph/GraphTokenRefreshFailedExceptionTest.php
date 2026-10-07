@@ -27,6 +27,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
 {
     private const TENANT = 'tenant-b4c-synthetic';
 
+    /** A synthetic client-secret fixture, not a credential (G-13); a needle the chain scan proves never surfaces. */
     private const SECRET_FIXTURE = 'b4c-synthetic-secret-not-real';
 
     private const MAILBOX = 'support@example.test';
