@@ -1853,7 +1853,11 @@ class StaffMeshAdminToolExecutor
             $record->state === MeshAllowRule::STATE_REAPED => "the expiry job has since proved it absent upstream after its expiry {$state}. {$oneIdOnly}",
             $record->state === MeshAllowRule::STATE_REAP_FAILED => "an earlier removal of it did not prove it absent {$state}, so whether the rule is still live upstream is unknown. "
                 .match (true) {
-                    $record->isPermanent() => 'It is PERMANENT, so the expiry job never retries the removal. While Mesh still returns the rule under its recorded id, an approved mesh_remove_allow_rule can retry it; if the rule is already gone, neither verb can reach it and the PSA record has to be cleared by hand.',
+                    $record->isPermanent() && $hasId => 'It is PERMANENT, so the expiry job never retries the removal. While Mesh still returns the rule under its recorded id, an approved mesh_remove_allow_rule can retry it; if the rule is already gone, neither verb can reach it and the PSA record has to be cleared by hand.',
+                    // An approved edit's display_id_lost clears the id and keeps
+                    // reap_failed, so there may be no recorded id to retry under;
+                    // MeshAllowRuleReaper::settleUnexpired() can write one back.
+                    $record->isPermanent() => "It is PERMANENT, so the expiry job never retries the removal, and the PSA holds no upstream rule id for it, so neither verb can reach it now. The expiry job does look this record up by sender and comment: once exactly one rule in Mesh matches, it records that rule's id here and an approved mesh_remove_allow_rule can retry the removal; if the rule is already gone, the PSA record has to be cleared by hand.",
                     $pastExpiry => 'Its expiry ('.$expiry.') has passed, so the expiry job retries the removal.',
                     default => 'The expiry job retries the removal once its expiry ('.$expiry.') passes.',
                 },
@@ -3202,10 +3206,17 @@ class StaffMeshAdminToolExecutor
                 // #5491: only a DATED record is ever due (scopeReapable needs
                 // a non-null expiry), so only that arm may promise the expiry
                 // job's re-identification; the permanent arm says what is
-                // actually true of an id-less permanent record.
+                // actually true of an id-less permanent record. Only an ACTIVE
+                // one is never visited: scopeUnsettledUnexpired() selects a
+                // permanent UNRESOLVED or REAP_FAILED row, and
+                // MeshAllowRuleReaper::settleUnexpired() writes back an id it
+                // finds by sender and comment, after which both verbs reach it.
                 .($expiresAt === null
-                    ? "PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared. The record is now PERMANENT, so the expiry job never visits it, and with no recorded id neither mesh_remove_allow_rule nor mesh_edit_allow_rule can reach it. "
-                        .'Check the rule in the Mesh portal; until someone clears this PSA record by hand, it blocks new allow rules for this sender.'
+                    ? ($record->state === MeshAllowRule::STATE_ACTIVE
+                        ? "PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared. The record is now PERMANENT, so the expiry job never visits it, and with no recorded id neither mesh_remove_allow_rule nor mesh_edit_allow_rule can reach it. "
+                            .'Check the rule in the Mesh portal; until someone clears this PSA record by hand, it blocks new allow rules for this sender.'
+                        : "PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared. The record is now PERMANENT (state '{$record->state}'), so the expiry job never removes it, and while it has no recorded id neither mesh_remove_allow_rule nor mesh_edit_allow_rule can reach it. "
+                            ."The expiry job does look a record in this state up by sender and comment: if exactly one rule in Mesh matches, it records that rule's id here again and both verbs can reach the record. Until then it blocks new allow rules for this sender. Check the rule in the Mesh portal.")
                     : "PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared so the expiry job re-identifies the rule by sender and comment when it is due. "
                         .'Check the rule in the Mesh portal.');
         } elseif ($after === null) {

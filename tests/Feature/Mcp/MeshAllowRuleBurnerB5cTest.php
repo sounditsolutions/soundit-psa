@@ -531,6 +531,103 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
     }
 
     /**
+     * b5c review contract:1 and contract:2, through the verbs and the
+     * reaper: a dated rule's removal does not prove it absent (reap_failed),
+     * then an approved edit to 'never' loses its id (display_id_lost). That
+     * record is not one the expiry job never visits: its settle pass looks it
+     * up by sender and comment and records the id again, and the remove verb
+     * then reaches it. Until then neither message may promise a retry under a
+     * recorded id; after it, the refusal names that retry.
+     */
+    public function test_a_permanent_reap_failed_record_that_loses_its_id_is_told_the_settle_pass_can_restore_it(): void
+    {
+        $this->configureMesh();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $write = $this->mockWrite();
+
+        $record = $this->approveCleanCreate($actor, $write, $this->stageAdd($fixture, ['expires_at' => now()->addDays(30)->toIso8601String()]), 'rule-b5c-refail');
+        $row = $this->upstreamRow('rule-b5c-refail', $record->comment);
+
+        // Counted, not open-ended, so the post-edit read below is reached:
+        // each verb reads once at staging and once at approval.
+        $write->shouldReceive('findRuleById')->twice()->andReturn($row);
+        $removal = $this->decodedResult($this->callTool('mesh_remove_allow_rule', [
+            'client_id' => $fixture['client']->id,
+            'ticket_id' => $this->anotherTicket($fixture)->id,
+            'rule_id' => 'rule-b5c-refail',
+            'confirm_sender' => self::SENDER,
+            'reason' => 'The vendor now authenticates its mail.',
+        ]));
+        $this->assertArrayHasKey('run_id', $removal, json_encode($removal));
+        $write->shouldReceive('deleteRule')->once()->with('rule-b5c-refail');
+        $write->shouldReceive('ruleAbsent')->once()->with('rule-b5c-refail')->andReturn(false);
+        $this->actingAs($actor)->post(route('cockpit.approve', TechnicianRun::findOrFail($removal['run_id'])))->assertSessionHas('error');
+        $this->assertSame(MeshAllowRule::STATE_REAP_FAILED, $record->fresh()->state);
+
+        $write->shouldReceive('findRuleById')->twice()->andReturn($row);
+        $edit = $this->decodedResult($this->callTool('mesh_edit_allow_rule', [
+            'client_id' => $fixture['client']->id,
+            'ticket_id' => $this->anotherTicket($fixture)->id,
+            'rule_id' => 'rule-b5c-refail',
+            'confirm_sender' => self::SENDER,
+            'expires_at' => 'never',
+            'reason' => 'Change how long the vendor stays allowed.',
+        ]));
+        $this->assertArrayHasKey('run_id', $edit, json_encode($edit));
+        $write->shouldReceive('patchRule')->once()->andReturn([]);
+        $write->shouldReceive('findRuleById')->once()->andReturn(null);
+        $this->actingAs($actor)->post(route('cockpit.approve', TechnicianRun::findOrFail($edit['run_id'])))->assertSessionHas('error');
+        $message = (string) session('error');
+        $record->refresh();
+        $this->assertSame(MeshAllowRule::STATE_REAP_FAILED, $record->state);
+        $this->assertTrue($record->isPermanent());
+        $this->assertNull($record->mesh_rule_id);
+
+        $this->assertStringContainsString(
+            "PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared. The record is now PERMANENT (state 'reap_failed'), so the expiry job never removes it, and while it has no recorded id neither mesh_remove_allow_rule nor mesh_edit_allow_rule can reach it. "
+                ."The expiry job does look a record in this state up by sender and comment: if exactly one rule in Mesh matches, it records that rule's id here again and both verbs can reach the record. Until then it blocks new allow rules for this sender. Check the rule in the Mesh portal.",
+            $message,
+        );
+        $this->assertStringNotContainsString('never visits it', $message);
+        $this->assertStringNotContainsString('by hand', $message);
+
+        $why = "PSA record #{$record->id}, but an earlier removal of it did not prove it absent (state 'reap_failed'), so whether the rule is still live upstream is unknown. ";
+        $error = $this->assertRefused(fn () => $this->restage($fixture));
+        $this->assertStringEndsWith(
+            $why.'It is PERMANENT, so the expiry job never retries the removal, and the PSA holds no upstream rule id for it, so neither verb can reach it now. '
+                ."The expiry job does look this record up by sender and comment: once exactly one rule in Mesh matches, it records that rule's id here and an approved mesh_remove_allow_rule can retry the removal; if the rule is already gone, the PSA record has to be cleared by hand. Nothing was staged now.",
+            $error,
+        );
+        $this->assertStringNotContainsString('under its recorded id', $error);
+
+        // The claim both texts make, executed: one match and the id is back,
+        // the row still reap_failed, and the remove verb reaches it.
+        $write->shouldReceive('findRulesByComment')->once()->andReturn([['id' => 'rule-b5c-refound']]);
+        app(MeshAllowRuleReaper::class)->reap();
+        $record->refresh();
+        $this->assertSame(MeshAllowRule::STATE_REAP_FAILED, $record->state);
+        $this->assertSame('rule-b5c-refound', $record->mesh_rule_id);
+
+        $error = $this->assertRefused(fn () => $this->restage($fixture));
+        $this->assertStringEndsWith(
+            $why.'It is PERMANENT, so the expiry job never retries the removal. While Mesh still returns the rule under its recorded id, an approved mesh_remove_allow_rule can retry it; if the rule is already gone, neither verb can reach it and the PSA record has to be cleared by hand. Nothing was staged now.',
+            $error,
+        );
+
+        $write->shouldReceive('findRuleById')->once()->andReturn($this->upstreamRow('rule-b5c-refound', $record->comment));
+        $remove = $this->decodedResult($this->callTool('mesh_remove_allow_rule', [
+            'client_id' => $fixture['client']->id,
+            'ticket_id' => $this->anotherTicket($fixture)->id,
+            'rule_id' => 'rule-b5c-refound',
+            'confirm_sender' => self::SENDER,
+            'reason' => 'Retry the removal.',
+        ]));
+        $this->assertArrayHasKey('run_id', $remove, json_encode($remove));
+        $this->assertStringContainsString('PSA-TRACKED (record #'.$record->id, TechnicianRun::findOrFail($remove['run_id'])->proposed_content);
+    }
+
+    /**
      * #5497 item 3: an ACTIVE dated record whose date has passed but which
      * the reaper has not yet removed is not "set to expire" a past date.
      * Hand-timed only by travelling past the expiry before the reaper runs.
