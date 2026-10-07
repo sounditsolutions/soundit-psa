@@ -711,6 +711,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
 
         $leaky = $this->reported(new GraphTokenRefreshFailedException('GET', new GraphClientException($wire)));
         foreach ($this->credentialNeedles() as $needle) {
+            $this->assertContains($needle, $this->needles(), 'the scans use it');
             $this->assertStringContainsString($needle, $wire, 'the needle is on the wire');
             $this->assertTrue(str_contains($leaky, $needle), "the reporter scan fires on '{$needle}'");
             $this->assertFalse(str_contains($this->reported($e), $needle), "the real chain carries no '{$needle}'");

@@ -521,6 +521,7 @@ class TeamsMessageAttachmentsTest extends TestCase
         ]]));
         $leakyRecord = new LogRecord(new \DateTimeImmutable, 'testing', Level::Warning, 'm', ['error' => $wire]);
         foreach ($this->credentialNeedles() as $needle) {
+            $this->assertContains($needle, $this->vendorNeedles(), 'assertNoVendorText() scans for it');
             $this->assertStringContainsString($needle, $wire, 'the needle is on the wire');
             $this->assertNotEmpty(array_filter($this->operatorStrings($leakyResponse), fn (string $s) => str_contains($s, $needle)), "the operator scan fires on '{$needle}'");
             $this->assertStringContainsString($needle, $this->render($leakyRecord), "the record scan fires on '{$needle}'");
