@@ -15,12 +15,16 @@ namespace App\Services\Graph;
  * the mailbox) and no Guzzle or identity-provider text, and there is no response body.
  *
  * $tokenFailure is the exception getToken() threw, and it is also chained as getPrevious()
- * (#5461) so a reporter that walks the chain keeps the cause. Chaining is safe under C-56
- * because getToken()'s messages are status-only on every branch (#5397): the HTTP status or
- * the Guzzle exception class when the token request failed, a fixed string when the response
- * had no access_token. It never carries the token URL, the tenant or the identity provider's
- * body. Tests\Unit\Graph\GraphTokenRefreshFailedExceptionTest scans that message on each
- * branch (#5450); a getToken() change that puts vendor text in its message must not chain.
+ * (#5461) so a reporter that walks the chain keeps the cause. getToken() has three failure
+ * arms and its message is status-only on each (#5397, #5511): the HTTP status when the token
+ * endpoint answered, the Guzzle exception class when it did not, a fixed string when a 2xx had
+ * no access_token. It never carries the token URL, the tenant or the identity provider's body.
+ * Tests\Unit\Graph\GraphTokenRefreshFailedExceptionTest renders the chain as Laravel's log
+ * formatter does, messages and stack traces of both links (#5513), and finds no vendor text.
+ * A reporter that prints frame arguments (zend.exception_ignore_args=Off) shows the users/
+ * endpoint, which holds the mailbox, in the trace; that frame is already in this exception's
+ * own trace, and the chained link adds nothing the outer one lacks. A getToken() change that
+ * puts vendor text in its message must not chain.
  */
 class GraphTokenRefreshFailedException extends GraphClientException
 {

@@ -8,9 +8,12 @@ use App\Models\Setting;
 use App\Services\Assistant\AssistantToolExecutor;
 use App\Services\Chet\TeamsMessageAttachments;
 use App\Services\Graph\GraphClient;
+use App\Services\Graph\GraphClientException;
+use App\Services\Graph\GraphTokenRefreshFailedException;
 use App\Support\McpConfig;
 use App\Support\McpToolRegistry;
 use App\Support\TeamsPersonaConfig;
+use GuzzleHttp\Exception\ClientException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
@@ -22,6 +25,7 @@ use Illuminate\Testing\TestResponse;
 use Monolog\Handler\TestHandler;
 use Monolog\Level;
 use Monolog\LogRecord;
+use Psr\Http\Message\RequestInterface;
 use Tests\TestCase;
 
 /**
@@ -310,7 +314,7 @@ class TeamsMessageAttachmentsTest extends TestCase
         $this->assertCount(1, $failures);
         $this->assertSame(Level::Warning, $failures[0]->level);
         $this->assertSame(['chat_id' => self::CHAT, 'stage' => 'message', 'status' => 403], $failures[0]->context);
-        $this->assertNoVendorText($failures, $text);
+        $this->assertNoVendorText($failures, $r);
 
         $this->assertTrue((bool) $r->json('result.isError'));
         $this->assertStringContainsString('HTTP 403', $text);
@@ -322,6 +326,9 @@ class TeamsMessageAttachmentsTest extends TestCase
 
     /** The identity provider's error text in the fixture; never in the record or the operator text. */
     private const IDP_MARKER = 'AADSTS7000215-B4C-SYNTHETIC-IDP-MARKER invalid client secret provided';
+
+    /** A synthetic client-secret fixture, not a credential (G-13). */
+    private const SECRET_FIXTURE = 'synthetic-secret-not-real';
 
     private const ATTACHMENT_READ_FAILED = '[ChetDataSurface] Teams message attachment read failed';
 
@@ -350,7 +357,7 @@ class TeamsMessageAttachmentsTest extends TestCase
     private function vendorNeedles(): array
     {
         return [self::GRAPH_401_MARKER, 'InvalidAuthenticationToken', self::IDP_MARKER, 'AADSTS', 'invalid_client',
-            'synthetic-tenant', 'synthetic-secret-not-real', 'login.microsoftonline.com', 'graph.microsoft.com'];
+            'synthetic-tenant', self::SECRET_FIXTURE, 'client_secret', 'login.microsoftonline.com', 'graph.microsoft.com'];
     }
 
     /**
@@ -358,17 +365,81 @@ class TeamsMessageAttachmentsTest extends TestCase
      * arms scan the fetcher's own record only: they reach GraphClient::throwFromGuzzle, whose
      * shared ERROR record is outside this file's scope.
      *
+     * Each record is scanned as Laravel writes it, through LogManager's own formatter, so an
+     * exception object in context renders with its trace and its [previous exception] chain
+     * (#5510); json_encode() would render it as {}. The operator text is every string in the
+     * JSON-RPC response, each content part and any JSON inside it included (#5514).
+     *
      * @param  list<LogRecord>  $records
      */
-    private function assertNoVendorText(array $records, string $text): void
+    private function assertNoVendorText(array $records, TestResponse $r): void
     {
         $this->assertNotEmpty($records, 'positive control: the path under test wrote no record at all');
+        $operator = $this->operatorStrings($r);
         foreach ($this->vendorNeedles() as $needle) {
-            $this->assertStringNotContainsString($needle, $text, 'operator text');
-            foreach ($records as $r) {
-                $this->assertStringNotContainsString($needle, $r->level->getName().' '.$r->message.' '.json_encode($r->context).' '.json_encode($r->extra));
+            foreach ($operator as $path => $string) {
+                $this->assertFalse(str_contains($string, $needle), "operator text at {$path} carries '{$needle}'");
+            }
+            foreach ($records as $record) {
+                $this->assertFalse(str_contains($this->render($record), $needle), "the rendered '{$record->message}' record carries '{$needle}'");
             }
         }
+    }
+
+    /** A record as LogManager's formatter (LineFormatter with stack traces) writes it. */
+    private function render(LogRecord $record): string
+    {
+        /** @var \Monolog\Formatter\FormatterInterface $formatter */
+        $formatter = (fn () => $this->formatter())->call(app('log'));
+
+        return $formatter->format($record);
+    }
+
+    /**
+     * Every string leaf of the JSON-RPC response, keyed by its path. A string that is itself
+     * JSON (each content part's text) is walked too, and kept whole as well.
+     *
+     * @return array<string, string>
+     */
+    private function operatorStrings(TestResponse $r): array
+    {
+        $out = ['body' => (string) $r->getContent()];
+        $walk = function (mixed $value, string $path) use (&$walk, &$out): void {
+            if (is_array($value)) {
+                foreach ($value as $key => $item) {
+                    $walk($item, $path.'.'.$key);
+                }
+
+                return;
+            }
+            if (! is_string($value)) {
+                return;
+            }
+            $out[$path] = $value;
+            $inner = json_decode($value, true);
+            if (is_array($inner)) {
+                $walk($inner, $path.'{json}');
+            }
+        };
+        $walk(json_decode((string) $r->getContent(), true), '$');
+
+        return $out;
+    }
+
+    /** Control for the scans above: they see a previous link's message and a second content part. */
+    public function test_the_vendor_scans_see_a_chained_cause_and_every_content_part(): void
+    {
+        $leaky = new GraphTokenRefreshFailedException('GET', new GraphClientException('Failed: '.self::IDP_MARKER));
+        $record = new LogRecord(new \DateTimeImmutable, 'testing', Level::Warning, 'm', ['exception' => $leaky]);
+        $this->assertStringContainsString(self::IDP_MARKER, $this->render($record));
+        $this->assertStringNotContainsString(self::IDP_MARKER, (string) json_encode($record->context), 'json_encode() renders a Throwable as {}');
+
+        $response = TestResponse::fromBaseResponse(response()->json(['jsonrpc' => '2.0', 'id' => 1, 'result' => [
+            'content' => [['type' => 'text', 'text' => '{"error":"clean"}'], ['type' => 'text', 'text' => json_encode(['detail' => self::GRAPH_401_MARKER])]],
+            'isError' => true,
+        ]]));
+        $hits = array_keys(array_filter($this->operatorStrings($response), fn (string $s) => str_contains($s, self::GRAPH_401_MARKER)));
+        $this->assertContains('$.result.content.1.text{json}.detail', $hits);
     }
 
     private function graph401(): Response
@@ -382,11 +453,19 @@ class TeamsMessageAttachmentsTest extends TestCase
         $logs = $this->captureLogs();
         $this->graph(
             $this->graph401(),
-            new Response(400, [], (string) json_encode(['error' => 'invalid_client', 'error_description' => self::IDP_MARKER])),
+            // #5517: the token endpoint echoes the request's form body, so the secret is in the
+            // response and in Guzzle's exception message; the needle scan can fire on it.
+            fn (RequestInterface $request) => new Response(400, [], (string) json_encode([
+                'echo' => (string) $request->getBody(), 'error' => 'invalid_client', 'error_description' => self::IDP_MARKER,
+            ], JSON_UNESCAPED_SLASHES)),
         );
 
         $r = $this->fetch([]);
         $text = (string) $r->json('result.content.0.text');
+        $tokenLegs = array_values(array_filter($this->history, fn (array $h) => str_ends_with($h['request']->getUri()->getPath(), '/oauth2/v2.0/token')));
+        $this->assertCount(2, $tokenLegs, 'positive control: the first token and the refresh');
+        $this->assertStringContainsString('client_secret='.self::SECRET_FIXTURE, (string) $tokenLegs[1]['request']->getBody(), 'positive control: the refresh sent the secret');
+        $this->assertStringContainsString(self::SECRET_FIXTURE, (string) $tokenLegs[1]['response']->getBody(), 'positive control: the fixture echoes it back');
 
         // #5449: the fetcher's record names the token failure, at WARNING, with no vendor text.
         $failures = $this->attachmentReadFailures($logs);
@@ -395,7 +474,15 @@ class TeamsMessageAttachmentsTest extends TestCase
         $this->assertSame([
             'chat_id' => self::CHAT, 'stage' => 'message', 'status' => 401, 'token_refresh' => 'failed',
         ], $failures[0]->context);
-        $this->assertNoVendorText($logs->getRecords(), $text);
+
+        // #5512 / #5516: every record on this arm, read. getToken()'s ERROR is status-only and
+        // GraphClient's refresh-failure ERROR carries exactly method, status and token_refresh.
+        $this->assertSame([
+            [Level::Error, 'Graph API token request failed', ['status' => 400, 'exception' => ClientException::class]],
+            [Level::Error, 'Graph API request failed', ['method' => 'GET', 'status' => 401, 'token_refresh' => 'failed']],
+            [Level::Warning, self::ATTACHMENT_READ_FAILED, $failures[0]->context],
+        ], array_map(fn (LogRecord $rec) => [$rec->level, $rec->message, $rec->context], $logs->getRecords()));
+        $this->assertNoVendorText($logs->getRecords(), $r);
 
         $this->assertTrue((bool) $r->json('result.isError'));
         $this->assertSame(0, $this->queue->count(), 'positive control: the 401 and the failed refresh both ran');
@@ -415,14 +502,15 @@ class TeamsMessageAttachmentsTest extends TestCase
             $this->graph401(),
         );
 
-        $text = (string) $this->fetch([])->json('result.content.0.text');
+        $r = $this->fetch([]);
+        $text = (string) $r->json('result.content.0.text');
 
         // #5449 control: a 401 a fresh token did not cure is the permission arm; no token_refresh key.
         $failures = $this->attachmentReadFailures($logs);
         $this->assertCount(1, $failures);
         $this->assertSame(Level::Warning, $failures[0]->level);
         $this->assertSame(['chat_id' => self::CHAT, 'stage' => 'message', 'status' => 401], $failures[0]->context);
-        $this->assertNoVendorText($failures, $text);
+        $this->assertNoVendorText($failures, $r);
 
         $this->assertSame(0, $this->queue->count(), 'positive control: the refresh succeeded and the retry ran');
         $this->assertStringContainsString('HTTP 401', $text);
@@ -569,7 +657,7 @@ class TeamsMessageAttachmentsTest extends TestCase
     }
 
     /** Install a real GraphClient whose only network is this scripted queue. */
-    private function graph(Response ...$responses): void
+    private function graph(Response|\Closure ...$responses): void
     {
         $this->history = [];
         $this->queue = new MockHandler([
@@ -582,7 +670,7 @@ class TeamsMessageAttachmentsTest extends TestCase
         $this->app->instance(GraphClient::class, new GraphClient([
             'tenant_id' => 'synthetic-tenant',
             'client_id' => 'synthetic-client',
-            'client_secret' => 'synthetic-secret-not-real',
+            'client_secret' => self::SECRET_FIXTURE,
             'request_timeout' => 5,
             'token_timeout' => 5,
             'handler' => $stack,
