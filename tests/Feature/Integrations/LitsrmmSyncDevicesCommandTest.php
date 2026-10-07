@@ -145,6 +145,19 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    public function test_accept_short_read_reaches_a_single_client_run_too(): void
+    {
+        $client = $this->mapClient();
+        $service = Mockery::mock(LitsrmmAssetSyncService::class);
+        $service->shouldReceive('sync')->once()
+            ->withArgs(fn ($only, $accept) => $only?->id === $client->id && $accept === [(string) $client->id])
+            ->andReturn(new SyncResult);
+        $this->app->instance(LitsrmmAssetSyncService::class, $service);
+
+        $this->artisan('litsrmm:sync-devices', ['--client' => $client->id, '--accept-short-read' => [(string) $client->id]])
+            ->assertSuccessful();
+    }
+
     public function test_without_the_option_nothing_is_accepted(): void
     {
         $this->mapClient();
