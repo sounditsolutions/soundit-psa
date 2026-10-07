@@ -472,7 +472,8 @@ class LitsrmmAssetSyncService
         }
 
         // #5683: a serial re-enrolls an unlisted link only one-to-one, as
-        // syncClient() would relink it: carried by exactly one listed device
+        // syncClient() relinks it (or keeps its link, when that device's
+        // detail read answers 404): carried by exactly one listed device
         // that is not retired, and that one runs the agent, is not
         // half-retired and is not linked to an asset already; and by exactly
         // one asset not linked to a live listed device.
@@ -765,6 +766,18 @@ class LitsrmmAssetSyncService
                 $this->recordSkip($result, $client, 'detail_read_not_found', "{$device->hostname}: its detail read answered 404 (not found); left as it was");
                 if ($asset !== null) {
                     $kept[$asset->id] = true;
+                }
+
+                // #5683: the one asset refuseShortRead() did not count as
+                // unlisted because this device carries its serial keeps its
+                // link too, so this 404 releases nothing rule (b) did not count.
+                $serial = LitsrmmSerial::identity($device->serial);
+                if ($asset === null && $serial !== null && ($serialCounts[$serial] ?? 0) === 1) {
+                    $spared = $assets->filter(fn (Asset $a) => ($a->litsrmm_device_id === null || ! isset($liveIds[strtolower($a->litsrmm_device_id)]))
+                        && LitsrmmSerial::identity($a->serial_number) === $serial);
+                    if ($spared->count() === 1 && $spared->first()->litsrmm_device_id !== null) {
+                        $kept[$spared->first()->id] = true;
+                    }
                 }
 
                 continue;

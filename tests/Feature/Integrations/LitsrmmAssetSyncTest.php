@@ -2085,6 +2085,29 @@ class LitsrmmAssetSyncTest extends TestCase
         $this->assertStringContainsString('4 of 5 linked asset(s) unlisted', $result->errorMessages[0]);
     }
 
+    public function test_a_404_on_the_re_enrolled_device_keeps_the_link_the_exemption_spared(): void
+    {
+        // Seven links: three listed, three gone, and one whose machine the
+        // read lists re-enrolled under a new id, whose detail read answers
+        // 404. Rule (b) counts 3 of 7 unlisted, so at most those 3 may go.
+        $this->linkedAssets(3);
+        for ($n = 1; $n <= 3; $n++) {
+            Asset::factory()->create(['client_id' => $this->client->id, 'litsrmm_device_id' => sprintf('8f14e45f-ceea-467a-9f38-%012d', 100 + $n)]);
+        }
+        $oldId = sprintf('8f14e45f-ceea-467a-9f38-%012d', 104);
+        $reenrolled = Asset::factory()->create(['client_id' => $this->client->id, 'serial_number' => 'SN9REAL0', 'litsrmm_device_id' => $oldId]);
+        $row = $this->device('9');
+        $this->details[$row['id']] = 404;
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(0, $result->details['short_read_refused'] ?? 0, implode('; ', $result->errorMessages));
+        $this->assertSame(0, $result->details['degraded_detail_read'] ?? 0);
+        $this->assertSame(0, $result->created);
+        $this->assertSame($oldId, $reenrolled->fresh()->litsrmm_device_id, 'the link rule (b) did not count is kept');
+        $this->assertSame(4, Asset::whereNotNull('litsrmm_device_id')->count(), 'only the 3 unlisted links are released');
+    }
+
     public function test_two_listed_devices_sharing_a_serial_exempt_no_link(): void
     {
         // Each serial is on two live devices, which syncClient() refuses as a
