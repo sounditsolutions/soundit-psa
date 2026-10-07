@@ -2203,4 +2203,20 @@ class LitsrmmAssetSyncTest extends TestCase
 
         $this->assertSame(0, $result->errors, implode('; ', $result->errorMessages));
     }
+
+    /** #5689, ruled (a): an offline Tactical agent row still holds, and the operator is told every run. */
+    public function test_an_offline_tactical_agent_row_still_holds_a_retired_asset(): void
+    {
+        $this->liveOtherRmm('tactical');
+        $row = $this->retiredDevice('1');
+        $asset = Asset::factory()->create(['client_id' => $this->client->id, 'hostname' => 'WORKSTATION-1', 'is_active' => true, 'litsrmm_device_id' => $row['id']]);
+        TacticalAsset::create(['agent_id' => 'agent-fixture-03', 'hostname' => 'WORKSTATION-1', 'asset_id' => $asset->id, 'status' => 'offline', 'last_seen_at' => now()->subDays(400)]);
+
+        foreach ([1, 2] as $run) {
+            $result = $this->service()->sync();
+
+            $this->assertTrue((bool) $asset->fresh()->is_active, "run {$run}: held");
+            $this->assertSame(1, $result->skipped, "run {$run}: reported");
+        }
+    }
 }
