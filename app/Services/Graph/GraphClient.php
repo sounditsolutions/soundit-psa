@@ -689,7 +689,26 @@ class GraphClient
             );
         }
 
-        $ttl = ($data['expires_in'] ?? 3600) - self::TOKEN_SAFETY_MARGIN;
+        // #5659: prove the shape before anything is cached. An access_token that is not a string
+        // would otherwise be cached and fail every later call until the TTL ran out, and an
+        // expires_in that is not numeric would break the TTL arithmetic. Neither is cached; the
+        // record names the field and the type PHP decoded it as, never its value (C-56).
+        $expiresIn = $data['expires_in'] ?? 3600;
+        $malformed = match (true) {
+            ! is_string($token) => ['access_token', $token],
+            ! is_numeric($expiresIn) => ['expires_in', $expiresIn],
+            default => null,
+        };
+        if ($malformed !== null) {
+            Log::error('Graph API token response malformed', [
+                'status' => $response->getStatusCode(),
+                'field' => $malformed[0],
+                'type' => get_debug_type($malformed[1]),
+            ]);
+            throw new GraphClientException("Graph API token response carried a malformed {$malformed[0]}");
+        }
+
+        $ttl = (int) $expiresIn - self::TOKEN_SAFETY_MARGIN;
         $this->cache->put(self::TOKEN_CACHE_KEY, $token, max($ttl, 60));
 
         return $token;
