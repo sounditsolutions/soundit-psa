@@ -123,6 +123,15 @@ class LitsrmmSyncControlsTest extends TestCase
             ->once();
     }
 
+    /** #5690: the schedule never passes the admin's per-run accept (#5577). */
+    public function test_the_schedule_never_passes_the_accept(): void
+    {
+        $command = (string) $this->event()->command;
+
+        $this->assertStringNotContainsString('accept-short-read', $command);
+        $this->assertMatchesRegularExpression("/litsrmm:sync-devices'?\\s*$/", $command, 'the scheduled command carries no option at all');
+    }
+
     public function test_the_scheduled_output_is_not_written_to_a_file(): void
     {
         // The skip lines it prints carry hostnames (C-56).
@@ -135,7 +144,7 @@ class LitsrmmSyncControlsTest extends TestCase
     {
         $client = $this->mapped();
         $this->syncService()->shouldReceive('sync')->once()
-            ->withArgs(fn (?Client $only) => $only?->id === $client->id)
+            ->withArgs(fn (...$args) => $args[0]?->id === $client->id && ($args[1] ?? []) === [])
             ->andReturn(self::created(3));
 
         $this->actingAs(User::factory()->admin()->create())
@@ -237,7 +246,7 @@ class LitsrmmSyncControlsTest extends TestCase
     {
         $this->mapped();
         $this->syncService()->shouldReceive('sync')->once()
-            ->withArgs(fn (?Client $only = null) => $only === null)
+            ->withArgs(fn (...$args) => ($args[0] ?? null) === null && ($args[1] ?? []) === [])
             ->andReturn(self::created(2));
 
         $this->actingAs(User::factory()->admin()->create())

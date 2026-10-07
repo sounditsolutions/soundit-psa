@@ -14,17 +14,22 @@ use Illuminate\Console\Command;
  * switched on "Sync every 4 hours" (Settings > Integrations > LITSRMM), which
  * is off by default until a supervised manual run has been read.
  *
- * --accept-short-read=<PSA client id> (repeatable, #5577) is the one way
+ * --accept-short-read=<refusal code> (repeatable, #5577) is the one way
  * through the short-read bound for a client whose change an admin has checked
- * is real (a re-enrollment wave, a decommission): that run syncs the named
- * clients as if the bound had not fired. It applies to that run only, nothing
- * stores it, and neither the schedule nor the Sync buttons pass it.
+ * is real (a re-enrollment wave, a decommission, a single-device client's
+ * last machine retired). The code is the value a refusal message prints: the
+ * PSA client id, the rule and the counts the admin checked. That run passes
+ * that refusal only, and only if its read refuses the client with exactly that
+ * rule and those counts (#5680); any other refusal of the client is refused as
+ * usual. An accept that passed nothing is reported by PSA client id (#5688).
+ * It applies to that run only, nothing stores it, and neither the schedule
+ * nor the Sync buttons pass it.
  */
 class LitsrmmSyncDevices extends Command
 {
     protected $signature = 'litsrmm:sync-devices
         {--client= : Sync devices for one client ID only}
-        {--accept-short-read=* : PSA client ID whose refused short read you have checked is real; applies to this run only}';
+        {--accept-short-read=* : The refusal code a short-read refusal printed (PSA client id, rule and counts), once you have checked the change is real; applies to this run only}';
 
     protected $description = 'Sync devices from LITSRMM into PSA assets for mapped clients';
 
@@ -43,15 +48,17 @@ class LitsrmmSyncDevices extends Command
         }
 
         $accept = $this->option('accept-short-read');
-        foreach ($accept as $id) {
-            if (! ctype_digit((string) $id)) {
-                $this->error('--accept-short-read takes PSA client IDs (digits only). Nothing was read.');
+        foreach ($accept as $code) {
+            if (! LitsrmmAssetSyncService::isRefusalCode((string) $code)) {
+                $this->error('--accept-short-read takes the refusal code a short-read refusal printed '
+                    .'(PSA client id, rule and counts, e.g. 12:b:1:5:4:5:1:0). Nothing was read.');
 
                 return self::FAILURE;
             }
         }
         if ($accept !== []) {
-            $this->warn('Accepting a short read for this run only, for PSA client ID(s): '.implode(', ', $accept));
+            // Not a claim that anything is accepted: the run reports what it passed.
+            $this->warn('For this run only, a short-read refusal is passed only if it matches exactly: '.implode(', ', $accept));
         }
 
         if ($clientId = $this->option('client')) {
@@ -94,6 +101,13 @@ class LitsrmmSyncDevices extends Command
 
         if (($result->details['short_read_accepted'] ?? 0) > 0) {
             $this->warn("  Short read accepted by --accept-short-read: {$result->details['short_read_accepted']} client(s)");
+        }
+
+        if (($result->details['short_read_accept_unused'] ?? []) !== []) {
+            $this->warn('  --accept-short-read passed nothing for PSA client ID(s): '
+                .implode(', ', $result->details['short_read_accept_unused'])
+                .' (outside --client, not a mapped active client, its read did not refuse it with exactly that code,'
+                .' or it was then refused as a degraded detail read)');
         }
 
         foreach ($result->skippedMessages as $message) {
