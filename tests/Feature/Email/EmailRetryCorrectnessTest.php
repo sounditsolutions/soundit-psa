@@ -68,6 +68,10 @@ class EmailRetryCorrectnessTest extends TestCase
         Http::preventStrayRequests();
         Storage::fake('local');
         Setting::setValue('graph_mailbox', self::MAILBOX);
+        // The queue is sync (phpunit.xml): the first RetryEmailAttachments run executes at
+        // commit. Its #5558 re-queue after a refusal is faked here, so each test sees one run;
+        // RetryEmailAttachmentsJobTest drives the re-queued run itself.
+        Bus::fake([fn ($job) => $job instanceof \App\Jobs\RetryEmailAttachments && $job->refusals > 0]);
 
         $this->logs = new TestHandler;
         $handler = $this->logs;
@@ -448,7 +452,7 @@ class EmailRetryCorrectnessTest extends TestCase
         $service = app(EmailService::class);
         $email = Email::where('graph_id', 'MSG-1')->firstOrFail();
         $noteId = TicketNote::where('email_id', $email->id)->sole()->id;
-        (fn () => $this->retryMessageReadAfterCommit($email->id, (int) $email->ticket_id, $noteId, $baseline))->call($service);
+        (fn () => $this->retryMessageRead($email->id, (int) $email->ticket_id, $noteId, $baseline))->call($service);
     }
 
     /** retryBaseline() for the email's ticket and note, read now. */
@@ -584,7 +588,7 @@ class EmailRetryCorrectnessTest extends TestCase
         $service = app(EmailService::class);
         $baseline = (fn () => $this->retryBaseline($ticket->id, null))->call($service);
 
-        (fn () => $this->retryMessageReadAfterCommit($email->id, $ticket->id, null, $baseline))->call($service);
+        (fn () => $this->retryMessageRead($email->id, $ticket->id, null, $baseline))->call($service);
 
         $this->assertSame(0, $this->messageReads(), 'refused before any Graph call');
         $this->assertSkipped('client_note_missing', discarded: 0);
@@ -648,7 +652,7 @@ class EmailRetryCorrectnessTest extends TestCase
         $this->assertSame([], $this->withMessage(self::SKIPPED), 'a rolled-back level runs no retry');
 
         // The callback as registered, run with the baseline it would hold when unset.
-        (fn () => $this->retryMessageReadAfterCommit($email->id, 1, null, null))->call($service);
+        (fn () => $this->retryMessageRead($email->id, 1, null, null))->call($service);
 
         $this->assertSame(1, $this->messageReads(), 'refused before any Graph call');
         $skipped = $this->withMessage(self::SKIPPED);

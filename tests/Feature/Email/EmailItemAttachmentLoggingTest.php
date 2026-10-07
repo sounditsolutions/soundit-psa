@@ -75,7 +75,8 @@ class EmailItemAttachmentLoggingTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Bus::fake();
+        // The after-commit RetryEmailAttachments job runs (sync queue); everything else is faked.
+        Bus::fake()->except(\App\Jobs\RetryEmailAttachments::class);
         Http::preventStrayRequests();
         Storage::fake('local');
         Setting::setValue('graph_mailbox', self::MAILBOX);
@@ -644,14 +645,18 @@ class EmailItemAttachmentLoggingTest extends TestCase
         $this->assertNull($note->body_html);
         $this->assertNull(Ticket::findOrFail($ticket->id)->description_html);
         $this->assertSame(0, Attachment::count());
-        // Each failed read writes its own existing record pair; nothing else is written,
-        // in particular no '[EmailService] Attachment retry after ticket creation threw' (a failed
-        // read never reaches the retry's catch: downloadEmailAttachments returns null, #5448).
+        // Each failed read writes its own existing record pair, and the job's #5558 marker says
+        // the attachments were not added (read_failed); in particular no '[EmailService]
+        // Attachment retry after ticket creation threw' (a failed read never reaches the retry's
+        // catch: downloadEmailAttachments returns null, #5448).
         $loud = array_map(fn (LogRecord $r) => $r->message, $this->records(Level::Warning));
         $this->assertEqualsCanonicalizing([
             'Graph API request failed', '[AttachmentService] Failed to fetch email attachments',
             'Graph API request failed', '[AttachmentService] Failed to fetch email attachments',
+            \App\Jobs\RetryEmailAttachments::MARKER,
         ], $loud);
+        $this->assertSame('read_failed', $this->withMessage(\App\Jobs\RetryEmailAttachments::MARKER)[0]->context['reason'] ?? null);
+        $this->assertSame(1, TicketNote::where('ticket_id', $ticket->id)->where('note_type', 'system')->where('is_private', true)->count(), '#5558: the ticket carries the marker note');
     }
 
     public function test_reply_path_with_a_failed_message_read_still_links_the_email(): void
