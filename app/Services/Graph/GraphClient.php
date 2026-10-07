@@ -560,10 +560,10 @@ class GraphClient
                     } catch (GraphClientException $tokenFailure) {
                         // #5398: Graph answered 401 and the refresh failed. getToken() writes a
                         // record only when the token request itself failed; a response without
-                        // access_token writes none. This arm never goes through throwFromGuzzle:
-                        // its record would carry the endpoint (a mailbox) and Guzzle's message
-                        // (vendor text). With $logFailure its record carries exactly three
-                        // fields: method, status (401) and token_refresh ('failed').
+                        // access_token writes none. This arm never goes through throwFromGuzzle,
+                        // whose exception message carries the endpoint (a mailbox). With
+                        // $logFailure its record carries exactly three fields: method, status
+                        // (401) and token_refresh ('failed').
                         if ($logFailure) {
                             Log::error('Graph API request failed', [
                                 'method' => $method,
@@ -710,12 +710,12 @@ class GraphClient
             $responseBody = json_decode((string) $e->getResponse()->getBody(), true);
         }
 
+        // #5533 / C-56: status only. The endpoint holds the mailbox on users/ paths, and Guzzle's
+        // message holds the request URI and the start of Graph's response body.
         if ($log) {
             Log::error('Graph API request failed', [
                 'method' => $method,
-                'endpoint' => $endpoint,
                 'status' => $statusCode,
-                'error' => $e->getMessage(),
             ]);
         }
 
