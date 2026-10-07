@@ -586,8 +586,12 @@ class EmailItemAttachmentLoggingTest extends TestCase
         }
         $this->assertSame($ticket->id, $email->fresh()->ticket_id);
         // The first read's own failure records predate r2 (a residual Jeeves files); the retry
-        // itself succeeded, so it writes no failure record of its own.
-        $this->assertSame([], $this->withMessage('[EmailService] Attachment re-read after ticket creation failed'));
+        // itself succeeded, so it writes no record of its own. Both of its record messages are
+        // asserted absent; EmailRetryCorrectnessTest shows each one firing (#5446).
+        foreach (['[EmailService] Attachment retry after ticket creation threw',
+            '[EmailService] Attachment retry after ticket creation skipped; ticket state changed since creation'] as $retryRecord) {
+            $this->assertSame([], $this->withMessage($retryRecord));
+        }
         $this->assertCount($firstReadFails ? 1 : 0, $this->withMessage('[AttachmentService] Failed to fetch email attachments'));
     }
 
@@ -624,7 +628,8 @@ class EmailItemAttachmentLoggingTest extends TestCase
         $this->assertNull(Ticket::findOrFail($ticket->id)->description_html);
         $this->assertSame(0, Attachment::count());
         // Each failed read writes its own existing record pair; nothing else is written,
-        // in particular no '[EmailService] Attachment re-read after ticket creation failed'.
+        // in particular no '[EmailService] Attachment retry after ticket creation threw' (a failed
+        // read never reaches the retry's catch: downloadEmailAttachments returns null, #5448).
         $loud = array_map(fn (LogRecord $r) => $r->message, $this->records(Level::Warning));
         $this->assertEqualsCanonicalizing([
             'Graph API request failed', '[AttachmentService] Failed to fetch email attachments',
