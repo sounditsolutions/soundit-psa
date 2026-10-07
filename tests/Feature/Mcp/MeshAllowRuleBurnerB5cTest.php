@@ -14,6 +14,7 @@ use App\Services\Mesh\MeshAllowRuleReaper;
 use App\Services\Mesh\MeshWriteClient;
 use App\Support\McpConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Testing\TestResponse;
 use Mockery;
@@ -55,11 +56,34 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
 
     private const AT_APPROVAL = ' No upstream call was made and the lifetime on this proposal was NOT applied.';
 
+    /** #5568: what an approval-time dedup refusal says it did to the card. */
+    private const CARD_CLOSED = ' This card is closed, not returned to the approval queue, so approving it again cannot create a rule. Only this card is closed; any other proposal already staged for this sender stays as it is.';
+
     private ?string $token = null;
+
+    /**
+     * G-5 (#5567): every Mesh call here goes through the MeshWriteClient
+     * double. HTTP is faked with NO stubbed URL and stray requests are
+     * prevented, so any raw request (the read client, a vendor call) throws
+     * instead of leaving the box or being answered with a silent 200, and
+     * tearDown() asserts none was sent.
+     */
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Http::fake([]);
+        Http::preventStrayRequests();
+    }
+
+    protected function tearDown(): void
+    {
+        Http::assertNothingSent();
+        parent::tearDown();
+    }
 
     private function configureMesh(): void
     {
-        Setting::setEncrypted('mesh_api_key', 'k');
+        Setting::setEncrypted('mesh_api_key', 'test-placeholder-not-a-key');
     }
 
     private function configureAiActor(): User
@@ -238,6 +262,13 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
         $this->assertStringNotContainsString('already allowed', $answer['error']);
         $this->assertSame($runsBefore, TechnicianRun::count(), 'nothing was staged');
         $this->assertSame($blockedBefore + 1, $this->blocked('mesh_stage_add_allow_rule'), 'the refusal is audited as a refusal');
+        // #5571: the audit row says what the operator was told. The MCP
+        // controller prepends its staged-downgrade notice to the answer, so
+        // the executor's refusal, which is what is audited, is its suffix.
+        $summary = (string) $this->lastBlockedSummary('mesh_stage_add_allow_rule');
+        $this->assertStringStartsWith('An allow rule for ', $summary);
+        $this->assertLessThan(1000, mb_strlen($summary), 'an untruncated summary, so the whole refusal is compared');
+        $this->assertStringEndsWith($summary, $answer['error']);
 
         return $answer['error'];
     }
@@ -245,6 +276,11 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
     private function blocked(string $actionType): int
     {
         return TechnicianActionLog::query()->where('action_type', $actionType)->where('result_status', 'blocked')->count();
+    }
+
+    private function lastBlockedSummary(string $actionType): ?string
+    {
+        return TechnicianActionLog::query()->where('action_type', $actionType)->where('result_status', 'blocked')->latest('id')->value('summary');
     }
 
     // ---- #5487 / #5495: unresolved is refused, and says what recovers it ---
@@ -276,10 +312,12 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
 
         $error = $this->assertRefused(fn () => $this->restage($fixture));
         $this->assertStringEndsWith(
-            "An allow rule for '".self::SENDER."' was created for this client recently as PSA record #{$record->id}, but whether that rule is live upstream was never proved (state 'unresolved'), so it is not answered as already in place. "
+            "An allow rule for '".self::SENDER."' was created for this client recently as PSA record #{$record->id}, but the PSA cannot currently say whether that rule is live upstream (state 'unresolved'), so it is not answered as already in place. "
                 .'Its expiry ('.$record->expires_at->toDayDateTimeString().' UTC) has passed, so the expiry job tries to identify the rule and remove it. Nothing was staged now.',
             $error,
         );
+        // #5569: this record WAS measured live with an id at creation.
+        $this->assertStringNotContainsString('never proved', $error);
     }
 
     /**
@@ -299,7 +337,7 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
         $record = $this->approveCleanCreate($actor, $write, $this->stageAdd($fixture), 'rule-b5c-ident');
         $record->forceFill(['state' => MeshAllowRule::STATE_UNRESOLVED, 'mesh_rule_id' => null])->save();
 
-        $opener = "An allow rule for '".self::SENDER."' was created for this client recently as PSA record #{$record->id}, but whether that rule is live upstream was never proved (state 'unresolved'), so it is not answered as already in place. ";
+        $opener = "An allow rule for '".self::SENDER."' was created for this client recently as PSA record #{$record->id}, but the PSA cannot currently say whether that rule is live upstream (state 'unresolved'), so it is not answered as already in place. ";
         $error = $this->assertRefused(fn () => $this->restage($fixture));
         $this->assertStringEndsWith(
             $opener.'Its scope WAS confirmed when it was created, so the expiry job only has to identify it: once one rule in Mesh carries its sender and comment, the record goes active with that id and the remove and edit verbs can reach it. '
@@ -364,15 +402,22 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
         $this->assertStringEndsWith($live.' Nothing was staged now.', $error);
 
         $write->shouldNotReceive('createAllowRule');
+        $before = $this->blocked('mesh_add_allow_rule');
         $this->actingAs($actor)->post(route('cockpit.approve', $cardB))->assertSessionHas('error');
         $this->assertSame($live.self::AT_APPROVAL, (string) session('error'));
+        // A live-brake refusal (outside the window) keeps releasing the card:
+        // the record it names still refuses every later click. #5562: exactly
+        // one audited blocked row, carrying the refusal.
         $this->assertSame(TechnicianRunState::AwaitingApproval, $cardB->fresh()->state);
+        $this->assertSame($before + 1, $this->blocked('mesh_add_allow_rule'));
+        $this->assertSame($live.self::AT_APPROVAL, $this->lastBlockedSummary('mesh_add_allow_rule'));
     }
 
     /**
-     * The DATED display_id_lost arm keeps its re-identification promise,
-     * which is true there (reapOne() resolves a missing id by sender and
-     * comment), and its id-less record is refused, naming that promise.
+     * The DATED display_id_lost arm names the expiry job's re-identification
+     * as an attempt (#5563): reapOne() tries the sender+comment match and,
+     * when nothing matches, records the row unresolved (executed in the
+     * unresolved test above). Its id-less record is refused, naming that.
      * Positive control for the permanent arm above: a swap of the two arms
      * fails one test or the other.
      */
@@ -385,7 +430,9 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
 
         $record = $this->approveCleanCreate($actor, $write, $this->stageAdd($fixture), 'rule-b5c-dated');
         $message = $this->editWithIdLost($actor, $write, $fixture, $record, now()->addDays(10)->toIso8601String());
-        $this->assertStringContainsString("PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared so the expiry job re-identifies the rule by sender and comment when it is due. Check the rule in the Mesh portal.", $message);
+        $this->assertStringContainsString("PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared, so when it is due the expiry job tries to re-identify the rule by sender and comment and remove it. "
+            .'If no rule in Mesh matches then, the record is marked unresolved and keeps blocking new allow rules for this sender. Check the rule in the Mesh portal.', $message);
+        $this->assertStringNotContainsString('re-identifies', $message);
         $this->assertStringNotContainsString('now PERMANENT', $message);
 
         $error = $this->assertRefused(fn () => $this->restage($fixture));
@@ -452,9 +499,11 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
     /**
      * #5497 item 1: the approval-time dedup arm reads the record's state. A
      * card staged before the first approval is approved after that rule was
-     * removed (inside the window): it is refused, the card goes back to
-     * awaiting approval, and nothing reaches Mesh. Before b5c it answered
-     * idempotent 'already created recently' over a removed rule.
+     * removed (inside the window): it is refused and nothing reaches Mesh.
+     * Before b5c it answered idempotent 'already created recently' over a
+     * removed rule. #5568: the refused card is CLOSED (Done), not released,
+     * and the text says so; the 25-hour re-approval below is the click that
+     * created a second rule when the card went back to awaiting approval.
      */
     public function test_the_approval_time_dedup_refuses_a_removed_record(): void
     {
@@ -472,12 +521,20 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
         $this->actingAs($actor)->post(route('cockpit.approve', $cardB))->assertSessionHas('error');
         $this->assertSame(
             "An allow rule for '".self::SENDER."' was created for this client recently as PSA record #{$record->id}, but an approved mesh_remove_allow_rule has since proved it absent upstream (state 'removed'). "
-                .'That proves only that the rule this record tracked is gone; the PSA has not checked whether any other rule for this sender is in force on the tenant.'.self::AT_APPROVAL,
+                .'That proves only that the rule this record tracked is gone; the PSA has not checked whether any other rule for this sender is in force on the tenant.'.self::AT_APPROVAL.self::CARD_CLOSED,
             (string) session('error'),
         );
-        $this->assertSame(TechnicianRunState::AwaitingApproval, $cardB->fresh()->state, 'a refusal releases the card');
+        $this->assertSame(TechnicianRunState::Done, $cardB->fresh()->state, '#5568: the refused card is closed, not released');
         $this->assertSame($before + 1, $this->blocked('mesh_add_allow_rule'));
+        $this->assertSame((string) session('error'), $this->lastBlockedSummary('mesh_add_allow_rule'), '#5571: the audit row is the refusal');
         $this->assertSame(0, TechnicianActionLog::where('summary', 'Duplicate Mesh allow rule suppressed before upstream call.')->count());
+
+        // #5568, executed: past the window the card cannot be approved again,
+        // so the removed rule is not re-created by it.
+        $this->travel(25)->hours();
+        $this->actingAs($actor)->post(route('cockpit.approve', $cardB));
+        $this->assertSame(TechnicianRunState::Done, $cardB->fresh()->state);
+        $this->assertSame(1, MeshAllowRule::count(), 'no second record, so no second create');
     }
 
     /**
@@ -526,8 +583,14 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
         $this->assertStringNotContainsString(self::PERMANENT_UNTIL, $error);
 
         $write->shouldNotReceive('createAllowRule');
+        $before = $this->blocked('mesh_add_allow_rule');
         $this->actingAs($actor)->post(route('cockpit.approve', $cardB))->assertSessionHas('error');
-        $this->assertStringEndsWith($why.self::AT_APPROVAL, (string) session('error'));
+        $this->assertStringEndsWith($why.self::AT_APPROVAL.self::CARD_CLOSED, (string) session('error'));
+        // #5562: one audited blocked row carrying the refusal, and the card's
+        // fate pinned (#5568: closed, never released).
+        $this->assertSame($before + 1, $this->blocked('mesh_add_allow_rule'));
+        $this->assertSame((string) session('error'), $this->lastBlockedSummary('mesh_add_allow_rule'));
+        $this->assertSame(TechnicianRunState::Done, $cardB->fresh()->state);
     }
 
     /**
@@ -660,7 +723,10 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
      * PERMANENT_UNTIL_NO_ID says mesh_remove_allow_rule would not close this
      * record. Executed, not inferred from a card label: the rule is still in
      * Mesh under another id, the removal is approved and proved, and the
-     * id-less PSA record stays ACTIVE (and keeps being refused).
+     * id-less PSA record stays ACTIVE and keeps refusing the sender: a
+     * re-stage after the removal, inside the window and after it, is
+     * refused (#5565, executed). #5570: the card and the summary name that
+     * record instead of calling the rule foreign.
      */
     public function test_an_approved_removal_of_the_rekeyed_rule_does_not_close_the_id_less_record(): void
     {
@@ -685,12 +751,24 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
         $write->shouldReceive('ruleAbsent')->once()->with('rule-b5c-rekeyed')->andReturn(true);
         $this->actingAs($actor)->post(route('cockpit.approve', TechnicianRun::findOrFail($staged['run_id'])))->assertSessionHas('success');
 
+        $unlinked = "The PSA holds no record under this rule id, but PSA record #{$record->id} (state 'active', no recorded rule id) carries this rule's sender and comment. "
+            .'That record is NOT closed by this removal: the PSA cannot prove it tracks this rule, so it stays as it is.';
+        $this->assertStringContainsString($unlinked, TechnicianRun::findOrFail($staged['run_id'])->proposed_content);
         $summary = TechnicianActionLog::where('action_type', 'mesh_remove_allow_rule')->where('result_status', 'executed')->sole()->summary;
-        $this->assertStringContainsString('The rule was foreign — the PSA held no record of it.', $summary);
+        $this->assertStringEndsWith(' '.$unlinked, $summary);
+        $this->assertStringNotContainsString('foreign', $summary);
+        $this->assertStringNotContainsString('held no record', $summary);
         $record->refresh();
         $this->assertSame(MeshAllowRule::STATE_ACTIVE, $record->state, 'the removal did not close this record');
         $this->assertNull($record->removed_at);
         $this->assertNull($record->mesh_rule_id);
+
+        // #5565: and it keeps being refused, inside the window and after it.
+        $error = $this->assertRefused(fn () => $this->restage($fixture));
+        $this->assertStringContainsString("as PSA record #{$record->id}, but Mesh stopped returning the rule under its recorded id", $error);
+        $this->travel(25)->hours();
+        $error = $this->assertRefused(fn () => $this->restage($fixture));
+        $this->assertStringContainsString("is recorded for this client as PSA record #{$record->id}, but Mesh stopped returning the rule under its recorded id", $error);
     }
 
     // ---- #5497 item 5: the two reaper settle notes #5156 reworded -----------
@@ -717,8 +795,25 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
         app(MeshAllowRuleReaper::class)->reap();
 
         $this->assertSame(MeshAllowRule::STATE_ACTIVE, $settled->fresh()->state);
-        Log::shouldHaveReceived('info')->withArgs(fn (string $m): bool => str_ends_with($m,
-            "Upstream rule id is 'rule-b5c-s1', and this rule's scope was confirmed by its create response, so the PERMANENT rule is now recorded active. It has no expiry, so the expiry job never removes it; ".self::PERMANENT_UNTIL.'.'))->once();
+        $settledNote = "Upstream rule id is 'rule-b5c-s1', and this rule's scope was confirmed by its create response, so the PERMANENT rule is now recorded active. It has no expiry, so the expiry job never removes it; ".self::PERMANENT_UNTIL.'.';
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m): bool => str_ends_with($m, $settledNote))->once();
+
+        $unprovedNote = "Upstream rule id is 'rule-b5c-s2'. An id is not scope evidence";
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m): bool => str_contains($m, "mesh_allow_rules#{$unproved->id} ") && str_contains($m, $unprovedNote))->once();
+
+        // #5572 (G-14 control wording): each note at its own level only,
+        // never at another level and never through the generic entries.
+        foreach (['emergency', 'alert', 'critical', 'error', 'warning', 'notice', 'info', 'debug'] as $level) {
+            if ($level !== 'info') {
+                Log::shouldNotHaveReceived($level, [Mockery::on(fn ($m): bool => is_string($m) && str_contains($m, $settledNote))]);
+            }
+            if ($level !== 'warning') {
+                Log::shouldNotHaveReceived($level, [Mockery::on(fn ($m): bool => is_string($m) && str_contains($m, $unprovedNote))]);
+            }
+        }
+        foreach (['log', 'write'] as $generic) {
+            Log::shouldNotHaveReceived($generic, [Mockery::any(), Mockery::on(fn ($m): bool => is_string($m) && (str_contains($m, $settledNote) || str_contains($m, $unprovedNote)))]);
+        }
 
         $note = "Upstream rule id is 'rule-b5c-s2'. An id is not scope evidence, so this PERMANENT rule stays unresolved: the expiry job never removes it while it has no expiry, and it keeps refusing new allow rules for this sender. "
             .'Checking the rule in the Mesh portal does not change that — the record closes when the PSA proves the rule removed: an approved mesh_remove_allow_rule does that directly, and once an approved mesh_edit_allow_rule gives the rule a date, the expiry job does it after that date passes; otherwise the record has to be cleared by hand.';

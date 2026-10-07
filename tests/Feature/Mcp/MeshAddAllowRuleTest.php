@@ -187,13 +187,19 @@ class MeshAddAllowRuleTest extends TestCase
         ] as $oldSpelling) {
             $this->assertMatchesRegularExpression($defaultLifetime, $oldSpelling, "the regex must catch the old spelling '{$oldSpelling}'");
         }
-        // #5415: the staged alias's description is checked as well; it is
-        // dispatch-reachable and was one of the texts that carried a default.
-        $stagedAlias = collect(\App\Services\Mcp\StaffMeshAdminToolExecutor::definitions())->keyBy('name')['mesh_stage_add_allow_rule'];
+        // #5415 / #5489: a staged-only token is served the stage alias's
+        // description under the public name (McpToolModes::unifyDefinition()),
+        // so $definition already IS that text. The direct definition, which a
+        // non-staged-mode grant is served, is read separately here; before
+        // #5489 nothing ran it through this regex.
+        $definitions = collect(\App\Services\Mcp\StaffMeshAdminToolExecutor::definitions())->keyBy('name');
+        $stagedAlias = $definitions['mesh_stage_add_allow_rule'];
+        $direct = $definitions['mesh_add_allow_rule'];
         foreach ([
             'description' => $definition['description'],
             'expires_at' => $definition['inputSchema']['properties']['expires_at']['description'],
-            'staged alias description' => $stagedAlias['description'],
+            'direct description' => $direct['description'],
+            'direct expires_at' => $direct['input_schema']['properties']['expires_at']['description'],
             // #5497 item 7: the alias's own expires_at schema text too.
             'staged alias expires_at' => $stagedAlias['input_schema']['properties']['expires_at']['description'],
         ] as $label => $text) {
@@ -709,6 +715,9 @@ class MeshAddAllowRuleTest extends TestCase
     /**
      * The reaper writes STATE_REAPED only after a detail GET returned 404, so
      * the PSA has PROVED its recorded rule absent (that one id; b5c #5486).
+     * STATE_REMOVED (an approved mesh_remove_allow_rule whose ruleAbsent()
+     * read proved the same) takes the same refusal (#5410, #5492), so REAPED
+     * is one of two proved-absent states here, not the only one.
      * Answering it success:true/idempotent:true put that certainty on the
      * machine-readable channel as an effect that does not exist, while only the
      * prose said otherwise — and the strictly LESS certain case (no PSA row at
@@ -1407,6 +1416,15 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertTrue($retry['idempotent'] ?? false, 'expected an idempotent answer, got: '.json_encode($retry));
         $this->assertSame($first['run_id'], $retry['run_id']);
         $this->assertSame(1, TechnicianRun::count());
+
+        // #5494: the other three channels the EXPIRY_NEVER docblock names,
+        // read for the OMITTED key: the staging result, the redacted card
+        // params and the encrypted payload all carry 'never'.
+        $this->assertSame('never', $first['expires_at'] ?? null, json_encode($first));
+        $run = TechnicianRun::findOrFail($first['run_id']);
+        $this->assertSame('never', $run->proposed_meta['redacted_params']['expires_at'] ?? null);
+        $payload = json_decode(\Illuminate\Support\Facades\Crypt::decryptString($run->proposed_meta['encrypted_payload']), true);
+        $this->assertSame('never', $payload['arguments']['expires_at'] ?? null);
     }
 
     /**
