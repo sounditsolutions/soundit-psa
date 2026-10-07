@@ -1647,8 +1647,13 @@ PROMPT;
                 continue;
             }
             try {
-                // #5553: a row whose storage_path update failed still names the placeholder, so
-                // the file is looked for under the row's own directory as well.
+                // #5553: a row whose storage_path update failed or never ran (a store killed by
+                // the job's timeout) still names the placeholder, so the model hook did not
+                // delete its file: the row's own directory (attachments/{id}, this row's only)
+                // is removed too, then looked for.
+                if (! $halted) {
+                    $disk->deleteDirectory("attachments/{$attachment->id}");
+                }
                 $gone = ! $halted
                     && ! \App\Models\Attachment::withTrashed()->whereKey($attachment->id)->exists()
                     && ! $disk->exists($attachment->storage_path)

@@ -989,15 +989,20 @@ class EmailRetryCorrectnessTest extends TestCase
 
     public function test_a_file_the_disk_did_not_delete_is_reported_by_id(): void
     {
-        // #5545: Storage::delete returns false rather than throwing; the row goes, the file stays.
-        $this->graph([$this->failedRead(), $this->readDuring(
-            fn () => Ticket::query()->firstOrFail()->update(['description' => 'tech edit']),
-        )]);
+        // #5545: the disk refuses the deletes (delete and deleteDirectory return false rather
+        // than throwing); the row goes, the file stays.
+        $this->graph([$this->failedRead(), $this->readDuring(function () {
+            Ticket::query()->firstOrFail()->update(['description' => 'tech edit']);
+            $real = Storage::disk('local');
+            $disk = \Mockery::mock(\Illuminate\Filesystem\FilesystemAdapter::class, [$real->getDriver(), $real->getAdapter(), $real->getConfig()])->makePartial();
+            $disk->shouldReceive('delete')->andReturn(false);
+            $disk->shouldReceive('deleteDirectory')->andReturn(false);
+            Storage::set('local', $disk);
+        })]);
         $email = $this->email();
         $kept = null;
         Attachment::forceDeleting(function (Attachment $a) use (&$kept) {
             $kept = $a->id;
-            $a->storage_path = 'attachments/elsewhere/none'; // the model hook deletes a path that is not the file
         });
 
         app(EmailService::class)->autoCreateTicketFromEmail($email);

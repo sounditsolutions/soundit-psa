@@ -468,20 +468,24 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->mock->append($this->read());
         $killed = false;
         // At the storage_path update the row is created (and tracked) and its file is written.
-        Attachment::updating(function () use ($job, &$killed, $ticketId) {
+        $atKill = null;
+        // Nothing here may assert: a failed assertion would be caught by the code under test.
+        Attachment::updating(function () use ($job, &$killed, &$atKill, $ticketId) {
             if ($killed) {
                 return;
             }
             $killed = true;
-            $this->assertSame(1, Attachment::count(), 'positive control: the row exists at the kill');
-            $this->assertCount(1, Storage::disk('local')->allFiles('attachments'), 'and its file');
+            $before = [Attachment::count(), count(Storage::disk('local')->allFiles('attachments'))];
             $this->timeOut($job);
             // The worker kills the process right after failed(); what it leaves is read here.
-            $this->assertSame(0, Attachment::withTrashed()->count(), 'the stored row is discarded');
-            $this->assertSame([], Storage::disk('local')->allFiles('attachments'), 'and its file');
-            $this->assertSame(['timed_out'], array_map(fn ($r) => $r->context['reason'], $this->withMessage(RetryEmailAttachments::MARKER)));
-            $this->assertCount(1, $this->markerNotes($ticketId));
-            $this->assertSame([['notifyEmailAdded', $ticketId, 0]], $this->seen->getArrayCopy());
+            $atKill = [
+                'before' => $before,
+                'rows' => Attachment::withTrashed()->count(),
+                'files' => Storage::disk('local')->allFiles('attachments'),
+                'markers' => array_map(fn ($r) => $r->context['reason'], $this->withMessage(RetryEmailAttachments::MARKER)),
+                'notes' => count($this->markerNotes($ticketId)),
+                'seen' => $this->seen->getArrayCopy(),
+            ];
             throw new \RuntimeException('B4I-SYNTHETIC-KILLED'); // stands in for the kill
         });
 
@@ -491,5 +495,13 @@ class RetryEmailAttachmentsJobTest extends TestCase
         }
 
         $this->assertTrue($killed, 'positive control: the kill point was reached');
+        $this->assertSame([
+            'before' => [1, 1],
+            'rows' => 0,
+            'files' => [],
+            'markers' => ['timed_out'],
+            'notes' => 1,
+            'seen' => [['notifyEmailAdded', $ticketId, 0]],
+        ], $atKill, 'row and file existed at the kill; failed() discarded both, wrote the marker and notified');
     }
 }
