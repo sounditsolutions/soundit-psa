@@ -27,7 +27,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
 {
     private const TENANT = 'tenant-b4c-synthetic';
 
-    private const SECRET = 'b4c-synthetic-secret-not-real';
+    private const SECRET_FIXTURE = 'b4c-synthetic-secret-not-real';
 
     private const MAILBOX = 'support@example.test';
 
@@ -94,7 +94,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
         return new GraphClient([
             'tenant_id' => self::TENANT,
             'client_id' => 'b4c-client',
-            'client_secret' => self::SECRET,
+            'client_secret' => self::SECRET_FIXTURE,
             'request_timeout' => 5,
             'token_timeout' => 5,
             'handler' => $stack,
@@ -118,7 +118,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
     /** @return list<string> */
     private function needles(): array
     {
-        return [self::IDP_MARKER, 'AADSTS', 'invalid_client', 'temporarily_unavailable', self::TENANT, self::SECRET,
+        return [self::IDP_MARKER, 'AADSTS', 'invalid_client', 'temporarily_unavailable', self::TENANT, self::SECRET_FIXTURE,
             'login.microsoftonline.com', 'oauth2', self::GRAPH_401_MARKER, 'InvalidAuthenticationToken',
             self::MAILBOX, rawurlencode(self::MAILBOX), 'graph.microsoft.com', 'cURL'];
     }
