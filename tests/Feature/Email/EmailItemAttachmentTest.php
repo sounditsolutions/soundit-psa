@@ -1300,7 +1300,8 @@ class EmailItemAttachmentTest extends TestCase
         // WARNING, whose 'error' is the GraphClientException message.
         $graph = $this->graph([new Response(500, [], json_encode(['error' => ['code' => 'InternalServerError', 'message' => self::GRAPH_ERROR_TEXT]]))]);
 
-        $this->assertNull(app(AttachmentService::class)->downloadEmailAttachments($this->email(), $graph, self::MAILBOX));
+        $email = $this->email();
+        $this->assertNull(app(AttachmentService::class)->downloadEmailAttachments($email, $graph, self::MAILBOX));
 
         $records = $this->records();
         $this->assertSame(
@@ -1310,14 +1311,38 @@ class EmailItemAttachmentTest extends TestCase
         // #5533: GraphClient's record is status-only.
         $this->assertSame(['method' => 'GET', 'status' => 500], $records[0]->context);
         $this->assertSame([], $this->graphFailureLeaks($records[0]), '#5533: GraphClient record');
-        // #5679: AttachmentService::downloadEmailAttachments' message-read catch still logs the
-        // GraphClientException message (that catch is the email batch's to change), but the
-        // message no longer carries the endpoint, so the WARNING carries no needle either.
-        $this->assertSame(['email_id', 'graph_id', 'error'], array_keys($records[1]->context));
-        $this->assertSame('Graph API error: GET returned 500', $records[1]->context['error']);
-        $this->assertSame([], $this->graphFailureLeaks($records[1]), '#5679: the WARNING carries no forbidden needle');
+        // b4i / C-56: AttachmentService::downloadEmailAttachments' message-read catch logs ids,
+        // the HTTP status and the exception class only; the exception message is not a carrier
+        // any more. Exactly these keys and values, so a returning 'error' key fails here.
+        $this->assertSame([
+            'email_id' => $email->id,
+            'graph_id' => 'MSG-1',
+            'status' => 500,
+            'exception' => \App\Services\Graph\GraphClientException::class,
+        ], $records[1]->context);
+        $this->assertSame([], $this->graphFailureLeaks($records[1]), 'the WARNING carries no forbidden needle');
         // Positive control: the request that failed did hold the mailbox in its path.
         $this->assertStringContainsString('users/'.self::MAILBOX.'/messages/MSG-1', urldecode((string) end($this->history)['request']->getUri()));
+    }
+
+    public function test_a_non_graph_message_read_throw_is_recorded_by_class_with_no_status_and_no_message(): void
+    {
+        // b4i: the message-read catch takes any Throwable; a non-Graph one's message can name the
+        // mailbox, and its code is not an HTTP status.
+        $graph = \Mockery::mock(GraphClient::class);
+        $graph->shouldReceive('getMessageAttachments')->andThrow(new \RuntimeException(self::NON_GRAPH_DETAIL.' '.self::MAILBOX, 503));
+        $email = $this->email();
+
+        $this->assertNull(app(AttachmentService::class)->downloadEmailAttachments($email, $graph, self::MAILBOX));
+
+        $records = $this->records();
+        $this->assertCount(1, $records, $this->describe($records));
+        $this->assertSame('[AttachmentService] Failed to fetch email attachments', $records[0]->message);
+        $this->assertSame(
+            ['email_id' => $email->id, 'graph_id' => 'MSG-1', 'status' => null, 'exception' => \RuntimeException::class],
+            $records[0]->context,
+        );
+        $this->assertNoLeakInLogs([self::NON_GRAPH_DETAIL, self::MAILBOX]);
     }
 
     public function test_item_value_read_failure_writes_no_request_failed_error(): void

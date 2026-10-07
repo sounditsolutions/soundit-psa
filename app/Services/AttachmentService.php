@@ -221,10 +221,16 @@ class AttachmentService
         try {
             $graphAttachments = $graph->getMessageAttachments($mailbox, $email->graph_id);
         } catch (\Throwable $e) {
+            // C-56: ids, the HTTP status and the exception class only, never the message. A
+            // GraphClientException's message no longer names the endpoint (#5679), but any other
+            // Throwable's message is not known to be free of the mailbox or vendor text. status is
+            // null when there is no HTTP status (connect/timeout, token failure, non-Graph throw).
+            $httpStatus = $e instanceof GraphClientException ? $e->getHttpStatus() : 0;
             Log::warning('[AttachmentService] Failed to fetch email attachments', [
                 'email_id' => $email->id,
                 'graph_id' => $email->graph_id,
-                'error' => $e->getMessage(),
+                'status' => $httpStatus > 0 ? $httpStatus : null,
+                'exception' => $e::class,
             ]);
 
             return null;

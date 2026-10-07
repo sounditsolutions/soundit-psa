@@ -216,11 +216,10 @@ class EmailItemAttachmentLoggingTest extends TestCase
         $backoff = $this->withMessage('[GraphClient] Rate limited, backing off');
         $this->assertCount(1, $backoff, 'positive control: the 429 branch ran and logged');
         $this->assertSame(Level::Warning, $backoff[0]->level);
-        $this->assertSame(
-            'users/{redacted}/messages/MSG-1/attachments/ATT-ITEM-1/$value',
-            $backoff[0]->context['endpoint'] ?? null,
-        );
-        $this->assertSame(1, $backoff[0]->context['attempt'] ?? null);
+        // #5672 / C-56: status, attempt and wait only; no endpoint, so neither the mailbox nor
+        // the message or attachment id in the path reaches the record.
+        $this->assertSame(['status' => 429, 'attempt' => 1, 'wait_seconds' => 1], $backoff[0]->context);
+        $this->assertStringNotContainsString('ATT-ITEM-1', json_encode($backoff[0]->context).$backoff[0]->message);
         $this->assertNoRecordContains([self::MAILBOX, rawurlencode(self::MAILBOX), 'support%40', 'support@']);
     }
 
@@ -236,8 +235,26 @@ class EmailItemAttachmentLoggingTest extends TestCase
 
         $backoff = $this->withMessage('[GraphClient] Rate limited, backing off');
         $this->assertCount(1, $backoff, 'positive control: the 429 branch ran and logged');
-        $this->assertSame('users/{redacted}/messages/MSG-1', $backoff[0]->context['endpoint'] ?? null);
+        $this->assertSame(['status' => 429, 'attempt' => 1, 'wait_seconds' => 1], $backoff[0]->context);
         $this->assertNoRecordContains([self::MAILBOX, rawurlencode(self::MAILBOX)]);
+    }
+
+    public function test_429_backoff_record_carries_no_chat_or_message_id_on_a_non_mailbox_path(): void
+    {
+        // #5672: a path with no users/ segment (a Teams chat message) kept every id under the
+        // old redaction. Positive control: the request that was backed off did carry them.
+        $graph = $this->graph([
+            new Response(429, ['Retry-After' => '1'], '{}'),
+            new Response(200, ['Content-Type' => 'application/json'], '{}'),
+        ]);
+
+        $graph->get('chats/CHAT-ID-1/messages/MSG-ID-1');
+
+        $this->assertStringContainsString('chats/CHAT-ID-1/messages/MSG-ID-1', (string) $this->history[0]['request']->getUri());
+        $backoff = $this->withMessage('[GraphClient] Rate limited, backing off');
+        $this->assertCount(1, $backoff, 'positive control: the 429 branch ran and logged');
+        $this->assertSame(['status' => 429, 'attempt' => 1, 'wait_seconds' => 1], $backoff[0]->context);
+        $this->assertNoRecordContains(['CHAT-ID-1', 'MSG-ID-1', 'chats/']);
     }
 
     // ── #5397: a token failure logs and throws no vendor text ──
