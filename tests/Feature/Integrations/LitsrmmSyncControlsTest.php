@@ -174,7 +174,7 @@ class LitsrmmSyncControlsTest extends TestCase
         $client = $this->mapped();
         $code = "{$client->id}:b:1:5:4:5:1:0";
         $result = new SyncResult;
-        $result->recordError("client {$client->id}: refused as a short read (rule b: fixture). If the change is real, re-run litsrmm:sync-devices with --accept-short-read set to the code on the next line, pasted exactly (a bare client id is rejected):\n{$code}");
+        $result->recordError("client {$client->id}: refused as a short read (rule b: fixture). If the change is real, re-run litsrmm:sync-devices with --accept-short-read set to the code that follows, pasted exactly (a bare client id is rejected):\n{$code}");
         $result->recordSkipped('WORKSTATION-1: a fixture skip');
         $this->syncService()->shouldReceive('sync')->once()
             ->withArgs(fn (...$args) => $args[0]?->id === $client->id && ($args[1] ?? []) === [])

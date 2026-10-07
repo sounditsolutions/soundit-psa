@@ -1881,10 +1881,10 @@ class LitsrmmAssetSyncTest extends TestCase
         $ids = [$this->client->id, $other->id, 999999];
         sort($ids);
         $this->assertSame($ids, $result->details['short_read_accept_unused']);
-        $this->assertStringContainsString('--accept-short-read passed nothing for PSA client ID(s) '.implode(', ', $ids).'.', LitsrmmAssetSyncService::describe($result));
+        $this->assertStringContainsString('For each of PSA client ID(s) '.implode(', ', $ids).', an --accept-short-read code given for it passed nothing.', LitsrmmAssetSyncService::describe($result));
         $this->assertStringNotContainsString('synced past the short-read bound', LitsrmmAssetSyncService::describe($result));
         Log::shouldHaveReceived('warning')
-            ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmAssetSync] --accept-short-read passed nothing for these PSA client ids'
+            ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmAssetSync] for each of these PSA client ids, an --accept-short-read code given for it passed nothing'
                 && $context === ['client_ids' => $ids])
             ->once();
     }
@@ -2285,6 +2285,9 @@ class LitsrmmAssetSyncTest extends TestCase
         $lines = explode("\n", $refused->errorMessages[0]);
         $copied = end($lines);
         $this->assertSame("{$this->client->id}:b:1:5:4:5:1:0", $copied, 'the last line is the code and nothing else');
+        // G-14: the instruction holds on the flash too, where the line break shows as a space.
+        $this->assertStringContainsString('set to the code that follows, pasted exactly (a bare client id is rejected):', $refused->errorMessages[0]);
+        $this->assertStringNotContainsString('next line', LitsrmmAssetSyncService::describe($refused));
         $this->assertTrue(LitsrmmAssetSyncService::isRefusalCode($copied));
 
         $accepted = $this->service()->sync(null, [$copied]);
@@ -2455,7 +2458,7 @@ class LitsrmmAssetSyncTest extends TestCase
         $this->assertNotNull($assets[4]->fresh()->litsrmm_device_id, 'rolled back: no link released');
         self::assertNeverLogged('[LitsrmmAssetSync] client short read accepted by the operator for this run');
         Log::shouldHaveReceived('warning')
-            ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmAssetSync] --accept-short-read passed nothing for these PSA client ids'
+            ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmAssetSync] for each of these PSA client ids, an --accept-short-read code given for it passed nothing'
                 && $context === ['client_ids' => [$this->client->id]])
             ->once();
     }
@@ -2479,6 +2482,7 @@ class LitsrmmAssetSyncTest extends TestCase
     public function test_a_second_code_for_a_client_another_code_passed_is_reported_unused(): void
     {
         // #5789: per code, not per client.
+        Log::spy();
         $this->linkedAssets(5);
         $this->service()->sync();
         $this->rows = array_slice($this->rows, 0, 1);
@@ -2488,6 +2492,15 @@ class LitsrmmAssetSyncTest extends TestCase
 
         $this->assertSame(1, $result->details['short_read_accepted']);
         $this->assertSame([$this->client->id], $result->details['short_read_accept_unused']);
+        // G-14: its other code passed, so nothing says the client passed nothing.
+        $text = LitsrmmAssetSyncService::describe($result);
+        $this->assertStringContainsString("For each of PSA client ID(s) {$this->client->id}, an --accept-short-read code given for it passed nothing.", $text);
+        $this->assertStringNotContainsString('passed nothing for', $text);
+        self::assertNeverLogged('[LitsrmmAssetSync] --accept-short-read passed nothing for these PSA client ids');
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmAssetSync] for each of these PSA client ids, an --accept-short-read code given for it passed nothing'
+                && $context === ['client_ids' => [$this->client->id]])
+            ->once();
     }
 
     public function test_an_accept_given_when_the_list_read_fails_is_reported_unused(): void

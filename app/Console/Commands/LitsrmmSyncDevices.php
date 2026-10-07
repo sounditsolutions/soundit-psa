@@ -110,9 +110,9 @@ class LitsrmmSyncDevices extends Command
         }
 
         if (($result->details['short_read_accept_unused'] ?? []) !== []) {
-            $this->warn('  --accept-short-read passed nothing for PSA client ID(s): '
+            $this->warn('  For each of PSA client ID(s) '
                 .implode(', ', $result->details['short_read_accept_unused'])
-                .' (outside --client, not a mapped active client, its read did not refuse it with exactly that code,'
+                .', an --accept-short-read code given for it passed nothing (outside --client, not a mapped active client, its read did not refuse it with exactly that code,'
                 .' it was then refused as a degraded detail read, the device list read failed so no client was examined,'
                 .' or another code for the same client passed)');
         }

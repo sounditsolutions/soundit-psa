@@ -242,8 +242,8 @@ class LitsrmmAssetSyncService
         }
 
         if (($result->details['short_read_accept_unused'] ?? []) !== []) {
-            $message .= ' --accept-short-read passed nothing for PSA client ID(s) '
-                .implode(', ', $result->details['short_read_accept_unused']).'.';
+            $message .= ' For each of PSA client ID(s) '
+                .implode(', ', $result->details['short_read_accept_unused']).', an --accept-short-read code given for it passed nothing.';
         }
 
         if ($result->skippedMessages !== []) {
@@ -319,7 +319,7 @@ class LitsrmmAssetSyncService
             if ($unused !== []) {
                 sort($unused);
                 $result->details['short_read_accept_unused'] = $unused;
-                Log::warning('[LitsrmmAssetSync] --accept-short-read passed nothing for these PSA client ids', ['client_ids' => $unused]);
+                Log::warning('[LitsrmmAssetSync] for each of these PSA client ids, an --accept-short-read code given for it passed nothing', ['client_ids' => $unused]);
             }
         }
 
@@ -645,7 +645,7 @@ class LitsrmmAssetSyncService
             .'; nothing of this client was changed. Each run checks its own read, so a later read refused the same way'
             .' is refused again, with a code of its own when its counts differ.'
             .($acceptCodes !== [] ? ' The --accept-short-read given for this client named a different refusal, so it was not passed.' : '')
-            .' If the change is real, re-run litsrmm:sync-devices with --accept-short-read set to the code on the next line, pasted exactly'
+            .' If the change is real, re-run litsrmm:sync-devices with --accept-short-read set to the code that follows, pasted exactly'
             ." (a bare client id is rejected):\n{$code}"
         );
 

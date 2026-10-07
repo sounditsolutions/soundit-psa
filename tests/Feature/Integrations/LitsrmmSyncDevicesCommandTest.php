@@ -351,7 +351,7 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $this->realSync([self::row(1)]);
 
         $this->artisan('litsrmm:sync-devices', ['--client' => $client->id, '--accept-short-read' => ['71:a:0:1:1:0:0:0']])
-            ->expectsOutputToContain('--accept-short-read passed nothing for PSA client ID(s): 71')
+            ->expectsOutputToContain('For each of PSA client ID(s) 71, an --accept-short-read code given for it passed nothing')
             ->doesntExpectOutputToContain('Short read accepted')
             ->assertSuccessful();
     }
@@ -365,7 +365,7 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         // #5786: the code is printed as a line of its own; that exact line,
         // fed back, is what passes the refusal.
         $this->artisan('litsrmm:sync-devices')
-            ->expectsOutputToContain('--accept-short-read set to the code on the next line, pasted exactly')
+            ->expectsOutputToContain('--accept-short-read set to the code that follows, pasted exactly')
             ->expectsOutput("{$client->id}:a:0:1:1:0:0:0")
             ->assertFailed();
         $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["{$client->id}:a:0:1:1:0:0:0"]])
