@@ -48,17 +48,16 @@ class AttachmentService
         ]);
 
         $path = "attachments/{$attachment->id}/{$sanitized}";
-        Storage::disk('local')->putFileAs(
+        // #5716: the same rollback as storeFromContent (#5553, #5709).
+        $this->writeOrRollBack($attachment, $path, fn () => Storage::disk('local')->putFileAs(
             "attachments/{$attachment->id}",
             $file,
             $sanitized,
-        );
+        ));
 
-        $attachment->update(['storage_path' => $path]);
-
+        // #5719: ids, size and type only; the client's filename is not logged.
         Log::info('[Attachment] Stored upload', [
             'attachment_id' => $attachment->id,
-            'filename' => $sanitized,
             'size' => $file->getSize(),
             'mime' => $attachment->mime_type,
         ]);
@@ -89,34 +88,53 @@ class AttachmentService
         ]);
 
         $path = "attachments/{$attachment->id}/{$sanitized}";
+        $this->writeOrRollBack($attachment, $path, fn () => Storage::disk('local')->put($path, $content));
+
+        // #5719: ids, size and type only. The filename and the Graph contentId come from the
+        // client's email and are not logged (C-56, the batch's no-filename rule).
+        Log::info('[Attachment] Stored from content', [
+            'attachment_id' => $attachment->id,
+            'size' => strlen($content),
+            'mime' => $mimeType,
+            'is_inline' => $isInline,
+        ]);
+
+        return $attachment;
+    }
+
+    /**
+     * Writes the file through $write, then points the row at $path. #5553/#5709/#5716: when the
+     * write throws or returns false (the local disk is 'throw' => false, so a failed write
+     * returns false), or the storage_path update throws, no row is left naming the placeholder
+     * or a missing file: the file and row are removed, best effort, and the failure is thrown
+     * (a false write as AttachmentStoreFailedException). A cleanup step that throws is recorded
+     * with the attachment id, the step and the exception class.
+     */
+    private function writeOrRollBack(Attachment $attachment, string $path, \Closure $write): void
+    {
         try {
-            Storage::disk('local')->put($path, $content);
+            if ($write() === false) {
+                throw new AttachmentStoreFailedException("Attachment {$attachment->id}: the file write returned false");
+            }
             $attachment->update(['storage_path' => $path]);
         } catch (\Throwable $e) {
-            // #5553: no row is left naming the placeholder path while the real file sits at
-            // $path. Both are removed, best effort, and the failure is rethrown unchanged.
-            try {
-                Storage::disk('local')->delete($path);
-            } catch (\Throwable) {
-            }
-            try {
-                Attachment::withTrashed()->whereKey($attachment->id)->forceDelete();
-            } catch (\Throwable) {
+            foreach ([
+                'file' => fn () => Storage::disk('local')->delete($path),
+                'row' => fn () => Attachment::withTrashed()->whereKey($attachment->id)->forceDelete(),
+            ] as $step => $cleanup) {
+                try {
+                    $cleanup();
+                } catch (\Throwable $cleanupFailure) {
+                    Log::warning('[Attachment] Cleanup after a failed store threw', [
+                        'attachment_id' => $attachment->id,
+                        'step' => $step,
+                        'exception' => $cleanupFailure::class,
+                    ]);
+                }
             }
 
             throw $e;
         }
-
-        Log::info('[Attachment] Stored from content', [
-            'attachment_id' => $attachment->id,
-            'filename' => $sanitized,
-            'size' => strlen($content),
-            'mime' => $mimeType,
-            'is_inline' => $isInline,
-            'content_id' => $contentId,
-        ]);
-
-        return $attachment;
     }
 
     /**

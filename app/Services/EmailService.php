@@ -1635,16 +1635,30 @@ PROMPT;
             }
         }
         foreach ($stored as $attachment) {
+            // #5718: a delete a listener halted (forceDelete() returns false) keeps the row, and
+            // is not counted as discarded; the row's absence is read back before counting.
             try {
-                $attachment->forceDelete();
+                $halted = $attachment->forceDelete() === false;
+            } catch (\Throwable) {
+                $left[] = (int) $attachment->id;
+
+                continue;
+            }
+            try {
                 // #5553: a row whose storage_path update failed still names the placeholder, so
                 // the file is looked for under the row's own directory as well.
-                if ($disk->exists($attachment->storage_path) || $disk->files("attachments/{$attachment->id}") !== []) {
-                    $left[] = (int) $attachment->id;
-                } else {
-                    $discarded++;
-                }
+                $gone = ! $halted
+                    && ! \App\Models\Attachment::withTrashed()->whereKey($attachment->id)->exists()
+                    && ! $disk->exists($attachment->storage_path)
+                    && $disk->files("attachments/{$attachment->id}") === [];
             } catch (\Throwable) {
+                // What is left cannot be confirmed, so the id is reported as left, as when the
+                // delete itself throws (#5717: kept on the conservative side).
+                $gone = false;
+            }
+            if ($gone) {
+                $discarded++;
+            } else {
                 $left[] = (int) $attachment->id;
             }
         }
