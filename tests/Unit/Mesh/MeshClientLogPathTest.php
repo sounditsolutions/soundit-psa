@@ -26,10 +26,13 @@ use Tests\TestCase;
  * holds exactly one response and must be empty afterwards, so the request
  * went through the swapped-in handler and nowhere else. For EVERY shape the
  * handler also records the URI it received, and the row pins that URI's
- * scheme, host, port (none) and user-info (none), its exact path, its query
- * and its fragment. Scheme and host are row values: the absolute rows name
+ * scheme, user-info, host, port, exact path, query and fragment, each to a
+ * row value (user-info and port default to none). Most absolute rows name
  * another host (and one another scheme) than base_uri, so a request that
- * ignored the endpoint's host or scheme fails (#5409). The path keeps the id
+ * ignored the endpoint's host or scheme fails (#5409); one names base_uri's
+ * own host, so the 'host' leak form is driven (#5420); and two carry
+ * user-info and a non-default port, which the request keeps and the log line
+ * drops with the rest of the authority (#5419, #5425). The path keeps the id
  * in the form it was built with (upper-cased or dashless included, a newline
  * percent-encoded), so the log line is redacted and the request is not
  * (#5334). The endpoint's own query is NOT carried: get() always passes
@@ -57,6 +60,14 @@ class MeshClientLogPathTest extends TestCase
 
     private const QUERY_MARKER = 'LOGPATH-QUERY-5c19e2';
 
+    /** Synthetic user-info an absolute endpoint may carry (G-13: not a credential). */
+    private const USER = 'synthuser-5c19';
+
+    private const PASS = 'SYNTHPASS-5c19e2';
+
+    /** A non-default port an absolute endpoint may carry. */
+    private const PORT = 8443;
+
     /** @var list<array{level: string, message: string, context: array}> */
     private array $logged = [];
 
@@ -72,9 +83,11 @@ class MeshClientLogPathTest extends TestCase
      * Endpoint as passed to get() => the path the log line must show => the
      * exact path of the URI the handler received => its exact query (default
      * '') => its exact fragment (default '') => its exact host (default
-     * base_uri's) => its exact scheme (default 'https').
+     * base_uri's) => its exact scheme (default 'https') => its exact
+     * user-info (default '') => its exact port (default null: none, or the
+     * scheme's default).
      *
-     * @return array<string, array{0: string, 1: string, 2: string, 3?: string, 4?: string, 5?: string, 6?: string}>
+     * @return array<string, array{0: string, 1: string, 2: string, 3?: string, 4?: string, 5?: string, 6?: string, 7?: string, 8?: int|null}>
      */
     public static function shapes(): array
     {
@@ -85,6 +98,8 @@ class MeshClientLogPathTest extends TestCase
         // reaches past the newline only under the s flag (#5337).
         $nl = substr($id, 0, 8)."\n".substr($id, 9);
         $q = '?filter='.self::QUERY_MARKER.'&_size=1';
+        $creds = self::USER.':'.self::PASS;
+        $port = self::PORT;
 
         return [
             'customer read (getCustomer shape)' => ["api/customers/{$id}/", 'api/customers/<customer>', "/api/customers/{$id}/"],
@@ -94,6 +109,17 @@ class MeshClientLogPathTest extends TestCase
             // scheme and host (a scheme-relative one keeps base_uri's scheme).
             'absolute URL' => ['http://'.self::ENDPOINT_HOST."/api/customers/{$id}/", '/api/customers/<customer>', "/api/customers/{$id}/", '', '', self::ENDPOINT_HOST, 'http'],
             'scheme-relative URL' => ['//'.self::ENDPOINT_HOST."/api/customers/{$id}/", '/api/customers/<customer>', "/api/customers/{$id}/", '', '', self::ENDPOINT_HOST],
+            // #5425: user-info and a non-default port. The request keeps both
+            // (pinned in columns 7 and 8); the log line drops the whole
+            // authority. The scheme-relative row takes base_uri's scheme and
+            // is a customer list, so logPath() changes it ONLY by stripping
+            // the authority (#5422).
+            'absolute URL, user-info and port' => ["https://{$creds}@".self::ENDPOINT_HOST.":{$port}/api/customers/{$id}/", '/api/customers/<customer>', "/api/customers/{$id}/", '', '', self::ENDPOINT_HOST, 'https', $creds, $port],
+            'scheme-relative customer list, user-info and port' => ['//'.self::USER.'@'.self::ENDPOINT_HOST.":{$port}/api/customers/", '/api/customers/', '/api/customers/', '', '', self::ENDPOINT_HOST, 'https', self::USER, $port],
+            // #5420 / #5422: an absolute customer list on base_uri's OWN host,
+            // changed only by the authority strip; it is the row that drives
+            // the 'host' leak form in the changed-shape loop.
+            "absolute customer list on base_uri's host" => ['https://'.self::HOST.'/api/customers/', '/api/customers/', '/api/customers/'],
             'versioned prefix' => ["api/v2/customers/{$id}/", 'api/v2/customers/<customer>', "/api/v2/customers/{$id}/"],
             'nested prefix' => ["api/partners/p-1/customers/{$id}/", 'api/partners/p-1/customers/<customer>', "/api/partners/p-1/customers/{$id}/"],
             'id containing a slash' => ["api/customers/abc/{$id}/", 'api/customers/<customer>', "/api/customers/abc/{$id}/"],
@@ -138,6 +164,8 @@ class MeshClientLogPathTest extends TestCase
         string $requestFragment = '',
         string $requestHost = self::HOST,
         string $requestScheme = 'https',
+        string $requestUserInfo = '',
+        ?int $requestPort = null,
     ): void {
         [$client, $mock, $seen] = $this->clientAnswering503();
 
@@ -156,15 +184,17 @@ class MeshClientLogPathTest extends TestCase
 
         $this->assertSame(0, $mock->count(), 'the request went through the swapped-in MockHandler');
         $this->assertCount(1, $seen->uris, 'exactly one request reached the handler');
-        // Positive control, every shape: the REQUEST is not redacted. Each
-        // URI component (scheme, user-info, host, port, path, query,
-        // fragment) is pinned to the row's value, so a request sent anywhere
-        // else, or carrying the endpoint's own query, fails here (#5409).
+        // Positive control, every shape: the REQUEST URI is not redacted.
+        // Each URI component (scheme, user-info, host, port, path, query,
+        // fragment) is pinned to a row value (user-info and port default to
+        // none; two rows carry both, #5419, #5425), so a request sent
+        // anywhere else, or carrying the endpoint's own query, fails here
+        // (#5409).
         $uri = new Uri($seen->uris[0]);
         $this->assertSame($requestScheme, $uri->getScheme(), 'positive control: request scheme');
-        $this->assertSame('', $uri->getUserInfo(), 'positive control: request user-info (none)');
+        $this->assertSame($requestUserInfo, $uri->getUserInfo(), 'positive control: request user-info');
         $this->assertSame($requestHost, $uri->getHost(), 'positive control: request host');
-        $this->assertNull($uri->getPort(), 'positive control: request port (the scheme default)');
+        $this->assertSame($requestPort, $uri->getPort(), 'positive control: request port (null: none, or the scheme default)');
         $this->assertSame($requestPath, $uri->getPath(), 'positive control: the request path keeps the id as built');
         $this->assertSame($requestQuery, $uri->getQuery(), "positive control: the request query is get()'s query option, not the endpoint's");
         $this->assertSame($requestFragment, $uri->getFragment(), 'positive control: the request fragment');
@@ -220,48 +250,107 @@ class MeshClientLogPathTest extends TestCase
     }
 
     /**
-     * logPath() itself, reached by reflection, on every shape: each comes
-     * back exactly as the row expects (so an identity logPath() fails on
-     * every changed row, #5335), and a changed row is free of every leak form
-     * the endpoint held. The rows are counted by kind with exact numbers: 17
-     * redact a customer tail to <customer>, 2 are changed only by the query
-     * cut ('customer list with a query', 'leading ?': the output is exactly
-     * the endpoint up to its first '?' or '#'), 2 come back as given (#5383).
-     * A row changed any other way without a <customer> fails (#5407).
-     * Dropping or unredacting a row changes a count.
+     * logPath() itself, reached by reflection, on every shape.
+     *
+     * First the output is classified against the ENDPOINT, before the row's
+     * expected value is consulted, so this arm runs on logPath()'s real
+     * output and a logPath() mutant can fail here rather than only at the
+     * exact pin below (#5421). A row comes back as given, or redacts a
+     * customer tail to <customer>, or is changed ONLY by the query cut (the
+     * output is exactly the endpoint up to its first '?' or '#'), or ONLY by
+     * dropping a scheme and authority (the output is exactly that cut's
+     * path as PSR-7's Uri parses it, which is not logPath()'s regex; #5422).
+     * Any other change without a <customer> fails (#5407). Then the output
+     * is pinned exactly to the row (so an identity logPath() fails on every
+     * changed row, #5335), and a changed row is free of every leak form the
+     * endpoint held.
+     *
+     * The rows are counted by kind with exact numbers: 18 redact, 2 are
+     * query-cut only, 2 authority-strip only, 2 come back as given (#5383).
+     * Dropping, unredacting or reclassifying a row changes a count. Every
+     * leak form is checked on at least one changed row that holds it, so no
+     * form in leakForms() is dead in this loop (#5420).
      */
     public function test_log_path_changes_every_redacted_shape(): void
     {
         $logPath = new \ReflectionMethod(MeshClient::class, 'logPath');
-        $redacted = 0;
-        $queryCutOnly = 0;
-        $kept = 0;
+        $kinds = ['redacted' => 0, 'query cut only' => 0, 'authority strip only' => 0, 'kept' => 0];
+        $formChecks = array_fill_keys(array_keys($this->leakForms()), 0);
 
         foreach (self::shapes() as $name => [$endpoint, $expectedPath]) {
             $out = $logPath->invoke(null, $endpoint);
-            $this->assertSame($expectedPath, $out, "{$name}: logPath()");
-            if ($out === $endpoint) {
-                $kept++;
-
-                continue;
+            $kind = $this->classify($endpoint, $out);
+            if ($kind === null) {
+                $this->fail("{$name}: changed without a <customer> and not only by the query cut or the scheme/authority strip: ".json_encode($out));
             }
-            if (str_contains($out, '<customer>')) {
-                $redacted++;
-            } elseif ($out === substr($endpoint, 0, strcspn($endpoint, '?#'))) {
-                $queryCutOnly++;
-            } else {
-                $this->fail("{$name}: changed without a <customer> and not only by the query cut: ".json_encode($out));
+            $kinds[$kind]++;
+            $this->assertSame($expectedPath, $out, "{$name}: logPath()");
+            if ($kind === 'kept') {
+                continue;
             }
             foreach ($this->leakForms() as $what => $form) {
                 if (stripos($endpoint, $form) !== false) {
+                    $formChecks[$what]++;
                     $this->assertStringNotContainsStringIgnoringCase($form, $out, "{$name}: {$what} survived logPath()");
                 }
             }
         }
 
-        $this->assertSame(17, $redacted, 'rows whose customer tail logPath() redacts');
-        $this->assertSame(2, $queryCutOnly, 'rows changed only by the query cut');
-        $this->assertSame(2, $kept, 'rows logPath() keeps as given');
+        $this->assertSame(
+            ['redacted' => 18, 'query cut only' => 2, 'authority strip only' => 2, 'kept' => 2],
+            $kinds,
+            'rows by kind',
+        );
+        foreach ($formChecks as $what => $n) {
+            $this->assertGreaterThan(0, $n, "leak form '{$what}' is never checked on a changed row that holds it (#5420)");
+        }
+    }
+
+    /**
+     * The classifier is not vacuous: each of its arms is reached by a
+     * synthetic output, and an output changed any other way is refused.
+     * The query-cut arm refuses a cut that also lost a character, and the
+     * authority arm refuses an output that kept the user-info or port
+     * (#5421, #5422, #5425).
+     */
+    public function test_the_classifier_reaches_each_arm_and_refuses_other_changes(): void
+    {
+        $host = self::ENDPOINT_HOST;
+        $this->assertSame('kept', $this->classify('api/customers/', 'api/customers/'));
+        $this->assertSame('redacted', $this->classify('api/customers/x/', 'api/customers/<customer>'));
+        $this->assertSame('query cut only', $this->classify('api/customers/?a=1', 'api/customers/'));
+        $this->assertSame('authority strip only', $this->classify("https://{$host}/api/customers/", '/api/customers/'));
+        $this->assertSame('authority strip only', $this->classify("//u@{$host}:8443/api/customers/?a=1", '/api/customers/'));
+
+        $this->assertNull($this->classify('api/customers/?a=1', 'api/customers'), 'a cut that also trimmed');
+        $this->assertNull($this->classify("https://{$host}/api/customers/", '/api/customers'), 'a strip that also trimmed');
+        $this->assertNull($this->classify("https://u:p@{$host}:8443/api/customers/", 'u:p@:8443/api/customers/'), 'user-info and port kept');
+        $this->assertNull($this->classify("https://{$host}:8443/api/customers/", ':8443/api/customers/'), 'port kept');
+        $this->assertNull($this->classify('api/customers/', 'api/customers/x'), 'changed otherwise');
+    }
+
+    /**
+     * How logPath() changed $endpoint into $out, judged from the endpoint
+     * alone; null when the change is none of the known kinds.
+     */
+    private function classify(string $endpoint, string $out): ?string
+    {
+        if ($out === $endpoint) {
+            return 'kept';
+        }
+        if (str_contains($out, '<customer>')) {
+            return 'redacted';
+        }
+        $cut = substr($endpoint, 0, strcspn($endpoint, '?#'));
+        if ($out === $cut) {
+            return 'query cut only';
+        }
+        $uri = new Uri($cut);
+        if ($uri->getAuthority() !== '' && $out === $uri->getPath()) {
+            return 'authority strip only';
+        }
+
+        return null;
     }
 
     /** @return array<string, string> */
@@ -274,6 +363,9 @@ class MeshClientLogPathTest extends TestCase
             'query marker' => self::QUERY_MARKER,
             'host' => self::HOST,
             'endpoint host' => self::ENDPOINT_HOST,
+            'user-info, user' => self::USER,
+            'user-info, password' => self::PASS,
+            'port' => ':'.self::PORT,
             'id prefix segment' => 'abc/',
         ];
     }
