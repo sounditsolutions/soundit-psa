@@ -553,17 +553,20 @@ class RetryEmailAttachmentsJobTest extends TestCase
             if ($a->attachable_type !== TicketNote::class || $atKill !== null) {
                 return;
             }
-            DB::transaction(fn () => DB::afterCommit(function () use ($job, &$atKill, $ticketId) {
-                $this->timeOut($job);
-                $atKill = [
-                    'linked_rows' => Attachment::where('attachable_type', TicketNote::class)->count(),
-                    'files' => count(Storage::disk('local')->allFiles('attachments')),
-                    'markers' => count($this->withMessage(RetryEmailAttachments::MARKER)),
-                    'notes' => count($this->markerNotes($ticketId)),
-                    'seen' => $this->seen->getArrayCopy(),
-                ];
-                throw new \RuntimeException('B4I-SYNTHETIC-KILLED'); // stands in for the kill
-            }));
+            // Not an arrow function: it captures by value, so the inner &$atKill would bind its copy.
+            DB::transaction(function () use ($job, &$atKill, $ticketId) {
+                DB::afterCommit(function () use ($job, &$atKill, $ticketId) {
+                    $this->timeOut($job);
+                    $atKill = [
+                        'linked_rows' => Attachment::where('attachable_type', TicketNote::class)->count(),
+                        'files' => count(Storage::disk('local')->allFiles('attachments')),
+                        'markers' => count($this->withMessage(RetryEmailAttachments::MARKER)),
+                        'notes' => count($this->markerNotes($ticketId)),
+                        'seen' => $this->seen->getArrayCopy(),
+                    ];
+                    throw new \RuntimeException('B4I-SYNTHETIC-KILLED'); // stands in for the kill
+                });
+            });
         });
 
         $job->fire();

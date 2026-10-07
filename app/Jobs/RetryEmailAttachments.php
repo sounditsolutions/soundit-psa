@@ -35,7 +35,9 @@ use Illuminate\Support\Facades\Log;
  *
  * #5453/#5549: the email-added commit work (notifyEmailAdded and the RunTechnicianLoop
  * dispatch) is this job's, run once the retry has finished, on every final path, timeout
- * included, so it sees what the retry linked and is not lost when the read is killed.
+ * included, so it sees what the retry linked and is not lost when the read is killed. The
+ * re-queue, the marker and the commit work each run with SIGALRM held back together with the
+ * flag that records them, so a timeout lands before or after one, never inside it.
  */
 class RetryEmailAttachments implements ShouldQueue
 {
@@ -73,8 +75,9 @@ class RetryEmailAttachments implements ShouldQueue
      * retry's outcome once it returned, then requeued, marked and committed. A timeout kill runs
      * failed() in this process, on a fresh copy of the job, while handle() is still on the stack
      * (the worker's SIGALRM handler), so failed() reads this and runs only what handle() had not
-     * started: the marker and the commit work run at most once, and an outcome handle() already
-     * had is not reported as a timeout.
+     * started: the marker and the commit work run exactly once, and an outcome handle() already
+     * had is not reported as a timeout. Each flag is set together with its step under
+     * uninterrupted(), so a flag that is set means its step ran, or is the step a kill cut short.
      *
      * @var array<string, array<string, mixed>>
      */
@@ -89,19 +92,25 @@ class RetryEmailAttachments implements ShouldQueue
             self::$progress[$key]['outcome'] = $outcome;
 
             if ($outcome !== null && $outcome['requeueable'] && $this->refusals < self::MAX_REFUSAL_REQUEUES) {
-                self::dispatch($this->emailId, $this->ticketId, $this->noteId, $this->baseline, $this->refusals + 1)
-                    ->delay(self::REQUEUE_DELAY_SECONDS);
-                self::$progress[$key]['requeued'] = true;
+                self::uninterrupted(function () use ($key): void {
+                    self::dispatch($this->emailId, $this->ticketId, $this->noteId, $this->baseline, $this->refusals + 1)
+                        ->delay(self::REQUEUE_DELAY_SECONDS);
+                    self::$progress[$key]['requeued'] = true;
+                });
 
                 return;
             }
 
             if ($outcome !== null) {
-                self::$progress[$key]['marked'] = true;
-                $this->writeMarker($outcome['reason'], $outcome['undiscarded_attachment_ids']);
+                self::uninterrupted(function () use ($key, $outcome): void {
+                    self::$progress[$key]['marked'] = true;
+                    $this->writeMarker($outcome['reason'], $outcome['undiscarded_attachment_ids']);
+                });
             }
-            self::$progress[$key]['committed'] = true;
-            $this->runCommitWork();
+            self::uninterrupted(function () use ($key): void {
+                self::$progress[$key]['committed'] = true;
+                $this->runCommitWork();
+            });
         } finally {
             unset(self::$progress[$key]);
         }
@@ -146,6 +155,24 @@ class RetryEmailAttachments implements ShouldQueue
             );
         }
         $this->runCommitWork();
+    }
+
+    /**
+     * Runs $step with SIGALRM held back, so the worker's timeout handler (failed()) runs before or
+     * after it, never inside: one already pending is handled before the step, one that arrives
+     * during it once the mask is restored. Without pcntl the worker installs no timeout handler.
+     */
+    private static function uninterrupted(\Closure $step): void
+    {
+        $old = [];
+        $masked = function_exists('pcntl_sigprocmask') && pcntl_sigprocmask(SIG_BLOCK, [SIGALRM], $old);
+        try {
+            $step();
+        } finally {
+            if ($masked) {
+                pcntl_sigprocmask(SIG_SETMASK, $old);
+            }
+        }
     }
 
     private function progressKey(): string

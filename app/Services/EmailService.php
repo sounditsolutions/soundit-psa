@@ -1429,6 +1429,8 @@ PROMPT;
         $discard = null;
         $outerStoredIds = self::$retryStoredIds;
         $outerLinked = self::$retryLinked;
+        $outerLinkIds = self::$retryLinkIds;
+        self::$retryLinkIds = [];
         self::$retryStoredIds = [];
         self::$retryLinked = false;
         try {
@@ -1467,6 +1469,7 @@ PROMPT;
             }
 
             $stage = 'link';
+            self::$retryLinkIds = array_map(fn ($a) => (int) $a->id, $attachments);
             $change = DB::transaction(function () use ($emailId, $ticketId, $noteId, $baseline, $attachments, $attachmentService, &$committed, &$wrote): ?string {
                 $change = $this->retryChange($emailId, $ticketId, $noteId, $baseline, lock: true);
                 if ($change !== null) {
@@ -1548,6 +1551,7 @@ PROMPT;
         } finally {
             self::$retryStoredIds = $outerStoredIds;
             self::$retryLinked = $outerLinked;
+            self::$retryLinkIds = $outerLinkIds;
         }
     }
 
@@ -1558,14 +1562,14 @@ PROMPT;
     }
 
     /**
-     * #5708: whether every row this retry stored that still exists (at least one) is linked to
-     * the client note in the database: true or false, or null when the read itself throws. A
-     * tracked id with no row (a store that removed its own failed row, #5553/#5709) does not
-     * count against the link.
+     * #5708: whether every row the link writes that still exists (at least one) is linked to the
+     * client note in the database: true or false, or null when the read itself throws. Only the
+     * link's own rows are read, so neither a tracked id with no row (a store that removed its own
+     * failed row, #5553/#5709) nor an unlinked row a skipped store left behind counts against it.
      */
     private function retryLinkPersisted(?int $noteId): ?bool
     {
-        $ids = array_values(array_unique(self::$retryStoredIds ?? []));
+        $ids = array_values(array_unique(self::$retryLinkIds));
         if ($ids === [] || $noteId === null) {
             return false;
         }
@@ -1583,6 +1587,9 @@ PROMPT;
 
     /** Whether the running retry's link transaction committed; see abandonRetry. */
     private static bool $retryLinked = false;
+
+    /** @var list<int> The ids of the rows the running retry's link writes; see retryLinkPersisted. */
+    private static array $retryLinkIds = [];
 
     /**
      * For a RetryEmailAttachments job killed while its retry was running (a timeout): discards
