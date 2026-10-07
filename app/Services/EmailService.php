@@ -775,10 +775,11 @@ PROMPT;
      * - Closed excluded from auto-reopen — explicit team decision must not be overridden
      * - PendingThirdParty excluded — client reply does not mean the third party responded
      *
-     * $predownloadedAttachments: null means no download was attempted, so this method downloads
-     * when the email has a graph_id. An array, even an empty one, means the caller already ran
-     * downloadEmailAttachments() for this email, so it is used as-is and nothing is fetched again
-     * (#5143: a refused or failed item must not be fetched and warned about twice).
+     * $predownloadedAttachments: null means no download was attempted, or the caller's message
+     * read failed (downloadEmailAttachments() returned null, #5394), so this method downloads
+     * when the email has a graph_id. An array, even an empty one, means the caller's message
+     * read succeeded, so it is used as-is and nothing is fetched again (#5143: a refused or
+     * failed item must not be fetched and warned about twice).
      */
     public function linkEmailToTicket(Email $email, Ticket $ticket, ?array $predownloadedAttachments = null): void
     {
@@ -797,7 +798,7 @@ PROMPT;
                 $graph = app(GraphClient::class);
                 $mailbox = Setting::getValue('graph_mailbox');
                 if ($mailbox) {
-                    $emailAttachments = $attachmentService->downloadEmailAttachments($email, $graph, $mailbox);
+                    $emailAttachments = $attachmentService->downloadEmailAttachments($email, $graph, $mailbox) ?? [];
                 }
             }
 
@@ -1144,8 +1145,9 @@ PROMPT;
             }
         }
 
-        // null when no download was attempted above (no graph_id or no mailbox); an array
-        // (possibly empty) when it was, so linkEmailToTicket does not fetch again (#5143).
+        // null when no download was attempted above (no graph_id or no mailbox) or when its
+        // message read failed, so linkEmailToTicket reads the message once more (#5394); an
+        // array (possibly empty) when the read succeeded, so it does not fetch again (#5143).
         $this->linkEmailToTicket($email, $ticket, $emailAttachments ?? null);
 
         // psa-vggw: link the sender's device(s) onto the ticket at creation so it

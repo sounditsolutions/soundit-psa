@@ -167,9 +167,13 @@ class GraphClient
      * token retry on 401, backoff on 429, the configured request_timeout). A 2xx is returned
      * as-is, including an empty body; the caller decides what an empty body means.
      *
-     * A failed request is NOT logged here (#5144): the only caller treats it as a soft skip and
-     * reports it itself, status-only. Other Graph calls keep throwFromGuzzle's error record.
-     * The token request and the 429 backoff keep their own records on this path too.
+     * throwFromGuzzle writes no error record for a failed request here (#5144): the only caller
+     * treats it as a soft skip and reports it itself, with ids, a reason token and either the
+     * HTTP status or the exception class, never the exception message. Other Graph calls keep
+     * throwFromGuzzle's error record. Two shared records can still be written on this path: a
+     * 429 backoff WARNING (endpoint with its users/ segment redacted, attempt, wait; #5391) and
+     * the token-request ERROR (HTTP status and exception class only; #5397). A 401 whose token
+     * refresh then fails is thrown as Graph's 401, not as the token failure (#5398).
      */
     public function getMessageAttachmentRaw(string $mailbox, string $messageId, string $attachmentId): string
     {
@@ -248,6 +252,16 @@ class GraphClient
     private static function seg(string $value): string
     {
         return rawurlencode($value);
+    }
+
+    /**
+     * The endpoint with the segment after users/ replaced, for a log record (#5391). That
+     * segment is a mailbox address or user id, raw or seg()-encoded, and C-56 keeps it out of
+     * logs. Every other segment is kept.
+     */
+    private static function redactUserSegment(string $endpoint): string
+    {
+        return (string) preg_replace('#(^|/)users/[^/?]+#', '$1users/{redacted}', $endpoint);
     }
 
     /**
@@ -540,7 +554,13 @@ class GraphClient
                 // Retry once on 401 with a fresh token
                 if ($statusCode === 401 && $attempt === 0) {
                     $this->cache->forget(self::TOKEN_CACHE_KEY);
-                    $freshToken = $this->getToken();
+                    try {
+                        $freshToken = $this->getToken();
+                    } catch (GraphClientException) {
+                        // #5398: Graph did answer 401. The failed refresh has written its own
+                        // status-only record in getToken(); the caller sees Graph's 401.
+                        $this->throwFromGuzzle($e, $method, $endpoint, $logFailure);
+                    }
                     $options['headers']['Authorization'] = 'Bearer '.$freshToken;
 
                     continue;
@@ -551,8 +571,9 @@ class GraphClient
                     $retryAfter = $e->getResponse()?->getHeaderLine('Retry-After');
                     $waitSeconds = $retryAfter && is_numeric($retryAfter) ? (int) $retryAfter : (10 * ($attempt + 1));
 
+                    // #5391 / C-56: the users/ segment is a mailbox or user id; never log it.
                     Log::warning('[GraphClient] Rate limited, backing off', [
-                        'endpoint' => $endpoint,
+                        'endpoint' => self::redactUserSegment($endpoint),
                         'attempt' => $attempt + 1,
                         'wait_seconds' => $waitSeconds,
                     ]);
@@ -630,11 +651,19 @@ class GraphClient
                 ],
             ]);
         } catch (GuzzleException $e) {
+            // #5397 / C-56: Guzzle's message carries the token URL (tenant id) and the identity
+            // provider's error body. Neither the record nor the exception message carries it:
+            // the HTTP status when the token endpoint answered (null when it did not) and the
+            // exception class only.
+            $status = method_exists($e, 'getResponse') && $e->getResponse()
+                ? $e->getResponse()->getStatusCode()
+                : null;
             Log::error('Graph API token request failed', [
-                'error' => $e->getMessage(),
+                'status' => $status,
+                'exception' => $e::class,
             ]);
             throw new GraphClientException(
-                'Failed to obtain Graph API token: '.$e->getMessage(),
+                'Failed to obtain Graph API token'.($status !== null ? " (HTTP {$status})" : ' ('.$e::class.')'),
             );
         }
 
