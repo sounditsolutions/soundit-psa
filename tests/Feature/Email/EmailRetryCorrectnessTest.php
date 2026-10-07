@@ -661,11 +661,13 @@ class EmailRetryCorrectnessTest extends TestCase
 
     public function test_a_retry_whose_baseline_was_never_set_is_refused_as_baseline_missing(): void
     {
-        // #5551: the callback reads the baseline when it runs; a throw between registration and
-        // the baseline that a caller catches before committing leaves it unset.
+        // #5551/#5711: the job is dispatched only after the baseline is taken, so a throw before
+        // that (caught by a caller that then commits) queues no job at all; a null baseline
+        // reaches the retry only in a payload that carries none. Both halves are driven here
+        // through the real entry points, not a direct call to the private arm.
         $this->graph([$this->failedRead()]); // #5714: no spare response
         $email = $this->email();
-        $service = app(EmailService::class);
+        Bus::fake([\App\Jobs\RetryEmailAttachments::class]);
 
         DB::transaction(function () use ($email) {
             \App\Models\TicketNote::creating(function () {
@@ -674,21 +676,23 @@ class EmailRetryCorrectnessTest extends TestCase
             try {
                 app(EmailService::class)->autoCreateTicketFromEmail($email);
             } catch (\RuntimeException) {
-                // A caller that swallows the throw and commits. autoCreate's own nested
-                // transaction rolled back to its savepoint; its after-commit callback was
-                // registered at that level and is discarded with it.
+                // A caller that swallows the throw and commits.
             }
         });
         $this->assertSame(1, $this->messageReads(), 'positive control: the first read ran and failed');
-        $this->assertSame([], $this->withMessage(self::SKIPPED), 'a rolled-back level runs no retry');
+        Bus::assertNotDispatched(\App\Jobs\RetryEmailAttachments::class);
+        \App\Models\TicketNote::flushEventListeners();
 
-        // The callback as registered, run with the baseline it would hold when unset.
-        (fn () => $this->retryMessageRead($email->id, 1, null, null))->call($service);
+        // A job whose payload carries no baseline, run as the worker runs it.
+        $ticket = Ticket::create(['subject' => 'Synthetic', 'client_id' => $email->client_id] + self::TICKET);
+        $email->update(['ticket_id' => $ticket->id]);
+        app()->call([new \App\Jobs\RetryEmailAttachments($email->id, $ticket->id, null, null), 'handle']);
 
         $this->assertSame(1, $this->messageReads(), 'refused before any Graph call');
         $skipped = $this->withMessage(self::SKIPPED);
         $this->assertCount(1, $skipped);
         $this->assertSame('baseline_missing', $skipped[0]->context['reason']);
+        Bus::assertDispatched(\App\Jobs\RetryEmailAttachments::class, fn ($j) => $j->refusals === 1 && $j->baseline === null);
     }
 
     public function test_a_retry_with_model_events_suppressed_is_refused_as_tracking_unavailable(): void

@@ -92,13 +92,14 @@ class EmailRetryLockProofTest extends TestCase
         $connection = DB::connection();
         $this->originalGrammar = $connection->getQueryGrammar();
         $this->assertInstanceOf(SQLiteGrammar::class, $this->originalGrammar, 'the suite runs on SQLite');
-        $connection->setQueryGrammar(new LockRecordingGrammar($connection, function (Builder $query) use ($connection) {
+        $connection->setQueryGrammar(new LockRecordingGrammar($connection, function (Builder $query, $value) use ($connection) {
             $table = (string) $query->from;
             $this->held[] = $table;
             $this->timeline[] = [
                 'event' => 'lock',
                 'table' => $table,
                 'level' => DB::transactionLevel() - $this->outside,
+                'value' => $value,
                 'mariadb' => (new MariaDbGrammar($connection))->compileSelect(clone $query),
             ];
         }));
@@ -114,7 +115,7 @@ class EmailRetryLockProofTest extends TestCase
         });
         DB::listen(function (QueryExecuted $q) {
             if (preg_match('/^(update|insert into|delete from) "(\w+)"/', $q->sql, $m)
-                && in_array($m[2], ['tickets', 'ticket_notes', 'emails'], true)) {
+                && in_array($m[2], ['tickets', 'ticket_notes', 'emails', 'attachments'], true)) {
                 $this->timeline[] = ['event' => 'write', 'table' => $m[2], 'level' => DB::transactionLevel() - $this->outside];
             }
         });
@@ -245,7 +246,12 @@ class EmailRetryLockProofTest extends TestCase
 
         // The link transaction after it: exactly these locks, in mergeTickets' order, inside
         // the one transaction, each before the first write to any of those tables.
-        $link = $this->afterRead(2);
+        // #5713: the read's own stores (attachments rows and their storage_path, at level 0,
+        // outside any transaction) are not part of the link; every write inside it is, the
+        // attachments link included.
+        $this->assertSame(['attachments'], array_values(array_unique(array_column(array_filter($this->afterRead(2),
+            fn ($e) => $e['event'] === 'write' && $e['level'] === 0), 'table'))), 'positive control: the read stored at level 0');
+        $link = array_values(array_filter($this->afterRead(2), fn ($e) => $e['level'] >= 1));
         $locks = array_values(array_filter($link, fn ($e) => $e['event'] === 'lock'));
         $this->assertSame(['tickets', 'ticket_notes', 'emails'], array_column($locks, 'table'), 'ticket, then note, then email (TicketService::mergeTickets order)');
         $this->assertSame([1, 1, 1], array_column($locks, 'level'), 'all three inside the one link transaction');
@@ -253,6 +259,8 @@ class EmailRetryLockProofTest extends TestCase
         $firstWrite = array_search('write', $kinds, true);
         $this->assertNotFalse($firstWrite, 'positive control: the link wrote');
         $this->assertLessThan($firstWrite, max(array_keys($kinds, 'lock', true)), 'every lock precedes the first write');
+        $this->assertContains('attachments', array_column(array_filter($link, fn ($e) => $e['event'] === 'write'), 'table'), 'positive control: the attachments link write is seen');
+        $this->assertSame([true, true, true], array_column($locks, 'value'), '#5713: FOR UPDATE locks only, no shared or string lock');
         $this->assertMariaDbForUpdate($locks);
     }
 
@@ -415,12 +423,13 @@ class EmailRetryLockProofTest extends TestCase
 }
 
 /**
- * An SQLiteGrammar that reports every lockForUpdate() read to $onLock and then compiles the lock
+ * An SQLiteGrammar that reports every lock clause (lockForUpdate, sharedLock, a string lock) to
+ * $onLock when the query is compiled, and then compiles the lock
  * exactly as SQLiteGrammar does (to nothing), so the suite's SQLite runs the same SQL.
  */
 class LockRecordingGrammar extends SQLiteGrammar
 {
-    /** @param  \Closure(Builder): void  $onLock */
+    /** @param  \Closure(Builder, bool|string): void  $onLock */
     public function __construct(\Illuminate\Database\Connection $connection, private \Closure $onLock)
     {
         parent::__construct($connection);
@@ -428,9 +437,9 @@ class LockRecordingGrammar extends SQLiteGrammar
 
     protected function compileLock(Builder $query, $value)
     {
-        if ($value === true) {
-            ($this->onLock)($query);
-        }
+        // #5713: every lock clause is reported, shared (false) and string locks too, so a
+        // lock that is not FOR UPDATE shows up (assertMariaDbForUpdate refuses it).
+        ($this->onLock)($query, $value);
 
         return parent::compileLock($query, $value);
     }
