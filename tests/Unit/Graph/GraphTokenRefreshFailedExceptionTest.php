@@ -639,13 +639,15 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
 
     /**
      * Every quoted string argument a rendered trace prints in its frames ("#n file(line):
-     * Class->method('a', ...)"), deduplicated.
+     * Class->method('a', ...)"), deduplicated. include/require frames are skipped: PHP prints
+     * the included file's path whatever exception_ignore_args says, and which of them appear
+     * depends on the test runner's entry script.
      *
      * @return list<string>
      */
     private static function stringArguments(string $rendered): array
     {
-        preg_match_all('/^#\d+ .*$/m', $rendered, $frames);
+        preg_match_all('/^#\d+ (?!.*: (?:include|require)(?:_once)?\().*$/m', $rendered, $frames);
         preg_match_all("/'(?:[^'\\\\]|\\\\.)*'/", implode("\n", $frames[0]), $args);
 
         return array_values(array_unique($args[0]));
