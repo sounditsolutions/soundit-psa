@@ -1027,7 +1027,9 @@ class MeshEditAllowRuleTest extends TestCase
         $this->assertStringContainsString("Mesh no longer returns a rule under id 'rule-xyz'", $error);
         $this->assertStringContainsString('the upstream side was NOT retried', $error);
         $this->assertStringContainsString('Mesh may keep showing the old expiry while the PSA enforces the new one', $error);
-        $this->assertStringContainsString('re-identifies the rule by sender and comment', $error);
+        // #5563: the expiry job TRIES the match; the text names the miss.
+        $this->assertStringContainsString('the expiry job tries to re-identify the rule by sender and comment and remove it', $error);
+        $this->assertStringContainsString('If no rule in Mesh matches then, the record is marked unresolved', $error);
 
         $record->refresh();
         $this->assertTrue($record->expires_at->equalTo($new), 'the enforced expiry is the change and it stands');

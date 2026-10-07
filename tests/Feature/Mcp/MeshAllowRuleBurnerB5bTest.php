@@ -208,7 +208,9 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
     /**
      * The claim PERMANENT_UNTIL_NO_ID makes, executed: the rule is still in
      * Mesh (re-keyed), the edit verb refuses it as FOREIGN, and the remove
-     * verb would treat it as foreign too, so it could not close the record.
+     * verb finds no record under the new id, so it could not close the record.
+     * Since #5570 the remove card does not call the rule foreign: it names the
+     * id-less record that matches by sender and comment and says it stays.
      */
     private function assertTheVerbsCannotReachTheRecord(array $fixture, Mockery\MockInterface $write, MeshAllowRule $record): void
     {
@@ -232,7 +234,9 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
             'reason' => 'Remove it.',
         ]));
         $this->assertArrayHasKey('run_id', $remove, json_encode($remove));
-        $this->assertStringContainsString('This rule is FOREIGN', TechnicianRun::findOrFail($remove['run_id'])->proposed_content);
+        $card = TechnicianRun::findOrFail($remove['run_id'])->proposed_content;
+        $this->assertStringContainsString("The PSA holds no record under this rule id, but PSA record #{$record->id} (state 'active', no recorded rule id) carries this rule's sender and comment. That record is NOT closed by this removal", $card);
+        $this->assertStringNotContainsString('FOREIGN', $card);
     }
 
     // ---- #5410: the dedup answer is true of the record's state ---------------
@@ -397,7 +401,7 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
         $this->assertArrayNotHasKey('idempotent', $answer);
         $this->assertArrayHasKey('error', $answer, json_encode($answer));
         $this->assertStringNotContainsString('already created', $answer['error']);
-        $this->assertStringContainsString("PSA record #{$record->id}, but whether that rule is live upstream was never proved (state 'unresolved')", $answer['error']);
+        $this->assertStringContainsString("PSA record #{$record->id}, but the PSA cannot currently say whether that rule is live upstream (state 'unresolved')", $answer['error']);
         $this->assertStringContainsString('the expiry job only has to identify it', $answer['error']);
         $this->assertStringNotContainsString(self::PERMANENT_UNTIL, $answer['error']);
     }
