@@ -1011,7 +1011,7 @@ class LitsrmmAssetSyncTest extends TestCase
 
         Log::shouldHaveReceived('warning')
             ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmAssetSync] client refused: short read'
-                && $context === ['client_id' => $this->client->id, 'rule' => 'a', 'listed' => 0, 'linked' => 2, 'unlisted' => 2, 'seats_held' => 0, 'seats_read' => 0])
+                && $context === ['client_id' => $this->client->id, 'rule' => 'a', 'listed' => 0, 'linked' => 2, 'unlisted' => 2, 'seats_held' => 0, 'seats_read' => 0, 'retired_listed' => 0])
             ->once();
     }
 
@@ -1085,6 +1085,9 @@ class LitsrmmAssetSyncTest extends TestCase
 
     public function test_a_device_that_left_before_its_detail_read_is_left_alone_and_not_an_error(): void
     {
+        // One 404 among reads that otherwise succeed (#5685: a client whose
+        // every read answers 404 is a degraded read instead).
+        $this->device('2');
         $row = $this->device('1', ['lastUser' => 'changed']);
         $asset = Asset::factory()->create(['client_id' => $this->client->id, 'litsrmm_device_id' => $row['id'], 'last_user' => 'before', 'cpu' => 'Known CPU']);
         $this->details[$row['id']] = 404;
@@ -1101,13 +1104,15 @@ class LitsrmmAssetSyncTest extends TestCase
 
     public function test_a_new_device_that_left_before_its_detail_read_is_not_created(): void
     {
+        $this->device('2');
         $row = $this->device('1');
         $this->details[$row['id']] = 404;
 
         $result = $this->service()->sync();
 
-        $this->assertSame(0, Asset::count());
-        $this->assertSame(0, $result->created);
+        $this->assertSame(0, Asset::where('litsrmm_device_id', $row['id'])->count());
+        $this->assertSame(1, Asset::count(), 'only the device that answered is created');
+        $this->assertSame(1, $result->created);
         $this->assertSame(1, $result->skipped);
     }
 
@@ -1284,7 +1289,7 @@ class LitsrmmAssetSyncTest extends TestCase
         $this->assertSame(10, $this->licenses($this->client)['workstation']->quantity, 'refused without the accept');
         $this->assertSame(1, $refused->details['short_read_refused']);
 
-        $accepted = $this->service()->sync(null, [$this->client->id]);
+        $accepted = $this->service()->sync(null, [self::acceptCode($refused)]);
 
         $this->assertSame(0, $accepted->errors, implode('; ', $accepted->errorMessages));
         $this->assertSame(2, $this->licenses($this->client)['workstation']->quantity);
@@ -1342,14 +1347,31 @@ class LitsrmmAssetSyncTest extends TestCase
 
     // ---- #5577: the admin's per-run, per-client way through ----
 
+    /**
+     * The --accept-short-read value the refusal message of $result names: of
+     * $clientId when given, else of its only refusal.
+     */
+    private static function acceptCode(\App\Services\SyncResult $result, ?int $clientId = null): string
+    {
+        foreach ($result->errorMessages as $message) {
+            if (preg_match('/--accept-short-read=(\d+:[abcd](?::\d+){6})$/', $message, $m)
+                && ($clientId === null || str_starts_with($m[1], "{$clientId}:"))) {
+                return $m[1];
+            }
+        }
+
+        throw new \RuntimeException('no refusal names an accept code: '.implode('; ', $result->errorMessages));
+    }
+
     public function test_an_accepted_short_read_syncs_that_client_for_that_run_only(): void
     {
         Log::spy();
         $assets = $this->linkedAssets(5);
         $this->service()->sync();
         $this->rows = array_slice($this->rows, 0, 1);
+        $code = self::acceptCode($this->service()->sync());
 
-        $result = $this->service()->sync(null, [(string) $this->client->id]);
+        $result = $this->service()->sync(null, [$code]);
 
         $this->assertSame(0, $result->errors, implode('; ', $result->errorMessages));
         $this->assertSame(4, $result->deactivated, 'the accepted shrink releases');
@@ -1375,8 +1397,11 @@ class LitsrmmAssetSyncTest extends TestCase
         $this->service()->sync();
         $keep = fn ($r) => in_array(substr($r['id'], -2), ['01', '51'], true);
         $this->rows = array_values(array_filter($this->rows, $keep));
+        $refused = $this->service()->sync();
+        $this->assertSame(2, $refused->errors);
+        $code = self::acceptCode($refused, $this->client->id);
 
-        $result = $this->service()->sync(null, [$this->client->id]);
+        $result = $this->service()->sync(null, [$code]);
 
         $this->assertSame(1, $result->errors, 'the other client is still refused');
         $this->assertStringContainsString("client {$other->id}: refused", $result->errorMessages[0]);
@@ -1391,7 +1416,8 @@ class LitsrmmAssetSyncTest extends TestCase
         $assets = $this->linkedAssets(5);
         $this->rows = [];
         $this->device('9');
-        $this->service()->sync(null, [$this->client->id]);
+        $code = self::acceptCode($this->service()->sync());
+        $this->service()->sync(null, [$code]);
         $this->assertNull($assets[0]->fresh()->litsrmm_device_id);
 
         // The next run, without the option, applies the bound again.
@@ -1443,7 +1469,7 @@ class LitsrmmAssetSyncTest extends TestCase
         $this->assertNull($this->licenses($this->client)['workstation'], 'no seat written');
         Log::shouldHaveReceived('warning')
             ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmAssetSync] client refused: degraded detail read'
-                && $context === ['client_id' => $this->client->id, 'reads' => 4, 'not_found' => 4])
+                && $context === ['client_id' => $this->client->id, 'reads' => 4, 'not_found' => 4, 'failed_other' => 0])
             ->once();
     }
 
@@ -1686,5 +1712,495 @@ class LitsrmmAssetSyncTest extends TestCase
         $this->assertNull($asset->fresh()->litsrmm_retired_at);
         $this->assertSame(0, $result->skipped, implode('; ', $result->skippedMessages));
         $this->assertSame(0, $result->details['retired']);
+    }
+
+    // ---- #5692 / #5686: rule (d)'s zero arm refuses any retirement to 0 seats ----
+
+    public function test_a_single_device_decommission_is_refused_until_accepted(): void
+    {
+        // The client's only machine, linked and billed, is retired in LITSRMM.
+        $assets = $this->linkedAssets(1);
+        $this->service()->sync();
+        $this->assertSame(1, $this->licenses($this->client)['workstation']->quantity);
+        $this->rows[0] = array_merge($this->rows[0], ['enrollmentState' => 'retired', 'availabilityState' => 'retired', 'retiredAt' => '2026-09-30T10:00:00.000Z']);
+
+        $first = $this->service()->sync();
+        $again = $this->service()->sync();
+
+        foreach ([$first, $again] as $refused) {
+            $this->assertSame(1, $refused->errors, 'every run refuses it again: never a silent pass');
+            $this->assertSame(1, $refused->details['short_read_refused']);
+            $this->assertStringContainsString('(rule d:', $refused->errorMessages[0]);
+            $this->assertStringContainsString('a read leaving 0 seats is refused whatever the drop, a single-device decommission included', $refused->errorMessages[0]);
+            $this->assertStringContainsString('every run refuses it again until it is accepted', $refused->errorMessages[0]);
+            $this->assertStringEndsWith("--accept-short-read={$this->client->id}:d:1:1:0:1:0:1", $refused->errorMessages[0]);
+        }
+        $this->assertTrue((bool) $assets[0]->fresh()->is_active, 'not marked inactive while refused');
+        $this->assertSame(1, $this->licenses($this->client)['workstation']->quantity, 'nor the seat cut');
+
+        $accepted = $this->service()->sync(null, [self::acceptCode($again)]);
+
+        $this->assertSame(0, $accepted->errors, implode('; ', $accepted->errorMessages));
+        $this->assertSame(1, $accepted->details['short_read_accepted']);
+        $this->assertFalse((bool) $assets[0]->fresh()->is_active, 'the accepted decommission retires the asset');
+        $this->assertNotNull($assets[0]->fresh()->litsrmm_retired_at);
+        $this->assertSame(0, $this->licenses($this->client)['workstation']->quantity);
+    }
+
+    public function test_a_retirement_that_leaves_seats_is_not_named_as_the_zero_arm(): void
+    {
+        // The non-zero arm's message does not claim the zero arm fired.
+        $this->seatsMostlyUnlinked(10, 2);
+        $this->rows = array_slice($this->rows, 0, 3);
+
+        $result = $this->service()->sync();
+
+        $this->assertStringContainsString('(rule d:', $result->errorMessages[0]);
+        $this->assertStringNotContainsString('a read leaving 0 seats', $result->errorMessages[0]);
+    }
+
+    // ---- #5684: both conjuncts of rule (d)'s non-zero arm ----
+
+    public function test_a_seat_drop_inside_the_floor_is_not_refused_even_past_half(): void
+    {
+        // 4 held, 1 read: a drop of 3 is past half but not past the floor.
+        $this->seatsMostlyUnlinked(4, 1);
+        $this->rows = array_slice($this->rows, 0, 1);
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(0, $result->errors, implode('; ', $result->errorMessages));
+        $this->assertSame(1, $this->licenses($this->client)['workstation']->quantity);
+    }
+
+    public function test_a_seat_drop_past_the_floor_but_not_past_half_is_not_refused(): void
+    {
+        // 10 held, 6 read: a drop of 4 is past the floor but not past half.
+        $this->seatsMostlyUnlinked(10, 2);
+        $this->rows = array_slice($this->rows, 0, 6);
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(0, $result->errors, implode('; ', $result->errorMessages));
+        $this->assertSame(6, $this->licenses($this->client)['workstation']->quantity);
+    }
+
+    public function test_a_half_retired_device_backs_no_seat_and_is_counted_in_the_refusal(): void
+    {
+        // #5684 / #5687: a seats-only client whose read lists one half-retired
+        // and one retired device: 0 seats read, both reported.
+        Log::spy();
+        $this->device('1', ['serial' => null]);
+        $this->service()->sync();
+        Asset::query()->update(['litsrmm_device_id' => null]);
+        $this->rows = [];
+        $this->device('21', ['enrollmentState' => 'enrolled', 'availabilityState' => 'retired']);
+        $this->retiredDevice('22');
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(1, $this->licenses($this->client)['workstation']->quantity, 'the seat is not cut');
+        $this->assertStringContainsString('seats 1 held, 0 read; 2 listed device(s) retired or half-retired, backing no seat', $result->errorMessages[0]);
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmAssetSync] client refused: short read'
+                && $context === ['client_id' => $this->client->id, 'rule' => 'd', 'listed' => 2, 'linked' => 0, 'unlisted' => 0, 'seats_held' => 1, 'seats_read' => 0, 'retired_listed' => 2])
+            ->once();
+    }
+
+    public function test_the_retired_count_tells_two_equal_seat_counts_apart(): void
+    {
+        // #5687: 10 held, 3 read, refused; the message carries the listed
+        // retired devices, which back no seat.
+        $this->seatsMostlyUnlinked(10, 2);
+        $this->rows = array_slice($this->rows, 0, 3);
+        for ($n = 21; $n <= 27; $n++) {
+            $this->retiredDevice((string) $n);
+        }
+
+        $result = $this->service()->sync();
+
+        $this->assertStringContainsString('seats 10 held, 3 read; 7 listed device(s) retired or half-retired', $result->errorMessages[0]);
+    }
+
+    // ---- #5680 / #5688: the accept passes only the refusal the admin checked ----
+
+    public function test_an_accept_does_not_pass_a_different_refusal_of_the_same_client(): void
+    {
+        // Run 1 refuses under rule b; the admin checks it. Their accepted run
+        // reads an empty page instead (rule a), which must stay refused.
+        $assets = $this->linkedAssets(6);
+        $this->service()->sync();
+        $this->rows = array_slice($this->rows, 0, 1);
+        $code = self::acceptCode($this->service()->sync());
+        $this->assertStringStartsWith("{$this->client->id}:b:", $code);
+
+        $this->rows = [];
+        $result = $this->service()->sync(null, [$code]);
+
+        foreach ($assets as $asset) {
+            $this->assertNotNull($asset->fresh()->litsrmm_device_id, 'the empty page releases nothing');
+        }
+        $this->assertSame(6, $this->licenses($this->client)['workstation']->quantity, 'nor zeroes the seats');
+        $this->assertSame(1, $result->details['short_read_refused']);
+        $this->assertArrayNotHasKey('short_read_accepted', $result->details);
+        $this->assertStringContainsString('(rule a:', $result->errorMessages[0]);
+        $this->assertStringContainsString('named a different refusal, so it was not passed', $result->errorMessages[0]);
+        $this->assertSame([$this->client->id], $result->details['short_read_accept_unused']);
+    }
+
+    public function test_an_accept_does_not_pass_the_same_rule_with_other_counts(): void
+    {
+        // Same rule (b), but the read is shorter than the one the admin checked.
+        $this->linkedAssets(8);
+        $this->service()->sync();
+        $all = $this->rows;
+        $this->rows = array_slice($all, 0, 3);
+        $code = self::acceptCode($this->service()->sync());
+
+        $this->rows = array_slice($all, 0, 1);
+        $result = $this->service()->sync(null, [$code]);
+
+        $this->assertSame(1, $result->details['short_read_refused']);
+        $this->assertStringContainsString('(rule b:', $result->errorMessages[0]);
+        $this->assertSame(8, $this->licenses($this->client)['workstation']->quantity);
+    }
+
+    public function test_an_accept_naming_no_refusal_is_reported_unused(): void
+    {
+        Log::spy();
+        $this->linkedAssets(2);
+        $other = $this->mappedClient(self::OTHER_VENDOR_CLIENT);
+
+        $result = $this->service()->sync($this->client, ["{$other->id}:a:0:1:1:0:0:0", "{$this->client->id}:a:0:2:2:0:0:0", '999999:a:0:1:1:0:0:0']);
+
+        $this->assertSame(0, $result->errors, implode('; ', $result->errorMessages));
+        $this->assertArrayNotHasKey('short_read_accepted', $result->details);
+        $ids = [$this->client->id, $other->id, 999999];
+        sort($ids);
+        $this->assertSame($ids, $result->details['short_read_accept_unused']);
+        $this->assertStringContainsString('--accept-short-read passed nothing for PSA client ID(s) '.implode(', ', $ids).'.', LitsrmmAssetSyncService::describe($result));
+        $this->assertStringNotContainsString('synced past the short-read bound', LitsrmmAssetSyncService::describe($result));
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmAssetSync] --accept-short-read passed nothing for these PSA client ids'
+                && $context === ['client_ids' => $ids])
+            ->once();
+    }
+
+    public function test_a_used_accept_is_not_reported_unused(): void
+    {
+        $this->linkedAssets(5);
+        $this->service()->sync();
+        $this->rows = array_slice($this->rows, 0, 1);
+        $code = self::acceptCode($this->service()->sync());
+
+        $result = $this->service()->sync(null, [$code]);
+
+        $this->assertSame(1, $result->details['short_read_accepted']);
+        $this->assertArrayNotHasKey('short_read_accept_unused', $result->details);
+        $this->assertStringNotContainsString('passed nothing', LitsrmmAssetSyncService::describe($result));
+    }
+
+    public function test_an_accepted_client_then_degraded_is_not_reported_as_synced(): void
+    {
+        // #5681: rule b accepted, then most detail reads answer 404.
+        Log::spy();
+        $this->linkedAssets(5);
+        $this->service()->sync();
+        $this->rows = array_slice($this->rows, 0, 1);
+        $this->device('9');
+        $this->device('10');
+        $code = self::acceptCode($this->service()->sync());
+        foreach ($this->rows as $row) {
+            $this->details[$row['id']] = 404;
+        }
+
+        $result = $this->service()->sync(null, [$code]);
+
+        $this->assertSame(1, $result->details['degraded_detail_read']);
+        $this->assertArrayNotHasKey('short_read_accepted', $result->details);
+        $this->assertStringNotContainsString('synced past the short-read bound', LitsrmmAssetSyncService::describe($result));
+        $this->assertSame([$this->client->id], $result->details['short_read_accept_unused']);
+        $this->assertSame(5, Asset::whereNotNull('litsrmm_device_id')->count(), 'nothing released');
+        Log::shouldNotHaveReceived('warning', ['[LitsrmmAssetSync] client short read accepted by the operator for this run', \Mockery::any()]);
+    }
+
+    // ---- #5685 / #5691 / #5682: degraded detail reads ----
+
+    public function test_a_one_device_client_whose_only_detail_read_answers_404_is_degraded(): void
+    {
+        $assets = $this->linkedAssets(1);
+        $this->details[$this->rows[0]['id']] = 404;
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(1, $result->errors, 'never a silent pass');
+        $this->assertSame(1, $result->details['degraded_detail_read']);
+        $this->assertSame("client {$this->client->id}: 1 of 1 device detail reads answered 404; treated as a degraded read, so nothing of this client was changed", $result->errorMessages[0]);
+        $this->assertSame(0, $result->skipped);
+        $this->assertNull($this->licenses($this->client)['workstation'], 'no seat written');
+        $this->assertNotNull($assets[0]->fresh()->litsrmm_device_id);
+    }
+
+    public function test_a_mostly_failed_detail_read_mixing_404_and_5xx_is_degraded(): void
+    {
+        // The issue's 404, 404, 500, 500: four of four failed.
+        Log::spy();
+        $assets = $this->linkedAssets(4);
+        $this->details[$this->rows[0]['id']] = 404;
+        $this->details[$this->rows[1]['id']] = 404;
+        $this->details[$this->rows[2]['id']] = 500;
+        $this->details[$this->rows[3]['id']] = 500;
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(1, $result->details['degraded_detail_read']);
+        $this->assertSame(["client {$this->client->id}: 2 of 4 device detail reads answered 404 and 2 failed otherwise; treated as a degraded read, so nothing of this client was changed"], $result->errorMessages, '#5682: no message claims list facts were written');
+        $this->assertNull($this->licenses($this->client)['workstation']);
+        foreach ($assets as $asset) {
+            $this->assertSame('before', $asset->fresh()->last_user, 'nothing written');
+        }
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmAssetSync] client refused: degraded detail read'
+                && $context === ['client_id' => $this->client->id, 'reads' => 4, 'not_found' => 2, 'failed_other' => 2])
+            ->once();
+    }
+
+    public function test_one_404_and_one_5xx_in_three_reads_is_degraded(): void
+    {
+        // Two of three failed, one of them a 404: more than one and more than half.
+        $this->linkedAssets(3);
+        $this->details[$this->rows[0]['id']] = 404;
+        $this->details[$this->rows[1]['id']] = 500;
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(1, $result->details['degraded_detail_read'] ?? 0);
+        $this->assertNull($this->licenses($this->client)['workstation']);
+    }
+
+    public function test_one_404_and_one_5xx_in_four_reads_is_not_degraded(): void
+    {
+        // Half failed: not more than half, so the client is written.
+        $this->linkedAssets(4);
+        $this->details[$this->rows[0]['id']] = 404;
+        $this->details[$this->rows[1]['id']] = 500;
+
+        $result = $this->service()->sync();
+
+        $this->assertArrayNotHasKey('degraded_detail_read', $result->details);
+        $this->assertSame(1, $result->skipped);
+        $this->assertSame(["client {$this->client->id}: a device's hardware was not refreshed (detail read failed: HTTP 500); its list facts were still written"], $result->errorMessages);
+        $this->assertSame(4, $this->licenses($this->client)['workstation']->quantity);
+    }
+
+    public function test_5xx_answers_with_no_404_are_not_a_degraded_read(): void
+    {
+        // Ruling #5578 is about 404s: without one, failures cost only hardware.
+        $this->linkedAssets(2);
+        $this->details[$this->rows[0]['id']] = 500;
+        $this->details[$this->rows[1]['id']] = 500;
+
+        $result = $this->service()->sync();
+
+        $this->assertArrayNotHasKey('degraded_detail_read', $result->details);
+        $this->assertSame(2, $result->errors);
+        $this->assertSame(2, $this->licenses($this->client)['workstation']->quantity);
+    }
+
+    public function test_a_single_404_in_a_larger_healthy_client_stays_a_skip(): void
+    {
+        $assets = $this->linkedAssets(5);
+        $this->details[$this->rows[2]['id']] = 404;
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(0, $result->errors, implode('; ', $result->errorMessages));
+        $this->assertSame(1, $result->skipped);
+        $this->assertArrayNotHasKey('degraded_detail_read', $result->details);
+        $this->assertSame(5, $this->licenses($this->client)['workstation']->quantity);
+        $this->assertNotNull($assets[2]->fresh()->litsrmm_device_id);
+    }
+
+    // ---- #5683: the re-enrolled-by-serial exemption is one-to-one ----
+
+    /** @return array<string, array{0: array<string, mixed>}> */
+    public static function devicesThatReenrollNothing(): array
+    {
+        return [
+            'agentless' => [['agentVersion' => null]],
+            'half-retired' => [['enrollmentState' => 'enrolled', 'availabilityState' => 'retired']],
+            'retired' => [['enrollmentState' => 'retired', 'availabilityState' => 'retired', 'retiredAt' => '2026-09-30T10:00:00.000Z']],
+        ];
+    }
+
+    /**
+     * Four links to device ids the read no longer lists, on assets whose real
+     * serials the read carries only on devices the sync would not relink.
+     */
+    #[DataProvider('devicesThatReenrollNothing')]
+    public function test_a_device_the_sync_would_not_relink_does_not_exempt_a_link(array $state): void
+    {
+        $this->linkedAssets(1);
+        for ($n = 1; $n <= 4; $n++) {
+            Asset::factory()->create(['client_id' => $this->client->id, 'serial_number' => "SN{$n}REAL0", 'litsrmm_device_id' => sprintf('8f14e45f-ceea-467a-9f38-%012d', 100 + $n)]);
+            $this->device((string) (10 + $n), array_merge(['serial' => "SN{$n}REAL0"], $state));
+        }
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(1, $result->details['short_read_refused'] ?? 0, implode('; ', $result->errorMessages));
+        $this->assertStringContainsString('(rule b:', $result->errorMessages[0]);
+        $this->assertStringContainsString('4 of 5 linked asset(s) unlisted', $result->errorMessages[0]);
+        $this->assertSame(5, Asset::whereNotNull('litsrmm_device_id')->count(), 'no link released');
+    }
+
+    public function test_one_listed_serial_does_not_exempt_several_links(): void
+    {
+        // The issue's case: five links share one serial; the read lists one
+        // device carrying it, already linked by id to a sixth asset.
+        $row = $this->device('1', ['serial' => 'SNSHARED01']);
+        Asset::factory()->create(['client_id' => $this->client->id, 'litsrmm_device_id' => $row['id']]);
+        for ($n = 1; $n <= 5; $n++) {
+            Asset::factory()->create(['client_id' => $this->client->id, 'serial_number' => 'SNSHARED01', 'litsrmm_device_id' => sprintf('8f14e45f-ceea-467a-9f38-%012d', 100 + $n)]);
+        }
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(1, $result->details['short_read_refused'] ?? 0, implode('; ', $result->errorMessages));
+        $this->assertStringContainsString('5 of 6 linked asset(s) unlisted', $result->errorMessages[0]);
+        $this->assertSame(6, Asset::whereNotNull('litsrmm_device_id')->count(), 'no link released');
+    }
+
+    public function test_one_unlinked_device_does_not_exempt_two_links_sharing_its_serial(): void
+    {
+        $this->linkedAssets(1);
+        for ($n = 1; $n <= 4; $n++) {
+            Asset::factory()->create(['client_id' => $this->client->id, 'serial_number' => 'SNSHARED01', 'litsrmm_device_id' => sprintf('8f14e45f-ceea-467a-9f38-%012d', 100 + $n)]);
+        }
+        $this->device('9', ['serial' => 'SNSHARED01']);
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(1, $result->details['short_read_refused'] ?? 0, implode('; ', $result->errorMessages));
+        $this->assertStringContainsString('4 of 5 linked asset(s) unlisted', $result->errorMessages[0]);
+    }
+
+    public function test_two_listed_devices_sharing_a_serial_exempt_no_link(): void
+    {
+        // Each serial is on two live devices, which syncClient() refuses as a
+        // shared serial, so none of the four links is re-enrolled.
+        $this->linkedAssets(1);
+        for ($n = 1; $n <= 4; $n++) {
+            Asset::factory()->create(['client_id' => $this->client->id, 'serial_number' => "SN{$n}REAL0", 'litsrmm_device_id' => sprintf('8f14e45f-ceea-467a-9f38-%012d', 100 + $n)]);
+            $this->device((string) (10 + $n), ['serial' => "SN{$n}REAL0"]);
+            $this->device((string) (20 + $n), ['serial' => "SN{$n}REAL0"]);
+        }
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(1, $result->details['short_read_refused'] ?? 0, implode('; ', $result->errorMessages));
+        $this->assertStringContainsString('4 of 5 linked asset(s) unlisted', $result->errorMessages[0]);
+    }
+
+    // ---- #5560 residuals in these files: #5583, #5584, #5586, #5589, #5593 ----
+
+    public function test_a_404_skip_names_what_was_observed_not_a_cause(): void
+    {
+        // #5583: a 404 does not prove the device left.
+        Log::spy();
+        $this->linkedAssets(3);
+        $this->details[$this->rows[0]['id']] = 404;
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(['WORKSTATION-1: its detail read answered 404 (not found); left as it was'], $result->skippedMessages);
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmAssetSync] device not written'
+                && $context === ['client_id' => $this->client->id, 'reason' => 'detail_read_not_found'])
+            ->once();
+    }
+
+    public function test_a_malformed_category_leaves_the_assets_facts_for_it_unchanged(): void
+    {
+        // #5584: "not refreshed" means the existing disk facts stay.
+        $row = $this->device('1');
+        $asset = Asset::factory()->create(['client_id' => $this->client->id, 'litsrmm_device_id' => $row['id'], 'disk_summary' => 'C: 100 GB', 'cpu' => 'Old CPU']);
+        $inventory = self::inventory();
+        $inventory['disks'] = 'nonsense';
+        $this->details[$row['id']] = $inventory;
+
+        $this->service()->sync();
+
+        $asset->refresh();
+        $this->assertSame('C: 100 GB', $asset->disk_summary, 'the malformed category is not refreshed');
+        $this->assertSame('AMD Ryzen 7 5700G with Radeon Graphics', $asset->cpu, 'the well-formed ones are');
+    }
+
+    public function test_a_real_serial_links_a_person_made_inactive_asset_and_leaves_it_inactive(): void
+    {
+        // #5586
+        $asset = Asset::factory()->create(['client_id' => $this->client->id, 'hostname' => 'OLD-NAME', 'serial_number' => 'SN1REAL0', 'is_active' => false, 'litsrmm_retired_at' => null]);
+        $row = $this->device('1');
+
+        $result = $this->service()->sync();
+
+        $asset->refresh();
+        $this->assertSame($row['id'], $asset->litsrmm_device_id, 'linked by its real serial');
+        $this->assertFalse((bool) $asset->is_active, 'and left inactive');
+        $this->assertNull($asset->litsrmm_retired_at);
+        $this->assertSame(0, $result->created, 'no second asset');
+        $this->assertSame(1, Asset::count());
+    }
+
+    public function test_a_device_whose_detail_read_answered_404_still_counts_for_seats(): void
+    {
+        // #5589: seats come from the list.
+        $this->linkedAssets(3);
+        $this->details[$this->rows[0]['id']] = 404;
+
+        $this->service()->sync();
+
+        $this->assertSame(3, $this->licenses($this->client)['workstation']->quantity);
+    }
+
+    public function test_an_empty_list_does_not_refuse_a_client_whose_links_the_sync_retired(): void
+    {
+        // #5593 (1): a retired asset keeps its link whatever the read says, so
+        // it is not a link the empty read could release.
+        $row = $this->retiredDevice('1');
+        $asset = Asset::factory()->create(['client_id' => $this->client->id, 'litsrmm_device_id' => $row['id']]);
+        $this->service()->sync();
+        $this->assertNotNull($asset->fresh()->litsrmm_retired_at);
+
+        $this->rows = [];
+        $result = $this->service()->sync();
+
+        $this->assertSame(0, $result->errors, implode('; ', $result->errorMessages));
+        $this->assertSame($row['id'], $asset->fresh()->litsrmm_device_id);
+    }
+
+    public function test_an_empty_list_does_not_refuse_a_client_whose_seats_are_already_0(): void
+    {
+        // #5593 (2): a suspended, zero-quantity seat is not a seat held.
+        $this->device('1', ['serial' => null]);
+        $this->service()->sync();
+        Asset::query()->update(['litsrmm_device_id' => null]);
+        License::query()->update(['quantity' => 0, 'status' => 'suspended']);
+
+        $this->rows = [];
+        $result = $this->service()->sync();
+
+        $this->assertSame(0, $result->errors, implode('; ', $result->errorMessages));
+    }
+
+    public function test_another_vendors_seats_do_not_make_an_empty_list_refused(): void
+    {
+        // #5593 (3): only LITSRMM seats count.
+        $type = LicenseType::create(['vendor' => 'other-vendor-fixture', 'vendor_sku_id' => 'seat', 'name' => 'Other', 'is_active' => true]);
+        License::create(['license_type_id' => $type->id, 'client_id' => $this->client->id, 'vendor_ref' => 'fixture', 'quantity' => 5, 'status' => 'active', 'synced_at' => now()]);
+
+        $result = $this->service()->sync();
+
+        $this->assertSame(0, $result->errors, implode('; ', $result->errorMessages));
     }
 }

@@ -136,12 +136,13 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $this->mapClient();
         $service = Mockery::mock(LitsrmmAssetSyncService::class);
         $service->shouldReceive('sync')->once()
-            ->withArgs(fn ($only, $accept) => $only === null && $accept === ['12', '34'])
+            ->withArgs(fn ($only, $accept) => $only === null && $accept === ['12:b:1:5:4:5:1:0', '34:d:2:0:0:1:0:2'])
             ->andReturn(new SyncResult);
         $this->app->instance(LitsrmmAssetSyncService::class, $service);
 
-        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ['12', '34']])
-            ->expectsOutputToContain('Accepting a short read for this run only, for PSA client ID(s): 12, 34')
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ['12:b:1:5:4:5:1:0', '34:d:2:0:0:1:0:2']])
+            ->expectsOutputToContain('a short-read refusal is passed only if it matches exactly: 12:b:1:5:4:5:1:0, 34:d:2:0:0:1:0:2')
+            ->doesntExpectOutputToContain('Accepting a short read')
             ->assertSuccessful();
     }
 
@@ -150,11 +151,11 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $client = $this->mapClient();
         $service = Mockery::mock(LitsrmmAssetSyncService::class);
         $service->shouldReceive('sync')->once()
-            ->withArgs(fn ($only, $accept) => $only?->id === $client->id && $accept === [(string) $client->id])
+            ->withArgs(fn ($only, $accept) => $only?->id === $client->id && $accept === ["{$client->id}:a:0:1:1:0:0:0"])
             ->andReturn(new SyncResult);
         $this->app->instance(LitsrmmAssetSyncService::class, $service);
 
-        $this->artisan('litsrmm:sync-devices', ['--client' => $client->id, '--accept-short-read' => [(string) $client->id]])
+        $this->artisan('litsrmm:sync-devices', ['--client' => $client->id, '--accept-short-read' => ["{$client->id}:a:0:1:1:0:0:0"]])
             ->assertSuccessful();
     }
 
@@ -178,7 +179,7 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $this->app->instance(LitsrmmAssetSyncService::class, $service);
 
         $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ['all']])
-            ->expectsOutputToContain('takes PSA client IDs')
+            ->expectsOutputToContain('takes the refusal code a short-read refusal printed')
             ->assertFailed();
     }
 
@@ -236,7 +237,7 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $asset = Asset::factory()->create(['client_id' => $client->id, 'litsrmm_device_id' => self::row(1)['id']]);
         $this->realSync([]);
 
-        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => [(string) $client->id]])
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["{$client->id}:a:0:1:1:0:0:0"]])
             ->expectsOutputToContain('Short read accepted by --accept-short-read: 1 client(s)')
             ->assertSuccessful();
         $this->assertNull($asset->fresh()->litsrmm_device_id);
@@ -262,5 +263,44 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
             ->expectsOutputToContain("Syncing LITSRMM devices for client ID {$client->id}...")
             ->doesntExpectOutputToContain('Fixture Client Name')
             ->assertSuccessful();
+    }
+
+    // ---- #5680 / #5688: the accept names one refusal, and an unused one is reported ----
+
+    public function test_a_bare_client_id_is_no_longer_an_accept(): void
+    {
+        $client = $this->mapClient();
+        $service = Mockery::mock(LitsrmmAssetSyncService::class);
+        $service->shouldNotReceive('sync');
+        $this->app->instance(LitsrmmAssetSyncService::class, $service);
+
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => [(string) $client->id]])
+            ->expectsOutputToContain('takes the refusal code a short-read refusal printed')
+            ->assertFailed();
+    }
+
+    public function test_an_accept_outside_the_client_run_is_reported_unused(): void
+    {
+        $client = $this->mapClient();
+        $this->realSync([self::row(1)]);
+
+        $this->artisan('litsrmm:sync-devices', ['--client' => $client->id, '--accept-short-read' => ['71:a:0:1:1:0:0:0']])
+            ->expectsOutputToContain('--accept-short-read passed nothing for PSA client ID(s): 71')
+            ->doesntExpectOutputToContain('Short read accepted')
+            ->assertSuccessful();
+    }
+
+    public function test_the_refusal_prints_the_code_the_command_takes(): void
+    {
+        $client = $this->mapClient();
+        $asset = Asset::factory()->create(['client_id' => $client->id, 'litsrmm_device_id' => self::row(1)['id']]);
+        $this->realSync([]);
+
+        $this->artisan('litsrmm:sync-devices')
+            ->expectsOutputToContain("--accept-short-read={$client->id}:a:0:1:1:0:0:0")
+            ->assertFailed();
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["{$client->id}:a:0:1:1:0:0:0"]])
+            ->assertSuccessful();
+        $this->assertNull($asset->fresh()->litsrmm_device_id);
     }
 }
