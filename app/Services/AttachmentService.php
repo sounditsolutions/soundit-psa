@@ -6,6 +6,7 @@ use App\Models\Attachment;
 use App\Models\Email;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
+use App\Services\Graph\GraphTokenRefreshFailedException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -302,9 +303,12 @@ class AttachmentService
             // (a GraphClientException with status 0, e.g. connect/timeout or a token failure at
             // entry, or any other Throwable, whose code is not read) is reported as
             // status_unknown: status null plus the exception class (#5399). Never the message (C-56).
+            // A 401 whose token refresh then failed also carries token_refresh => failed, so the
+            // record names the token failure as the cause (#5398).
             $httpStatus = $e instanceof GraphClientException ? $e->getHttpStatus() : 0;
             if ($httpStatus > 0) {
-                $this->warnSkipped($email, $ga, 'fetch_failed', ['status' => $httpStatus]);
+                $this->warnSkipped($email, $ga, 'fetch_failed', ['status' => $httpStatus]
+                    + ($e instanceof GraphTokenRefreshFailedException ? ['token_refresh' => 'failed'] : []));
             } else {
                 $this->warnSkipped($email, $ga, 'status_unknown', [
                     'status' => null,

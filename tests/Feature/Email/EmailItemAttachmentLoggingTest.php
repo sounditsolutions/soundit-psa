@@ -6,11 +6,13 @@ use App\Models\Attachment;
 use App\Models\Client;
 use App\Models\Email;
 use App\Models\Setting;
+use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Services\AttachmentService;
 use App\Services\EmailService;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
+use App\Services\Graph\GraphTokenRefreshFailedException;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
@@ -20,6 +22,7 @@ use Illuminate\Cache\ArrayStore;
 use Illuminate\Cache\Repository;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -33,7 +36,8 @@ use Tests\TestCase;
  * and retry.
  *  - #5391: the 429 backoff record never carries the mailbox.
  *  - #5397: a token failure's record and exception message carry no vendor text.
- *  - #5398: a Graph 401 whose token refresh fails is reported as Graph's 401.
+ *  - #5398: a Graph 401 whose token refresh fails is reported as Graph's 401 with the token
+ *    failure named, and its record carries no mailbox or vendor text (r2).
  *  - #5399: a failure with no HTTP status is reported as status_unknown.
  *  - #5394: a failed MESSAGE read on the new-ticket path is read once more; a failed or
  *    oversize ITEM is still fetched once (#5143).
@@ -304,6 +308,7 @@ class EmailItemAttachmentLoggingTest extends TestCase
         $this->assertSame(Level::Warning, $notStored[0]->level);
         $this->assertSame('fetch_failed', $notStored[0]->context['reason'] ?? null);
         $this->assertSame(401, $notStored[0]->context['status'] ?? null);
+        $this->assertSame('failed', $notStored[0]->context['token_refresh'] ?? null, 'the record names the token failure');
         $this->assertArrayNotHasKey('exception', $notStored[0]->context);
 
         // The only other loud record is the refresh's own status-only token ERROR; the item
@@ -328,6 +333,7 @@ class EmailItemAttachmentLoggingTest extends TestCase
             $this->fail('expected a GraphClientException');
         } catch (GraphClientException $e) {
             $this->assertSame(401, $e->getHttpStatus());
+            $this->assertInstanceOf(GraphTokenRefreshFailedException::class, $e);
         }
     }
 
@@ -435,5 +441,211 @@ class EmailItemAttachmentLoggingTest extends TestCase
         $this->assertCount($expectedValueRequests, $this->requestsEndingWith('/$value'));
         $this->assertSame(0, Attachment::count());
         $this->assertCount(1, $this->withMessage(self::NOT_STORED));
+    }
+
+    // ── r2 (Jeeves 2026-10-06 19:03 PT): #5398 record, #5394 retry outside the lock ──
+
+    /** Graph's own 401 error text in the fixture; never logged and never in the exception. */
+    private const GRAPH_401_TEXT = 'B4A-R2-SYNTHETIC-GRAPH-401-TEXT';
+
+    private function graph401(): Response
+    {
+        return new Response(401, ['Content-Type' => 'application/json'], (string) json_encode([
+            'error' => ['code' => 'InvalidAuthenticationToken', 'message' => self::GRAPH_401_TEXT],
+        ]));
+    }
+
+    /** @return array<string, array{0: \Closure(): Response}> */
+    public static function tokenRefreshFailures(): array
+    {
+        return [
+            'token endpoint refuses (400)' => [fn () => new Response(400, ['Content-Type' => 'application/json'], (string) json_encode([
+                'error' => 'invalid_client', 'error_description' => self::IDP_ERROR_TEXT,
+            ]))],
+            'token response without access_token' => [fn () => new Response(200, ['Content-Type' => 'application/json'], '{"note":"'.self::IDP_ERROR_TEXT.'"}')],
+        ];
+    }
+
+    /** Every string that must stay out of every record and every exception message on this arm. */
+    private function refreshArmSecrets(): array
+    {
+        return [self::MAILBOX, rawurlencode(self::MAILBOX), 'support@', 'support%40', self::GRAPH_401_TEXT,
+            'InvalidAuthenticationToken', self::IDP_ERROR_TEXT, 'invalid_client', self::TENANT, 'graph.microsoft.com'];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('tokenRefreshFailures')]
+    public function test_401_refresh_failure_on_a_logging_caller_writes_a_status_only_record(\Closure $tokenFailure): void
+    {
+        // getMessageAttachments keeps logFailure=true and puts the raw mailbox in its endpoint.
+        $graph = $this->graph([$this->graph401(), $tokenFailure()]);
+
+        $thrown = null;
+        try {
+            $graph->getMessageAttachments(self::MAILBOX, 'MSG-1');
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+
+        $this->assertInstanceOf(GraphTokenRefreshFailedException::class, $thrown);
+        $this->assertSame(401, $thrown->getHttpStatus());
+        $this->assertNull($thrown->getResponseBody(), 'no vendor body rides on the exception');
+        $this->assertCount(1, $this->requestsEndingWith('/oauth2/v2.0/token'), 'positive control: the refresh ran');
+
+        $failed = $this->withMessage('Graph API request failed');
+        $this->assertCount(1, $failed, 'logFailure=true: the arm writes its record');
+        $this->assertSame(Level::Error, $failed[0]->level);
+        $this->assertSame(['method' => 'GET', 'status' => 401, 'token_refresh' => 'failed'], $failed[0]->context);
+        foreach ($this->refreshArmSecrets() as $needle) {
+            $this->assertStringNotContainsString($needle, $thrown->getMessage());
+        }
+        $this->assertNoRecordContains($this->refreshArmSecrets());
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('tokenRefreshFailures')]
+    public function test_401_refresh_failure_on_a_quiet_caller_writes_no_request_record(\Closure $tokenFailure): void
+    {
+        // The item $value read is the logFailure=false caller; it reports the failure itself.
+        $graph = $this->graph([$this->expandResponse([$this->itemAttachment()]), $this->graph401(), $tokenFailure()]);
+
+        $this->assertSame([], app(AttachmentService::class)->downloadEmailAttachments($this->email(), $graph, self::MAILBOX));
+
+        $this->assertCount(1, $this->requestsEndingWith('/oauth2/v2.0/token'), 'positive control: the refresh ran');
+        $this->assertSame([], $this->withMessage('Graph API request failed'), 'logFailure=false: no request record');
+        $notStored = $this->withMessage(self::NOT_STORED);
+        $this->assertCount(1, $notStored);
+        $this->assertSame(['fetch_failed', 401, 'failed'], [
+            $notStored[0]->context['reason'] ?? null, $notStored[0]->context['status'] ?? null, $notStored[0]->context['token_refresh'] ?? null,
+        ]);
+        $this->assertNoRecordContains($this->refreshArmSecrets());
+    }
+
+    private const CID_HTML = '<p>See the screenshot</p><p><img src="cid:img1@synthetic.example.test" alt="shot"></p>';
+
+    /** A message read whose one attachment is an inline image referenced by CID_HTML. */
+    private function inlineImageRead(): Response
+    {
+        return $this->expandResponse([[
+            '@odata.type' => '#microsoft.graph.fileAttachment',
+            'id' => 'ATT-FILE-1',
+            'name' => 'image001.png',
+            'contentType' => 'image/png',
+            'size' => 68,
+            'isInline' => true,
+            'contentId' => 'img1@synthetic.example.test',
+            'contentBytes' => base64_encode('synthetic-png-bytes-b4a-r2'),
+        ]]);
+    }
+
+    /**
+     * A wire response that records DB::transactionLevel() when the request is sent, so a test
+     * can see whether a message read ran inside autoCreateTicketFromEmail's transaction.
+     *
+     * @param  list<int>  $levels
+     */
+    private function recordingLevel(array &$levels, Response $response): \Closure
+    {
+        return function () use (&$levels, $response) {
+            $levels[] = DB::transactionLevel();
+
+            return $response;
+        };
+    }
+
+    private function newTicketEmail(): Email
+    {
+        $client = Client::create(['name' => 'Example Client']);
+
+        return $this->email(['client_id' => $client->id, 'body_html' => self::CID_HTML]);
+    }
+
+    /** @return array<string, array{0: bool}> */
+    public static function firstReadOutcomes(): array
+    {
+        return ['first read succeeds' => [false], 'first read fails, retry succeeds' => [true]];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('firstReadOutcomes')]
+    public function test_a_retried_read_reaches_the_same_attachment_and_cid_resolution_as_a_first_read(bool $firstReadFails): void
+    {
+        $this->graph(array_merge($firstReadFails ? [new Response(503, [], '{}')] : [], [$this->inlineImageRead()]));
+        $email = $this->newTicketEmail();
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertCount($firstReadFails ? 2 : 1, $this->requestsEndingWith('/messages/MSG-1'), 'message read count');
+        $a = Attachment::sole();
+        $this->assertTrue($a->is_inline);
+        $note = TicketNote::where('email_id', $email->id)->sole();
+        $this->assertSame([TicketNote::class, $note->id], [$a->attachable_type, $a->attachable_id], 'linked as on a first read');
+
+        $ticket = Ticket::findOrFail($ticket->id);
+        foreach (['ticket description_html' => $ticket->description_html, 'note body_html' => $note->fresh()->body_html] as $what => $html) {
+            $this->assertNotNull($html, "{$what} was built");
+            $this->assertStringContainsString($a->url, $html, "{$what}: cid: resolved to the stored image");
+            $this->assertStringNotContainsString('cid:', $html, "{$what}: no unresolved cid:");
+        }
+        $this->assertSame($ticket->id, $email->fresh()->ticket_id);
+        // The first read's own failure records predate r2 (a residual Jeeves files); the retry
+        // itself succeeded, so it writes no failure record of its own.
+        $this->assertSame([], $this->withMessage('[EmailService] Attachment re-read after ticket creation failed'));
+        $this->assertCount($firstReadFails ? 1 : 0, $this->withMessage('[AttachmentService] Failed to fetch email attachments'));
+    }
+
+    public function test_the_retried_message_read_runs_after_commit_outside_the_row_lock(): void
+    {
+        $levels = [];
+        $this->graph([
+            $this->recordingLevel($levels, new Response(503, [], '{}')),
+            $this->recordingLevel($levels, $this->inlineImageRead()),
+        ]);
+        $email = $this->newTicketEmail();
+        $outside = DB::transactionLevel();
+
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertCount(2, $levels, 'positive control: both message reads ran');
+        $this->assertSame($outside + 1, $levels[0], 'the first read runs inside the email-row transaction');
+        $this->assertSame($outside, $levels[1], 'the retry runs after that transaction committed');
+        $this->assertSame(1, Attachment::count());
+    }
+
+    public function test_both_message_reads_failing_still_creates_the_ticket_without_attachments(): void
+    {
+        $this->graph([new Response(503, [], '{}'), new Response(503, [], '{}')]);
+        $email = $this->newTicketEmail();
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertCount(2, $this->requestsEndingWith('/messages/MSG-1'), 'message read count');
+        $this->assertSame($ticket->id, $email->fresh()->ticket_id, 'the email is still ticketed');
+        $note = TicketNote::where('email_id', $email->id)->sole();
+        $this->assertSame('Is this legit?', $note->body);
+        $this->assertNull($note->body_html);
+        $this->assertNull(Ticket::findOrFail($ticket->id)->description_html);
+        $this->assertSame(0, Attachment::count());
+        // Each failed read writes its own existing record pair; nothing else is written,
+        // in particular no '[EmailService] Attachment re-read after ticket creation failed'.
+        $loud = array_map(fn (LogRecord $r) => $r->message, $this->records(Level::Warning));
+        $this->assertEqualsCanonicalizing([
+            'Graph API request failed', '[AttachmentService] Failed to fetch email attachments',
+            'Graph API request failed', '[AttachmentService] Failed to fetch email attachments',
+        ], $loud);
+    }
+
+    public function test_reply_path_with_a_failed_message_read_still_links_the_email(): void
+    {
+        $this->graph([new Response(503, [], '{}')]);
+        $client = Client::create(['name' => 'Example Client']);
+        $email = $this->email(['client_id' => $client->id]);
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($this->email([
+            'graph_id' => null, 'client_id' => $client->id, 'subject' => 'Earlier',
+        ]));
+
+        $note = app(EmailService::class)->linkEmailToTicket($email, $ticket);
+
+        $this->assertCount(1, $this->requestsEndingWith('/messages/MSG-1'), 'message read count');
+        $this->assertNotNull($note);
+        $this->assertSame($ticket->id, $email->fresh()->ticket_id);
+        $this->assertSame(0, Attachment::count());
     }
 }

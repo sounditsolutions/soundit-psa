@@ -171,9 +171,10 @@ class GraphClient
      * treats it as a soft skip and reports it itself, with ids, a reason token and either the
      * HTTP status or the exception class, never the exception message. Other Graph calls keep
      * throwFromGuzzle's error record. Two shared records can still be written on this path: a
-     * 429 backoff WARNING (endpoint with its users/ segment redacted, attempt, wait; #5391) and
-     * the token-request ERROR (HTTP status and exception class only; #5397). A 401 whose token
-     * refresh then fails is thrown as Graph's 401, not as the token failure (#5398).
+     * 429 backoff WARNING (endpoint with its users/ segment redacted, attempt, wait; #5391) and,
+     * when the token request itself fails, the token-request ERROR (HTTP status and exception
+     * class only; #5397). A token response without access_token writes no record. A 401 whose
+     * token refresh then fails is thrown as GraphTokenRefreshFailedException, status 401 (#5398).
      */
     public function getMessageAttachmentRaw(string $mailbox, string $messageId, string $attachmentId): string
     {
@@ -556,10 +557,21 @@ class GraphClient
                     $this->cache->forget(self::TOKEN_CACHE_KEY);
                     try {
                         $freshToken = $this->getToken();
-                    } catch (GraphClientException) {
-                        // #5398: Graph did answer 401. The failed refresh has written its own
-                        // status-only record in getToken(); the caller sees Graph's 401.
-                        $this->throwFromGuzzle($e, $method, $endpoint, $logFailure);
+                    } catch (GraphClientException $tokenFailure) {
+                        // #5398: Graph answered 401 and the refresh failed. getToken() writes a
+                        // record only when the token request itself failed; a response without
+                        // access_token writes none. This arm never goes through throwFromGuzzle:
+                        // its record would carry the endpoint (a mailbox) and Guzzle's message
+                        // (vendor text). With $logFailure it writes method and status only.
+                        if ($logFailure) {
+                            Log::error('Graph API request failed', [
+                                'method' => $method,
+                                'status' => 401,
+                                'token_refresh' => 'failed',
+                            ]);
+                        }
+
+                        throw new GraphTokenRefreshFailedException($method, $tokenFailure);
                     }
                     $options['headers']['Authorization'] = 'Bearer '.$freshToken;
 

@@ -305,6 +305,42 @@ class TeamsMessageAttachmentsTest extends TestCase
         $this->assertStringContainsString('Chat.Read.All application permission', $text);
     }
 
+    /** #5398 (b4a r2): a token-refresh failure is not reported as a missing permission. */
+    public function test_a_401_whose_token_refresh_fails_names_the_token_failure_not_a_permission(): void
+    {
+        $this->graph(
+            new Response(401, [], (string) json_encode(['error' => ['code' => 'InvalidAuthenticationToken', 'message' => 'synthetic']])),
+            new Response(400, [], (string) json_encode(['error' => 'invalid_client', 'error_description' => 'synthetic'])),
+        );
+
+        $r = $this->fetch([]);
+        $text = (string) $r->json('result.content.0.text');
+
+        $this->assertTrue((bool) $r->json('result.isError'));
+        $this->assertSame(0, $this->queue->count(), 'positive control: the 401 and the failed refresh both ran');
+        $this->assertStringContainsString('HTTP 401', $text);
+        $this->assertStringContainsString('token refresh then failed', $text);
+        $this->assertStringNotContainsString('application permission', $text);
+        $this->assertStringNotContainsString('Ask the operator to grant it', $text);
+    }
+
+    /** Control for the test above: a 401 that a fresh token did not cure is still the permission refusal. */
+    public function test_a_401_after_a_successful_refresh_still_names_the_permission(): void
+    {
+        $this->graph(
+            new Response(401, [], '{}'),
+            new Response(200, [], (string) json_encode(['access_token' => 'synthetic-token-2', 'expires_in' => 3600])),
+            new Response(401, [], '{}'),
+        );
+
+        $text = (string) $this->fetch([])->json('result.content.0.text');
+
+        $this->assertSame(0, $this->queue->count(), 'positive control: the refresh succeeded and the retry ran');
+        $this->assertStringContainsString('HTTP 401', $text);
+        $this->assertStringContainsString('application permission', $text);
+        $this->assertStringNotContainsString('token refresh', $text);
+    }
+
     public function test_an_unknown_ordinal_and_a_malformed_message_id_are_refused(): void
     {
         $this->graph($this->graphJson($this->imageOnlyMessage()));
