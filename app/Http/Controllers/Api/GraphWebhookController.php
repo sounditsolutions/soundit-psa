@@ -67,8 +67,10 @@ class GraphWebhookController extends Controller
                     'exception' => $e::class,
                 ]);
             } catch (\Throwable $e) {
-                // #5731 / C-56: the exception class only. This arm's message is not GraphClient's
-                // (an import or database failure can carry any text), so it is not logged.
+                // #5731 / C-56: the exception class only. The try block covers the fetch and the
+                // import, so this arm takes any non-GraphClientException from either, and its
+                // message can carry any text; it is not logged. (A GraphClientException thrown
+                // inside the import takes the arm above, whose record says 'fetch'; #5774.)
                 Log::error('[GraphWebhook] Failed to import message', [
                     'exception' => $e::class,
                 ]);

@@ -11,9 +11,13 @@ namespace Tests\Support;
  *   object put in a context is invisible to the scan.
  *
  * flattenForScan() walks the value instead. Scalars are written as they are (no escaping), an
- * array or a plain object is walked key by key, and a Throwable is written as its class, its
- * message, the response body when it has one (GraphClientException::getResponseBody()), and
- * then the same for every getPrevious() link.
+ * array is walked key by key, and a Throwable is written as its class, its message, the response
+ * body when it has one (GraphClientException::getResponseBody()), and then the same for every
+ * getPrevious() link. Any other object is read in the order Monolog's NormalizerFormatter (under
+ * Laravel's LineFormatter) reads it: jsonSerialize() for a JsonSerializable, then __toString()
+ * for an object that has one (a PSR-7 Uri prints its whole URL in the log line; #5770), and
+ * otherwise every property, private and protected ones included. Monolog prints only the public
+ * ones there; the scan reads more than the log line, never less.
  */
 trait FlattensLogContext
 {
@@ -40,7 +44,17 @@ trait FlattensLogContext
             return implode(' | ', $parts);
         }
         if (is_object($value)) {
-            $value = $value instanceof \JsonSerializable ? $value->jsonSerialize() : get_object_vars($value);
+            if ($value instanceof \JsonSerializable) {
+                $value = $value->jsonSerialize();
+            } elseif (method_exists($value, '__toString')) {
+                try {
+                    return $value::class.': '.$value->__toString();
+                } catch (\Throwable) {
+                    $value = self::allProperties($value);
+                }
+            } else {
+                $value = self::allProperties($value);
+            }
             if (! is_array($value)) {
                 return self::flattenForScan($value, $depth + 1);
             }
@@ -55,5 +69,21 @@ trait FlattensLogContext
         }
 
         return get_debug_type($value);
+    }
+
+    /**
+     * Every property of $object, private and protected included, keyed by its bare name.
+     *
+     * @return array<string, mixed>
+     */
+    private static function allProperties(object $object): array
+    {
+        $out = [];
+        foreach ((array) $object as $key => $item) {
+            // (array) prefixes a private key with "\0Class\0" and a protected one with "\0*\0".
+            $out[(string) preg_replace('/^\0[^\0]*\0/', '', (string) $key)] = $item;
+        }
+
+        return $out;
     }
 }

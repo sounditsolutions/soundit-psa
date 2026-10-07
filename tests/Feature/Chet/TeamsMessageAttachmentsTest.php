@@ -575,30 +575,43 @@ class TeamsMessageAttachmentsTest extends TestCase
         $this->assertNoVendorText([$cleanRecord], $cleanResponse);
     }
 
-    /** #5622 control: an on-demand logger bypasses the TestHandler; the MessageLogged list sees it. */
     /**
      * #5726 positive control: a GraphClient rebound after graph() (so the tool would read
      * through a client with no scripted queue) fails mcp()'s guard before the request is sent.
+     * #5771: the rebound client is itself scripted to refuse every request, so if the guard
+     * were weakened the tool would reach this refusing handler, never the network, and the
+     * refusal list below would not be empty.
      */
     public function test_the_per_call_guard_fails_when_the_tool_would_resolve_another_client(): void
     {
         $this->graph();
-        $this->app->instance(GraphClient::class, new GraphClient([
+        $refused = [];
+        $refusing = HandlerStack::create(function (\Psr\Http\Message\RequestInterface $request) use (&$refused) {
+            $refused[] = $request->getUri()->getHost();
+
+            return \GuzzleHttp\Promise\Create::rejectionFor(new \GuzzleHttp\Exception\ConnectException('b4k2 refused stray request', $request));
+        });
+        $this->app->instance(GraphClient::class, $rebound = new GraphClient([
             'tenant_id' => 'synthetic-tenant', 'client_id' => self::CLIENT_ID, 'client_secret' => self::SECRET_FIXTURE,
-            'request_timeout' => 5, 'token_timeout' => 5,
+            'request_timeout' => 5, 'token_timeout' => 5, 'handler' => $refusing,
         ], cache()->store('array')));
+        foreach (['http', 'authHttp'] as $property) {
+            $this->assertSame($refusing, (new \ReflectionProperty(GraphClient::class, $property))->getValue($rebound)->getConfig('handler'), "the rebound GraphClient::\${$property} refuses every request");
+        }
 
         try {
             $this->fetch([]);
         } catch (\PHPUnit\Framework\AssertionFailedError $e) {
             $this->assertStringContainsString('the tool resolves this client (before the tool request)', $e->getMessage());
             $this->assertSame(0, McpAuditLog::count(), 'no tool request was sent');
+            $this->assertSame([], $refused, 'the rebound client was sent nothing');
 
             return;
         }
         $this->fail('the guard did not fire on a rebound GraphClient');
     }
 
+    /** #5622 control: an on-demand logger bypasses the TestHandler; the MessageLogged list sees it. */
     public function test_the_record_list_sees_an_on_demand_logger(): void
     {
         $logs = $this->captureLogs();

@@ -16,6 +16,7 @@ use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Monolog\Handler\NullHandler;
 use Monolog\Handler\TestHandler;
 use Monolog\LogRecord;
 use Tests\Support\FlattensLogContext;
@@ -23,7 +24,8 @@ use Tests\TestCase;
 
 /**
  * #5679 / C-56: the GraphClientException messages GraphClient throws carry the method and the
- * status, never the endpoint, the mailbox or the nextLink URL. A caller or Laravel's reporter
+ * status (or, with no response, that none was received; #5722), never the endpoint, the mailbox
+ * or the nextLink URL. A caller or Laravel's reporter
  * logs that message, so it must not carry what GraphClient's own record leaves out.
  * getHttpStatus() and getResponseBody() are unchanged.
  *
@@ -94,6 +96,12 @@ class GraphClientExceptionMessageTest extends TestCase
         return [self::MAILBOX, rawurlencode(self::MAILBOX), 'support@', 'support%40', 'users/', 'graph.microsoft.com', '$skip', self::GRAPH_ERROR_TEXT];
     }
 
+    /** @return list<string> Guzzle's own text, looked for in a record's message and context alike (#5778) */
+    private static function guzzleNeedles(): array
+    {
+        return ['cURL'];
+    }
+
     /** @return list<string> the needles $text carries */
     private static function carried(string $text): array
     {
@@ -129,7 +137,7 @@ class GraphClientExceptionMessageTest extends TestCase
             'throwFromGuzzle, response (post)' => [fn (GraphClient $g) => $g->post("users/{$mailbox}/sendMail", ['x' => 1]), fn () => [self::graph500()], 'Graph API error: POST returned 500', 500],
             'throwFromGuzzle, no response' => [fn (GraphClient $g) => $g->getMessageAttachments($mailbox, 'MSG-1'), fn () => [
                 new ConnectException('cURL error 7: refused for https://graph.microsoft.com/v1.0/users/'.$mailbox.'/messages/MSG-1', new Request('GET', 'users/'.$mailbox.'/messages/MSG-1')),
-            ], 'Graph API error: GET returned 0', 0],
+            ], 'Graph API error: GET received no response', 0],
             'throwFromGuzzle, nextLink page (requestAbsolute)' => [fn (GraphClient $g) => $g->getAllPages("users/{$mailbox}/messages"), fn () => [self::page(), self::graph500()], 'Graph API error: GET returned 500', 500],
             'throwFromGuzzle, nextLink page (requestJsonAbsolute)' => [fn (GraphClient $g) => $g->calendarView($mailbox, '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z'), fn () => [self::page(), self::graph500()], 'Graph API error: GET returned 500', 500],
             'invalid JSON (request)' => [fn (GraphClient $g) => $g->get("users/{$mailbox}/messages"), fn () => [new Response(200, [], 'not json')], 'Invalid JSON response from Graph API: GET returned 200', 200],
@@ -176,10 +184,8 @@ class GraphClientExceptionMessageTest extends TestCase
     {
         $out = [];
         foreach ($this->logged as $m) {
-            $carried = self::carried($m->message.' '.self::flattenForScan($m->context));
-            if (str_contains(self::flattenForScan($m->context), 'cURL')) {
-                $carried[] = 'cURL';
-            }
+            $text = $m->message.' '.self::flattenForScan($m->context);
+            $carried = [...self::carried($text), ...array_values(array_filter(self::guzzleNeedles(), fn (string $n) => str_contains($text, $n)))];
             if ($carried !== []) {
                 $out[] = ["{$m->level} {$m->message}", $carried];
             }
@@ -217,14 +223,23 @@ class GraphClientExceptionMessageTest extends TestCase
     }
 
     /**
-     * #5742 positive control: a record written through an on-demand stack, outside the
-     * configured channels, reaches the MessageLogged list and the scan.
+     * #5742 / #5780 positive control: a record written through an on-demand logger built with
+     * its own handler (Log::build()), so it is outside the configured channels and never
+     * reaches the TestHandler, still reaches the MessageLogged list and the scan.
      */
     public function test_the_record_list_sees_an_on_demand_logger(): void
     {
-        Log::stack(['single'])->error('Graph API request failed', ['endpoint' => 'users/'.self::MAILBOX.'/messages']);
+        Log::build(['driver' => 'monolog', 'handler' => NullHandler::class])->error('Graph API request failed', ['endpoint' => 'users/'.self::MAILBOX.'/messages']);
+        $this->assertSame([], $this->logs->getRecords(), 'the TestHandler alone misses it');
         $this->assertSame(['error Graph API request failed'], array_map(fn (MessageLogged $m) => "{$m->level} {$m->message}", $this->logged));
         $this->assertSame([['error Graph API request failed', [self::MAILBOX, 'support@', 'users/']]], $this->recordsCarryingANeedle());
+    }
+
+    /** #5778 control: Guzzle's cURL text in a record's message, with nothing in its context, turns the scan red. */
+    public function test_the_record_scan_fails_on_curl_text_in_the_message(): void
+    {
+        $this->logged = [new MessageLogged('error', 'Graph API request failed: cURL error 7: connection refused', ['method' => 'GET'])];
+        $this->assertSame([['error Graph API request failed: cURL error 7: connection refused', ['cURL']]], $this->recordsCarryingANeedle());
     }
 
     /**
