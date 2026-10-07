@@ -586,11 +586,14 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
 
         $this->assertStringContainsString(
             "PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared. The record is now PERMANENT (state 'reap_failed'), so the expiry job never removes it, and while it has no recorded id neither mesh_remove_allow_rule nor mesh_edit_allow_rule can reach it. "
-                ."The expiry job does look a record in this state up by sender and comment: if exactly one rule in Mesh matches, it records that rule's id here again and both verbs can reach the record. Until then it blocks new allow rules for this sender. Check the rule in the Mesh portal.",
+                ."The expiry job does look a record in this state up by sender and comment: if exactly one rule in Mesh matches, it records that rule's id here again, which only makes the record reachable by both verbs; it does not lift the block. "
+                .'This record keeps blocking new allow rules for this sender until the PSA proves a removal against it (an approved mesh_remove_allow_rule, once the id is back) or someone clears it by hand. Check the rule in the Mesh portal.',
             $message,
         );
         $this->assertStringNotContainsString('never visits it', $message);
-        $this->assertStringNotContainsString('by hand', $message);
+        // The block does not end when the id comes back: executed below, the
+        // row stays reap_failed after the settle pass and is still refused.
+        $this->assertStringNotContainsString('Until then it blocks', $message);
 
         $why = "PSA record #{$record->id}, but an earlier removal of it did not prove it absent (state 'reap_failed'), so whether the rule is still live upstream is unknown. ";
         $error = $this->assertRefused(fn () => $this->restage($fixture));
