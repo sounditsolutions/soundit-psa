@@ -60,6 +60,9 @@ class MeshClientLogPathTest extends TestCase
 
     private const QUERY_MARKER = 'LOGPATH-QUERY-5c19e2';
 
+    /** A fragment marker on an unredacted path (#5479). */
+    private const FRAGMENT_MARKER = 'LOGPATH-FRAG-5c19e2';
+
     /** Synthetic user-info an absolute endpoint may carry (G-13: not a credential). */
     private const USER = 'synthuser-5c19';
 
@@ -126,6 +129,8 @@ class MeshClientLogPathTest extends TestCase
             'sub-resource' => ["api/customers/{$id}/licenses/", 'api/customers/<customer>', "/api/customers/{$id}/licenses/"],
             'id upper-cased' => ["api/customers/{$up}/", 'api/customers/<customer>', "/api/customers/{$up}/"],
             'id dashless' => ["api/customers/{$bare}/", 'api/customers/<customer>', "/api/customers/{$bare}/"],
+            // #5482: holds the upper-cased dashless form, case-sensitively.
+            'id dashless, upper-cased' => ['api/customers/'.strtoupper($bare).'/', 'api/customers/<customer>', '/api/customers/'.strtoupper($bare).'/'],
             'id, no trailing slash' => ["api/customers/{$id}", 'api/customers/<customer>', "/api/customers/{$id}"],
             // Query rows. get() always passes Guzzle a 'query' option, and
             // that option REPLACES a query written into the endpoint: with
@@ -136,6 +141,11 @@ class MeshClientLogPathTest extends TestCase
             // A bare query resolves against base_uri: path '/', query
             // replaced by the empty option (measured).
             'leading ?' => [$q, '', '/', ''],
+            // #5474: an absolute endpoint carrying a query. logPath() applies
+            // the query cut AND the authority strip, and nothing else; the
+            // request goes to the endpoint's host with the endpoint's query
+            // replaced by get()'s empty query option (measured).
+            'absolute customer list with a query' => ['https://'.self::ENDPOINT_HOST."/api/customers/{$q}", '/api/customers/', '/api/customers/', '', '', self::ENDPOINT_HOST],
             // Fragment row. The query option does not touch a fragment: the
             // PSR-7 request URI the handler receives KEEPS '#frag' (Guzzle's
             // resolver carries the relative fragment), and the log line drops
@@ -145,9 +155,18 @@ class MeshClientLogPathTest extends TestCase
             // fragment, while StreamHandler passes the URI with its fragment
             // to fopen() (#5405, #5426).
             'id with a fragment' => ["api/customers/{$id}/#frag", 'api/customers/<customer>', "/api/customers/{$id}/", '', 'frag'],
+            // #5479: a fragment on a path with no customers/ segment, so only
+            // the '#' half of the cut keeps it out of the log line (on the
+            // row above, the redaction swallows '#frag' whether or not the
+            // cut did). The fragment marker is a leak form.
+            'unredacted path with a fragment' => ['api/devices/#'.self::FRAGMENT_MARKER, 'api/devices/', '/api/devices/', '', self::FRAGMENT_MARKER],
             // #5337: the regex flags and the segment boundary. The request
             // path carries the newline percent-encoded.
             'id with a newline (s flag)' => ["api/customers/{$nl}/", 'api/customers/<customer>', '/api/customers/'.str_replace("\n", '%0A', $nl).'/'],
+            // #5480: an absolute endpoint whose path PSR-7 percent-encodes.
+            // logPath() strips the authority and keeps the bytes as given;
+            // the request path carries the space as %20.
+            'absolute URL, space in the path' => ['https://'.self::ENDPOINT_HOST.'/api/x y/', '/api/x y/', '/api/x%20y/', '', '', self::ENDPOINT_HOST],
             'upper-case scheme (i flag, host strip)' => ['HTTPS://'.self::ENDPOINT_HOST."/api/customers/{$id}/", '/api/customers/<customer>', "/api/customers/{$id}/", '', '', self::ENDPOINT_HOST],
             'upper-case Customers/ (i flag, redaction)' => ["api/Customers/{$id}/", 'api/Customers/<customer>', "/api/Customers/{$id}/"],
             'bare customers/ at the start (^ branch)' => ["customers/{$id}/", 'customers/<customer>', "/customers/{$id}/"],
@@ -265,14 +284,18 @@ class MeshClientLogPathTest extends TestCase
      * below (#5421, #5439). Then the output is pinned exactly to the row (so
      * an identity logPath() fails on every changed row, #5335).
      *
-     * The rows are counted by kind with exact numbers: 18 redact, 2 are
-     * query-cut only, 2 authority-strip only, 2 come back as given (#5383).
+     * The rows are counted by kind with exact numbers: 19 redact, 3 are
+     * query-cut only (one of them cut at '#', #5479), 3 authority-strip
+     * only (one with a path PSR-7 would percent-encode, #5480), 1 is both
+     * query cut and authority strip (#5474), 2 come back as given (#5383).
      * Dropping, unredacting or reclassifying a row changes a count. Every
      * leak form is held, matched case-sensitively, by at least one row's
      * endpoint (a row that holds one and comes back as given fails the leak
      * check), so no form in leakForms() is dead in this loop; the
      * upper-cased id form is held only by the 'id upper-cased' row, so
-     * dropping that row fails here (#5420, #5442).
+     * dropping that row fails here (#5420, #5442), and likewise the
+     * upper-cased dashless form and the 'id dashless, upper-cased' row
+     * (#5482).
      */
     public function test_log_path_changes_every_redacted_shape(): void
     {
@@ -297,7 +320,7 @@ class MeshClientLogPathTest extends TestCase
         }
 
         $this->assertSame(
-            ['redacted' => 18, 'query cut only' => 2, 'authority strip only' => 2, 'query cut and authority strip' => 0, 'kept' => 2],
+            ['redacted' => 19, 'query cut only' => 3, 'authority strip only' => 3, 'query cut and authority strip' => 1, 'kept' => 2],
             $kinds,
             'rows by kind',
         );
@@ -309,25 +332,85 @@ class MeshClientLogPathTest extends TestCase
     /**
      * The leak check in the loop above can fail on a logPath() output, not
      * only on fixture data (#5441): fed an output that kept what logPath()
-     * must drop, leaksIn() names the form. Each row's endpoint, offered as
-     * its own output (an identity logPath()), leaks every form that row
-     * holds, and across the rows every form in leakForms() is named, so no
-     * form is checked only vacuously. The base_uri-host row with its
-     * authority kept leaks 'host'.
+     * must drop, leaksIn() names exactly the forms kept. Pinned by literal
+     * lists, not recomputed from leakForms():
+     * - identity outputs: the base_uri-host row with its authority kept
+     *   leaks 'host'; the user-info row leaks each of its six forms (#5483);
+     * - partially processed outputs, not equal to the endpoint (#5471): a
+     *   query cut without the redaction leaks the id forms and not the
+     *   query marker; an authority strip without the redaction leaks the
+     *   id forms and none of the authority's;
+     * - an output whose kept id changed case is still named, since $out is
+     *   matched in any case (#5481);
+     * - on the upper-cased rows, an output that kept only part of the id
+     *   is named by that part's upper-cased form (#5482).
+     * Then, on every changed row, the endpoint offered as its own output
+     * leaks exactly the forms that row's endpoint holds (case-sensitively),
+     * not merely some form (#5483), and across the rows every form in
+     * leakForms() is named.
      */
     public function test_the_leak_check_fails_on_a_leaking_output(): void
     {
+        $id = self::MESH_ID;
         $base = 'https://'.self::HOST.'/api/customers/';
         $this->assertSame(['host'], $this->leaksIn($base, $base), 'authority kept on the base_uri-host row');
         $this->assertSame([], $this->leaksIn($base, '/api/customers/'), 'authority stripped');
-        $up = 'api/customers/'.strtoupper(self::MESH_ID).'/';
-        $this->assertContains('Mesh id, upper-cased', $this->leaksIn($up, $up), 'upper-cased id kept');
+        $creds = 'https://'.self::USER.':'.self::PASS.'@'.self::ENDPOINT_HOST.':'.self::PORT."/api/customers/{$id}/";
+        $this->assertSame(
+            ['Mesh id', 'Mesh id after its first dash', 'endpoint host', 'user-info, user', 'user-info, password', 'port'],
+            $this->leaksIn($creds, $creds),
+            'user-info row, identity output: every form it holds (#5483)',
+        );
+
+        // #5471: partially processed outputs.
+        $this->assertSame(
+            ['Mesh id', 'Mesh id after its first dash'],
+            $this->leaksIn("api/customers/{$id}/?filter=".self::QUERY_MARKER, "api/customers/{$id}/"),
+            'query cut, redaction skipped',
+        );
+        $this->assertSame(
+            ['Mesh id', 'Mesh id after its first dash'],
+            $this->leaksIn($creds, "/api/customers/{$id}/"),
+            'authority stripped, redaction skipped',
+        );
+        $this->assertSame(
+            ['endpoint host', 'user-info, user', 'user-info, password', 'port'],
+            $this->leaksIn($creds, self::USER.':'.self::PASS.'@'.self::ENDPOINT_HOST.':'.self::PORT.'/api/customers/<customer>'),
+            'redacted, scheme dropped but authority kept',
+        );
+
+        // #5481: the kept id changed case on its way to the output.
+        $this->assertSame(
+            ['Mesh id', 'Mesh id after its first dash'],
+            $this->leaksIn("api/customers/{$id}/", 'api/customers/'.strtoupper($id).'/'),
+            'lower-case id logged upper-cased',
+        );
+        $this->assertSame(
+            ['Mesh id, upper-cased', 'Mesh id after its first dash, upper-cased'],
+            $this->leaksIn('api/customers/'.strtoupper($id).'/', "api/customers/{$id}/"),
+            'upper-case id logged lower-cased',
+        );
+
+        // #5482: part of an upper-cased id kept.
+        $this->assertSame(
+            ['Mesh id after its first dash, upper-cased'],
+            $this->leaksIn('api/customers/'.strtoupper($id).'/', 'api/customers/'.strtoupper(substr($id, 9))),
+            'upper-cased row, tail after the first dash kept',
+        );
+        $upBare = strtoupper(str_replace('-', '', $id));
+        $this->assertSame(
+            ['Mesh id, dashless, upper-cased'],
+            $this->leaksIn("api/customers/{$upBare}/", "api/customers/{$upBare}"),
+            'upper-cased dashless row, id kept',
+        );
 
         $named = [];
         foreach (self::shapes() as $name => [$endpoint, $expectedPath]) {
             $own = $this->leaksIn($endpoint, $endpoint);
             if ($endpoint !== $expectedPath) {
-                $this->assertNotSame([], $own, "{$name}: an identity logPath() on a changed row leaks a form");
+                $held = array_keys(array_filter($this->leakForms(), fn (string $form): bool => str_contains($endpoint, $form)));
+                $this->assertNotSame([], $held, "{$name}: a changed row holds a leak form");
+                $this->assertSame($held, $own, "{$name}: an identity logPath() on a changed row leaks every form the row holds");
             }
             $named = array_merge($named, $own);
         }
@@ -340,10 +423,14 @@ class MeshClientLogPathTest extends TestCase
      * Refused: a cut or strip that also lost a character; an output that
      * kept the user-info, the port, or both (#5421, #5422, #5425); an
      * absolute or relative customer read left unredacted, and a query or
-     * an authority left on (each the output of a logPath() with that step
-     * deleted, #5439); a relative endpoint as PSR-7's Uri would
-     * percent-encode it, which the authority test alone keeps out (#5443);
-     * and a query cut offered as an authority strip (#5437).
+     * an authority left on (the output of a logPath() with that step
+     * deleted, #5439), including the IDENTITY output, where the deleted
+     * step was the only one the endpoint needed, both on four named
+     * endpoints and on every changed row (#5470); two outputs that are
+     * not step-deletion outputs but are changed otherwise; a relative or
+     * absolute path as PSR-7's Uri would percent-encode it (#5443, #5480);
+     * and a query cut plus an authority strip is pinned to the combined
+     * kind, not either 'only' kind and not null (#5437, #5475).
      */
     public function test_the_classifier_reaches_each_arm_and_refuses_other_changes(): void
     {
@@ -359,20 +446,33 @@ class MeshClientLogPathTest extends TestCase
         // logPath() step-deletion outputs (#5439).
         $this->assertNull($this->classify("https://{$host}/api/customers/x/", '/api/customers/x/'), 'absolute customer read, not redacted');
         $this->assertNull($this->classify('//'.$host.'/api/customers/x/', '/api/customers/x/'), 'scheme-relative customer read, not redacted');
+        // #5470: the step deleted is the only step the endpoint needs, so
+        // the output IS the endpoint (an identity output on an endpoint that
+        // changes). The base classifier's `$out === $endpoint => 'kept'`
+        // shortcut accepted every one of these.
+        $this->assertNull($this->classify('api/customers/x/', 'api/customers/x/'), 'relative customer read, redaction deleted (identity)');
+        $this->assertNull($this->classify('api/customers/?a=1', 'api/customers/?a=1'), 'customer list with a query, query cut deleted (identity)');
+        $this->assertNull($this->classify('api/devices/#f', 'api/devices/#f'), 'unredacted path with a fragment, cut deleted (identity)');
+        $this->assertNull($this->classify("https://{$host}/api/customers/", "https://{$host}/api/customers/"), 'absolute customer list, authority strip deleted (identity)');
+        // Not step-deletion outputs: changed some other way.
         $this->assertNull($this->classify('api/customers/x/', 'api/customers/x/x'), 'relative customer read, changed but not redacted');
         $this->assertNull($this->classify('api/customers/x/?a=1', 'api/customers/x/'), 'query cut, not redacted');
         $this->assertNull($this->classify("https://{$host}/api/customers/x/", "https://{$host}/api/customers/<customer>"), 'redacted, authority kept');
-        $this->assertNull($this->classify("https://{$host}/api/customers/", "https://{$host}/api/customers/".'?'), 'authority kept, changed otherwise');
+        $this->assertNull($this->classify("https://{$host}/api/customers/", "https://{$host}/api/customers/".'?'), 'authority kept, changed otherwise (not a step-deletion output)');
         $this->assertNull($this->classify('api/customers/x/?a=1', 'api/customers/<customer>?a=1'), 'redacted, query kept');
-        $this->assertNull($this->classify('api/customers/?a=1', 'api/customers/?a=1x'), 'query kept and changed');
+        $this->assertNull($this->classify('api/customers/?a=1', 'api/customers/?a=1x'), 'query kept and changed (not a step-deletion output)');
         $this->assertNull($this->classify("https://{$host}/api/customers/?a=1", "https://{$host}/api/customers/"), 'query cut, authority kept');
         $this->assertNull($this->classify("https://{$host}/api/customers/?a=1", '/api/customers/?a=1'), 'authority strip, query kept');
         // #5443: no authority, so the Uri path is not an authority strip.
         $this->assertNull($this->classify('api/x y/', 'api/x%20y/'), 'relative path percent-encoded by Uri');
         $this->assertNull($this->classify('api/x y/?a=1', 'api/x%20y/'), 'relative cut percent-encoded by Uri');
-        // #5437: the authority-strip kind is not reached by a query cut.
-        $this->assertNotSame('authority strip only', $this->classify("https://{$host}/api/customers/?a=1", '/api/customers/'), 'a query cut is not an authority strip only');
-        $this->assertNotSame('query cut only', $this->classify("https://{$host}/api/customers/?a=1", '/api/customers/'), 'an authority strip is not a query cut only');
+        // #5480: nor an absolute one; the strip keeps the path's bytes.
+        $this->assertSame('authority strip only', $this->classify("https://{$host}/api/x y/", '/api/x y/'), 'absolute path kept byte for byte');
+        $this->assertNull($this->classify("https://{$host}/api/x y/", '/api/x%20y/'), 'absolute path percent-encoded by Uri');
+        // #5437 / #5475: a query cut plus an authority strip is exactly the
+        // combined kind (so neither 'only' kind, and not null).
+        $this->assertSame('query cut and authority strip', $this->classify("https://{$host}/api/customers/?a=1", '/api/customers/'), 'https + query: both steps');
+        $this->assertSame('query cut and authority strip', $this->classify("https://{$host}/api/customers/#f", '/api/customers/'), 'https + fragment: both steps');
 
         $this->assertNull($this->classify('api/customers/?a=1', 'api/customers'), 'a cut that also trimmed');
         $this->assertNull($this->classify("https://{$host}/api/customers/", '/api/customers'), 'a strip that also trimmed');
@@ -380,16 +480,28 @@ class MeshClientLogPathTest extends TestCase
         $this->assertNull($this->classify("https://{$host}:8443/api/customers/", ':8443/api/customers/'), 'port kept');
         $this->assertNull($this->classify("https://u@{$host}/api/customers/", 'u@/api/customers/'), 'user-info kept');
         $this->assertNull($this->classify('api/customers/', 'api/customers/x'), 'changed otherwise');
+
+        // #5470, every row: on each row logPath() changes, the endpoint
+        // offered as its own output (an identity logPath()) is refused.
+        $identities = 0;
+        foreach (self::shapes() as $name => [$endpoint, $expectedPath]) {
+            if ($endpoint !== $expectedPath) {
+                $this->assertNull($this->classify($endpoint, $endpoint), "{$name}: an identity output on a changed row is refused");
+                $identities++;
+            }
+        }
+        $this->assertSame(count(self::shapes()) - 2, $identities, 'every row but the two kept ones is a changed row');
     }
 
     /**
      * How logPath() changed $endpoint into $out, judged from the endpoint
      * alone; null unless $out is EXACTLY what every step applied to the
      * endpoint gives. The steps are modelled without logPath()'s regexes:
-     * the cut at the first '?' or '#'; the authority strip, taken as the
-     * path PSR-7's Uri parses from the cut, and only when that Uri has an
-     * authority (a relative cut is kept byte for byte, though Uri would
-     * percent-encode it); and the redaction, by splitting on '/' at the
+     * the cut at the first '?' or '#'; the authority strip, only when
+     * PSR-7's Uri finds an authority in the cut, taken as the cut's own
+     * bytes from the first '/' after '<scheme>://' or '//' (not Uri's
+     * getPath(), which percent-encodes, so neither a relative nor an
+     * absolute path is modelled as encoded, #5443, #5480); and the redaction, by splitting on '/' at the
      * first segment equal to 'customers' (any case) that has anything after
      * it. So an output that skipped any step (left the id, kept the
      * authority, kept the query) or did anything else is refused (#5407,
@@ -400,7 +512,15 @@ class MeshClientLogPathTest extends TestCase
     {
         $cut = substr($endpoint, 0, strcspn($endpoint, '?#'));
         $uri = new Uri($cut);
-        $stripped = $uri->getAuthority() !== '' ? $uri->getPath() : $cut;
+        $stripped = $cut;
+        if ($uri->getAuthority() !== '') {
+            // The raw bytes after the authority, not $uri->getPath(), which
+            // percent-encodes (#5480): skip '<scheme>:' if Uri found one,
+            // then the '//', then up to the next '/'.
+            $from = ($uri->getScheme() !== '' ? strlen($uri->getScheme()) + 1 : 0) + 2;
+            $slash = strpos($cut, '/', $from);
+            $stripped = $slash === false ? '' : substr($cut, $slash);
+        }
 
         $want = $stripped;
         $redacted = false;
@@ -461,7 +581,12 @@ class MeshClientLogPathTest extends TestCase
             // Held by the newline row, whose id is split after its first
             // eight characters, as well as by every lowercase-id row.
             'Mesh id after its first dash' => substr(self::MESH_ID, 9),
+            // #5482: the partial forms in the case the upper-cased rows hold
+            // them, since the endpoint match is case-sensitive.
+            'Mesh id after its first dash, upper-cased' => strtoupper(substr(self::MESH_ID, 9)),
+            'Mesh id, dashless, upper-cased' => strtoupper(str_replace('-', '', self::MESH_ID)),
             'query marker' => self::QUERY_MARKER,
+            'fragment marker' => self::FRAGMENT_MARKER,
             'host' => self::HOST,
             'endpoint host' => self::ENDPOINT_HOST,
             'user-info, user' => self::USER,
