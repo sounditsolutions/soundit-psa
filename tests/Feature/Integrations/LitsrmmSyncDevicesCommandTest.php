@@ -279,6 +279,72 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
             ->assertFailed();
     }
 
+    public function test_the_code_line_copied_from_the_output_is_accepted_as_it_is(): void
+    {
+        // #5786: capture what the command printed, take the line that is a
+        // code, untrimmed, and feed it back.
+        $client = $this->mapClient();
+        $asset = Asset::factory()->create(['client_id' => $client->id, 'litsrmm_device_id' => self::row(1)['id']]);
+        $this->realSync([]);
+
+        $this->assertSame(1, \Illuminate\Support\Facades\Artisan::call('litsrmm:sync-devices'));
+        $printed = \Illuminate\Support\Facades\Artisan::output();
+        $codes = array_values(array_filter(explode("\n", $printed), fn (string $line) => LitsrmmAssetSyncService::isRefusalCode($line)));
+        $this->assertSame(["{$client->id}:a:0:1:1:0:0:0"], $codes, $printed);
+
+        $this->assertSame(0, \Illuminate\Support\Facades\Artisan::call('litsrmm:sync-devices', ['--accept-short-read' => $codes]));
+        $this->assertNull($asset->fresh()->litsrmm_device_id);
+    }
+
+    public function test_a_bare_client_id_is_told_to_paste_the_code_exactly(): void
+    {
+        $client = $this->mapClient();
+        $service = Mockery::mock(LitsrmmAssetSyncService::class);
+        $service->shouldNotReceive('sync');
+        $this->app->instance(LitsrmmAssetSyncService::class, $service);
+
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => [(string) $client->id]])
+            ->expectsOutputToContain('pasted exactly; a bare client id is rejected. Nothing was read.')
+            ->assertFailed();
+    }
+
+    public function test_a_code_with_a_leading_zero_is_rejected_before_anything_is_read(): void
+    {
+        // #5793: no refusal prints one, so it could never match.
+        $client = $this->mapClient();
+        $service = Mockery::mock(LitsrmmAssetSyncService::class);
+        $service->shouldNotReceive('sync');
+        $this->app->instance(LitsrmmAssetSyncService::class, $service);
+
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["0{$client->id}:a:0:1:1:0:0:0"]])
+            ->expectsOutputToContain('takes the refusal code a short-read refusal printed')
+            ->assertFailed();
+    }
+
+    public function test_an_accept_given_when_the_list_read_fails_names_that_cause(): void
+    {
+        // #5788: the unused-accept explanation includes the failed list read.
+        $client = $this->mapClient();
+        $result = new SyncResult;
+        $result->recordError('Failed to read LITSRMM devices (HTTP 503); nothing was changed');
+        $result->details['short_read_accept_unused'] = [$client->id];
+        $this->syncReturns($result);
+
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["{$client->id}:a:0:1:1:0:0:0"]])
+            ->expectsOutputToContain('the device list read failed so no client was examined')
+            ->assertFailed();
+    }
+
+    public function test_install_says_a_bare_id_is_rejected_and_where_the_code_is(): void
+    {
+        $install = (string) file_get_contents(base_path('docs/INSTALL.md'));
+
+        $this->assertStringContainsString('**A bare client id is rejected; paste the code exactly.**', $install);
+        $this->assertStringContainsString('`[LitsrmmAssetSync] refusal code for --accept-short-read, on the next line:`', $install);
+        $this->assertStringContainsString("a Sync button's message shows it as the very last text of the message, after a space", $install);
+        $this->assertStringContainsString('`left_before_detail_read`', $install, '#5794: the renamed skip reason');
+    }
+
     public function test_an_accept_outside_the_client_run_is_reported_unused(): void
     {
         $client = $this->mapClient();
@@ -296,8 +362,11 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $asset = Asset::factory()->create(['client_id' => $client->id, 'litsrmm_device_id' => self::row(1)['id']]);
         $this->realSync([]);
 
+        // #5786: the code is printed as a line of its own; that exact line,
+        // fed back, is what passes the refusal.
         $this->artisan('litsrmm:sync-devices')
-            ->expectsOutputToContain("--accept-short-read={$client->id}:a:0:1:1:0:0:0")
+            ->expectsOutputToContain('--accept-short-read set to the code on the next line, pasted exactly')
+            ->expectsOutput("{$client->id}:a:0:1:1:0:0:0")
             ->assertFailed();
         $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["{$client->id}:a:0:1:1:0:0:0"]])
             ->assertSuccessful();
