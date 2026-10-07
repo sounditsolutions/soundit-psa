@@ -22,7 +22,9 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Monolog\Formatter\FormatterInterface;
 use Monolog\Handler\TestHandler;
+use Monolog\LogRecord;
 use Psr\Http\Message\RequestInterface;
 use Tests\TestCase;
 
@@ -79,8 +81,10 @@ class MeshC56ReadSitesTest extends TestCase
      * How deep expose() follows a context (#5518): each array level and each
      * previous exception is one level, an object two (the object, then its
      * 'public' array). Past it a value, a scalar included, renders as
-     * '[depth]', so a name deeper than this is not seen; driven by
-     * test_expose_cuts_a_cycle_and_names_its_depth_cap.
+     * '[depth]', so a name deeper than this is not seen, and the log scans
+     * fail on the marker instead (#5697); driven by
+     * test_expose_cuts_a_cycle_and_names_its_depth_cap and
+     * test_a_marker_that_drops_content_fails_the_log_scans.
      */
     private const EXPOSE_DEPTH = 16;
 
@@ -107,9 +111,16 @@ class MeshC56ReadSitesTest extends TestCase
     private string $mode = '503';
 
     /**
-     * The listener's records, raw: context is rendered when a record is
-     * READ (listenerLines(), allLogs()), never inside the Log:: call under
-     * test, so a context object's __toString() does not run there (#5519).
+     * The listener's records, each context as expose()'s write-time
+     * snapshot, rendered when a record is READ (listenerLines(), allLogs()).
+     * Neither instrument runs a context object's __toString() or
+     * jsonSerialize() inside the Log:: call under test (#5519, #5696): the
+     * listener and the setUp() TestHandler (through its formatter) store
+     * that snapshot, which runs no user code; what renderContext() says is
+     * read at write and what at read (#5695). A handler the channel itself
+     * carries is not an instrument and keeps its own behaviour (the
+     * default channel's file handler formats with Monolog's LineFormatter,
+     * which casts a Stringable during the write).
      *
      * @var list<array{level: string, message: string, context: array<mixed>}>
      */
@@ -164,9 +175,26 @@ class MeshC56ReadSitesTest extends TestCase
 
         Http::preventStrayRequests();
         Event::listen(MessageLogged::class, function (MessageLogged $e): void {
-            $this->logged[] = ['level' => $e->level, 'message' => $e->message, 'context' => $e->context];
+            $this->logged[] = ['level' => $e->level, 'message' => $e->message, 'context' => self::expose($e->context)];
         });
         $this->monolog = new TestHandler;
+        // #5695, #5696: the handler's formatter takes expose()'s write-time
+        // snapshot as the record's 'formatted' value, in place of the
+        // default LineFormatter, which casts a Stringable inside the write.
+        $this->monolog->setFormatter(new class(fn (LogRecord $r) => self::expose($r->context)) implements FormatterInterface
+        {
+            public function __construct(private \Closure $snapshot) {}
+
+            public function format(LogRecord $record): mixed
+            {
+                return ($this->snapshot)($record);
+            }
+
+            public function formatBatch(array $records): mixed
+            {
+                return array_map(fn (LogRecord $r) => $this->format($r), $records);
+            }
+        });
         $this->preSetUpClone = Log::driver()->getLogger()->withName('probe-pre-setup');
         Log::driver()->getLogger()->pushHandler($this->monolog);
     }
@@ -690,6 +718,16 @@ class MeshC56ReadSitesTest extends TestCase
         $this->assertSame([], $this->logged, 'nor the listener');
     }
 
+    /**
+     * A withName() clone of the default channel's Monolog logger whose only
+     * handler is the setUp() TestHandler: the instrument driven alone, with
+     * none of the channel's own handlers (#5696).
+     */
+    private function handlerOnlyClone(): \Monolog\Logger
+    {
+        return Log::driver()->getLogger()->withName('probe')->setHandlers([$this->monolog]);
+    }
+
     /** @return list<string> a TestHandler's records, 'level message' each */
     private static function levelMessages(TestHandler $handler): array
     {
@@ -697,9 +735,14 @@ class MeshC56ReadSitesTest extends TestCase
     }
 
     /**
-     * Context shapes plain json_encode() hides, plus the two Throwable shapes
-     * it shows that expose() must keep (#5465), each as [context builder over
-     * the client name, the rendered fragment that must appear].
+     * Context shapes the instruments must render so the name is seen, each
+     * as [context builder over the client name, the rendered fragment that
+     * must appear] (#5704): shapes plain json_encode() hides (a Throwable's
+     * message and previous chain, a Stringable's string form, a value
+     * beside or inside an invalid UTF-8 byte or a NAN, U+2028/U+2029
+     * escaped) and shapes it shows that expose() must not drop (a
+     * Throwable's public property and jsonSerialize() output, a plain or
+     * Stringable object's public property) (#5465, #5520, #5522, #5524).
      *
      * @return array<string, array{\Closure(string): array<mixed>, \Closure(string): string}>
      */
@@ -801,9 +844,9 @@ class MeshC56ReadSitesTest extends TestCase
     }
 
     /**
-     * #5465: each shape of context plain json_encode() hides, and each
-     * Throwable shape it shows (a public property, jsonSerialize() output),
-     * is rendered by BOTH instruments so the name is seen: on each
+     * #5465: each hiddenContexts() shape, hidden by plain json_encode() or
+     * shown by it and kept by expose() (#5704), is rendered by BOTH
+     * instruments so the name is seen: on each
      * instrument's own route
      * the holder holds one record at 'error' whose text carries the
      * fragment, the other holds nothing, and assertNoClientNames() fails
@@ -839,46 +882,189 @@ class MeshC56ReadSitesTest extends TestCase
     }
 
     /**
-     * #5519: the listener renders context when its records are READ, not
-     * inside the Log:: call under test. A Stringable whose __toString()
-     * counts its calls is not cast by the write (on channel('null'), whose
-     * NullHandler formats nothing, so no Monolog formatter casts it
-     * either); reading casts it. A __toString() that throws does not throw
-     * out of the write, and reads as '[__toString() threw <class>]' while
-     * the rest of the context, the name included, is still rendered.
+     * #5519, #5695, #5696: on EACH instrument's own route, the write runs no
+     * user code and takes a snapshot; reading runs the deferred user code.
+     * The listener is driven on channel('null') (its NullHandler formats
+     * nothing) and the setUp() TestHandler on handlerOnlyClone() (no
+     * MessageLogged, and not the channel's own file handler, whose
+     * LineFormatter does cast a Stringable during the write), each alone. A Stringable that counts its casts is not
+     * cast by the write, on either route; reading casts it. A public
+     * property, a nested array value and a Throwable's message are read
+     * at the write: the client name they held is still seen after each is
+     * changed, and the changed value is not (#5695). The string form is
+     * read at read time: it shows the later state. A __toString() that
+     * throws does not throw out of the write, and reads as a marker.
      */
-    public function test_context_is_rendered_when_read_not_inside_the_log_call(): void
+    public function test_context_is_snapshotted_at_write_and_user_code_runs_at_read(): void
     {
         $client = $this->mappedClient(self::MESH_ID, 'Synthetic Client Name 4d0e');
-        $counted = new class
-        {
-            public int $casts = 0;
-
-            public function __toString(): string
+        $routes = [
+            'channel(null)' => [fn (array $c) => Log::channel('null')->error('[Probe]', $c), true, 'MessageLogged records'],
+            'withName(), TestHandler only' => [fn (array $c) => $this->handlerOnlyClone()->error('[Probe]', $c), false, 'default-channel Monolog records'],
+        ];
+        foreach ($routes as $route => [$write, $listener, $arm]) {
+            $counted = new class
             {
-                $this->casts++;
+                public int $casts = 0;
 
-                return 'counted';
+                public string $label = 'before';
+
+                public function __toString(): string
+                {
+                    $this->casts++;
+
+                    return 'counted '.$this->label;
+                }
+            };
+            $throwing = new class implements \Stringable
+            {
+                public function __toString(): string
+                {
+                    throw new \LogicException('synthetic __toString failure');
+                }
+            };
+            $dto = (object) ['client' => $client->name];
+            $nested = ['row' => ['client' => $client->name]];
+            $error = new class('failed for '.$client->name) extends \RuntimeException
+            {
+                public function rename(string $m): void
+                {
+                    $this->message = $m;
+                }
+            };
+
+            $this->logged = [];
+            $this->monolog->clear();
+            $write(['counted' => $counted, 'throwing' => $throwing, 'dto' => $dto, 'nested' => $nested, 'e' => $error]);
+            $this->assertSame(0, $counted->casts, "{$route}: the write did not cast the context object");
+            // Changed after the write: the record carried the name.
+            $counted->label = 'after';
+            $dto->client = 'changed-after-write';
+            $nested['row']['client'] = 'changed-after-write';
+            $error->rename('changed-after-write');
+
+            [$holder, $other] = $listener ? [$this->listenerLines(), $this->monologLines()] : [$this->monologLines(), $this->listenerLines()];
+            $this->assertSame([], $other, "{$route}: the other instrument did not see it");
+            $this->assertCount(1, $holder, "{$route}: one record");
+            $this->assertSame(1, $counted->casts, "{$route}: reading cast it once");
+            $this->assertStringContainsString('"string":"counted after","public":{"casts":0,"label":"before"}}', $holder[0], "{$route}: the string form at read, the public properties at write");
+            $this->assertStringContainsString('"string":"[__toString() threw LogicException]","public":[]}', $holder[0], "{$route}: the throw named");
+            $this->assertSame(3, substr_count($holder[0], $client->name), "{$route}: the name in the public property, the array and the message, each as written: ".$holder[0]);
+            $this->assertStringContainsString('"message":"failed for '.$client->name.'"', $holder[0], "{$route}: the Throwable's message as written");
+            $this->assertStringNotContainsString('changed-after-write', $holder[0], "{$route}: no value changed after the write is read");
+            $this->assertArmFails(fn () => $this->assertNoClientNames([$client]), "{$arm}: a client name reached the logs", $route);
+        }
+    }
+
+    /**
+     * #5697, #5701: a marker that drops content fails the scans. A name
+     * behind [depth] (nested past EXPOSE_DEPTH), behind a __toString() that
+     * throws, or behind a jsonSerialize() that throws is not seen, so
+     * assertNoClientNames() and assertNoVendorTextInLogs() fail on the
+     * marker itself, on each instrument's own route, naming the marker.
+     * A [cycle] marker drops nothing (the object is rendered in full
+     * above it) and passes, with the name it holds still seen once.
+     */
+    public function test_a_marker_that_drops_content_fails_the_log_scans(): void
+    {
+        $client = $this->mappedClient(self::MESH_ID, 'Synthetic Client Name 8e2f');
+        $deep = ['v' => $client->name];
+        for ($i = 0; $i < self::EXPOSE_DEPTH; $i++) {
+            $deep = [$deep];
+        }
+        $markers = [
+            '[depth]' => ['nest' => $deep],
+            '[__toString() threw LogicException]' => ['who' => new class implements \Stringable
+            {
+                public function __toString(): string
+                {
+                    throw new \LogicException('synthetic');
+                }
+            }],
+            '[jsonSerialize() threw LogicException]' => ['row' => new class implements \JsonSerializable
+            {
+                public function jsonSerialize(): mixed
+                {
+                    throw new \LogicException('synthetic');
+                }
+            }],
+        ];
+        $routes = [
+            'channel(null)' => [fn (array $c) => Log::channel('null')->error('[Probe]', $c), 'MessageLogged records', 'every MessageLogged record'],
+            'withName(), TestHandler only' => [fn (array $c) => $this->handlerOnlyClone()->error('[Probe]', $c), 'default-channel Monolog records', 'every default-channel Monolog record'],
+        ];
+        foreach ($markers as $marker => $context) {
+            foreach ($routes as $route => [$write, $names, $vendor]) {
+                $this->logged = [];
+                $this->monolog->clear();
+                $write($context);
+                $this->assertStringContainsString('"'.$marker.'"', $this->allLogs().$this->monologLogs(), "{$route} {$marker}: positive control, the marker was rendered");
+                $this->assertArmFails(fn () => $this->assertNoClientNames([$client]), "{$names}: content dropped behind {$marker}", "{$route} {$marker}");
+                $this->assertArmFails(fn () => $this->assertNoVendorTextInLogs(), "{$vendor}: content dropped behind {$marker}", "{$route} {$marker}");
+            }
+        }
+
+        // A cycle drops nothing: the scan passes, and the name is seen once.
+        $node = (object) ['client' => $client->name];
+        $node->self = $node;
+        $this->logged = [];
+        $this->monolog->clear();
+        Log::channel('null')->error('[Probe]', ['n' => $node]);
+        $this->assertStringContainsString('"self":"[cycle stdClass]"', $this->allLogs(), 'positive control: the cycle marker was rendered');
+        $this->assertSame(1, substr_count($this->allLogs(), $client->name), 'the cycled object is rendered once, its name with it');
+        $this->assertArmFails(fn () => $this->assertNoClientNames([$client]), 'MessageLogged records: a client name reached the logs', 'cycle');
+        $this->assertNoClientNames([]);
+        $this->assertNoVendorTextInLogs();
+    }
+
+    /**
+     * #5701, #5523: a JsonSerializable that is not a Throwable has its
+     * jsonSerialize() output rendered by expose()'s own rules, at read
+     * time: a name in a Throwable or a Stringable inside that output is
+     * seen, a jsonSerialize() that returns its own object is a cycle, and
+     * one that throws is a marker, not an error out of the scan.
+     */
+    public function test_a_json_serializable_context_is_rendered_by_the_same_rules(): void
+    {
+        $name = 'Synthetic Client Name 2c7b';
+        $holding = new class($name) implements \JsonSerializable
+        {
+            public function __construct(private string $n) {}
+
+            public function jsonSerialize(): mixed
+            {
+                return ['errors' => [new \RuntimeException('failed for '.$this->n)], 'who' => new class($this->n) implements \Stringable
+                {
+                    public function __construct(private string $n) {}
+
+                    public function __toString(): string
+                    {
+                        return 'client '.$this->n;
+                    }
+                }];
             }
         };
-        $throwing = new class implements \Stringable
+        $rendered = self::renderContext(['c' => $holding]);
+        $this->assertStringContainsString('"message":"failed for '.$name.'"', $rendered, 'a Throwable inside jsonSerialize() output');
+        $this->assertStringContainsString('"string":"client '.$name.'"', $rendered, 'a Stringable inside jsonSerialize() output');
+
+        $self = new class implements \JsonSerializable
         {
-            public function __toString(): string
+            public function jsonSerialize(): mixed
             {
-                throw new \LogicException('synthetic __toString failure');
+                return ['me' => $this];
             }
         };
+        $this->assertSame(['c' => ['me' => '[cycle '.$self::class.']']], json_decode(self::renderContext(['c' => $self]), true), 'returning itself is a cycle');
 
-        Log::channel('null')->error('[Probe]', ['counted' => $counted, 'throwing' => $throwing, 'client' => $client->name]);
-        $this->assertSame(0, $counted->casts, 'the write did not cast the context object');
-        $lines = $this->listenerLines();
-        $this->assertSame(1, $counted->casts, 'reading cast it once');
-        $this->assertCount(1, $lines);
-        // 'public' is read after the cast, so it shows the one cast.
-        $this->assertStringContainsString('"string":"counted","public":{"casts":1}}', $lines[0], 'read: the string form rendered');
-        $this->assertStringContainsString('"string":"[__toString() threw LogicException]","public":[]}', $lines[0], 'read: the throw named');
-        $this->assertStringEndsWith(',"client":"'.$client->name.'"}', $lines[0], 'read: the rest of the context kept');
-        $this->assertArmFails(fn () => $this->assertNoClientNames([$client]), 'MessageLogged records: a client name reached the logs', 'channel(null), throwing __toString()');
+        $throws = new class implements \JsonSerializable
+        {
+            public function jsonSerialize(): mixed
+            {
+                throw new \LogicException('synthetic');
+            }
+        };
+        $this->assertSame('{"c":"[jsonSerialize() threw LogicException]"}', self::renderContext(['c' => $throws]), 'a throw is a marker');
     }
 
     /**
@@ -1206,10 +1392,10 @@ class MeshC56ReadSitesTest extends TestCase
         return implode("\n", $this->listenerLines());
     }
 
-    /** One listener record as 'text': its message, a space, its rendered context. */
+    /** One listener record as 'text': its message, a space, its context snapshot rendered now. */
     private static function text(array $r): string
     {
-        return $r['message'].' '.self::renderContext($r['context']);
+        return $r['message'].' '.self::render($r['context']);
     }
 
     /**
@@ -1295,12 +1481,18 @@ class MeshC56ReadSitesTest extends TestCase
      * property of a context object (other than a Throwable's message and
      * previous chain, or what a Stringable's string form shows); a name
      * behind a JsonSerializable that is not a Throwable, when its
-     * jsonSerialize() output omits it OR holds it inside a Throwable or
-     * Stringable (expose() leaves such output to json_encode(), which
-     * writes a Throwable as {}: a Collection of exceptions, say) (#5523);
-     * a name in the string form of an object whose __toString() throws; and
-     * a name deeper than EXPOSE_DEPTH levels, or in a previous exception
-     * past that depth (#5518; driven).
+     * jsonSerialize() output omits it (its output is rendered by the same
+     * rules, so a Throwable or Stringable inside it is seen, #5523, #5701);
+     * and a name in an object's string form or jsonSerialize() output as
+     * it was at the write, when it changed before the read (those two run
+     * user code, so they are read at read time; everything else is
+     * snapshotted at the write, #5695). Where rendering DROPS content (a
+     * name deeper than EXPOSE_DEPTH levels or past that depth in a previous
+     * chain, #5518; a __toString() or jsonSerialize() that throws), the
+     * marker it leaves fails this assertion and assertNoVendorTextInLogs()
+     * (assertNothingDroppedIn(), #5697; driven by
+     * test_a_marker_that_drops_content_fails_the_log_scans), so no name
+     * hides behind one silently.
      *
      * @param  list<Client>  $clients
      */
@@ -1316,18 +1508,36 @@ class MeshC56ReadSitesTest extends TestCase
         foreach ($clients as $c) {
             $this->assertStringNotContainsStringIgnoringCase($c->name, $text, "{$where}: a client name reached the logs");
         }
+        $this->assertNothingDroppedIn($text, $where);
+    }
+
+    /**
+     * #5697: no marker for DROPPED content in $text: '[depth]',
+     * '[__toString() threw <class>]' or '[jsonSerialize() threw <class>]',
+     * each a whole rendered JSON string. A scan cannot vouch for what was
+     * not rendered, so it fails, naming the marker. '[cycle <class>]' is
+     * not one of them: the object it repeats is rendered in full above it.
+     */
+    private function assertNothingDroppedIn(string $text, string $where): void
+    {
+        if (preg_match('/"(\[(?:depth|__toString\(\) threw [^"\]]+|jsonSerialize\(\) threw [^"\]]+)\])"/', $text, $m) === 1) {
+            $this->fail("{$where}: content dropped behind {$m[1]}");
+        }
     }
 
     /**
      * assertNoVendorText() over every record from BOTH instruments (#5434), as
      * assertNoClientNames() reads them: vendor body, query, host, API key and
-     * both Mesh ids (raw and dashless, any case). Each arm is driven alone by
+     * both Mesh ids (raw and dashless, any case), and no marker for dropped
+     * content (#5697). Each arm is driven alone by
      * test_the_vendor_text_assertion_fails_on_each_route.
      */
     private function assertNoVendorTextInLogs(): void
     {
-        $this->assertNoVendorText($this->allLogs(), 'every MessageLogged record');
-        $this->assertNoVendorText($this->monologLogs(), 'every default-channel Monolog record');
+        foreach (['every MessageLogged record' => $this->allLogs(), 'every default-channel Monolog record' => $this->monologLogs()] as $where => $text) {
+            $this->assertNoVendorText($text, $where);
+            $this->assertNothingDroppedIn($text, $where);
+        }
     }
 
     /** Every record the default channel's Monolog logger handled, as 'level message context'. */
@@ -1338,31 +1548,58 @@ class MeshC56ReadSitesTest extends TestCase
 
     /**
      * A record's context as both instruments render it (#5465): JSON_FLAGS
-     * over the context after expose() has replaced each Throwable, and each
-     * other object json_encode() would write as its public properties alone.
+     * over the context after expose() has replaced each Throwable and each
+     * other object, and resolve() has filled in what expose() deferred.
      * A Throwable becomes its class, message, previous chain, public
      * properties and, when JsonSerializable, its jsonSerialize() output
      * (json_encode() writes one as its public properties or jsonSerialize()
      * output alone, so its message was unseen); any other object that is not
      * JsonSerializable becomes its class, its string form (null unless it is
      * Stringable) and its public properties: both are rendered, Stringable
-     * or not (#5522). A JsonSerializable that is not a Throwable is left to
-     * json_encode() as it is. Private and protected state is still not
-     * rendered. A __toString() that throws renders as '[__toString() threw
-     * <class>]' (#5519). An object met again inside its own expansion
-     * renders as '[cycle <class>]' (#5521). Anything past EXPOSE_DEPTH
-     * levels, including a previous chain longer than that, renders as
-     * '[depth]' (#5518). The context is rendered when a record is read,
-     * not inside the Log:: call that wrote it (#5519).
+     * or not (#5522). A JsonSerializable that is not a Throwable becomes its
+     * jsonSerialize() output, itself rendered by these rules, so a Throwable
+     * or Stringable inside it is seen (#5523). Private and protected state
+     * is still not rendered.
+     *
+     * WHEN each part is read (#5519, #5695, #5696): expose() runs inside the
+     * Log:: call (each instrument stores its snapshot at write) and reads
+     * only what no user code produces: scalars, arrays, a class, public
+     * properties (get_object_vars()), a Throwable's message and previous
+     * exception (final methods). The two parts that run user code, a
+     * __toString() and a jsonSerialize(), are deferred to resolve(), which
+     * runs when a record is READ. So a public property, a nested array or
+     * a Throwable's message changed after the write is scanned as it was
+     * written; an object's string form and jsonSerialize() output are
+     * scanned as they are at read time.
+     *
+     * Markers: a __toString() that throws renders as '[__toString() threw
+     * <class>]' (#5519) and a jsonSerialize() that throws as
+     * '[jsonSerialize() threw <class>]' (#5701); anything past EXPOSE_DEPTH
+     * levels, including a previous chain longer than that, as '[depth]'
+     * (#5518). Each drops content, and the log scans fail on each
+     * (assertNothingDroppedIn(), #5697). An object met again inside its own
+     * expansion renders as '[cycle <class>]' (#5521); that drops nothing,
+     * since the object is being rendered in full above it.
      *
      * @param  array<mixed>  $context
      */
     private static function renderContext(array $context): string
     {
-        return (string) json_encode(self::expose($context), self::JSON_FLAGS);
+        return self::render(self::expose($context));
+    }
+
+    /** A snapshot expose() took, rendered now: resolve() runs the deferred user code. */
+    private static function render(mixed $snapshot): string
+    {
+        return (string) json_encode(self::resolve($snapshot), self::JSON_FLAGS);
     }
 
     /**
+     * The write-time half of renderContext(): runs no user code, so it is
+     * safe inside the Log:: call. A part that needs user code is left as a
+     * \Closure for resolve(); expose() itself never returns a context's own
+     * closure, which it turns into ['class' => 'Closure', ...].
+     *
      * @param  list<object>  $path  the objects being expanded above $value,
      *                              so a cycle is cut at once (#5521)
      */
@@ -1385,25 +1622,61 @@ class MeshC56ReadSitesTest extends TestCase
                 'message' => $value->getMessage(),
                 'previous' => $value->getPrevious() === null ? null : self::expose($value->getPrevious(), $depth + 1, $path),
                 'public' => self::expose(get_object_vars($value), $depth + 1, $path),
-                'json' => $value instanceof \JsonSerializable ? self::expose($value->jsonSerialize(), $depth + 1, $path) : null,
+                'json' => $value instanceof \JsonSerializable ? fn () => self::jsonOf($value, $depth + 1, $path) : null,
             ];
         }
-        if (is_object($value) && ! $value instanceof \JsonSerializable) {
+        if ($value instanceof \JsonSerializable) {
             $path[] = $value;
-            try {
-                $string = $value instanceof \Stringable ? (string) $value : null;
-            } catch (\Throwable $t) {
-                $string = '[__toString() threw '.$t::class.']';
-            }
+
+            return fn () => self::jsonOf($value, $depth + 1, $path);
+        }
+        if (is_object($value)) {
+            $path[] = $value;
 
             return [
                 'class' => $value::class,
-                'string' => $string,
+                'string' => $value instanceof \Stringable ? fn () => self::stringOf($value) : null,
                 'public' => self::expose(get_object_vars($value), $depth + 1, $path),
             ];
         }
 
         return $value;
+    }
+
+    /** The read-time half: each deferred part, run now, and what it returns resolved in turn. */
+    private static function resolve(mixed $snapshot): mixed
+    {
+        if ($snapshot instanceof \Closure) {
+            return self::resolve($snapshot());
+        }
+
+        return is_array($snapshot) ? array_map(fn ($v) => self::resolve($v), $snapshot) : $snapshot;
+    }
+
+    private static function stringOf(\Stringable $value): string
+    {
+        try {
+            return (string) $value;
+        } catch (\Throwable $t) {
+            return '[__toString() threw '.$t::class.']';
+        }
+    }
+
+    /**
+     * jsonSerialize() run at read time, its output put through expose() one
+     * level down with $value on the path (so returning itself is a cycle).
+     *
+     * @param  list<object>  $path
+     */
+    private static function jsonOf(\JsonSerializable $value, int $depth, array $path): mixed
+    {
+        try {
+            $out = $value->jsonSerialize();
+        } catch (\Throwable $t) {
+            return '[jsonSerialize() threw '.$t::class.']';
+        }
+
+        return self::expose($out, $depth, $path);
     }
 
     /** The records whose text contains $needle, at any level; at least one must exist. */
@@ -1461,7 +1734,7 @@ class MeshC56ReadSitesTest extends TestCase
     private function monologLines(): array
     {
         return array_map(
-            fn ($r) => strtolower($r->level->getName()).' '.$r->message.' '.self::renderContext($r->context),
+            fn ($r) => strtolower($r->level->getName()).' '.$r->message.' '.self::render($r->formatted),
             $this->monolog->getRecords(),
         );
     }

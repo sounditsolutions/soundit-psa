@@ -68,8 +68,10 @@ class MeshClient
     /**
      * Internal request method with auth header.
      * API-KEY header is added here — never logged. A failure is logged by
-     * method, endpoint path (see logPath(): no scheme, authority or query, and
-     * everything after a customers/ segment replaced by <customer>), HTTP
+     * method, endpoint path (see logPath(): no query or fragment, no scheme
+     * or authority written before a '//', and everything after a customers/
+     * segment replaced by <customer>; a scheme-less '[user@]host:port/...'
+     * endpoint keeps its authority, and 'https:/...' its scheme), HTTP
      * status and exception class only: Guzzle's message quotes the request
      * URI and a summary of the vendor's response body (C-56), and the path
      * after customers/ carries a client's Mesh customer id (#5298/#5305,
@@ -84,8 +86,9 @@ class MeshClient
      * base_uri's scheme and host under a '/'-rooted path; an absolute
      * endpoint brings its own scheme, user-info, host and port; a
      * scheme-relative one (//host/...) brings its user-info, host and port
-     * but takes base_uri's scheme; so does a scheme-less 'host:port/...'
-     * one, which PSR-7 parses as host and port (#5608). Query: get(), today this method's only
+     * but takes base_uri's scheme; so does a scheme-less
+     * '[user@]host:port/...' one, which PSR-7 parses as user-info, host and
+     * port (#5608, #5705). Query: get(), today this method's only
      * caller, always sets $options['query'] ([] by default). Measured in
      * that test with get()'s default []: a query written into a relative
      * or an absolute $endpoint does not reach the request URI, whose query
@@ -124,8 +127,9 @@ class MeshClient
      * The endpoint as logged. Cut at the first '?' or '#' (strcspn, not
      * strtok, so a leading '?' still drops the query), strip any scheme and
      * authority (or a scheme-relative //authority: user-info, host and port
-     * alike; the strip needs '//', so a scheme-less 'host:port/...'
-     * endpoint keeps its host and port on the line, #5608), then replace EVERYTHING after the
+     * alike; the strip needs '//', so a scheme-less '[user@]host:port/...'
+     * endpoint keeps its user-info, host and port on the line, #5608,
+     * #5705), then replace EVERYTHING after the
      * first customers/ segment, at any depth (api/customers/,
      * api/v2/customers/, api/partners/x/customers/, an absolute URL), with
      * the literal <customer>: the Mesh customer id and every segment after

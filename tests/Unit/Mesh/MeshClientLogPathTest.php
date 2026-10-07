@@ -27,12 +27,17 @@ use Tests\TestCase;
  * went through the swapped-in handler and nowhere else. For EVERY shape the
  * handler also records the URI it received, and the row pins that URI's
  * scheme, user-info, host, port, exact path, query and fragment, each to a
- * row value (user-info and port default to none). Most absolute rows name
- * another host (and one another scheme) than base_uri, so a request that
- * ignored the endpoint's host or scheme fails (#5409); one names base_uri's
- * own host, so the 'host' leak form is driven (#5420); and two carry
- * user-info and a non-default port, which the request keeps and the log line
- * drops with the rest of the authority (#5419, #5425). The path keeps the id
+ * row value (user-info and port default to none). Most rows with an
+ * authority name ENDPOINT_HOST rather than base_uri's host, and two name
+ * another scheme (http, and x-mesh2.v1, #5607), so a request that ignored
+ * the endpoint's host or scheme fails (#5409); one names base_uri's own
+ * host, so the 'host' leak form is driven (#5420). Five carry a non-default
+ * port and four of those user-info (the per-form pins in
+ * test_log_path_changes_every_redacted_shape count them), which the
+ * request keeps. The log line drops them with the rest of the authority
+ * where the endpoint writes '//' before it (#5419, #5425, #5607); the two
+ * scheme-less 'host:port/...' rows keep them on the line (#5608, #5705:
+ * measured, not endorsed, see keptLeaks()). The path keeps the id
  * in the form it was built with (upper-cased or dashless included, a newline
  * percent-encoded), so the log line is redacted and the request is not
  * (#5334). The endpoint's own query is NOT carried: get() always passes
@@ -180,10 +185,17 @@ class MeshClientLogPathTest extends TestCase
             // '//' bytes, so the request goes to that host and port under
             // base_uri's scheme (measured), while logPath()'s strip needs
             // '//' and the log line KEEPS the host and port. Measured, not
-            // endorsed: knownLeaks() pins exactly those two forms on this
+            // endorsed: keptLeaks() pins exactly those two forms on this
             // row, so a logPath() that starts stripping them fails here
-            // until the pin is moved, and no other row may leak them.
+            // until the pin is moved (and what else moves, see keptLeaks()),
+            // and no row keptLeaks() does not list may leak them.
             'scheme-less host and port (#5608)' => [self::ENDPOINT_HOST.":{$port}/api/customers/{$id}/", self::ENDPOINT_HOST.":{$port}/api/customers/<customer>", "/api/customers/{$id}/", '', '', self::ENDPOINT_HOST, 'https', '', $port],
+            // #5705: the same with user-info. parse_url() splits it off at
+            // '@', so the request carries user-info, host and port, and the
+            // log line keeps all three (measured, not endorsed; keptLeaks()).
+            // With 'user:password@' in front the user is read as a scheme
+            // instead (measured in the classifier test), so that is no row.
+            'scheme-less user-info, host and port (#5705)' => [self::USER.'@'.self::ENDPOINT_HOST.":{$port}/api/customers/{$id}/", self::USER.'@'.self::ENDPOINT_HOST.":{$port}/api/customers/<customer>", "/api/customers/{$id}/", '', '', self::ENDPOINT_HOST, 'https', self::USER, $port],
             // #5607: a scheme holding a digit, '.' and '-' (RFC 3986 allows
             // them; the vendored Uri parses it as a scheme), with user-info
             // and a port, so a narrower scheme class in logPath()'s strip
@@ -349,7 +361,7 @@ class MeshClientLogPathTest extends TestCase
      *
      * The piece check (idPieceIn(), #5506) runs beside the leak check.
      *
-     * The rows are counted by kind with exact numbers: 25 redact, 3 are
+     * The rows are counted by kind with exact numbers: 26 redact, 3 are
      * query-cut only (one of them cut at '#', #5479), 3 authority-strip
      * only (one with a path PSR-7 would percent-encode, #5480), 1 is both
      * query cut and authority strip (#5474), 2 come back as given (#5383).
@@ -385,7 +397,7 @@ class MeshClientLogPathTest extends TestCase
         }
 
         $this->assertSame(
-            ['redacted' => 25, 'query cut only' => 3, 'authority strip only' => 3, 'query cut and authority strip' => 1, 'kept' => 2],
+            ['redacted' => 26, 'query cut only' => 3, 'authority strip only' => 3, 'query cut and authority strip' => 1, 'kept' => 2],
             $kinds,
             'rows by kind',
         );
@@ -394,20 +406,20 @@ class MeshClientLogPathTest extends TestCase
         // second row that holds it, fails here.
         $this->assertSame(
             [
-                'Mesh id' => 19,
+                'Mesh id' => 20,
                 'Mesh id, dashless' => 1,
                 'Mesh id, upper-cased' => 1,
-                'Mesh id before its first dash' => 23,
-                'Mesh id after its first dash' => 20,
+                'Mesh id before its first dash' => 24,
+                'Mesh id after its first dash' => 21,
                 'Mesh id after its first dash, upper-cased' => 1,
                 'Mesh id, dashless, upper-cased' => 1,
                 'query marker' => 4,
                 'fragment marker' => 1,
                 'host' => 1,
-                'endpoint host' => 9,
-                'user-info, user' => 3,
+                'endpoint host' => 10,
+                'user-info, user' => 4,
                 'user-info, password' => 2,
-                'port' => 4,
+                'port' => 5,
                 'id prefix segment' => 1,
             ],
             $formChecks,
@@ -521,9 +533,11 @@ class MeshClientLogPathTest extends TestCase
      * #5506: the piece check (idPieceIn()) names what no whole leak form
      * does: the last group or an 8-character run of the id away from its
      * head, upper-cased or across a percent-encoded dash, and the newline
-     * row's id split by '%0A' (a kept head, and the head of a mixed-case
-     * or percent-encoded id, are already the 'before its first dash'
-     * form, #5602). On every row, the redacted log path holds no piece.
+     * row's id split by '%0A'. A kept lower-case head, and the head of a
+     * mixed-case or percent-encoded id written in lower case, are already
+     * the 'before its first dash' form (#5602); an UPPER-cased head is
+     * not, since that form is matched case-sensitively, so only this check
+     * names it (#5698; driven). On every row, the redacted log path holds no piece.
      * The positive control runs on every row whose endpoint holds an
      * 8-character run of the dashless id in ANY case once '-' and '%2D'
      * are dropped (found by a plain case-insensitive search, independent
@@ -547,6 +561,7 @@ class MeshClientLogPathTest extends TestCase
         $mixed = 'api/customers/5c3A4F86/';
         $this->assertSame([], $this->leaksIn("api/customers/{$id}/", $mixed), 'precondition: no whole form names that run');
         $this->assertSame('5c3a4f86', $this->idPieceIn($mixed), 'mixed case inside the run');
+        $this->assertSame([], $this->leaksIn('api/customers/'.strtoupper($id).'/', 'api/customers/7B2E9D41%2D5C3A'), 'precondition (#5698): no whole form names an upper-cased head');
         $this->assertSame('7b2e9d41', $this->idPieceIn('api/customers/7B2E9D41%2D5C3A'), 'percent-encoded dash, upper-cased');
         $this->assertSame('9d415c3a', $this->idPieceIn('api/customers/9D41%2D5C3A'), 'a run held only across a percent-encoded dash');
         $this->assertSame('7b2e9d41', $this->idPieceIn('api/customers/7b2e9d41%0A5c3a'), 'the newline row, split by %0A');
@@ -575,21 +590,29 @@ class MeshClientLogPathTest extends TestCase
                 $this->assertNotNull($this->idPieceIn($requestPath), "{$name}: positive control, the request path holds a piece");
             }
         }
-        // 25 of the 34 rows; the nine others carry no id (customer lists,
+        // 26 of the 35 rows; the nine others carry no id (customer lists,
         // the leading '?', the devices fragment, the space, xcustomers/).
-        $this->assertCount(34, self::shapes());
-        $this->assertSame(25, count($selected), 'rows holding a run of the id, in any case: '.json_encode($selected));
+        $this->assertCount(35, self::shapes());
+        $this->assertSame(26, count($selected), 'rows holding a run of the id, in any case: '.json_encode($selected));
         $this->assertContains('id upper-cased', $selected);
         $this->assertContains('id dashless, upper-cased', $selected);
     }
 
     /**
      * Rows whose log line, as logPath() is today, KEEPS some leak forms:
-     * measured, not endorsed (#5608). A scheme-less 'host:port/...'
-     * endpoint has an authority to PSR-7 (the request goes to that host and
-     * port) but no '//' bytes, so logPath()'s strip leaves it. Changing
-     * logPath() is out of this test's scope; pinning it here means a fix
-     * fails until this list is emptied, and no other row may keep a form.
+     * measured, not endorsed (#5608, #5705). A scheme-less
+     * '[user@]host:port/...' endpoint has an authority to PSR-7 (the
+     * request goes to that host and port, user-info included) but no '//'
+     * bytes, so logPath()'s strip leaves it. Changing logPath() is out of
+     * this test's scope, and no other row may keep a form. A logPath()
+     * that strips it fails here, and moving this pin is not all a fix owes
+     * (#5700): it also moves those two rows' expected log paths in
+     * shapes(), classify()'s model (which strips only when '//' follows the
+     * scheme, so it refuses the fixed output) and the #5598 controls in
+     * test_the_classifier_reaches_each_arm_and_refuses_other_changes that
+     * pin the scheme-less case. The model must then strip by the fix's own
+     * rule, not lose the '//' test: that test is what refuses a strip of
+     * bytes that are no authority (the single-slash controls, #5502).
      *
      * @return array<string, list<string>>
      */
@@ -597,6 +620,7 @@ class MeshClientLogPathTest extends TestCase
     {
         return [
             'scheme-less host and port (#5608)' => ['endpoint host', 'port'],
+            'scheme-less user-info, host and port (#5705)' => ['endpoint host', 'user-info, user', 'port'],
         ];
     }
 
@@ -642,6 +666,7 @@ class MeshClientLogPathTest extends TestCase
             'absolute URL, space in the path' => ['endpoint host'],
             'single slash after the scheme' => $id,
             'scheme-less host and port (#5608)' => [...$id, 'endpoint host', 'port'],
+            'scheme-less user-info, host and port (#5705)' => [...$id, 'endpoint host', 'user-info, user', 'port'],
             'scheme with a digit, dot and dash (#5607)' => [...$id, ...$creds],
             "'//' after the start (#5607)" => $id,
             'upper-case scheme (i flag, host strip)' => [...$id, 'endpoint host'],
@@ -754,11 +779,16 @@ class MeshClientLogPathTest extends TestCase
         // '//' in the bytes, so the '//' test DECIDES the result: with it,
         // nothing is stripped (what logPath() does, #5608); without it, the
         // model would strip from offset 2 to the next '/'.
-        $this->assertSame('host:8080', (new Uri('host:8080/api/customers/x/'))->getAuthority(), 'measured: Uri gives host:port an authority with no //');
-        $this->assertSame('', (new Uri('host:8080/api/customers/x/'))->getScheme(), 'measured: and no scheme');
-        $this->assertSame('redacted', $this->classify('host:8080/api/customers/x/', 'host:8080/api/customers/<customer>'), 'host:port: redacted, nothing stripped (#5598)');
-        $this->assertNull($this->classify('host:8080/api/customers/x/', '/api/customers/<customer>'), 'host:port: an authority strip with no // bytes is refused (#5598)');
-        $this->assertSame('kept', $this->classify('host:8080/api/customers/', 'host:8080/api/customers/'), 'host:port customer list: kept (#5598)');
+        $this->assertSame("{$host}:8080", (new Uri("{$host}:8080/api/customers/x/"))->getAuthority(), 'measured: Uri gives host:port an authority with no //');
+        $this->assertSame('', (new Uri("{$host}:8080/api/customers/x/"))->getScheme(), 'measured: and no scheme');
+        $this->assertSame('redacted', $this->classify("{$host}:8080/api/customers/x/", "{$host}:8080/api/customers/<customer>"), 'host:port: redacted, nothing stripped (#5598)');
+        $this->assertNull($this->classify("{$host}:8080/api/customers/x/", '/api/customers/<customer>'), 'host:port: an authority strip with no // bytes is refused (#5598)');
+        $this->assertSame('kept', $this->classify("{$host}:8080/api/customers/", "{$host}:8080/api/customers/"), 'host:port customer list: kept (#5598)');
+        // #5705: 'user@host:port/...' is read with its user-info; with
+        // 'user:password@' the user is read as a scheme, and no authority.
+        $this->assertSame('u@'.$host.':8080', (new Uri("u@{$host}:8080/api/customers/x/"))->getAuthority(), 'measured: user@host:port, an authority with user-info');
+        $withPass = new Uri("u:p@{$host}:8080/api/customers/x/");
+        $this->assertSame(['u', ''], [$withPass->getScheme(), $withPass->getAuthority()], 'measured: user:password@host:port, the user read as a scheme');
 
         $this->assertNull($this->classify('api/customers/?a=1', 'api/customers'), 'a cut that also trimmed');
         $this->assertNull($this->classify("https://{$host}/api/customers/", '/api/customers'), 'a strip that also trimmed');
