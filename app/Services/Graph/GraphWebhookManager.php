@@ -38,9 +38,7 @@ class GraphWebhookManager
             try {
                 $this->renewSubscription($subscriptionId);
             } catch (GraphClientException $e) {
-                Log::warning('[GraphWebhook] Renewal failed, creating new subscription', [
-                    'error' => $e->getMessage(),
-                ]);
+                Log::warning('[GraphWebhook] Renewal failed, creating new subscription', self::failure($e));
                 $this->createSubscription();
             }
         }
@@ -69,10 +67,7 @@ class GraphWebhookManager
                 'clientState' => $clientState,
             ]);
         } catch (GraphClientException $e) {
-            Log::error('[GraphWebhook] Failed to create subscription', [
-                'mailbox' => $mailbox,
-                'error' => $e->getMessage(),
-            ]);
+            Log::error('[GraphWebhook] Failed to create subscription', self::failure($e));
             throw $e;
         }
 
@@ -102,8 +97,7 @@ class GraphWebhookManager
         } catch (GraphClientException $e) {
             Log::error('[GraphWebhook] Failed to renew subscription', [
                 'subscription_id' => $subscriptionId,
-                'error' => $e->getMessage(),
-            ]);
+            ] + self::failure($e));
             throw $e;
         }
 
@@ -132,8 +126,7 @@ class GraphWebhookManager
         } catch (GraphClientException $e) {
             Log::warning('[GraphWebhook] Failed to delete subscription', [
                 'subscription_id' => $subscriptionId,
-                'error' => $e->getMessage(),
-            ]);
+            ] + self::failure($e));
         }
 
         Setting::setValue('graph_subscription_id', null);
@@ -141,5 +134,16 @@ class GraphWebhookManager
         Setting::setValue('graph_webhook_client_state', null);
 
         Log::info('[GraphWebhook] Subscription deleted', ['id' => $subscriptionId]);
+    }
+
+    /**
+     * #5677 / C-56: a failed subscription call is logged by status and exception class only.
+     * The mailbox (graph_mailbox) and the exception message stay out of the record.
+     *
+     * @return array{status: int, exception: class-string}
+     */
+    private static function failure(GraphClientException $e): array
+    {
+        return ['status' => $e->getHttpStatus(), 'exception' => $e::class];
     }
 }
