@@ -10,8 +10,9 @@ class GraphClientException extends RuntimeException
         string $message,
         private readonly int $httpStatus = 0,
         private readonly ?array $responseBody = null,
+        ?\Throwable $previous = null,
     ) {
-        parent::__construct($message, $httpStatus);
+        parent::__construct($message, $httpStatus, $previous);
     }
 
     public function getHttpStatus(): int
