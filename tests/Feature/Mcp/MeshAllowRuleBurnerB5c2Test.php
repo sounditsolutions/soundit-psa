@@ -11,6 +11,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Mesh\MeshAllowRuleReaper;
+use App\Services\Mesh\MeshClient;
 use App\Services\Mesh\MeshWriteClient;
 use App\Support\McpConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -31,8 +32,10 @@ use Tests\TestCase;
  *  - #5564: every recordRefusal() arm the b5c-1 tests never emitted, with
  *    the expiry job's promise executed where the arm makes one.
  *
- * Mesh is reached only through the MeshWriteClient double; raw HTTP is
- * faked with no stub and stray requests are prevented (G-5). Synthetic data
+ * Mesh is reached only through container doubles: MeshWriteClient's
+ * carries each test's expectations and MeshClient's has none, so any
+ * unexpected call throws (G-5, #5651; their Guzzle traffic never reaches
+ * the Http facade, whose fake covers only facade requests). Synthetic data
  * only (G-13): example.test senders and tenants, no client names.
  */
 class MeshAllowRuleBurnerB5c2Test extends TestCase
@@ -58,6 +61,8 @@ class MeshAllowRuleBurnerB5c2Test extends TestCase
         parent::setUp();
         Http::fake([]);
         Http::preventStrayRequests();
+        $this->app->instance(MeshClient::class, Mockery::mock(MeshClient::class));
+        $this->app->instance(MeshWriteClient::class, Mockery::mock(MeshWriteClient::class));
     }
 
     protected function tearDown(): void
@@ -150,6 +155,16 @@ class MeshAllowRuleBurnerB5c2Test extends TestCase
         return $this->decodedResult($this->callTool('mesh_add_allow_rule', $this->stageArgs($fixture, $overrides)));
     }
 
+    /** #5644: a re-stage that must be refused with exactly one blocked row and no run; returns the refusal. */
+    private function refusedRestage(array $fixture, array $overrides = []): string
+    {
+        $blocked = $this->blocked('mesh_stage_add_allow_rule');
+        $args = $this->stageArgs($fixture, $overrides);
+        $runs = TechnicianRun::count();
+
+        return $this->stagingRefusal($this->decodedResult($this->callTool('mesh_add_allow_rule', $args)), $blocked, $runs);
+    }
+
     /** Approve a staged add whose create proves scope on $tenant and recovers $ruleId. */
     private function approveCleanCreate(User $actor, Mockery\MockInterface $write, TechnicianRun $run, string $ruleId, string $tenant = self::TENANT): MeshAllowRule
     {
@@ -224,9 +239,16 @@ class MeshAllowRuleBurnerB5c2Test extends TestCase
     }
 
     /** The staging refusal's executor text (the MCP controller prepends its downgrade notice). */
-    private function stagingRefusal(array $answer): string
+    private function stagingRefusal(array $answer, ?int $blockedBefore = null, ?int $runsBefore = null): string
     {
         $this->assertArrayNotHasKey('success', $answer, json_encode($answer));
+        // #5644: exactly one audited blocked row, and no run staged.
+        if ($blockedBefore !== null) {
+            $this->assertSame($blockedBefore + 1, $this->blocked('mesh_stage_add_allow_rule'), 'exactly one audited blocked row');
+        }
+        if ($runsBefore !== null) {
+            $this->assertSame($runsBefore, TechnicianRun::count(), 'a refusal stages no run');
+        }
         $this->assertArrayHasKey('error', $answer, json_encode($answer));
         $summary = (string) $this->lastBlockedSummary('mesh_stage_add_allow_rule');
         $this->assertStringEndsWith($summary, $answer['error'], 'the audited summary is the refusal');
@@ -372,13 +394,16 @@ class MeshAllowRuleBurnerB5c2Test extends TestCase
         $this->assertGreaterThan($recordA->id, $recordB->id);
         $fixture['client']->forceFill(['mesh_customer_id' => self::TENANT])->save();
 
-        $answer = $this->restage($fixture);
+        $blockedBefore = $this->blocked('mesh_stage_add_allow_rule');
+        $args = $this->stageArgs($fixture);
+        $runsBefore = TechnicianRun::count();
+        $answer = $this->decodedResult($this->callTool('mesh_add_allow_rule', $args));
         $this->assertArrayNotHasKey('idempotent', $answer, json_encode($answer));
         $this->assertStringEndsWith(
             "An allow rule for '".self::SENDER."' was created for this client recently as PSA record #{$recordA->id}, but an approved mesh_remove_allow_rule has since proved it absent upstream (state 'removed'). "
                 .'That proves only that the rule this record tracked is gone; the PSA has not checked whether any other rule for this sender is in force on the tenant. Nothing was staged now. '
                 .'If the sender still needs allowing, check its rules in the Mesh portal, then stage it again once the 24-hour post-execution dedup window has elapsed.',
-            $this->stagingRefusal($answer),
+            $this->stagingRefusal($answer, $blockedBefore, $runsBefore),
         );
         $this->assertStringNotContainsString('#'.$recordB->id, $answer['error']);
     }
@@ -405,10 +430,10 @@ class MeshAllowRuleBurnerB5c2Test extends TestCase
         $expiry = $record->expires_at->toDayDateTimeString().' UTC';
         $opener = "An allow rule for '".self::SENDER."' was created for this client recently as PSA record #{$record->id}, but an earlier removal of it did not prove it absent (state 'reap_failed'), so whether the rule is still live upstream is unknown. ";
 
-        $this->assertSame($opener."The expiry job retries the removal once its expiry ({$expiry}) passes. Nothing was staged now.", $this->stagingRefusal($this->restage($fixture)));
+        $this->assertSame($opener."The expiry job retries the removal once its expiry ({$expiry}) passes. Nothing was staged now.", $this->refusedRestage($fixture));
 
         $this->travel(3)->hours();
-        $this->assertSame($opener."Its expiry ({$expiry}) has passed, so the expiry job retries the removal. Nothing was staged now.", $this->stagingRefusal($this->restage($fixture)));
+        $this->assertSame($opener."Its expiry ({$expiry}) has passed, so the expiry job retries the removal. Nothing was staged now.", $this->refusedRestage($fixture));
 
         $write->shouldReceive('deleteRule')->once()->with('rule-b5c2-rf');
         $write->shouldReceive('ruleAbsent')->once()->with('rule-b5c2-rf')->andReturn(true);
@@ -436,7 +461,7 @@ class MeshAllowRuleBurnerB5c2Test extends TestCase
         $this->assertSame(
             "An allow rule for '".self::SENDER."' was created for this client recently as PSA record #{$record->id}, but Mesh stopped returning the rule under its recorded id after an approved mesh_edit_allow_rule, and that id was cleared (state 'active'), so whether the rule is still in force upstream is unknown: Mesh may have re-keyed it or it may be gone. "
                 .'Its expiry ('.$record->expires_at->toDayDateTimeString().' UTC) has passed, so the expiry job tries to re-identify the rule by sender and comment and remove it. Nothing was staged now.',
-            $this->stagingRefusal($this->restage($fixture)),
+            $this->refusedRestage($fixture),
         );
 
         $write->shouldReceive('findRuleByComment')->once()->andReturn(['id' => 'rule-b5c2-rekeyed']);
@@ -464,11 +489,11 @@ class MeshAllowRuleBurnerB5c2Test extends TestCase
 
         $this->assertSame(
             $opener.'Its scope WAS confirmed when it was created, so the expiry job only has to identify it: once one rule in Mesh carries its sender and comment, the record goes active with that id and the remove and edit verbs can reach it. Nothing was staged now.',
-            $this->stagingRefusal($this->restage($fixture)),
+            $this->refusedRestage($fixture),
         );
 
         $record->forceFill(['scope_proved' => false, 'mesh_rule_id' => null, 'expires_at' => now()->addDays(5)])->save();
-        $error = $this->stagingRefusal($this->restage($fixture));
+        $error = $this->refusedRestage($fixture);
         $this->assertSame(
             $opener.'Mesh never confirmed its scope, so identifying the rule does not settle this record. It closes when the PSA proves the rule removed: an approved mesh_remove_allow_rule can do that once the record carries its upstream id, '
                 ."and the expiry job does it after the record's expiry passes; otherwise someone has to check the rule in the Mesh portal and clear the PSA record by hand. Nothing was staged now.",
@@ -488,11 +513,13 @@ class MeshAllowRuleBurnerB5c2Test extends TestCase
         $actor = $this->configureAiActor();
         $fixture = $this->fixture();
         $write = $this->mockWrite();
-        $write->shouldNotReceive('createAllowRule')->byDefault();
-
         $cardB = $this->stageAdd($fixture);
         $cardC = $this->stageAdd($fixture);
         $record = $this->approveCleanCreate($actor, $write, $this->stageAdd($fixture, ['expires_at' => now()->addDays(30)->toIso8601String()]), 'rule-b5c2-tail');
+        // #5645: the one clean create above is the only one. A default
+        // never() set before approveCleanCreate()'s once() was discarded by
+        // Mockery, so the guard is set here, after it, where it holds.
+        $write->shouldNotReceive('createAllowRule');
         $this->editWithIdLost($actor, $write, $fixture, $record, now()->addDays(10)->toIso8601String());
         $record->refresh();
 

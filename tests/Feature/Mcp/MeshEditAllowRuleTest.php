@@ -10,6 +10,7 @@ use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
+use App\Services\Mesh\MeshClient;
 use App\Services\Mesh\MeshClientException;
 use App\Services\Mesh\MeshWriteClient;
 use App\Support\McpConfig;
@@ -67,6 +68,12 @@ class MeshEditAllowRuleTest extends TestCase
         parent::setUp();
 
         $this->freezeTime();
+        // G-5 (#5656): see the guard note in MeshAllowRuleBurnerB5bTest.
+        // MeshClient and MeshWriteClient bypass the Http facade, so both are
+        // bound to Mockery doubles with no expectations: a call a test did
+        // not set up throws rather than leaving the box.
+        $this->app->instance(MeshClient::class, Mockery::mock(MeshClient::class));
+        $this->app->instance(MeshWriteClient::class, Mockery::mock(MeshWriteClient::class));
     }
 
     private function configureMesh(): void

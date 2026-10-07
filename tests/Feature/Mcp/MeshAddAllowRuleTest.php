@@ -195,8 +195,14 @@ class MeshAddAllowRuleTest extends TestCase
         $definitions = collect(\App\Services\Mcp\StaffMeshAdminToolExecutor::definitions())->keyBy('name');
         $stagedAlias = $definitions['mesh_stage_add_allow_rule'];
         $direct = $definitions['mesh_add_allow_rule'];
+        // #5646: the substitution the comment above relies on, asserted
+        // rather than assumed. If unifyDefinition() stopped serving the
+        // alias's description under the public name, the loop below would
+        // stop reading the stage alias's text at all; read it directly too.
+        $this->assertStringStartsWith(trim($stagedAlias['description']), $definition['description'], 'a staged-only token is served the stage alias description (plus the staged-mode notice)');
         foreach ([
             'description' => $definition['description'],
+            'staged alias description' => $stagedAlias['description'],
             'expires_at' => $definition['inputSchema']['properties']['expires_at']['description'],
             'direct description' => $direct['description'],
             'direct expires_at' => $direct['input_schema']['properties']['expires_at']['description'],

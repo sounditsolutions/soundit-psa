@@ -11,6 +11,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Mcp\StaffMeshAdminToolExecutor;
+use App\Services\Mesh\MeshClient;
 use App\Services\Mesh\MeshClientException;
 use App\Services\Mesh\MeshWriteClient;
 use App\Support\McpConfig;
@@ -48,6 +49,22 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
     private const PERMANENT_UNTIL = 'it stays until someone removes it (mesh_remove_allow_rule) or gives it a date (mesh_edit_allow_rule)';
 
     private const PERMANENT_UNTIL_NO_ID = 'the PSA holds no upstream rule id for it, so mesh_edit_allow_rule cannot give it a date, mesh_remove_allow_rule would not close this record, and the expiry job never removes a rule with no expiry; this PSA record keeps blocking new allow rules for this sender until someone checks the rule in the Mesh portal and clears the record by hand';
+
+    /**
+     * G-5 (#5651, #5656): Mesh is never reached from this file. MeshClient
+     * and MeshWriteClient build their own Guzzle clients, so neither the
+     * Http fake nor preventStrayRequests() sees their traffic; the guard is
+     * at the container instead. Both are bound to Mockery doubles with no
+     * expectations, so any call a test did not set up throws. A test that
+     * needs MeshWriteClient replaces its double with one carrying
+     * expectations (mockWrite()).
+     */
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->app->instance(MeshClient::class, Mockery::mock(MeshClient::class));
+        $this->app->instance(MeshWriteClient::class, Mockery::mock(MeshWriteClient::class));
+    }
 
     private const ONE_ID_ONLY = 'That proves only that the rule this record tracked is gone; the PSA has not checked whether any other rule for this sender is in force on the tenant.';
 
@@ -235,7 +252,9 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
         ]));
         $this->assertArrayHasKey('run_id', $remove, json_encode($remove));
         $card = TechnicianRun::findOrFail($remove['run_id'])->proposed_content;
-        $this->assertStringContainsString("The PSA holds no record under this rule id, but PSA record #{$record->id} (state 'active', no recorded rule id) carries this rule's sender and comment. That record is NOT closed by this removal", $card);
+        $this->assertStringContainsString("The PSA holds no record under this rule id, but PSA record #{$record->id} (state 'active', no recorded rule id) carries this rule's sender and comment. ", $card);
+        $this->assertStringContainsString('That record is NOT closed by this removal.', $card);
+        $this->assertStringContainsString('removing it may break mail delivery that is working today', $card);
         $this->assertStringNotContainsString('FOREIGN', $card);
     }
 

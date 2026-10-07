@@ -11,6 +11,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Mesh\MeshAllowRuleReaper;
+use App\Services\Mesh\MeshClient;
 use App\Services\Mesh\MeshWriteClient;
 use App\Support\McpConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -62,17 +63,21 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
     private ?string $token = null;
 
     /**
-     * G-5 (#5567): every Mesh call here goes through the MeshWriteClient
-     * double. HTTP is faked with NO stubbed URL and stray requests are
-     * prevented, so any raw request (the read client, a vendor call) throws
-     * instead of leaving the box or being answered with a silent 200, and
-     * tearDown() asserts none was sent.
+     * G-5 (#5567, corrected by #5651): every Mesh call here goes through a
+     * container double. MeshClient and MeshWriteClient build their own Guzzle
+     * clients, which the Http facade's fake and preventStrayRequests() never
+     * see, so the guard for Mesh is the container: both are bound to Mockery
+     * doubles with no expectations, and any call a test did not set up
+     * throws. The Http fake covers only requests made through the Http
+     * facade.
      */
     protected function setUp(): void
     {
         parent::setUp();
         Http::fake([]);
         Http::preventStrayRequests();
+        $this->app->instance(MeshClient::class, Mockery::mock(MeshClient::class));
+        $this->app->instance(MeshWriteClient::class, Mockery::mock(MeshWriteClient::class));
     }
 
     protected function tearDown(): void
@@ -430,8 +435,10 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
 
         $record = $this->approveCleanCreate($actor, $write, $this->stageAdd($fixture), 'rule-b5c-dated');
         $message = $this->editWithIdLost($actor, $write, $fixture, $record, now()->addDays(10)->toIso8601String());
-        $this->assertStringContainsString("PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared, so when it is due the expiry job tries to re-identify the rule by sender and comment and remove it. "
-            .'If no rule in Mesh matches then, the record is marked unresolved and keeps blocking new allow rules for this sender. Check the rule in the Mesh portal.', $message);
+        $this->assertStringContainsString("PSA record #{$record->id} keeps the new expiry; its recorded rule id was cleared, so when it is due the expiry job tries to re-identify the rule by sender and comment and remove it (if more than one rule in Mesh matches, it takes the first one Mesh lists). "
+            .'If no rule in Mesh matches then, the record is marked unresolved; if the rule list cannot be read, it is marked reap_failed and the removal is retried. Either way a new allow rule for this sender is then refused when it is approved. Check the rule in the Mesh portal.', $message);
+        // #5657: not "keeps blocking new allow rules" — staging is not refused by it.
+        $this->assertStringNotContainsString('keeps blocking new allow rules', $message);
         $this->assertStringNotContainsString('re-identifies', $message);
         $this->assertStringNotContainsString('now PERMANENT', $message);
 
@@ -751,9 +758,13 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
         $write->shouldReceive('ruleAbsent')->once()->with('rule-b5c-rekeyed')->andReturn(true);
         $this->actingAs($actor)->post(route('cockpit.approve', TechnicianRun::findOrFail($staged['run_id'])))->assertSessionHas('success');
 
+        // #5641 / #5640: the note keeps the delivery caveat and says the
+        // record keeps refusing the sender (executed below) and needs a hand
+        // clear. #5647: the card alone adds that approval re-checks it.
         $unlinked = "The PSA holds no record under this rule id, but PSA record #{$record->id} (state 'active', no recorded rule id) carries this rule's sender and comment. "
-            .'That record is NOT closed by this removal: the PSA cannot prove it tracks this rule, so it stays as it is.';
-        $this->assertStringContainsString($unlinked, TechnicianRun::findOrFail($staged['run_id'])->proposed_content);
+            .'The PSA cannot prove it tracks this rule, and the comment can be edited in the Mesh portal, so the rule may have been set up outside this system: removing it may break mail delivery that is working today. '
+            .'That record is NOT closed by this removal. It stays as it is, and while it does, a new allow rule for this sender is refused (when it is approved, if not already when it is staged); once this rule is gone the expiry job finds no rule to identify that record by, so it has to be cleared by hand.';
+        $this->assertStringContainsString($unlinked.' Approval re-checks this: if the expiry job records this rule\'s id on that record before the card is approved, approving closes the record as removed.', TechnicianRun::findOrFail($staged['run_id'])->proposed_content);
         $summary = TechnicianActionLog::where('action_type', 'mesh_remove_allow_rule')->where('result_status', 'executed')->sole()->summary;
         $this->assertStringEndsWith(' '.$unlinked, $summary);
         $this->assertStringNotContainsString('foreign', $summary);
@@ -803,16 +814,20 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
 
         // #5572 (G-14 control wording): each note at its own level only,
         // never at another level and never through the generic entries.
+        // #5643: variadic closures, so a call carrying a context array (or
+        // any other extra argument) is matched too; a fixed-arity matcher
+        // list only ever matched a one-argument (or two-argument) call.
+        $carries = static fn (array $args, string $note): bool => collect($args)->contains(fn ($a): bool => is_string($a) && str_contains($a, $note));
         foreach (['emergency', 'alert', 'critical', 'error', 'warning', 'notice', 'info', 'debug'] as $level) {
             if ($level !== 'info') {
-                Log::shouldNotHaveReceived($level, [Mockery::on(fn ($m): bool => is_string($m) && str_contains($m, $settledNote))]);
+                Log::shouldNotHaveReceived($level, fn (...$args): bool => $carries($args, $settledNote));
             }
             if ($level !== 'warning') {
-                Log::shouldNotHaveReceived($level, [Mockery::on(fn ($m): bool => is_string($m) && str_contains($m, $unprovedNote))]);
+                Log::shouldNotHaveReceived($level, fn (...$args): bool => $carries($args, $unprovedNote));
             }
         }
         foreach (['log', 'write'] as $generic) {
-            Log::shouldNotHaveReceived($generic, [Mockery::any(), Mockery::on(fn ($m): bool => is_string($m) && (str_contains($m, $settledNote) || str_contains($m, $unprovedNote)))]);
+            Log::shouldNotHaveReceived($generic, fn (...$args): bool => $carries($args, $settledNote) || $carries($args, $unprovedNote));
         }
 
         $note = "Upstream rule id is 'rule-b5c-s2'. An id is not scope evidence, so this PERMANENT rule stays unresolved: the expiry job never removes it while it has no expiry, and it keeps refusing new allow rules for this sender. "
