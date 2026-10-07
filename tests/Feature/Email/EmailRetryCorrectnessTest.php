@@ -51,7 +51,7 @@ class EmailRetryCorrectnessTest extends TestCase
 
     private const BODY_TEXT = 'B4B-SYNTHETIC-BODY please look';
 
-    private const SKIPPED = '[EmailService] Attachment retry after ticket creation skipped; ticket state changed since creation';
+    private const SKIPPED = '[EmailService] Attachment retry after ticket creation skipped';
 
     private const THREW = '[EmailService] Attachment retry after ticket creation threw';
 
@@ -180,9 +180,14 @@ class EmailRetryCorrectnessTest extends TestCase
         $skipped = $this->withMessage(self::SKIPPED);
         $this->assertCount(1, $skipped, 'one skip record');
         $this->assertSame(Level::Warning, $skipped[0]->level);
-        $this->assertSame(['email_id', 'ticket_id', 'reason', 'discarded_attachments'], array_keys($skipped[0]->context));
-        $this->assertSame($reason, $skipped[0]->context['reason']);
-        $this->assertSame($discarded, $skipped[0]->context['discarded_attachments']);
+        $this->assertSame([
+            'email_id' => Email::where('graph_id', 'MSG-1')->value('id') ?? $skipped[0]->context['email_id'],
+            'ticket_id' => $skipped[0]->context['ticket_id'],
+            'reason' => $reason,
+            'stored_attachments' => $discarded,
+            'discarded_attachments' => $discarded,
+            'undiscarded_attachment_ids' => [],
+        ], $skipped[0]->context, 'status-only: ids, the reason and counts (#5545)');
         foreach ([self::MAILBOX, self::BODY_TEXT, 'synthetic.example.test', 'image001', 'tech edit'] as $needle) {
             $this->assertStringNotContainsString($needle, $this->text($skipped[0]), 'status-only (C-56)');
         }
@@ -228,6 +233,11 @@ class EmailRetryCorrectnessTest extends TestCase
                 fn () => Ticket::whereNotNull('id')->firstOrFail()->update(['description_html' => '<p>tech edit html</p>']),
                 'ticket_changed',
                 fn (self $t) => $t->assertSame('<p>tech edit html</p>', $t->ticketOf()->description_html),
+            ],
+            'email hard-deleted (#5557)' => [
+                fn () => Email::where('graph_id', 'MSG-1')->delete(),
+                'email_gone',
+                fn (self $t) => $t->assertSame(0, Email::count()),
             ],
             'technician edits the client note' => [
                 fn () => TicketNote::whereNotNull('email_id')->firstOrFail()->update(['body' => 'tech edit body', 'body_html' => '<p>tech edit note</p>']),
@@ -341,8 +351,9 @@ class EmailRetryCorrectnessTest extends TestCase
         $this->assertSame(Level::Warning, $threw[0]->level);
         $this->assertSame([
             'email_id' => $email->id, 'ticket_id' => $ticket->id, 'stage' => 'link', 'linked' => false,
-            'exception' => \RuntimeException::class, 'discarded_attachments' => 1,
-        ], $threw[0]->context, 'status-only: ids, stage, class, count');
+            'exception' => \RuntimeException::class,
+            'stored_attachments' => 1, 'discarded_attachments' => 1, 'undiscarded_attachment_ids' => [],
+        ], $threw[0]->context, 'status-only: ids, stage, class, counts');
         $this->assertStringNotContainsString('B4B-SYNTHETIC-DEADLOCK', $this->text($threw[0]));
         $this->assertSame(0, Attachment::withTrashed()->count(), 'no orphan Attachment row');
         $this->assertSame([], $this->storedFiles(), 'no orphan stored file');
@@ -373,7 +384,8 @@ class EmailRetryCorrectnessTest extends TestCase
 
         $threw = $this->withMessage(self::THREW);
         $this->assertCount(1, $threw);
-        $this->assertSame(['download', false, 1], [$threw[0]->context['stage'], $threw[0]->context['linked'], $threw[0]->context['discarded_attachments']]);
+        $this->assertSame(['download', false, 1, 1, []], [$threw[0]->context['stage'], $threw[0]->context['linked'],
+            $threw[0]->context['stored_attachments'], $threw[0]->context['discarded_attachments'], $threw[0]->context['undiscarded_attachment_ids']]);
         $this->assertSame(0, Attachment::withTrashed()->count());
         $this->assertSame([], $this->storedFiles());
     }
@@ -419,8 +431,9 @@ class EmailRetryCorrectnessTest extends TestCase
         $this->assertSame(Level::Warning, $threw[0]->level);
         $this->assertSame([
             'email_id' => $email->id, 'ticket_id' => $ticket->id, 'stage' => 'link', 'linked' => false,
-            'exception' => \RuntimeException::class, 'discarded_attachments' => 0,
-        ], $threw[0]->context, 'status-only: ids, stage, class, count');
+            'exception' => \RuntimeException::class,
+            'stored_attachments' => 1, 'discarded_attachments' => 0, 'undiscarded_attachment_ids' => [Attachment::withTrashed()->sole()->id],
+        ], $threw[0]->context, 'status-only: ids, stage, class, counts; #5554: the ids the failed lookup could not discard');
         foreach (['B4B-SYNTHETIC-DEADLOCK', 'B4B-SYNTHETIC-CONNECTION-LOST'] as $needle) {
             $this->assertStringNotContainsString($needle, $this->text($threw[0]));
         }
@@ -464,6 +477,7 @@ class EmailRetryCorrectnessTest extends TestCase
         $this->assertSame($files, $this->storedFiles(), 'no duplicate stored file');
         $skipped = $this->withMessage(self::SKIPPED);
         $this->assertCount(1, $skipped);
+        // #5556: the first run wrote description_html (inline image), so the second is refused on the ticket.
         $this->assertSame(['ticket_changed', 0], [$skipped[0]->context['reason'], $skipped[0]->context['discarded_attachments']]);
     }
 
@@ -485,6 +499,8 @@ class EmailRetryCorrectnessTest extends TestCase
         $a = Attachment::sole();
         $this->assertSame(TicketNote::class, $a->attachable_type);
         $this->assertSame(TicketNote::where('email_id', $email->id)->sole()->id, $a->attachable_id, 'the surviving set is the linked one');
+        $this->assertSame([$a->storage_path], $this->storedFiles(), '#5550: the file left is the linked row\'s own');
+        $this->assertSame('synthetic-report-b4b', Storage::disk('local')->get($a->storage_path));
         $skipped = $this->withMessage(self::SKIPPED);
         $this->assertCount(1, $skipped);
         $this->assertSame(['attachments_changed', 1], [$skipped[0]->context['reason'], $skipped[0]->context['discarded_attachments']]);
@@ -572,6 +588,301 @@ class EmailRetryCorrectnessTest extends TestCase
 
         $this->assertSame(0, $this->messageReads(), 'refused before any Graph call');
         $this->assertSkipped('client_note_missing', discarded: 0);
+    }
+
+    // ── #5557/#5551/#5550: every pre-check refusal is recorded, with its own reason ──
+
+    /** @return array<string, array{0: \Closure(): void, 1: string}> */
+    public static function stateGoneBeforeTheRetry(): array
+    {
+        return [
+            'email hard-deleted' => [fn () => Email::where('graph_id', 'MSG-1')->delete(), 'email_gone'],
+            'graph_id cleared' => [fn () => Email::where('graph_id', 'MSG-1')->update(['graph_id' => null]), 'graph_id_missing'],
+            'mailbox setting cleared' => [fn () => Setting::setValue('graph_mailbox', ''), 'mailbox_unset'],
+            'ticket soft-deleted' => [fn () => Ticket::query()->firstOrFail()->delete(), 'ticket_gone'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('stateGoneBeforeTheRetry')]
+    public function test_state_gone_before_the_retry_is_refused_with_its_own_reason_and_no_graph_read(\Closure $gone, string $reason): void
+    {
+        // An outer transaction defers the retry to its commit; the state goes before that.
+        $this->graph([$this->failedRead(), $this->read()]);
+        $email = $this->email();
+
+        DB::transaction(function () use ($email, $gone) {
+            app(EmailService::class)->autoCreateTicketFromEmail($email);
+            $gone();
+        });
+
+        $this->assertSame(1, $this->messageReads(), 'refused before any Graph call');
+        $skipped = $this->withMessage(self::SKIPPED);
+        $this->assertCount(1, $skipped, '#5557: never a silent return');
+        $this->assertSame($email->id, $skipped[0]->context['email_id']);
+        $this->assertSame($reason, $skipped[0]->context['reason']);
+        $this->assertSame([0, 0, []], [$skipped[0]->context['stored_attachments'], $skipped[0]->context['discarded_attachments'], $skipped[0]->context['undiscarded_attachment_ids']]);
+        $this->assertSame(0, Attachment::withTrashed()->count());
+    }
+
+    public function test_a_retry_whose_baseline_was_never_set_is_refused_as_baseline_missing(): void
+    {
+        // #5551: the callback reads the baseline when it runs; a throw between registration and
+        // the baseline that a caller catches before committing leaves it unset.
+        $this->graph([$this->failedRead(), $this->read()]);
+        $email = $this->email();
+        $service = app(EmailService::class);
+
+        DB::transaction(function () use ($email) {
+            \App\Models\TicketNote::creating(function () {
+                throw new \RuntimeException('B4G-SYNTHETIC-NOTE-FAIL');
+            });
+            try {
+                app(EmailService::class)->autoCreateTicketFromEmail($email);
+            } catch (\RuntimeException) {
+                // A caller that swallows the throw and commits. autoCreate's own nested
+                // transaction rolled back to its savepoint; its after-commit callback was
+                // registered at that level and is discarded with it.
+            }
+        });
+        $this->assertSame(1, $this->messageReads(), 'positive control: the first read ran and failed');
+        $this->assertSame([], $this->withMessage(self::SKIPPED), 'a rolled-back level runs no retry');
+
+        // The callback as registered, run with the baseline it would hold when unset.
+        (fn () => $this->retryMessageReadAfterCommit($email->id, 1, null, null))->call($service);
+
+        $this->assertSame(1, $this->messageReads(), 'refused before any Graph call');
+        $skipped = $this->withMessage(self::SKIPPED);
+        $this->assertCount(1, $skipped);
+        $this->assertSame('baseline_missing', $skipped[0]->context['reason']);
+    }
+
+    public function test_a_retry_with_model_events_suppressed_is_refused_as_tracking_unavailable(): void
+    {
+        // #5555: with no dispatcher nothing the read stores could be found again for discard.
+        $this->graph([$this->failedRead(), $this->read()]);
+        $email = $this->email();
+
+        DB::transaction(function () use ($email) {
+            app(EmailService::class)->autoCreateTicketFromEmail($email);
+            Attachment::unsetEventDispatcher();
+        });
+        Attachment::setEventDispatcher($this->app['events']);
+
+        $this->assertSame(1, $this->messageReads(), 'refused before any Graph call');
+        $this->assertSame('tracking_unavailable', $this->withMessage(self::SKIPPED)[0]->context['reason'] ?? null);
+        $this->assertSame(0, Attachment::withTrashed()->count());
+    }
+
+    private function twoFileRead(): Response
+    {
+        return new Response(200, ['Content-Type' => 'application/json'], (string) json_encode([
+            'id' => 'MSG-1',
+            'attachments' => [
+                ['@odata.type' => '#microsoft.graph.fileAttachment', 'id' => 'ATT-1', 'name' => 'a.txt',
+                    'contentType' => 'text/plain', 'isInline' => false, 'contentBytes' => base64_encode('synthetic-a')],
+                ['@odata.type' => '#microsoft.graph.fileAttachment', 'id' => 'ATT-2', 'name' => 'b.txt',
+                    'contentType' => 'text/plain', 'isInline' => false, 'contentBytes' => base64_encode('synthetic-b')],
+            ],
+        ]));
+    }
+
+    public function test_flushed_attachment_listeners_are_re_registered_so_a_partial_store_is_still_discarded(): void
+    {
+        // #5555: after Attachment::flushEventListeners() on the same dispatcher (a long-running
+        // worker, a test helper), the created-listener is the only record of a row stored before
+        // a later store threw (the read never returns it). It must be registered again.
+        $this->graph([$this->failedRead(), $this->read(inline: false), $this->failedRead(), $this->twoFileRead()]);
+        app(EmailService::class)->autoCreateTicketFromEmail($this->email()); // registers the listener
+        $this->assertSame(1, Attachment::count(), 'positive control: the first retry linked');
+        $first = Attachment::sole();
+        Attachment::flushEventListeners();
+        // flush removes Attachment::booted's own forceDeleting hook too; put the same hook back.
+        Attachment::forceDeleting(fn (Attachment $a) => Storage::disk('local')->delete($a->storage_path));
+        $made = 0;
+        Attachment::creating(function () use (&$made) {
+            if (++$made === 2) {
+                throw new \RuntimeException('B4G-SYNTHETIC-DISK-FULL');
+            }
+        });
+        $this->logs->clear();
+        Email::where('graph_id', 'MSG-1')->update(['graph_id' => null]); // graph_id is unique
+
+        app(EmailService::class)->autoCreateTicketFromEmail($this->email(['subject' => 'Second']));
+
+        $threw = $this->withMessage(self::THREW);
+        $this->assertCount(1, $threw);
+        $this->assertSame(['download', 1, 1, []], [$threw[0]->context['stage'], $threw[0]->context['stored_attachments'],
+            $threw[0]->context['discarded_attachments'], $threw[0]->context['undiscarded_attachment_ids']]);
+        $this->assertSame([$first->id], Attachment::withTrashed()->pluck('id')->all(), 'only the first ticket\'s attachment is left');
+        $this->assertCount(1, $this->storedFiles());
+    }
+
+    public function test_listeners_flushed_during_the_retry_read_still_leave_what_the_read_returned_discarded(): void
+    {
+        // #5555: the listener is gone while the read stores; the rows the read returns are
+        // tracked anyway, so a refusal still removes them.
+        $this->graph([$this->failedRead(), $this->readDuring(function () {
+            Attachment::flushEventListeners();
+            Attachment::forceDeleting(fn (Attachment $a) => Storage::disk('local')->delete($a->storage_path));
+            Ticket::query()->firstOrFail()->update(['description' => 'tech edit']);
+        })]);
+
+        app(EmailService::class)->autoCreateTicketFromEmail($this->email());
+
+        $this->assertSame(2, $this->messageReads(), 'positive control: the retry read ran');
+        $this->assertSkipped('ticket_changed', discarded: 1);
+    }
+
+    // ── #5544/#5545/#5550/#5553: what the records say on a refusal, a failed discard and a late throw ──
+
+    public function test_a_refusal_whose_record_throws_says_linked_false_and_does_not_discard_twice(): void
+    {
+        // #5544: the refusal's (empty) link transaction commits; that must not read as a link.
+        $this->graph([$this->failedRead(), $this->readDuring(
+            fn () => Ticket::query()->firstOrFail()->update(['description' => 'tech edit']),
+        )]);
+        $email = $this->email();
+        $once = false;
+        \Illuminate\Support\Facades\Event::listen(\Illuminate\Log\Events\MessageLogged::class, function ($e) use (&$once) {
+            if ($e->message === self::SKIPPED && ! $once) {
+                $once = true;
+                throw new \RuntimeException('B4G-SYNTHETIC-LOG-FAIL');
+            }
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertTrue($once, 'positive control: the skip record threw');
+        $threw = $this->withMessage(self::THREW);
+        $this->assertCount(1, $threw);
+        $this->assertSame([
+            'email_id' => $email->id, 'ticket_id' => $ticket->id, 'stage' => 'discard', 'linked' => false,
+            'exception' => \RuntimeException::class,
+            'stored_attachments' => 1, 'discarded_attachments' => 1, 'undiscarded_attachment_ids' => [],
+        ], $threw[0]->context, 'linked false, and the discard that already ran is reported, not repeated');
+        $this->assertSame(0, Attachment::withTrashed()->count());
+        $this->assertSame([], $this->storedFiles());
+    }
+
+    public function test_a_throw_after_the_link_commits_says_linked_true_and_keeps_the_linked_attachment(): void
+    {
+        // #5550: an after-commit callback registered inside the link transaction (after the
+        // $committed flag) throws once the link has committed; nothing linked may be discarded.
+        $this->graph([$this->failedRead(), $this->read()]);
+        $email = $this->email();
+        Attachment::updated(function (Attachment $a) {
+            if ($a->attachable_type === TicketNote::class) {
+                DB::afterCommit(fn () => throw new \RuntimeException('B4G-SYNTHETIC-LATE'));
+            }
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $threw = $this->withMessage(self::THREW);
+        $this->assertCount(1, $threw);
+        $this->assertSame([
+            'email_id' => $email->id, 'ticket_id' => $ticket->id, 'stage' => 'link', 'linked' => true,
+            'exception' => \RuntimeException::class,
+            'stored_attachments' => 0, 'discarded_attachments' => 0, 'undiscarded_attachment_ids' => [],
+        ], $threw[0]->context);
+        $a = Attachment::sole();
+        $this->assertSame([TicketNote::class, TicketNote::where('email_id', $email->id)->sole()->id], [$a->attachable_type, $a->attachable_id]);
+        $this->assertSame([$a->storage_path], $this->storedFiles(), 'the linked row\'s own file is kept');
+    }
+
+    public function test_a_force_delete_that_throws_is_reported_by_id(): void
+    {
+        // #5545: of two stored rows, the second's force-delete throws.
+        $this->graph([$this->failedRead(), function () {
+            Ticket::query()->firstOrFail()->update(['description' => 'tech edit']);
+
+            return $this->twoFileRead();
+        }]);
+        $email = $this->email();
+        $seen = 0;
+        Attachment::forceDeleting(function () use (&$seen) {
+            if (++$seen === 2) {
+                throw new \RuntimeException('B4G-SYNTHETIC-LOCK-WAIT');
+            }
+        });
+
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $left = Attachment::withTrashed()->sole();
+        $skipped = $this->withMessage(self::SKIPPED);
+        $this->assertCount(1, $skipped);
+        $this->assertSame(['ticket_changed', 2, 1, [$left->id]], [$skipped[0]->context['reason'], $skipped[0]->context['stored_attachments'],
+            $skipped[0]->context['discarded_attachments'], $skipped[0]->context['undiscarded_attachment_ids']]);
+    }
+
+    public function test_a_file_the_disk_did_not_delete_is_reported_by_id(): void
+    {
+        // #5545: Storage::delete returns false rather than throwing; the row goes, the file stays.
+        $this->graph([$this->failedRead(), $this->readDuring(
+            fn () => Ticket::query()->firstOrFail()->update(['description' => 'tech edit']),
+        )]);
+        $email = $this->email();
+        $kept = null;
+        Attachment::forceDeleting(function (Attachment $a) use (&$kept) {
+            $kept = $a->id;
+            $a->storage_path = 'attachments/elsewhere/none'; // the model hook deletes a path that is not the file
+        });
+
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertNotNull($kept, 'positive control: the discard ran');
+        $this->assertCount(1, $this->storedFiles(), 'the file is still on disk');
+        $skipped = $this->withMessage(self::SKIPPED);
+        $this->assertSame([1, 0, [$kept]], [$skipped[0]->context['stored_attachments'],
+            $skipped[0]->context['discarded_attachments'], $skipped[0]->context['undiscarded_attachment_ids']]);
+    }
+
+    public function test_a_failed_storage_path_update_leaves_no_placeholder_row_and_no_orphan_file(): void
+    {
+        // #5553: storeFromContent's put succeeds, its storage_path update throws.
+        $this->graph([$this->failedRead(), $this->read()]);
+        $email = $this->email();
+        Attachment::updating(function (Attachment $a) {
+            if ($a->isDirty('storage_path')) {
+                throw new \RuntimeException('B4G-SYNTHETIC-UPDATE-FAIL');
+            }
+        });
+
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertSame(2, $this->messageReads(), 'positive control: the retry read ran and stored');
+        $threw = $this->withMessage(self::THREW);
+        $this->assertCount(1, $threw);
+        $this->assertSame(['download', 1, 1, []], [$threw[0]->context['stage'], $threw[0]->context['stored_attachments'],
+            $threw[0]->context['discarded_attachments'], $threw[0]->context['undiscarded_attachment_ids']]);
+        $this->assertSame(0, Attachment::withTrashed()->where('storage_path', 'attachments/tmp')->count(), 'no row names the placeholder');
+        $this->assertSame(0, Attachment::withTrashed()->count());
+        $this->assertSame([], $this->storedFiles(), 'no orphan file under attachments/{id}/');
+    }
+
+    public function test_store_from_content_removes_its_row_and_file_when_the_storage_path_update_fails(): void
+    {
+        // #5553, every caller: no row is left naming 'attachments/tmp', no file at attachments/{id}/.
+        Attachment::updating(function (Attachment $a) {
+            if ($a->isDirty('storage_path')) {
+                throw new \RuntimeException('B4G-SYNTHETIC-UPDATE-FAIL');
+            }
+        });
+        $made = null;
+        Attachment::created(function (Attachment $a) use (&$made) {
+            $made = $a->id;
+        });
+
+        try {
+            app(\App\Services\AttachmentService::class)->storeFromContent('synthetic-c', 'c.txt', 'text/plain');
+            $this->fail('the update failure is rethrown');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('B4G-SYNTHETIC-UPDATE-FAIL', $e->getMessage(), 'rethrown unchanged');
+        }
+
+        $this->assertNotNull($made, 'positive control: the row was created');
+        $this->assertSame(0, Attachment::withTrashed()->count(), 'no placeholder row');
+        $this->assertSame([], $this->storedFiles(), 'no file');
     }
 
     // ── #5445: the retry builds the forward-provenance line exactly as a first read does ──
