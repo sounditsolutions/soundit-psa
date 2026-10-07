@@ -504,4 +504,77 @@ class RetryEmailAttachmentsJobTest extends TestCase
             'seen' => [['notifyEmailAdded', $ticketId, 0]],
         ], $atKill, 'row and file existed at the kill; failed() discarded both, wrote the marker and notified');
     }
+
+    public function test_a_timeout_during_the_commit_work_does_not_run_it_again_or_write_a_marker(): void
+    {
+        // The kill lands while handle()'s own notifyEmailAdded is sending, after the retry linked:
+        // failed() runs in the same process and must not notify, dispatch or mark again.
+        $this->graph([$this->failedRead()]);
+        $ticket = $this->ticketWithQueuedRetry();
+        $job = $this->popRetry();
+        $this->mock->append($this->read());
+        $calls = new \ArrayObject;
+        $kill = fn () => $this->timeOut($job);
+        $this->app->instance(NotificationService::class, new class($calls, $kill) extends NotificationService
+        {
+            public function __construct(private \ArrayObject $calls, private \Closure $kill) {}
+
+            public function notifyEmailAdded(Ticket $ticket, Email $email): void
+            {
+                $this->calls[] = $ticket->id;
+                if (count($this->calls) === 1) {
+                    ($this->kill)();
+                }
+            }
+
+            public function notifyTicketCreated(Ticket $ticket): void {}
+        });
+
+        $job->fire();
+
+        $this->assertTrue($job->hasFailed(), 'positive control: the timeout failed the job');
+        $this->assertSame([$ticket->id], $calls->getArrayCopy(), 'notifyEmailAdded once, not again from failed()');
+        $this->assertSame(TicketNote::class, Attachment::sole()->attachable_type, 'positive control: the retry linked');
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::MARKER), 'linked: no not-added marker');
+        $this->assertSame([], $this->markerNotes($ticket->id));
+    }
+
+    public function test_a_timeout_after_the_link_committed_keeps_the_linked_attachment_and_writes_no_marker(): void
+    {
+        // #5708 window: a callback staged by a nested transaction runs after the link commits and
+        // before the link level's own flag is set; the kill lands there.
+        $this->graph([$this->failedRead()]);
+        $ticketId = $this->ticketWithQueuedRetry()->id;
+        $job = $this->popRetry();
+        $this->mock->append($this->read());
+        $atKill = null;
+        // Nothing here may assert: a failed assertion would be caught by the code under test.
+        Attachment::updated(function (Attachment $a) use ($job, &$atKill, $ticketId) {
+            if ($a->attachable_type !== TicketNote::class || $atKill !== null) {
+                return;
+            }
+            DB::transaction(fn () => DB::afterCommit(function () use ($job, &$atKill, $ticketId) {
+                $this->timeOut($job);
+                $atKill = [
+                    'linked_rows' => Attachment::where('attachable_type', TicketNote::class)->count(),
+                    'files' => count(Storage::disk('local')->allFiles('attachments')),
+                    'markers' => count($this->withMessage(RetryEmailAttachments::MARKER)),
+                    'notes' => count($this->markerNotes($ticketId)),
+                    'seen' => $this->seen->getArrayCopy(),
+                ];
+                throw new \RuntimeException('B4I-SYNTHETIC-KILLED'); // stands in for the kill
+            }));
+        });
+
+        $job->fire();
+
+        $this->assertNotNull($atKill, 'positive control: the kill point was reached');
+        $this->assertSame([
+            'linked_rows' => 1,
+            'files' => 1,
+            'markers' => 0,
+            'notes' => 0,
+            'seen' => [['notifyEmailAdded', $ticketId, 1]],
+        ], $atKill, 'the committed link is read back: nothing discarded, no not-added marker, notified once');
+    }
 }

@@ -30,7 +30,7 @@ use Illuminate\Support\Facades\Log;
  * The re-queued run checks against the SAME creation-time baseline, so it never writes over an
  * edit made since (#5447/#5460): it recovers a refusal whose cause has cleared, and a lasting
  * edit stays refused. A final outcome that links nothing (refused twice, a failed read, a
- * throw before the link committed, a timeout) writes a durable marker: one status-only WARNING
+ * throw or a timeout before the link committed) writes a durable marker: one status-only WARNING
  * and a private System note on the ticket naming the email id and the reason (#5558).
  *
  * #5453/#5549: the email-added commit work (notifyEmailAdded and the RunTechnicianLoop
@@ -68,40 +68,89 @@ class RetryEmailAttachments implements ShouldQueue
         public readonly int $refusals = 0,
     ) {}
 
+    /**
+     * What handle() has reached for each dispatch running in this process, by progressKey(): the
+     * retry's outcome once it returned, then requeued, marked and committed. A timeout kill runs
+     * failed() in this process, on a fresh copy of the job, while handle() is still on the stack
+     * (the worker's SIGALRM handler), so failed() reads this and runs only what handle() had not
+     * started: the marker and the commit work run at most once, and an outcome handle() already
+     * had is not reported as a timeout.
+     *
+     * @var array<string, array<string, mixed>>
+     */
+    private static array $progress = [];
+
     public function handle(EmailService $emails): void
     {
-        $outcome = $emails->retryMessageRead($this->emailId, $this->ticketId, $this->noteId, $this->baseline);
+        $key = $this->progressKey();
+        self::$progress[$key] = [];
+        try {
+            $outcome = $emails->retryMessageRead($this->emailId, $this->ticketId, $this->noteId, $this->baseline);
+            self::$progress[$key]['outcome'] = $outcome;
 
-        if ($outcome !== null && $outcome['requeueable'] && $this->refusals < self::MAX_REFUSAL_REQUEUES) {
-            self::dispatch($this->emailId, $this->ticketId, $this->noteId, $this->baseline, $this->refusals + 1)
-                ->delay(self::REQUEUE_DELAY_SECONDS);
+            if ($outcome !== null && $outcome['requeueable'] && $this->refusals < self::MAX_REFUSAL_REQUEUES) {
+                self::dispatch($this->emailId, $this->ticketId, $this->noteId, $this->baseline, $this->refusals + 1)
+                    ->delay(self::REQUEUE_DELAY_SECONDS);
+                self::$progress[$key]['requeued'] = true;
 
-            return;
+                return;
+            }
+
+            if ($outcome !== null) {
+                self::$progress[$key]['marked'] = true;
+                $this->writeMarker($outcome['reason'], $outcome['undiscarded_attachment_ids']);
+            }
+            self::$progress[$key]['committed'] = true;
+            $this->runCommitWork();
+        } finally {
+            unset(self::$progress[$key]);
         }
-
-        if ($outcome !== null) {
-            $this->writeMarker($outcome['reason'], $outcome['undiscarded_attachment_ids']);
-        }
-        $this->runCommitWork();
     }
 
     /**
      * A timeout kill, or a throw out of handle() (only a failed re-queue dispatch can throw
      * there): final, never re-queued. On a timeout the worker calls this in the killed process,
-     * after rolling back any open transaction, so abandonRetry still sees what the read stored.
+     * after rolling back any open transaction. When handle() already had the retry's outcome,
+     * that outcome stands: a re-queued run owns what follows; otherwise only the marker and the
+     * commit work handle() had not started are run. When the kill landed inside the retry,
+     * abandonRetry discards what the read stored unless the link committed, and the marker is
+     * written unless the link is known to have committed.
      */
     public function failed(?\Throwable $e): void
     {
-        $discard = ['undiscarded_attachment_ids' => []];
+        $progress = self::$progress[$this->progressKey()] ?? [];
+        if (array_key_exists('outcome', $progress)) {
+            if ($progress['requeued'] ?? false) {
+                return;
+            }
+            $outcome = $progress['outcome'];
+            if ($outcome !== null && ! ($progress['marked'] ?? false)) {
+                $this->writeMarker($outcome['reason'], $outcome['undiscarded_attachment_ids']);
+            }
+            if (! ($progress['committed'] ?? false)) {
+                $this->runCommitWork();
+            }
+
+            return;
+        }
+
+        $discard = ['linked' => false, 'undiscarded_attachment_ids' => []];
         try {
-            $discard = app(EmailService::class)->abandonRetry();
+            $discard = app(EmailService::class)->abandonRetry($this->noteId);
         } catch (\Throwable) {
         }
-        $this->writeMarker(
-            $e instanceof \Illuminate\Queue\TimeoutExceededException ? 'timed_out' : 'job_failed',
-            $discard['undiscarded_attachment_ids'],
-        );
+        if ($discard['linked'] !== true) {
+            $this->writeMarker(
+                $e instanceof \Illuminate\Queue\TimeoutExceededException ? 'timed_out' : 'job_failed',
+                $discard['undiscarded_attachment_ids'],
+            );
+        }
         $this->runCommitWork();
+    }
+
+    private function progressKey(): string
+    {
+        return "{$this->emailId}:{$this->ticketId}:{$this->refusals}";
     }
 
     /** @param  list<int>  $undiscarded */

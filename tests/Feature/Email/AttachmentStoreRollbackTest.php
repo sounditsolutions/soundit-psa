@@ -121,6 +121,39 @@ class AttachmentStoreRollbackTest extends TestCase
         $this->assertSame([], Storage::disk('local')->allFiles('attachments'), 'no orphan file');
     }
 
+    public function test_email_intake_skips_an_attachment_whose_write_is_refused_and_stores_the_rest(): void
+    {
+        // The email-intake caller: a refused write skips that one attachment with a status-only
+        // warning instead of throwing out of the message's import (and rolling the import back).
+        $real = Storage::disk('local');
+        $disk = \Mockery::mock(FilesystemAdapter::class, [$real->getDriver(), $real->getAdapter(), $real->getConfig()])->makePartial();
+        $disk->shouldReceive('put')->andReturnUsing(
+            fn ($path, $contents, $options = []) => str_contains($path, 'payroll') ? false : $real->put($path, $contents, $options),
+        );
+        Storage::set('local', $disk);
+        $email = \App\Models\Email::create([
+            'graph_id' => 'MSG-1', 'direction' => 'inbound', 'from_address' => 'user@example.test',
+            'from_name' => 'User', 'subject' => 'Synthetic', 'body_text' => 'Synthetic body', 'received_at' => now(),
+        ]);
+        $graph = \Mockery::mock(\App\Services\Graph\GraphClient::class);
+        $graph->shouldReceive('getMessageAttachments')->once()->andReturn([
+            ['@odata.type' => '#microsoft.graph.fileAttachment', 'id' => 'ATT-1', 'name' => self::FILENAME,
+                'contentType' => 'text/plain', 'isInline' => false, 'contentBytes' => base64_encode('synthetic-a')],
+            ['@odata.type' => '#microsoft.graph.fileAttachment', 'id' => 'ATT-2', 'name' => 'b.txt',
+                'contentType' => 'text/plain', 'isInline' => false, 'contentBytes' => base64_encode('synthetic-b')],
+        ]);
+
+        $stored = app(AttachmentService::class)->downloadEmailAttachments($email, $graph, 'support@example.test');
+
+        $this->assertCount(1, $stored, 'the other attachment is still stored');
+        $this->assertSame(1, Attachment::withTrashed()->count(), 'no row for the refused write');
+        $this->assertSame([$stored[0]->storage_path], Storage::disk('local')->allFiles('attachments'));
+        $skipped = $this->withMessage('[AttachmentService] Email attachment content not stored');
+        $this->assertCount(1, $skipped, 'the refused write is reported, not silent');
+        $this->assertSame(['ATT-1', 'store_failed'], [$skipped[0]->context['attachment_id'], $skipped[0]->context['reason']]);
+        $this->assertStringNotContainsString('Payroll', json_encode($skipped[0]->context));
+    }
+
     public function test_a_cleanup_step_that_throws_is_recorded_by_id_step_and_class(): void
     {
         Attachment::updating(function (Attachment $a) {

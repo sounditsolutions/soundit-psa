@@ -1558,8 +1558,10 @@ PROMPT;
     }
 
     /**
-     * #5708: whether every row this retry stored is linked to the client note in the database:
-     * true or false, or null when the read itself throws.
+     * #5708: whether every row this retry stored that still exists (at least one) is linked to
+     * the client note in the database: true or false, or null when the read itself throws. A
+     * tracked id with no row (a store that removed its own failed row, #5553/#5709) does not
+     * count against the link.
      */
     private function retryLinkPersisted(?int $noteId): ?bool
     {
@@ -1568,9 +1570,12 @@ PROMPT;
             return false;
         }
         try {
-            return \App\Models\Attachment::withTrashed()->whereIn('id', $ids)
+            $present = \App\Models\Attachment::withTrashed()->whereIn('id', $ids)->count();
+            $linked = \App\Models\Attachment::withTrashed()->whereIn('id', $ids)
                 ->where('attachable_type', TicketNote::class)->where('attachable_id', $noteId)
-                ->count() === count($ids);
+                ->count();
+
+            return $present > 0 && $linked === $present;
         } catch (\Throwable) {
             return null;
         }
@@ -1581,18 +1586,29 @@ PROMPT;
 
     /**
      * For a RetryEmailAttachments job killed while its retry was running (a timeout): discards
-     * what that retry stored unless its link committed, and returns the discard record. The
-     * worker has already rolled back an open transaction. With no retry running, nothing.
+     * what that retry stored unless its link committed, and returns the discard record with
+     * linked: true when the link committed, false when it did not, null when that could not be
+     * read (the rows are then kept and reported as undiscarded). The worker has already rolled
+     * back an open transaction. #5708: the link level's flag is set after any after-commit
+     * callback a nested transaction staged, so a kill in between is read back, as the retry's
+     * catch arm does. With no retry running, nothing (linked false).
      *
-     * @return array{stored_attachments: int, discarded_attachments: int, undiscarded_attachment_ids: list<int>}
+     * @return array{linked: bool|null, stored_attachments: int, discarded_attachments: int, undiscarded_attachment_ids: list<int>}
      */
-    public function abandonRetry(): array
+    public function abandonRetry(?int $noteId = null): array
     {
-        if (self::$retryStoredIds === null || self::$retryLinked) {
-            return self::NOTHING_DISCARDED;
+        if (self::$retryStoredIds === null) {
+            return ['linked' => false] + self::NOTHING_DISCARDED;
+        }
+        $linked = self::$retryLinked ?: $this->retryLinkPersisted($noteId);
+        if ($linked !== false) {
+            $ids = array_values(array_unique(self::$retryStoredIds));
+
+            return ['linked' => $linked, 'stored_attachments' => count($ids), 'discarded_attachments' => 0,
+                'undiscarded_attachment_ids' => $linked === null ? $ids : []];
         }
 
-        return $this->discardRetryStored();
+        return ['linked' => false] + $this->discardRetryStored();
     }
 
     private const NOTHING_DISCARDED = ['stored_attachments' => 0, 'discarded_attachments' => 0, 'undiscarded_attachment_ids' => []];

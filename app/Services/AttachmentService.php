@@ -226,7 +226,9 @@ class AttachmentService
      * Returns array of created Attachment models, empty when the message has none or none was
      * stored. Returns null when the message read itself failed (#5394), so a caller can tell a
      * failed read from an empty list and try the read again; a failed or refused ITEM is not a
-     * failed read and still yields an array.
+     * failed read and still yields an array. So is an attachment whose disk write is refused
+     * (AttachmentStoreFailedException, #5709): it is skipped with a store_failed warning, and the
+     * rest of the message is still stored (storeOrSkip).
      *
      * @return Attachment[]|null
      */
@@ -260,7 +262,7 @@ class AttachmentService
             $type = $ga['@odata.type'] ?? '';
 
             if ($type === self::ITEM_ATTACHMENT) {
-                $item = $this->downloadItemAttachment($email, $graph, $mailbox, $ga);
+                $item = $this->storeOrSkip($email, $ga, fn () => $this->downloadItemAttachment($email, $graph, $mailbox, $ga));
                 if ($item !== null) {
                     $attachments[] = $item;
                 }
@@ -269,7 +271,10 @@ class AttachmentService
             }
 
             if ($type === self::REFERENCE_ATTACHMENT) {
-                $attachments[] = $this->storeReferencePlaceholder($email, $ga);
+                $placeholder = $this->storeOrSkip($email, $ga, fn () => $this->storeReferencePlaceholder($email, $ga));
+                if ($placeholder !== null) {
+                    $attachments[] = $placeholder;
+                }
 
                 continue;
             }
@@ -294,18 +299,40 @@ class AttachmentService
                 continue;
             }
 
-            $attachment = $this->storeFromContent(
+            $attachment = $this->storeOrSkip($email, $ga, fn () => $this->storeFromContent(
                 $content,
                 $ga['name'] ?? 'attachment',
                 $ga['contentType'] ?? 'application/octet-stream',
                 isInline: $ga['isInline'] ?? false,
                 contentId: $ga['contentId'] ?? null,
-            );
+            ));
 
-            $attachments[] = $attachment;
+            if ($attachment !== null) {
+                $attachments[] = $attachment;
+            }
         }
 
         return $attachments;
+    }
+
+    /**
+     * One attachment's store for email intake. A refused disk write (AttachmentStoreFailedException;
+     * the store has already rolled back its own row and file, best effort, #5709) skips that
+     * attachment with a store_failed warning, as a refused item fetch does, so it never fails the
+     * email's import. Any other throw is not caught here.
+     *
+     * @param  array<string, mixed>  $ga
+     * @param  \Closure(): ?Attachment  $store
+     */
+    private function storeOrSkip(Email $email, array $ga, \Closure $store): ?Attachment
+    {
+        try {
+            return $store();
+        } catch (AttachmentStoreFailedException) {
+            $this->warnSkipped($email, $ga, 'store_failed');
+
+            return null;
+        }
     }
 
     /**
