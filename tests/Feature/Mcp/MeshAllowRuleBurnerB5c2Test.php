@@ -49,7 +49,7 @@ class MeshAllowRuleBurnerB5c2Test extends TestCase
 
     private const AT_APPROVAL = ' No upstream call was made and the lifetime on this proposal was NOT applied.';
 
-    private const CARD_CLOSED = ' This card is closed, not returned to the approval queue, so approving it again cannot create a rule; any further allow rule for this sender needs a new proposal.';
+    private const CARD_CLOSED = ' This card is closed, not returned to the approval queue, so approving it again cannot create a rule. Only this card is closed; any other proposal already staged for this sender stays as it is.';
 
     private ?string $token = null;
 
@@ -499,6 +499,10 @@ class MeshAllowRuleBurnerB5c2Test extends TestCase
         $this->assertApprovalDedupRefused($actor, $cardB,
             "An allow rule for '".self::SENDER."' was created for this client recently as PSA record #{$record->id}, but Mesh stopped returning the rule under its recorded id after an approved mesh_edit_allow_rule, and that id was cleared (state 'active'), so whether the rule is still in force upstream is unknown: Mesh may have re-keyed it or it may be gone. "
                 .'Once its expiry ('.$record->expires_at->toDayDateTimeString().' UTC) passes, the expiry job tries to re-identify the rule by sender and comment and remove it.'.self::AT_APPROVAL.self::CARD_CLOSED);
+
+        // contract:2, executed: closing card B left its sibling card C, staged
+        // for the same sender, exactly as it was, as the closed-card text says.
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $cardC->fresh()->state, 'only the refused card is closed');
 
         $record->forceFill(['state' => MeshAllowRule::STATE_UNRESOLVED])->save();
         $this->assertApprovalDedupRefused($actor, $cardC,

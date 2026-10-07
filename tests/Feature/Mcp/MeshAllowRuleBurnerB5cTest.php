@@ -57,7 +57,7 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
     private const AT_APPROVAL = ' No upstream call was made and the lifetime on this proposal was NOT applied.';
 
     /** #5568: what an approval-time dedup refusal says it did to the card. */
-    private const CARD_CLOSED = ' This card is closed, not returned to the approval queue, so approving it again cannot create a rule; any further allow rule for this sender needs a new proposal.';
+    private const CARD_CLOSED = ' This card is closed, not returned to the approval queue, so approving it again cannot create a rule. Only this card is closed; any other proposal already staged for this sender stays as it is.';
 
     private ?string $token = null;
 

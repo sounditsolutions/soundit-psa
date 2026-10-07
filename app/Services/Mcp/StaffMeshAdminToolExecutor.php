@@ -71,9 +71,12 @@ class StaffMeshAdminToolExecutor
     /**
      * What an approval-time dedup refusal does to its card (#5568): it is
      * closed, not returned to the approval queue, so no later click on it
-     * can reach createAllowRule once the dedup window has passed.
+     * can reach createAllowRule once the dedup window has passed. It closes
+     * THIS card only: another proposal already staged for the sender is not
+     * closed, cancelled or re-checked by it, so the text claims nothing about
+     * the sender beyond this card (G-14, b5c-2 contract:2).
      */
-    private const DEDUP_CARD_CLOSED = 'This card is closed, not returned to the approval queue, so approving it again cannot create a rule; any further allow rule for this sender needs a new proposal.';
+    private const DEDUP_CARD_CLOSED = 'This card is closed, not returned to the approval queue, so approving it again cannot create a rule. Only this card is closed; any other proposal already staged for this sender stays as it is.';
 
     /**
      * How many proposals for the same write may exist on one ticket. A spent
