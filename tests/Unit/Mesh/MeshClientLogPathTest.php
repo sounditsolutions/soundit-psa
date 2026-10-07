@@ -31,13 +31,15 @@ use Tests\TestCase;
  * authority name ENDPOINT_HOST rather than base_uri's host, and two name
  * another scheme (http, and x-mesh2.v1, #5607), so a request that ignored
  * the endpoint's host or scheme fails (#5409); one names base_uri's own
- * host, so the 'host' leak form is driven (#5420). Five carry a non-default
- * port and four of those user-info (the per-form pins in
- * test_log_path_changes_every_redacted_shape count them), which the
- * request keeps. The log line drops them with the rest of the authority
- * where the endpoint writes '//' before it (#5419, #5425, #5607); the two
- * scheme-less 'host:port/...' rows keep them on the line (#5608, #5705:
- * measured, not endorsed, see keptLeaks()). The path keeps the id
+ * host, so the 'host' leak form is driven (#5420). Six carry a non-default
+ * port and five of those user-info (the per-form pins in
+ * test_log_path_changes_every_redacted_shape count them); the request
+ * keeps them on all but one. The log line drops them with the rest of the
+ * authority where the endpoint writes '//' before it (#5419, #5425,
+ * #5607); the three scheme-less '[user[:password]@]host:port/...' rows
+ * keep them on the line (#5608, #5705, #5761: measured, not endorsed, see
+ * keptLeaks()), the #5761 row its password included, though PSR-7 reads
+ * that row's user as the request's scheme and sends it no host. The path keeps the id
  * in the form it was built with (upper-cased or dashless included, a newline
  * percent-encoded), so the log line is redacted and the request is not
  * (#5334). The endpoint's own query is NOT carried: get() always passes
@@ -193,9 +195,17 @@ class MeshClientLogPathTest extends TestCase
             // #5705: the same with user-info. parse_url() splits it off at
             // '@', so the request carries user-info, host and port, and the
             // log line keeps all three (measured, not endorsed; keptLeaks()).
-            // With 'user:password@' in front the user is read as a scheme
-            // instead (measured in the classifier test), so that is no row.
             'scheme-less user-info, host and port (#5705)' => [self::USER.'@'.self::ENDPOINT_HOST.":{$port}/api/customers/{$id}/", self::USER.'@'.self::ENDPOINT_HOST.":{$port}/api/customers/<customer>", "/api/customers/{$id}/", '', '', self::ENDPOINT_HOST, 'https', self::USER, $port],
+            // #5761: the same with a password, 'user:pass@host:port/...'.
+            // PSR-7 reads the user as a SCHEME (it is a valid scheme name),
+            // so the request URI has scheme USER, no authority and no host,
+            // and the rest is its path (measured). That parse does not stop
+            // it being a row: logPath() works on the bytes, its strip needs
+            // '//', and there is none, so only the redaction runs and the
+            // log line KEEPS the user, the PASSWORD, the host and the port
+            // (measured, not endorsed; keptLeaks(), and a ruling on a
+            // logPath() fix is Jeeves's). The 503 here is the MockHandler's.
+            'scheme-less user-info with a password, host and port (#5761)' => ["{$creds}@".self::ENDPOINT_HOST.":{$port}/api/customers/{$id}/", "{$creds}@".self::ENDPOINT_HOST.":{$port}/api/customers/<customer>", self::PASS.'@'.self::ENDPOINT_HOST.":{$port}/api/customers/{$id}/", '', '', '', self::USER],
             // #5607: a scheme holding a digit, '.' and '-' (RFC 3986 allows
             // them; the vendored Uri parses it as a scheme), with user-info
             // and a port, so a narrower scheme class in logPath()'s strip
@@ -361,7 +371,7 @@ class MeshClientLogPathTest extends TestCase
      *
      * The piece check (idPieceIn(), #5506) runs beside the leak check.
      *
-     * The rows are counted by kind with exact numbers: 26 redact, 3 are
+     * The rows are counted by kind with exact numbers: 27 redact, 3 are
      * query-cut only (one of them cut at '#', #5479), 3 authority-strip
      * only (one with a path PSR-7 would percent-encode, #5480), 1 is both
      * query cut and authority strip (#5474), 2 come back as given (#5383).
@@ -397,7 +407,7 @@ class MeshClientLogPathTest extends TestCase
         }
 
         $this->assertSame(
-            ['redacted' => 26, 'query cut only' => 3, 'authority strip only' => 3, 'query cut and authority strip' => 1, 'kept' => 2],
+            ['redacted' => 27, 'query cut only' => 3, 'authority strip only' => 3, 'query cut and authority strip' => 1, 'kept' => 2],
             $kinds,
             'rows by kind',
         );
@@ -406,20 +416,20 @@ class MeshClientLogPathTest extends TestCase
         // second row that holds it, fails here.
         $this->assertSame(
             [
-                'Mesh id' => 20,
+                'Mesh id' => 21,
                 'Mesh id, dashless' => 1,
                 'Mesh id, upper-cased' => 1,
-                'Mesh id before its first dash' => 24,
-                'Mesh id after its first dash' => 21,
+                'Mesh id before its first dash' => 25,
+                'Mesh id after its first dash' => 22,
                 'Mesh id after its first dash, upper-cased' => 1,
                 'Mesh id, dashless, upper-cased' => 1,
                 'query marker' => 4,
                 'fragment marker' => 1,
                 'host' => 1,
-                'endpoint host' => 10,
-                'user-info, user' => 4,
-                'user-info, password' => 2,
-                'port' => 5,
+                'endpoint host' => 11,
+                'user-info, user' => 5,
+                'user-info, password' => 3,
+                'port' => 6,
                 'id prefix segment' => 1,
             ],
             $formChecks,
@@ -590,23 +600,27 @@ class MeshClientLogPathTest extends TestCase
                 $this->assertNotNull($this->idPieceIn($requestPath), "{$name}: positive control, the request path holds a piece");
             }
         }
-        // 26 of the 35 rows; the nine others carry no id (customer lists,
+        // 27 of the 36 rows; the nine others carry no id (customer lists,
         // the leading '?', the devices fragment, the space, xcustomers/).
-        $this->assertCount(35, self::shapes());
-        $this->assertSame(26, count($selected), 'rows holding a run of the id, in any case: '.json_encode($selected));
+        $this->assertCount(36, self::shapes());
+        $this->assertSame(27, count($selected), 'rows holding a run of the id, in any case: '.json_encode($selected));
         $this->assertContains('id upper-cased', $selected);
         $this->assertContains('id dashless, upper-cased', $selected);
     }
 
     /**
      * Rows whose log line, as logPath() is today, KEEPS some leak forms:
-     * measured, not endorsed (#5608, #5705). A scheme-less
+     * measured, not endorsed (#5608, #5705, #5761). A scheme-less
      * '[user@]host:port/...' endpoint has an authority to PSR-7 (the
      * request goes to that host and port, user-info included) but no '//'
-     * bytes, so logPath()'s strip leaves it. Changing logPath() is out of
+     * bytes, so logPath()'s strip leaves it. A scheme-less
+     * 'user:password@host:port/...' endpoint has no authority to PSR-7
+     * (the user is read as its scheme), and no '//' bytes either, so the
+     * log line keeps the user, the PASSWORD, the host and the port
+     * (#5761). Changing logPath() is out of
      * this test's scope, and no other row may keep a form. A logPath()
-     * that strips it fails here, and moving this pin is not all a fix owes
-     * (#5700): it also moves those two rows' expected log paths in
+     * that strips them fails here, and moving this pin is not all a fix owes
+     * (#5700): it also moves those three rows' expected log paths in
      * shapes(), classify()'s model (which strips only when '//' follows the
      * scheme, so it refuses the fixed output) and the #5598 controls in
      * test_the_classifier_reaches_each_arm_and_refuses_other_changes that
@@ -621,6 +635,7 @@ class MeshClientLogPathTest extends TestCase
         return [
             'scheme-less host and port (#5608)' => ['endpoint host', 'port'],
             'scheme-less user-info, host and port (#5705)' => ['endpoint host', 'user-info, user', 'port'],
+            'scheme-less user-info with a password, host and port (#5761)' => ['endpoint host', 'user-info, user', 'user-info, password', 'port'],
         ];
     }
 
@@ -667,6 +682,7 @@ class MeshClientLogPathTest extends TestCase
             'single slash after the scheme' => $id,
             'scheme-less host and port (#5608)' => [...$id, 'endpoint host', 'port'],
             'scheme-less user-info, host and port (#5705)' => [...$id, 'endpoint host', 'user-info, user', 'port'],
+            'scheme-less user-info with a password, host and port (#5761)' => [...$id, ...$creds],
             'scheme with a digit, dot and dash (#5607)' => [...$id, ...$creds],
             "'//' after the start (#5607)" => $id,
             'upper-case scheme (i flag, host strip)' => [...$id, 'endpoint host'],
@@ -786,6 +802,8 @@ class MeshClientLogPathTest extends TestCase
         $this->assertSame('kept', $this->classify("{$host}:8080/api/customers/", "{$host}:8080/api/customers/"), 'host:port customer list: kept (#5598)');
         // #5705: 'user@host:port/...' is read with its user-info; with
         // 'user:password@' the user is read as a scheme, and no authority.
+        // That is how PSR-7 parses it, not what logPath() keeps: the
+        // #5761 row in shapes() pins the log line keeping the password.
         $this->assertSame('u@'.$host.':8080', (new Uri("u@{$host}:8080/api/customers/x/"))->getAuthority(), 'measured: user@host:port, an authority with user-info');
         $withPass = new Uri("u:p@{$host}:8080/api/customers/x/");
         $this->assertSame(['u', ''], [$withPass->getScheme(), $withPass->getAuthority()], 'measured: user:password@host:port, the user read as a scheme');
