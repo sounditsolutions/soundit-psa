@@ -171,7 +171,7 @@ class GraphClient
      * treats it as a soft skip and reports it itself, with ids, a reason token and either the
      * HTTP status or the exception class, never the exception message. Other Graph calls keep
      * throwFromGuzzle's error record. Two shared records can still be written on this path: a
-     * 429 backoff WARNING (endpoint with its users/ segment redacted, attempt, wait; #5391) and,
+     * 429 backoff WARNING (status, attempt and wait only, no endpoint; #5672) and,
      * when the token request itself fails, the token-request ERROR (HTTP status and exception
      * class only; #5397), or the malformed-token-response ERROR (status, field and type only;
      * #5659). A token response without access_token writes no record. A 401 whose
@@ -254,16 +254,6 @@ class GraphClient
     private static function seg(string $value): string
     {
         return rawurlencode($value);
-    }
-
-    /**
-     * The endpoint with the segment after users/ replaced, for a log record (#5391). That
-     * segment is a mailbox address or user id, raw or seg()-encoded, and C-56 keeps it out of
-     * logs. Every other segment is kept.
-     */
-    private static function redactUserSegment(string $endpoint): string
-    {
-        return (string) preg_replace('#(^|/)users/[^/?]+#', '$1users/{redacted}', $endpoint);
     }
 
     /**
@@ -585,9 +575,11 @@ class GraphClient
                     $retryAfter = $e->getResponse()?->getHeaderLine('Retry-After');
                     $waitSeconds = $retryAfter && is_numeric($retryAfter) ? (int) $retryAfter : (10 * ($attempt + 1));
 
-                    // #5391 / C-56: the users/ segment is a mailbox or user id; never log it.
+                    // #5672 / C-56: status, attempt and wait only. The endpoint is never logged:
+                    // besides the users/ segment (#5391) it holds message, chat, attachment and
+                    // subscription ids.
                     Log::warning('[GraphClient] Rate limited, backing off', [
-                        'endpoint' => self::redactUserSegment($endpoint),
+                        'status' => 429,
                         'attempt' => $attempt + 1,
                         'wait_seconds' => $waitSeconds,
                     ]);

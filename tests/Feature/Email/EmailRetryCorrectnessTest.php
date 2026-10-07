@@ -62,12 +62,27 @@ class EmailRetryCorrectnessTest extends TestCase
 
     private TestHandler $logs;
 
+    /** #5714: the Graph mock; tearDown requires every queued response to have been used. */
+    private ?MockHandler $mock = null;
+
+    protected function assertPostConditions(): void
+    {
+        if ($this->mock !== null) {
+            $this->assertSame(0, $this->mock->count(), 'G-5 (#5714): no spare Graph response left to serve a stray request');
+        }
+        parent::assertPostConditions();
+    }
+
     protected function setUp(): void
     {
         parent::setUp();
         Http::preventStrayRequests();
         Storage::fake('local');
         Setting::setValue('graph_mailbox', self::MAILBOX);
+        // The queue is sync (phpunit.xml): the first RetryEmailAttachments run executes at
+        // commit. Its #5558 re-queue after a refusal is faked here, so each test sees one run;
+        // RetryEmailAttachmentsJobTest drives the re-queued run itself.
+        Bus::fake([fn ($job) => $job instanceof \App\Jobs\RetryEmailAttachments && $job->refusals > 0]);
 
         $this->logs = new TestHandler;
         $handler = $this->logs;
@@ -95,7 +110,8 @@ class EmailRetryCorrectnessTest extends TestCase
     private function graph(array $responses): void
     {
         $this->history = [];
-        $stack = HandlerStack::create(new MockHandler($responses));
+        $this->mock = new MockHandler($responses);
+        $stack = HandlerStack::create($this->mock);
         $stack->push(Middleware::history($this->history));
         $cache = new Repository(new ArrayStore);
         $cache->put('graph_api_token', 'test-token', 3600);
@@ -150,7 +166,7 @@ class EmailRetryCorrectnessTest extends TestCase
     {
         $client = Client::create(['name' => 'Example Client']);
 
-        return Email::create($overrides + [
+        $email = Email::create($overrides + [
             'graph_id' => 'MSG-1',
             'direction' => 'inbound',
             'from_address' => 'user@example.test',
@@ -161,6 +177,14 @@ class EmailRetryCorrectnessTest extends TestCase
             'client_id' => $client->id,
             'received_at' => now(),
         ]);
+        $this->expectedEmailId = $email->id;
+        // The ticket id is recorded when the ticket is created, before any test edit can
+        // relink or delete the email.
+        Ticket::created(function (Ticket $t) {
+            $this->expectedTicketId ??= $t->id;
+        });
+
+        return $email;
     }
 
     private function ticketOf(): Ticket
@@ -174,15 +198,26 @@ class EmailRetryCorrectnessTest extends TestCase
         return Storage::disk('local')->allFiles('attachments');
     }
 
-    /** Exactly one skip WARNING, status-only, with $reason; nothing linked, nothing left stored. */
+    /** The ids a skip record must carry, recorded when the email and its ticket are created. */
+    private ?int $expectedEmailId = null;
+
+    private ?int $expectedTicketId = null;
+
+    /**
+     * Exactly one skip WARNING, status-only, with $reason and the ids recorded at creation
+     * (#5712: never read back from the record itself); nothing linked, nothing left stored.
+     */
     private function assertSkipped(string $reason, int $discarded): void
     {
+        $this->assertNotNull($this->expectedEmailId, 'the email was created through email()');
+        $this->expectedTicketId ??= Email::whereKey($this->expectedEmailId)->value('ticket_id');
+        $this->assertNotNull($this->expectedTicketId, 'the ticket id is known');
         $skipped = $this->withMessage(self::SKIPPED);
         $this->assertCount(1, $skipped, 'one skip record');
         $this->assertSame(Level::Warning, $skipped[0]->level);
         $this->assertSame([
-            'email_id' => Email::where('graph_id', 'MSG-1')->value('id') ?? $skipped[0]->context['email_id'],
-            'ticket_id' => $skipped[0]->context['ticket_id'],
+            'email_id' => $this->expectedEmailId,
+            'ticket_id' => (int) $this->expectedTicketId,
             'reason' => $reason,
             'stored_attachments' => $discarded,
             'discarded_attachments' => $discarded,
@@ -288,7 +323,7 @@ class EmailRetryCorrectnessTest extends TestCase
     {
         // An outer transaction defers the retry to ITS commit; the email is unlinked before
         // that, as a merge in the same outer transaction would.
-        $this->graph([$this->failedRead(), $this->read()]);
+        $this->graph([$this->failedRead()]); // #5714: no spare response
         $email = $this->email();
 
         DB::transaction(function () use ($email) {
@@ -448,7 +483,7 @@ class EmailRetryCorrectnessTest extends TestCase
         $service = app(EmailService::class);
         $email = Email::where('graph_id', 'MSG-1')->firstOrFail();
         $noteId = TicketNote::where('email_id', $email->id)->sole()->id;
-        (fn () => $this->retryMessageReadAfterCommit($email->id, (int) $email->ticket_id, $noteId, $baseline))->call($service);
+        (fn () => $this->retryMessageRead($email->id, (int) $email->ticket_id, $noteId, $baseline))->call($service);
     }
 
     /** retryBaseline() for the email's ticket and note, read now. */
@@ -465,7 +500,7 @@ class EmailRetryCorrectnessTest extends TestCase
         $baseline = null;
         $this->graph([$this->failedRead(), $this->readDuring(function () use (&$baseline) {
             $baseline = $this->baselineNow(); // the creation-time state, before the retry writes
-        }), $this->read()]);
+        })]); // #5714: the second run reads nothing
         app(EmailService::class)->autoCreateTicketFromEmail($this->email());
         $this->assertSame(1, Attachment::count(), 'positive control: the first retry linked');
         $files = $this->storedFiles();
@@ -577,14 +612,14 @@ class EmailRetryCorrectnessTest extends TestCase
     {
         // The only way the retry is reached with no note: it is always scheduled with one
         // (linkEmailToTicket creates a note whenever graph_id is set), so drive it directly.
-        $this->graph([$this->read()]);
+        $this->graph([]); // #5714: no spare response
         $email = $this->email();
         $ticket = Ticket::create(['subject' => 'Synthetic', 'client_id' => $email->client_id] + self::TICKET);
         $email->update(['ticket_id' => $ticket->id]);
         $service = app(EmailService::class);
         $baseline = (fn () => $this->retryBaseline($ticket->id, null))->call($service);
 
-        (fn () => $this->retryMessageReadAfterCommit($email->id, $ticket->id, null, $baseline))->call($service);
+        (fn () => $this->retryMessageRead($email->id, $ticket->id, null, $baseline))->call($service);
 
         $this->assertSame(0, $this->messageReads(), 'refused before any Graph call');
         $this->assertSkipped('client_note_missing', discarded: 0);
@@ -607,7 +642,7 @@ class EmailRetryCorrectnessTest extends TestCase
     public function test_state_gone_before_the_retry_is_refused_with_its_own_reason_and_no_graph_read(\Closure $gone, string $reason): void
     {
         // An outer transaction defers the retry to its commit; the state goes before that.
-        $this->graph([$this->failedRead(), $this->read()]);
+        $this->graph([$this->failedRead()]); // #5714: no spare response
         $email = $this->email();
 
         DB::transaction(function () use ($email, $gone) {
@@ -626,11 +661,13 @@ class EmailRetryCorrectnessTest extends TestCase
 
     public function test_a_retry_whose_baseline_was_never_set_is_refused_as_baseline_missing(): void
     {
-        // #5551: the callback reads the baseline when it runs; a throw between registration and
-        // the baseline that a caller catches before committing leaves it unset.
-        $this->graph([$this->failedRead(), $this->read()]);
+        // #5551/#5711: the job is dispatched only after the baseline is taken, so a throw before
+        // that (caught by a caller that then commits) queues no job at all; a null baseline
+        // reaches the retry only in a payload that carries none. Both halves are driven here
+        // through the real entry points, not a direct call to the private arm.
+        $this->graph([$this->failedRead()]); // #5714: no spare response
         $email = $this->email();
-        $service = app(EmailService::class);
+        Bus::fake([\App\Jobs\RetryEmailAttachments::class]);
 
         DB::transaction(function () use ($email) {
             \App\Models\TicketNote::creating(function () {
@@ -639,27 +676,29 @@ class EmailRetryCorrectnessTest extends TestCase
             try {
                 app(EmailService::class)->autoCreateTicketFromEmail($email);
             } catch (\RuntimeException) {
-                // A caller that swallows the throw and commits. autoCreate's own nested
-                // transaction rolled back to its savepoint; its after-commit callback was
-                // registered at that level and is discarded with it.
+                // A caller that swallows the throw and commits.
             }
         });
         $this->assertSame(1, $this->messageReads(), 'positive control: the first read ran and failed');
-        $this->assertSame([], $this->withMessage(self::SKIPPED), 'a rolled-back level runs no retry');
+        Bus::assertNotDispatched(\App\Jobs\RetryEmailAttachments::class);
+        \App\Models\TicketNote::flushEventListeners();
 
-        // The callback as registered, run with the baseline it would hold when unset.
-        (fn () => $this->retryMessageReadAfterCommit($email->id, 1, null, null))->call($service);
+        // A job whose payload carries no baseline, run as the worker runs it.
+        $ticket = Ticket::create(['subject' => 'Synthetic', 'client_id' => $email->client_id] + self::TICKET);
+        $email->update(['ticket_id' => $ticket->id]);
+        app()->call([new \App\Jobs\RetryEmailAttachments($email->id, $ticket->id, null, null), 'handle']);
 
         $this->assertSame(1, $this->messageReads(), 'refused before any Graph call');
         $skipped = $this->withMessage(self::SKIPPED);
         $this->assertCount(1, $skipped);
         $this->assertSame('baseline_missing', $skipped[0]->context['reason']);
+        Bus::assertDispatched(\App\Jobs\RetryEmailAttachments::class, fn ($j) => $j->refusals === 1 && $j->baseline === null);
     }
 
     public function test_a_retry_with_model_events_suppressed_is_refused_as_tracking_unavailable(): void
     {
         // #5555: with no dispatcher nothing the read stores could be found again for discard.
-        $this->graph([$this->failedRead(), $this->read()]);
+        $this->graph([$this->failedRead()]); // #5714: no spare response
         $email = $this->email();
 
         DB::transaction(function () use ($email) {
@@ -671,6 +710,26 @@ class EmailRetryCorrectnessTest extends TestCase
         $this->assertSame(1, $this->messageReads(), 'refused before any Graph call');
         $this->assertSame('tracking_unavailable', $this->withMessage(self::SKIPPED)[0]->context['reason'] ?? null);
         $this->assertSame(0, Attachment::withTrashed()->count());
+    }
+
+    public function test_a_retry_run_under_without_events_is_refused_as_tracking_unavailable(): void
+    {
+        // #5715: withoutEvents installs a NullDispatcher (not null); the created-listener would
+        // register on it and never fire, so a partial store could not be discarded.
+        Bus::fake([\App\Jobs\RetryEmailAttachments::class]); // this test drives the retry itself
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+        $this->assertSame(1, $this->messageReads(), 'positive control: the first read failed');
+        $ticketId = (int) $email->fresh()->ticket_id;
+        $noteId = TicketNote::where('email_id', $email->id)->sole()->id;
+        $baseline = $this->baselineNow();
+
+        $outcome = Attachment::withoutEvents(fn () => app(EmailService::class)->retryMessageRead($email->id, $ticketId, $noteId, $baseline));
+
+        $this->assertSame(1, $this->messageReads(), 'refused before any Graph call');
+        $this->assertSame('tracking_unavailable', $outcome['reason'] ?? null);
+        $this->assertSame('tracking_unavailable', $this->withMessage(self::SKIPPED)[0]->context['reason'] ?? null);
     }
 
     private function twoFileRead(): Response
@@ -764,6 +823,66 @@ class EmailRetryCorrectnessTest extends TestCase
         $this->assertSame([], $this->storedFiles());
     }
 
+    public function test_a_nested_level_callback_that_throws_after_the_link_commits_keeps_the_linked_attachment(): void
+    {
+        // #5708: a callback registered inside a nested transaction is staged ahead of the link
+        // level's $committed flag, so it throws with the flag still false although the link
+        // committed. The committed link is read back; nothing linked is discarded.
+        $this->graph([$this->failedRead(), $this->read()]);
+        $email = $this->email();
+        Attachment::updated(function (Attachment $a) {
+            if ($a->attachable_type === TicketNote::class) {
+                DB::transaction(fn () => DB::afterCommit(fn () => throw new \RuntimeException('B4I-SYNTHETIC-NESTED')));
+            }
+        });
+
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $threw = $this->withMessage(self::THREW);
+        $this->assertCount(1, $threw, 'positive control: the nested callback threw into the retry');
+        $this->assertSame([true, 0, []], [$threw[0]->context['linked'], $threw[0]->context['discarded_attachments'],
+            $threw[0]->context['undiscarded_attachment_ids']]);
+        $a = Attachment::sole();
+        $this->assertSame([TicketNote::class, TicketNote::where('email_id', $email->id)->sole()->id], [$a->attachable_type, $a->attachable_id]);
+        $this->assertSame([$a->storage_path], $this->storedFiles());
+        $this->assertSame([], $this->withMessage(\App\Jobs\RetryEmailAttachments::MARKER), 'linked: no not-added marker');
+    }
+
+    public function test_a_logger_that_always_fails_does_not_escape_the_retry(): void
+    {
+        // #5710: the refusal's record throws, and so does the catch arm's. The retry still
+        // returns, so the job writes its note and runs the commit work.
+        $notified = new \ArrayObject;
+        $this->app->instance(NotificationService::class, new class($notified) extends NotificationService
+        {
+            public function __construct(private \ArrayObject $notified) {}
+
+            public function notifyEmailAdded(Ticket $ticket, Email $email): void
+            {
+                $this->notified[] = $ticket->id;
+            }
+
+            public function notifyTicketCreated(Ticket $ticket): void {}
+        });
+        $this->graph([$this->failedRead(), $this->readDuring(
+            fn () => Ticket::query()->firstOrFail()->update(['description' => 'tech edit']),
+        )]);
+        $email = $this->email();
+        $failed = 0;
+        \Illuminate\Support\Facades\Event::listen(\Illuminate\Log\Events\MessageLogged::class, function ($e) use (&$failed) {
+            if (str_starts_with($e->message, '[EmailService] Attachment retry')) {
+                $failed++;
+                throw new \RuntimeException('B4I-SYNTHETIC-LOGGER');
+            }
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertSame(2, $failed, 'positive control: the skip record and the catch arm record both threw');
+        $this->assertSame([$ticket->id], $notified->getArrayCopy(), 'the commit work still ran');
+        $this->assertSame(1, TicketNote::where('ticket_id', $ticket->id)->where('note_type', 'system')->count(), 'the marker note was written');
+    }
+
     public function test_a_throw_after_the_link_commits_says_linked_true_and_keeps_the_linked_attachment(): void
     {
         // #5550: an after-commit callback registered inside the link transaction (after the
@@ -815,17 +934,75 @@ class EmailRetryCorrectnessTest extends TestCase
             $skipped[0]->context['discarded_attachments'], $skipped[0]->context['undiscarded_attachment_ids']]);
     }
 
-    public function test_a_file_the_disk_did_not_delete_is_reported_by_id(): void
+    public function test_a_halted_force_delete_keeps_the_row_and_is_reported_by_id_not_counted_discarded(): void
     {
-        // #5545: Storage::delete returns false rather than throwing; the row goes, the file stays.
+        // #5718: a later forceDeleting listener returns false after the model's own hook removed
+        // the file; forceDelete() returns false and the row stays.
         $this->graph([$this->failedRead(), $this->readDuring(
             fn () => Ticket::query()->firstOrFail()->update(['description' => 'tech edit']),
         )]);
         $email = $this->email();
+        // The file goes first (as the model's own forceDeleting hook does), then a guard halts.
+        Attachment::forceDeleting(function (Attachment $a) {
+            Storage::disk('local')->delete($a->storage_path);
+
+            return false;
+        });
+
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $left = Attachment::withTrashed()->sole();
+        $this->assertSame([], $this->storedFiles(), 'positive control: the file is gone, only the row stays');
+        $skipped = $this->withMessage(self::SKIPPED);
+        $this->assertSame([1, 0, [$left->id]], [$skipped[0]->context['stored_attachments'],
+            $skipped[0]->context['discarded_attachments'], $skipped[0]->context['undiscarded_attachment_ids']]);
+    }
+
+    public function test_a_check_that_throws_after_a_successful_force_delete_reports_the_id_as_left_and_does_not_escape(): void
+    {
+        // #5717 (kept conservative, not changed): the delete succeeds and the files() check
+        // afterwards throws. What is left cannot be confirmed, so the id is reported as left;
+        // the throw does not escape the discard.
+        $this->graph([$this->failedRead(), $this->readDuring(function () {
+            Ticket::query()->firstOrFail()->update(['description' => 'tech edit']);
+            // Only files() fails; the writes, deletes and exists() pass through.
+            $real = Storage::disk('local');
+            $disk = \Mockery::mock(\Illuminate\Filesystem\FilesystemAdapter::class, [$real->getDriver(), $real->getAdapter(), $real->getConfig()])->makePartial();
+            $disk->shouldReceive('files')->andThrow(new \RuntimeException('B4I-SYNTHETIC-FS'));
+            Storage::set('local', $disk);
+        })]);
+        $email = $this->email();
+        $deleted = null;
+        Attachment::forceDeleted(function (Attachment $a) use (&$deleted) {
+            $deleted = $a->id;
+        });
+
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertNotNull($deleted, 'positive control: the delete itself succeeded');
+        $this->assertSame(0, Attachment::withTrashed()->count(), 'the row is gone');
+        $skipped = $this->withMessage(self::SKIPPED);
+        $this->assertSame([1, 0, [$deleted]], [$skipped[0]->context['stored_attachments'],
+            $skipped[0]->context['discarded_attachments'], $skipped[0]->context['undiscarded_attachment_ids']]);
+        $this->assertSame([], $this->withMessage(self::THREW), 'the check failure did not escape the discard');
+    }
+
+    public function test_a_file_the_disk_did_not_delete_is_reported_by_id(): void
+    {
+        // #5545: the disk refuses the deletes (delete and deleteDirectory return false rather
+        // than throwing); the row goes, the file stays.
+        $this->graph([$this->failedRead(), $this->readDuring(function () {
+            Ticket::query()->firstOrFail()->update(['description' => 'tech edit']);
+            $real = Storage::disk('local');
+            $disk = \Mockery::mock(\Illuminate\Filesystem\FilesystemAdapter::class, [$real->getDriver(), $real->getAdapter(), $real->getConfig()])->makePartial();
+            $disk->shouldReceive('delete')->andReturn(false);
+            $disk->shouldReceive('deleteDirectory')->andReturn(false);
+            Storage::set('local', $disk);
+        })]);
+        $email = $this->email();
         $kept = null;
         Attachment::forceDeleting(function (Attachment $a) use (&$kept) {
             $kept = $a->id;
-            $a->storage_path = 'attachments/elsewhere/none'; // the model hook deletes a path that is not the file
         });
 
         app(EmailService::class)->autoCreateTicketFromEmail($email);

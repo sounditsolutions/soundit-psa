@@ -786,6 +786,16 @@ PROMPT;
      */
     public function linkEmailToTicket(Email $email, Ticket $ticket, ?array $predownloadedAttachments = null): ?TicketNote
     {
+        return $this->linkEmailToTicketWith($email, $ticket, $predownloadedAttachments, deferCommitWork: false);
+    }
+
+    /**
+     * linkEmailToTicket; with $deferCommitWork the email-added commit work (the RunTechnicianLoop
+     * dispatch and notifyEmailAdded) is not registered here, because a RetryEmailAttachments job
+     * runs it after the retry (#5453/#5549).
+     */
+    private function linkEmailToTicketWith(Email $email, Ticket $ticket, ?array $predownloadedAttachments, bool $deferCommitWork): ?TicketNote
+    {
         $note = null;
 
         // Mark as read so the email UI unread count stays meaningful
@@ -845,7 +855,7 @@ PROMPT;
             // own substance/idempotency logic (Task 10) decides whether to actually draft.
             // afterCommit: creation now runs inside the email-row transaction, and a
             // worker must never pick this job up for a ticket a rollback removed.
-            if (\App\Support\TechnicianConfig::enabled() && ! $ticket->isUnverifiedContactIntake()) {
+            if (! $deferCommitWork && \App\Support\TechnicianConfig::enabled() && ! $ticket->isUnverifiedContactIntake()) {
                 \App\Jobs\RunTechnicianLoop::dispatch($ticket->id)->afterCommit();
             }
         }
@@ -858,7 +868,9 @@ PROMPT;
         // notified about a ticket that does not exist (nor notify twice on retry).
         // With no transaction open this runs immediately, so every other path is
         // byte-identical in behaviour.
-        DB::afterCommit(fn () => app(NotificationService::class)->notifyEmailAdded($ticket, $email));
+        if (! $deferCommitWork) {
+            DB::afterCommit(fn () => app(NotificationService::class)->notifyEmailAdded($ticket, $email));
+        }
 
         // Auto-transition PendingClient or Resolved → InProgress when client replies
         $reopenable = [TicketStatus::PendingClient, TicketStatus::Resolved];
@@ -1175,7 +1187,8 @@ PROMPT;
             }
         }
 
-        // #5394: a failed FIRST read is retried once, after the outermost transaction commits.
+        // #5394: a failed FIRST read is retried once, after the outermost transaction commits, by
+        // the queued RetryEmailAttachments job (#5457: the webhook's 202 no longer waits on it).
         // #5455: only that retry is off the lock. The first read above still runs inside
         // autoCreateTicketFromEmail's transaction, under its lockForUpdate on the email row (and
         // under any lock a caller's own transaction holds), so it holds those locks through
@@ -1183,40 +1196,16 @@ PROMPT;
         // vendor-dedup branch above and on the reply path (#5452, open). The retry itself holds
         // no lock during its Graph read (EmailRetryLockProofTest).
         //
-        // #5453: the retry is registered BEFORE linkEmailToTicket registers its own after-commit
-        // work (the RunTechnicianLoop dispatch and notifyEmailAdded), at the same transaction
-        // level. Laravel runs the callbacks of one transaction level in registration order, so
-        // that work runs after the retry has finished and sees the retry's attachments,
-        // description_html and note body_html, as it sees a first-read success's. That holds
-        // only while both registrations happen at this level: a callback registered inside a
-        // nested DB::transaction that commits first is staged, and run, before this level's
-        // (DatabaseTransactionsManager::stageTransactions), so wrapping linkEmailToTicket's work
-        // in its own transaction would run it before the retry again (#5548). The #5453 test in
-        // EmailRetryCorrectnessTest pins the order.
+        // #5453/#5549: on a failed first read the job owns the email-added commit work (the
+        // RunTechnicianLoop dispatch and notifyEmailAdded), so linkEmailToTicket registers
+        // neither here. The job runs it once the retry has finished, so it sees the retry's
+        // attachments, description_html and note body_html, as it sees a first-read success's;
+        // and it runs it on every way the job ends, including a timeout (RetryEmailAttachments).
         //
-        // #5549: so on a failed first read, notifyEmailAdded and the RunTechnicianLoop dispatch
-        // wait for the retry's Graph read, including its request timeout and 429 backoff; a
-        // process killed during that read runs neither.
-        //
-        // The note id and the baseline the retry checks against are not known yet; they are
-        // filled in below, before commit, and read when the callback runs. A baseline still
-        // unset then (a throw between here and there that a caller caught before committing)
-        // is refused as baseline_missing.
-        $retry = null;
-        if ($messageReadFailed) {
-            $retry = (object) ['emailId' => $email->id, 'ticketId' => $ticket->id, 'noteId' => null, 'baseline' => null];
-            DB::afterCommit(fn () => $this->retryMessageReadAfterCommit(
-                $retry->emailId, $retry->ticketId, $retry->noteId, $retry->baseline,
-            ));
-        }
-
         // null when no download was attempted above (no graph_id or no mailbox). An array
         // (possibly empty) otherwise, so linkEmailToTicket does not fetch (#5143); after a
-        // failed message read that array is [] and the read is retried after commit (#5394).
-        $note = $this->linkEmailToTicket($email, $ticket, $emailAttachments ?? null);
-        if ($retry !== null) {
-            $retry->noteId = $note?->id;
-        }
+        // failed message read that array is [] and the read is retried by the job (#5394).
+        $note = $this->linkEmailToTicketWith($email, $ticket, $emailAttachments ?? null, deferCommitWork: $messageReadFailed);
 
         // psa-vggw: link the sender's device(s) onto the ticket at creation so it
         // carries real asset context from the start (held-first, fail-soft). Skips when
@@ -1226,9 +1215,13 @@ PROMPT;
 
         // #5447/#5460: what the retry must still find before it writes, read after every write
         // this method makes to the ticket and note. A write a caller makes later in the same
-        // transaction is not in it and would refuse the retry.
-        if ($retry !== null) {
-            $retry->baseline = $this->retryBaseline($retry->ticketId, $retry->noteId);
+        // transaction is not in it and would refuse the retry. The job is queued only now, with
+        // the note id and this baseline in its payload (#5711), and only once the outermost
+        // transaction commits (afterCommit): a rollback queues nothing.
+        if ($messageReadFailed) {
+            \App\Jobs\RetryEmailAttachments::dispatch(
+                $email->id, $ticket->id, $note?->id, $this->retryBaseline($ticket->id, $note?->id),
+            )->afterCommit();
         }
 
         Log::info('[EmailService] Auto-created ticket from email', [
@@ -1361,13 +1354,15 @@ PROMPT;
     /**
      * #5555: makes sure the created-listener that records what the retry stores is registered on
      * Attachment's current event dispatcher, re-registering it when the dispatcher was replaced
-     * or its listeners were flushed. False when Attachment has no dispatcher (model events
-     * suppressed): then nothing the retry stored could be found again for discard.
+     * or its listeners were flushed. False when Attachment has no dispatcher or a NullDispatcher
+     * (model events suppressed, #5715): then nothing the retry stored could be found again.
      */
     private function trackRetryStores(): bool
     {
         $dispatcher = \App\Models\Attachment::getEventDispatcher();
-        if ($dispatcher === null) {
+        // #5715: Model::withoutEvents installs a NullDispatcher, which accepts listeners and
+        // fires none; that is suppression too.
+        if ($dispatcher === null || $dispatcher instanceof \Illuminate\Events\NullDispatcher) {
             return false;
         }
         self::$retryListener ??= function (\App\Models\Attachment $a): void {
@@ -1386,11 +1381,12 @@ PROMPT;
     }
 
     /**
-     * #5394: the one retry of a new ticket's failed message read, run after commit. Its Graph
-     * read holds no lock and no transaction. What it writes on success matches a first-read
-     * success: attachToNewTicket, then the note's body_html as linkEmailToTicket builds it
-     * (forward provenance line included) and the note links. The after-commit RunTechnicianLoop
-     * dispatch and notifyEmailAdded run after it (see createTicketFromLockedEmail, #5453).
+     * #5394: the one retry of a new ticket's failed message read, run by the queued
+     * RetryEmailAttachments job after the creating transaction commits. Its Graph read holds
+     * no lock and no transaction. What it writes on success matches a first-read success:
+     * attachToNewTicket, then the note's body_html as linkEmailToTicket builds it (forward
+     * provenance line included) and the note links. The job runs notifyEmailAdded and the
+     * RunTechnicianLoop dispatch after it returns (#5453).
      *
      * #5447/#5460: it writes only if, re-checked under lockForUpdate on the ticket, note and
      * email rows (taken in that order, see retryChange) in one short transaction, the email is
@@ -1418,15 +1414,25 @@ PROMPT;
      * (#5554). A read that fails again, or returns no attachments, stores nothing and writes
      * nothing here; downloadEmailAttachments writes the failed read's own records.
      *
+     * Returns null when the retry linked what it read or the read had no attachments;
+     * otherwise the outcome for the job's #5558 marker: the reason, whether the job may
+     * re-queue it (a refusal may; a failed read or a throw may not) and the ids left undiscarded.
+     *
      * @param  array<string, mixed>|null  $baseline  retryBaseline() as the creating transaction left it
+     * @return array{reason: string, requeueable: bool, undiscarded_attachment_ids: list<int>}|null
      */
-    private function retryMessageReadAfterCommit(int $emailId, int $ticketId, ?int $noteId, ?array $baseline): void
+    public function retryMessageRead(int $emailId, int $ticketId, ?int $noteId, ?array $baseline): ?array
     {
         $stage = 'lookup';
         $committed = false;
+        $wrote = false;
         $discard = null;
         $outerStoredIds = self::$retryStoredIds;
+        $outerLinked = self::$retryLinked;
+        $outerLinkIds = self::$retryLinkIds;
+        self::$retryLinkIds = [];
         self::$retryStoredIds = [];
+        self::$retryLinked = false;
         try {
             $email = Email::find($emailId);
             $mailbox = Setting::getValue('graph_mailbox');
@@ -1443,22 +1449,28 @@ PROMPT;
             if ($change !== null) {
                 $this->warnRetrySkipped($emailId, $ticketId, $change);
 
-                return;
+                return self::retryOutcome($change, true);
             }
 
             $stage = 'download';
             $attachmentService = app(AttachmentService::class);
-            $attachments = $attachmentService->downloadEmailAttachments($email, app(GraphClient::class), $mailbox) ?? [];
+            $attachments = $attachmentService->downloadEmailAttachments($email, app(GraphClient::class), $mailbox);
+            if ($attachments === null) {
+                // The read failed again; downloadEmailAttachments wrote its own record and
+                // stored nothing. Final: the job writes the marker (#5558).
+                return self::retryOutcome('read_failed', false);
+            }
             // #5555: whatever the listener saw, everything the read returned is discarded on a refusal.
             self::$retryStoredIds = array_values(array_unique(array_merge(
                 self::$retryStoredIds ?? [], array_map(fn ($a) => (int) $a->id, $attachments),
             )));
             if ($attachments === []) {
-                return;
+                return null;
             }
 
             $stage = 'link';
-            $change = DB::transaction(function () use ($emailId, $ticketId, $noteId, $baseline, $attachments, $attachmentService, &$committed): ?string {
+            self::$retryLinkIds = array_map(fn ($a) => (int) $a->id, $attachments);
+            $change = DB::transaction(function () use ($emailId, $ticketId, $noteId, $baseline, $attachments, $attachmentService, &$committed, &$wrote): ?string {
                 $change = $this->retryChange($emailId, $ticketId, $noteId, $baseline, lock: true);
                 if ($change !== null) {
                     return $change;
@@ -1468,6 +1480,7 @@ PROMPT;
                 // discard attachments that are now linked. A refusal's (empty) commit leaves it false.
                 DB::afterCommit(function () use (&$committed): void {
                     $committed = true;
+                    self::$retryLinked = true;
                 });
                 $email = Email::findOrFail($emailId);
                 $ticket = Ticket::findOrFail($ticketId);
@@ -1487,6 +1500,7 @@ PROMPT;
                 foreach ($attachments as $attachment) {
                     $attachmentService->linkTo($attachment, 'App\\Models\\TicketNote', $note->id);
                 }
+                $wrote = true;
 
                 return null;
             });
@@ -1494,7 +1508,11 @@ PROMPT;
                 $stage = 'discard';
                 $discard = $this->discardRetryStored();
                 $this->warnRetrySkipped($emailId, $ticketId, $change, $discard);
+
+                return self::retryOutcome($change, true, $discard['undiscarded_attachment_ids']);
             }
+
+            return null;
         } catch (\Throwable $e) {
             // The ticket is already committed; a failed retry must not fail the email. A failed
             // Graph read never reaches here: downloadEmailAttachments catches it, logs it and
@@ -1505,19 +1523,99 @@ PROMPT;
             // linked is true only when the link transaction committed its writes before the
             // throw; then nothing is discarded, and the record still counts what the retry stored.
             // A discard that already ran is not run again.
-            $discard ??= $committed
+            // #5708: the flag above is first only among this level's callbacks; one staged by a
+            // nested transaction runs before it. So when the write path finished and the flag is
+            // still false, whether the link committed is read back: a rolled-back link left the
+            // stored rows unlinked. A read that throws keeps the rows (linked is then null).
+            if (! $committed && $wrote) {
+                $committed = $this->retryLinkPersisted($noteId);
+                self::$retryLinked = $committed !== false;
+            }
+            $discard ??= $committed !== false
                 ? ['stored_attachments' => count(array_unique(self::$retryStoredIds ?? []))] + self::NOTHING_DISCARDED
                 : $this->discardRetryStored();
-            Log::warning('[EmailService] Attachment retry after ticket creation threw', [
-                'email_id' => $emailId,
-                'ticket_id' => $ticketId,
-                'stage' => $stage,
-                'linked' => $committed,
-                'exception' => $e::class,
-            ] + ($discard ?? self::NOTHING_DISCARDED));
+            try {
+                Log::warning('[EmailService] Attachment retry after ticket creation threw', [
+                    'email_id' => $emailId,
+                    'ticket_id' => $ticketId,
+                    'stage' => $stage,
+                    'linked' => $committed,
+                    'exception' => $e::class,
+                ] + ($discard ?? self::NOTHING_DISCARDED));
+            } catch (\Throwable) {
+                // #5710: a logger that keeps failing must not escape the retry; the job's marker
+                // (a ticket note as well as a record) still reports the outcome.
+            }
+
+            return $committed !== false ? null : self::retryOutcome('retry_threw', false, ($discard ?? self::NOTHING_DISCARDED)['undiscarded_attachment_ids']);
         } finally {
             self::$retryStoredIds = $outerStoredIds;
+            self::$retryLinked = $outerLinked;
+            self::$retryLinkIds = $outerLinkIds;
         }
+    }
+
+    /** @return array{reason: string, requeueable: bool, undiscarded_attachment_ids: list<int>} */
+    private static function retryOutcome(string $reason, bool $requeueable, array $undiscarded = []): array
+    {
+        return ['reason' => $reason, 'requeueable' => $requeueable, 'undiscarded_attachment_ids' => $undiscarded];
+    }
+
+    /**
+     * #5708: whether every row the link writes that still exists (at least one) is linked to the
+     * client note in the database: true or false, or null when the read itself throws. Only the
+     * link's own rows are read, so neither a tracked id with no row (a store that removed its own
+     * failed row, #5553/#5709) nor an unlinked row a skipped store left behind counts against it.
+     */
+    private function retryLinkPersisted(?int $noteId): ?bool
+    {
+        $ids = array_values(array_unique(self::$retryLinkIds));
+        if ($ids === [] || $noteId === null) {
+            return false;
+        }
+        try {
+            $present = \App\Models\Attachment::withTrashed()->whereIn('id', $ids)->count();
+            $linked = \App\Models\Attachment::withTrashed()->whereIn('id', $ids)
+                ->where('attachable_type', TicketNote::class)->where('attachable_id', $noteId)
+                ->count();
+
+            return $present > 0 && $linked === $present;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /** Whether the running retry's link transaction committed; see abandonRetry. */
+    private static bool $retryLinked = false;
+
+    /** @var list<int> The ids of the rows the running retry's link writes; see retryLinkPersisted. */
+    private static array $retryLinkIds = [];
+
+    /**
+     * For a RetryEmailAttachments job killed while its retry was running (a timeout): discards
+     * what that retry stored unless its link committed, and returns the discard record with
+     * linked: true when the link committed, false when it did not, null when that could not be
+     * read (the rows are then kept and reported as undiscarded). The worker has already rolled
+     * back an open transaction. #5708: the link level's flag is set after any after-commit
+     * callback a nested transaction staged, so a kill in between is read back, as the retry's
+     * catch arm does. With no retry running, nothing (linked false).
+     *
+     * @return array{linked: bool|null, stored_attachments: int, discarded_attachments: int, undiscarded_attachment_ids: list<int>}
+     */
+    public function abandonRetry(?int $noteId = null): array
+    {
+        if (self::$retryStoredIds === null) {
+            return ['linked' => false] + self::NOTHING_DISCARDED;
+        }
+        $linked = self::$retryLinked ?: $this->retryLinkPersisted($noteId);
+        if ($linked !== false) {
+            $ids = array_values(array_unique(self::$retryStoredIds));
+
+            return ['linked' => $linked, 'stored_attachments' => count($ids), 'discarded_attachments' => 0,
+                'undiscarded_attachment_ids' => $linked === null ? $ids : []];
+        }
+
+        return ['linked' => false] + $this->discardRetryStored();
     }
 
     private const NOTHING_DISCARDED = ['stored_attachments' => 0, 'discarded_attachments' => 0, 'undiscarded_attachment_ids' => []];
@@ -1540,8 +1638,8 @@ PROMPT;
             $stored = \App\Models\Attachment::withTrashed()->whereIn('id', $ids)->get();
             $disk = Storage::disk('local');
         } catch (\Throwable) {
-            // The catch arm calls this too; a throw here would escape the retry and stop the
-            // after-commit callbacks registered after it (see createTicketFromLockedEmail, #5453).
+            // The catch arm calls this too; a throw here would escape the retry and fail the
+            // job, skipping its outcome marker.
             // #5554: the ids are kept and reported, nothing was discarded.
             return ['stored_attachments' => count($ids), 'discarded_attachments' => 0, 'undiscarded_attachment_ids' => $ids];
         }
@@ -1562,16 +1660,35 @@ PROMPT;
             }
         }
         foreach ($stored as $attachment) {
+            // #5718: a delete a listener halted (forceDelete() returns false) keeps the row, and
+            // is not counted as discarded; the row's absence is read back before counting.
             try {
-                $attachment->forceDelete();
-                // #5553: a row whose storage_path update failed still names the placeholder, so
-                // the file is looked for under the row's own directory as well.
-                if ($disk->exists($attachment->storage_path) || $disk->files("attachments/{$attachment->id}") !== []) {
-                    $left[] = (int) $attachment->id;
-                } else {
-                    $discarded++;
-                }
+                $halted = $attachment->forceDelete() === false;
             } catch (\Throwable) {
+                $left[] = (int) $attachment->id;
+
+                continue;
+            }
+            try {
+                // #5553: a row whose storage_path update failed or never ran (a store killed by
+                // the job's timeout) still names the placeholder, so the model hook did not
+                // delete its file: the row's own directory (attachments/{id}, this row's only)
+                // is removed too, then looked for.
+                if (! $halted) {
+                    $disk->deleteDirectory("attachments/{$attachment->id}");
+                }
+                $gone = ! $halted
+                    && ! \App\Models\Attachment::withTrashed()->whereKey($attachment->id)->exists()
+                    && ! $disk->exists($attachment->storage_path)
+                    && $disk->files("attachments/{$attachment->id}") === [];
+            } catch (\Throwable) {
+                // What is left cannot be confirmed, so the id is reported as left, as when the
+                // delete itself throws (#5717: kept on the conservative side).
+                $gone = false;
+            }
+            if ($gone) {
+                $discarded++;
+            } else {
                 $left[] = (int) $attachment->id;
             }
         }
