@@ -90,12 +90,12 @@ class RetryEmailAttachmentsJobTest extends TestCase
         });
     }
 
-    protected function tearDown(): void
+    protected function assertPostConditions(): void
     {
         if ($this->mock !== null) {
             $this->assertSame(0, $this->mock->count(), 'G-5 (#5714): every queued Graph response was used; no spare to serve a stray request');
         }
-        parent::tearDown();
+        parent::assertPostConditions();
     }
 
     private function graph(array $responses): void

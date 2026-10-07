@@ -120,6 +120,17 @@ class EmailRetryLockProofTest extends TestCase
         });
     }
 
+    /** #5714: the Graph mock; tearDown requires every queued response to have been used. */
+    private ?MockHandler $mock = null;
+
+    protected function assertPostConditions(): void
+    {
+        if ($this->mock !== null) {
+            $this->assertSame(0, $this->mock->count(), 'G-5 (#5714): no spare Graph response left to serve a stray request');
+        }
+        parent::assertPostConditions();
+    }
+
     protected function tearDown(): void
     {
         if ($this->originalGrammar !== null) {
@@ -147,7 +158,7 @@ class EmailRetryLockProofTest extends TestCase
             'client_secret' => 'secret',
             'request_timeout' => 15,
             'token_timeout' => 10,
-            'handler' => HandlerStack::create(new MockHandler($wrapped)),
+            'handler' => HandlerStack::create($this->mock = new MockHandler($wrapped)),
         ], $cache));
     }
 
@@ -381,7 +392,7 @@ class EmailRetryLockProofTest extends TestCase
     #[\PHPUnit\Framework\Attributes\DataProvider('linkPathsThatReadUnderTheLock')]
     public function test_link_paths_still_read_graph_once_under_the_email_row_lock_with_no_retry(\Closure $drive): void
     {
-        $this->graph([$this->failedRead(), $this->read()]);
+        $this->graph([$this->failedRead()]); // #5714: no spare response; no retry may read
 
         $drive($this);
 

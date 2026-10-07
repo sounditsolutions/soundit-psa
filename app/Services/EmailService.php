@@ -1354,13 +1354,15 @@ PROMPT;
     /**
      * #5555: makes sure the created-listener that records what the retry stores is registered on
      * Attachment's current event dispatcher, re-registering it when the dispatcher was replaced
-     * or its listeners were flushed. False when Attachment has no dispatcher (model events
-     * suppressed): then nothing the retry stored could be found again for discard.
+     * or its listeners were flushed. False when Attachment has no dispatcher or a NullDispatcher
+     * (model events suppressed, #5715): then nothing the retry stored could be found again.
      */
     private function trackRetryStores(): bool
     {
         $dispatcher = \App\Models\Attachment::getEventDispatcher();
-        if ($dispatcher === null) {
+        // #5715: Model::withoutEvents installs a NullDispatcher, which accepts listeners and
+        // fires none; that is suppression too.
+        if ($dispatcher === null || $dispatcher instanceof \Illuminate\Events\NullDispatcher) {
             return false;
         }
         self::$retryListener ??= function (\App\Models\Attachment $a): void {
