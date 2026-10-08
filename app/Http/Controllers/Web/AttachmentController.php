@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Web;
 use App\Http\Controllers\Controller;
 use App\Models\Attachment;
 use App\Services\AttachmentService;
+use App\Services\AttachmentStoreFailedException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -19,7 +21,11 @@ class AttachmentController extends Controller
             'note_id' => ['nullable', 'integer'],
         ]);
 
-        $attachment = $attachmentService->storeUpload($request->file('file'), auth()->id());
+        try {
+            $attachment = $attachmentService->storeUpload($request->file('file'), auth()->id());
+        } catch (AttachmentStoreFailedException $e) {
+            return self::storeRefused($e, $ticket->id, 'staff');
+        }
 
         // When editing an existing note, link directly to it; otherwise link to ticket
         // (will be re-linked to note after save if URL appears in body)
@@ -35,6 +41,28 @@ class AttachmentController extends Controller
             'markdown' => "![{$attachment->original_filename}]({$attachment->url})",
             'id' => $attachment->id,
         ]);
+    }
+
+    /**
+     * #5809: the disk refused the upload's write (AttachmentStoreFailedException; the store has
+     * already removed its row and file, #5709/#5716). A 503: the server could not store a file
+     * the request validated. C-56: the body is status-only and the WARNING carries the ticket
+     * id, the surface and the exception class, never the message or the filename. Shared by the
+     * portal's uploadAttachment.
+     */
+    public static function storeRefused(AttachmentStoreFailedException $e, int $ticketId, string $surface): JsonResponse
+    {
+        try {
+            Log::warning('[Attachment] Upload not stored: the disk refused the write', [
+                'ticket_id' => $ticketId,
+                'surface' => $surface,
+                'exception' => $e::class,
+            ]);
+        } catch (\Throwable) {
+            // The 503 still tells the uploader the file was not stored.
+        }
+
+        return response()->json(['message' => 'The file could not be stored. Try again.'], 503);
     }
 
     public function show(Attachment $attachment, string $filename): StreamedResponse

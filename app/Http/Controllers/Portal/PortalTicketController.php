@@ -212,7 +212,12 @@ class PortalTicketController extends Controller
             'note_id' => ['nullable', 'integer'],
         ]);
 
-        $attachment = $attachmentService->storeUpload($request->file('file'));
+        try {
+            $attachment = $attachmentService->storeUpload($request->file('file'));
+        } catch (\App\Services\AttachmentStoreFailedException $e) {
+            // #5809: the same 503 and status-only record as the staff upload.
+            return \App\Http\Controllers\Web\AttachmentController::storeRefused($e, $ticket->id, 'portal');
+        }
 
         $noteId = $request->input('note_id');
         // Only a note the portal may see: notes() is withTrashed() and unscoped.
