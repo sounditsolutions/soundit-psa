@@ -120,8 +120,11 @@ class ControlDClient
         }
         $options = ['headers' => ['X-Force-Org-Id' => $orgPk], 'allow_redirects' => false, 'http_errors' => false];
         if ($body !== null) {
-            // Producer OpenAPI: PUT /organizations consumes application/x-www-form-urlencoded
-            // (tests/Fixtures/ControlD/organization-README.md); provisioning keeps JSON.
+            // Vendor OpenAPI 3.0.1 "Modify Organization" (PUT /organizations): requestBody
+            // application/x-www-form-urlencoded with optional parent_profile (recorded in
+            // the organization-README fixture notes; no captured payload). Its live
+            // behaviour under X-Force-Org-Id is unproven until the first approved step.
+            // Provisioning keeps JSON.
             $options[$organizationPut ? 'form_params' : 'json'] = $body;
         }
         try {

@@ -57,7 +57,8 @@ class ClientControlDOnboardingController extends Controller
      * onboarding intent of THIS client, so its per-client lock can be cleared. B3's
      * release() does the guarded UPDATE and writes the audit row; it refuses posted,
      * uncertain, bound, rejected and released intents and changes nothing for them.
-     * Makes no vendor call.
+     * Makes no vendor call. The ownership check here is repeated in release()'s own
+     * UPDATE predicate (client_id = this client), so the service is scoped on its own.
      */
     public function release(Request $request, Client $client, string $intent)
     {
@@ -72,7 +73,7 @@ class ClientControlDOnboardingController extends Controller
             return new ControlDOnboardingStaged($vendor, new ControlDProvisioning($vendor));
         })();
         try {
-            $service->release($request->user(), $row->id, $validated['reason']);
+            $service->release($request->user(), (int) $client->id, $row->id, $validated['reason']);
         } catch (ControlDClientException $e) {
             return redirect()->route('clients.show', $client)->withErrors(['controld_onboarding' => $e->getMessage()]);
         }

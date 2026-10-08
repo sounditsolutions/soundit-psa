@@ -183,11 +183,16 @@ class ControlDProvisioning
         }
         // Two accepted arms (XULQ2iix ruling (c)): (ii) the profile is one of the
         // sub-organization's OWN profiles exactly once; or (i) it is the sub-organization's
-        // Global Profile (parent_profile), which the vendor does NOT list in the
-        // sub-organization's GET profiles. Arm (i) is read live from the parent's
-        // GET sub_organizations with the org listed exactly once; a malformed or
-        // ambiguous inventory is a definite pre-write refusal.
-        if ($matches !== 1) {
+        // Global Profile (parent_profile), which a read-only production GET reported on card
+        // XULQ2iix (2026-10-08) as absent from that sub-organization's GET profiles. An own
+        // inventory listing the PK more than once is ambiguous and a definite pre-write
+        // refusal whatever arm (i) would say; arm (i) is consulted only when the PK is not
+        // listed at all, read live from the parent's GET sub_organizations with the org
+        // listed exactly once, and an unreadable or malformed parent inventory refuses.
+        if ($matches > 1) {
+            $this->refuse('Enforced profile is listed more than once in this organization\'s own profiles (ambiguous).');
+        }
+        if ($matches === 0) {
             try {
                 $global = (new ControlDSubOrganizations($this->client))->parentProfileOf($orgPk);
             } catch (ControlDClientException) {

@@ -254,7 +254,7 @@ class ControlDGlobalProfileTest extends TestCase
         return $this->ok(['types' => ['os' => ['icons' => ['desktop-windows' => ['name' => 'Windows']]]]]);
     }
 
-    /** Arm (i): the global profile is NOT in the sub-org's own profiles (measured vendor behaviour) but is its parent_profile. */
+    /** Arm (i): the global profile is NOT in the sub-org's own profiles but is its parent_profile (the shape a production read on card XULQ2iix reported; these fixtures are synthetic, built from the producer schema). */
     public function test_preflight_accepts_the_sub_organizations_global_profile_read_live(): void
     {
         $row = $this->provisionRow(self::GLOBAL);
@@ -282,20 +282,25 @@ class ControlDGlobalProfileTest extends TestCase
 
     public static function preflightRefusals(): array
     {
+        $neither = 'Enforced profile is neither this organization\'s global profile nor exactly one of its own profiles.';
+        $unconfirmed = 'Control D global profile of this organization could not be confirmed.';
+
         return [
-            'global-is-another-profile' => [['333333synthCC']],
-            'global-absent' => [[null]],
-            'org-not-listed' => [['unlisted']],
-            'org-listed-twice' => [['twice']],
-            'parent-profile-null' => [['null']],
-            'inventory-malformed' => [['malformed']],
+            'global-is-another-profile' => [['333333synthCC'], $neither],
+            'global-absent' => [[null], $neither],
+            'org-not-listed' => [['unlisted'], $unconfirmed],
+            'org-listed-twice' => [['twice'], $unconfirmed],
+            'parent-profile-null' => [['null'], $unconfirmed],
+            'inventory-malformed' => [['malformed'], $unconfirmed],
+            'inventory-503' => [['503'], $unconfirmed],
         ];
     }
 
     #[DataProvider('preflightRefusals')]
-    public function test_preflight_refuses_without_writing_when_neither_arm_holds(array $case): void
+    public function test_preflight_refuses_without_writing_when_neither_arm_holds(array $case, string $message): void
     {
         $inventory = match ($case[0]) {
+            '503' => new Response(503),
             'unlisted' => $this->inventory($this->listed('sibling01')),
             'twice' => $this->inventory($this->listed(), $this->listed()),
             'null' => $this->inventory(array_merge($this->listed(), ['parent_profile' => null])),
@@ -304,7 +309,7 @@ class ControlDGlobalProfileTest extends TestCase
         };
         $service = new ControlDProvisioning($this->transport([$this->types(), $this->ok(['profiles' => [['PK' => '444444synthDD']]]), $inventory]));
         $e = $this->refused(fn () => $service->create(self::ORG, $this->fields(self::GLOBAL)));
-        $this->assertMatchesRegularExpression('/neither this organization\'s global profile|could not be confirmed/', $e->getMessage());
+        $this->assertSame($message, $e->getMessage(), 'each arm pins its own message');
         $this->assertSame(['GET /devices/types', 'GET /profiles', 'GET /organizations/sub_organizations'], $this->calls(), 'no write');
     }
 
@@ -325,7 +330,7 @@ class ControlDGlobalProfileTest extends TestCase
         $actor = $this->admin();
         $client = $this->mapped();
         $writer = $this->writer([$this->inventory($this->listed(self::ORG, null)), $this->putResponse(), $this->inventory($this->listed())]);
-        $id = $writer->stageGlobalProfile($actor, $client->id);
+        $id = $writer->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL);
         $writer->execute($actor, $id);
         $this->assertSame(['GET /organizations/sub_organizations', 'PUT /organizations', 'GET /organizations/sub_organizations'], $this->calls());
         $put = $this->history[1]['request'];
@@ -342,7 +347,7 @@ class ControlDGlobalProfileTest extends TestCase
         $actor = $this->admin();
         $client = $this->mapped();
         $writer = $this->writer([$this->inventory($this->listed())]);
-        $id = $writer->stageGlobalProfile($actor, $client->id);
+        $id = $writer->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL);
         $e = $this->refused(fn () => $writer->execute($actor, $id));
         $this->assertStringContainsString('already enforced', $e->getMessage());
         $this->assertSame(['GET /organizations/sub_organizations'], $this->calls());
@@ -355,7 +360,7 @@ class ControlDGlobalProfileTest extends TestCase
         $actor = $this->admin();
         $client = $this->mapped();
         $writer = $this->writer([$this->inventory($this->listed('sibling01', null))]);
-        $id = $writer->stageGlobalProfile($actor, $client->id);
+        $id = $writer->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL);
         $this->refused(fn () => $writer->execute($actor, $id));
         $this->assertSame(['GET /organizations/sub_organizations'], $this->calls(), 'no PUT');
         $this->assertSame('staged', ControlDOnboardingIntent::findOrFail($id)->state);
@@ -366,7 +371,7 @@ class ControlDGlobalProfileTest extends TestCase
         $actor = $this->admin();
         $client = $this->mapped();
         $writer = $this->writer([$this->inventory($this->listed(self::ORG, null)), new Response(400, [], '{"success":false,"error":{"code":40000,"message":"vendor text"}}')]);
-        $id = $writer->stageGlobalProfile($actor, $client->id);
+        $id = $writer->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL);
         $writer->execute($actor, $id);
         $intent = ControlDOnboardingIntent::findOrFail($id);
         $this->assertSame(['rejected', 40000, null], [$intent->state, $intent->reason_code, $intent->active_client_id]);
@@ -405,7 +410,7 @@ class ControlDGlobalProfileTest extends TestCase
             default => $this->inventory($this->listed()),
         };
         $writer = $this->writer($responses);
-        $id = $writer->stageGlobalProfile($actor, $client->id);
+        $id = $writer->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL);
         $writer->execute($actor, $id);
         $intent = ControlDOnboardingIntent::findOrFail($id);
         $this->assertSame(['uncertain', $phase, $client->id], [$intent->state, $intent->phase, (int) $intent->active_client_id]);
@@ -420,9 +425,9 @@ class ControlDGlobalProfileTest extends TestCase
     {
         $actor = $this->admin();
         $writer = $this->writer([]);
-        $this->refused(fn () => $writer->stageGlobalProfile($actor, Client::factory()->create()->id));
+        $this->refused(fn () => $writer->stageGlobalProfile($actor, Client::factory()->create()->id, self::ORG, self::GLOBAL));
         Setting::setValue('controld_default_profile_id', '');
-        $this->refused(fn () => $writer->stageGlobalProfile($actor, $this->mapped()->id));
+        $this->refused(fn () => $writer->stageGlobalProfile($actor, $this->mapped()->id, self::ORG, self::GLOBAL));
         $this->assertSame(0, ControlDOnboardingIntent::count());
         $this->assertCount(0, $this->history);
     }
@@ -442,7 +447,7 @@ class ControlDGlobalProfileTest extends TestCase
 
     private function stagedIntent(Client $client, User $actor): string
     {
-        return $this->writer([])->stageGlobalProfile($actor, $client->id);
+        return $this->writer([])->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL);
     }
 
     public function test_admin_releases_a_never_admitted_intent_with_an_audit_row_and_the_client_can_stage_again(): void
@@ -452,7 +457,7 @@ class ControlDGlobalProfileTest extends TestCase
         $id = $this->stagedIntent($client, $actor);
         $this->refused(fn () => $this->stagedIntent($client, $actor), ControlDClientException::class);
         $releaser = $this->admin();
-        $this->writer([])->release($releaser, $id, 'never admitted; clearing the lock');
+        $this->writer([])->release($releaser, $client->id, $id, 'never admitted; clearing the lock');
         $intent = ControlDOnboardingIntent::findOrFail($id);
         $this->assertSame([ControlDOnboardingStaged::RELEASED, null], [$intent->state, $intent->active_client_id]);
         $this->assertStringContainsString('#'.$releaser->id, (string) $intent->reason);
@@ -490,8 +495,8 @@ class ControlDGlobalProfileTest extends TestCase
         $id = $this->stagedIntent($client, $actor);
         ControlDOnboardingIntent::whereKey($id)->update($attributes);
         $before = ControlDOnboardingIntent::findOrFail($id)->getAttributes();
-        $e = $this->refused(fn () => $this->writer([])->release($this->admin(), $id, 'try'));
-        $this->assertStringContainsString('never-admitted', $e->getMessage());
+        $e = $this->refused(fn () => $this->writer([])->release($this->admin(), $client->id, $id, 'try'));
+        $this->assertSame(ControlDOnboardingStaged::RELEASE_REFUSAL, $e->getMessage());
         $this->assertSame($before, ControlDOnboardingIntent::findOrFail($id)->getAttributes());
         $this->assertSame(0, TechnicianActionLog::where('action_type', 'controld_release_intent')->count());
     }
@@ -499,10 +504,11 @@ class ControlDGlobalProfileTest extends TestCase
     public function test_release_requires_an_active_admin_and_a_reason(): void
     {
         $actor = $this->admin();
-        $id = $this->stagedIntent($this->mapped(), $actor);
-        $this->refused(fn () => $this->writer([])->release(User::factory()->tech()->create(['is_active' => true]), $id, 'x'));
-        $this->refused(fn () => $this->writer([])->release(User::factory()->admin()->create(['is_active' => false]), $id, 'x'));
-        $this->refused(fn () => $this->writer([])->release($actor, $id, '   '));
+        $client = $this->mapped();
+        $id = $this->stagedIntent($client, $actor);
+        $this->refused(fn () => $this->writer([])->release(User::factory()->tech()->create(['is_active' => true]), $client->id, $id, 'x'));
+        $this->refused(fn () => $this->writer([])->release(User::factory()->admin()->create(['is_active' => false]), $client->id, $id, 'x'));
+        $this->refused(fn () => $this->writer([])->release($actor, $client->id, $id, '   '));
         $this->assertSame('staged', ControlDOnboardingIntent::findOrFail($id)->state);
     }
 
@@ -514,39 +520,42 @@ class ControlDGlobalProfileTest extends TestCase
         $observed = null;
         $writer = $this->writer([
             $this->inventory($this->listed(self::ORG, null)),
-            function () use (&$observed, &$id) {
+            function () use (&$observed, &$id, $client) {
                 try {
-                    $this->writer([])->release($this->admin(), $id, 'racing');
+                    $this->writer([])->release($this->admin(), $client->id, $id, 'racing');
                     $observed = 'released';
-                } catch (ControlDClientException) {
-                    $observed = 'refused';
+                } catch (ControlDClientException $e) {
+                    $observed = $e->getMessage();
                 }
 
                 return new Response(503);
             },
         ]);
-        $id = $writer->stageGlobalProfile($actor, $client->id);
+        $id = $writer->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL);
         $writer->execute($actor, $id);
-        $this->assertSame('refused', $observed);
+        $this->assertSame(ControlDOnboardingStaged::RELEASE_REFUSAL, $observed, 'refused by the guarded UPDATE');
         $intent = ControlDOnboardingIntent::findOrFail($id);
         $this->assertSame(['uncertain', $client->id], [$intent->state, (int) $intent->active_client_id]);
     }
 
-    /** RACE inside release: admit() commits between release's read and its write. Only the conditional UPDATE can see it. */
+    /** RACE inside release: admit() commits immediately before release's guarded UPDATE. Only the conditional UPDATE can see it. */
     public function test_release_whose_read_is_overtaken_by_admit_refuses_through_the_conditional_update(): void
     {
         $actor = $this->admin();
-        $id = $this->stagedIntent($this->mapped(), $actor);
-        ControlDOnboardingIntent::retrieved(function (ControlDOnboardingIntent $row) use ($id): void {
-            if ($row->id === $id && $row->state === 'staged') {
-                ControlDOnboardingIntent::whereKey($id)->update(['state' => 'posted', 'phase' => 'post']);
+        $client = $this->mapped();
+        $id = $this->stagedIntent($client, $actor);
+        $fired = false;
+        \Illuminate\Support\Facades\DB::connection()->beforeExecuting(function (string $sql, array $bindings) use ($id, $client, &$fired): void {
+            if (! $fired && str_starts_with(strtolower(ltrim($sql)), 'update') && str_contains($sql, 'controld_onboarding_intents') && in_array(ControlDOnboardingStaged::RELEASED, $bindings, true)) {
+                $fired = true;
+                // Exactly what admit() commits: state staged -> posted, phase -> post, lock kept.
+                \Illuminate\Support\Facades\DB::table('controld_onboarding_intents')->where('id', $id)->where('state', 'staged')
+                    ->where('active_client_id', $client->id)->update(['state' => 'posted', 'phase' => 'post']);
             }
         });
-        try {
-            $this->refused(fn () => $this->writer([])->release($this->admin(), $id, 'racing'));
-        } finally {
-            ControlDOnboardingIntent::flushEventListeners();
-        }
+        $e = $this->refused(fn () => $this->writer([])->release($this->admin(), $client->id, $id, 'racing'));
+        $this->assertTrue($fired, 'the admit was injected immediately before the guarded UPDATE');
+        $this->assertSame(ControlDOnboardingStaged::RELEASE_REFUSAL, $e->getMessage());
         $intent = ControlDOnboardingIntent::findOrFail($id);
         $this->assertSame(['posted', 'post'], [$intent->state, $intent->phase]);
         $this->assertNotNull($intent->active_client_id);
@@ -570,5 +579,200 @@ class ControlDGlobalProfileTest extends TestCase
         $this->assertSame(1, TechnicianActionLog::where('action_type', 'controld_release_intent')->count());
         $this->actingAs($actor)->post(route('clients.controld.intent.release', [$client, $id]), ['reason' => 'again'])
             ->assertRedirect(route('clients.show', $client))->assertSessionHasErrors('controld_onboarding');
+    }
+
+    // ── r2 (Jeeves 22:4xZ must-carry) ───────────────────────────────────────────
+
+    private const SECRET_FIXTURE = 'r2-synthetic-secret-not-real';
+
+    /** Item 1: a DIFFERENT parent_profile is never replaced: definite pre-admit refusal, no PUT, intent stays staged. */
+    public function test_enforce_step_refuses_a_different_global_profile_before_admit_without_a_write(): void
+    {
+        $actor = $this->admin();
+        $client = $this->mapped();
+        $writer = $this->writer([$this->inventory($this->listed(self::ORG, '333333synthCC'))]);
+        $id = $writer->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL);
+        $e = $this->refused(fn () => $writer->execute($actor, $id));
+        $this->assertSame(ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL, $e->getMessage());
+        $this->assertStringNotContainsString('333333synthCC', $e->getMessage(), 'no PK in the operator text');
+        $this->assertSame(['GET /organizations/sub_organizations'], $this->calls(), 'no PUT');
+        $intent = ControlDOnboardingIntent::findOrFail($id);
+        $this->assertSame(['staged', 'preflight', null], [$intent->state, $intent->phase, $intent->vendor_pk]);
+    }
+
+    /** Item 1: the step state reader tells absent, enforced and different apart (nextStep decides on it). */
+    public function test_global_profile_state_distinguishes_absent_enforced_and_different(): void
+    {
+        $this->assertSame(ControlDOnboardingStaged::PROFILE_ABSENT, $this->writer([$this->inventory($this->listed(self::ORG, null))])->globalProfileState(self::ORG));
+        $this->assertSame(ControlDOnboardingStaged::PROFILE_ENFORCED, $this->writer([$this->inventory($this->listed())])->globalProfileState(self::ORG));
+        $this->assertSame(ControlDOnboardingStaged::PROFILE_DIFFERENT, $this->writer([$this->inventory($this->listed(self::ORG, '333333synthCC'))])->globalProfileState(self::ORG));
+    }
+
+    public static function pinDrift(): array
+    {
+        return [
+            'org-remapped-after-staging' => ['org'],
+            'setting-changed-after-staging' => ['setting'],
+            'payload-org-not-the-client' => ['payload-org'],
+            'payload-profile-not-the-setting' => ['payload-profile'],
+        ];
+    }
+
+    /** Item 2: execute() refuses before any vendor call when the live org or setting no longer equals the pins. */
+    #[DataProvider('pinDrift')]
+    public function test_enforce_step_refuses_pin_drift_before_any_vendor_call(string $case): void
+    {
+        $actor = $this->admin();
+        $client = $this->mapped();
+        $writer = $this->writer([$this->inventory($this->listed(self::ORG, null)), $this->putResponse(), $this->inventory($this->listed())]);
+        if ($case === 'payload-org') {
+            $this->refused(fn () => $writer->stageGlobalProfile($actor, $client->id, '555555synthEE', self::GLOBAL));
+            $this->assertSame(0, ControlDOnboardingIntent::count());
+            $this->assertCount(0, $this->history);
+
+            return;
+        }
+        if ($case === 'payload-profile') {
+            $this->refused(fn () => $writer->stageGlobalProfile($actor, $client->id, self::ORG, '333333synthCC'));
+            $this->assertSame(0, ControlDOnboardingIntent::count());
+            $this->assertCount(0, $this->history);
+
+            return;
+        }
+        $id = $writer->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL);
+        if ($case === 'org') {
+            $client->forceFill(['controld_org_id' => '555555synthEE'])->save();
+        } else {
+            Setting::setValue('controld_default_profile_id', '333333synthCC');
+        }
+        $e = $this->refused(fn () => $writer->execute($actor, $id));
+        $this->assertSame('The Control D organization or the configured global profile no longer matches what was approved; nothing was written.', $e->getMessage());
+        $this->assertCount(0, $this->history, 'no vendor call at all');
+        $this->assertSame('staged', ControlDOnboardingIntent::findOrFail($id)->state);
+    }
+
+    /** Item 2: the PUT carries the PINNED profile under the PINNED org (both equal the live values by construction). */
+    public function test_enforce_step_puts_the_pinned_profile_under_the_pinned_org(): void
+    {
+        $actor = $this->admin();
+        $client = $this->mapped();
+        $writer = $this->writer([$this->inventory($this->listed(self::ORG, null)), $this->putResponse(), $this->inventory($this->listed())]);
+        $id = $writer->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL);
+        $payload = ControlDOnboardingIntent::findOrFail($id)->payload;
+        $this->assertSame(['org_pk' => self::ORG, 'profile_pk' => self::GLOBAL], $payload);
+        $writer->execute($actor, $id);
+        $put = $this->history[1]['request'];
+        $this->assertSame(self::ORG, $put->getHeaderLine('X-Force-Org-Id'));
+        parse_str((string) $put->getBody(), $sent);
+        $this->assertSame(['parent_profile' => self::GLOBAL], $sent);
+    }
+
+    public static function bindRecheckFailures(): array
+    {
+        return [
+            'mapping-changed-during-put' => ['remap'],
+            'actor-demoted-during-put' => ['demote'],
+            'client-deleted-during-put' => ['delete'],
+        ];
+    }
+
+    /** Item 3: posted->bound goes through bind(): a failed re-check after the PUT is uncertain and terminal, never bound. */
+    #[DataProvider('bindRecheckFailures')]
+    public function test_enforce_step_bind_recheck_failure_after_the_put_is_uncertain_and_terminal(string $case): void
+    {
+        $actor = $this->admin();
+        $client = $this->mapped();
+        $writer = $this->writer([
+            $this->inventory($this->listed(self::ORG, null)),
+            function () use ($case, $client, $actor) {
+                match ($case) {
+                    'remap' => Client::whereKey($client->id)->update(['controld_org_id' => '555555synthEE']),
+                    'demote' => User::whereKey($actor->id)->update(['is_active' => false]),
+                    'delete' => Client::whereKey($client->id)->delete(),
+                };
+
+                return $this->putResponse();
+            },
+            $this->inventory($this->listed()),
+        ]);
+        $id = $writer->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL);
+        $writer->execute($actor, $id);
+        $intent = ControlDOnboardingIntent::findOrFail($id);
+        $this->assertSame(['uncertain', 'local-persistence', $client->id], [$intent->state, $intent->phase, (int) $intent->active_client_id]);
+        $this->assertSame(['GET /organizations/sub_organizations', 'PUT /organizations', 'GET /organizations/sub_organizations'], $this->calls());
+    }
+
+    /** Item 4: the already-enforced no-op uses release()'s predicate, writes a system audit row, and reports truthfully. */
+    public function test_already_enforced_no_op_release_is_audited_as_a_system_no_op(): void
+    {
+        $actor = $this->admin();
+        $client = $this->mapped();
+        $writer = $this->writer([$this->inventory($this->listed())]);
+        $id = $writer->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL);
+        $e = $this->refused(fn () => $writer->execute($actor, $id));
+        $this->assertSame('The Control D global profile is already enforced on this organization; no vendor write was made and the intent was released.', $e->getMessage());
+        $log = TechnicianActionLog::where('action_type', 'controld_release_intent')->sole();
+        $this->assertSame(['system:controld-global-profile-noop', $client->id, 'executed'], [$log->actor_label, (int) $log->client_id, $log->result_status]);
+        $this->assertStringContainsString('no vendor write was made', $log->summary);
+        $this->assertStringNotContainsString(self::GLOBAL, $log->summary, 'no PK or vendor text in the audit row');
+    }
+
+    /** Item 4: row count 0 (the intent no longer holds THIS client's lock) => not released, no audit, and it says so. */
+    public function test_already_enforced_no_op_with_zero_rows_does_not_claim_a_release(): void
+    {
+        $actor = $this->admin();
+        $client = $this->mapped();
+        $writer = $this->writer([
+            function () use (&$id) {
+                // The lock moved between execute()'s staged check and the no-op release.
+                ControlDOnboardingIntent::whereKey($id)->update(['active_client_id' => null]);
+
+                return $this->inventory($this->listed());
+            },
+        ]);
+        $id = $writer->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL);
+        $e = $this->refused(fn () => $writer->execute($actor, $id));
+        $this->assertStringContainsString('was not released', $e->getMessage());
+        $this->assertSame('staged', ControlDOnboardingIntent::findOrFail($id)->state);
+        $this->assertSame(0, TechnicianActionLog::where('action_type', 'controld_release_intent')->count());
+    }
+
+    /** Item 5: an own inventory listing the PK twice is ambiguous and refused, even when it is also the parent_profile. */
+    public function test_preflight_refuses_a_duplicated_own_profile_even_when_it_is_the_global_profile(): void
+    {
+        $service = new ControlDProvisioning($this->transport([
+            $this->types(), $this->ok(['profiles' => [['PK' => self::GLOBAL], ['PK' => self::GLOBAL]]]),
+            $this->inventory($this->listed()),
+        ]));
+        $e = $this->refused(fn () => $service->create(self::ORG, $this->fields(self::GLOBAL)));
+        $this->assertSame('Enforced profile is listed more than once in this organization\'s own profiles (ambiguous).', $e->getMessage());
+        $this->assertSame(['GET /devices/types', 'GET /profiles'], $this->calls(), 'arm (i) is not consulted; no write');
+    }
+
+    /** Item 6: the service-level release is scoped to the client on its own (no controller check in front). */
+    public function test_service_release_refuses_another_clients_intent(): void
+    {
+        $actor = $this->admin();
+        $client = $this->mapped();
+        $id = $this->stagedIntent($client, $actor);
+        $other = Client::factory()->create();
+        $e = $this->refused(fn () => $this->writer([])->release($this->admin(), $other->id, $id, 'cross-client'));
+        $this->assertSame(ControlDOnboardingStaged::RELEASE_REFUSAL, $e->getMessage());
+        $this->assertSame(['staged', $client->id], [ControlDOnboardingIntent::findOrFail($id)->state, (int) ControlDOnboardingIntent::findOrFail($id)->active_client_id]);
+        $this->assertSame(0, TechnicianActionLog::where('action_type', 'controld_release_intent')->count());
+    }
+
+    /** Item 7: the release reason passes through ActionRedactor before it reaches the audit row. */
+    public function test_release_reason_is_redacted_in_the_audit_row(): void
+    {
+        $actor = $this->admin();
+        $client = $this->mapped();
+        $id = $this->stagedIntent($client, $actor);
+        $this->writer([])->release($this->admin(), $client->id, $id, 'mailbox imaps://ops:'.self::SECRET_FIXTURE.'@mail.example.test/ password: '.self::SECRET_FIXTURE.' for ops@example.test');
+        $log = TechnicianActionLog::where('action_type', 'controld_release_intent')->sole();
+        $this->assertStringNotContainsString(self::SECRET_FIXTURE, $log->summary);
+        $this->assertStringContainsString('[REDACTED:credential]', $log->summary);
+        $this->assertStringContainsString('ops@example.test', $log->summary, 'the non-secret text survives');
+        $this->assertStringNotContainsString(self::SECRET_FIXTURE, (string) ControlDOnboardingIntent::findOrFail($id)->reason);
     }
 }
