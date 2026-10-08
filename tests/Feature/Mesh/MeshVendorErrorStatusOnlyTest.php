@@ -799,8 +799,9 @@ class MeshVendorErrorStatusOnlyTest extends TestCase
             $this->app->make(MeshWriteClient::class)->deleteRule(self::RULE_ID);
             $this->fail('the scripted DELETE was expected to fail');
         } catch (MeshClientException $e) {
-            $this->assertStringNotContainsString('://', $e->getMessage(), 'positive control: the transport message names no URI');
-            $this->assertStringContainsString(self::LEAK_IP, $e->getMessage(), 'positive control: the raw message carries the host');
+            $this->assertStringNotContainsString('://', $e->getPrevious()->getMessage(), 'positive control: the transport message names no URI');
+            $this->assertStringContainsString(self::LEAK_IP, $e->getPrevious()->getMessage(), 'positive control: the raw message carries the host');
+            $this->assertStringNotContainsString(self::LEAK_IP, $e->getMessage(), 'the client message carries no host (#5884)');
             $this->assertSame(0, $e->getCode());
             $this->assertTrue($e->nothingWasSent(), 'the never-sent arm still says so, structurally');
 
@@ -961,7 +962,11 @@ class MeshVendorErrorStatusOnlyTest extends TestCase
 
     // ---- assertions -------------------------------------------------------------
 
-    /** Positive control: the client really produced a message carrying the leak. */
+    /**
+     * Positive control: the transport really produced a message carrying the
+     * leak. Since #5884 that message is only the chained Guzzle exception's;
+     * MeshWriteClient's own message carries neither the body nor the host.
+     */
     private function assertTheVendorMessageCarriesTheLeak(): void
     {
         $client = $this->app->make(MeshWriteClient::class);
@@ -969,8 +974,11 @@ class MeshVendorErrorStatusOnlyTest extends TestCase
             $client->listCustomerRules(self::TENANT);
             $this->fail('the scripted list read was expected to fail');
         } catch (MeshClientException $e) {
-            $this->assertStringContainsString(self::MARKER, $e->getMessage(), 'positive control: the raw message carries the vendor body');
-            $this->assertStringContainsString(self::HOST, $e->getMessage(), 'positive control: the raw message carries the host');
+            $raw = (string) $e->getPrevious()?->getMessage();
+            $this->assertStringContainsString(self::MARKER, $raw, 'positive control: the raw message carries the vendor body');
+            $this->assertStringContainsString(self::HOST, $raw, 'positive control: the raw message carries the host');
+            $this->assertStringNotContainsString(self::MARKER, $e->getMessage(), 'the client message carries no vendor body (#5884)');
+            $this->assertStringNotContainsString(self::HOST, $e->getMessage(), 'the client message carries no host (#5884)');
         }
     }
 

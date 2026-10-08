@@ -622,9 +622,10 @@ class MeshClientLogPathTest extends TestCase
      * digit, '.' and '-' (a narrower scheme class leaves the authority on)
      * and '//' after the start (an unanchored strip eats it). An empty
      * authority ('https:///...') is checked here only: the PSR-7 Uri
-     * refuses to parse it, so get() throws before any request or log line
-     * (measured), and it cannot be a row. With '[^/]+' in place of '[^/]*'
-     * the scheme would stay on.
+     * refuses to parse it, so get() throws before any request (measured),
+     * and it cannot be a 503 row. Since #5878 request() catches that
+     * MalformedUriException and writes the status-only line with this
+     * logPath(). With '[^/]+' in place of '[^/]*' the scheme would stay on.
      */
     public function test_log_path_strips_an_empty_authority_and_only_a_leading_one(): void
     {
@@ -638,11 +639,14 @@ class MeshClientLogPathTest extends TestCase
         try {
             $client->get("https:///api/customers/{$id}/");
             $this->fail('the empty-authority endpoint must throw');
-        } catch (\GuzzleHttp\Psr7\Exception\MalformedUriException) {
+        } catch (MeshClientException $e) {
+            // #5878: status-only, no previous exception.
+            $this->assertSame('Mesh API error: GET /api/customers/<customer> failed with no HTTP status (GuzzleHttp\Psr7\Exception\MalformedUriException)', $e->getMessage());
+            $this->assertNull($e->getPrevious());
         }
         $this->assertSame([], $seen->uris, 'no request reached the handler');
         $this->assertSame(1, $mock->count(), 'the 503 was never taken');
-        $this->assertSame([], $this->logged, 'no log line');
+        $this->assertSame(['[MeshClient] GET /api/customers/<customer> failed with no HTTP status (GuzzleHttp\Psr7\Exception\MalformedUriException)'], array_column($this->logged, 'message'), 'one status-only line (#5878)');
     }
 
     /**
