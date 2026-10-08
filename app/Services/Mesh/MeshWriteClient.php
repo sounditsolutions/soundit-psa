@@ -134,15 +134,22 @@ class MeshWriteClient
             $this->http = $http ?? new Client([
                 'base_uri' => rtrim($this->config['base_url'] ?? 'https://hub-us.emailsecurity.app', '/').'/',
                 'timeout' => 30,
+                // #6105: a redirect is never followed (request() also sets
+                // it per request, so an injected transport cannot either).
+                'allow_redirects' => false,
             ]);
         } catch (\InvalidArgumentException) {
             $this->http = null;
         }
     }
 
+    /**
+     * #6103: the same set MeshClient refuses before send: null, false, '',
+     * blanks, 0 and '0' (empty()), and true, which would be sent as '1'.
+     */
     public function isConfigured(): bool
     {
-        return ! empty($this->config['api_key']);
+        return ! MeshClient::apiKeyMissing($this->config['api_key'] ?? null);
     }
 
     /**
@@ -191,7 +198,7 @@ class MeshWriteClient
      *                                   the rule permanent — the absent
      *                                   mesh_allow_rules expiry is.
      */
-    public function createAllowRule(string $customerId, string $sender, string $comment, ?string $dateExpiry): array
+    public function createAllowRule(#[\SensitiveParameter] string $customerId, #[\SensitiveParameter] string $sender, #[\SensitiveParameter] string $comment, ?string $dateExpiry): array
     {
         $this->assertConfigured();
 
@@ -247,7 +254,7 @@ class MeshWriteClient
      * @throws MeshClientException credential missing, upstream failure, or a
      *                             list read that could not be completed
      */
-    public function listCustomerRules(string $customerId): array
+    public function listCustomerRules(#[\SensitiveParameter] string $customerId): array
     {
         $this->assertConfigured();
 
@@ -331,7 +338,7 @@ class MeshWriteClient
      *
      * @return array<string, mixed>|null
      */
-    public function findRuleByComment(string $customerId, string $sender, string $comment): ?array
+    public function findRuleByComment(#[\SensitiveParameter] string $customerId, #[\SensitiveParameter] string $sender, #[\SensitiveParameter] string $comment): ?array
     {
         foreach ($this->listCustomerRules($customerId) as $row) {
             if (self::rowMatchesComment($row, $sender, $comment)) {
@@ -359,7 +366,7 @@ class MeshWriteClient
      *
      * @return list<array<string, mixed>>
      */
-    public function findRulesByComment(string $customerId, string $sender, string $comment): array
+    public function findRulesByComment(#[\SensitiveParameter] string $customerId, #[\SensitiveParameter] string $sender, #[\SensitiveParameter] string $comment): array
     {
         $matches = [];
 
@@ -411,7 +418,7 @@ class MeshWriteClient
      *
      * @return array<string, mixed>|null
      */
-    public function findRuleById(string $customerId, string $ruleId): ?array
+    public function findRuleById(#[\SensitiveParameter] string $customerId, #[\SensitiveParameter] string $ruleId): ?array
     {
         $ruleId = trim($ruleId);
         if ($ruleId === '') {
@@ -496,9 +503,9 @@ class MeshWriteClient
      *
      * @throws MeshClientException credential missing, empty or unknown field set,
      *                             or any non-400 upstream failure
-     * @throws MeshWriteRejectedException upstream 400, carrying the vendor's own text
+     * @throws MeshWriteRejectedException upstream 400 (status-only message, #6106)
      */
-    public function patchRule(string $ruleId, array $fields): array
+    public function patchRule(#[\SensitiveParameter] string $ruleId, array $fields): array
     {
         $this->assertConfigured();
 
@@ -536,7 +543,7 @@ class MeshWriteClient
      *
      * @throws MeshClientException
      */
-    public function deleteRule(string $ruleId): void
+    public function deleteRule(#[\SensitiveParameter] string $ruleId): void
     {
         $this->assertConfigured();
 
@@ -556,7 +563,7 @@ class MeshWriteClient
      *         which is NOT a pass. An unmeasurable post-condition fails
      *         closed: the caller must not mark a row reaped on null.
      */
-    public function ruleAbsent(string $ruleId): ?bool
+    public function ruleAbsent(#[\SensitiveParameter] string $ruleId): ?bool
     {
         if (! $this->isConfigured() || trim($ruleId) === '') {
             return null;
@@ -624,17 +631,25 @@ class MeshWriteClient
      * @param  array<string, mixed>  $options
      * @return array<string, mixed>
      *
-     * @throws MeshWriteRejectedException on 400, carrying the vendor's own body
+     * @throws MeshWriteRejectedException on 400, with a status-only message (#6106)
      * @throws MeshClientException on anything else, with the HTTP status as the code
      */
-    private function request(string $method, string $endpoint, array $options = []): array
+    private function request(string $method, #[\SensitiveParameter] string $endpoint, array $options = []): array
     {
         $this->preflight($method, $endpoint);
 
         $options['headers'] = [
-            'API-KEY' => $this->config['api_key'] ?? '',
+            'API-KEY' => $this->config['api_key'],
             'Accept' => 'application/json',
         ];
+        // #6105: never follow a redirect. RedirectMiddleware would carry the
+        // API-KEY header to whatever host Location names, re-send a 307/308
+        // body there, and turn a 301/302/303 write into a GET whose answer
+        // would be read as this write's. Per request, so a transport built
+        // elsewhere (the test seam) cannot follow one either. With no hop
+        // after the first, the never-sent errno arm below can only describe
+        // the one request this method made.
+        $options['allow_redirects'] = false;
 
         try {
             $response = $this->http->request($method, $endpoint, $options);
@@ -683,9 +698,14 @@ class MeshWriteClient
 
                 Log::warning("[MeshWriteClient] {$method} ".self::logPath($endpoint).' refused by Mesh (400)');
 
+                // #6106: no vendor text in the message (C-56): the status,
+                // and only the names of fields this client sends that the
+                // answer was keyed on (refusalFields()).
+                $fields = self::refusalFields($vendorBody);
+
                 throw new MeshWriteRejectedException(
-                    self::refusalText($vendorBody) ?? 'Mesh refused the request (400) without a readable reason.',
-                    $vendorBody,
+                    'Mesh refused the request (HTTP 400)'
+                    .($fields !== [] ? '; its answer named the field(s) '.implode(', ', $fields) : '').'.',
                 );
             }
 
@@ -709,7 +729,20 @@ class MeshWriteClient
             // create stays may-have-committed and fails closed.
             $failure = "{$method} ".self::logPath($endpoint).' failed in the HTTP client with no Mesh status recorded ('.$e::class.')';
             Log::error("[MeshWriteClient] {$failure}");
-            throw new MeshClientException("Mesh API error: {$failure}");
+            throw new MeshClientException("Mesh API error: {$failure}", noStatusRecorded: true);
+        }
+
+        $status = $response->getStatusCode();
+        if ($status >= 300 && $status < 400) {
+            // #6105: a redirect, not followed. Mesh (or something in front
+            // of it) answered, so for a write the request may have been
+            // acted on: never nothingSent. The status is the code, so the
+            // executor's createMayHaveCommitted() reconciles a 3xx on a
+            // create, and ruleAbsent() reads it as unmeasured, never as
+            // absent. The Location is neither followed, logged nor quoted.
+            $failure = "{$method} ".self::logPath($endpoint)." failed with HTTP {$status} (redirect not followed)";
+            Log::error("[MeshWriteClient] {$failure}");
+            throw new MeshClientException("Mesh API error: {$failure}", $status);
         }
 
         $decoded = json_decode((string) $response->getBody(), true);
@@ -721,11 +754,11 @@ class MeshWriteClient
      * Refusals decided before Guzzle is called, so nothing was sent (#5984,
      * #5985, #5991). The endpoint is parsed FIRST and its refusal logs the
      * fixed '[unparseable endpoint]' (#6048); the base-URL and key arms log
-     * logPath(), which fails closed on anything but a relative path. All
+     * logPath(), which logs only the rule collection's own path shape. All
      * three are client-detected (#6060). None quotes the base URL, the
      * endpoint or the key.
      */
-    private function preflight(string $method, string $endpoint): void
+    private function preflight(string $method, #[\SensitiveParameter] string $endpoint): void
     {
         try {
             // The same parse Guzzle's Utils::uriFor() does first; its
@@ -743,7 +776,7 @@ class MeshWriteClient
             throw new MeshClientException('The Mesh base URL could not be parsed; nothing was sent.', clientDetected: true, nothingSent: true);
         }
 
-        $keyRefusal = MeshClient::headerValueRefusal($this->config['api_key'] ?? '');
+        $keyRefusal = MeshClient::apiKeyRefusal($this->config['api_key'] ?? null);
         if ($keyRefusal !== null) {
             Log::error("[MeshWriteClient] {$method} ".self::logPath($endpoint)." refused: the Mesh API key {$keyRefusal}; nothing was sent");
             throw new MeshClientException("The Mesh API key {$keyRefusal}; nothing was sent.", clientDetected: true, nothingSent: true);
@@ -751,58 +784,50 @@ class MeshWriteClient
     }
 
     /**
-     * The endpoint as a log may carry it: the path, never a query string.
-     * Every public method builds a relative path from a constant and a
-     * rawurlencode()d id, which encodes '@' and ':'. Anything else (an '@',
-     * a ':' or a '//' anywhere in the path: possible user-info, scheme or
-     * host) is logged as '[unparseable endpoint]' (#6048, fails closed).
+     * The endpoint as a log may carry it (#6048, #6107, #6118). The query
+     * and fragment are cut first. Then an allowlist, not a search for bad
+     * bytes: the rule collection path RULE_ENDPOINT is kept as it is; a
+     * path under it (a rule id, encoded or not, and anything after it) is
+     * logged as RULE_ENDPOINT.'<rule>/', as MeshClient::logPath() logs a
+     * customer id as <customer>; anything else (a host, a scheme, user-info,
+     * another route) is the fixed '[unparseable endpoint]'. So a vendor rule
+     * id never reaches a log line, and neither does a host, whatever bytes
+     * encode it.
      */
     private static function logPath(string $endpoint): string
     {
         $path = substr($endpoint, 0, strcspn($endpoint, '?#'));
 
-        return strpbrk($path, '@:') !== false || str_contains($path, '//')
-            ? MeshClient::UNPARSEABLE_ENDPOINT
-            : $path;
+        if ($path === self::RULE_ENDPOINT) {
+            return $path;
+        }
+
+        return str_starts_with($path, self::RULE_ENDPOINT)
+            ? self::RULE_ENDPOINT.'<rule>/'
+            : MeshClient::UNPARSEABLE_ENDPOINT;
     }
 
     /**
-     * The vendor's refusal, flattened to one line.
+     * The request fields this client sends (createAllowRule() and
+     * PATCHABLE_FIELDS). Only these may be named from a 400 answer.
      *
-     * Both measured 400 shapes are covered: the sender validator answers
-     * `{"detail":…,"errors":[…]}` and the comment validator answers a bare
-     * field map `{"comment":["String invalid"]}`. Anything unrecognised
-     * falls back to a compact JSON dump rather than being dropped — the whole
-     * point of this passthrough is that the caller sees why Mesh said no
-     * (#1018 criterion 9), and a shape we did not anticipate is exactly the
-     * case where masking it would cost the most.
-     *
-     * @param  array<string, mixed>  $body
+     * @var array<int, string>
      */
-    private static function refusalText(array $body): ?string
+    private const SENT_FIELDS = ['users', 'domains', 'active', 'sender', 'comment', 'ab', 'customer_id', 'organization_level', 'date_expiry'];
+
+    /**
+     * #6106: the top-level keys of a 400 answer that name a field this
+     * client sends, in SENT_FIELDS order. Never a value: the measured
+     * sender refusal echoes the sender mailbox in its text, and Mesh's
+     * answer is vendor text (C-56). A key outside SENT_FIELDS is dropped.
+     *
+     * @param  array<int|string, mixed>  $body
+     * @return list<string>
+     */
+    private static function refusalFields(array $body): array
     {
-        $parts = [];
+        $keys = array_map('strval', array_keys($body));
 
-        if (is_scalar($body['detail'] ?? null)) {
-            $parts[] = trim((string) $body['detail']);
-        }
-
-        foreach ($body as $key => $value) {
-            if ($key === 'detail') {
-                continue;
-            }
-
-            $flat = is_array($value)
-                ? implode('; ', array_map(static fn ($v): string => is_scalar($v) ? (string) $v : json_encode($v), $value))
-                : (is_scalar($value) ? (string) $value : json_encode($value));
-
-            if (trim($flat) !== '') {
-                $parts[] = $key === 'errors' ? $flat : "{$key}: {$flat}";
-            }
-        }
-
-        $text = trim(implode(' — ', array_filter($parts, static fn (string $p): bool => trim($p) !== '')));
-
-        return $text !== '' ? mb_substr($text, 0, 500) : null;
+        return array_values(array_filter(self::SENT_FIELDS, static fn (string $f): bool => in_array($f, $keys, true)));
     }
 }

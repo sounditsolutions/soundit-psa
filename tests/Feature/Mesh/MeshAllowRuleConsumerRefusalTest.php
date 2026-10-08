@@ -132,9 +132,19 @@ class MeshAllowRuleConsumerRefusalTest extends TestCase
     {
         $actor = $this->actor();
         $mock = new MockHandler([new Response(201, [], '{"added_for":["'.self::TENANT.'"]}')]);
-        $this->bindWrite($mode === 'null-http'
+        $write = $mode === 'null-http'
             ? new MeshWriteClient(['api_key' => 'test-placeholder-not-a-key', 'base_url' => self::BAD_BASE_URL])
-            : new MeshWriteClient(['api_key' => "SECRET_FIXTURE-6062\r\nX: 1"], new GuzzleClient(['handler' => HandlerStack::create($mock)])));
+            : new MeshWriteClient(['api_key' => "SECRET_FIXTURE-6062\r\nX: 1"], new GuzzleClient(['handler' => HandlerStack::create($mock)]));
+        $this->bindWrite($write);
+        $http = new \ReflectionProperty($write, 'http');
+        if ($mode === 'null-http') {
+            // #6110: this row's client has no transport at all, so the
+            // MockHandler below is not wired into it and cannot witness a
+            // send. What can: the client holds no transport to send with.
+            $this->assertNull($http->getValue($write), 'premise: PSR-7 refused the base URL, so the client holds no transport');
+        } else {
+            $this->assertNotNull($http->getValue($write), 'premise: the MockHandler is this client\'s transport');
+        }
         $run = $this->stageAdd();
 
         $this->actingAs($actor)->post(route('cockpit.approve', $run))->assertSessionHas('error');
@@ -145,7 +155,11 @@ class MeshAllowRuleConsumerRefusalTest extends TestCase
         $this->assertSame(['rejected'], $this->auditStatuses());
         $this->assertSame($expected, TechnicianActionLog::where('result_status', 'rejected')->value('summary'));
         $this->assertSame(0, MeshAllowRule::count(), 'no phantom row for a rule that never existed');
-        $this->assertSame(1, $mock->count(), 'nothing reached the handler');
+        if ($mode === 'null-http') {
+            $this->assertNull($http->getValue($write), 'still no transport after the approval');
+        } else {
+            $this->assertSame(1, $mock->count(), 'nothing reached the handler');
+        }
     }
 
     /**
@@ -178,7 +192,10 @@ class MeshAllowRuleConsumerRefusalTest extends TestCase
         $this->assertNull($record->mesh_rule_id);
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
         $summary = (string) TechnicianActionLog::where('result_status', 'executed_with_fault')->value('summary');
-        $this->assertStringStartsWith('Mesh did not acknowledge the create (the create failed without an HTTP status from Mesh)', $summary);
+        // #6104: the client threw before recording a status; whether Mesh
+        // answered is not known, so the text does not say it gave none.
+        $this->assertStringStartsWith("Mesh did not acknowledge the create (the create failed in the PSA's HTTP client with no Mesh status recorded)", $summary);
+        $this->assertStringNotContainsString('without an HTTP status from Mesh', $summary);
         $this->assertStringNotContainsString('nothing was sent', $summary);
         $this->assertStringNotContainsString('mesh-6062', $summary);
     }

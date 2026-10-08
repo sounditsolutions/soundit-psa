@@ -37,6 +37,9 @@ class MeshClientException extends \RuntimeException
      * @param  bool  $nothingSent  no request reached the wire: a pre-flight
      *                             refusal, or a connect-phase failure decided
      *                             before any request bytes were sent
+     * @param  bool  $noStatusRecorded  the HTTP client threw before a Mesh
+     *                                  status was recorded, and whether
+     *                                  Mesh answered is not known (#6104)
      */
     public function __construct(
         string $message = '',
@@ -44,6 +47,7 @@ class MeshClientException extends \RuntimeException
         ?\Throwable $previous = null,
         private readonly bool $clientDetected = false,
         private readonly bool $nothingSent = false,
+        private readonly bool $noStatusRecorded = false,
     ) {
         parent::__construct($message, $code, $previous);
     }
@@ -63,7 +67,9 @@ class MeshClientException extends \RuntimeException
      * answered the rule list read with HTTP 503". An upstream failure without
      * one: "the rule list read failed without an HTTP status from Mesh",
      * followed by "; nothing was sent" when the request never left the PSA —
-     * nothing from its message. A failure the client detected itself: its own
+     * nothing from its message. An HTTP-client failure with no status
+     * recorded (#6104): "the rule list read failed in the PSA's HTTP client
+     * with no Mesh status recorded". A failure the client detected itself: its own
      * message, which is the real cause and carries no vendor text.
      *
      * @param  string  $what  the call, as a noun phrase ("the rule list read")
@@ -78,6 +84,12 @@ class MeshClientException extends \RuntimeException
 
         if ($this->clientDetected && trim($this->getMessage()) !== '') {
             return $this->getMessage();
+        }
+
+        if ($this->noStatusRecorded) {
+            // #6104: not 'without an HTTP status from Mesh': the client
+            // threw before recording one, and Mesh may have answered.
+            return "{$what} failed in the PSA's HTTP client with no Mesh status recorded";
         }
 
         return "{$what} failed without an HTTP status from Mesh"
@@ -96,11 +108,13 @@ class MeshClientException extends \RuntimeException
      * and returns true so the handler does not also write its default record.
      * report() does not cover the console renderer or (string) $e; not
      * chaining covers the MESSAGES those print. (string) $e also prints the
-     * stack trace, and its frames show string arguments (a method, an
-     * endpoint, a tenant id) cut to zend.exception_string_param_max_len
-     * bytes whenever zend.exception_ignore_args is Off, which is PHP's
-     * built-in default (#6051, measured in MeshUncaughtRenderTest). Not
-     * chaining does not cover those; only that setting does.
+     * stack trace, whose frames show string arguments when
+     * zend.exception_ignore_args is Off (#6051). #6108: the Mesh clients'
+     * endpoint, tenant id, sender, comment and rule id parameters are
+     * #[\SensitiveParameter], so their frames show a
+     * SensitiveParameterValue object instead, at any
+     * zend.exception_string_param_max_len (MeshUncaughtRenderTest). Frames
+     * of callers outside the Mesh clients are not covered by that.
      */
     public function report(): bool
     {

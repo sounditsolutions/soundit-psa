@@ -31,7 +31,8 @@ class MeshCustomerController extends Controller
                 // Status only (C-56): the message quotes Guzzle's, which carries
                 // the request URI, the host and a summary of the vendor's body.
                 // Not "could not connect": Mesh may have answered with a status.
-                ->with('error', 'Could not load Mesh customers: '.$e->statusPhrase('the customer list read').'.');
+                // #6114: one full stop: a client-detected phrase ends in one.
+                ->with('error', 'Could not load Mesh customers: '.rtrim($e->statusPhrase('the customer list read'), '.').'.');
         }
 
         // Sort customers by company_name

@@ -223,31 +223,41 @@ class MeshWriteClientTest extends TestCase
         $this->assertNull($client->findRuleByComment('tenant-1', 'someone-else@example.test', 'PSA allow AAAAAAAAAA'));
     }
 
-    public function test_a_400_becomes_a_rejection_carrying_the_vendor_text(): void
+    /**
+     * #6106: the measured sender refusal echoes the sender mailbox in its
+     * text. The rejection's message is the PSA's own, status-only.
+     */
+    public function test_a_400_becomes_a_status_only_rejection_without_the_vendor_text(): void
     {
-        $body = ['detail' => 'No Allow/Block Rules added', 'errors' => ['Invalid sender: special-use or reserved domain']];
+        $body = ['detail' => 'No Allow/Block Rules added', 'errors' => ['Invalid sender: billing@vendor.example.test is special-use or reserved']];
         $client = $this->clientReturning([new Response(400, [], json_encode($body))]);
 
         try {
-            $client->createAllowRule('tenant-1', 'root@localhost', 'PSA allow AAAAAAAAAA', '2026-12-01T00:00:00+00:00');
+            $client->createAllowRule('tenant-1', 'billing@vendor.example.test', 'PSA allow AAAAAAAAAA', '2026-12-01T00:00:00+00:00');
             $this->fail('a 400 must raise MeshWriteRejectedException');
         } catch (MeshWriteRejectedException $e) {
-            $this->assertStringContainsString('No Allow/Block Rules added', $e->getMessage());
-            $this->assertStringContainsString('Invalid sender', $e->getMessage());
-            $this->assertSame($body, $e->vendorBody());
+            $this->assertSame('Mesh refused the request (HTTP 400).', $e->getMessage());
             $this->assertSame(400, $e->getCode());
+            $this->assertSame('Mesh answered the create with HTTP 400', $e->statusPhrase('the create'));
+            foreach (['billing@vendor.example.test', 'No Allow/Block', 'Invalid sender'] as $vendor) {
+                $this->assertStringNotContainsString($vendor, (string) $e);
+            }
         }
     }
 
-    public function test_a_field_map_400_is_also_passed_through(): void
+    /** #6106: a field-map 400 names only the field this client sent, never its vendor text. */
+    public function test_a_field_map_400_names_only_the_sent_field(): void
     {
-        $client = $this->clientReturning([new Response(400, [], json_encode(['comment' => ['String invalid']]))]);
+        $client = $this->clientReturning([new Response(400, [], json_encode([
+            'comment' => ['String invalid'],
+            'unknown_vendor_key' => ['x'],
+        ]))]);
 
         try {
             $client->createAllowRule('tenant-1', 'a@example.test', 'PSA allow # 1', '2026-12-01T00:00:00+00:00');
             $this->fail('a 400 must raise MeshWriteRejectedException');
         } catch (MeshWriteRejectedException $e) {
-            $this->assertStringContainsString('comment: String invalid', $e->getMessage());
+            $this->assertSame('Mesh refused the request (HTTP 400); its answer named the field(s) comment.', $e->getMessage());
         }
     }
 
@@ -423,7 +433,7 @@ class MeshWriteClientTest extends TestCase
         $this->clientReturning([])->patchRule('   ', ['date_expiry' => null]);
     }
 
-    public function test_patch_reports_a_vendor_400_as_a_rejection_with_its_own_text(): void
+    public function test_patch_reports_a_vendor_400_as_a_status_only_rejection(): void
     {
         $client = $this->clientReturning([
             new Response(400, [], json_encode(['date_expiry' => ['Datetime has wrong format.']])),
@@ -433,7 +443,8 @@ class MeshWriteClientTest extends TestCase
             $client->patchRule('rule-1', ['date_expiry' => 'not-a-date']);
             $this->fail('a 400 must surface as a vendor rejection');
         } catch (MeshWriteRejectedException $e) {
-            $this->assertStringContainsString('Datetime has wrong format', $e->getMessage());
+            $this->assertSame('Mesh refused the request (HTTP 400); its answer named the field(s) date_expiry.', $e->getMessage());
+            $this->assertStringNotContainsString('Datetime has wrong format', (string) $e, '#6106: no vendor text');
         }
     }
 }

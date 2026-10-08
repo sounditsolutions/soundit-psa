@@ -24,12 +24,10 @@ use Tests\TestCase;
  * request() throw sites no longer chain Guzzle's exception, so neither
  * surface can carry ITS message: URI, user-info or vendor body.
  *
- * #6051: (string) $e also prints the stack trace. Its frames show string
- * arguments whenever zend.exception_ignore_args is Off (PHP's built-in
- * default), cut to zend.exception_string_param_max_len bytes. The rows
- * above pass under the ini the suite runs with; the last test measures
- * both settings instead of assuming one, and pins that not chaining does
- * NOT cover trace arguments.
+ * #6051: (string) $e also prints the stack trace. Its frames show
+ * arguments whenever zend.exception_ignore_args is Off. #6108: the Mesh
+ * clients' endpoint and id parameters are #[\SensitiveParameter]; the last
+ * test measures both settings with a 1000-byte cut.
  *
  * Positive control: every marker is on the raw Guzzle exception the client
  * caught (RecordsGuzzleRejections). G-5: MockHandler only, stray Http
@@ -109,24 +107,39 @@ class MeshUncaughtRenderTest extends TestCase
     }
 
     /**
-     * #6051, measured: a refused endpoint's frame in (string) $e. With
-     * exception_ignore_args On no argument is printed; with it Off and the
-     * built-in 15-byte cut, the first 15 bytes of the endpoint are.
+     * #6051 measured that with zend.exception_ignore_args Off the refused
+     * endpoint's first bytes reached (string) $e through its frame. #6108:
+     * the Mesh clients' endpoint and id parameters are
+     * #[\SensitiveParameter], so no frame shows them at any length cut
+     * (here 1000 bytes, past the whole value), with ignore_args On or Off.
+     * #6109: the client's transport is a MockHandler, so even a preflight
+     * regression could not reach a real handler; the queue proves nothing
+     * was asked for.
      */
-    public function test_trace_arguments_in_the_string_form_depend_on_exception_ignore_args(): void
+    public function test_trace_arguments_in_the_string_form_carry_no_endpoint_or_tenant(): void
     {
         $endpoint = '//synthuser-6051:SYNTHPASS-6051@'.self::HOST.':99999/api/customers/';
+        $tenant = '11111111-2222-3333-4444-555555555555';
         $saved = [ini_get('zend.exception_ignore_args'), ini_get('zend.exception_string_param_max_len')];
         $strings = [];
+        $mock = new MockHandler([new Response(503, [], self::BODY), new Response(503, [], self::BODY)]);
         try {
+            ini_set('zend.exception_string_param_max_len', '1000');
             foreach (['1', '0'] as $ignore) {
                 ini_set('zend.exception_ignore_args', $ignore);
-                ini_set('zend.exception_string_param_max_len', '15');
+                $client = new MeshClient(['api_key' => 'test-placeholder-not-a-key', 'base_url' => 'https://'.self::HOST]);
+                (new \ReflectionProperty($client, 'http'))->setValue($client, new GuzzleClient(['handler' => HandlerStack::create($mock)]));
                 try {
-                    (new MeshClient(['api_key' => 'test-placeholder-not-a-key', 'base_url' => 'https://'.self::HOST]))->get($endpoint);
+                    $client->get($endpoint);
                     $this->fail('the endpoint must be refused');
                 } catch (MeshClientException $e) {
-                    $strings[$ignore] = (string) $e;
+                    $strings["endpoint/{$ignore}"] = (string) $e;
+                }
+                try {
+                    $client->getCustomer($tenant);
+                    $this->fail('the 503 must fail the read');
+                } catch (MeshClientException $e) {
+                    $strings["tenant/{$ignore}"] = (string) $e;
                 }
             }
         } finally {
@@ -134,9 +147,14 @@ class MeshUncaughtRenderTest extends TestCase
             ini_set('zend.exception_string_param_max_len', (string) $saved[1]);
         }
 
-        $this->assertStringNotContainsString('synthuser-6051', $strings['1'], 'ignore_args On: no argument in the trace');
-        $this->assertStringContainsString("'//synthuser-605...'", $strings['0'], 'ignore_args Off: the endpoint prefix is in the trace; not chaining does not cover it');
-        $this->assertStringNotContainsString('SYNTHPASS-6051', $strings['0'], 'the 15-byte cut stops before the password');
+        $this->assertSame(0, $mock->count(), 'premise: the two tenant reads reached the MockHandler; the refused endpoint did not');
+        $this->assertStringContainsString('SensitiveParameterValue', $strings['endpoint/0'], 'positive control: with ignore_args Off the frame shows the redacted parameter');
+        $this->assertStringContainsString("'GET'", $strings['endpoint/0'], 'positive control: with ignore_args Off other arguments are printed');
+        foreach ($strings as $where => $text) {
+            foreach (['synthuser-6051', 'SYNTHPASS-6051', self::HOST, '11111111-2222'] as $leak) {
+                $this->assertStringNotContainsString($leak, $text, "{$where}: the trace carries '{$leak}'");
+            }
+        }
     }
 
     private function renderForConsole(\Throwable $e): string

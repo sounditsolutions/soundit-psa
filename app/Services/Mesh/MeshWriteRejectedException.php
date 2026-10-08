@@ -6,11 +6,14 @@ namespace App\Services\Mesh;
  * A write Mesh REFUSED at the application layer (HTTP 400) — the server
  * validated the request and declined it. Distinct from MeshClientException
  * (transport / auth / 5xx) because a 400 is a DETERMINATE refusal: Mesh
- * validated the request and did not act, so nothing needs reconciling. The
- * vendor's own validation text is kept on the exception (the message and
- * vendorBody()), but it is the vendor's response body, so the executor
- * reports a refusal by its status only (C-56, card FLzMLDxF) through
- * statusPhrase(), not by this text.
+ * validated the request and did not act, so nothing needs reconciling.
+ *
+ * #6106: the message is written by the PSA and carries no vendor text: the
+ * status, and at most the names of request fields Mesh's answer was keyed
+ * on, from a fixed allowlist (MeshWriteClient::refusalFields()). The
+ * vendor's validation text (it can echo the sender mailbox) is neither in
+ * the message nor kept on the exception. Callers report a refusal through
+ * statusPhrase() (C-56, card FLzMLDxF), as before.
  *
  * Two validators are measured (2026-09-01 enforcement test, prod tenant):
  *   - `sender`  → {"detail":"No Allow/Block Rules added","errors":["Invalid sender: …special-use or reserved…"]}
@@ -20,17 +23,8 @@ namespace App\Services\Mesh;
  */
 class MeshWriteRejectedException extends MeshClientException
 {
-    /** @param array<string, mixed> $vendorBody */
-    public function __construct(
-        string $message,
-        private readonly array $vendorBody = [],
-    ) {
-        parent::__construct($message, 400);
-    }
-
-    /** @return array<string, mixed> */
-    public function vendorBody(): array
+    public function __construct(string $message)
     {
-        return $this->vendorBody;
+        parent::__construct($message, 400);
     }
 }

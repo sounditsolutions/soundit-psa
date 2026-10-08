@@ -235,13 +235,14 @@ class MeshRequestPreflightTest extends TestCase
     }
 
     /**
-     * #6061: the class-only arm after a SEND. Mesh answers a 3xx whose
-     * Location PSR-7 cannot parse; the vendored RedirectMiddleware throws
-     * the MalformedUriException unwrapped, after the handler answered. So
-     * the arm is reachable post-send and nothingSent must stay unset.
+     * #6061 measured the class-only arm after a SEND: a 3xx whose Location
+     * PSR-7 cannot parse, thrown unwrapped by RedirectMiddleware. #6105
+     * stopped following redirects, so that answer is now a failure by its
+     * status (#6104: the text names the status Mesh gave), the Location is
+     * never parsed, and nothingSent stays unset (Mesh answered).
      */
     #[DataProvider('clients')]
-    public function test_the_class_only_arm_follows_a_send_and_claims_nothing_sent(string $which): void
+    public function test_a_3xx_with_an_unparseable_location_is_a_status_failure_not_the_class_only_arm(string $which): void
     {
         $location = '//'.self::USER.':'.self::PASS.'@'.self::HOST.':99999/elsewhere';
         [$guzzle, $mock] = $this->mockGuzzle(new Response(302, ['Location' => $location]));
@@ -249,10 +250,29 @@ class MeshRequestPreflightTest extends TestCase
 
         $this->assertInstanceOf(MeshClientException::class, $e);
         $this->assertSame(0, $mock->count(), 'premise: the request reached the handler and Mesh answered 302');
-        $this->assertStringEndsWith('failed in the HTTP client with no Mesh status recorded ('.\GuzzleHttp\Psr7\Exception\MalformedUriException::class.')', $e->getMessage());
+        $this->assertSame(302, $e->getCode());
+        $this->assertStringEndsWith('failed with HTTP 302 (redirect not followed)', $e->getMessage());
         $this->assertFalse($e->nothingWasSent(), 'sent and answered: nothingSent must stay unset (fail closed)');
-        $this->assertSame('the read failed without an HTTP status from Mesh', $e->statusPhrase('the read'));
+        $this->assertSame('Mesh answered the read with HTTP 302', $e->statusPhrase('the read'));
         $this->assertNothingCarries($e, [self::USER, self::PASS, self::HOST, 'Unable to parse URI']);
+    }
+
+    /**
+     * #6104: the class-only arm does not say Mesh gave no status: the
+     * client threw before recording one, and whether Mesh answered is not
+     * known.
+     */
+    #[DataProvider('clients')]
+    public function test_the_class_only_arms_phrase_claims_no_absent_status(string $which): void
+    {
+        [$guzzle] = $this->mockGuzzle(function () {
+            throw new \InvalidArgumentException('synthetic: thrown inside the client for '.self::HOST);
+        });
+        $e = $this->callMesh($which, ['api_key' => 'test-placeholder-not-a-key', 'base_url' => 'https://'.self::HOST], $guzzle);
+
+        $this->assertInstanceOf(MeshClientException::class, $e);
+        $this->assertSame("the read failed in the PSA's HTTP client with no Mesh status recorded", $e->statusPhrase('the read'));
+        $this->assertFalse($e->nothingWasSent());
     }
 
     /**

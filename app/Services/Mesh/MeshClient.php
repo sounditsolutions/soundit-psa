@@ -38,6 +38,9 @@ class MeshClient
             $this->http = new Client([
                 'base_uri' => rtrim($this->config['base_url'] ?? 'https://hub-us.emailsecurity.app', '/').'/',
                 'timeout' => 90,
+                // #6105: a redirect is never followed (request() also sets
+                // it per request); see request().
+                'allow_redirects' => false,
             ]);
         } catch (\InvalidArgumentException) {
             $this->http = null;
@@ -47,7 +50,7 @@ class MeshClient
     /**
      * Make an authenticated GET request to the Mesh API.
      */
-    public function get(string $endpoint, array $params = []): array
+    public function get(#[\SensitiveParameter] string $endpoint, array $params = []): array
     {
         return $this->request('GET', $endpoint, ['query' => $params]);
     }
@@ -69,7 +72,7 @@ class MeshClient
     /**
      * Search Mesh customers. Returns paginated results.
      */
-    public function getCustomers(?string $filter = null, int $size = 100): array
+    public function getCustomers(#[\SensitiveParameter] ?string $filter = null, int $size = 100): array
     {
         $params = ['_from' => 0, '_size' => $size];
         if ($filter) {
@@ -84,7 +87,7 @@ class MeshClient
     /**
      * Get a single Mesh customer by UUID.
      */
-    public function getCustomer(string $uuid): array
+    public function getCustomer(#[\SensitiveParameter] string $uuid): array
     {
         return $this->get("api/customers/{$uuid}/");
     }
@@ -141,24 +144,33 @@ class MeshClient
      * API-KEY header, and the console renderer and (string) $e (which a
      * queue worker stores in failed_jobs) both print every previous
      * exception's message ((string) $e also prints the stack trace, whose
-     * frames show string arguments only when zend.exception_ignore_args is
-     * Off; #6051). Before Guzzle is called, preflight() refuses an endpoint
+     * frames show arguments when zend.exception_ignore_args is Off, #6051;
+     * #6108: $endpoint and the id parameters are #[\SensitiveParameter],
+     * so these methods' frames do not show them). Before Guzzle is called, preflight() refuses an endpoint
      * PSR-7 cannot parse (#5878, #6049, #6060: code 0, nothingSent, #5990,
      * and no endpoint text at all), a base URL it could not parse (#5991)
      * and an API key an HTTP header cannot carry (#5979). A status-less
      * failure names the cURL errno when the handler recorded one (#6050:
      * the number only). Any other InvalidArgumentException from the HTTP
-     * client is reported by class only, not as a Mesh status, and may
-     * follow a send (#6061).
+     * client is reported by class only, not as a Mesh status, and makes
+     * no claim about what was sent (#6061). #6105: redirects are never
+     * followed. Guzzle's RedirectMiddleware strips only Authorization and
+     * Cookie on a cross-origin hop, so a followed redirect would carry the
+     * API-KEY header to whatever host Location names. A 3xx is a failure
+     * by its status: logged and thrown like any other status, its Location
+     * never read or quoted.
      */
-    private function request(string $method, string $endpoint, array $options = []): array
+    private function request(string $method, #[\SensitiveParameter] string $endpoint, array $options = []): array
     {
         $this->preflight($method, $endpoint);
 
         $options['headers'] = [
-            'API-KEY' => $this->config['api_key'] ?? '',
+            'API-KEY' => $this->config['api_key'],
             'Accept' => 'application/json',
         ];
+        // #6105: per request too, so a transport built elsewhere (a test
+        // seam, a future factory) cannot follow one either.
+        $options['allow_redirects'] = false;
 
         try {
             $response = $this->http->request($method, $endpoint, $options);
@@ -179,17 +191,28 @@ class MeshClient
             throw new MeshClientException("Mesh API error: {$failure}", $e->getCode());
         } catch (\InvalidArgumentException $e) {
             // #5979: endpoint and API key were checked in preflight(), so
-            // this is something else the HTTP client threw. #6061: that is
-            // not only request options or handler setup: the vendored
-            // RedirectMiddleware parses a 3xx answer's Location with PSR-7
-            // and does not wrap its refusal, so this arm can follow a
-            // request Mesh received and answered (MeshRequestPreflightTest
-            // drives it). Its message may quote a URI or a header value, so
-            // class only, unchained, and no claim about what was sent:
-            // nothingSent stays unset.
+            // this is something else the HTTP client threw. #6061 measured
+            // one such route after a send: RedirectMiddleware parsing an
+            // unparseable Location. #6105 turned redirects off, so that
+            // route now ends in the 3xx arm below with its status
+            // (MeshRedirectRefusalTest). Whether any other route can follow
+            // a send is not measured. Its message may quote a URI or a
+            // header value, so class only, unchained, and no claim about
+            // what was sent: nothingSent stays unset.
             $failure = "{$method} ".self::logPath($endpoint).' failed in the HTTP client with no Mesh status recorded ('.$e::class.')';
             Log::error("[MeshClient] {$failure}");
-            throw new MeshClientException("Mesh API error: {$failure}");
+            throw new MeshClientException("Mesh API error: {$failure}", noStatusRecorded: true);
+        }
+
+        $status = $response->getStatusCode();
+        if ($status >= 300 && $status < 400) {
+            // #6105: Mesh (or something in front of it) answered with a
+            // redirect, which is not followed. A failure by status, like
+            // any other: the Location is neither followed, logged nor
+            // quoted, and the answered status is the exception's code.
+            $failure = "{$method} ".self::logPath($endpoint)." failed with HTTP {$status} (redirect not followed)";
+            Log::error("[MeshClient] {$failure}");
+            throw new MeshClientException("Mesh API error: {$failure}", $status);
         }
 
         $body = (string) $response->getBody();
@@ -206,7 +229,7 @@ class MeshClient
      * quotes the base URL or the key; logPath() is what the line shows of
      * the endpoint.
      */
-    private function preflight(string $method, string $endpoint): void
+    private function preflight(string $method, #[\SensitiveParameter] string $endpoint): void
     {
         try {
             // The same parse Guzzle's Utils::uriFor() does first; its
@@ -222,7 +245,7 @@ class MeshClient
             throw new MeshClientException('The Mesh base URL could not be parsed; nothing was sent.', clientDetected: true, nothingSent: true);
         }
 
-        $keyRefusal = self::headerValueRefusal($this->config['api_key'] ?? '');
+        $keyRefusal = self::apiKeyRefusal($this->config['api_key'] ?? null);
         if ($keyRefusal !== null) {
             Log::error("[MeshClient] {$method} ".self::logPath($endpoint)." refused: the Mesh API key {$keyRefusal}; nothing was sent");
             throw new MeshClientException("The Mesh API key {$keyRefusal}; nothing was sent.", clientDetected: true, nothingSent: true);
@@ -245,6 +268,24 @@ class MeshClient
     }
 
     /**
+     * Why the PSA will not send $key as the API-KEY header, or null when it
+     * will. #6103: a missing key (null, false, '' or blanks, which PSR-7
+     * trims to '') and true (sent as '1') are refused as 'is not
+     * configured', the same set MeshWriteClient::isConfigured() refuses
+     * (empty(), so '0' and 0 too), plus true. Then the header rule.
+     */
+    public static function apiKeyRefusal(mixed $key): ?string
+    {
+        return self::apiKeyMissing($key) ? 'is not configured' : self::headerValueRefusal($key);
+    }
+
+    /** #6103: the 'is not configured' set of apiKeyRefusal(). */
+    public static function apiKeyMissing(mixed $key): bool
+    {
+        return empty($key) || $key === true || (is_string($key) && trim($key, " \t") === '');
+    }
+
+    /**
      * What PSR-7's MessageTrait accepts as a header value, whose refusal
      * quotes the value (#5979, #5985): a scalar or null, cast to a string
      * and trimmed of spaces and tabs (#6054: an int or float key is
@@ -258,15 +299,20 @@ class MeshClient
     /**
      * Why PSR-7 would refuse $value as a header value, as the end of 'the
      * Mesh API key …', or null when it would not (#6054: the reason names
-     * what was measured).
+     * what was measured). One exception, stricter than PSR-7: an array,
+     * which PSR-7 reads as a list of header values, is refused because
+     * the PSA sends one key as one value (#6111: the reason says so).
+     * #6113: NAN, INF and -INF need no branch of their own: (string)
+     * gives 'NAN', 'INF' and '-INF', which the byte rule accepts, as
+     * PSR-7 does (MeshHeaderValueBoundaryTest rows).
      */
     public static function headerValueRefusal(mixed $value): ?string
     {
+        if (is_array($value)) {
+            return 'is a list of values, and the PSA sends one key as one header value';
+        }
         if (! is_scalar($value) && $value !== null) {
             return 'is not a value an HTTP header can carry';
-        }
-        if (is_float($value) && ! is_finite($value)) {
-            return null; // PSR-7 writes it as 'NAN', 'INF' or '-INF'.
         }
 
         return preg_match('/^[\x20\x09\x21-\x7E\x80-\xFF]*$/D', (string) $value) === 1
