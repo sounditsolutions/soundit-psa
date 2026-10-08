@@ -12,6 +12,7 @@ use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Sleep;
 
 /**
  * LITSRMM stage 3: devices become PSA assets.
@@ -37,8 +38,10 @@ use Illuminate\Support\Facades\Log;
  *    LitsrmmSerial) never match and are never written.
  *  - A FAILED LIST READ CHANGES NOTHING. A degraded read is not evidence
  *    that machines are gone. A failed DETAIL read (getDevice) costs only that
- *    device's hardware: its list facts are still written, its hardware is
- *    left as it was, and the run records an error. A single detail read
+ *    device's hardware: its hardware is left as it was and the run records
+ *    an error, which says whether its list facts were written (they are,
+ *    unless syncClient() skips the device for another reason: a shared
+ *    serial, an ambiguous match, an asset already claimed, #5784). A single detail read
  *    answered 404 among reads that succeed is most likely the device leaving
  *    between the list and the detail read, though a 404 does not prove that
  *    (#5583), so its asset is left exactly as it was (no write, its link
@@ -54,12 +57,14 @@ use Illuminate\Support\Facades\Log;
  *    an error on the result (so the command exits FAILURE), a log line
  *    carrying the PSA client id and the counts only, and nothing of it is
  *    written (no asset, no link released, no retirement, no seat). One 404
- *    among reads that otherwise succeed stays a skip. So does exactly half
- *    of the reads failing, two 404s of four reads included (#5795): "more
- *    than half" is the ruled bound, and each such 404 is still reported as
- *    a skip with its own log line, its link kept and nothing of it
- *    written, so it does not pass silently; the run then exits SUCCESS
- *    unless something else failed. Failures with no 404
+ *    among reads that otherwise succeed stays a skip. Exactly half of the
+ *    reads failing is not degraded either, two 404s of four reads included
+ *    (#5795): "more than half" is the ruled bound. Each such 404 is still
+ *    reported as a skip with its own log line, its link kept and nothing
+ *    of it written, so it does not pass silently; each failure other than
+ *    a 404 is an error as below, so the run exits FAILURE when there is
+ *    one (#5842), and SUCCESS when they were all 404s and nothing else
+ *    failed. Failures with no 404
  *    among them are not a degraded read: they cost only those devices'
  *    hardware, as above.
  *  - A SHORT LIST IS NOT THE TRUTH (#5343, #5575, #5576). Only links on
@@ -72,10 +77,12 @@ use Illuminate\Support\Facades\Log;
  *    is not retired, and that one runs the vendor's agent, is not
  *    half-retired and is not already linked to an asset; and by exactly one
  *    asset of the client that is not linked to a live listed device. It is
- *    narrower than syncClient(), which relinks an agentless device by its
- *    serial too (#5796): such a link still counts as unlisted here, so the
- *    bound may refuse a client whose accepted run then releases less than
- *    the refusal counted. That errs towards refusing. A
+ *    narrower than syncClient(), which also relinks such an asset to an
+ *    agentless device by its serial, and to a listed device by its
+ *    hostname, a device with no serial included (matchUnlinked(), #5796,
+ *    #5848): such a link still counts as unlisted here, so the bound may
+ *    refuse a client whose accepted run then releases less than the
+ *    refusal counted. That errs towards refusing. A
  *    client is refused, and nothing
  *    of it is read in detail or written (no asset, no link released, no
  *    retirement, no seat), when any of these holds, checked in this order:
@@ -102,17 +109,23 @@ use Illuminate\Support\Facades\Log;
  *    refused on every run, scheduled ones included (each exits FAILURE and
  *    logs the refusal), until an admin passes it with --accept-short-read
  *    (below); a transient one clears when a later read is whole; and a
- *    read whose counts changed is refused with a new code.
+ *    read whose counts or device set changed is refused with a new code.
  *    The refusal is an error on the result (so the command exits FAILURE),
  *    counted in details['short_read_refused'], and a log line carrying the
  *    PSA client id, the rule and the counts only, the count of listed
  *    retired or half-retired devices included (#5687), and the refusal code
- *    itself under 'code'. Its message ends with that code on a line of its
+ *    itself under 'code'; a second fixed, single-line record
+ *    ('refusal code for --accept-short-read') carries it under
+ *    'refusal_code' (#5844, #5845). The code is a context field, not text
+ *    the message places on a line, so it reads the same under any log
+ *    formatter. Its error message ends with that code on a line of its
  *    own, nothing after it, so the line pasted as it is passes
- *    isRefusalCode() (#5786); describe() keeps nothing after a code. The
- *    error message is what the command prints and what a Sync button
- *    flashes (as its last text: the page shows the line break as a space);
- *    a scheduled run's output goes nowhere, so its code is in the log. A refusal
+ *    isRefusalCode() (#5786). The command prints each code as a line of
+ *    its own. A Sync button flashes describe(), whose page shows each line
+ *    break as a space: there each refusal's code is followed by a space and
+ *    the next refusal's text ('client N: refused ...'), and only the last
+ *    refusal's code is the last text of the message (#5843). A scheduled
+ *    run's output goes nowhere, so its code is in the log. A refusal
  *    that would also leave the client 0 seats says so whatever its rule
  *    (#5797). A normal shrink
  *    inside that bound still releases and still writes the seats.
@@ -125,16 +138,26 @@ use Illuminate\Support\Facades\Log;
  *    and only when this run's read refuses it with exactly that rule and
  *    those counts (#5680): a read with another rule or other counts (an
  *    empty page after a truncated one, say) is refused as usual and its
- *    message says the accept named another refusal. The code binds counts,
- *    not which devices were read (#5785): another read with the same rule
- *    and the same counts (for rule (a), any empty page of that client)
- *    passes, so an accept is for a run the admin starts and watches. A passed client is synced as if the bound had not fired, and
+ *    message says the accept named another refusal. The code also binds
+ *    which devices were read (#5785): it ends with a device-set digest
+ *    (deviceSetDigest()), so another read with the same counts but other
+ *    devices listed, or other links to release, is refused with a code of
+ *    its own. A code without the digest (the shape before #5785) is
+ *    rejected by the command, which says to re-run and paste the new
+ *    code. An empty read hashes the same however it came about, so a rule
+ *    (a) accept passes only if a second device list read, a few seconds
+ *    later in the same run, lists none of the client's devices either
+ *    (confirmEmptyRead()). A code passes once: given more than once in a
+ *    run it passes nothing, and nothing is stored between runs, so the
+ *    next run checks its own read again. A passed client is synced as if the bound had not fired, and
  *    only once its transaction has committed is it counted in
  *    details['short_read_accepted'] and logged with the PSA client id
  *    (#5681, #5783). A code that passed nothing (another client than
- *    --client, an id not mapped, no such refusal, a client then refused as
- *    a degraded detail read, a device list read that failed so no client
- *    was examined, or a second code for a client another code passed) is
+ *    --client, an id not mapped, no such refusal, a code given more than
+ *    once, an empty read the second read did not confirm, a client then
+ *    refused as a degraded detail read, a client whose transaction rolled
+ *    back, a device list read that failed so no client was examined, or a
+ *    second code for a client another code passed) is
  *    listed by its PSA client id in details['short_read_accept_unused']
  *    (#5688, #5788, #5789). Nothing stores it: the
  *    next run applies the bound again. The schedule and the Sync buttons
@@ -207,6 +230,17 @@ class LitsrmmAssetSyncService
      */
     public const RELEASE_FLOOR = 3;
 
+    /** #5785: hex digits of the device-set digest that ends a refusal code (deviceSetDigest()). */
+    public const DIGEST_LENGTH = 10;
+
+    /**
+     * #5785 (ii): an accepted rule (a) refusal (an empty read) releases only
+     * if a second device list read, this many seconds later in the same run,
+     * also lists none of the client's devices. Through the Sleep facade, so
+     * tests fake it.
+     */
+    public const EMPTY_READ_RETRY_SECONDS = 5;
+
     public function __construct(private readonly LitsrmmClient $litsrmm) {}
 
     /**
@@ -225,9 +259,12 @@ class LitsrmmAssetSyncService
     }
 
     /**
-     * One line for an operator after a button press: the counts, then every
-     * error and every refused guess, so a flash message never hides why a
-     * machine was not linked.
+     * The text a Sync button flashes: the counts, the retired, accepted and
+     * unused-accept notes, then every refused guess ('Skipped: '), then every
+     * error ('Errors: ', joinErrors()), so a flash message never hides why a
+     * machine was not linked. One line, unless a refusal is among the
+     * errors: each refusal is then a line of its own ending with its code,
+     * and the last code ends the text (#5786, #5852).
      */
     public static function describe(SyncResult $result): string
     {
@@ -258,12 +295,15 @@ class LitsrmmAssetSyncService
     }
 
     /**
-     * The errors joined by '; ' and closed with '.', with every refusal
-     * last (#5786): a refusal message ends with its code on a line of its
-     * own, and nothing is added after a code but a line break before the
-     * next refusal. So the last refusal's code ends the text a Sync button
-     * flashes (the page shows the line break as a space), and every code
-     * line can be pasted as it is into --accept-short-read.
+     * The errors that are not refusals, joined by '; '; then every refusal
+     * last, joined by a line break (#5786, #5852). With no refusal the text
+     * is closed with '.'; with one, '; ' comes before the first refusal and
+     * nothing at all follows the last code. A refusal message ends with its
+     * code on a line of its own, so every code line of the raw text can be
+     * pasted as it is into --accept-short-read. On the page the line break
+     * shows as a space, so there each code but the last is followed by the
+     * next refusal's text, and only the last refusal's code ends the text a
+     * Sync button flashes (#5843).
      *
      * @param  list<string>  $messages
      */
@@ -294,9 +334,11 @@ class LitsrmmAssetSyncService
      *
      * $acceptShortRead: refusal codes (refusalCode()) an admin passed with
      * --accept-short-read for this run only. Each passes at most the one
-     * refusal it names; a client with any code that passed nothing (a second
-     * code for a client another code passed included, #5789) is listed by
-     * PSA client id in details['short_read_accept_unused'].
+     * refusal it names, once: a code given more than once passes nothing
+     * (#5785). A client with any code that passed nothing (a second code for
+     * a client another code passed included, #5789) is listed by PSA client
+     * id in details['short_read_accept_unused']. Nothing marks a code used
+     * beyond this run.
      *
      * @param  list<string>  $acceptShortRead
      */
@@ -304,13 +346,20 @@ class LitsrmmAssetSyncService
     {
         $result = new SyncResult;
         $accepted = [];
-        foreach ($acceptShortRead as $code) {
-            $accepted[(int) strtok((string) $code, ':')][] = (string) $code;
+        // #5785 (i): a code is single-use. One given more than once in a run
+        // passes nothing: its refusal is refused, saying so.
+        $reused = [];
+        foreach (array_count_values(array_map('strval', $acceptShortRead)) as $code => $times) {
+            $code = (string) $code;
+            $accepted[(int) strtok($code, ':')][] = $code;
+            if ($times > 1) {
+                $reused[$code] = true;
+            }
         }
         $used = [];
 
         try {
-            $this->syncAll($only, $accepted, $used, $result);
+            $this->syncAll($only, $accepted, $reused, $used, $result);
         } finally {
             $unused = array_keys(array_filter(
                 $accepted,
@@ -328,9 +377,10 @@ class LitsrmmAssetSyncService
 
     /**
      * @param  array<int, list<string>>  $accepted  PSA client id => accepted refusal codes
+     * @param  array<string, true>  $reused  codes given more than once this run, which pass nothing (#5785)
      * @param  array<string, true>  $used  refusal codes that passed a refusal whose client was then synced and committed
      */
-    private function syncAll(?Client $only, array $accepted, array &$used, SyncResult $result): void
+    private function syncAll(?Client $only, array $accepted, array $reused, array &$used, SyncResult $result): void
     {
 
         $clients = Client::query()
@@ -374,7 +424,7 @@ class LitsrmmAssetSyncService
         foreach ($clients as $client) {
             $rows = $byVendorClient[strtolower($client->litsrmm_client_id)] ?? [];
 
-            [$refused, $acceptedRefusal] = $this->refuseShortRead($client, $rows, $result, $accepted[$client->id] ?? []);
+            [$refused, $acceptedRefusal] = $this->refuseShortRead($client, $rows, $result, $accepted[$client->id] ?? [], $reused);
 
             if ($refused) {
                 continue;
@@ -482,28 +532,68 @@ class LitsrmmAssetSyncService
     }
 
     /**
-     * The refusal code of a short-read refusal: the PSA client id, the rule
-     * and every count the refusal message shows, joined by ':'. It is what
-     * --accept-short-read takes (#5680), so an accept passes only a refusal
-     * with exactly the rule and counts the admin checked. Ids and counts
-     * only (C-56).
+     * The refusal code of a short-read refusal, joined by ':': the PSA client
+     * id, the rule, every count the refusal message shows (listed, linked,
+     * unlisted, seats held, seats read, retired listed), and last the
+     * device-set digest (#5785), e.g. 12:b:1:5:4:5:1:0:d0123456789. It is
+     * what --accept-short-read takes (#5680), so an accept passes only a
+     * refusal with exactly the rule, the counts and the device set the admin
+     * checked. The PSA id, counts and a hash only (C-56): no vendor id.
      *
-     * @param  array{client_id: int, rule: string, listed: int, linked: int, unlisted: int, seats_held: int, seats_read: int, retired_listed: int}  $context
+     * @param  array{client_id: int, rule: string, listed: int, linked: int, unlisted: int, seats_held: int, seats_read: int, retired_listed: int, digest: string}  $context
      */
     public static function refusalCode(array $context): string
     {
         return implode(':', [
             $context['client_id'], $context['rule'], $context['listed'], $context['linked'],
             $context['unlisted'], $context['seats_held'], $context['seats_read'], $context['retired_listed'],
+            $context['digest'],
         ]);
+    }
+
+    /**
+     * The device-set digest that ends a refusal code (#5785): 'd' and the
+     * first DIGEST_LENGTH lowercase hex digits of the sha256 of these bytes:
+     * the vendor device ids the read lists for the client (every row,
+     * retired ones included), lowercased and sorted as strings; then a line
+     * '--'; then the ids of the linked assets the read would release (the
+     * unlisted ones), sorted as integers; all joined by "\n", with no line
+     * break at the end. An empty set adds no line, so an empty read of a
+     * client whose assets 3 and 4 are linked hashes "--\n3\n4". It is a hash:
+     * the device ids themselves never reach a message, a record or a log.
+     *
+     * @param  list<string>  $deviceIds
+     * @param  list<int>  $assetIds
+     */
+    public static function deviceSetDigest(array $deviceIds, array $assetIds): string
+    {
+        $deviceIds = array_map('strtolower', $deviceIds);
+        sort($deviceIds, SORT_STRING);
+        sort($assetIds, SORT_NUMERIC);
+
+        $bytes = implode("\n", array_merge($deviceIds, ['--'], array_map('strval', $assetIds)));
+
+        return 'd'.substr(hash('sha256', $bytes), 0, self::DIGEST_LENGTH);
     }
 
     /**
      * Whether $code has the shape refusalCode() writes: plain integers, so a
      * leading zero, which no refusal prints and none could match, is
-     * rejected before anything is read (#5793).
+     * rejected before anything is read (#5793); and the device-set digest
+     * last (#5785).
      */
     public static function isRefusalCode(string $code): bool
+    {
+        return preg_match('/^[1-9]\d*:[abcd](:(0|[1-9]\d*)){6}:d[0-9a-f]{'.self::DIGEST_LENGTH.'}$/D', $code) === 1;
+    }
+
+    /**
+     * Whether $code has the shape refusal codes had before the device-set
+     * digest (#5785): the client id, the rule and the six counts, nothing
+     * after. Such a code can never match: the command rejects it and says to
+     * re-run and paste the new code.
+     */
+    public static function isPreDigestRefusalCode(string $code): bool
     {
         return preg_match('/^[1-9]\d*:[abcd](:(0|[1-9]\d*)){6}$/D', $code) === 1;
     }
@@ -520,14 +610,19 @@ class LitsrmmAssetSyncService
      * with --accept-short-read (#5577, #5680). A refusal whose code is among
      * them is not refused: its context comes back as the second element, and
      * sync() counts and logs it as accepted only once the client is synced
-     * (#5681). Any other refusal is refused as usual, and its message says
-     * the accept named a different one.
+     * (#5681). Except (#5785): a code in $reused (given more than once this
+     * run) passes nothing, and its refusal's message says so; and a rule
+     * (a) code passes only if confirmEmptyRead() finds the second list read
+     * empty too, or the client is refused with that read's own error. Any
+     * other refusal is refused as usual, and its message says the accept
+     * named a different one.
      *
      * @param  list<LitsrmmDevice>  $rows
      * @param  list<string>  $acceptCodes
+     * @param  array<string, true>  $reused  codes given more than once this run
      * @return array{0: bool, 1: array<string, int|string>|null} refused; the accepted refusal's log context
      */
-    private function refuseShortRead(Client $client, array $rows, SyncResult $result, array $acceptCodes = []): array
+    private function refuseShortRead(Client $client, array $rows, SyncResult $result, array $acceptCodes = [], array $reused = []): array
     {
         $assets = Asset::where('client_id', $client->id)
             ->get(['id', 'litsrmm_device_id', 'litsrmm_retired_at', 'serial_number']);
@@ -546,8 +641,9 @@ class LitsrmmAssetSyncService
         // already; and by exactly one asset not linked to a live listed
         // device. syncClient() then relinks that asset (or keeps its link,
         // when that device's detail read answers 404). It would also relink
-        // by an agentless device's serial, which exempts nothing here
-        // (#5796): that errs towards refusing.
+        // by an agentless device's serial, or by hostname (a device with no
+        // serial included), which exempt nothing here (#5796, #5848): that
+        // errs towards refusing.
         $listed = [];
         $liveIds = [];
         $deviceSerials = [];
@@ -582,7 +678,7 @@ class LitsrmmAssetSyncService
         }
 
         $linked = $links->count();
-        $unlisted = $links->filter(function (Asset $a) use ($listed, $eligible, $deviceSerials, $assetSerials) {
+        $unlistedLinks = $links->filter(function (Asset $a) use ($listed, $eligible, $deviceSerials, $assetSerials) {
             if (isset($listed[strtolower($a->litsrmm_device_id)])) {
                 return false;
             }
@@ -590,7 +686,8 @@ class LitsrmmAssetSyncService
 
             return $serial === null || ! isset($eligible[$serial])
                 || $deviceSerials[$serial] !== 1 || ($assetSerials[$serial] ?? 0) !== 1;
-        })->count();
+        });
+        $unlisted = $unlistedLinks->count();
 
         $seatsHeld = (int) License::where('client_id', $client->id)
             ->whereHas('licenseType', fn ($q) => $q->where('vendor', self::LICENSE_VENDOR))
@@ -622,20 +719,31 @@ class LitsrmmAssetSyncService
             'seats_held' => $seatsHeld,
             'seats_read' => $seatsRead,
             'retired_listed' => $retiredListed,
+            // #5785: binds which devices were read and which links would go.
+            'digest' => self::deviceSetDigest(
+                array_map(fn (LitsrmmDevice $d) => $d->id, $rows),
+                $unlistedLinks->map(fn (Asset $a) => (int) $a->id)->values()->all(),
+            ),
         ];
         $code = self::refusalCode($context);
 
-        if (in_array($code, $acceptCodes, true)) {
+        $given = in_array($code, $acceptCodes, true);
+
+        if ($given && ! isset($reused[$code])) {
+            if ($rule === 'a' && ! $this->confirmEmptyRead($client, $result)) {
+                return [true, null];
+            }
+
             return [false, $context];
         }
 
-        // The joined code is in the log too: a scheduled run's output goes
-        // nowhere, so the log is where its refusal code is found (#5786).
-        // The second line's message ends with the code on a line of its own
-        // and a line break, so the file line formatter writes its context on
-        // the line after and the code line can be pasted as it is.
+        // The code is in the log too: a scheduled run's output goes nowhere,
+        // so the log is where its refusal code is found (#5786). It is a
+        // context field ('code' here, 'refusal_code' in the record below),
+        // which every formatter writes as it is (#5844); both messages are
+        // fixed and single-line (#5845).
         Log::warning('[LitsrmmAssetSync] client refused: short read', $context + ['code' => $code]);
-        Log::warning("[LitsrmmAssetSync] refusal code for --accept-short-read, on the next line:\n{$code}\n", ['client_id' => $client->id]);
+        Log::warning('[LitsrmmAssetSync] refusal code for --accept-short-read', ['client_id' => $client->id, 'refusal_code' => $code]);
         $result->details['short_read_refused'] = ($result->details['short_read_refused'] ?? 0) + 1;
         $result->recordError(
             "client {$client->id}: refused as a short read (rule {$rule}: the read lists ".count($rows)
@@ -644,7 +752,11 @@ class LitsrmmAssetSyncService
             .self::zeroSeatsClause($rule, $seatsHeld, $seatsRead)
             .'; nothing of this client was changed. Each run checks its own read, so a later read refused the same way'
             .' is refused again, with a code of its own when its counts differ.'
-            .($acceptCodes !== [] ? ' The --accept-short-read given for this client named a different refusal, so it was not passed.' : '')
+            .match (true) {
+                $given => ' Its code was given to --accept-short-read more than once; a code passes one refusal once, so it was not passed.',
+                $acceptCodes !== [] => ' The --accept-short-read given for this client named a different refusal, so it was not passed.',
+                default => '',
+            }
             .' If the change is real, re-run litsrmm:sync-devices with --accept-short-read set to the code that follows, pasted exactly'
             ." (a bare client id is rejected):\n{$code}"
         );
@@ -653,10 +765,56 @@ class LitsrmmAssetSyncService
     }
 
     /**
+     * #5785 (ii): an accepted rule (a) refusal (the read lists none of the
+     * client's devices) passes only if a second device list read,
+     * EMPTY_READ_RETRY_SECONDS later in this run, lists none of them either.
+     * A digest cannot tell a real empty read from a transient one: every
+     * empty read of a client with the same links hashes the same. When the
+     * second read lists any device of the client, or fails, the client is
+     * refused for this run (an error, counted in
+     * details['short_read_refused'], logged with the PSA client id and the
+     * count or the failure's status only) and nothing of it is changed; its
+     * code is not marked used, so it is reported as passing nothing.
+     */
+    private function confirmEmptyRead(Client $client, SyncResult $result): bool
+    {
+        Sleep::for(self::EMPTY_READ_RETRY_SECONDS)->seconds();
+
+        try {
+            $devices = $this->litsrmm->getDevices();
+        } catch (LitsrmmClientException $e) {
+            $failure = self::failure($e);
+            Log::warning('[LitsrmmAssetSync] accepted empty read not confirmed: second list read failed', ['client_id' => $client->id] + $failure);
+            $result->details['short_read_refused'] = ($result->details['short_read_refused'] ?? 0) + 1;
+            $result->recordError("client {$client->id}: the accepted empty read (rule a) was not confirmed: the second device list read failed ("
+                .self::describeFailure($failure).'); nothing of this client was changed');
+
+            return false;
+        }
+
+        $vendorClient = strtolower($client->litsrmm_client_id);
+        $listed = count(array_filter($devices, fn (LitsrmmDevice $d) => strtolower($d->clientId) === $vendorClient));
+
+        if ($listed === 0) {
+            return true;
+        }
+
+        Log::warning('[LitsrmmAssetSync] accepted empty read not confirmed: second list read listed devices', ['client_id' => $client->id, 'listed' => $listed]);
+        $result->details['short_read_refused'] = ($result->details['short_read_refused'] ?? 0) + 1;
+        $result->recordError("client {$client->id}: the accepted empty read (rule a) was not confirmed: a second device list read "
+            .self::EMPTY_READ_RETRY_SECONDS." seconds later listed {$listed} device(s), so the empty read was transient; nothing of this client was changed");
+
+        return false;
+    }
+
+    /**
      * The zero-arm warning of a refusal whose read would leave the client 0
      * LITSRMM seats while it holds some (#5692, #5797). Rule (d) fires on that
      * whatever the drop; a rule (a), (b) or (c) refusal names only its own
      * rule, so the warning says that accepting it also zeroes the seats.
+     * Seats here are the client's total over both seat types, as in rule
+     * (d): a read that zeroes one type but not the other gets no warning
+     * (#5847, left as ruled on its adjudication).
      */
     private static function zeroSeatsClause(string $rule, int $seatsHeld, int $seatsRead): string
     {
