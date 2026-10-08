@@ -290,7 +290,7 @@ class MeshAllowRuleReaper
             app(SignalHub::class)->emit(
                 self::SIGNAL_UNRESOLVED,
                 $rule,
-                "Mesh allow rule #{$rule->id} stays unresolved: its scope was never proved; clear it by hand or remove it",
+                "Mesh allow rule #{$rule->id} stays unresolved: its scope was never proved; check the rule in the Mesh portal and clear the PSA record by hand",
                 ['client_id' => $rule->client_id],
             );
         } catch (\Throwable $e) {

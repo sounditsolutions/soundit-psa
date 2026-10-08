@@ -113,7 +113,7 @@ class MeshAllowRuleUnresolvedSignalTest extends TestCase
         $events = $this->events();
         $this->assertCount(1, $events);
         $event = $events->first();
-        $this->assertSame("Mesh allow rule #{$record->id} stays unresolved: its scope was never proved; clear it by hand or remove it", $event->summary);
+        $this->assertSame("Mesh allow rule #{$record->id} stays unresolved: its scope was never proved; check the rule in the Mesh portal and clear the PSA record by hand", $event->summary);
         $this->assertSame($record->getMorphClass(), $event->entity_type);
         $this->assertSame($record->id, (int) $event->entity_id);
         $this->assertSame(['client_id' => $record->client_id], $event->context);
