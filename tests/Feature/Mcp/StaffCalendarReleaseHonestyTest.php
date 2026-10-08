@@ -19,11 +19,13 @@ use Tests\TestCase;
 /**
  * #6124: every arm of approveStagedRun() that releases the claim before the write reads
  * releaseClaim()'s bool. When the CAS wins the decline keeps its advice (re-stage, add the owner
- * back, verify the ticket); when it loses (the run left Executing by another path) the decline
- * says the run was not reopened instead, and gives no advice that treats it as pending.
+ * back, verify the ticket); when it loses (the run left Executing, or another claim now holds
+ * it) the decline says the run was not reopened instead, and gives no advice that treats it as
+ * pending.
  *
  * The lost CAS is forced at the database: a listener moves the run to Flagged right after
- * claimForExecution()'s UPDATE, so every later release finds it no longer Executing.
+ * claimForExecution()'s UPDATE, so every later release finds it no longer Executing. One row
+ * instead restamps claimed_at (#6125), so the run stays Executing under another claim.
  * GraphClient is mocked; only the join-link arm reads it. Synthetic values only (G-13).
  */
 class StaffCalendarReleaseHonestyTest extends TestCase
@@ -32,7 +34,7 @@ class StaffCalendarReleaseHonestyTest extends TestCase
 
     private const OWNER = 'owner6124@example.test';
 
-    private const NOT_REOPENED = 'the run was not reopened (it is no longer executing); check its current state before acting on it again.';
+    private const NOT_REOPENED = 'the run was not reopened; check its current state before acting on it again.';
 
     private User $approver;
 
@@ -58,15 +60,21 @@ class StaffCalendarReleaseHonestyTest extends TestCase
         return TechnicianRun::findOrFail($staged['run_id']);
     }
 
-    /** After the claim's UPDATE, another path moves the run out of Executing. */
-    private function loseTheCasAfterTheClaim(TechnicianRun $run): void
+    /**
+     * After the claim's UPDATE, another path writes $change to the run: by default it moves the
+     * run out of Executing; a claimed_at change leaves it Executing under another claim.
+     *
+     * @param  array<string, mixed>|null  $change
+     */
+    private function loseTheCasAfterTheClaim(TechnicianRun $run, ?array $change = null): void
     {
+        $change ??= ['state' => TechnicianRunState::Flagged->value];
         $moved = false;
-        DB::listen(function (QueryExecuted $q) use ($run, &$moved): void {
+        DB::listen(function (QueryExecuted $q) use ($run, $change, &$moved): void {
             if (! $moved && str_starts_with(strtolower($q->sql), 'update') && str_contains($q->sql, 'technician_runs')
                 && in_array(TechnicianRunState::Executing->value, $q->bindings, true)) {
                 $moved = true;
-                DB::table('technician_runs')->where('id', $run->id)->update(['state' => TechnicianRunState::Flagged->value]);
+                DB::table('technician_runs')->where('id', $run->id)->update($change);
             }
         });
     }
@@ -143,6 +151,24 @@ class StaffCalendarReleaseHonestyTest extends TestCase
         foreach (['re-stage', 'Add it back', 'Verify the ticket first'] as $advice) {
             $this->assertStringNotContainsString($advice, (string) $r->message);
         }
+    }
+
+    /**
+     * #6125: the release can also lose while the run is still Executing, under a claim another
+     * approver now holds (the claimed_at fence). The decline says only that the run was not
+     * reopened, which is true on this path as on the Flagged one.
+     */
+    public function test_a_refusal_whose_release_loses_on_the_claim_owner_fence_says_not_reopened(): void
+    {
+        $run = $this->staged(['user_upn' => self::OWNER, 'event_id' => 'EVT-6124', 'comment' => 'x', 'reason' => 'Resolved.']);
+        Setting::setValue('calendar_enabled', '0');
+        $this->loseTheCasAfterTheClaim($run, ['claimed_at' => now()->addMinute()]);
+
+        $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run->fresh(), $this->approver->id);
+
+        $this->assertSame('gate_declined', $r->status);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'positive control: the CAS lost on the fence and the run is still Executing');
+        $this->assertSame('The calendar toolset is now disabled in this deployment; the staged write was refused; '.self::NOT_REOPENED, $r->message);
     }
 
     /**

@@ -114,8 +114,9 @@ class TechnicianRun extends Model
     /**
      * Release a claimed run back to the queue (executing → awaiting_approval). Direct update
      * because claimForExecution bypasses dirty tracking. Returns whether the CAS won — false
-     * means the run was no longer Executing (it completed, or another releaser beat us), which
-     * lets the stale-claim reaper count only the runs it actually rescued.
+     * means the run was no longer Executing (it completed, or another releaser beat us) or is
+     * Executing under a claim this instance does not hold (#6125), which lets the stale-claim
+     * reaper count only the runs it actually rescued.
      */
     public function releaseClaim(): bool
     {

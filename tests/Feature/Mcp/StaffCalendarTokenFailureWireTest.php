@@ -289,7 +289,7 @@ class StaffCalendarTokenFailureWireTest extends TestCase
 
         $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run, $this->approver->id);
 
-        $this->assertSame('The calendar update was not sent: reading the event before the update failed upstream (Microsoft Graph). Nothing was written to the calendar; the run was not reopened (it is no longer executing); check its current state before acting on it again.', $r->message);
+        $this->assertSame('The calendar update was not sent: reading the event before the update failed upstream (Microsoft Graph). Nothing was written to the calendar; the run was not reopened; check its current state before acting on it again.', $r->message);
         $this->assertSame(TechnicianRunState::Flagged, $run->fresh()->state, 'positive control: the CAS lost');
         $this->assertSame(['GET'], array_map(fn (RequestInterface $q) => $q->getMethod(), $this->requestsTo('graph.microsoft.com')));
     }
@@ -361,7 +361,7 @@ class StaffCalendarTokenFailureWireTest extends TestCase
         $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run, $this->approver->id);
 
         $this->assertSame('gate_declined', $r->status);
-        $this->assertSame('The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar; the run was not reopened (it is no longer executing); check its current state before acting on it again.', $r->message);
+        $this->assertSame('The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar; the run was not reopened; check its current state before acting on it again.', $r->message);
         $this->assertSame(TechnicianRunState::Flagged, $run->fresh()->state, 'positive control: the CAS lost');
         // #6122: the same controls as the other wire rows.
         $this->assertCount(1, $this->requestsTo('login.microsoftonline.com'), 'positive control: the token request ran');
@@ -388,7 +388,7 @@ class StaffCalendarTokenFailureWireTest extends TestCase
         $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run, $this->approver->id);
 
         $this->assertSame('gate_declined', $r->status);
-        $this->assertSame('The calendar write failed upstream (Microsoft Graph); it is safe to retry (Graph de-duplicates the create by transaction id). The run was not reopened (it is no longer executing); check its current state before acting on it again.', $r->message);
+        $this->assertSame('The calendar write failed upstream (Microsoft Graph); it is safe to retry (Graph de-duplicates the create by transaction id). The run was not reopened; check its current state before acting on it again.', $r->message);
         $this->assertSame(TechnicianRunState::Flagged, $run->fresh()->state, 'positive control: the CAS lost');
     }
 

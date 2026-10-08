@@ -89,13 +89,18 @@ trait FlattensLogContext
      * (an Authorization header in an $options array is found). An object argument is written as
      * its class only and is not walked: frames hold the container, the test case and the client
      * itself, and walking those exhausts memory. A credential held inside an object argument is
-     * therefore outside this scan.
+     * therefore outside this scan. Frames of PHPUnit's own classes (the test runner) are skipped:
+     * they hold the runner's argv, whose test file paths can match a needle (for example
+     * 'Bearer' in GraphClientBearerFrameTest.php) and depend on how the suite was invoked.
      */
     protected static function frameArgumentsForScan(\Throwable $e): string
     {
         $parts = [];
         for ($link = $e, $links = 0; $link !== null && $links < 8; $link = $link->getPrevious(), $links++) {
             foreach ($link->getTrace() as $i => $frame) {
+                if (str_starts_with($frame['class'] ?? '', 'PHPUnit\\')) {
+                    continue;
+                }
                 foreach ($frame['args'] ?? [] as $n => $arg) {
                     $parts[] = $link::class."#{$i} ".($frame['function'] ?? '?')." arg {$n}: ".self::frameArgumentForScan($arg, 0);
                 }

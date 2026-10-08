@@ -57,10 +57,12 @@ class StaffCalendarToolExecutor
     private const TOKEN_FAILURE_AUDIT = 'Graph calendar write not sent (no Graph access token was obtained): ';
 
     /**
-     * #6016: the decline tail when releaseClaim() returned false: the run had already left
-     * Executing (another path moved it), so it was not reopened and a re-approve is not offered.
+     * #6016: the decline tail when releaseClaim() returned false: this release did not reopen the
+     * run, so the tail says so and a re-approve is not offered. It names no cause: the CAS loses
+     * when the run is no longer Executing and also, since the claim-owner fence (#6125), when it
+     * is still Executing under a claim this instance does not hold.
      */
-    private const NOT_REOPENED = 'the run was not reopened (it is no longer executing); check its current state before acting on it again.';
+    private const NOT_REOPENED = 'the run was not reopened; check its current state before acting on it again.';
 
     /**
      * #6121: the audit summary prefix when the event read an update with a body makes before its
@@ -1019,7 +1021,7 @@ class StaffCalendarToolExecutor
             // #6124: the exception is rethrown, so no text is returned here; a lost CAS is
             // recorded instead of passing as a reopen.
             if (! $run->releaseClaim()) {
-                Log::warning('[Calendar] approval failed before the write and the run was not reopened (it is no longer executing)', [
+                Log::warning('[Calendar] approval failed and the run was not reopened', [
                     'run_id' => $run->id, 'exception' => $e::class,
                 ]);
             }
@@ -1031,8 +1033,7 @@ class StaffCalendarToolExecutor
     /**
      * #6124: release the claim on a pre-write refusal and decline. $fact states the refusal;
      * $advice (which treats the run as still pending) is appended only when releaseClaim()'s CAS
-     * won. On a lost CAS the run left Executing by another path and is not in the approval
-     * queue, so NOT_REOPENED is appended instead.
+     * won. On a lost CAS this call did not reopen the run, so NOT_REOPENED is appended instead.
      */
     private function releaseAndDecline(TechnicianRun $run, string $fact, string $advice): TechnicianApprovalResult
     {
