@@ -87,7 +87,8 @@ class RetryEmailAttachments implements ShouldQueue
     }
 
     /**
-     * $ids with the earlier runs' undiscarded ids (#5803); null (not known, #5799) stays null.
+     * $ids with the earlier runs' undiscarded ids (#5803); null (not known, #5799) stays null,
+     * and writeMarker then records the earlier runs' ids on their own.
      *
      * @param  list<int>|null  $ids
      * @return list<int>|null
@@ -132,7 +133,9 @@ class RetryEmailAttachments implements ShouldQueue
 
             if ($outcome !== null && $outcome['requeueable'] && $this->refusals < self::MAX_REFUSAL_REQUEUES) {
                 self::uninterrupted(function () use ($key, $outcome): void {
-                    self::dispatch($this->emailId, $this->ticketId, $this->noteId, $this->baseline, $this->refusals + 1,
+                    // #5807: a payload queued before #5807 carries retryState's raw rows; the re-queue
+                    // carries their fingerprint, which compares exactly as they did, never the rows.
+                    self::dispatch($this->emailId, $this->ticketId, $this->noteId, EmailService::retryFingerprint($this->baseline), $this->refusals + 1,
                         $this->withEarlier($outcome['undiscarded_attachment_ids']))
                         ->delay(self::REQUEUE_DELAY_SECONDS);
                     self::$progress[$key]['requeued'] = true;
@@ -244,7 +247,8 @@ class RetryEmailAttachments implements ShouldQueue
     }
 
     /**
-     * #5803: the final run linked, and an earlier run left rows undiscarded. C-56: ids only.
+     * #5803: an earlier run left rows undiscarded, and the final run linked or its marker carries
+     * null (its own ids not known in this process, #5799). C-56: ids only.
      */
     private function warnEarlierUndiscarded(): void
     {
@@ -259,9 +263,16 @@ class RetryEmailAttachments implements ShouldQueue
         }
     }
 
-    /** @param  list<int>|null  $undiscarded  null when not known in this process (#5799) */
+    /**
+     * @param  list<int>|null  $undiscarded  null when not known in this process (#5799); the
+     *                                       earlier runs' ids (#5803), known from the payload, then
+     *                                       go in their own EARLIER_UNDISCARDED record
+     */
     private function writeMarker(string $reason, ?array $undiscarded): void
     {
+        if ($undiscarded === null && $this->earlierUndiscarded !== []) {
+            $this->warnEarlierUndiscarded();
+        }
         $noted = false;
         try {
             if (Ticket::whereKey($this->ticketId)->exists()) {

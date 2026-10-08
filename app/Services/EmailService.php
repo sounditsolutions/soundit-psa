@@ -1314,12 +1314,14 @@ PROMPT;
     /**
      * #5807: retryState with the ticket and note rows replaced by a sha256 of serialize() of
      * each, so two states compare equal exactly when their rows are identical in value and type,
-     * as the !== on the rows themselves did. A row given as a hash already is kept.
+     * as the !== on the rows themselves did. A row given as a hash already is kept. Public so
+     * RetryEmailAttachments re-queues a payload queued before #5807 as its fingerprint, never
+     * its raw rows.
      *
      * @param  array<string, mixed>|null  $state
      * @return array{ticket: mixed, note: mixed, attachments: mixed}|null
      */
-    private static function retryFingerprint(?array $state): ?array
+    public static function retryFingerprint(?array $state): ?array
     {
         if ($state === null) {
             return null;
