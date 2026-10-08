@@ -97,15 +97,43 @@ class EmailItemAttachmentTest extends TestCase
     /** Deepest nesting walk() reads; anything deeper fails the scan instead of passing it (#5536). */
     private const WALK_MAX_DEPTH = 12;
 
-    private const MIME = "From: Payroll Team <payroll@phish.example.test>\r\n"
+    /*
+     * Fixture values that are also needle sources (#5629): the fixtures below and
+     * forbiddenNeedles() both read these, and needleControls() plants copies taken from the
+     * fixtures' own output, so a needle that stops matching its fixture fails its control.
+     */
+    private const ITEM_NAME = 'Urgent: verify your payroll account';
+
+    private const EMAIL_SUBJECT = 'FW: suspicious';
+
+    private const EMAIL_BODY = 'Is this legit?';
+
+    private const EMAIL_FROM = 'user@example.test';
+
+    private const FILE_NAME = 'Invoice Template.docx';
+
+    private const REFERENCE_NAME = 'Sales Invoice Template.docx';
+
+    private const MIME_SENDER = 'payroll@phish.example.test';
+
+    private const PHISH_URL = 'http://198.51.100.7/login';
+
+    /** #5625: distinctive, so they can be needles; G-13 synthetic. */
+    private const GRAPH_BEARER = 'SECRET_FIXTURE_b4n_graph_bearer';
+
+    private const TENANT = 'tenant-b4n-synthetic';
+
+    private const CLIENT_CREDENTIAL = 'SECRET_FIXTURE_b4n_client_credential';
+
+    private const MIME = 'From: Payroll Team <'.self::MIME_SENDER.">\r\n"
         ."Return-Path: <bounce@phish.example.test>\r\n"
         ."Received: from mail.phish.example.test (192.0.2.10) by mx.example.test\r\n"
         ."Authentication-Results: mx.example.test; spf=fail smtp.mailfrom=phish.example.test\r\n"
-        ."To: User <user@example.test>\r\n"
-        ."Subject: Urgent: verify your payroll account\r\n"
+        .'To: User <'.self::EMAIL_FROM.">\r\n"
+        .'Subject: '.self::ITEM_NAME."\r\n"
         ."Content-Type: text/plain; charset=\"us-ascii\"\r\n"
         ."MIME-Version: 1.0\r\n\r\n"
-        ."Click http://198.51.100.7/login to keep your pay.\r\n";
+        .'Click '.self::PHISH_URL." to keep your pay.\r\n";
 
     protected function setUp(): void
     {
@@ -126,6 +154,24 @@ class EmailItemAttachmentTest extends TestCase
         }
         $this->captureAllLogChannels();
     }
+
+    /**
+     * #5626: a write through the ORIGINAL manager (the #5530 limit) lands in a stray file, not
+     * the TestHandler, so every passing test checks the files before tearDown() removes them.
+     * #5627: a logger captured() refused fails the test even when the code under test caught
+     * the LogicException.
+     */
+    protected function assertPostConditions(): void
+    {
+        foreach ($this->strayLogPaths as $kind => $path) {
+            $this->assertFileDoesNotExist($path, "#5626: a record reached the {$kind} file, outside the capture");
+        }
+        $this->assertNull($this->uncapturable, '#5627: captureAllLogChannels refused a logger the code under test then used');
+        parent::assertPostConditions();
+    }
+
+    /** #5627: what captured() refused, set even when the code under test swallows the throw. */
+    private ?string $uncapturable = null;
 
     protected function tearDown(): void
     {
@@ -158,7 +204,14 @@ class EmailItemAttachmentTest extends TestCase
      *    (#5532);
      *  - a resolved logger that is not Monolog (a custom 'via' returning another PSR-3 logger)
      *    cannot be given the handler, so captured() fails the test instead of passing it
-     *    through uncaptured (#5531).
+     *    through uncaptured (#5531); it also records the refusal, and assertPostConditions()
+     *    fails the test on it, so code under test that catches the LogicException cannot
+     *    drop the record silently (#5627);
+     *  - #5631: each rewritten channel keeps its configured 'processors' (and the
+     *    PsrLogMessageProcessor 'replace_placeholders' adds) and its 'tap' list, so what they
+     *    put in the record's extra or message in production is in the scanned record. Not kept:
+     *    a processor configured on a handler or formatter rather than the channel (the handler
+     *    is replaced), and a 'monolog' channel's 'formatter'.
      * Not captured (#5530): a logger the code builds itself, outside the Log manager
      * (new Monolog\Logger(...)); any object that took the ORIGINAL manager, or a logger from it,
      * before this method ran (for example a singleton built at boot with LoggerInterface or
@@ -173,19 +226,24 @@ class EmailItemAttachmentTest extends TestCase
     {
         $this->logs = new TestHandler;
         $handler = $this->logs;
-        foreach (array_keys(config('logging.channels')) as $name) {
+        foreach (config('logging.channels') as $name => $channel) {
+            // #5631: keep what the channel adds to a record: its processors and its taps.
+            $kept = array_intersect_key($channel, array_flip(['processors', 'replace_placeholders', 'tap']));
             config(["logging.channels.{$name}" => [
                 'driver' => 'custom',
-                'via' => fn () => new \Monolog\Logger($name, [$handler]),
-            ]]);
+                'via' => fn (array $config) => new \Monolog\Logger($name, [$handler], self::channelProcessors($config)),
+            ] + $kept]);
             Log::forgetChannel($name);
         }
         config(['logging.channels.emergency' => ['path' => $this->strayLogPaths['emergency']]]);
 
         $original = Log::getFacadeRoot();
-        Log::swap(new class($this->app, $handler, $original) extends \Illuminate\Log\LogManager
+        $refused = function (string $type): void {
+            $this->uncapturable ??= $type;
+        };
+        Log::swap(new class($this->app, $handler, $original, $refused) extends \Illuminate\Log\LogManager
         {
-            public function __construct($app, private readonly TestHandler $capture, \Illuminate\Log\LogManager $original)
+            public function __construct($app, private readonly TestHandler $capture, \Illuminate\Log\LogManager $original, private readonly \Closure $refused)
             {
                 parent::__construct($app);
                 $this->sharedContext = $original->sharedContext();
@@ -212,6 +270,7 @@ class EmailItemAttachmentTest extends TestCase
             {
                 $monolog = $logger instanceof \Illuminate\Log\Logger ? $logger->getLogger() : $logger;
                 if (! $monolog instanceof \Monolog\Logger) {
+                    ($this->refused)(get_debug_type($monolog));
                     throw new \LogicException('captureAllLogChannels cannot capture a '.get_debug_type($monolog).' logger');
                 }
                 if ($monolog->getHandlers() !== [$this->capture]) {
@@ -221,6 +280,26 @@ class EmailItemAttachmentTest extends TestCase
                 return $logger;
             }
         });
+    }
+
+    /**
+     * #5631: the processors a channel's config gives its logger, as LogManager builds them: the
+     * 'processors' list (a class, or ['processor' => class, 'with' => [...]]) and the
+     * PsrLogMessageProcessor that 'replace_placeholders' adds.
+     *
+     * @return list<\Monolog\Processor\ProcessorInterface|callable>
+     */
+    private static function channelProcessors(array $config): array
+    {
+        $processors = array_map(
+            fn ($p) => app()->make($p['processor'] ?? $p, $p['with'] ?? []),
+            $config['processors'] ?? [],
+        );
+        if ($config['replace_placeholders'] ?? false) {
+            $processors[] = new \Monolog\Processor\PsrLogMessageProcessor;
+        }
+
+        return $processors;
     }
 
     /** @return list<LogRecord> */
@@ -240,12 +319,12 @@ class EmailItemAttachmentTest extends TestCase
         $stack->push(Middleware::history($this->history));
 
         $cache = new Repository(new ArrayStore);
-        $cache->put('graph_api_token', 'test-token', 3600);
+        $cache->put('graph_api_token', self::GRAPH_BEARER, 3600);
 
         $graph = new GraphClient([
-            'tenant_id' => 'tenant',
+            'tenant_id' => self::TENANT,
             'client_id' => 'client',
-            'client_secret' => 'secret',
+            'client_secret' => self::CLIENT_CREDENTIAL,
             'request_timeout' => 15,
             'token_timeout' => 10,
             'handler' => $stack,
@@ -270,7 +349,7 @@ class EmailItemAttachmentTest extends TestCase
             '@odata.type' => '#microsoft.graph.itemAttachment',
             'id' => 'ATT-ITEM-1',
             'lastModifiedDateTime' => '2026-10-05T10:00:00Z',
-            'name' => 'Urgent: verify your payroll account',
+            'name' => self::ITEM_NAME,
             'contentType' => null,
             'size' => 32005,
             'isInline' => false,
@@ -283,7 +362,7 @@ class EmailItemAttachmentTest extends TestCase
             '@odata.type' => '#microsoft.graph.fileAttachment',
             'id' => 'ATT-FILE-1',
             'lastModifiedDateTime' => '2026-10-05T10:00:00Z',
-            'name' => 'Invoice Template.docx',
+            'name' => self::FILE_NAME,
             'contentType' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             'size' => 13068,
             'isInline' => false,
@@ -299,7 +378,7 @@ class EmailItemAttachmentTest extends TestCase
             '@odata.type' => '#microsoft.graph.referenceAttachment',
             'id' => 'ATT-REF-1',
             'lastModifiedDateTime' => '2026-10-05T10:00:00Z',
-            'name' => 'Sales Invoice Template.docx',
+            'name' => self::REFERENCE_NAME,
             'contentType' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             'size' => 1060,
             'isInline' => true,
@@ -311,10 +390,10 @@ class EmailItemAttachmentTest extends TestCase
         return Email::create($overrides + [
             'graph_id' => 'MSG-1',
             'direction' => 'inbound',
-            'from_address' => 'user@example.test',
+            'from_address' => self::EMAIL_FROM,
             'from_name' => 'User',
-            'subject' => 'FW: suspicious',
-            'body_text' => 'Is this legit?',
+            'subject' => self::EMAIL_SUBJECT,
+            'body_text' => self::EMAIL_BODY,
             'received_at' => now(),
         ]);
     }
@@ -372,42 +451,111 @@ class EmailItemAttachmentTest extends TestCase
 
     /**
      * What no record may carry (C-56), by label. Matching is case-insensitive substring
-     * (#5534), so a re-cased, truncated-at-the-end or embedded copy of a needle is caught; each
-     * needle is chosen so that a partial copy of the secret still contains one:
-     *  - the mailbox raw, its local part with '@', URL-encoded (whole and local part), double
-     *    encoded and base64;
-     *  - Graph's error text, its opening words (a Str::limit() cut keeps them) and Graph's error
-     *    codes used by the fixtures (vendor text);
-     *  - the message body (#5541): the item's name (which is the MIME Subject), MIME fragments
-     *    (sender, sending IP, phishing URL) and the email's own subject and body.
-     * Not covered: a re-encoding not listed here (hex, a hash, any other transform), a fragment
-     * shorter than every needle, or the item name's slug: '[Attachment] Stored from content'
-     * logs the stored filename ('urgent-verify-your-payroll-account.eml') today, so a slug
-     * needle would fail on that record.
+     * (#5534). Every needle is derived from the fixture constants the fixtures themselves use,
+     * and needleControls() plants a fixture-derived copy for each label (#5628, #5629):
+     *  - the mailbox raw, its local part with '@', URL-encoded (whole and local part) and double
+     *    encoded;
+     *  - base64 (#5623): for the mailbox, the MIME sender and the item name, the encoding of the
+     *    secret at each of the three byte alignments, cut to whole 4-character groups and
+     *    unpadded. That is the substring any base64 of a longer text containing the secret
+     *    holds (a Graph contentBytes of the MIME, 'To: <mailbox>', a trailing newline), and
+     *    base64url or unpadded copies hold the same characters while a core has no '+' or '/'
+     *    (needleControls() asserts it has none);
+     *  - text secrets (#5624): the item name, Graph's error text, the email's subject and body,
+     *    and the file and reference attachment names (#5634) each have a needle for their first
+     *    and their last TRUNCATION_KEEP characters, so a cut copy (Str::limit, a tail) is caught
+     *    when it keeps at least that many characters from either end (closing punctuation
+     *    aside);
+     *  - transport forms (#5630): the item name and the email body with spaces as RFC 2047 / QP
+     *    '=20' and as Q-encoding '_' (subject and body), the phishing URL JSON-escaped and its
+     *    bare host; a folded header is caught by the start or end needle when the fold falls
+     *    outside them;
+     *  - the other MIME headers (#5630, #5634): the display name, the sending domain (the
+     *    Return-Path, Received host and smtp.mailfrom all carry it), the sending IP, and the
+     *    To address, which is the email's own sender address;
+     *  - the token, tenant and client credential the Graph fixture is built with (#5625);
+     *  - the item name's and file name's stored-filename slugs (#5818: '[Attachment] Stored
+     *    from content' logs ids, size and type only since #5719, so no record carries them);
+     *  - Graph's error codes used by the fixtures (vendor text).
+     * Not covered: a middle fragment, or a cut that keeps fewer than TRUNCATION_KEEP characters
+     * at both ends; a fold inside a start or end needle; base64 of any secret not listed above;
+     * every other transform (hex, a hash, HTML entities, percent-encoding of the text secrets,
+     * RFC 2047 'B' words split across a fold); the mailbox's domain alone (every fixture address
+     * shares it).
      *
      * @return array<string, string>
      */
     private static function forbiddenNeedles(): array
     {
-        return [
+        $needles = [
             'mailbox' => self::MAILBOX,
-            'mailbox local part' => 'support@',
+            'mailbox local part' => strstr(self::MAILBOX, '@', true).'@',
             'mailbox urlencoded' => rawurlencode(self::MAILBOX),
-            'mailbox local part urlencoded' => 'support%40',
-            'mailbox double-urlencoded' => 'support%2540',
-            'mailbox base64' => base64_encode(self::MAILBOX),
+            'mailbox local part urlencoded' => rawurlencode(strstr(self::MAILBOX, '@', true).'@'),
+            'mailbox double-urlencoded' => rawurlencode(rawurlencode(strstr(self::MAILBOX, '@', true).'@')),
+        ];
+        foreach (['mailbox' => self::MAILBOX, 'MIME sender' => self::MIME_SENDER, 'item name' => self::ITEM_NAME] as $label => $secret) {
+            foreach (self::base64Cores($secret) as $after => $core) {
+                $needles["{$label} base64 (after {$after} bytes)"] = $core;
+            }
+        }
+        foreach ([
+            'item name' => self::ITEM_NAME,
             'graph error text' => self::GRAPH_ERROR_TEXT,
-            'graph error text prefix' => 'The specified object',
+            'email subject' => self::EMAIL_SUBJECT,
+            'email body' => self::EMAIL_BODY,
+            'file attachment name' => self::FILE_NAME,
+            'reference attachment name' => self::REFERENCE_NAME,
+        ] as $label => $secret) {
+            $needles["{$label} (start)"] = substr($secret, 0, self::TRUNCATION_KEEP);
+            // The end needle leaves out closing punctuation, which a quoted tail often drops.
+            $needles["{$label} (end)"] = substr(rtrim($secret, '.?!'), -self::TRUNCATION_KEEP);
+        }
+
+        return $needles + [
+            'item name QP (start)' => substr(str_replace(' ', '=20', self::ITEM_NAME), 0, self::TRUNCATION_KEEP),
+            'item name Q underscore (start)' => substr(str_replace(' ', '_', self::ITEM_NAME), 0, self::TRUNCATION_KEEP),
+            'email subject Q underscore' => str_replace(' ', '_', self::EMAIL_SUBJECT),
+            'email body QP (start)' => substr(str_replace(' ', '=20', self::EMAIL_BODY), 0, self::TRUNCATION_KEEP),
+            'item name slug' => \Illuminate\Support\Str::slug(self::ITEM_NAME),
+            'file attachment name slug' => \Illuminate\Support\Str::slug(pathinfo(self::FILE_NAME, PATHINFO_FILENAME)),
+            'MIME sender' => self::MIME_SENDER,
+            'MIME display name' => 'Payroll Team',
+            'MIME sending domain' => substr(strstr(self::MIME_SENDER, '@'), 1),
+            'MIME sending IP' => '192.0.2.10',
+            'MIME phishing URL' => self::PHISH_URL,
+            'MIME phishing URL JSON-escaped' => trim(json_encode(self::PHISH_URL), '"'),
+            'MIME phishing URL host' => parse_url(self::PHISH_URL, PHP_URL_HOST),
+            'email sender / MIME To' => self::EMAIL_FROM,
+            'graph bearer token' => self::GRAPH_BEARER,
+            'graph tenant' => self::TENANT,
+            'graph client credential' => self::CLIENT_CREDENTIAL,
             'graph error code ErrorItemNotFound' => 'ErrorItemNotFound',
             'graph error code InternalServerError' => 'InternalServerError',
             'graph error code ServiceUnavailable' => 'ServiceUnavailable',
-            'item name / MIME subject' => 'Urgent: verify your payroll account',
-            'MIME sender' => 'payroll@phish.example.test',
-            'MIME sending IP' => '192.0.2.10',
-            'MIME phishing URL' => 'http://198.51.100.7/login',
-            'email subject' => 'FW: suspicious',
-            'email body' => 'Is this legit?',
         ];
+    }
+
+    /** Characters of a text secret's start and end that are needles (#5624). */
+    private const TRUNCATION_KEEP = 12;
+
+    /**
+     * #5623: base64 of $secret preceded by 0, 1 and 2 other bytes, keeping only the 4-character
+     * groups made of $secret's bytes alone: the characters any base64 of a text containing
+     * $secret at that alignment carries.
+     *
+     * @return array<int, string> keyed by the number of bytes before the secret
+     */
+    private static function base64Cores(string $secret): array
+    {
+        $cores = [];
+        foreach ([0, 1, 2] as $after) {
+            $skip = (3 - $after) % 3;
+            $whole = intdiv(strlen($secret) - $skip, 3) * 3;
+            $cores[$after] = base64_encode(substr($secret, $skip, $whole));
+        }
+
+        return $cores;
     }
 
     /**
@@ -551,7 +699,7 @@ class EmailItemAttachmentTest extends TestCase
             '/v1.0/users/support%40example.test/messages/MSG-1/attachments/ATT-ITEM-1/$value',
             $value[0]['request']->getUri()->getPath(),
         );
-        $this->assertSame('Bearer test-token', $value[0]['request']->getHeaderLine('Authorization'));
+        $this->assertSame('Bearer '.self::GRAPH_BEARER, $value[0]['request']->getHeaderLine('Authorization'));
         // #5541: the stored item's name, MIME and the email's subject and body reach no record.
         $this->assertNotSame([], $this->records(), 'positive control: the store path logs');
         $this->assertNoLeakInLogs();
@@ -711,6 +859,8 @@ class EmailItemAttachmentTest extends TestCase
             ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'message/rfc822', 'text/plain'],
             array_map(fn ($a) => $a->mime_type, $stored),
         );
+        // #5632: the scan below is not vacuous: the run wrote records.
+        $this->assertNotSame([], $this->records(), 'positive control: the mixed-message path logs');
         $this->assertNoLeakInLogs();
     }
 
@@ -952,8 +1102,9 @@ class EmailItemAttachmentTest extends TestCase
         Log::channel('single')->withName('renamed')->info('withName');
         Log::build(['driver' => 'single', 'path' => $onDemandPath])->warning('on-demand build');
         Log::channel('not-in-logging-config')->error('unconfigured channel');
-        // #5538: every level method the logger exposes, called directly, on the facade and on
-        // a resolved channel.
+        // #5538: every level method called directly on the facade; on a resolved channel
+        // ('single'), emergency, alert and notice here, and the other five in
+        // test_capture_sees_each_level_method_on_a_resolved_channel (#5636).
         Log::emergency('facade emergency');
         Log::alert('facade alert');
         Log::critical('facade critical');
@@ -994,6 +1145,73 @@ class EmailItemAttachmentTest extends TestCase
         }
     }
 
+    public function test_capture_sees_each_level_method_on_a_resolved_channel(): void
+    {
+        // #5636: each of the eight level methods called directly on Log::channel('single').
+        $channel = Log::channel('single');
+        foreach (['emergency', 'alert', 'critical', 'error', 'warning', 'notice', 'info', 'debug'] as $level) {
+            $channel->{$level}("channel {$level}");
+        }
+
+        $this->assertSame(
+            [['EMERGENCY', 'channel emergency'], ['ALERT', 'channel alert'], ['CRITICAL', 'channel critical'], ['ERROR', 'channel error'],
+                ['WARNING', 'channel warning'], ['NOTICE', 'channel notice'], ['INFO', 'channel info'], ['DEBUG', 'channel debug']],
+            array_map(fn (LogRecord $r) => [$r->level->getName(), $r->message], $this->records()),
+        );
+    }
+
+    public function test_capture_keeps_a_channels_processors_and_taps(): void
+    {
+        // #5631: what a channel's configured processor or tap adds to a record in production is
+        // in the scanned record. Configured before the capture, as config/logging.php would be.
+        $this->app->instance('b4n.tap-extra', ['tapped' => self::MAILBOX]);
+        config(['logging.channels.single.processors' => [B4nExtraProcessor::class]]);
+        config(['logging.channels.single.tap' => [B4nExtraTap::class]]);
+        $this->captureAllLogChannels();
+
+        Log::channel('single')->info('with processors');
+
+        $r = $this->records()[0];
+        $extra = array_intersect_key($r->extra, ['processed' => 1, 'tapped' => 1]);
+        ksort($extra);
+        $this->assertSame(['processed' => 'b4n', 'tapped' => self::MAILBOX], $extra);
+        $this->assertArrayHasKey('mailbox', $this->leakHits($r), 'the tap\'s extra is scanned');
+    }
+
+    public function test_capture_keeps_a_custom_creator_registered_before_the_swap(): void
+    {
+        // #5633: a Log::extend() driver registered before the swap still resolves through the
+        // swapped manager, and its logger is captured.
+        Log::extend('b4n-extended', fn ($app, array $config) => new \Monolog\Logger('b4n-extended'));
+        $this->captureAllLogChannels();
+
+        Log::build(['driver' => 'b4n-extended'])->warning('through the extended driver');
+
+        $this->assertSame([['WARNING', 'through the extended driver', 'b4n-extended']],
+            array_map(fn (LogRecord $r) => [$r->level->getName(), $r->message, $r->channel], $this->records()),
+            'the extended driver\'s own logger, not the emergency fallback');
+    }
+
+    public function test_a_write_through_an_uncaptured_manager_fails_the_post_condition(): void
+    {
+        // #5626: an object holding a manager that is not the swapped one (the #5530 limit) logs
+        // to an unconfigured channel; its emergency logger writes the stray file. The
+        // post-condition every test runs must fail on it before tearDown() deletes it.
+        (new \Illuminate\Log\LogManager($this->app))->channel('not-in-logging-config')->warning('held before the swap');
+
+        $this->assertSame([], $this->records(), 'positive control: the capture did not see it');
+        $this->assertFileExists($this->strayLogPaths['emergency'], 'positive control: it reached the stray file');
+        try {
+            $this->assertPostConditions();
+        } catch (\PHPUnit\Framework\AssertionFailedError $e) {
+            $this->assertStringContainsString('#5626', $e->getMessage());
+            @unlink($this->strayLogPaths['emergency']); // spent: this control expected it
+
+            return;
+        }
+        $this->fail('#5626: the post-condition passed a write outside the capture');
+    }
+
     public function test_capture_keeps_context_shared_before_the_swap(): void
     {
         // #5532: a Log::shareContext() made before the swap still reaches every record.
@@ -1011,11 +1229,29 @@ class EmailItemAttachmentTest extends TestCase
 
     public function test_capture_refuses_a_logger_it_cannot_capture(): void
     {
-        // #5531: a non-Monolog logger cannot be given the handler, so it fails the test.
-        $this->expectException(\LogicException::class);
-        $this->expectExceptionMessage('cannot capture');
+        // #5531: a non-Monolog logger cannot be given the handler, so it throws on the logging
+        // call's own stack. #5627: code under test that catches it, as a catch (\Throwable) arm
+        // in AttachmentService or EmailService would, still leaves the refusal recorded, and
+        // assertPostConditions() fails the test on it.
+        $swallowed = null;
+        try {
+            Log::build(['driver' => 'custom', 'via' => fn () => new \Psr\Log\NullLogger])->debug('unseen');
+        } catch (\Throwable $e) {
+            $swallowed = $e;
+        }
 
-        Log::build(['driver' => 'custom', 'via' => fn () => new \Psr\Log\NullLogger])->debug('unseen');
+        $this->assertInstanceOf(\LogicException::class, $swallowed);
+        $this->assertStringContainsString('cannot capture', $swallowed->getMessage());
+        $this->assertSame(\Psr\Log\NullLogger::class, $this->uncapturable, 'the swallowed refusal is still recorded');
+        try {
+            $this->assertPostConditions();
+        } catch (\PHPUnit\Framework\AssertionFailedError $e) {
+            $this->assertStringContainsString('#5627', $e->getMessage());
+            $this->uncapturable = null; // spent: this control expected it
+
+            return;
+        }
+        $this->fail('#5627: the post-condition passed a refused logger');
     }
 
     // ── #5392 / #5535: assertNoLeakInLogs sees a needle in every carrier, and in the right part ──
@@ -1153,6 +1389,137 @@ class EmailItemAttachmentTest extends TestCase
         $this->assertSame($expected, $seenIn, 'render parts that carry the planted needle');
     }
 
+    /**
+     * #5628/#5629: one planted control per needle, taken from the fixtures' OWN output (the
+     * MIME the $value fixture serves, the email() and attachment factories, the Graph error
+     * body, the GraphClient the fixture builds) through the transform the needle claims to
+     * catch. Each row must be caught under its own label (other needles may hit too), so a
+     * needle that is deleted, mistyped or no longer matches its fixture fails its row.
+     *
+     * @return array<string, array{0: \Closure(self): string, 1: string}>
+     */
+    public static function needleControls(): array
+    {
+        $mime = fn (self $t) => self::MIME;
+        $mailbox = fn (self $t) => (string) Setting::getValue('graph_mailbox');
+        $sender = fn (self $t) => preg_match('/^From: [^<]*<([^>]+)>/m', $mime($t), $m) ? $m[1] : '';
+        $item = fn (self $t) => $t->itemAttachment()['name'];
+        $email = fn (self $t) => $t->email()->only(['subject', 'body_text', 'from_address']);
+        $graphText = fn (self $t) => json_decode((string) self::failingValueResponses()['http-404'][0]->getBody(), true)['error']['message'];
+        $header = fn (string $mime, string $name) => preg_match('/^'.$name.': (.*)$/m', $mime, $m) ? rtrim($m[1], "\r") : '';
+        $keep = self::TRUNCATION_KEEP;
+
+        $rows = [
+            'mailbox' => [fn (self $t) => 'm '.$mailbox($t).' m', 'mailbox'],
+            'mailbox local part' => [fn (self $t) => strstr($mailbox($t), '@', true).'@', 'mailbox local part'],
+            'mailbox urlencoded' => [fn (self $t) => 'x/'.rawurlencode($mailbox($t)), 'mailbox urlencoded'],
+            'mailbox local part urlencoded' => [fn (self $t) => rawurlencode(strstr($mailbox($t), '@', true).'@').'elsewhere', 'mailbox local part urlencoded'],
+            'mailbox double-urlencoded' => [fn (self $t) => rawurlencode(rawurlencode(strstr($mailbox($t), '@', true).'@')).'x', 'mailbox double-urlencoded'],
+        ];
+        // #5623: each alignment, embedded in a longer text, plain/unpadded/base64url.
+        foreach ([
+            'mailbox' => fn (self $t) => $mailbox($t),
+            'MIME sender' => $sender,
+            'item name' => fn (self $t) => $header($t->valueFixtureMime(), 'Subject'),
+        ] as $label => $secret) {
+            foreach ([0, 1, 2] as $after) {
+                $rows["{$label} base64 (after {$after} bytes)"] = [
+                    fn (self $t) => rtrim(strtr(base64_encode(str_repeat('~', 3 + $after).$secret($t)."\r\n"), '+/', '-_'), '='),
+                    "{$label} base64 (after {$after} bytes)",
+                ];
+            }
+        }
+        // #5624: Str::limit keeps the start; a tail keeps the end.
+        foreach ([
+            'item name' => $item,
+            'graph error text' => $graphText,
+            'email subject' => fn (self $t) => $email($t)['subject'],
+            'email body' => fn (self $t) => $email($t)['body_text'],
+            'file attachment name' => fn (self $t) => $t->fileAttachment()['name'],
+            'reference attachment name' => fn (self $t) => $t->referenceAttachment()['name'],
+        ] as $label => $secret) {
+            $rows["{$label} (start)"] = [fn (self $t) => \Illuminate\Support\Str::limit($secret($t), $keep, '...'), "{$label} (start)"];
+            $rows["{$label} (end)"] = [fn (self $t) => '...'.substr(rtrim($secret($t), '.?!'), -$keep), "{$label} (end)"];
+        }
+
+        return $rows + [
+            // #5630: transport forms of the fixtures' text.
+            'item name QP (start)' => [fn (self $t) => iconv_mime_encode('Subject', $header($t->valueFixtureMime(), 'Subject'), ['scheme' => 'Q', 'line-length' => 998]), 'item name QP (start)'],
+            'item name Q underscore (start)' => [fn (self $t) => '=?UTF-8?Q?'.substr(str_replace(' ', '_', $item($t)), 0, $keep).'?=', 'item name Q underscore (start)'],
+            'email subject Q underscore' => [fn (self $t) => '=?UTF-8?Q?'.str_replace(' ', '_', $email($t)['subject']).'?=', 'email subject Q underscore'],
+            'email body QP (start)' => [fn (self $t) => iconv_mime_encode('X', $email($t)['body_text'], ['scheme' => 'Q', 'line-length' => 998]), 'email body QP (start)'],
+            // #5818: the slugs, as AttachmentService would name the stored file.
+            'item name slug' => [fn (self $t) => 'stored '.\Illuminate\Support\Str::slug($item($t)).'.eml', 'item name slug'],
+            'file attachment name slug' => [fn (self $t) => 'stored '.\Illuminate\Support\Str::slug(pathinfo($t->fileAttachment()['name'], PATHINFO_FILENAME)).'.docx', 'file attachment name slug'],
+            // #5630/#5634: the MIME's own header values, read out of the MIME.
+            'MIME sender' => [fn (self $t) => 'from '.$sender($t), 'MIME sender'],
+            'MIME display name' => [fn (self $t) => trim(strstr($header($mime($t), 'From'), '<', true)), 'MIME display name'],
+            'MIME sending domain' => [fn (self $t) => 'via '.(preg_match('/^Received: from mail\.(\S+)/m', $mime($t), $m) ? $m[1] : ''), 'MIME sending domain'],
+            'MIME sending IP' => [fn (self $t) => preg_match('/\((\d+\.\d+\.\d+\.\d+)\)/', $mime($t), $m) ? 'ip '.$m[1] : '', 'MIME sending IP'],
+            'MIME phishing URL' => [fn (self $t) => preg_match('#https?://\S+#', $mime($t), $m) ? $m[0] : '', 'MIME phishing URL'],
+            'MIME phishing URL JSON-escaped' => [fn (self $t) => preg_match('#https?://\S+#', $mime($t), $m) ? json_encode(['u' => $m[0]]) : '', 'MIME phishing URL JSON-escaped'],
+            'MIME phishing URL host' => [fn (self $t) => preg_match('#https?://([^/\s]+)#', $mime($t), $m) ? 'host '.$m[1] : '', 'MIME phishing URL host'],
+            'email sender / MIME To' => [fn (self $t) => preg_match('/^To: .*<([^>]+)>/m', $mime($t), $m) && $m[1] === $email($t)['from_address'] ? 'to '.$m[1] : '', 'email sender / MIME To'],
+            // #5625: what the Graph fixture really sends and is built with.
+            'graph bearer token' => [fn (self $t) => $t->sentAuthorization(), 'graph bearer token'],
+            'graph tenant' => [fn (self $t) => 'tenant '.$t->graphConfig('tenant_id'), 'graph tenant'],
+            'graph client credential' => [fn (self $t) => 'cred '.$t->graphConfig('client_secret'), 'graph client credential'],
+            'graph error code ErrorItemNotFound' => [fn (self $t) => 'code '.json_decode((string) self::failingValueResponses()['http-404'][0]->getBody(), true)['error']['code'], 'graph error code ErrorItemNotFound'],
+            'graph error code InternalServerError' => [fn (self $t) => 'code '.json_decode((string) self::failingValueResponses()['http-500'][0]->getBody(), true)['error']['code'], 'graph error code InternalServerError'],
+            'graph error code ServiceUnavailable' => [fn (self $t) => 'code '.json_decode((string) self::failingValueResponses()['http-503'][0]->getBody(), true)['error']['code'], 'graph error code ServiceUnavailable'],
+        ];
+    }
+
+    /** The MIME the item's $value read serves in test_item_attachment_is_stored_as_eml_through_value. */
+    private function valueFixtureMime(): string
+    {
+        $graph = $this->graph([$this->expandResponse([$this->itemAttachment()]), new Response(200, [], self::MIME)]);
+        $stored = app(AttachmentService::class)->downloadEmailAttachments($this->email(['graph_id' => 'MSG-CTL-'.uniqid()]), $graph, self::MAILBOX);
+
+        return Storage::disk('local')->get($stored[0]->storage_path);
+    }
+
+    /** The Authorization header the Graph fixture sends. */
+    private function sentAuthorization(): string
+    {
+        $graph = $this->graph([$this->expandResponse([])]);
+        $graph->getMessageAttachments(self::MAILBOX, 'MSG-1');
+
+        return $this->history[0]['request']->getHeaderLine('Authorization');
+    }
+
+    private function graphConfig(string $key): string
+    {
+        return (string) ((fn () => $this->config[$key])->call($this->graph([])));
+    }
+
+    #[DataProvider('needleControls')]
+    public function test_each_needle_catches_a_fixture_derived_copy(\Closure $plant, string $label): void
+    {
+        $value = $plant($this);
+        $this->logs->clear();
+        $this->assertNotSame('', $value, 'positive control: the fixture yields the planted value');
+
+        Log::debug('planted', ['v' => $value]);
+
+        $hit = array_keys($this->leakHits($this->records()[0]));
+        $this->assertContains($label, $hit, "needle '{$label}' missed a fixture-derived copy: ".json_encode($value));
+        if (str_contains($label, 'base64')) {
+            $this->assertDoesNotMatchRegularExpression('#[+/]#', self::forbiddenNeedles()[$label], 'a core with + or / would miss base64url');
+        }
+    }
+
+    /** #5628: every needle has a control row, and every row names a needle. */
+    public function test_every_needle_has_a_control_row(): void
+    {
+        $rows = array_map(fn ($row) => $row[1], self::needleControls());
+        $labels = array_keys(self::forbiddenNeedles());
+        sort($rows);
+        sort($labels);
+
+        $this->assertSame($labels, $rows);
+    }
+
     public function test_no_leak_check_catches_a_caller_supplied_needle(): void
     {
         Log::debug('fetch failed', ['exception' => new \RuntimeException(self::NON_GRAPH_DETAIL)]);
@@ -1175,6 +1542,24 @@ class EmailItemAttachmentTest extends TestCase
             return;
         }
         $this->fail('a needle below walk()\'s depth limit passed the scan');
+    }
+
+    public function test_walk_reads_exactly_to_its_depth_limit(): void
+    {
+        // #5635: a leaf at exactly WALK_MAX_DEPTH is read (and its needle caught); one level
+        // deeper fails the scan. walk() of nested($n) reaches the leaf at depth $n.
+        $this->assertSame(12, self::WALK_MAX_DEPTH, 'the documented limit');
+        $atLimit = $this->walk(self::nested(self::WALK_MAX_DEPTH, self::MAILBOX), new \SplObjectStorage);
+        $this->assertStringContainsString(self::MAILBOX, $atLimit, 'the leaf at the deepest level read');
+
+        try {
+            $this->walk(self::nested(self::WALK_MAX_DEPTH + 1, self::MAILBOX), new \SplObjectStorage);
+        } catch (\PHPUnit\Framework\AssertionFailedError $e) {
+            $this->assertStringContainsString('walk() passed depth 12', $e->getMessage());
+
+            return;
+        }
+        $this->fail('one level past the limit was read instead of refused');
     }
 
     /** A Throwable built in a frame that received $arg; its trace frame holds $arg when args are kept. */
@@ -1291,7 +1676,7 @@ class EmailItemAttachmentTest extends TestCase
         $leaks = $this->graphFailureLeaks($record);
 
         $this->assertSame(['endpoint'], $leaks['mailbox'] ?? null);
-        $this->assertSame(['error'], $leaks['graph error text'] ?? null);
+        $this->assertSame(['error'], $leaks['graph error text (start)'] ?? null);
     }
 
     public function test_message_read_failure_records_carry_no_mailbox_or_graph_text(): void
@@ -1360,5 +1745,24 @@ class EmailItemAttachmentTest extends TestCase
         }
 
         $this->assertSame([], $this->records(), $this->describe($this->records()));
+    }
+}
+
+/** #5631: a configured channel processor (test only). */
+class B4nExtraProcessor implements \Monolog\Processor\ProcessorInterface
+{
+    public function __invoke(LogRecord $record): LogRecord
+    {
+        return $record->with(extra: $record->extra + ['processed' => 'b4n']);
+    }
+}
+
+/** #5631: a configured channel tap (test only); adds what the container holds to extra. */
+class B4nExtraTap
+{
+    public function __invoke(\Illuminate\Log\Logger $logger): void
+    {
+        $add = app('b4n.tap-extra');
+        $logger->getLogger()->pushProcessor(fn (LogRecord $r) => $r->with(extra: $r->extra + $add));
     }
 }

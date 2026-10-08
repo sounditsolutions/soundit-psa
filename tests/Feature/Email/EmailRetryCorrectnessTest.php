@@ -898,6 +898,48 @@ class EmailRetryCorrectnessTest extends TestCase
         $this->assertSame([], $this->withMessage(\App\Jobs\RetryEmailAttachments::MARKER), 'linked: no not-added marker');
     }
 
+    public function test_a_link_read_back_that_throws_writes_a_link_state_unknown_marker(): void
+    {
+        // #5801: after the link's write path finished, a nested level's after-commit callback
+        // throws before the link level's flag is set (#5708), and the read-back of the link then
+        // throws too. Whether the link committed is unknown; the rows are kept, and the job must
+        // not stay silent on the ticket.
+        $this->graph([$this->failedRead(), $this->read()]);
+        $email = $this->email();
+        $readBackFails = false;
+        Attachment::updated(function (Attachment $a) use (&$readBackFails) {
+            if ($a->attachable_type === TicketNote::class) {
+                // Not an arrow function: it captures by value, so the inner &$readBackFails would bind its copy.
+                DB::transaction(function () use (&$readBackFails) {
+                    DB::afterCommit(function () use (&$readBackFails) {
+                        $readBackFails = true;
+                        throw new \RuntimeException('B4N-SYNTHETIC-NESTED');
+                    });
+                });
+            }
+        });
+        DB::beforeExecuting(function (string $sql) use (&$readBackFails) {
+            if ($readBackFails && str_starts_with(strtolower($sql), 'select count(*) as aggregate from "attachments"')) {
+                throw new \RuntimeException('B4N-SYNTHETIC-READBACK');
+            }
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $threw = $this->withMessage(self::THREW);
+        $this->assertCount(1, $threw, 'positive control: the link threw into the retry');
+        $this->assertNull($threw[0]->context['linked'], 'positive control: the read-back threw (linked null)');
+        $kept = Attachment::withTrashed()->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $this->assertCount(1, $kept, 'the rows are kept, not discarded');
+        $unknown = $this->withMessage(\App\Jobs\RetryEmailAttachments::MARKER_LINK_UNKNOWN);
+        $this->assertCount(1, $unknown, '#5801: a link-state-unknown marker, not silence');
+        $this->assertSame([EmailService::RETRY_LINK_UNKNOWN, $kept, true],
+            [$unknown[0]->context['reason'], $unknown[0]->context['undiscarded_attachment_ids'], $unknown[0]->context['ticket_note_written']]);
+        $this->assertSame([], $this->withMessage(\App\Jobs\RetryEmailAttachments::MARKER), 'not reported as not-added');
+        $note = TicketNote::where('ticket_id', $ticket->id)->where('note_type', 'system')->sole();
+        $this->assertStringContainsString('could not be read back', $note->body);
+    }
+
     public function test_a_logger_that_always_fails_does_not_escape_the_retry(): void
     {
         // #5710: the refusal's record throws, and so does the catch arm's. The retry still

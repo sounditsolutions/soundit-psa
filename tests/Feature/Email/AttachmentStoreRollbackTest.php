@@ -11,6 +11,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Monolog\Handler\TestHandler;
+use Monolog\Level;
 use Monolog\LogRecord;
 use Tests\TestCase;
 
@@ -70,7 +71,7 @@ class AttachmentStoreRollbackTest extends TestCase
         return UploadedFile::fake()->createWithContent(self::FILENAME, 'synthetic-xlsx-bytes');
     }
 
-    /** @return array<string, array{0: \Closure(AttachmentService): Attachment, 1: string}> */
+    /** @return array<string, array{0: \Closure(AttachmentService, self): Attachment, 1: string}> */
     public static function stores(): array
     {
         return [
@@ -181,6 +182,36 @@ class AttachmentStoreRollbackTest extends TestCase
         $row = Attachment::withTrashed()->sole();
         $this->assertSame(['attachment_id' => $row->id, 'step' => 'row', 'exception' => \LogicException::class], $cleanup[0]->context);
         $this->assertStringNotContainsString('Payroll', json_encode($cleanup[0]->context));
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('stores')]
+    public function test_a_file_cleanup_that_returns_false_is_recorded_by_id_and_step(\Closure $store): void
+    {
+        // #5806: the local disk is 'throw' => false, so a failed delete returns false, never throws.
+        Attachment::updating(function (Attachment $a) {
+            if ($a->isDirty('storage_path')) {
+                throw new \RuntimeException('B4N-SYNTHETIC-UPDATE-FAIL');
+            }
+        });
+        $this->diskRefusing('delete');
+        $made = null;
+        Attachment::created(function (Attachment $a) use (&$made) {
+            $made = $a->id;
+        });
+
+        try {
+            $store(app(AttachmentService::class), $this);
+            $this->fail('rethrown');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('B4N-SYNTHETIC-UPDATE-FAIL', $e->getMessage());
+        }
+
+        $this->assertNotEmpty(Storage::disk('local')->allFiles("attachments/{$made}"), 'positive control: the file was left on disk');
+        $refused = $this->withMessage('[Attachment] Cleanup after a failed store returned false');
+        $this->assertCount(1, $refused, '#5806: a false delete is recorded, not ignored');
+        $this->assertSame(Level::Warning, $refused[0]->level);
+        $this->assertSame(['attachment_id' => $made, 'step' => 'file', 'exception' => null], $refused[0]->context);
+        $this->assertSame([], $this->withMessage('[Attachment] Cleanup after a failed store threw'));
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('stores')]

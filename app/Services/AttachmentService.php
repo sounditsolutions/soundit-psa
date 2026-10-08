@@ -108,7 +108,9 @@ class AttachmentService
      * returns false), or the storage_path update throws, no row is left naming the placeholder
      * or a missing file: the file and row are removed, best effort, and the failure is thrown
      * (a false write as AttachmentStoreFailedException). A cleanup step that throws is recorded
-     * with the attachment id, the step and the exception class.
+     * with the attachment id, the step and the exception class. #5806: so is a file delete that
+     * returns false (the local disk does not throw), with exception null; the file may then be
+     * left on disk with no row naming it.
      */
     private function writeOrRollBack(Attachment $attachment, string $path, \Closure $write): void
     {
@@ -123,7 +125,13 @@ class AttachmentService
                 'row' => fn () => Attachment::withTrashed()->whereKey($attachment->id)->forceDelete(),
             ] as $step => $cleanup) {
                 try {
-                    $cleanup();
+                    if ($cleanup() === false && $step === 'file') {
+                        Log::warning('[Attachment] Cleanup after a failed store returned false', [
+                            'attachment_id' => $attachment->id,
+                            'step' => $step,
+                            'exception' => null,
+                        ]);
+                    }
                 } catch (\Throwable $cleanupFailure) {
                     Log::warning('[Attachment] Cleanup after a failed store threw', [
                         'attachment_id' => $attachment->id,
@@ -244,14 +252,18 @@ class AttachmentService
             // C-56: ids, the HTTP status and the exception class only, never the message. A
             // GraphClientException's message no longer names the endpoint (#5679), but any other
             // Throwable's message is not known to be free of the mailbox or vendor text. status is
-            // null when there is no HTTP status (connect/timeout, token failure, non-Graph throw).
+            // the GraphClientException's status when it is above 0: Graph's HTTP status, or the
+            // status of a response GraphClient could not decode (e.g. 200 with invalid JSON). It is
+            // null otherwise (connect/timeout, a token request that failed at entry, a non-Graph
+            // throw). #5813: a 401 whose token refresh then failed records status 401 and
+            // token_refresh => failed, as the item read does (#5398).
             $httpStatus = $e instanceof GraphClientException ? $e->getHttpStatus() : 0;
             Log::warning('[AttachmentService] Failed to fetch email attachments', [
                 'email_id' => $email->id,
                 'graph_id' => $email->graph_id,
                 'status' => $httpStatus > 0 ? $httpStatus : null,
                 'exception' => $e::class,
-            ]);
+            ] + ($e instanceof GraphTokenRefreshFailedException ? ['token_refresh' => 'failed'] : []));
 
             return null;
         }
