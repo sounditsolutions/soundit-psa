@@ -472,6 +472,11 @@ class ControlDGlobalProfileTest extends TestCase
             'bound' => [['state' => 'bound', 'phase' => 'local-persistence', 'active_client_id' => null]],
             'rejected' => [['state' => 'rejected', 'phase' => 'post', 'active_client_id' => null]],
             'released' => [['state' => 'released', 'active_client_id' => null]],
+            // State alone must refuse: phase preflight and no vendor PK, so only the state predicate can.
+            'posted-at-preflight' => [['state' => 'posted', 'phase' => 'preflight']],
+            'uncertain-at-preflight' => [['state' => 'uncertain', 'phase' => 'preflight']],
+            'bound-at-preflight' => [['state' => 'bound', 'phase' => 'preflight']],
+            'rejected-at-preflight' => [['state' => 'rejected', 'phase' => 'preflight']],
             'staged-past-preflight' => [['state' => 'staged', 'phase' => 'post']],
             'staged-with-vendor-pk' => [['state' => 'staged', 'vendor_pk' => self::ORG]],
         ];
