@@ -120,7 +120,12 @@ class MeshClient
      * quotes the request URI (user-info, host and customer id included;
      * Guzzle masks only a parsed password) or names the user as a refused
      * scheme, plus vendor body text, and it holds the request with its
-     * API-KEY header, so never log getPrevious() or its message.
+     * API-KEY header, so never log getPrevious() or its message. An
+     * endpoint PSR-7 cannot parse (MalformedUriException, an
+     * InvalidArgumentException thrown before any handler runs) gets the
+     * same line and message with 'no HTTP status', code 0 and NO previous
+     * exception, because that exception's message is the raw endpoint
+     * (#5878).
      */
     private function request(string $method, string $endpoint, array $options = []): array
     {
@@ -143,6 +148,17 @@ class MeshClient
                 .($status > 0 ? "HTTP {$status}" : 'no HTTP status').' ('.$e::class.')';
             Log::error("[MeshClient] {$failure}");
             throw new MeshClientException("Mesh API error: {$failure}", $e->getCode(), $e);
+        } catch (\InvalidArgumentException $e) {
+            // #5878: an endpoint parse_url rejects makes PSR-7 throw
+            // MalformedUriException ("Unable to parse URI: <the endpoint>",
+            // user-info and password included) before any handler runs. It
+            // is an InvalidArgumentException, not a GuzzleException, so the
+            // catch above never sees it. Same status-only line and message,
+            // and it is NOT chained: its message is the raw endpoint, and no
+            // report() or renderer that walks getPrevious() may reach it.
+            $failure = "{$method} ".self::logPath($endpoint).' failed with no HTTP status ('.$e::class.')';
+            Log::error("[MeshClient] {$failure}");
+            throw new MeshClientException("Mesh API error: {$failure}");
         }
 
         $body = (string) $response->getBody();
