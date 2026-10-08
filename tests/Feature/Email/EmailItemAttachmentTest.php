@@ -1582,8 +1582,9 @@ class EmailItemAttachmentTest extends TestCase
 
     // ── #5393 / #5533: #5144 keeps throwFromGuzzle's record on every other Graph call ──
     //
-    // GraphClient::throwFromGuzzle() writes 'Graph API request failed' at ERROR with exactly two
-    // context keys, method and status (#5533, C-56). It used to carry 'endpoint' (the request
+    // GraphClient::throwFromGuzzle() writes 'Graph API request failed' at ERROR with exactly three
+    // context keys, method, operation (an endpoint-free label, #5671) and status, plus the
+    // exception class on status 0 (#5533, C-56; #6076). It used to carry 'endpoint' (the request
     // path, which holds the raw mailbox on the 'message read (expand)' row) and 'error' (Guzzle's
     // message: the request URI and the start of Graph's response body); the tests below require
     // that no forbiddenNeedles() needle is in any part of the record.
@@ -1694,7 +1695,7 @@ class EmailItemAttachmentTest extends TestCase
             [['ERROR', 'Graph API request failed'], ['WARNING', '[AttachmentService] Failed to fetch email attachments']],
             array_map(fn (LogRecord $r) => [$r->level->getName(), $r->message], $records),
         );
-        // #5533 / #5671: GraphClient's record is status-only plus the endpoint-free operation label.
+        // #5533 / #5671: GraphClient's record is the method, the endpoint-free operation label and the status.
         $this->assertSame(['method' => 'GET', 'operation' => 'messages', 'status' => 500], $records[0]->context);
         $this->assertSame([], $this->graphFailureLeaks($records[0]), '#5533: GraphClient record');
         // b4i / C-56: AttachmentService::downloadEmailAttachments' message-read catch logs ids,

@@ -40,7 +40,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
         Setting::setValue('triage_system_user_id', (string) $actor->id);
     }
 
-    private function enableCalendar(array $allowed = ['charlie@soundit.co']): void
+    private function enableCalendar(array $allowed = ['staff@example.test']): void
     {
         Setting::setValue('calendar_enabled', '1');
         Setting::setValue('calendar_allowed_owner_upns', json_encode($allowed));
@@ -68,13 +68,13 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
 
     public function test_create_builds_the_graph_body_and_backlinks_a_private_note_on_the_ticket(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $captured = null;
         $this->mockCreate($captured);
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_create_event', [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'staff@example.test',
             'subject' => 'Onsite: printer swap',
             'start' => '2026-07-29T15:00:00',
             'end' => '2026-07-29T16:00:00',
@@ -91,7 +91,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
 
         // Body grounded in the producer shape (camelCase), tz defaulting to UTC.
         $body = $captured['body'];
-        $this->assertSame('charlie@soundit.co', $captured['upn']);
+        $this->assertSame('staff@example.test', $captured['upn']);
         $this->assertSame('Onsite: printer swap', $body['subject']);
         $this->assertSame('2026-07-29T15:00:00', $body['start']['dateTime']);
         $this->assertSame('UTC', $body['start']['timeZone']);
@@ -106,7 +106,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
         $this->assertNotNull($note);
         $this->assertTrue((bool) $note->is_private);
         $this->assertStringContainsString('AAMkAG-new', $note->body);
-        $this->assertStringContainsString('charlie@soundit.co', $note->body);
+        $this->assertStringContainsString('staff@example.test', $note->body);
     }
 
     public function test_create_transaction_id_covers_the_whole_plan_not_just_subject_and_window(): void
@@ -114,7 +114,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
         // Review #3: two creates on ONE ticket with identical subject+window but DIFFERENT attendees
         // must NOT share a transactionId — else Graph dedupes and silently returns the first event,
         // and the back-link note records a create that never happened (lies to the technician).
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $txns = [];
         $this->mock(GraphClient::class, function ($m) use (&$txns) {
@@ -126,7 +126,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
         });
 
         $base = [
-            'user_upn' => 'charlie@soundit.co', 'subject' => 'Onsite',
+            'user_upn' => 'staff@example.test', 'subject' => 'Onsite',
             'start' => '2026-07-29T15:00:00', 'end' => '2026-07-29T16:00:00',
             'ticket_id' => $ticket->id, 'reason' => 'r',
         ];
@@ -140,13 +140,13 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
 
     public function test_create_with_teams_meeting_sets_the_online_meeting_fields(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $captured = null;
         $this->mockCreate($captured);
 
         app(StaffCalendarToolExecutor::class)->execute('calendar_create_event', [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'staff@example.test',
             'subject' => 'Remote assist',
             'start' => '2026-07-29T15:00:00',
             'end' => '2026-07-29T16:00:00',
@@ -161,12 +161,12 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
 
     public function test_create_refuses_a_non_allowlisted_owner_before_any_graph_call(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('createEvent')->never());
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_create_event', [
-            'user_upn' => 'billing@soundit.co', // internal, NOT allowlisted
+            'user_upn' => 'billing@example.test', // internal, NOT allowlisted
             'subject' => 'x', 'start' => '2026-07-29T15:00:00', 'end' => '2026-07-29T16:00:00',
             'ticket_id' => $ticket->id, 'reason' => 'x',
         ], 0, 'mcp-staff:chet');
@@ -178,13 +178,13 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
     public function test_create_allows_an_external_attendee_but_never_as_owner(): void
     {
         // The owner is allowlisted; an EXTERNAL attendee is legitimate and passes through.
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $captured = null;
         $this->mockCreate($captured);
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_create_event', [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'staff@example.test',
             'subject' => 'Kickoff', 'start' => '2026-07-29T15:00:00', 'end' => '2026-07-29T16:00:00',
             'attendees' => ['ceo@clientco.example', 'contact@another.example'],
             'ticket_id' => $ticket->id, 'reason' => 'Kickoff.',
@@ -197,12 +197,12 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
 
     public function test_create_rejects_a_malformed_attendee(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('createEvent')->never());
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_create_event', [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'staff@example.test',
             'subject' => 'x', 'start' => '2026-07-29T15:00:00', 'end' => '2026-07-29T16:00:00',
             'attendees' => ['not-an-email'],
             'ticket_id' => $ticket->id, 'reason' => 'x',
@@ -214,12 +214,12 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
 
     public function test_create_requires_a_resolvable_ticket_id(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('createEvent')->never());
 
         // Missing ticket_id.
         $missing = app(StaffCalendarToolExecutor::class)->execute('calendar_create_event', [
-            'user_upn' => 'charlie@soundit.co', 'subject' => 'x',
+            'user_upn' => 'staff@example.test', 'subject' => 'x',
             'start' => '2026-07-29T15:00:00', 'end' => '2026-07-29T16:00:00', 'reason' => 'x',
         ], 0, 'mcp-staff:chet');
         $this->assertArrayHasKey('error', $missing);
@@ -227,7 +227,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
 
         // Non-existent ticket_id.
         $unknown = app(StaffCalendarToolExecutor::class)->execute('calendar_create_event', [
-            'user_upn' => 'charlie@soundit.co', 'subject' => 'x',
+            'user_upn' => 'staff@example.test', 'subject' => 'x',
             'start' => '2026-07-29T15:00:00', 'end' => '2026-07-29T16:00:00', 'ticket_id' => 999999, 'reason' => 'x',
         ], 0, 'mcp-staff:chet');
         $this->assertArrayHasKey('error', $unknown);
@@ -236,7 +236,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
 
     public function test_update_builds_a_partial_patch_and_backlinks(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $captured = null;
         $this->mock(GraphClient::class, function ($m) use (&$captured) {
@@ -248,7 +248,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
         });
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_update_event', [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'staff@example.test',
             'event_id' => 'AAMkAG',
             'subject' => 'Onsite: rescheduled',
             'start' => '2026-07-30T15:00:00',
@@ -272,12 +272,12 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
 
     public function test_update_requires_at_least_one_field(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('updateEvent')->never());
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_update_event', [
-            'user_upn' => 'charlie@soundit.co', 'event_id' => 'AAMkAG',
+            'user_upn' => 'staff@example.test', 'event_id' => 'AAMkAG',
             'ticket_id' => $ticket->id, 'reason' => 'x',
         ], 0, 'mcp-staff:chet');
 
@@ -286,7 +286,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
 
     public function test_cancel_calls_graph_cancel_with_comment_and_backlinks(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $captured = null;
         $this->mock(GraphClient::class, function ($m) use (&$captured) {
@@ -296,7 +296,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
         });
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_cancel_event', [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'staff@example.test',
             'event_id' => 'AAMkAG',
             'comment' => 'Cancelling — client resolved remotely.',
             'ticket_id' => $ticket->id,
@@ -312,7 +312,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
 
     public function test_respond_calls_graph_respond_and_backlinks(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $captured = null;
         $this->mock(GraphClient::class, function ($m) use (&$captured) {
@@ -322,7 +322,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
         });
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_respond_event', [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'staff@example.test',
             'event_id' => 'AAMkAG',
             'response' => 'accept',
             'comment' => 'See you there.',
@@ -337,12 +337,12 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
 
     public function test_respond_rejects_an_invalid_response(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('respondEvent')->never());
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_respond_event', [
-            'user_upn' => 'charlie@soundit.co', 'event_id' => 'AAMkAG',
+            'user_upn' => 'staff@example.test', 'event_id' => 'AAMkAG',
             'response' => 'maybe', 'ticket_id' => $ticket->id, 'reason' => 'x',
         ], 0, 'mcp-staff:chet');
 
@@ -352,12 +352,12 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
     public function test_a_disabled_toolset_refuses_every_write(): void
     {
         Setting::setValue('calendar_enabled', '0');
-        Setting::setValue('calendar_allowed_owner_upns', json_encode(['charlie@soundit.co']));
+        Setting::setValue('calendar_allowed_owner_upns', json_encode(['staff@example.test']));
         $ticket = $this->ticket();
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('createEvent')->never());
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_create_event', [
-            'user_upn' => 'charlie@soundit.co', 'subject' => 'x',
+            'user_upn' => 'staff@example.test', 'subject' => 'x',
             'start' => '2026-07-29T15:00:00', 'end' => '2026-07-29T16:00:00',
             'ticket_id' => $ticket->id, 'reason' => 'x',
         ], 0, 'mcp-staff:chet');
@@ -377,7 +377,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
      */
     public function test_a_body_edit_on_a_teams_meeting_preserves_the_join_link(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $captured = null;
         $this->mock(GraphClient::class, function ($m) use (&$captured) {
@@ -395,7 +395,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
         });
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_update_event', [
-            'user_upn' => 'charlie@soundit.co', 'event_id' => 'AAMkAG',
+            'user_upn' => 'staff@example.test', 'event_id' => 'AAMkAG',
             'body' => "New agenda line 1\nline 2", 'ticket_id' => $ticket->id, 'reason' => 'Reworked the agenda.',
         ], 0, 'mcp-staff:chet');
 
@@ -414,7 +414,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
      */
     public function test_a_body_edit_on_a_teams_meeting_with_no_locatable_join_block_is_refused(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('getEvent')->once()->andReturn([
@@ -428,7 +428,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
         });
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_update_event', [
-            'user_upn' => 'charlie@soundit.co', 'event_id' => 'AAMkAG',
+            'user_upn' => 'staff@example.test', 'event_id' => 'AAMkAG',
             'body' => 'New agenda', 'ticket_id' => $ticket->id, 'reason' => 'Reworked the agenda.',
         ], 0, 'mcp-staff:chet');
 
@@ -439,7 +439,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
     /** A non-Teams event keeps the existing plain-Text body path unchanged (no HTML, no join guard). */
     public function test_a_body_edit_on_a_non_teams_event_stays_plain_text(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $captured = null;
         $this->mock(GraphClient::class, function ($m) use (&$captured) {
@@ -455,7 +455,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
         });
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_update_event', [
-            'user_upn' => 'charlie@soundit.co', 'event_id' => 'AAMkAG',
+            'user_upn' => 'staff@example.test', 'event_id' => 'AAMkAG',
             'body' => 'New agenda', 'ticket_id' => $ticket->id, 'reason' => 'Reworked the agenda.',
         ], 0, 'mcp-staff:chet');
 
@@ -471,14 +471,14 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
      */
     public function test_an_immediate_cancel_survives_a_post_write_bookkeeping_failure(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->once());
         // Break the post-write back-link: the AI actor it attributes to no longer exists.
         Setting::setValue('triage_system_user_id', '99999999');
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_cancel_event', [
-            'user_upn' => 'charlie@soundit.co', 'event_id' => 'AAMkAG', 'comment' => 'x', 'ticket_id' => $ticket->id, 'reason' => 'Resolved.',
+            'user_upn' => 'staff@example.test', 'event_id' => 'AAMkAG', 'comment' => 'x', 'ticket_id' => $ticket->id, 'reason' => 'Resolved.',
         ], 0, 'mcp-staff:chet');
 
         $this->assertArrayNotHasKey('error', $result);
@@ -492,12 +492,12 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
      */
     public function test_an_immediate_cancel_graph_failure_returns_a_non_retry_error(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = $this->ticket();
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->once()->andThrow(new GraphClientException('read timeout')));
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_cancel_event', [
-            'user_upn' => 'charlie@soundit.co', 'event_id' => 'AAMkAG', 'comment' => 'x', 'ticket_id' => $ticket->id, 'reason' => 'Resolved.',
+            'user_upn' => 'staff@example.test', 'event_id' => 'AAMkAG', 'comment' => 'x', 'ticket_id' => $ticket->id, 'reason' => 'Resolved.',
         ], 0, 'mcp-staff:chet');
 
         $this->assertArrayHasKey('error', $result);

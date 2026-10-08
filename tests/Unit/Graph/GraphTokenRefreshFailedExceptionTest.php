@@ -656,7 +656,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
             $this->assertSame(
                 [
                     [Level::Error, 'Graph API token request failed', ['status' => $status]],
-                    [Level::Error, 'Graph API request failed', ['method' => 'GET', 'status' => 401, 'token_refresh' => 'failed']],
+                    [Level::Error, 'Graph API request failed', ['method' => 'GET', 'operation' => 'messages', 'status' => 401, 'token_refresh' => 'failed']],
                 ],
                 array_map(fn (LogRecord $r) => [$r->level, $r->message, $r->context], $this->logs->getRecords()),
                 "{$name}: the token record is the status alone",
@@ -834,7 +834,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
      * provider pins for the arm: status and exception class on the response and no-response
      * arms (status null on the latter), status, field and PHP type on the malformed arm, and
      * none on the no-token arm (#5741). GraphClient's refresh-failure record carries exactly
-     * method, status 401 and token_refresh 'failed'. Records are scanned as Laravel renders
+     * method, the operation label (#6075), status 401 and token_refresh 'failed'. Records are scanned as Laravel renders
      * them, not as json_encode() sees them (#5510).
      *
      * #5622: the TestHandler sees only configured channels; the MessageLogged list also sees an
@@ -852,7 +852,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
         if ($tokenRecord !== null) {
             $expectedRecords[] = [Level::Error, $tokenRecord[0], $tokenRecord[1]];
         }
-        $expectedRecords[] = [Level::Error, 'Graph API request failed', ['method' => 'GET', 'status' => 401, 'token_refresh' => 'failed']];
+        $expectedRecords[] = [Level::Error, 'Graph API request failed', ['method' => 'GET', 'operation' => 'messages', 'status' => 401, 'token_refresh' => 'failed']];
 
         $records = $this->logs->getRecords();
         $this->assertSame(
@@ -935,27 +935,29 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
     }
 
     /**
-     * #5678: what a reporter that serialises getTrace() itself (not the log line) would print.
-     * getTraceAsString(), which the render above and stringArguments() read, shows an array
-     * argument only as 'Array', so those scans cannot see a credential inside
+     * #5678 / #6023: what a reporter that serialises getTrace() itself (not the log line) would
+     * print. getTraceAsString(), which the render above and stringArguments() read, shows an
+     * array argument only as 'Array', so those scans cannot see a credential inside
      * authenticatedRequest()'s $options. frameArgumentsForScan() reads every argument of every
-     * frame of both links; FlattensLogContextTest plants a credential in an array argument and
-     * shows that it fires.
+     * frame of both links (within its 8-link and depth-8 bounds); FlattensLogContextTest plants
+     * a credential in an array argument and shows that it fires.
      *
-     * Arguments on (zend.exception_ignore_args=Off): the seeded bearer IS in a frame argument,
-     * authenticatedRequest()'s $options, and the rendered trace still does not print it. This
-     * pins the exposure the issue describes rather than hiding it: removing the bearer from that
-     * frame is a GraphClient change, not made here. Arguments off (php.ini-production): no
-     * frame keeps an argument, so the chain carries no credential.
+     * Arguments on (zend.exception_ignore_args=Off): before #6023 the seeded bearer was in
+     * authenticatedRequest()'s $options frame argument. authenticatedRequest() no longer writes
+     * the header into $options; it merges it into the options it hands Guzzle at each send, so
+     * no frame argument of either link holds the seeded bearer, the refreshed one or the
+     * secret. Positive control: the same scan does read authenticatedRequest()'s arguments (its
+     * endpoint argument holds the mailbox). Arguments off (php.ini-production): no frame keeps
+     * an argument at all.
      */
-    public function test_frame_arguments_hold_the_bearer_only_with_arguments_on(): void
+    public function test_frame_arguments_hold_no_bearer_with_arguments_on_or_off(): void
     {
         ini_set('zend.exception_ignore_args', '0');
         $on = $this->refreshFailure(self::echoingTokenResponse(400, ['error' => 'invalid_client']));
         $args = self::frameArgumentsForScan($on);
         $this->assertStringContainsString('users/'.self::MAILBOX, $args, 'positive control: the scan reads this chain\'s frame arguments');
-        $this->assertMatchesRegularExpression('/authenticatedRequest arg 2: [^\n]*Bearer '.preg_quote(self::SEEDED_ACCESS_FIXTURE, '/').'/', $args, 'the bearer is in authenticatedRequest()\'s $options');
-        $this->assertStringNotContainsString(self::SEEDED_ACCESS_FIXTURE, $on->getTraceAsString(), 'the trace string prints $options only as Array');
+        $this->assertMatchesRegularExpression('/authenticatedRequest arg 2: \[/', $args, 'positive control: authenticatedRequest()\'s $options is a scanned frame argument');
+        $this->assertCarriesNone([...$this->credentialNeedles(), self::SECRET_FIXTURE], $args, 'the frame arguments with arguments on');
 
         ini_set('zend.exception_ignore_args', '1');
         $off = $this->refreshFailure(self::echoingTokenResponse(400, ['error' => 'invalid_client']));

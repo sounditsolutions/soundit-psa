@@ -44,13 +44,13 @@ class StaffCalendarStagedWriteTest extends TestCase
         $this->approver = User::factory()->create(['name' => 'Gus']);
     }
 
-    private function enableCalendar(array $allowed = ['charlie@soundit.co']): void
+    private function enableCalendar(array $allowed = ['staff@example.test']): void
     {
         Setting::setValue('calendar_enabled', '1');
         Setting::setValue('calendar_allowed_owner_upns', json_encode($allowed));
     }
 
-    private function createArgs(Ticket $ticket, string $owner = 'charlie@soundit.co'): array
+    private function createArgs(Ticket $ticket, string $owner = 'staff@example.test'): array
     {
         return [
             'user_upn' => $owner,
@@ -79,7 +79,7 @@ class StaffCalendarStagedWriteTest extends TestCase
 
     public function test_staging_a_create_parks_an_awaiting_run_and_never_calls_graph(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = Ticket::factory()->create();
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('createEvent')->never());
 
@@ -103,12 +103,12 @@ class StaffCalendarStagedWriteTest extends TestCase
 
     public function test_staging_still_gates_the_owner_allowlist_before_parking(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = Ticket::factory()->create();
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('createEvent')->never());
 
         $result = app(StaffCalendarToolExecutor::class)->execute(
-            'calendar_stage_create_event', $this->createArgs($ticket, 'billing@soundit.co'), 0, 'mcp-staff:chet', 'chet'
+            'calendar_stage_create_event', $this->createArgs($ticket, 'billing@example.test'), 0, 'mcp-staff:chet', 'chet'
         );
 
         $this->assertArrayHasKey('error', $result);
@@ -118,7 +118,7 @@ class StaffCalendarStagedWriteTest extends TestCase
 
     public function test_approving_a_staged_create_executes_the_graph_write_and_backlinks(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = Ticket::factory()->create();
         $captured = null;
         $this->mock(GraphClient::class, function ($m) use (&$captured) {
@@ -137,7 +137,7 @@ class StaffCalendarStagedWriteTest extends TestCase
         $result = app(StaffCalendarToolExecutor::class)->approveStagedRun($run, $this->approver->id);
 
         $this->assertSame('executed', $result->status);
-        $this->assertSame('charlie@soundit.co', $captured['upn']);
+        $this->assertSame('staff@example.test', $captured['upn']);
         $this->assertSame('Onsite: printer swap', $captured['body']['subject']);
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
         // Back-link note lands on approval (private, system).
@@ -149,7 +149,7 @@ class StaffCalendarStagedWriteTest extends TestCase
     public function test_approval_re_verifies_the_allowlist_at_approval_time_toctou(): void
     {
         // Owner is allowlisted at STAGE time...
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = Ticket::factory()->create();
         // ...and the Graph write must NEVER fire once the owner is de-listed before approval.
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('createEvent')->never());
@@ -160,19 +160,19 @@ class StaffCalendarStagedWriteTest extends TestCase
         $run = TechnicianRun::find($staged['run_id']);
 
         // The allowlist changes between staging and approval — the TOCTOU window.
-        Setting::setValue('calendar_allowed_owner_upns', json_encode(['someone-else@soundit.co']));
+        Setting::setValue('calendar_allowed_owner_upns', json_encode(['someone-else@example.test']));
 
         $result = app(StaffCalendarToolExecutor::class)->approveStagedRun($run, $this->approver->id);
 
         $this->assertSame('gate_declined', $result->status);
-        $this->assertStringContainsString('charlie@soundit.co', (string) $result->message);
+        $this->assertStringContainsString('staff@example.test', (string) $result->message);
         // The run was released, not left wedged Executing, and certainly not Done.
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
     }
 
     public function test_approval_is_refused_when_the_toolset_is_disabled_at_approval_time(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = Ticket::factory()->create();
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('createEvent')->never());
 
@@ -189,7 +189,7 @@ class StaffCalendarStagedWriteTest extends TestCase
 
     public function test_double_approval_is_single_use(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = Ticket::factory()->create();
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('createEvent')->once()->andReturn(['id' => 'AAMkAG-new', 'subject' => 'x', 'webLink' => 'https://x']);
@@ -212,7 +212,7 @@ class StaffCalendarStagedWriteTest extends TestCase
         // Review #4: a corrupted encrypted_payload makes Crypt::decryptString throw DecryptException.
         // That must reach the graceful deny-and-re-stage path (gate_declined + claim released),
         // NOT rethrow into a cockpit 500. The Graph write must never fire.
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = Ticket::factory()->create();
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('createEvent')->never());
 
@@ -234,7 +234,7 @@ class StaffCalendarStagedWriteTest extends TestCase
 
     public function test_staging_a_cancel_and_approving_it_calls_graph_cancel(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = Ticket::factory()->create();
         $captured = null;
         $this->mock(GraphClient::class, function ($m) use (&$captured) {
@@ -244,7 +244,7 @@ class StaffCalendarStagedWriteTest extends TestCase
         });
 
         $staged = app(StaffCalendarToolExecutor::class)->execute('calendar_stage_cancel_event', [
-            'user_upn' => 'charlie@soundit.co', 'event_id' => 'AAMkAG',
+            'user_upn' => 'staff@example.test', 'event_id' => 'AAMkAG',
             'comment' => 'No longer needed', 'ticket_id' => $ticket->id, 'reason' => 'Resolved remotely.',
         ], 0, 'mcp-staff:chet', 'chet');
 
@@ -266,14 +266,14 @@ class StaffCalendarStagedWriteTest extends TestCase
      */
     public function test_a_post_write_bookkeeping_failure_lands_terminal_and_never_re_fires_the_write(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = Ticket::factory()->create();
 
         // Exactly ONE cancel across BOTH approvals below — the double-execute guard.
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->once());
 
         $staged = app(StaffCalendarToolExecutor::class)->execute('calendar_stage_cancel_event', [
-            'user_upn' => 'charlie@soundit.co', 'event_id' => 'AAMkAG',
+            'user_upn' => 'staff@example.test', 'event_id' => 'AAMkAG',
             'comment' => 'No longer needed', 'ticket_id' => $ticket->id, 'reason' => 'Resolved remotely.',
         ], 0, 'mcp-staff:chet', 'chet');
         $run = TechnicianRun::find($staged['run_id']);
@@ -303,11 +303,11 @@ class StaffCalendarStagedWriteTest extends TestCase
      */
     public function test_re_staging_an_executed_cancel_does_not_revive_or_refire(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = Ticket::factory()->create();
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->once());
 
-        $args = ['user_upn' => 'charlie@soundit.co', 'event_id' => 'AAMkAG', 'comment' => 'x', 'ticket_id' => $ticket->id, 'reason' => 'Resolved.'];
+        $args = ['user_upn' => 'staff@example.test', 'event_id' => 'AAMkAG', 'comment' => 'x', 'ticket_id' => $ticket->id, 'reason' => 'Resolved.'];
         $exec = app(StaffCalendarToolExecutor::class);
 
         $staged = $exec->execute('calendar_stage_cancel_event', $args, 0, 'mcp-staff:chet', 'chet');
@@ -332,13 +332,13 @@ class StaffCalendarStagedWriteTest extends TestCase
      */
     public function test_an_indeterminate_graph_failure_on_a_cancel_is_held_not_reopened(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = Ticket::factory()->create();
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->once()->andThrow(new GraphClientException('read timeout')));
 
         $exec = app(StaffCalendarToolExecutor::class);
         $staged = $exec->execute('calendar_stage_cancel_event', [
-            'user_upn' => 'charlie@soundit.co', 'event_id' => 'AAMkAG', 'comment' => 'x', 'ticket_id' => $ticket->id, 'reason' => 'Resolved.',
+            'user_upn' => 'staff@example.test', 'event_id' => 'AAMkAG', 'comment' => 'x', 'ticket_id' => $ticket->id, 'reason' => 'Resolved.',
         ], 0, 'mcp-staff:chet', 'chet');
         $run = TechnicianRun::find($staged['run_id']);
 
@@ -394,12 +394,12 @@ class StaffCalendarStagedWriteTest extends TestCase
      */
     public function test_staging_a_write_that_already_executed_immediately_is_refused(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['staff@example.test']);
         $ticket = Ticket::factory()->create();
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->once());
 
         $exec = app(StaffCalendarToolExecutor::class);
-        $args = ['user_upn' => 'charlie@soundit.co', 'event_id' => 'AAMkAG', 'comment' => 'x', 'ticket_id' => $ticket->id, 'reason' => 'Resolved.'];
+        $args = ['user_upn' => 'staff@example.test', 'event_id' => 'AAMkAG', 'comment' => 'x', 'ticket_id' => $ticket->id, 'reason' => 'Resolved.'];
 
         // Immediate execute: writes an 'executed' audit row, creates NO staged run.
         $imm = $exec->execute('calendar_cancel_event', $args, 0, 'mcp-staff:chet');
