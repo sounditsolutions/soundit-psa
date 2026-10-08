@@ -112,7 +112,13 @@ class AttachmentService
      * returns false (the local disk does not throw), with exception null; the file may then be
      * left on disk with no row naming it. #5805: a throw from the storage_path update is thrown
      * as AttachmentStorePathFailedException (id only, the original as getPrevious()), since the
-     * original's message can carry the path and so the filename.
+     * original's message can carry the path and so the filename. #6029: except a deadlock or
+     * lock wait (the framework's concurrency detector) or a lost connection (its lost-connection
+     * detector), judged on the driver's exception, whose message has no bindings, never on the
+     * QueryException, whose message carries the bound path and so a sender-chosen filename: that
+     * throw is rethrown as a QueryException on the driver's exception with the bindings withheld,
+     * so the class, the code and the driver text that DB::transaction, the queue worker and a
+     * caller's catch (QueryException) read are kept, and its SQL shows ? for the path.
      */
     private function writeOrRollBack(Attachment $attachment, string $path, \Closure $write): void
     {
@@ -123,6 +129,18 @@ class AttachmentService
             try {
                 $attachment->update(['storage_path' => $path]);
             } catch (\Throwable $updateFailure) {
+                $driver = $updateFailure instanceof \Illuminate\Database\QueryException ? $updateFailure->getPrevious() : null;
+                if ($driver !== null && self::isConcurrencyOrLostConnection($driver)) {
+                    throw new \Illuminate\Database\QueryException(
+                        $updateFailure->getConnectionName(),
+                        $updateFailure->getSql(),
+                        [],
+                        $driver,
+                        $updateFailure->getConnectionDetails(),
+                        $updateFailure->readWriteType,
+                    );
+                }
+
                 throw new AttachmentStorePathFailedException($attachment->id, $updateFailure);
             }
         } catch (\Throwable $e) {
@@ -149,6 +167,19 @@ class AttachmentService
 
             throw $e;
         }
+    }
+
+    /** #6029: the framework's own detectors, given the driver's exception (its message has no bindings). */
+    private static function isConcurrencyOrLostConnection(\Throwable $e): bool
+    {
+        $concurrency = app()->bound(\Illuminate\Contracts\Database\ConcurrencyErrorDetector::class)
+            ? app(\Illuminate\Contracts\Database\ConcurrencyErrorDetector::class)
+            : new \Illuminate\Database\ConcurrencyErrorDetector;
+        $lost = app()->bound(\Illuminate\Contracts\Database\LostConnectionDetector::class)
+            ? app(\Illuminate\Contracts\Database\LostConnectionDetector::class)
+            : new \Illuminate\Database\LostConnectionDetector;
+
+        return $concurrency->causedByConcurrencyError($e) || $lost->causedByLostConnection($e);
     }
 
     /**
@@ -255,8 +286,8 @@ class AttachmentService
         try {
             $graphAttachments = $graph->getMessageAttachments($mailbox, $email->graph_id);
         } catch (\Throwable $e) {
-            // C-56: the email id, the HTTP status and the exception class only, never the message
-            // or (#5804) the Graph message id. A
+            // C-56: the email id, the HTTP status, the exception class and (#5813, below) the
+            // token_refresh marker; never the message or (#5804) the Graph message id. A
             // GraphClientException's message no longer names the endpoint (#5679), but any other
             // Throwable's message is not known to be free of the mailbox or vendor text. status is
             // the GraphClientException's status when it is above 0: Graph's HTTP status, or the
@@ -474,8 +505,8 @@ class AttachmentService
     private function warnSkipped(Email $email, array $ga, string $reason, array $extra = []): void
     {
         Log::warning('[AttachmentService] Email attachment content not stored', [
+            // #6044 (C-56): the email id, never the Graph message id.
             'email_id' => $email->id,
-            'graph_id' => $email->graph_id,
             'attachment_id' => is_string($ga['id'] ?? null) ? $ga['id'] : null,
             'odata_type' => is_string($ga['@odata.type'] ?? null) ? $ga['@odata.type'] : null,
             'reason' => $reason,

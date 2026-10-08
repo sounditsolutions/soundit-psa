@@ -160,4 +160,48 @@ class RetryEmailAttachmentsFailerTest extends TestCase
         $this->assertSame([$ticketId], $this->seen->getArrayCopy());
         $this->assertSame(0, Attachment::withTrashed()->count(), 'the rolled-back read is discarded');
     }
+
+    public function test_the_push_read_back_reads_the_write_connection(): void
+    {
+        // #6037: at prod's level 0 a select goes to the read PDO when one is configured. Here the
+        // read PDO is a separate empty database, set only for the read-back; read on it, the
+        // push's row would not be found (or the query would throw: queued_row null).
+        $this->assertSame(0, DB::transactionLevel(), "precondition: prod's level 0");
+        config(['queue.default' => 'database']);
+        $client = Client::create(['name' => 'Example Client']);
+        $email = Email::create([
+            'graph_id' => 'MSG-1', 'direction' => 'inbound', 'from_address' => 'user@example.test', 'from_name' => 'User',
+            'subject' => 'Printer offline', 'body_text' => 'B6-SYNTHETIC-BODY', 'body_html' => '<p>B6</p>',
+            'client_id' => $client->id, 'received_at' => now(),
+        ]);
+        $replica = new \PDO('sqlite::memory:');
+        $thrown = 0;
+        \Illuminate\Support\Facades\Event::listen(\Illuminate\Queue\Events\JobQueued::class, function ($event) use (&$thrown, $replica) {
+            if ($event->job instanceof RetryEmailAttachments && $thrown++ === 0) {
+                DB::connection()->setReadPdo($replica);
+
+                throw new \RuntimeException('B6-SYNTHETIC-AFTER-INSERT');
+            }
+        });
+        $readTypes = [];
+        DB::listen(function ($q) use (&$readTypes) {
+            if (str_contains(strtolower($q->sql), 'from "jobs"') && str_contains(strtolower($q->sql), 'like')) {
+                $readTypes[] = $q->readWriteType;
+            }
+        });
+
+        try {
+            app(EmailService::class)->autoCreateTicketFromEmail($email);
+        } finally {
+            DB::connection()->setReadPdo(null);
+        }
+
+        $this->assertSame(1, $thrown, 'positive control: the push threw after its insert');
+        $this->assertSame(['write'], $readTypes, 'the read-back ran once, on the write PDO');
+        $found = $this->withMessage(RetryEmailAttachments::PUSH_THREW_ROW_FOUND);
+        $this->assertCount(1, $found);
+        $this->assertSame('jobs', $found[0]->context['found_in']);
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::NOT_QUEUED));
+        $this->assertSame([], $this->seen->getArrayCopy(), 'no inline commit work');
+    }
 }
