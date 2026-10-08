@@ -342,22 +342,55 @@ class AttachmentStoreRollbackTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('passedThrough')]
-    public function test_a_concurrency_or_lost_connection_throw_is_not_wrapped(string $message, int|string $code): void
+    public function test_a_concurrency_or_lost_connection_throw_is_rethrown_as_a_query_exception_without_the_path(string $message, int|string $code): void
     {
-        // #6029: the framework's detectors read the thrown exception itself, so these go out as
-        // the QueryException they are; the row and file are still rolled back.
+        // #6029: the rethrow is a QueryException on the driver's exception with the bindings
+        // withheld: the class, the code and the driver text the framework's detectors read are
+        // kept, the bound path is not; the row and file are still rolled back. Exception argument
+        // capture is off, as in prod (ruling 5).
         $this->storagePathUpdateThrows($message, $code);
-
-        $thrown = null;
+        $ignoreArgs = ini_set('zend.exception_ignore_args', '1');
         try {
-            app(AttachmentService::class)->storeFromContent('synthetic-bytes', self::FILENAME, 'text/plain');
-        } catch (\Throwable $e) {
-            $thrown = $e;
+            $thrown = null;
+            try {
+                app(AttachmentService::class)->storeFromContent('synthetic-bytes', self::FILENAME, 'text/plain');
+            } catch (\Throwable $e) {
+                $thrown = $e;
+            }
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $ignoreArgs);
         }
 
         $this->assertInstanceOf(\Illuminate\Database\QueryException::class, $thrown, 'a caller catching QueryException still matches');
         $this->assertSame(0, Attachment::withTrashed()->count(), 'rolled back as before');
         $this->assertSame([], Storage::disk('local')->allFiles('attachments'));
+        $this->assertSame($message, $thrown->getPrevious()?->getMessage(), 'the driver exception is kept as previous');
+        $this->assertSame($code, $thrown->getCode(), 'the driver code is kept');
+        $this->assertStringStartsWith($message, $thrown->getMessage(), 'the driver text is kept');
+        $this->assertStringContainsString('set "storage_path" = ?', $thrown->getMessage(), 'positive control: the SQL is still in the message');
+        $this->assertSame([], $thrown->getBindings(), 'the bound path is withheld');
+        $this->assertTrue(
+            (new \Illuminate\Database\ConcurrencyErrorDetector)->causedByConcurrencyError($thrown)
+                || (new \Illuminate\Database\LostConnectionDetector)->causedByLostConnection($thrown),
+            'the framework still classifies the rethrow',
+        );
+
+        // The sinks: the exception handler's log record and the shipped failer's failed_jobs row.
+        app(\Illuminate\Contracts\Debug\ExceptionHandler::class)->report($thrown);
+        $this->assertCount(1, $this->withMessage($thrown->getMessage()), 'positive control: the handler reported it');
+        $this->assertSame('database-uuids', config('queue.failed.driver'), 'precondition: the shipped failer');
+        $uuid = (string) \Illuminate\Support\Str::uuid();
+        app('queue.failer')->log('database', 'default', json_encode(['uuid' => $uuid]), $thrown);
+        $stored = (string) \Illuminate\Support\Facades\DB::table('failed_jobs')->where('uuid', $uuid)->value('exception');
+        $this->assertStringContainsString($message, $stored, 'positive control: the row holds this exception');
+        $formatter = new \Monolog\Formatter\LineFormatter(null, null, true, true, true);
+        $sinks = array_map(fn ($record) => $formatter->format($record), $this->logs->getRecords());
+        $sinks[] = $stored;
+        foreach ($sinks as $text) {
+            foreach (['payroll', 'Payroll', '.xlsx', 'attachments/'] as $needle) {
+                $this->assertStringNotContainsString($needle, $text, "#6029: no filename or path in a log record or failed_jobs.exception ({$needle})");
+            }
+        }
     }
 
     public function test_a_deadlock_inside_a_transaction_reaches_the_frameworks_deadlock_handling(): void
@@ -376,6 +409,10 @@ class AttachmentStoreRollbackTest extends TestCase
 
         $this->assertInstanceOf(\Illuminate\Database\DeadlockException::class, $thrown);
         $this->assertInstanceOf(\Illuminate\Database\QueryException::class, $thrown->getPrevious());
+        $this->assertStringContainsString('Deadlock found', $thrown->getMessage(), 'positive control: DeadlockException copies the rethrow message');
+        foreach (['payroll', 'Payroll', '.xlsx', 'attachments/'] as $needle) {
+            $this->assertStringNotContainsString($needle, $thrown->getMessage(), "#6029: the DeadlockException carries no filename or path ({$needle})");
+        }
     }
 
     public function test_another_query_exception_is_still_wrapped(): void
@@ -385,5 +422,41 @@ class AttachmentStoreRollbackTest extends TestCase
 
         $this->expectException(AttachmentStorePathFailedException::class);
         app(AttachmentService::class)->storeFromContent('synthetic-bytes', self::FILENAME, 'text/plain');
+    }
+
+    /** @return array<string, array{0: string}> */
+    public static function needleFilenames(): array
+    {
+        // The extension survives sanitizeFilename lowercased, spaces kept.
+        return [
+            'lost-connection needle' => ['Payroll-Q3-Example.server has gone away'],
+            'concurrency needle' => ['Payroll-Q3-Example.database is locked'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('needleFilenames')]
+    public function test_a_filename_carrying_a_detector_needle_is_still_wrapped(string $filename): void
+    {
+        // #6029: the detectors read the driver exception, whose message has no bindings, never
+        // the QueryException, whose message carries the bound path and so the sender's filename.
+        $this->storagePathUpdateThrows('B6-SYNTHETIC-DATA-TOO-LONG');
+
+        $thrown = null;
+        try {
+            app(AttachmentService::class)->storeFromContent('synthetic-bytes', $filename, 'text/plain');
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+
+        $this->assertInstanceOf(AttachmentStorePathFailedException::class, $thrown, 'wrapped, id only (#5805)');
+        $original = $thrown->getPrevious();
+        $this->assertInstanceOf(\Illuminate\Database\QueryException::class, $original);
+        $this->assertTrue(
+            (new \Illuminate\Database\ConcurrencyErrorDetector)->causedByConcurrencyError($original)
+                || (new \Illuminate\Database\LostConnectionDetector)->causedByLostConnection($original),
+            'positive control: read on the QueryException, a detector matches the filename in the bound path',
+        );
+        $this->assertStringNotContainsString('payroll', $thrown->getMessage());
+        $this->assertSame(0, Attachment::withTrashed()->count(), 'rolled back as before');
     }
 }

@@ -114,9 +114,11 @@ class AttachmentService
      * as AttachmentStorePathFailedException (id only, the original as getPrevious()), since the
      * original's message can carry the path and so the filename. #6029: except a deadlock or
      * lock wait (the framework's concurrency detector) or a lost connection (its lost-connection
-     * detector): that throw goes out unwrapped, so DB::transaction's retry and reconnect and a
-     * caller's catch (QueryException) still see it, and its message then carries the path to
-     * whatever sink receives it, as before #5805.
+     * detector), judged on the driver's exception, whose message has no bindings, never on the
+     * QueryException, whose message carries the bound path and so a sender-chosen filename: that
+     * throw is rethrown as a QueryException on the driver's exception with the bindings withheld,
+     * so the class, the code and the driver text that DB::transaction, the queue worker and a
+     * caller's catch (QueryException) read are kept, and its SQL shows ? for the path.
      */
     private function writeOrRollBack(Attachment $attachment, string $path, \Closure $write): void
     {
@@ -127,8 +129,16 @@ class AttachmentService
             try {
                 $attachment->update(['storage_path' => $path]);
             } catch (\Throwable $updateFailure) {
-                if (self::isConcurrencyOrLostConnection($updateFailure)) {
-                    throw $updateFailure;
+                $driver = $updateFailure instanceof \Illuminate\Database\QueryException ? $updateFailure->getPrevious() : null;
+                if ($driver !== null && self::isConcurrencyOrLostConnection($driver)) {
+                    throw new \Illuminate\Database\QueryException(
+                        $updateFailure->getConnectionName(),
+                        $updateFailure->getSql(),
+                        [],
+                        $driver,
+                        $updateFailure->getConnectionDetails(),
+                        $updateFailure->readWriteType,
+                    );
                 }
 
                 throw new AttachmentStorePathFailedException($attachment->id, $updateFailure);
@@ -159,7 +169,7 @@ class AttachmentService
         }
     }
 
-    /** #6029: what the framework's transaction retry and reconnect read, by its own detectors. */
+    /** #6029: the framework's own detectors, given the driver's exception (its message has no bindings). */
     private static function isConcurrencyOrLostConnection(\Throwable $e): bool
     {
         $concurrency = app()->bound(\Illuminate\Contracts\Database\ConcurrencyErrorDetector::class)

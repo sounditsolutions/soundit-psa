@@ -9,7 +9,8 @@ use Illuminate\Support\Facades\Log;
  * QueryException, whose message carries the SQL bindings: the path, and so the sanitized client
  * filename). writeOrRollBack throws this in its place. The message carries the attachment id
  * only; getPrevious() is the original throw, for code that needs it. A deadlock or lost
- * connection is not wrapped (#6029, AttachmentService::writeOrRollBack).
+ * connection is not wrapped in this: it is rethrown as a QueryException with the bindings
+ * withheld (#6029, AttachmentService::writeOrRollBack).
  *
  * C-56: the framework's own report would put this exception in the log context, and the line
  * formatter writes each previous exception's message after it, so report() writes the record
