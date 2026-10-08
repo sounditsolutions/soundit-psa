@@ -67,9 +67,11 @@ class MeshAllowRuleBurnerB5cTest extends TestCase
      * container double. MeshClient and MeshWriteClient build their own Guzzle
      * clients, which the Http facade's fake and preventStrayRequests() never
      * see, so the guard for Mesh is the container: both are bound to Mockery
-     * doubles with no expectations, and any call a test did not set up
-     * throws. The Http fake covers only requests made through the Http
-     * facade.
+     * doubles with no expectations. A call a double was not set up for
+     * throws AT THE CALL; a path that catches Throwable can turn that throw
+     * into a refusal the test never sees, so the doubles prove no real Mesh
+     * traffic left the box, not that every stray call fails a test (#5757).
+     * The Http fake covers only requests made through the Http facade.
      */
     protected function setUp(): void
     {
