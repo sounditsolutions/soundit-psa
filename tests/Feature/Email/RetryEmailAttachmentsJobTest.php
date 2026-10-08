@@ -62,6 +62,7 @@ class RetryEmailAttachmentsJobTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->testLevel = DB::transactionLevel();
         Http::preventStrayRequests();
         Storage::fake('local');
         Setting::setValue('graph_mailbox', self::MAILBOX);
@@ -557,20 +558,33 @@ class RetryEmailAttachmentsJobTest extends TestCase
     // ── A timeout kill and a refusal do not share or double-count one budget ──
 
     /**
-     * What the worker's SIGALRM handler does to a job that ran past its own $timeout. In prod
-     * Job::fail() first rolls the connection back to level 0 (queue.failed.database set); here
-     * that would end RefreshDatabase's wrapping transaction, so it is switched off. The retry
-     * itself never holds a transaction across its Graph read (EmailRetryLockProofTest).
+     * What the worker's SIGALRM handler does to a job that ran past its own $timeout, in prod's
+     * order (#5815): Job::fail() rolls every open transaction back (queue.failed.database set,
+     * rollBack(toLevel: 0)), then calls failed(). Level 0 here would end RefreshDatabase's
+     * wrapping transaction, so the framework's own rollback is switched off and this helper
+     * rolls back to the test's level instead, before failed() runs. The worker then kills the
+     * process; here the code under test unwinds instead, so the levels it expects are reopened
+     * empty after failed() and roll back as it unwinds.
      */
     private function timeOut(\Illuminate\Queue\Jobs\DatabaseJob $job): void
     {
         config(['queue.failed.database' => null]);
+        $open = DB::transactionLevel() - $this->testLevel;
+        if ($open > 0) {
+            DB::rollBack($this->testLevel);
+        }
         $worker = app('queue.worker');
         $e = \Illuminate\Queue\TimeoutExceededException::forJob($job);
         // --tries=2 is the worker's option; the job's own maxTries (1) must win.
         (fn () => $this->markJobAsFailedIfWillExceedMaxAttempts('database', $job, 2, $e))->call($worker);
         (fn () => $this->markJobAsFailedIfItShouldFailOnTimeout('database', $job, $e))->call($worker);
+        for ($i = 0; $i < $open; $i++) {
+            DB::beginTransaction();
+        }
     }
+
+    /** The transaction level RefreshDatabase leaves a test at: prod's level 0. */
+    private int $testLevel = 0;
 
     public function test_a_timeout_on_the_first_run_is_final_and_spends_no_refusal_re_queue(): void
     {
@@ -637,15 +651,22 @@ class RetryEmailAttachmentsJobTest extends TestCase
                 'notes' => count($this->markerNotes($ticketId)),
                 'seen' => $this->seen->getArrayCopy(),
             ];
-            throw new \RuntimeException('B4I-SYNTHETIC-KILLED'); // stands in for the kill
+            // Stands in for the kill. The store's own catch and the retry's catch arm absorb it,
+            // so the job unwinds; what it may still do after failed() is asserted below (#5808).
+            throw new \RuntimeException('B4I-SYNTHETIC-KILLED');
         });
 
-        try {
-            $job->fire();
-        } catch (\RuntimeException) {
-        }
+        $job->fire();
 
         $this->assertTrue($killed, 'positive control: the kill point was reached');
+        $this->assertSame(
+            ['rows' => 0, 'files' => [], 'markers' => ['timed_out'], 'notes' => 1, 'seen' => [['notifyEmailAdded', $ticketId, 0]]],
+            ['rows' => Attachment::withTrashed()->count(), 'files' => Storage::disk('local')->allFiles('attachments'),
+                'markers' => array_map(fn ($r) => $r->context['reason'], $this->withMessage(RetryEmailAttachments::MARKER)),
+                'notes' => count($this->markerNotes($ticketId)), 'seen' => $this->seen->getArrayCopy()],
+            '#5808: after failed(), the unwinding run writes no second marker and runs no second commit work',
+        );
+        $this->assertSame([], $this->retryRows(), 'and re-queues nothing');
         $this->assertSame([
             'before' => [1, 1],
             'rows' => 0,
@@ -654,6 +675,49 @@ class RetryEmailAttachmentsJobTest extends TestCase
             'notes' => 1,
             'seen' => [['notifyEmailAdded', $ticketId, 0]],
         ], $atKill, 'row and file existed at the kill; failed() discarded both, wrote the marker and notified');
+    }
+
+    public function test_a_timeout_inside_the_link_transaction_rolls_back_first_then_discards(): void
+    {
+        // #5815: the kill lands inside the link transaction, after the link wrote. In prod the
+        // worker rolls that transaction back before failed(), so abandonRetry reads the link as
+        // not persisted and discards the row and file; failed() reading the uncommitted link
+        // would keep an unlinked row and write no marker.
+        $this->graph([$this->failedRead()]);
+        $ticketId = $this->ticketWithQueuedRetry()->id;
+        $job = $this->popRetry();
+        $this->mock->append($this->read());
+        $atKill = null;
+        // Nothing here may assert: a failed assertion would be caught by the code under test.
+        Attachment::updated(function (Attachment $a) use ($job, &$atKill, $ticketId) {
+            if ($a->attachable_type !== TicketNote::class || $atKill !== null) {
+                return;
+            }
+            $open = DB::transactionLevel() - $this->testLevel;
+            $this->timeOut($job);
+            $atKill = [
+                'open' => $open,
+                'rows' => Attachment::withTrashed()->count(),
+                'files' => count(Storage::disk('local')->allFiles('attachments')),
+                'markers' => array_map(fn ($r) => $r->context['reason'], $this->withMessage(RetryEmailAttachments::MARKER)),
+                'notes' => count($this->markerNotes($ticketId)),
+                'seen' => $this->seen->getArrayCopy(),
+            ];
+            throw new \RuntimeException('B4M-SYNTHETIC-KILLED'); // stands in for the kill
+        });
+
+        $job->fire();
+
+        $this->assertNotNull($atKill, 'positive control: the kill point was reached');
+        $expected = ['open' => 1, 'rows' => 0, 'files' => 0, 'markers' => ['timed_out'], 'notes' => 1, 'seen' => [['notifyEmailAdded', $ticketId, 0]]];
+        $this->assertSame($expected, $atKill, 'inside the link transaction; rolled back, then discarded, marked and notified');
+        $this->assertSame(
+            ['rows' => 0, 'markers' => ['timed_out'], 'notes' => 1, 'seen' => [['notifyEmailAdded', $ticketId, 0]]],
+            ['rows' => Attachment::withTrashed()->count(),
+                'markers' => array_map(fn ($r) => $r->context['reason'], $this->withMessage(RetryEmailAttachments::MARKER)),
+                'notes' => count($this->markerNotes($ticketId)), 'seen' => $this->seen->getArrayCopy()],
+            '#5808: nothing more after failed()',
+        );
     }
 
     public function test_a_timeout_during_the_commit_work_does_not_run_it_again_or_write_a_marker(): void

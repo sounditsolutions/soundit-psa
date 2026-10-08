@@ -122,6 +122,12 @@ class RetryEmailAttachments implements ShouldQueue
         self::$progress[$key] = [];
         try {
             $outcome = $emails->retryMessageRead($this->emailId, $this->ticketId, $this->noteId, $this->baseline);
+            if (self::$progress[$key]['failed'] ?? false) {
+                // #5808: failed() already ran for this dispatch in this process. The worker exits
+                // right after it on a timeout; should this run go on regardless, failed() owns
+                // the outcome, and nothing more is written, re-queued or notified here.
+                return;
+            }
             self::$progress[$key]['outcome'] = $outcome;
 
             if ($outcome !== null && $outcome['requeueable'] && $this->refusals < self::MAX_REFUSAL_REQUEUES) {
@@ -173,6 +179,9 @@ class RetryEmailAttachments implements ShouldQueue
         $key = $this->progressKey();
         $here = array_key_exists($key, self::$progress);
         $progress = self::$progress[$key] ?? [];
+        if ($here) {
+            self::$progress[$key]['failed'] = true;
+        }
         if (array_key_exists('outcome', $progress)) {
             if ($progress['requeued'] ?? false) {
                 return;
