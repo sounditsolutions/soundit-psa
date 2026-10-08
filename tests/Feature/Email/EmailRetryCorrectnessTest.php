@@ -283,7 +283,55 @@ class EmailRetryCorrectnessTest extends TestCase
                     $t->assertNull($t->ticketOf()->description_html, 'nothing of the retry was written');
                 },
             ],
+            // #5807: the baseline is a hash of each row, so each column alone must still refuse.
+            'note body alone' => [
+                fn () => TicketNote::whereNotNull('email_id')->firstOrFail()->update(['body' => 'tech edit body only']),
+                'note_changed',
+                fn (self $t) => $t->assertSame('tech edit body only', TicketNote::whereNotNull('email_id')->sole()->body),
+            ],
+            'note body_html alone' => [
+                fn () => TicketNote::whereNotNull('email_id')->firstOrFail()->update(['body_html' => '<p>tech edit html only</p>']),
+                'note_changed',
+                fn (self $t) => $t->assertSame('<p>tech edit html only</p>', TicketNote::whereNotNull('email_id')->sole()->body_html),
+            ],
         ];
+    }
+
+    /** @return array<string, array{0: bool, 1: string|null}> */
+    public static function legacyBaselines(): array
+    {
+        return ['unchanged since the baseline' => [false, null], 'edited since the baseline' => [true, 'ticket_changed']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('legacyBaselines')]
+    public function test_a_payload_queued_before_5807_with_raw_rows_compares_as_before(bool $edit, ?string $reason): void
+    {
+        // #5807: a job queued before the deploy carries retryState's raw rows; it is hashed on
+        // read, so an unchanged ticket still links and an edited one is still refused.
+        Bus::fake([\App\Jobs\RetryEmailAttachments::class]); // this test drives the retry itself
+        // The edit lands during the retry's read, so the locked re-check is what refuses.
+        $this->graph([$this->failedRead(), $this->readDuring(function () use ($edit) {
+            if ($edit) {
+                Ticket::whereNotNull('id')->firstOrFail()->update(['description' => 'tech edit: legacy']);
+            }
+        })]);
+        $email = $this->email();
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+        $ticketId = (int) $email->fresh()->ticket_id;
+        $noteId = TicketNote::where('email_id', $email->id)->sole()->id;
+        $service = app(EmailService::class);
+        $raw = (fn () => $this->retryState($ticketId, $noteId))->call($service);
+        $this->assertIsArray($raw['ticket'], 'positive control: a raw, pre-#5807 baseline');
+
+        $outcome = $service->retryMessageRead($email->id, $ticketId, $noteId, $raw);
+
+        $this->assertSame(2, $this->messageReads(), 'positive control: the retry read ran');
+        $this->assertSame($reason, $outcome['reason'] ?? null);
+        if ($reason === null) {
+            $this->assertSame(TicketNote::class, Attachment::sole()->attachable_type, 'linked');
+        } else {
+            $this->assertSkipped($reason, discarded: 1);
+        }
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('editsDuringTheRetryRead')]

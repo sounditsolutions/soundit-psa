@@ -257,6 +257,47 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertNotEmpty($command->baseline, '#5711: the payload carries the creation-time baseline');
     }
 
+    public function test_the_queued_and_failed_payloads_carry_no_ticket_or_note_content(): void
+    {
+        // #5807: the baseline is ids and hashes only, so the client's email text never sits in
+        // jobs.payload, nor in failed_jobs.payload after the job fails.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $needle = 'B4M-SYNTHETIC-BODY-NEEDLE';
+        $email = $this->email();
+        $email->update(['body_text' => "{$needle} text", 'body_html' => "<p>{$needle} html</p>".self::CID_HTML]);
+        // A plain email ticket has no description; a vendor-parsed one does. Plant one.
+        Ticket::creating(function (Ticket $t) use ($needle) {
+            $t->description = "{$needle} description";
+            $t->description_html = "<p>{$needle} description_html</p>";
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $note = TicketNote::where('email_id', $email->id)->sole();
+        $this->assertStringContainsString($needle, (string) $ticket->fresh()->description.(string) $ticket->fresh()->description_html,
+            'positive control: the ticket carries the needle');
+        $this->assertStringContainsString($needle, (string) $note->body.(string) $note->body_html, 'positive control: the note carries the needle');
+        $rows = $this->retryRows();
+        $this->assertCount(1, $rows, 'positive control: the retry was queued');
+        $this->assertStringNotContainsString($needle, $rows[0]->payload, 'jobs.payload');
+
+        $job = $this->popRetry();
+        $command = $this->commandOf($job);
+        $this->assertStringNotContainsString($needle, serialize($command), 'serialize($job)');
+        $this->assertSame(['ticket', 'note', 'attachments'], array_keys($command->baseline));
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{64}$/', $command->baseline['ticket']);
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{64}$/', $command->baseline['note']);
+        $this->assertSame([], $command->baseline['attachments']);
+
+        // What the worker records for a failed job: the raw body, through the configured failer.
+        app('queue.failer')->log('database', 'default', $job->getRawBody(), new \RuntimeException('B4M-SYNTHETIC-FAIL'));
+        $failed = DB::table('failed_jobs')->get();
+        $this->assertCount(1, $failed, 'positive control: the failed job was recorded');
+        $this->assertSame(RetryEmailAttachments::class, json_decode($failed[0]->payload, true)['displayName'] ?? null, 'positive control: it is this job');
+        $this->assertStringNotContainsString($needle, $failed[0]->payload, 'failed_jobs.payload');
+    }
+
     public function test_a_rolled_back_transaction_queues_no_retry(): void
     {
         $this->databaseQueue();

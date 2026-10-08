@@ -1300,11 +1300,37 @@ PROMPT;
      * The baseline for retryState: taken inside the creating transaction, after every write
      * createTicketFromLockedEmail makes to the ticket and note.
      *
-     * @return array<string, mixed>
+     * #5807: it travels in the queued job's payload (jobs.payload, and failed_jobs.payload after
+     * a failure), so it carries no content: the ticket and note rows are each reduced to a
+     * sha256 of their serialised values (retryFingerprint), the attachments to their ids.
+     *
+     * @return array{ticket?: string, note?: string|null, attachments?: list<int>}
      */
     private function retryBaseline(int $ticketId, ?int $noteId): array
     {
-        return $this->retryState($ticketId, $noteId) ?? [];
+        return self::retryFingerprint($this->retryState($ticketId, $noteId)) ?? [];
+    }
+
+    /**
+     * #5807: retryState with the ticket and note rows replaced by a sha256 of serialize() of
+     * each, so two states compare equal exactly when their rows are identical in value and type,
+     * as the !== on the rows themselves did. A row given as a hash already is kept.
+     *
+     * @param  array<string, mixed>|null  $state
+     * @return array{ticket: mixed, note: mixed, attachments: mixed}|null
+     */
+    private static function retryFingerprint(?array $state): ?array
+    {
+        if ($state === null) {
+            return null;
+        }
+        $hash = fn ($row) => is_array($row) ? hash('sha256', serialize($row)) : $row;
+
+        return [
+            'ticket' => $hash($state['ticket'] ?? null),
+            'note' => $hash($state['note'] ?? null),
+            'attachments' => $state['attachments'] ?? null,
+        ];
     }
 
     /**
@@ -1331,8 +1357,12 @@ PROMPT;
         if ($now['note'] === null) {
             return 'client_note_missing';
         }
+        // #5807: both sides as fingerprints; a payload queued before #5807 carries the raw rows,
+        // which are hashed the same way, so it compares as it did.
+        $now = self::retryFingerprint($now);
+        $was = self::retryFingerprint($baseline);
         foreach (['ticket' => 'ticket_changed', 'note' => 'note_changed', 'attachments' => 'attachments_changed'] as $key => $reason) {
-            if (($baseline[$key] ?? null) !== $now[$key]) {
+            if (($was[$key] ?? null) !== $now[$key]) {
                 return $reason;
             }
         }
