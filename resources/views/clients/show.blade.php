@@ -993,6 +993,9 @@
                         $cdHasCode = $client->getRawOriginal('controld_provisioning_code') !== null || $client->getRawOriginal('controld_deactivation_pin') !== null;
                         $cdStep = ! $cdMapped ? 'organization' : (! $cdHasCode ? 'code' : null);
                         $cdTickets = $cdStep ? $client->tickets()->open()->orderByDesc('id')->limit(25)->get(['id', 'halo_id', 'subject']) : collect();
+                        // A never-admitted intent (staged, preflight, no vendor PK) holding this client's lock.
+                        $cdReleasable = \App\Models\ControlDOnboardingIntent::where('client_id', $client->id)->where('state', 'staged')
+                            ->where('phase', 'preflight')->whereNull('vendor_pk')->get(['id', 'operation', 'created_at']);
                     @endphp
                     <div class="row g-3 mb-3" id="controld-onboarding">
                         <div class="col-md-6">
@@ -1023,10 +1026,18 @@
                                             @if($cdStep === 'organization')
                                                 Creates the client's Control D sub-organization (name and contact email from this record, two-factor required) and binds it here. Step 2 (the provisioning code) is staged separately afterwards.
                                             @else
-                                                Mapped to organization <code>{{ $client->controld_org_id }}</code>. Cuts one provisioning code under it with the Control D panel defaults; the code is stored encrypted and never shown.
+                                                Mapped to organization <code>{{ $client->controld_org_id }}</code>. If the configured global profile is not yet enforced on it, the next proposal enforces it first; otherwise it cuts one provisioning code with the Control D panel defaults (stored encrypted, never shown).
                                             @endif
                                             Staging holds a proposal in the cockpit for a <strong>second Admin</strong> to approve; nothing is created by this button.
                                         </p>
+                                        @foreach($cdReleasable as $cdIntent)
+                                            <form method="POST" action="{{ route('clients.controld.intent.release', [$client, $cdIntent->id]) }}" class="d-flex flex-column gap-2 mb-2 border rounded p-2" data-testid="controld-intent-release">
+                                                @csrf
+                                                <div class="small"><i class="bi bi-lock me-1"></i>Intent <code>{{ $cdIntent->id }}</code> ({{ $cdIntent->operation }}) was staged but never admitted; no vendor write was made. It holds this client's onboarding lock.</div>
+                                                <input type="text" name="reason" class="form-control form-control-sm" maxlength="500" placeholder="Reason for releasing (audited)" required>
+                                                <button type="submit" class="btn btn-outline-primary btn-sm align-self-start"><i class="bi bi-unlock me-1"></i>Release this intent</button>
+                                            </form>
+                                        @endforeach
                                         @if($cdTickets->isEmpty())
                                             <div class="text-muted small"><i class="bi bi-info-circle me-1"></i>Open a ticket for this client first — the proposal is held on a ticket.</div>
                                         @else

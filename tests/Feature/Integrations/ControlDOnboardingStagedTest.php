@@ -40,6 +40,14 @@ class ControlDOnboardingStagedTest extends TestCase
         parent::setUp();
         Http::preventStrayRequests();
         Setting::setValue('controld_enabled', '1');
+        // Synthetic Global Profile PK (G-13): the org step enforces it as parent_profile.
+        Setting::setValue('controld_default_profile_id', '111111synthAA');
+    }
+
+    /** One parent-inventory row (GET sub_organizations producer schema) with the global profile set. */
+    private function listed(): array
+    {
+        return json_decode(file_get_contents(base_path('tests/Fixtures/ControlD/sub-organization.json')), true)['body']['sub_organizations'][0];
     }
 
     private function row(): array
@@ -57,7 +65,7 @@ class ControlDOnboardingStagedTest extends TestCase
         // Direct Guzzle isolation, not a claim that Laravel's facade fakes Guzzle.
         $handler = new MockHandler([...($responses ?? [
             $this->response(['organization' => $this->row()]),
-            $this->response(['sub_organizations' => [$this->row()]]),
+            $this->response(['sub_organizations' => [$this->listed()]]),
         ]), ...array_fill(0, 8, new Response(503))]);
         $stack = HandlerStack::create($handler);
         $stack->push(Middleware::history($this->history));
@@ -97,7 +105,7 @@ class ControlDOnboardingStagedTest extends TestCase
 
                 return $this->response(['organization' => $this->row()]);
             },
-            $this->response(['sub_organizations' => [array_merge($this->row(), ['PK' => 'sibling01', 'name' => 'Sibling']), $this->row()]]),
+            $this->response(['sub_organizations' => [array_merge($this->listed(), ['PK' => 'sibling01', 'name' => 'Sibling']), $this->listed()]]),
         ]);
         $id = $this->stage($writer, $actor, $client);
         $this->assertSame('staged', ControlDOnboardingIntent::findOrFail($id)->state);
@@ -163,7 +171,7 @@ class ControlDOnboardingStagedTest extends TestCase
 
                     return $this->response(['organization' => $this->row()]);
                 },
-                $this->response(['sub_organizations' => [$this->row()]]),
+                $this->response(['sub_organizations' => [$this->listed()]]),
             ]);
             $id = $this->stage($writer, $actor, $client);
             $writer->execute($actor, $id);
@@ -203,9 +211,9 @@ class ControlDOnboardingStagedTest extends TestCase
     {
         $actor = User::factory()->create(['is_active' => true]);
         $client = Client::factory()->create();
-        $rows = [array_merge($this->row(), ['name' => $name])];
+        $rows = [array_merge($this->listed(), ['name' => $name])];
         if ($duplicate) {
-            $rows[] = $this->row();
+            $rows[] = $this->listed();
         }
         $writer = $this->writer([$this->response(['organization' => $this->row()]), $this->response(['sub_organizations' => $rows])]);
         $id = $this->stage($writer, $actor, $client);
@@ -228,7 +236,7 @@ class ControlDOnboardingStagedTest extends TestCase
             function () use ($actor) {
                 User::whereKey($actor->id)->update(['is_active' => false]);
 
-                return $this->response(['sub_organizations' => [$this->row()]]);
+                return $this->response(['sub_organizations' => [$this->listed()]]);
             },
         ]);
         $id = $this->stage($writer, $actor, $client);

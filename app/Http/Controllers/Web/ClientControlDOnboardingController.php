@@ -4,7 +4,12 @@ namespace App\Http\Controllers\Web;
 
 use App\Http\Controllers\Controller;
 use App\Models\Client;
+use App\Models\ControlDOnboardingIntent;
 use App\Models\Ticket;
+use App\Services\ControlD\ControlDClient;
+use App\Services\ControlD\ControlDClientException;
+use App\Services\ControlD\ControlDOnboardingStaged;
+use App\Services\ControlD\ControlDProvisioning;
 use App\Services\Mcp\StaffControlDOnboardingToolExecutor;
 use App\Support\ControlDConfig;
 use Illuminate\Http\Request;
@@ -45,5 +50,33 @@ class ClientControlDOnboardingController extends Controller
             : "Control D onboarding step '{$step}' staged for cockpit approval by a second Admin (run #{$result['run_id']}).";
 
         return redirect()->route('clients.show', $client)->with('success', $message);
+    }
+
+    /**
+     * Admin-only (RequireAdmin on the route), audited release of a NEVER-ADMITTED
+     * onboarding intent of THIS client, so its per-client lock can be cleared. B3's
+     * release() does the guarded UPDATE and writes the audit row; it refuses posted,
+     * uncertain, bound, rejected and released intents and changes nothing for them.
+     * Makes no vendor call.
+     */
+    public function release(Request $request, Client $client, string $intent)
+    {
+        $validated = $request->validate(['reason' => ['required', 'string', 'max:500']]);
+        $row = ControlDOnboardingIntent::find($intent);
+        if ($row === null || (int) $row->client_id !== (int) $client->id) {
+            abort(404);
+        }
+        $service = app()->bound(ControlDOnboardingStaged::class) ? app(ControlDOnboardingStaged::class) : (function (): ControlDOnboardingStaged {
+            $vendor = new ControlDClient(['api_key' => ControlDConfig::get('api_key')]);
+
+            return new ControlDOnboardingStaged($vendor, new ControlDProvisioning($vendor));
+        })();
+        try {
+            $service->release($request->user(), $row->id, $validated['reason']);
+        } catch (ControlDClientException $e) {
+            return redirect()->route('clients.show', $client)->withErrors(['controld_onboarding' => $e->getMessage()]);
+        }
+
+        return redirect()->route('clients.show', $client)->with('success', "Control D onboarding intent {$row->id} released; this client can be staged again.");
     }
 }

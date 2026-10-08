@@ -14,7 +14,15 @@ POST consumes application/x-www-form-urlencoded with four required inputs: name,
 contact_email, twofa_req (0/1), stats_endpoint. B2 requires all four explicitly;
 it does not select a contact, MFA policy or region on the operator's behalf.
 The caller must supply a supported analytics-region PK; vendor validation failures
-remain failures, not automatic defaults. No optional fields are emitted.
+remain failures, not automatic defaults. One optional field is emitted (XULQ2iix):
+`parent_profile` = the configured Global Profile PK (`controld_default_profile_id`).
+
+`sub-organization.json` is mechanically instantiated from the GET
+`sub_organizations` item schema with synthetic values (G-13). In that schema
+`parent_profile` is an OPTIONAL property (absent from `required`) of type object with
+required `PK`/`updated`/`name`. So ABSENT is the only documented unset shape; null, a
+scalar or an object without a string PK is treated as malformed. A read-back that lists
+the org without `parent_profile.PK` equal to the setting is uncertain, not success.
 
 POST response: body.organization.PK. GET response: body.sub_organizations[] with
 PK and name. Only the exact PK returned by this attempt can be bound. The GET must

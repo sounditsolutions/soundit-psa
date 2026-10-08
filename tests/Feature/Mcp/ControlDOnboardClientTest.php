@@ -147,6 +147,20 @@ class ControlDOnboardClientTest extends TestCase
         return json_decode(file_get_contents(base_path('tests/Fixtures/ControlD/organization.json')), true)['body']['organization'];
     }
 
+    /** One GET sub_organizations row (producer-schema fixture) for $org, with $global as its parent_profile, or none. */
+    private function listed(string $org = 'syntheticOrg01', ?string $global = 'testprofile01'): array
+    {
+        $row = json_decode(file_get_contents(base_path('tests/Fixtures/ControlD/sub-organization.json')), true)['body']['sub_organizations'][0];
+        $row['PK'] = $org;
+        if ($global === null) {
+            unset($row['parent_profile']);
+        } else {
+            $row['parent_profile']['PK'] = $global;
+        }
+
+        return $row;
+    }
+
     private function ok(array $body): Response
     {
         return new Response(200, [], json_encode(['success' => true, 'body' => $body]));
@@ -302,7 +316,7 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertStringContainsString('Synthetic Organization', $run->proposed_content);
         $this->assertSame(0, ControlDOnboardingIntent::count(), 'staging makes no intent and no vendor call');
 
-        $this->vendor([$this->ok(['organization' => $this->orgRow()]), $this->ok(['sub_organizations' => [$this->orgRow()]])]);
+        $this->vendor([$this->ok(['organization' => $this->orgRow()]), $this->ok(['sub_organizations' => [$this->listed()]])]);
         $approver = User::factory()->admin()->create(['is_active' => true]);
         $this->approve($run, $approver);
 
@@ -313,7 +327,7 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertCount(2, $this->history);
         $this->assertSame('/organizations/suborg', $this->history[0]['request']->getUri()->getPath());
         parse_str((string) $this->history[0]['request']->getBody(), $sent);
-        $this->assertSame(['name' => 'Synthetic Organization', 'contact_email' => 'synthetic@example.invalid', 'twofa_req' => '1', 'stats_endpoint' => 'synthetic-region'], $sent);
+        $this->assertSame(['name' => 'Synthetic Organization', 'contact_email' => 'synthetic@example.invalid', 'twofa_req' => '1', 'stats_endpoint' => 'synthetic-region', 'parent_profile' => 'testprofile01'], $sent);
         $this->assertDatabaseHas('technician_action_logs', ['action_type' => 'controld_stage_onboard_client', 'result_status' => 'executed', 'run_id' => $run->id, 'approver_user_id' => $approver->id]);
     }
 
@@ -323,6 +337,8 @@ class ControlDOnboardClientTest extends TestCase
         $this->configure();
         $this->aiActor();
         $fixture = $this->fixture(['controld_org_id' => 'existingOrg01']);
+        // Staging a mapped client reads the parent inventory (read-only) to order the steps.
+        $this->vendor([$this->ok(['sub_organizations' => [$this->listed('existingOrg01')]])]);
         $run = $this->stage($fixture);
         $this->assertSame('code', $run->proposed_meta['redacted_params']['step'], 'a mapped client proposes the code step, never organization');
 
@@ -331,11 +347,12 @@ class ControlDOnboardClientTest extends TestCase
         $orgRun = $this->stage($unmapped);
         $this->assertSame('organization', $orgRun->proposed_meta['redacted_params']['step']);
         $unmapped['client']->forceFill(['controld_org_id' => 'racedOrg01'])->save();
-        $this->vendor([]);
+        $this->vendor([$this->ok(['sub_organizations' => [$this->listed('racedOrg01')]])]);
         $response = $this->approve($orgRun, User::factory()->admin()->create(['is_active' => true]));
         $this->assertSame(TechnicianRunState::AwaitingApproval, $orgRun->fresh()->state);
         $this->assertSame(0, ControlDOnboardingIntent::count(), 'drift is refused by the executor before any intent is staged');
-        $this->assertCount(0, $this->history);
+        $this->assertCount(1, $this->history, 'only the read-only step-ordering GET; no write');
+        $this->assertSame('GET', $this->history[0]['request']->getMethod());
         $this->assertSame('racedOrg01', $unmapped['client']->fresh()->controld_org_id);
         $this->assertSame(1, TechnicianActionLog::where('run_id', $orgRun->id)->where('result_status', 'blocked')->where('summary', 'like', "%the client now needs the 'code' step, not 'organization'%")->count());
         $this->assertStringContainsString('Deny this proposal and stage again', (string) session('error'));
@@ -349,12 +366,13 @@ class ControlDOnboardClientTest extends TestCase
         $this->configure();
         $this->aiActor();
         $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
+        $this->vendor([$this->ok(['sub_organizations' => [$this->listed('testorg001')]])]);
         $run = $this->stage($fixture);
         $this->assertSame('code', $run->proposed_meta['redacted_params']['step']);
         $this->assertStringContainsString('step 2 of 2', $run->proposed_content);
         $this->assertStringContainsString('No deactivation PIN and no hostname prefix', $run->proposed_content);
 
-        $this->vendor($this->codeResponses());
+        $this->vendor([$this->ok(['sub_organizations' => [$this->listed('testorg001')]]), ...$this->codeResponses()]);
         $approver = User::factory()->admin()->create(['is_active' => true]);
         $response = $this->approve($run, $approver);
 
@@ -364,8 +382,8 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertNull($client->controld_deactivation_pin);
         $intent = ControlDOnboardingIntent::sole();
         $this->assertSame(['code', 'bound', 'fixture001'], [$intent->operation, $intent->state, $intent->vendor_pk]);
-        $this->assertCount(4, $this->history);
-        $sent = json_decode((string) $this->history[2]['request']->getBody(), true);
+        $this->assertCount(5, $this->history);
+        $sent = json_decode((string) $this->history[3]['request']->getBody(), true);
         $this->assertSame('desktop-windows', $sent['icon']);
         $this->assertArrayNotHasKey('deactivation_pin', $sent);
         $this->assertArrayNotHasKey('name_prefix', $sent);
@@ -401,7 +419,7 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertStringContainsString('approver is the stager', TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'blocked')->value('summary'));
 
         // A different active Admin may approve it.
-        $this->vendor([$this->ok(['organization' => $this->orgRow()]), $this->ok(['sub_organizations' => [$this->orgRow()]])]);
+        $this->vendor([$this->ok(['organization' => $this->orgRow()]), $this->ok(['sub_organizations' => [$this->listed()]])]);
         $this->approve($run, User::factory()->admin()->create(['is_active' => true]));
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
         $this->assertSame('syntheticOrg01', $fixture['client']->fresh()->controld_org_id);
@@ -479,7 +497,7 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertSame('opsbot', $run->proposed_meta['drafted_by_token'] ?? null);
         $this->assertStringNotContainsString('psa-mcp-', json_encode($run->proposed_meta));
 
-        $this->vendor([$this->ok(['organization' => $this->orgRow()]), $this->ok(['sub_organizations' => [$this->orgRow()]])]);
+        $this->vendor([$this->ok(['organization' => $this->orgRow()]), $this->ok(['sub_organizations' => [$this->listed()]])]);
         $approver = User::factory()->admin()->create(['is_active' => true]);
         $this->approve($run, $approver);
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
@@ -595,7 +613,7 @@ class ControlDOnboardClientTest extends TestCase
         $run = $this->stage($fixture, $plain);
         $this->assertSame((int) $row->id, $this->payload($run)['staged_by_token_id'] ?? null);
 
-        $this->vendor([$this->ok(['organization' => $this->orgRow()]), $this->ok(['sub_organizations' => [$this->orgRow()]])]);
+        $this->vendor([$this->ok(['organization' => $this->orgRow()]), $this->ok(['sub_organizations' => [$this->listed()]])]);
         $approver = User::factory()->admin()->create(['is_active' => true]);
         $this->approve($run, $approver);
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state, 'the approval re-read must split the legacy entry the way authentication does');
@@ -770,5 +788,108 @@ class ControlDOnboardClientTest extends TestCase
         $this->actingAs($admin)->post(route('settings.integrations.toggle'), ['integration' => 'controld_onboarding'])->assertRedirect();
         $this->assertFalse(ControlDConfig::isOnboardingEnabled());
         $this->assertFalse(ControlDConfig::isOnboardingEnabled(), 'default is off');
+    }
+
+    // ── XULQ2iix: enforce-global-profile step and ordering ───────────────────────
+
+    /** A mapped sub-org WITHOUT parent_profile proposes the global-profile step, not code; approval PUTs and reads back. */
+    public function test_mapped_org_without_the_global_profile_proposes_and_executes_the_global_profile_step_first(): void
+    {
+        $this->configure();
+        $this->aiActor();
+        $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
+        $this->vendor([$this->ok(['sub_organizations' => [$this->listed('testorg001', null)]])]);
+        $run = $this->stage($fixture);
+        $this->assertSame('global-profile', $run->proposed_meta['redacted_params']['step']);
+        $this->assertStringContainsString('global profile step', $run->proposed_content);
+        $this->assertStringContainsString('testprofile01', $run->proposed_content);
+        $this->assertSame(0, ControlDOnboardingIntent::count());
+
+        $this->vendor([
+            $this->ok(['sub_organizations' => [$this->listed('testorg001', null)]]), // approval re-derives the step
+            $this->ok(['sub_organizations' => [$this->listed('testorg001', null)]]), // pre-admit check
+            $this->ok(['organization' => ['PK' => 'testorg001']]),
+            $this->ok(['sub_organizations' => [$this->listed('testorg001')]]),
+        ]);
+        $approver = User::factory()->admin()->create(['is_active' => true]);
+        $this->approve($run, $approver);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertSame(['GET', 'GET', 'PUT', 'GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
+        $intent = ControlDOnboardingIntent::sole();
+        $this->assertSame(['global-profile', 'bound', null], [$intent->operation, $intent->state, $intent->active_client_id]);
+        $this->assertDatabaseHas('technician_action_logs', ['run_id' => $run->id, 'result_status' => 'executed', 'approver_user_id' => $approver->id]);
+        $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%vendor text%')->count());
+
+        // Next proposal is the code step.
+        $this->vendor([$this->ok(['sub_organizations' => [$this->listed('testorg001')]])]);
+        $next = $this->decoded($this->callTool($this->token(), 'controld_onboard_client', ['client_id' => $fixture['client']->id, 'ticket_id' => $fixture['ticket']->id, 'reason' => 'next', 'staged' => true]));
+        $this->assertSame('code', $next['step'] ?? null, json_encode($next));
+    }
+
+    /** Fail closed: an unreadable/malformed parent inventory at staging proposes nothing (never the code step). */
+    public function test_unreadable_parent_inventory_refuses_staging_for_a_mapped_client(): void
+    {
+        $this->configure();
+        $this->aiActor();
+        $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
+        foreach ([new Response(503), $this->ok(['sub_organizations' => [$this->listed('otherorg01')]]), $this->ok(['sub_organizations' => [array_merge($this->listed('testorg001'), ['parent_profile' => null])]])] as $answer) {
+            $this->vendor([$answer]);
+            $result = $this->decoded($this->callTool($this->token(), 'controld_onboard_client', ['client_id' => $fixture['client']->id, 'ticket_id' => $fixture['ticket']->id, 'reason' => 'x', 'staged' => true]));
+            $this->assertStringContainsString('Could not confirm whether the Control D global profile is enforced', $result['error'] ?? '', json_encode($result));
+        }
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    /** A global-profile proposal approved after someone else enforced it is refused as drift, with no write. */
+    public function test_global_profile_step_approved_after_enforcement_is_refused_as_drift(): void
+    {
+        $this->configure();
+        $this->aiActor();
+        $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
+        $this->vendor([$this->ok(['sub_organizations' => [$this->listed('testorg001', null)]])]);
+        $run = $this->stage($fixture);
+        $this->vendor([$this->ok(['sub_organizations' => [$this->listed('testorg001')]])]);
+        $this->approve($run, User::factory()->admin()->create(['is_active' => true]));
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertSame(['GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
+        $this->assertSame(0, ControlDOnboardingIntent::count());
+    }
+
+    /** A released intent does not own the client: the next step can be proposed. A staged one still does. */
+    public function test_released_intent_does_not_own_the_client_but_a_staged_one_does(): void
+    {
+        $this->configure();
+        $this->aiActor();
+        $fixture = $this->fixture();
+        $intent = new ControlDOnboardingIntent;
+        $intent->forceFill(['id' => (string) \Illuminate\Support\Str::uuid(), 'client_id' => $fixture['client']->id, 'actor_id' => 1,
+            'active_client_id' => $fixture['client']->id, 'operation' => 'organization', 'state' => 'staged', 'phase' => 'preflight', 'payload' => []])->save();
+        $refused = $this->decoded($this->callTool($this->token(), 'controld_onboard_client', ['client_id' => $fixture['client']->id, 'ticket_id' => $fixture['ticket']->id, 'reason' => 'x', 'staged' => true]));
+        $this->assertStringContainsString('already owns this client', $refused['error'] ?? '');
+        $admin = User::factory()->admin()->create(['is_active' => true]);
+        $this->actingAs($admin)->post(route('clients.controld.intent.release', [$fixture['client'], $intent->id]), ['reason' => 'never admitted'])->assertSessionHas('success');
+        $this->assertSame('released', $intent->fresh()->state);
+        $this->assertSame('organization', $this->stage($fixture)->proposed_meta['redacted_params']['step']);
+    }
+
+    public function test_client_page_offers_release_only_for_a_never_admitted_intent(): void
+    {
+        $this->configure();
+        $fixture = $this->fixture();
+        $admin = User::factory()->admin()->create(['is_active' => true]);
+        $make = function (string $state, string $phase) use ($fixture): ControlDOnboardingIntent {
+            $intent = new ControlDOnboardingIntent;
+            $intent->forceFill(['id' => (string) \Illuminate\Support\Str::uuid(), 'client_id' => $fixture['client']->id, 'actor_id' => 1,
+                'active_client_id' => $state === 'staged' ? $fixture['client']->id : null, 'operation' => 'organization', 'state' => $state, 'phase' => $phase, 'payload' => []])->save();
+
+            return $intent;
+        };
+        $posted = $make('uncertain', 'readback');
+        $html = $this->actingAs($admin)->get(route('clients.show', $fixture['client']))->assertOk()->getContent();
+        $this->assertStringNotContainsString('controld-intent-release', $html);
+        $staged = $make('staged', 'preflight');
+        $html = $this->actingAs($admin)->get(route('clients.show', $fixture['client']))->assertOk()->getContent();
+        $this->assertStringContainsString(route('clients.controld.intent.release', [$fixture['client'], $staged->id]), $html);
+        $this->assertStringNotContainsString(route('clients.controld.intent.release', [$fixture['client'], $posted->id]), $html);
     }
 }

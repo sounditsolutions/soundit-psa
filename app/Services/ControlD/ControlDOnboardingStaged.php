@@ -2,8 +2,10 @@
 
 namespace App\Services\ControlD;
 
+use App\Enums\TechnicianTier;
 use App\Models\Client;
 use App\Models\ControlDOnboardingIntent;
+use App\Models\TechnicianActionLog;
 use App\Models\User;
 use App\Support\ControlDConfig;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -26,6 +28,7 @@ class ControlDOnboardingStaged
             || ! in_array($requireMfa, [0, 1], true) || ! preg_match('/\A[A-Za-z0-9_-]{1,255}\z/', $statsEndpoint)) {
             throw new ControlDClientException('Explicit organization name, contact email, MFA choice and analytics region are required.');
         }
+        $this->globalProfileSetting();
 
         return $this->stage($actor, $clientId, 'organization', [
             'name' => $name, 'contact_email' => $contactEmail, 'twofa_req' => $requireMfa, 'stats_endpoint' => $statsEndpoint,
@@ -35,6 +38,84 @@ class ControlDOnboardingStaged
     public function stageCode(#[\SensitiveParameter] User $actor, int $clientId, string $icon, #[\SensitiveParameter] ?string $pin = null, #[\SensitiveParameter] ?string $namePrefix = null): string
     {
         return $this->stage($actor, $clientId, 'code', ['icon' => $icon, 'pin' => $pin, 'name_prefix' => $namePrefix]);
+    }
+
+    /** Enforce the configured Global Profile on an already-mapped sub-organization. */
+    public function stageGlobalProfile(#[\SensitiveParameter] User $actor, int $clientId): string
+    {
+        $this->globalProfileSetting();
+
+        return $this->stage($actor, $clientId, self::GLOBAL_PROFILE, []);
+    }
+
+    public const GLOBAL_PROFILE = 'global-profile';
+
+    /** The intent state a released, never-admitted intent ends in. Terminal; owns nothing. */
+    public const RELEASED = 'released';
+
+    /**
+     * Read-only: is the configured Global Profile the sub-organization's parent_profile?
+     * Throws ControlDClientException when the setting is missing, the parent inventory is
+     * malformed, or the org is not listed exactly once: unknown is never "enforced".
+     */
+    public function globalProfileEnforced(string $orgPk): bool
+    {
+        $global = $this->globalProfileSetting();
+        $this->available();
+
+        return (new ControlDSubOrganizations($this->vendor))->parentProfileOf($orgPk) === $global;
+    }
+
+    private function globalProfileSetting(): string
+    {
+        $global = ControlDConfig::defaultProfileId();
+        if ($global === null || ! preg_match('/\A[A-Za-z0-9_-]{1,255}\z/', $global)) {
+            throw new ControlDClientException(ControlDConfig::DEFAULT_PROFILE_SETTING.' is required to onboard.');
+        }
+
+        return $global;
+    }
+
+    /**
+     * Admin-only, audited release of a NEVER-ADMITTED intent: state staged, phase
+     * preflight, no vendor PK. One conditional UPDATE carries every one of those
+     * predicates, so an admit() that commits first leaves nothing for it to match and a
+     * posted/uncertain/bound/rejected row is never touched. The audit row is written in
+     * the same transaction: no audit, no release.
+     */
+    public function release(#[\SensitiveParameter] User $actor, string $intentId, string $reason): void
+    {
+        $this->independent();
+        $this->authorize($actor);
+        $this->authorize(User::find($actor->getKey()));
+        $reason = mb_substr(trim($reason), 0, 500);
+        if ($reason === '') {
+            throw new ControlDClientException('A reason is required to release a Control D intent.');
+        }
+        $intent = ControlDOnboardingIntent::find($intentId);
+        if ($intent === null) {
+            throw new ControlDClientException('Control D intent not found.');
+        }
+        $clientId = (int) $intent->client_id;
+        $connection = (new Client)->getConnection();
+        $connection->transaction(function () use ($actor, $intentId, $reason, $clientId): void {
+            $released = ControlDOnboardingIntent::whereKey($intentId)->where('state', 'staged')
+                ->where('phase', 'preflight')->whereNull('vendor_pk')
+                ->update(['state' => self::RELEASED, 'active_client_id' => null,
+                    'reason' => 'released by admin #'.$actor->getKey(), 'updated_at' => now()]);
+            if ($released !== 1) {
+                throw new ControlDClientException('Only a never-admitted staged Control D intent can be released; nothing was changed.');
+            }
+            TechnicianActionLog::create([
+                'actor_id' => $actor->getKey(), 'approver_user_id' => $actor->getKey(),
+                'actor_label' => 'staff:'.$actor->getKey(), 'action_type' => 'controld_release_intent',
+                'tier' => TechnicianTier::Approve->value, 'result_status' => 'executed',
+                'client_id' => Client::whereKey($clientId)->exists() ? $clientId : null,
+                'content_hash' => hash('sha256', 'controld_release_intent:'.$intentId),
+                'summary' => mb_substr("controld-intent:{$intentId}: released never-admitted staged intent for client #{$clientId} by admin #{$actor->getKey()}: {$reason}", 0, 1000),
+                'correlation_id' => (string) Str::uuid(),
+            ]);
+        }, 1);
     }
 
     private function independent(): void
@@ -54,6 +135,7 @@ class ControlDOnboardingStaged
     private function eligible(?Client $client, string $operation): void
     {
         if ($client === null || ($operation === 'organization' && $client->controld_org_id !== null)
+            || ($operation === self::GLOBAL_PROFILE && (! is_string($client->controld_org_id) || trim($client->controld_org_id) === ''))
             || ($operation === 'code' && (! is_string($client->controld_org_id) || trim($client->controld_org_id) === ''
                 || $client->getRawOriginal('controld_provisioning_code') !== null || $client->getRawOriginal('controld_deactivation_pin') !== null))) {
             throw new ControlDClientException('Client is missing, deleted or already has conflicting Control D state.');
@@ -113,6 +195,8 @@ class ControlDOnboardingStaged
             $this->eligible(Client::find($intent->client_id), $intent->operation);
             if ($intent->operation === 'organization') {
                 $this->organization($intent, $actor);
+            } elseif ($intent->operation === self::GLOBAL_PROFILE) {
+                $this->globalProfile($intent, $actor);
             } else {
                 $this->code($intent, $actor);
             }
@@ -174,8 +258,10 @@ class ControlDOnboardingStaged
     private function organization(ControlDOnboardingIntent $intent, #[\SensitiveParameter] User $actor): void
     {
         $payload = $intent->payload;
+        // Pre-admission: no setting, no POST (a definite local refusal).
+        $global = $this->globalProfileSetting();
         $this->admit($intent);
-        $response = $this->vendor->requestParent('POST', 'organizations/suborg', $payload);
+        $response = $this->vendor->requestParent('POST', 'organizations/suborg', [...$payload, 'parent_profile' => $global]);
         $row = $response['body']->organization ?? null;
         if (! $row instanceof \stdClass || ! is_string($row->PK ?? null)
             || ! preg_match('/\A[A-Za-z0-9_-]{1,255}\z/', $row->PK)) {
@@ -199,6 +285,14 @@ class ControlDOnboardingStaged
                 if ($listed->name !== $payload['name']) {
                     throw new ControlDOrganizationUncertainException($pk, 'readback');
                 }
+                try {
+                    $listedGlobal = ControlDSubOrganizations::parentProfile($listed);
+                } catch (ControlDClientException) {
+                    throw new ControlDOrganizationUncertainException($pk, 'readback');
+                }
+                if ($listedGlobal !== $global) {
+                    throw new ControlDOrganizationUncertainException($pk, 'readback');
+                }
                 $matches++;
             }
         }
@@ -207,6 +301,56 @@ class ControlDOnboardingStaged
         }
         $intent->phase = 'local-persistence';
         $this->bind($intent, $actor, $pk, null);
+    }
+
+    /**
+     * PUT organizations under X-Force-Org-Id (Modify Organization: the sub-org itself)
+     * with parent_profile, then the parent's GET sub_organizations read-back. One PUT,
+     * never retried: a definite vendor envelope rejection is `rejected`; any other
+     * failure after admission, or a read-back that does not show the profile, is
+     * uncertain and terminal.
+     */
+    private function globalProfile(ControlDOnboardingIntent $intent, #[\SensitiveParameter] User $actor): void
+    {
+        $orgPk = (string) Client::find($intent->client_id)->controld_org_id;
+        $global = $this->globalProfileSetting();
+        if (! preg_match('/\A[A-Za-z0-9_-]{1,255}\z/', $orgPk)) {
+            throw new ControlDClientException('Control D organization identifier is invalid.');
+        }
+        $intent->org_pk = $orgPk;
+        $intent->saveOrFail();
+        $inventory = new ControlDSubOrganizations($this->vendor);
+        // Read-only pre-admission check: listed exactly once and not already enforced.
+        if ($inventory->parentProfileOf($orgPk) === $global) {
+            // Definite no-op: no write is needed or made, so the never-admitted intent
+            // ends released (same guarded UPDATE as release()) instead of holding the lock.
+            ControlDOnboardingIntent::whereKey($intent->id)->where('state', 'staged')->where('phase', 'preflight')->whereNull('vendor_pk')
+                ->update(['state' => self::RELEASED, 'active_client_id' => null, 'reason' => 'already enforced; no vendor write', 'updated_at' => now()]);
+            throw new ControlDClientException('The Control D global profile is already enforced on this organization; nothing was changed.');
+        }
+        $this->admit($intent);
+        try {
+            $this->vendor->requestForOrg('PUT', 'organizations', $orgPk, ['parent_profile' => $global]);
+        } catch (ControlDWriteRejectedException $e) {
+            throw $e;
+        } catch (\Throwable) {
+            throw new ControlDOrganizationUncertainException($orgPk, 'post');
+        }
+        try {
+            $intent->forceFill(['phase' => 'readback'])->saveOrFail();
+            $confirmed = $inventory->parentProfileOf($orgPk) === $global;
+        } catch (\Throwable) {
+            throw new ControlDOrganizationUncertainException($orgPk, 'readback');
+        }
+        if (! $confirmed) {
+            throw new ControlDOrganizationUncertainException($orgPk, 'readback');
+        }
+        if (ControlDOnboardingIntent::whereKey($intent->id)->where('state', 'posted')->where('active_client_id', $intent->client_id)
+            ->update(['state' => 'bound', 'phase' => 'local-persistence', 'vendor_pk' => $orgPk, 'active_client_id' => null,
+                'reason' => null, 'reason_code' => null, 'updated_at' => now()]) !== 1) {
+            throw new ControlDOrganizationUncertainException($orgPk, 'local-persistence');
+        }
+        $intent->refresh();
     }
 
     private function code(ControlDOnboardingIntent $intent, #[\SensitiveParameter] User $actor): void

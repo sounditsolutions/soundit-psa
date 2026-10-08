@@ -42,6 +42,12 @@ class ControlDOnboardingOrganization
             || ! preg_match('/\A[A-Za-z0-9_-]{1,255}\z/', $statsEndpoint)) {
             throw new ControlDClientException('Explicit organization name, contact email, MFA choice and analytics region are required.');
         }
+        // The sub-organization is created with the configured Global Profile enforced
+        // (vendor POST /organizations/suborg optional `parent_profile`). No setting, no POST.
+        $globalProfile = ControlDConfig::defaultProfileId();
+        if ($globalProfile === null || ! preg_match('/\A[A-Za-z0-9_-]{1,255}\z/', $globalProfile)) {
+            throw new ControlDClientException(ControlDConfig::DEFAULT_PROFILE_SETTING.' is required to create an organization.');
+        }
         $pk = null;
         $phase = 'post';
         try {
@@ -49,6 +55,7 @@ class ControlDOnboardingOrganization
             $response = $this->vendor->requestParent('POST', 'organizations/suborg', [
                 'name' => $name, 'contact_email' => $contactEmail,
                 'twofa_req' => $requireMfa, 'stats_endpoint' => $statsEndpoint,
+                'parent_profile' => $globalProfile,
             ]);
             $row = $response['body']->organization ?? null;
             if (! $row instanceof \stdClass || ! is_string($row->PK ?? null)
@@ -70,6 +77,9 @@ class ControlDOnboardingOrganization
                 if ($listed->PK === $pk) {
                     if ($listed->name !== $name) {
                         throw new ControlDClientException('Control D organization name does not match this attempt.');
+                    }
+                    if (ControlDSubOrganizations::parentProfile($listed) !== $globalProfile) {
+                        throw new ControlDClientException('Control D organization global profile does not match this attempt.');
                     }
                     $matches++;
                 }

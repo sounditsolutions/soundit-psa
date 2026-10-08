@@ -771,9 +771,14 @@
                     {{-- One-time secret readout (e.g. a created user's temp password): shown
                          exactly once, never persisted anywhere — so this toast never
                          auto-dismisses and offers a copy affordance. --}}
-                    <div x-show="!!toast.secret" class="d-flex align-items-center gap-2 mt-2">
-                        <code class="cockpit-toast-secret user-select-all" x-text="toast.secret"></code>
-                        <button type="button" class="btn btn-sm btn-light" @click="copyToastSecret(toast, $event)">Copy</button>
+                    {{-- x-show sits on a wrapper WITHOUT .d-flex: Bootstrap's .d-flex is
+                         display:flex !important and would beat Alpine's inline display:none,
+                         showing the Copy button on every toast. --}}
+                    <div x-show="!!toast.secret" class="cockpit-toast-secret-row mt-2">
+                        <div class="d-flex align-items-center gap-2">
+                            <code class="cockpit-toast-secret user-select-all" x-text="toast.secret"></code>
+                            <button type="button" class="btn btn-sm btn-light" @click="copyToastSecret(toast, $event)">Copy</button>
+                        </div>
                     </div>
                 </div>
                 <button x-show="!!toast.undo" type="button" class="btn btn-sm btn-light" @click="toast.undo()">Undo</button>
@@ -1067,6 +1072,10 @@ document.addEventListener('alpine:init', function () {
             },
 
             async copyToastSecret(toast, event) {
+                // Never copy an absent secret: writeText(null) puts the string 'null' on the clipboard.
+                if (typeof toast?.secret !== 'string' || toast.secret === '') {
+                    return;
+                }
                 try {
                     await navigator.clipboard.writeText(toast.secret);
                     const button = event?.target?.closest('button');

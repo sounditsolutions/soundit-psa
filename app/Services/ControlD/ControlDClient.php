@@ -107,16 +107,22 @@ class ControlDClient
      */
     public function requestForOrg(string $method, string $endpoint, string $orgPk, #[\SensitiveParameter] ?array $body = null): array
     {
+        // PUT organizations (Modify Organization) under X-Force-Org-Id modifies that
+        // sub-organization; it is accepted only as a PUT with a body.
+        $organizationPut = $endpoint === 'organizations' && $method === 'PUT' && $body !== null;
         if (! in_array($method, ['GET', 'POST', 'PUT', 'DELETE'], true)
             || (! preg_match('/\Aprovision(?:\/[A-Za-z0-9_-]+(?:\/invalidate)?)?\z/', $endpoint)
-                && ! in_array($endpoint, ['devices/types', 'profiles', 'organizations/organization'], true))
+                && ! in_array($endpoint, ['devices/types', 'profiles', 'organizations/organization'], true)
+                && ! $organizationPut)
             || ! preg_match('/\A[A-Za-z0-9_-]+\z/', $orgPk)
             || ! is_string($this->config['api_key'] ?? null) || trim($this->config['api_key']) === '') {
             throw new ControlDClientException('Control D scoped request is invalid or unconfigured.');
         }
         $options = ['headers' => ['X-Force-Org-Id' => $orgPk], 'allow_redirects' => false, 'http_errors' => false];
         if ($body !== null) {
-            $options['json'] = $body;
+            // Producer OpenAPI: PUT /organizations consumes application/x-www-form-urlencoded
+            // (tests/Fixtures/ControlD/organization-README.md); provisioning keeps JSON.
+            $options[$organizationPut ? 'form_params' : 'json'] = $body;
         }
         try {
             $response = $this->http->request($method, $endpoint, $options);
@@ -130,7 +136,7 @@ class ControlDClient
             $error = json_decode((string) $response->getBody());
             if ($error instanceof \stdClass && ($error->success ?? null) === false
                 && ($error->error ?? null) instanceof \stdClass && is_int($error->error->code ?? null)) {
-                if ($method === 'POST') {
+                if ($method === 'POST' || $organizationPut) {
                     throw new ControlDWriteRejectedException('Control D scoped request was explicitly rejected by the vendor envelope (HTTP 4xx).', $error->error->code, $response->getStatusCode());
                 }
                 throw new ControlDClientException('Control D scoped request was explicitly rejected by the vendor envelope (HTTP 4xx).');

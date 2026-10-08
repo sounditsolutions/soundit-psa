@@ -181,8 +181,21 @@ class ControlDProvisioning
             }
             $matches += $profile->PK === $body['profile_id'] ? 1 : 0;
         }
+        // Two accepted arms (XULQ2iix ruling (c)): (ii) the profile is one of the
+        // sub-organization's OWN profiles exactly once; or (i) it is the sub-organization's
+        // Global Profile (parent_profile), which the vendor does NOT list in the
+        // sub-organization's GET profiles. Arm (i) is read live from the parent's
+        // GET sub_organizations with the org listed exactly once; a malformed or
+        // ambiguous inventory is a definite pre-write refusal.
         if ($matches !== 1) {
-            $this->refuse('Enforced profile is missing or ambiguous in this organization.');
+            try {
+                $global = (new ControlDSubOrganizations($this->client))->parentProfileOf($orgPk);
+            } catch (ControlDClientException) {
+                $this->refuse('Control D global profile of this organization could not be confirmed.');
+            }
+            if ($global !== $body['profile_id']) {
+                $this->refuse('Enforced profile is neither this organization\'s global profile nor exactly one of its own profiles.');
+            }
         }
         if ($body['stats'] !== 0) {
             $data = $this->body($this->client->requestForOrg('GET', 'organizations/organization', $orgPk));

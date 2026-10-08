@@ -1370,8 +1370,31 @@ means the POST may have happened, NOT that it succeeded. Own-POST PK checkpoints
 read-back;
 verified client binding and `bound` commit together. Rejected/bound intents release the
 lock. Uncertain and crash-left posted/staged records retain it indefinitely; no automatic
-retry, timeout release, cleanup, resume or reconciliation endpoint is installed. Manual
-reconciliation requires a separate bounded ruling, not direct row edits or a re-cut.
+retry, timeout release, cleanup, resume or reconciliation endpoint is installed for
+admitted intents. Manual reconciliation of those requires a separate bounded ruling, not
+direct row edits or a re-cut. The one exception is a NEVER-ADMITTED intent (state
+`staged`, phase `preflight`, no vendor PK): an active Admin may release it from the
+client page's Control D onboarding card with a reason (XULQ2iix). One conditional UPDATE
+moves it to the terminal state `released` and frees the lock, so a `posted`,
+`uncertain`, `bound` or `rejected` intent, or one admitted concurrently, is refused and
+left unchanged; the release writes a `controld_release_intent` audit row and makes no
+vendor call.
+
+**Global Profile (XULQ2iix).** Both organization writers (B2 and the B3
+`organization` step) send `parent_profile` = the Enforced profile ID default
+(`controld_default_profile_id`) on POST `organizations/suborg`, refuse before any
+request when it is unset, and bind only when the parent's GET `sub_organizations`
+lists the new org once with `parent_profile.PK` equal to it; anything else after the
+POST is uncertain and never retried. An organization created without it gets a separate
+`global-profile` intent: a read-only GET confirms the org is listed once and not
+already enforced (already enforced is a no-op refusal that releases the intent), then
+one PUT `organizations` under `X-Force-Org-Id` with `parent_profile`, then the same
+read-back; a vendor envelope rejection is `rejected`, any other failure after admission
+is uncertain and terminal. The code preflight accepts the profile when it is the
+sub-organization's `parent_profile.PK` (read live from the parent inventory) or exactly
+one of the sub-organization's own profiles. Whether POST `/provision` accepts a Global
+Profile PK as `profile_id` is NOT yet proven; a vendor refusal there is a definite
+rejection.
 
 Capability is observed ONLY at the intended write. HTTP403 with vendor `success:false`
 and integer `error.code:40301` records terminal `rejected`, phase `post`, reason code
@@ -1404,7 +1427,10 @@ and a `reason`. Each proposal is ONE step, decided by the server from the client
 record: `organization` when the client has no `controld_org_id` (creates the
 sub-organization from the client's name and contact email, two-factor required, the
 panel's auto-detected analytics region; binds the returned id), then `code` once
-mapped (cuts one provisioning code with the six defaults, icon `desktop-windows`, no
+mapped and its sub-organization already enforces the configured Global Profile
+(`global-profile` comes first otherwise; deciding which is a read-only GET of the parent
+organization list at staging and again at approval, and an unreadable list refuses
+staging) (cuts one provisioning code with the six defaults, icon `desktop-windows`, no
 deactivation PIN and no hostname prefix — both deferred to a later leg and never
 accepted from callers). Approval happens in the AI Technician cockpit under an active
 Admin, and the two-person rule is applied per lane (B4.1, #2043): a proposal staged from
