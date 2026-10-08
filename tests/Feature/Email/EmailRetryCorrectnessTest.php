@@ -933,6 +933,7 @@ class EmailRetryCorrectnessTest extends TestCase
         $this->assertCount(1, $kept, 'the rows are kept, not discarded');
         $unknown = $this->withMessage(\App\Jobs\RetryEmailAttachments::MARKER_LINK_UNKNOWN);
         $this->assertCount(1, $unknown, '#5801: a link-state-unknown marker, not silence');
+        $this->assertSame(Level::Warning, $unknown[0]->level, '#6006');
         $this->assertSame([EmailService::RETRY_LINK_UNKNOWN, $kept, true],
             [$unknown[0]->context['reason'], $unknown[0]->context['undiscarded_attachment_ids'], $unknown[0]->context['ticket_note_written']]);
         $this->assertSame([], $this->withMessage(\App\Jobs\RetryEmailAttachments::MARKER), 'not reported as not-added');
@@ -1196,9 +1197,10 @@ class EmailRetryCorrectnessTest extends TestCase
 
         try {
             app(\App\Services\AttachmentService::class)->storeFromContent('synthetic-c', 'c.txt', 'text/plain');
-            $this->fail('the update failure is rethrown');
-        } catch (\RuntimeException $e) {
-            $this->assertSame('B4G-SYNTHETIC-UPDATE-FAIL', $e->getMessage(), 'rethrown unchanged');
+            $this->fail('the update failure is thrown');
+        } catch (\App\Services\AttachmentStorePathFailedException $e) {
+            // #5805: thrown id-only, the original kept as getPrevious().
+            $this->assertSame('B4G-SYNTHETIC-UPDATE-FAIL', $e->getPrevious()?->getMessage());
         }
 
         $this->assertNotNull($made, 'positive control: the row was created');

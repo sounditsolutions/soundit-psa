@@ -110,7 +110,9 @@ class AttachmentService
      * (a false write as AttachmentStoreFailedException). A cleanup step that throws is recorded
      * with the attachment id, the step and the exception class. #5806: so is a file delete that
      * returns false (the local disk does not throw), with exception null; the file may then be
-     * left on disk with no row naming it.
+     * left on disk with no row naming it. #5805: a throw from the storage_path update is thrown
+     * as AttachmentStorePathFailedException (id only, the original as getPrevious()), since the
+     * original's message can carry the path and so the filename.
      */
     private function writeOrRollBack(Attachment $attachment, string $path, \Closure $write): void
     {
@@ -118,7 +120,11 @@ class AttachmentService
             if ($write() === false) {
                 throw new AttachmentStoreFailedException("Attachment {$attachment->id}: the file write returned false");
             }
-            $attachment->update(['storage_path' => $path]);
+            try {
+                $attachment->update(['storage_path' => $path]);
+            } catch (\Throwable $updateFailure) {
+                throw new AttachmentStorePathFailedException($attachment->id, $updateFailure);
+            }
         } catch (\Throwable $e) {
             foreach ([
                 'file' => fn () => Storage::disk('local')->delete($path),
@@ -249,7 +255,8 @@ class AttachmentService
         try {
             $graphAttachments = $graph->getMessageAttachments($mailbox, $email->graph_id);
         } catch (\Throwable $e) {
-            // C-56: ids, the HTTP status and the exception class only, never the message. A
+            // C-56: the email id, the HTTP status and the exception class only, never the message
+            // or (#5804) the Graph message id. A
             // GraphClientException's message no longer names the endpoint (#5679), but any other
             // Throwable's message is not known to be free of the mailbox or vendor text. status is
             // the GraphClientException's status when it is above 0: Graph's HTTP status, or the
@@ -260,7 +267,6 @@ class AttachmentService
             $httpStatus = $e instanceof GraphClientException ? $e->getHttpStatus() : 0;
             Log::warning('[AttachmentService] Failed to fetch email attachments', [
                 'email_id' => $email->id,
-                'graph_id' => $email->graph_id,
                 'status' => $httpStatus > 0 ? $httpStatus : null,
                 'exception' => $e::class,
             ] + ($e instanceof GraphTokenRefreshFailedException ? ['token_refresh' => 'failed'] : []));

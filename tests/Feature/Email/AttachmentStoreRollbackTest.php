@@ -5,6 +5,7 @@ namespace Tests\Feature\Email;
 use App\Models\Attachment;
 use App\Services\AttachmentService;
 use App\Services\AttachmentStoreFailedException;
+use App\Services\AttachmentStorePathFailedException;
 use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -21,6 +22,7 @@ use Tests\TestCase;
  *    naming a missing file; a cleanup step that throws is recorded, not swallowed.
  *  - #5716: storeUpload gets the same rollback as storeFromContent (#5553).
  *  - #5719: the Stored records carry ids, size and type; no filename or contentId.
+ *  - #5805 (b5): a storage_path update that throws is thrown as an id-only exception.
  *
  * Synthetic data only.
  */
@@ -113,9 +115,10 @@ class AttachmentStoreRollbackTest extends TestCase
 
         try {
             $store(app(AttachmentService::class), $this);
-            $this->fail('the update failure is rethrown');
-        } catch (\RuntimeException $e) {
-            $this->assertSame('B4I-SYNTHETIC-UPDATE-FAIL', $e->getMessage(), 'rethrown unchanged');
+            $this->fail('the update failure is thrown');
+        } catch (AttachmentStorePathFailedException $e) {
+            // #5805: id only, the original kept as getPrevious().
+            $this->assertSame('B4I-SYNTHETIC-UPDATE-FAIL', $e->getPrevious()?->getMessage(), 'the original is kept');
         }
 
         $this->assertSame(0, Attachment::withTrashed()->count(), 'no row naming the placeholder');
@@ -173,8 +176,8 @@ class AttachmentStoreRollbackTest extends TestCase
         try {
             app(AttachmentService::class)->storeFromContent('synthetic-bytes', self::FILENAME, 'text/plain');
             $this->fail('rethrown');
-        } catch (\RuntimeException $e) {
-            $this->assertSame('B4I-SYNTHETIC-UPDATE-FAIL', $e->getMessage(), 'the original failure, not the cleanup one');
+        } catch (AttachmentStorePathFailedException $e) {
+            $this->assertSame('B4I-SYNTHETIC-UPDATE-FAIL', $e->getPrevious()?->getMessage(), 'the original failure, not the cleanup one');
         }
 
         $cleanup = $this->withMessage('[Attachment] Cleanup after a failed store threw');
@@ -202,8 +205,8 @@ class AttachmentStoreRollbackTest extends TestCase
         try {
             $store(app(AttachmentService::class), $this);
             $this->fail('rethrown');
-        } catch (\RuntimeException $e) {
-            $this->assertSame('B4N-SYNTHETIC-UPDATE-FAIL', $e->getMessage());
+        } catch (AttachmentStorePathFailedException $e) {
+            $this->assertSame('B4N-SYNTHETIC-UPDATE-FAIL', $e->getPrevious()?->getMessage());
         }
 
         $this->assertNotEmpty(Storage::disk('local')->allFiles("attachments/{$made}"), 'positive control: the file was left on disk');
@@ -227,5 +230,45 @@ class AttachmentStoreRollbackTest extends TestCase
         foreach (['payroll', 'Payroll', '.xlsx', self::CONTENT_ID, 'synthetic.example.test'] as $needle) {
             $this->assertStringNotContainsString($needle, $text, '#5719: no filename or contentId');
         }
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('stores')]
+    public function test_a_storage_path_query_exception_reaches_no_log_with_the_filename(\Closure $store): void
+    {
+        // #5805 / C-56 ruling 1: a real QueryException from the storage_path UPDATE carries the
+        // bound path, so the filename. What is thrown, and what the exception handler logs for
+        // it, must not.
+        \Illuminate\Support\Facades\DB::beforeExecuting(function (string $sql, array $bindings) {
+            if (str_starts_with(strtolower($sql), 'update "attachments" set "storage_path"')) {
+                throw new \Illuminate\Database\QueryException('sqlite', $sql, $bindings, new \PDOException('B5-SYNTHETIC-LOCK-WAIT'));
+            }
+        });
+
+        $thrown = null;
+        try {
+            $store(app(AttachmentService::class), $this);
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+
+        $this->assertInstanceOf(AttachmentStorePathFailedException::class, $thrown);
+        $previous = $thrown->getPrevious();
+        $this->assertInstanceOf(\Illuminate\Database\QueryException::class, $previous, 'getPrevious() keeps the original');
+        $this->assertStringContainsString('payroll-q3-example', $previous->getMessage(), 'positive control: the original carries the filename');
+        $this->assertSame(0, Attachment::withTrashed()->count(), 'rolled back as before');
+
+        app(\Illuminate\Contracts\Debug\ExceptionHandler::class)->report($thrown);
+
+        $reported = $this->withMessage($thrown->getMessage());
+        $this->assertCount(1, $reported, 'positive control: the handler reported it');
+        $this->assertSame(Level::Error, $reported[0]->level);
+        $formatter = new \Monolog\Formatter\LineFormatter(null, null, true, true, true);
+        foreach ($this->logs->getRecords() as $record) {
+            $text = $formatter->format($record);
+            foreach (['payroll', 'Payroll', '.xlsx', 'B5-SYNTHETIC-LOCK-WAIT'] as $needle) {
+                $this->assertStringNotContainsString($needle, $text, "#5805: no filename or original message in any log record ({$record->message})");
+            }
+        }
+        $this->assertStringNotContainsString('payroll', $thrown->getMessage());
     }
 }

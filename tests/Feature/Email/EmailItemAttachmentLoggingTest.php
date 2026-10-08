@@ -323,7 +323,7 @@ class EmailItemAttachmentLoggingTest extends TestCase
         $failed = $this->withMessage('[AttachmentService] Failed to fetch email attachments');
         $this->assertCount(1, $failed);
         $this->assertSame([
-            'email_id' => $email->id, 'graph_id' => 'MSG-1', 'status' => 401,
+            'email_id' => $email->id, 'status' => 401,
             'exception' => GraphTokenRefreshFailedException::class, 'token_refresh' => 'failed',
         ], $failed[0]->context);
         $this->assertNoRecordContains([self::TENANT, self::MAILBOX]);
