@@ -373,7 +373,8 @@ class TeamsMessageAttachmentsTest extends TestCase
         $failures = $this->attachmentReadFailures($logs);
         $this->assertEveryRecord([
             [Level::Error, 'Graph API token request failed', ['status' => $tokenStatus, 'exception' => $exceptionClass]],
-            [Level::Warning, self::ATTACHMENT_READ_FAILED, ['chat_id' => self::CHAT, 'stage' => 'message', 'status' => 0]],
+            // #6021: the token failure is told apart from a read that got no response.
+            [Level::Warning, self::ATTACHMENT_READ_FAILED, ['chat_id' => self::CHAT, 'stage' => 'message', 'status' => 0, 'token' => 'not obtained']],
         ], $logs);
         $this->assertCount(1, $failures);
         $this->assertNoVendorText($logs->getRecords(), $r);
@@ -404,6 +405,64 @@ class TeamsMessageAttachmentsTest extends TestCase
         $this->assertStringNotContainsString('HTTP 0', $text);
         $this->assertStringNotContainsString('token', $text);
         $this->assertOperatorResult(self::NO_STATUS, $r);
+    }
+
+    /**
+     * #6021: a token response with no access_token makes getToken() throw without writing a
+     * record of its own, so the fetcher's record is the only one, and it says the token was
+     * not obtained.
+     */
+    public function test_a_token_response_without_an_access_token_is_recorded_as_a_token_failure(): void
+    {
+        $logs = $this->captureLogs();
+        $this->graphQueue(new Response(200, [], (string) json_encode(['token_type' => 'Bearer'])));
+
+        $r = $this->fetch([]);
+
+        $this->assertSame([], $this->graphPaths(), 'positive control: no Graph read was sent');
+        $this->assertEveryRecord([
+            [Level::Warning, self::ATTACHMENT_READ_FAILED, ['chat_id' => self::CHAT, 'stage' => 'message', 'status' => 0, 'token' => 'not obtained']],
+        ], $logs);
+        $this->assertOperatorResult(self::TOKEN_FAILED, $r);
+    }
+
+    /**
+     * #6012: Graph answered 200 with a JSON body that is not an object, so get()'s array return
+     * type throws a TypeError inside the PSA. That is not a Graph failure: the record names the
+     * class and the text does not say Graph gave no status.
+     */
+    public function test_a_non_graph_failure_after_a_graph_200_is_not_called_a_missing_status(): void
+    {
+        $logs = $this->captureLogs();
+        $this->graph(new Response(200, ['Content-Type' => 'application/json'], 'null'));
+
+        $r = $this->fetch([]);
+        $text = (string) $r->json('result.content.0.text');
+
+        $this->assertCount(1, $this->graphPaths(), 'positive control: Graph was read and answered');
+        $this->assertEveryRecord([
+            [Level::Warning, self::ATTACHMENT_READ_FAILED, ['chat_id' => self::CHAT, 'stage' => 'message', 'status' => 0, 'exception' => \TypeError::class]],
+        ], $logs);
+        $this->assertStringNotContainsString('no HTTP status', $text);
+        $this->assertOperatorResult('Teams message read failed inside the PSA, not as a Microsoft Graph HTTP error; nothing was read.', $r);
+    }
+
+    /**
+     * #6017: at the hosted-content stage the message was already read, so the text says the
+     * attachment content was not read, never that nothing was read.
+     */
+    public function test_a_hosted_content_failure_does_not_say_nothing_was_read(): void
+    {
+        $logs = $this->captureLogs();
+        $this->graph(
+            $this->graphJson($this->imageOnlyMessage()),
+            new Response(503, [], '{}'),
+        );
+
+        $r = $this->fetch([]);
+
+        $this->assertCount(2, $this->graphPaths(), 'positive control: the message read succeeded and the hosted content was requested');
+        $this->assertOperatorResult('Teams hosted content read failed (HTTP 503); the attachment content was not read.', $r);
     }
 
     /**

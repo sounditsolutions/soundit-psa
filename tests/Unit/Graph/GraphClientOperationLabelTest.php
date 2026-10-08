@@ -100,9 +100,12 @@ class GraphClientOperationLabelTest extends TestCase
     }
 
     /**
-     * [method, endpoint, label]. Most rows are shapes GraphClient's callers build; the rows
-     * after 'hosted content' are synthetic probes of the query and fragment cut, case folding,
-     * the 'other' fallback and an id that only contains a noun (#6073). A query in an endpoint
+     * [method, endpoint, label]. The rows through 'group' are shapes GraphClient's callers build:
+     * the eleven through 'hosted content', then the seven #6069 added so every allowlisted noun
+     * is produced by a real caller shape (#6123). The rows after 'group' are synthetic probes
+     * of the query and fragment cut, case folding, percent-decoding (#6126),
+     * the 'other' fallback, an id that only contains a noun (#6073) and ids that equal a noun
+     * (#6078, pinned as the documented behaviour, not as a goal). A query in an endpoint
      * passed to get() is not sent (get() replaces it with ['query' => $params]); it reaches the
      * label only as written, which is what these rows exercise.
      *
@@ -148,6 +151,17 @@ class GraphClientOperationLabelTest extends TestCase
             // No allowlisted noun: the literal 'other', not a segment.
             'no noun' => ['GET', "organization/{$id}/branding", 'other'],
             'id that contains a noun' => ['GET', 'users/messages-5671/notAResource', 'users'],
+            // #6126: a segment is compared after percent-decoding, so an encoded noun is that
+            // noun; an encoded '/' stays inside its segment.
+            'percent-encoded noun' => ['GET', "users/{$m}/m%65ssages/{$id}", 'messages'],
+            'percent-encoded camel noun' => ['POST', "users/{$m}/send%4Dail", 'sendMail'],
+            'encoded slash stays in its segment' => ['GET', 'organization/x%2Fmessages/branding', 'other'],
+            // #6078 / #6126: last match wins, and the rule cannot tell an id from a noun, so an
+            // id equal to a noun in any case is the label. Documented behaviour, pinned so a
+            // change to it is a deliberate one.
+            'folder id equal to a noun' => ['GET', "users/{$m}/mailFolders/teams", 'teams'],
+            'event id equal to a noun, capitalised' => ['GET', "users/{$m}/events/Photo", 'photo'],
+            'message id equal to a noun, upper case' => ['GET', 'chats/CHAT-1/messages/TEAMS', 'teams'],
         ];
     }
 
@@ -161,7 +175,7 @@ class GraphClientOperationLabelTest extends TestCase
     {
         return [self::MAILBOX, self::MESSAGE_ID, 'users/', 'example.test', '?', '#', '$', 'SUB-5671', 'synthetic5671', 'thread.v2',
             '1700000000000', 'CHAT-1', 'MSG-1', 'HC-1', 'EVT-1', 'ATT-1', 'TEAM-1', 'CHAN-1', 'GRP-1', 'messages-5671', 'notAResource',
-            'branding', 'inbox', 'getSchedule', 'Users', 'USERS', 'Messages'];
+            'branding', 'inbox', 'getSchedule', 'Users', 'USERS', 'Messages', '%', 'm%65ssages', 'send%4Dail', 'Photo', 'TEAMS'];
     }
 
     #[DataProvider('endpoints')]
@@ -199,6 +213,56 @@ class GraphClientOperationLabelTest extends TestCase
         $this->assertSame([], array_values(array_diff($nouns, $produced)), 'nouns no row produces');
         $this->assertSame(['other'], array_values(array_diff($produced, $nouns)), 'labels outside the allowlist');
         $this->assertCount(16, $nouns, 'positive control: the allowlist as #5671 landed it');
+    }
+
+    /**
+     * #6126: an endpoint starting '///' cannot be sent (psr7's Uri refuses to parse it, before
+     * and after #6120), so it never reaches a record; its label is read directly. Only the
+     * empty authority '//' is dropped and the path after it is read as usual.
+     */
+    public function test_a_triple_slash_start_drops_only_the_empty_authority(): void
+    {
+        $label = new \ReflectionMethod(GraphClient::class, 'operationLabel');
+        $this->assertSame('events', $label->invoke(null, '///users/'.self::MAILBOX.'/events/EVT-1'));
+        $this->assertSame('other', $label->invoke(null, '//teams/organization/ORG-5671'), 'positive control: a real authority is dropped');
+    }
+
+    /**
+     * #6119: the 401-refresh record's 'operation' is operationLabel() of each request's own
+     * endpoint, not a fixed word: a 401 whose token refresh then fails is labelled for a mail
+     * send, a calendar write, an event read and a subscription renewal alike.
+     *
+     * @return array<string, array{0: string, 1: string, 2: string}>
+     */
+    public static function refreshFailures(): array
+    {
+        $m = self::MAILBOX;
+
+        return [
+            'sendMail' => ['POST', "users/{$m}/sendMail", 'sendMail'],
+            'calendar write' => ['PATCH', "users/{$m}/events/EVT-1", 'events'],
+            'calendar view' => ['GET', "users/{$m}/calendarView", 'calendarView'],
+            'subscription' => ['PATCH', 'subscriptions/SUB-5671-synthetic', 'subscriptions'],
+            'no noun' => ['GET', 'organization/ORG-5671/branding', 'other'],
+        ];
+    }
+
+    #[DataProvider('refreshFailures')]
+    public function test_the_401_refresh_record_names_each_requests_own_operation(string $method, string $endpoint, string $label): void
+    {
+        $graph = $this->graph(self::failure(401), new Response(400, ['Content-Type' => 'application/json'], (string) json_encode(['error' => 'invalid_client'])));
+        try {
+            match ($method) {
+                'GET' => $graph->get($endpoint),
+                'POST' => $graph->post($endpoint, ['x' => 1]),
+                'PATCH' => $graph->patch($endpoint, ['x' => 1]),
+            };
+            $this->fail('no throw');
+        } catch (\App\Services\Graph\GraphTokenRefreshFailedException) {
+        }
+        $this->assertCount(2, $this->history, 'positive control: the request and the failed refresh were sent');
+        $this->assertSame([['method' => $method, 'operation' => $label, 'status' => 401, 'token_refresh' => 'failed']], $this->failedContexts());
+        $this->assertSame([], $this->needlesInAnyRecord(self::endpointNeedles()));
     }
 
     /**

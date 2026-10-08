@@ -50,7 +50,9 @@ class StaffCalendarToolExecutor
      * getToken() once before it sends anything, so on this arm the write request was never
      * sent. A token failure on the 401 refresh, after a request was sent, is a
      * GraphTokenRefreshFailedException, a sibling class that takes the indeterminate arm
-     * (#6014, #6015).
+     * (#6014, #6015), except on the event read before an update with a body, where any
+     * GraphClientException is a CalendarPreReadFailedException and takes its own "not sent"
+     * arm (#6121).
      */
     private const TOKEN_FAILURE_AUDIT = 'Graph calendar write not sent (no Graph access token was obtained): ';
 
@@ -59,6 +61,15 @@ class StaffCalendarToolExecutor
      * Executing (another path moved it), so it was not reopened and a re-approve is not offered.
      */
     private const NOT_REOPENED = 'the run was not reopened (it is no longer executing); check its current state before acting on it again.';
+
+    /**
+     * #6121: the audit summary prefix when the event read an update with a body makes before its
+     * PATCH failed upstream (CalendarPreReadFailedException). Only that GET was sent.
+     */
+    private const PRE_READ_FAILURE_AUDIT = 'Graph calendar write not sent (the event read before the update failed): ';
+
+    /** #6121: the caller-facing text for that failure, before the path-specific tail. */
+    private const PRE_READ_FAILURE_TEXT = 'The calendar update was not sent: reading the event before the update failed upstream (Microsoft Graph). Nothing was written to the calendar';
 
     public function __construct(private readonly GraphClient $graph) {}
 
@@ -462,10 +473,17 @@ class StaffCalendarToolExecutor
             // #5833: getToken() failed before authenticatedRequest() sent anything, so the write
             // request was never sent and nothing can have reached the calendar: a determinate
             // failure, not the indeterminate outcome below. A refresh failure after a sent
-            // request is GraphTokenRefreshFailedException, which is not caught here (#6014).
+            // request is GraphTokenRefreshFailedException: not this arm's class, so the
+            // GraphClientException arm below catches it as indeterminate (#6014, #6128). On the
+            // update pre-read it is caught as CalendarPreReadFailedException instead (#6121).
             $this->safeAudit($directTool, 'error', $ticket, $contentHash, self::TOKEN_FAILURE_AUDIT.mb_substr($e->getMessage(), 0, 140), $actorLabel);
 
             return ['error' => 'The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar, so a retry cannot duplicate it.'];
+        } catch (CalendarPreReadFailedException $e) {
+            // #6121: only the event read before the update was sent; the write was not.
+            $this->safeAudit($directTool, 'error', $ticket, $contentHash, self::PRE_READ_FAILURE_AUDIT.mb_substr($e->getMessage(), 0, 140), $actorLabel);
+
+            return ['error' => self::PRE_READ_FAILURE_TEXT.', so a retry cannot duplicate it.'];
         } catch (GraphClientException $e) {
             // review diff:2 + contract:1: the immediate path must NOT let an upstream failure escape
             // as an uncaught exception (a generic MCP 500 the agent blindly retries). A 15s timeout is
@@ -699,7 +717,18 @@ class StaffCalendarToolExecutor
      */
     private function updateBodyPreservingTeamsJoin(string $upn, string $eventId, array $newBody): array
     {
-        $event = $this->graph->getEvent($upn, $eventId); // immediately before the write
+        // #6121: a GraphClientException from this read (an HTTP failure, no response, a 401 whose
+        // refresh failed, or a malformed event) means only this GET was sent; the PATCH below
+        // never was. It is rethrown as CalendarPreReadFailedException so both paths report a
+        // determinate "not sent", not the indeterminate outcome of a sent write. A
+        // GraphTokenException (no token, nothing sent) keeps its own arm.
+        try {
+            $event = $this->graph->getEvent($upn, $eventId); // immediately before the write
+        } catch (GraphTokenException $e) {
+            throw $e;
+        } catch (GraphClientException $e) {
+            throw new CalendarPreReadFailedException($e);
+        }
 
         if (! ($event['isOnlineMeeting'] ?? false)) {
             return $newBody; // not a Teams meeting — nothing to preserve
@@ -874,35 +903,29 @@ class StaffCalendarToolExecutor
             $plan = is_array($payload) && is_array($payload['plan'] ?? null) ? $payload['plan'] : null;
 
             if ($plan === null || $upn === '' || (self::stagedToDirectMap()[$run->action_type] ?? null) !== $directTool) {
-                $run->releaseClaim();
-
-                return $this->declined('The held calendar payload could not be read or does not match this action; deny this proposal and re-stage it.');
+                return $this->releaseAndDecline($run, 'The held calendar payload could not be read or does not match this action', '; deny this proposal and re-stage it.');
             }
 
             // *** TOCTOU RE-VERIFY at approval time — not only at stage time. ***
             if (! CalendarConfig::isEnabled()) {
                 $this->auditWrite($run->action_type, 'blocked', $run->ticket, $run->content_hash, 'Calendar toolset disabled at approval time.', $this->approverLabel($approverId), $run->id, $approverId);
-                $run->releaseClaim();
 
-                return $this->declined('The calendar toolset is now disabled in this deployment; the staged write was refused.');
+                return $this->releaseAndDecline($run, 'The calendar toolset is now disabled in this deployment; the staged write was refused', '.');
             }
             if (! CalendarConfig::ownerUpnAllowed($upn)) {
                 $this->auditWrite($run->action_type, 'blocked', $run->ticket, $run->content_hash, "Owner {$upn} no longer allowlisted at approval time.", $this->approverLabel($approverId), $run->id, $approverId);
-                $run->releaseClaim();
 
-                return $this->declined("Calendar owner {$upn} is no longer on the allowlist; the staged write was refused. Add it back (or deny and re-stage) if this is still intended.");
+                return $this->releaseAndDecline($run, "Calendar owner {$upn} is no longer on the allowlist; the staged write was refused", '. Add it back (or deny and re-stage) if this is still intended.');
             }
 
             $payloadTicketId = (int) ($payload['ticket_id'] ?? 0);
             $ticket = Ticket::automationVisible()->find($payloadTicketId);
             if ($ticket === null) {
-                $run->releaseClaim();
-
                 if (Ticket::find($payloadTicketId)?->isUnverifiedContactIntake()) {
-                    return $this->declined('The ticket this write traced to is an unverified contact intake held for staff verification; the staged write was refused. Verify the ticket first, or deny this proposal.');
+                    return $this->releaseAndDecline($run, 'The ticket this write traced to is an unverified contact intake held for staff verification; the staged write was refused', '. Verify the ticket first, or deny this proposal.');
                 }
 
-                return $this->declined('The ticket this write traced to no longer exists; deny this proposal and re-stage it.');
+                return $this->releaseAndDecline($run, 'The ticket this write traced to no longer exists', '; deny this proposal and re-stage it.');
             }
 
             try {
@@ -911,9 +934,12 @@ class StaffCalendarToolExecutor
                 // Refused BEFORE any Graph write (blocker 3 join-link guard) — nothing committed,
                 // so release and decline. NOT a retry: re-approving would only refuse again.
                 $this->auditWrite($run->action_type, 'blocked', $ticket, $run->content_hash, 'Calendar update refused to protect a Teams join link: '.mb_substr($e->getMessage(), 0, 160), $this->approverLabel($approverId), $run->id, $approverId);
-                $run->releaseClaim();
 
-                return $this->declined($e->getMessage());
+                // #6124: on a lost CAS the not-reopened fact leads, so declined()'s 300-character
+                // cut cannot drop it from this long refusal.
+                return $run->releaseClaim()
+                    ? $this->declined($e->getMessage())
+                    : $this->declined(ucfirst(self::NOT_REOPENED).' '.$e->getMessage());
             } catch (GraphTokenException $e) {
                 // #5833: no token, so the write request was never sent and nothing committed.
                 // Release the claim as on the refusal above; re-approving cannot double-send.
@@ -922,6 +948,15 @@ class StaffCalendarToolExecutor
                 $reopened = $run->releaseClaim();
 
                 return $this->declined('The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar; '
+                    .($reopened ? 'the run is reopened, so re-approve to retry.' : self::NOT_REOPENED));
+            } catch (CalendarPreReadFailedException $e) {
+                // #6121: only the event read before the update was sent, so nothing committed and
+                // the run is released like the token arm above (update is not retry-safe, but
+                // no update was sent). The text says reopened only when the CAS won (#6016).
+                $this->safeAudit($run->action_type, 'error', $ticket, $run->content_hash, self::PRE_READ_FAILURE_AUDIT.mb_substr($e->getMessage(), 0, 140), $this->approverLabel($approverId), $run->id, $approverId);
+                $reopened = $run->releaseClaim();
+
+                return $this->declined(self::PRE_READ_FAILURE_TEXT.'; '
                     .($reopened ? 'the run is reopened, so re-approve to retry.' : self::NOT_REOPENED));
             } catch (GraphClientException $e) {
                 // review contract:1: the outcome is INDETERMINATE — a 15s timeout or a post-POST
@@ -981,10 +1016,27 @@ class StaffCalendarToolExecutor
                 return new TechnicianApprovalResult('executed', message: 'Calendar write executed; finalizing the run failed and was flagged — do NOT re-approve.');
             }
 
-            $run->releaseClaim();
+            // #6124: the exception is rethrown, so no text is returned here; a lost CAS is
+            // recorded instead of passing as a reopen.
+            if (! $run->releaseClaim()) {
+                Log::warning('[Calendar] approval failed before the write and the run was not reopened (it is no longer executing)', [
+                    'run_id' => $run->id, 'exception' => $e::class,
+                ]);
+            }
 
             throw $e;
         }
+    }
+
+    /**
+     * #6124: release the claim on a pre-write refusal and decline. $fact states the refusal;
+     * $advice (which treats the run as still pending) is appended only when releaseClaim()'s CAS
+     * won. On a lost CAS the run left Executing by another path and is not in the approval
+     * queue, so NOT_REOPENED is appended instead.
+     */
+    private function releaseAndDecline(TechnicianRun $run, string $fact, string $advice): TechnicianApprovalResult
+    {
+        return $this->declined($fact.($run->releaseClaim() ? $advice : '; '.self::NOT_REOPENED));
     }
 
     /** Decrypt the held write intent from the run's encrypted payload. Null on any tamper/absence. */

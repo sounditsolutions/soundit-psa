@@ -20,7 +20,7 @@ class StaffCalendarToolExecutorTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function enableCalendar(array $allowed = ['charlie@soundit.co']): void
+    private function enableCalendar(array $allowed = ['owner@example.test']): void
     {
         Setting::setValue('calendar_enabled', '1');
         Setting::setValue('calendar_allowed_owner_upns', json_encode($allowed));
@@ -49,7 +49,7 @@ class StaffCalendarToolExecutorTest extends TestCase
             'isOnlineMeeting' => true,
             'onlineMeeting' => ['joinUrl' => 'https://teams.microsoft.com/l/meetup-join/xyz'],
             'location' => ['displayName' => 'Reception'],
-            'organizer' => ['emailAddress' => ['name' => 'Charlie Coutts', 'address' => 'charlie@soundit.co']],
+            'organizer' => ['emailAddress' => ['name' => 'Staff Owner', 'address' => 'owner@example.test']],
             'responseStatus' => ['response' => 'organizer'],
             'attendees' => [
                 [
@@ -63,14 +63,14 @@ class StaffCalendarToolExecutorTest extends TestCase
 
     public function test_reading_a_non_allowlisted_mailbox_is_refused_before_any_graph_call(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['owner@example.test']);
         // The guard must refuse BEFORE touching Graph — assert calendarView is never called.
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('calendarView')->never();
         });
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_list_events', [
-            'user_upn' => 'billing@soundit.co', // internal, but NOT on the allowlist
+            'user_upn' => 'billing@example.test', // internal, but NOT on the allowlist
             'start' => '2026-07-28T00:00:00Z',
             'end' => '2026-07-29T00:00:00Z',
         ], 1, 'mcp-staff:chet');
@@ -82,13 +82,13 @@ class StaffCalendarToolExecutorTest extends TestCase
     public function test_a_disabled_toolset_refuses_even_an_allowlisted_mailbox(): void
     {
         Setting::setValue('calendar_enabled', '0');
-        Setting::setValue('calendar_allowed_owner_upns', json_encode(['charlie@soundit.co']));
+        Setting::setValue('calendar_allowed_owner_upns', json_encode(['owner@example.test']));
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('calendarView')->never();
         });
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_list_events', [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'owner@example.test',
             'start' => '2026-07-28T00:00:00Z',
             'end' => '2026-07-29T00:00:00Z',
         ], 1, 'mcp-staff:chet');
@@ -115,22 +115,22 @@ class StaffCalendarToolExecutorTest extends TestCase
 
     public function test_reading_an_allowlisted_mailbox_projects_the_graph_event_shape(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['owner@example.test']);
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('calendarView')
                 ->once()
-                ->with('charlie@soundit.co', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z')
+                ->with('owner@example.test', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z')
                 ->andReturn([$this->graphEvent()]);
         });
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_list_events', [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'owner@example.test',
             'start' => '2026-07-28T00:00:00Z',
             'end' => '2026-07-29T00:00:00Z',
         ], 1, 'mcp-staff:chet');
 
         $this->assertArrayNotHasKey('error', $result);
-        $this->assertSame('charlie@soundit.co', $result['user_upn']);
+        $this->assertSame('owner@example.test', $result['user_upn']);
         $this->assertCount(1, $result['events']);
 
         $event = $result['events'][0];
@@ -138,7 +138,7 @@ class StaffCalendarToolExecutorTest extends TestCase
         $this->assertSame('Onsite: printer swap', $event['subject']);
         $this->assertSame('2026-07-28T15:00:00.0000000', $event['start']['date_time']);
         $this->assertSame('UTC', $event['start']['time_zone']);
-        $this->assertSame('charlie@soundit.co', $event['organizer']['email']);
+        $this->assertSame('owner@example.test', $event['organizer']['email']);
         $this->assertTrue($event['is_online_meeting']);
         $this->assertSame('https://teams.microsoft.com/l/meetup-join/xyz', $event['online_meeting_url']);
         $this->assertSame('Reception', $event['location']);
@@ -151,13 +151,13 @@ class StaffCalendarToolExecutorTest extends TestCase
 
     public function test_allowlist_match_is_case_insensitive_on_the_owner(): void
     {
-        $this->enableCalendar(['Charlie@SoundIT.co']);
+        $this->enableCalendar(['Owner@Example.test']);
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('calendarView')->once()->andReturn([]);
         });
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_list_events', [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'owner@example.test',
             'start' => '2026-07-28T00:00:00Z',
             'end' => '2026-07-29T00:00:00Z',
         ], 1, 'mcp-staff:chet');
@@ -172,7 +172,7 @@ class StaffCalendarToolExecutorTest extends TestCase
      * a committed live capture; see graphEvent()). scheduleItems carry a subject + location on the
      * real wire; the projection MUST NOT surface them — that privacy boundary is what this exercises.
      */
-    private function graphSchedule(string $scheduleId = 'charlie@soundit.co'): array
+    private function graphSchedule(string $scheduleId = 'owner@example.test'): array
     {
         return [
             'scheduleId' => $scheduleId,
@@ -200,17 +200,17 @@ class StaffCalendarToolExecutorTest extends TestCase
 
     public function test_get_schedule_projects_the_free_busy_grid_and_omits_meeting_content(): void
     {
-        $this->enableCalendar(['charlie@soundit.co', 'justin@soundit.co']);
+        $this->enableCalendar(['owner@example.test', 'tech@example.test']);
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('getSchedule')
                 ->once()
-                ->with('charlie@soundit.co', ['charlie@soundit.co', 'justin@soundit.co'], '2026-07-28T00:00:00Z', '2026-07-28T23:59:00Z', 30)
-                ->andReturn([$this->graphSchedule('charlie@soundit.co'), $this->graphSchedule('justin@soundit.co')]);
+                ->with('owner@example.test', ['owner@example.test', 'tech@example.test'], '2026-07-28T00:00:00Z', '2026-07-28T23:59:00Z', 30)
+                ->andReturn([$this->graphSchedule('owner@example.test'), $this->graphSchedule('tech@example.test')]);
         });
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_get_schedule', [
-            'user_upn' => 'charlie@soundit.co',
-            'schedules' => ['charlie@soundit.co', 'justin@soundit.co'],
+            'user_upn' => 'owner@example.test',
+            'schedules' => ['owner@example.test', 'tech@example.test'],
             'start' => '2026-07-28T00:00:00Z',
             'end' => '2026-07-28T23:59:00Z',
         ], 1, 'mcp-staff:chet');
@@ -219,7 +219,7 @@ class StaffCalendarToolExecutorTest extends TestCase
         $this->assertCount(2, $result['schedules']);
 
         $sched = $result['schedules'][0];
-        $this->assertSame('charlie@soundit.co', $sched['schedule_id']);
+        $this->assertSame('owner@example.test', $sched['schedule_id']);
         $this->assertSame('000022220000', $sched['availability_view']);
         $this->assertSame('08:00:00.0000000', $sched['working_hours']['start_time']);
         $this->assertSame('17:00:00.0000000', $sched['working_hours']['end_time']);
@@ -245,14 +245,14 @@ class StaffCalendarToolExecutorTest extends TestCase
         // information disclosure) and must be allowlisted. A single non-allowlisted entry
         // REJECTS THE WHOLE CALL — no partial grid — and NAMES the offender. getSchedule is
         // never reached.
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['owner@example.test']);
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('getSchedule')->never();
         });
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_get_schedule', [
-            'user_upn' => 'charlie@soundit.co',
-            'schedules' => ['charlie@soundit.co', 'ceo@clientco.example'], // second is not allowlisted
+            'user_upn' => 'owner@example.test',
+            'schedules' => ['owner@example.test', 'ceo@clientco.example'], // second is not allowlisted
             'start' => '2026-07-28T00:00:00Z',
             'end' => '2026-07-28T23:59:00Z',
         ], 1, 'mcp-staff:chet');
@@ -264,14 +264,14 @@ class StaffCalendarToolExecutorTest extends TestCase
 
     public function test_get_schedule_rejects_a_non_allowlisted_path_owner(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['owner@example.test']);
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('getSchedule')->never();
         });
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_get_schedule', [
-            'user_upn' => 'billing@soundit.co', // internal, but not allowlisted
-            'schedules' => ['charlie@soundit.co'],
+            'user_upn' => 'billing@example.test', // internal, but not allowlisted
+            'schedules' => ['owner@example.test'],
             'start' => '2026-07-28T00:00:00Z',
             'end' => '2026-07-28T23:59:00Z',
         ], 1, 'mcp-staff:chet');
@@ -282,13 +282,13 @@ class StaffCalendarToolExecutorTest extends TestCase
 
     public function test_get_schedule_requires_a_non_empty_schedules_array(): void
     {
-        $this->enableCalendar(['charlie@soundit.co']);
+        $this->enableCalendar(['owner@example.test']);
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('getSchedule')->never();
         });
 
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_get_schedule', [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'owner@example.test',
             'schedules' => [],
             'start' => '2026-07-28T00:00:00Z',
             'end' => '2026-07-28T23:59:00Z',

@@ -943,12 +943,14 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
      * a credential in an array argument and shows that it fires.
      *
      * Arguments on (zend.exception_ignore_args=Off): before #6023 the seeded bearer was in
-     * authenticatedRequest()'s $options frame argument. authenticatedRequest() no longer writes
-     * the header into $options; it merges it into the options it hands Guzzle at each send, so
-     * no frame argument of either link holds the seeded bearer, the refreshed one or the
-     * secret. Positive control: the same scan does read authenticatedRequest()'s arguments (its
-     * endpoint argument holds the mailbox). Arguments off (php.ini-production): no frame keeps
-     * an argument at all.
+     * authenticatedRequest()'s $options frame argument. Since #6120 the header is set on the
+     * PSR-7 Request at each send and never on an options array, so no frame argument of either
+     * link holds the seeded bearer or the secret. This chain is the failed-refresh arm only, so
+     * no refreshed bearer exists here; every other arm (a refresh that succeeds, 429 retries,
+     * the absolute-URL senders, a throwable from inside the handler stack) is scanned in
+     * GraphClientBearerFrameTest (#6130). Positive control: the same scan does read
+     * authenticatedRequest()'s arguments (its endpoint argument holds the mailbox). Arguments
+     * off (php.ini-production): no frame keeps an argument at all.
      */
     public function test_frame_arguments_hold_no_bearer_with_arguments_on_or_off(): void
     {

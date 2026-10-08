@@ -40,7 +40,7 @@ class StaffCalendarToolWiringTest extends TestCase
     }
 
     /** Switch the toolset on: enabled + allowlist + a configured Graph transport. */
-    private function enableCalendarLive(array $allowed = ['charlie@soundit.co']): void
+    private function enableCalendarLive(array $allowed = ['owner@example.test']): void
     {
         Setting::setValue('calendar_enabled', '1');
         Setting::setValue('calendar_allowed_owner_upns', json_encode($allowed));
@@ -97,7 +97,7 @@ class StaffCalendarToolWiringTest extends TestCase
             'isOnlineMeeting' => true,
             'onlineMeeting' => ['joinUrl' => 'https://teams.microsoft.com/l/meetup-join/xyz'],
             'location' => ['displayName' => 'Reception'],
-            'organizer' => ['emailAddress' => ['name' => 'Charlie Coutts', 'address' => 'charlie@soundit.co']],
+            'organizer' => ['emailAddress' => ['name' => 'Staff Owner', 'address' => 'owner@example.test']],
             'responseStatus' => ['response' => 'organizer'],
             'attendees' => [[
                 'type' => 'required',
@@ -213,16 +213,16 @@ class StaffCalendarToolWiringTest extends TestCase
 
     public function test_granted_call_reads_an_allowlisted_mailbox_and_projects_events(): void
     {
-        $this->enableCalendarLive(['charlie@soundit.co']);
+        $this->enableCalendarLive(['owner@example.test']);
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('calendarView')
                 ->once()
-                ->with('charlie@soundit.co', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z')
+                ->with('owner@example.test', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z')
                 ->andReturn([$this->graphEvent()]);
         });
 
         $response = $this->callTool($this->token(['calendar_list_events']), 'calendar_list_events', [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'owner@example.test',
             'start' => '2026-07-28T00:00:00Z',
             'end' => '2026-07-29T00:00:00Z',
         ]);
@@ -230,26 +230,26 @@ class StaffCalendarToolWiringTest extends TestCase
         $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
 
         $result = $this->decodedResult($response);
-        $this->assertSame('charlie@soundit.co', $result['user_upn']);
+        $this->assertSame('owner@example.test', $result['user_upn']);
         $this->assertCount(1, $result['events']);
         $event = $result['events'][0];
         $this->assertSame('Onsite: printer swap', $event['subject']);
         $this->assertSame('2026-07-28T15:00:00.0000000', $event['start']['date_time']);
-        $this->assertSame('charlie@soundit.co', $event['organizer']['email']);
+        $this->assertSame('owner@example.test', $event['organizer']['email']);
         // The allowlist gates the OWNER, never attendees: an external attendee is present.
         $this->assertSame('contact@clientco.example', $event['attendees'][0]['email']);
     }
 
     public function test_granted_call_refuses_a_non_allowlisted_owner_through_the_endpoint(): void
     {
-        $this->enableCalendarLive(['charlie@soundit.co']);
+        $this->enableCalendarLive(['owner@example.test']);
         // The allowlist must refuse BEFORE any Graph call — assert calendarView is never hit.
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('calendarView')->never();
         });
 
         $response = $this->callTool($this->token(['calendar_list_events']), 'calendar_list_events', [
-            'user_upn' => 'billing@soundit.co', // internal, but NOT on the allowlist
+            'user_upn' => 'billing@example.test', // internal, but NOT on the allowlist
             'start' => '2026-07-28T00:00:00Z',
             'end' => '2026-07-29T00:00:00Z',
         ]);
@@ -260,16 +260,16 @@ class StaffCalendarToolWiringTest extends TestCase
 
     public function test_get_event_reads_an_allowlisted_mailbox(): void
     {
-        $this->enableCalendarLive(['charlie@soundit.co']);
+        $this->enableCalendarLive(['owner@example.test']);
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('getEvent')
                 ->once()
-                ->with('charlie@soundit.co', 'AAMkAG')
+                ->with('owner@example.test', 'AAMkAG')
                 ->andReturn($this->graphEvent());
         });
 
         $response = $this->callTool($this->token(['calendar_get_event']), 'calendar_get_event', [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'owner@example.test',
             'event_id' => 'AAMkAG',
         ]);
         $response->assertOk();
@@ -280,14 +280,14 @@ class StaffCalendarToolWiringTest extends TestCase
     public function test_switched_off_calendar_call_is_refused_as_not_live(): void
     {
         Setting::setValue('calendar_enabled', '0');
-        Setting::setValue('calendar_allowed_owner_upns', json_encode(['charlie@soundit.co']));
+        Setting::setValue('calendar_allowed_owner_upns', json_encode(['owner@example.test']));
         config(['services.graph' => ['tenant_id' => 't', 'client_id' => 'c', 'client_secret' => 's']]);
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('calendarView')->never();
         });
 
         $response = $this->callTool($this->token(['calendar_list_events']), 'calendar_list_events', [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'owner@example.test',
             'start' => '2026-07-28T00:00:00Z',
             'end' => '2026-07-29T00:00:00Z',
         ]);
@@ -298,13 +298,13 @@ class StaffCalendarToolWiringTest extends TestCase
 
     public function test_legacy_token_cannot_call_calendar_even_when_live(): void
     {
-        $this->enableCalendarLive(['charlie@soundit.co']);
+        $this->enableCalendarLive(['owner@example.test']);
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('calendarView')->never();
         });
 
         $response = $this->callTool($this->legacyToken(), 'calendar_list_events', [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'owner@example.test',
             'start' => '2026-07-28T00:00:00Z',
             'end' => '2026-07-29T00:00:00Z',
         ]);
@@ -315,13 +315,13 @@ class StaffCalendarToolWiringTest extends TestCase
 
     public function test_granted_call_get_schedule_projects_availability_through_the_endpoint(): void
     {
-        $this->enableCalendarLive(['charlie@soundit.co', 'justin@soundit.co']);
+        $this->enableCalendarLive(['owner@example.test', 'tech@example.test']);
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('getSchedule')
                 ->once()
-                ->with('charlie@soundit.co', ['charlie@soundit.co', 'justin@soundit.co'], '2026-07-28T00:00:00Z', '2026-07-28T23:59:00Z', 30)
+                ->with('owner@example.test', ['owner@example.test', 'tech@example.test'], '2026-07-28T00:00:00Z', '2026-07-28T23:59:00Z', 30)
                 ->andReturn([[
-                    'scheduleId' => 'charlie@soundit.co',
+                    'scheduleId' => 'owner@example.test',
                     'availabilityView' => '000022220000',
                     'scheduleItems' => [[
                         'status' => 'busy',
@@ -340,8 +340,8 @@ class StaffCalendarToolWiringTest extends TestCase
         });
 
         $response = $this->callTool($this->token(['calendar_get_schedule']), 'calendar_get_schedule', [
-            'user_upn' => 'charlie@soundit.co',
-            'schedules' => ['charlie@soundit.co', 'justin@soundit.co'],
+            'user_upn' => 'owner@example.test',
+            'schedules' => ['owner@example.test', 'tech@example.test'],
             'start' => '2026-07-28T00:00:00Z',
             'end' => '2026-07-28T23:59:00Z',
         ]);
@@ -362,16 +362,16 @@ class StaffCalendarToolWiringTest extends TestCase
         // envelope) must SCREAM end-to-end, never return a clean grid that reads as "everyone is
         // free" (CLAUDE.md hard rule; psa-abl0i.2). GraphClient throws GraphShapeDriftException on
         // drift; the endpoint must surface it as isError, not as availability data.
-        $this->enableCalendarLive(['charlie@soundit.co', 'justin@soundit.co']);
+        $this->enableCalendarLive(['owner@example.test', 'tech@example.test']);
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('getSchedule')
                 ->once()
-                ->andThrow(new GraphShapeDriftException('Microsoft Graph getSchedule returned an error for mailbox justin@soundit.co; its availability is unknown, so the whole free/busy read is refused rather than shown as free.'));
+                ->andThrow(new GraphShapeDriftException('Microsoft Graph getSchedule returned an error for mailbox tech@example.test; its availability is unknown, so the whole free/busy read is refused rather than shown as free.'));
         });
 
         $response = $this->callTool($this->token(['calendar_get_schedule']), 'calendar_get_schedule', [
-            'user_upn' => 'charlie@soundit.co',
-            'schedules' => ['charlie@soundit.co', 'justin@soundit.co'],
+            'user_upn' => 'owner@example.test',
+            'schedules' => ['owner@example.test', 'tech@example.test'],
             'start' => '2026-07-28T00:00:00Z',
             'end' => '2026-07-28T23:59:00Z',
         ]);
@@ -379,7 +379,7 @@ class StaffCalendarToolWiringTest extends TestCase
         $response->assertOk();
         $this->assertTrue((bool) $response->json('result.isError'));
         $text = (string) $response->json('result.content.0.text');
-        $this->assertStringContainsString('justin@soundit.co', $text);
+        $this->assertStringContainsString('tech@example.test', $text);
         // The failure must NOT masquerade as availability data.
         $this->assertStringNotContainsString('availability_view', $text);
     }
@@ -389,14 +389,14 @@ class StaffCalendarToolWiringTest extends TestCase
         // The manager-mandated direct test (fork 3): a mix of allowlisted + non-allowlisted
         // targets ERRORS and returns NO grid — a partial free/busy grid must never be
         // indistinguishable from a complete one.
-        $this->enableCalendarLive(['charlie@soundit.co']);
+        $this->enableCalendarLive(['owner@example.test']);
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('getSchedule')->never();
         });
 
         $response = $this->callTool($this->token(['calendar_get_schedule']), 'calendar_get_schedule', [
-            'user_upn' => 'charlie@soundit.co',
-            'schedules' => ['charlie@soundit.co', 'ceo@clientco.example'],
+            'user_upn' => 'owner@example.test',
+            'schedules' => ['owner@example.test', 'ceo@clientco.example'],
             'start' => '2026-07-28T00:00:00Z',
             'end' => '2026-07-28T23:59:00Z',
         ]);

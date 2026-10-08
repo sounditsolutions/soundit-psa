@@ -295,34 +295,52 @@ class TeamsMessageAttachmentFetcher
     /** @return array{error: string} */
     private function graphFailure(\Throwable $e, string $chatId, string $what): array
     {
-        $status = $e instanceof GraphClientException ? $e->getHttpStatus() : 0;
+        $graphFailure = $e instanceof GraphClientException;
+        $status = $graphFailure ? $e->getHttpStatus() : 0;
         // #5398: a 401 whose token refresh failed is a token failure, not the permission
         // refusal the 401/403 arm below names, so it gets its own record key and message.
         $tokenRefreshFailed = $e instanceof GraphTokenRefreshFailedException;
+        // #6021: a token that could not be obtained (nothing sent) is told apart in the record
+        // from a read that got no response; both have status 0.
+        $tokenFailed = $e instanceof GraphTokenException;
 
+        // #6012: a throwable that is not a GraphClientException is named in the record by its
+        // class only (never its message), so a PSA-side failure is not read as a Graph one.
         Log::warning('[ChetDataSurface] Teams message attachment read failed', [
             'chat_id' => $chatId,
             'stage' => $what,
             'status' => $status,
-        ] + ($tokenRefreshFailed ? ['token_refresh' => 'failed'] : []));
+        ] + ($tokenRefreshFailed ? ['token_refresh' => 'failed'] : [])
+          + ($tokenFailed ? ['token' => 'not obtained'] : [])
+          + (! $graphFailure ? ['exception' => $e::class] : []));
+
+        // #6017: at the 'hosted content' stage the message itself was already read, so the
+        // text says the attachment content was not read rather than that nothing was.
+        $unread = $what === 'message' ? 'nothing was read' : 'the attachment content was not read';
 
         if ($tokenRefreshFailed) {
-            return ['error' => "Teams {$what} read failed: Microsoft Graph answered HTTP {$status} and the PSA's Graph token refresh then failed, so no fresh token was obtained; nothing was read."];
+            return ['error' => "Teams {$what} read failed: Microsoft Graph answered HTTP {$status} and the PSA's Graph token refresh then failed, so no fresh token was obtained; {$unread}."];
         }
         // #5833: getToken() failed before the read was sent, so there is no HTTP status to name.
-        if ($e instanceof GraphTokenException) {
-            return ['error' => "Teams {$what} read failed: the PSA could not obtain a Microsoft Graph access token, so the read was not sent; nothing was read."];
+        if ($tokenFailed) {
+            return ['error' => "Teams {$what} read failed: the PSA could not obtain a Microsoft Graph access token, so the read was not sent; {$unread}."];
+        }
+        // #6012: not a Graph HTTP failure (for example a TypeError on a 200 whose body is not a
+        // JSON object, or a cache-store failure). Graph may have answered, so the text does not
+        // say it gave no status.
+        if (! $graphFailure) {
+            return ['error' => "Teams {$what} read failed inside the PSA, not as a Microsoft Graph HTTP error; {$unread}."];
         }
 
         return match ($status) {
             // #5670: the status alone does not show why Graph refused, so the permission is named
             // as something to check, never as the cause.
-            401, 403 => ['error' => "Teams refused the {$what} read (HTTP {$status}); nothing was read. The status alone does not show why. Ask the operator to check that the PSA's Microsoft Graph app registration has the ".TeamsChatReadToolset::HOSTED_CONTENT_PERMISSION.' application permission with admin consent; a missing permission is one possible cause.'],
+            401, 403 => ['error' => "Teams refused the {$what} read (HTTP {$status}); {$unread}. The status alone does not show why. Ask the operator to check that the PSA's Microsoft Graph app registration has the ".TeamsChatReadToolset::HOSTED_CONTENT_PERMISSION.' application permission with admin consent; a missing permission is one possible cause.'],
             404 => ['error' => 'Attachment not found on this message'],
-            // #5833: status 0 is no HTTP status at all (no response arrived, or the failure was
-            // not a Graph HTTP failure), so it is never printed as 'HTTP 0'.
-            0 => ['error' => "Teams {$what} read failed with no HTTP status from Microsoft Graph; nothing was read."],
-            default => ['error' => "Teams {$what} read failed (HTTP {$status}); nothing was read."],
+            // #5833: status 0 on a GraphClientException is no HTTP status at all (no response
+            // arrived), so it is never printed as 'HTTP 0'.
+            0 => ['error' => "Teams {$what} read failed with no HTTP status from Microsoft Graph; {$unread}."],
+            default => ['error' => "Teams {$what} read failed (HTTP {$status}); {$unread}."],
         };
     }
 }

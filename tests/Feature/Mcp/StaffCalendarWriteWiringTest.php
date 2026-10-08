@@ -33,7 +33,7 @@ class StaffCalendarWriteWiringTest extends TestCase
         Setting::setValue('triage_system_user_id', (string) $actor->id);
     }
 
-    private function enableCalendarLive(array $allowed = ['charlie@soundit.co']): void
+    private function enableCalendarLive(array $allowed = ['owner@example.test']): void
     {
         Setting::setValue('calendar_enabled', '1');
         Setting::setValue('calendar_allowed_owner_upns', json_encode($allowed));
@@ -62,7 +62,7 @@ class StaffCalendarWriteWiringTest extends TestCase
     private function createArgs(Ticket $ticket): array
     {
         return [
-            'user_upn' => 'charlie@soundit.co',
+            'user_upn' => 'owner@example.test',
             'subject' => 'Onsite: printer swap',
             'start' => '2026-07-29T15:00:00',
             'end' => '2026-07-29T16:00:00',
@@ -73,7 +73,7 @@ class StaffCalendarWriteWiringTest extends TestCase
 
     public function test_a_staged_grant_parks_a_run_via_the_endpoint_then_the_cockpit_approves_and_executes_it(): void
     {
-        $this->enableCalendarLive(['charlie@soundit.co']);
+        $this->enableCalendarLive(['owner@example.test']);
         $ticket = Ticket::factory()->create();
         $approver = User::factory()->create();
 
@@ -99,12 +99,12 @@ class StaffCalendarWriteWiringTest extends TestCase
         $this->actingAs($approver)->post(route('cockpit.approve', $run));
 
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
-        $this->assertSame('charlie@soundit.co', $captured['upn']);
+        $this->assertSame('owner@example.test', $captured['upn']);
     }
 
     public function test_an_immediate_grant_executes_the_write_directly_via_the_endpoint(): void
     {
-        $this->enableCalendarLive(['charlie@soundit.co']);
+        $this->enableCalendarLive(['owner@example.test']);
         $ticket = Ticket::factory()->create();
 
         $this->mock(GraphClient::class, function ($m) {
@@ -121,7 +121,7 @@ class StaffCalendarWriteWiringTest extends TestCase
 
     public function test_the_write_audit_redacts_free_text_to_lengths_never_raw(): void
     {
-        $this->enableCalendarLive(['charlie@soundit.co']);
+        $this->enableCalendarLive(['owner@example.test']);
         $ticket = Ticket::factory()->create();
         $this->mock(GraphClient::class, function ($m) {
             $m->shouldReceive('createEvent')->once()->andReturn(['id' => 'AAMkAG-new', 'subject' => 'x', 'webLink' => 'https://x']);
@@ -137,7 +137,7 @@ class StaffCalendarWriteWiringTest extends TestCase
         // Free text is present only as a length; structural scalars stay verbatim.
         $this->assertArrayHasKey('subject_length', $audit->arguments);
         $this->assertArrayHasKey('reason_length', $audit->arguments);
-        $this->assertSame('charlie@soundit.co', $audit->arguments['user_upn']);
+        $this->assertSame('owner@example.test', $audit->arguments['user_upn']);
         $this->assertSame($ticket->id, $audit->arguments['ticket_id']);
         // The raw content must never appear anywhere in the audit row.
         $json = (string) json_encode($audit->arguments);
@@ -149,7 +149,7 @@ class StaffCalendarWriteWiringTest extends TestCase
     {
         // Explicit-grant-only: the tenant-wide staff calendar writes must never be inherited by the
         // legacy full-surface token (mirrors the Slice A read guard).
-        $this->enableCalendarLive(['charlie@soundit.co']);
+        $this->enableCalendarLive(['owner@example.test']);
         $ticket = Ticket::factory()->create();
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('createEvent')->never());
 
