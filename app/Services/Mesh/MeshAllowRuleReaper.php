@@ -3,6 +3,8 @@
 namespace App\Services\Mesh;
 
 use App\Models\MeshAllowRule;
+use App\Models\SignalEvent;
+use App\Services\Signals\SignalHub;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -56,6 +58,9 @@ class MeshAllowRuleReaper
      * scheduled window.
      */
     public const BATCH_LIMIT = 100;
+
+    /** #5160: the Alerts Hub event for a permanent row whose scope was never proved. */
+    public const SIGNAL_UNRESOLVED = 'mesh.allow_rule_unresolved';
 
     public function __construct(private readonly MeshWriteClient $client) {}
 
@@ -247,9 +252,50 @@ class MeshAllowRuleReaper
             Log::warning("[MeshAllowRuleReaper] mesh_allow_rules#{$rule->id} {$which} and unsettled; it may be live and it blocks new allow rules for this sender. {$note}");
 
             $counts['unresolved']++;
+
+            if ($permanent && ! (bool) $rule->scope_proved && $rule->state === MeshAllowRule::STATE_UNRESOLVED) {
+                $this->signalUnresolved($rule);
+            }
         }
 
         return $counts;
+    }
+
+    /**
+     * #5160: tell the Alerts Hub about a PERMANENT unresolved row whose scope
+     * was never proved. Nothing in the PSA ever deletes such a row, so the
+     * hourly count is otherwise its only trace.
+     *
+     * At most once per row per 24 hours: the reaper runs hourly, so an earlier
+     * event for the same row inside that window suppresses this one.
+     *
+     * Status only (C-56): the summary and context carry the PSA row id and
+     * client id, never the tenant, sender, comment or upstream id. A failure
+     * here never reaches the reaper's counts or its caller.
+     */
+    private function signalUnresolved(MeshAllowRule $rule): void
+    {
+        try {
+            $recent = SignalEvent::query()
+                ->where('type_key', self::SIGNAL_UNRESOLVED)
+                ->where('entity_type', $rule->getMorphClass())
+                ->where('entity_id', $rule->getKey())
+                ->where('occurred_at', '>', now()->subDay())
+                ->exists();
+
+            if ($recent) {
+                return;
+            }
+
+            app(SignalHub::class)->emit(
+                self::SIGNAL_UNRESOLVED,
+                $rule,
+                "Mesh allow rule #{$rule->id} stays unresolved: its scope was never proved; check the rule in the Mesh portal and clear the PSA record by hand",
+                ['client_id' => $rule->client_id],
+            );
+        } catch (\Throwable $e) {
+            Log::warning("[MeshAllowRuleReaper] mesh_allow_rules#{$rule->id}: the Alerts Hub signal was not emitted (".$e::class.').');
+        }
     }
 
     /**
