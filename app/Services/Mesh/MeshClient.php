@@ -185,7 +185,11 @@ class MeshClient
      * drops bytes and never adds any. Then strip: when the bytes before
      * that '//' are empty or end in ':' (any scheme PSR-7 takes, RFC 3986
      * or not), they, the '//' and the host[:port] go; otherwise (' //')
-     * they stay with the host[:port] and only the user-info went. The
+     * they stay with the host[:port] and only the user-info went. When
+     * those kept bytes are not blank and the endpoint holds an '@'
+     * anywhere, the whole line path is '[unparseable endpoint]' instead:
+     * they may be user-info holding '//' ('user:pass//@host/...', which
+     * no '@' search reaches), so they are never logged with an '@'. The
      * strip needs '//', so a scheme-less 'host:port/...' endpoint keeps
      * its host and port on the line (#5608, #5705). Then cut at the
      * first '?' or '#' (strcspn, not strtok, so a leading '?' still drops
@@ -227,13 +231,18 @@ class MeshClient
         // logged (#5761).
         $rest = substr($endpoint, $end);
         $atAfterQuery = $rest !== '' && $rest[0] !== '/' && str_contains($rest, '@');
-        if ($atAfterQuery || (preg_match(self::HOST_PORT, $hostPort) !== 1 && str_contains($endpoint, '@'))) {
-            return self::UNPARSEABLE_ENDPOINT;
-        }
         // The strip: when nothing, or bytes ending in ':' (read as a
         // scheme, RFC 3986 or not), come before that '//', they go with
-        // the '//' and the host[:port]; otherwise only the user-info went.
+        // the '//' and the host[:port]; otherwise they are kept and only
+        // the user-info went. Kept bytes that are not blank may be
+        // user-info holding '//' ('user:pass//@host'): no '@' search
+        // reaches them, so with an '@' anywhere they would be logged
+        // (#5761).
         $strip = $start > 0 && ($head === '' || str_ends_with($head, ':'));
+        $keptHead = $start > 0 && ! $strip && trim($head) !== '';
+        if ($atAfterQuery || ($keptHead && str_contains($endpoint, '@')) || (preg_match(self::HOST_PORT, $hostPort) !== 1 && str_contains($endpoint, '@'))) {
+            return self::UNPARSEABLE_ENDPOINT;
+        }
         $endpoint = ($strip ? '' : substr($endpoint, 0, $start).$hostPort).substr($endpoint, $end);
 
         // Then the cut at the first '?' or '#' (strcspn, not strtok, so a

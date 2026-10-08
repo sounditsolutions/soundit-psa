@@ -397,6 +397,11 @@ class MeshClientLogPathTest extends TestCase
             "password holding '/' (unparseable)" => ["{$u}:{$p}/z@{$h}:{$port}/api/customers/{$id}/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
             "password holding '?' (unparseable)" => ["{$u}:{$p}?z@{$h}:{$port}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
             "password holding '#' (unparseable)" => ["{$u}:{$p}#z@{$h}:{$port}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
+            // #5761 r3 (diff:1): user-info holding '//' leaves the user (and
+            // the password's start) before the '//', where no '@' search
+            // looks; bytes kept there are never logged with an '@'.
+            "password holding '//' (unparseable)" => ["{$u}:{$p}//z@{$h}:{$port}/api/customers/{$id}/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
+            "user holding '//' (unparseable)" => ["{$u}//z@{$h}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], false, 'unparseable'],
             // A first segment that reads as 'host:' with no port digits
             // ('https:' here) is not a host, so user-info after it is not
             // logged as path.
@@ -495,7 +500,7 @@ class MeshClientLogPathTest extends TestCase
                 $driven++;
             }
         }
-        $this->assertSame(2 * 15, $driven, 'fifteen rows on each real handler');
+        $this->assertSame(2 * 16, $driven, 'sixteen rows on each real handler');
     }
 
     /**
@@ -516,7 +521,7 @@ class MeshClientLogPathTest extends TestCase
             $kinds[$kind] = ($kinds[$kind] ?? 0) + 1;
         }
         ksort($kinds);
-        $this->assertSame(['authority strip only' => 3, 'kept' => 1, 'query cut only' => 1, 'redacted' => 11, 'unparseable' => 9, 'user-info drop' => 6], $kinds, 'user-info rows by kind');
+        $this->assertSame(['authority strip only' => 3, 'kept' => 1, 'query cut only' => 1, 'redacted' => 11, 'unparseable' => 11, 'user-info drop' => 6], $kinds, 'user-info rows by kind');
         // '//user:password@' with a '/' in the password: PSR-7 refuses it
         // (no request, no line), so it is checked here only.
         $this->assertSame('[unparseable endpoint]', $logPath->invoke(null, '//'.self::USER.':'.self::PASS.'/z@'.self::ENDPOINT_HOST.'/api/'));
@@ -1176,7 +1181,11 @@ class MeshClientLogPathTest extends TestCase
         $parsed = $hostPort === '' ? ['host' => ''] : parse_url('//'.$hostPort);
         $notHost = ! is_array($parsed) || array_diff(array_keys($parsed), ['host', 'port']) !== [] || str_ends_with($hostPort, ':');
         $atPastQuery = strpbrk(substr($endpoint, $end, 1), '?#') !== false && str_contains(substr($endpoint, $end), '@');
-        if ($atPastQuery || (str_contains($endpoint, '@') && $notHost)) {
+        // #5761 r3: bytes before that '//' that no strip removes and that
+        // are not blank may be user-info holding '//'; with an '@' anywhere
+        // the endpoint is unparseable too.
+        $keptHead = $start > 0 && trim($head) !== '' && ! str_ends_with($head, ':');
+        if ($atPastQuery || (str_contains($endpoint, '@') && ($notHost || $keptHead))) {
             return $out === '[unparseable endpoint]' ? 'unparseable' : null;
         }
         $userInfoDrop = count($pieces) > 1;
