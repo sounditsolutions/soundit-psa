@@ -93,10 +93,24 @@ class GraphWebhookManagerLoggingTest extends TestCase
         ]));
     }
 
-    /** @return list<string> */
+    /**
+     * #5671: 'subscriptions/' (an endpoint carrying a subscription id), not the bare noun, which
+     * is now the failed request's operation label.
+     *
+     * @return list<string>
+     */
     private static function needles(): array
     {
-        return [self::MAILBOX, rawurlencode(self::MAILBOX), 'support@', 'users/', self::GRAPH_ERROR_TEXT, 'Graph API error', 'subscriptions'];
+        return [self::MAILBOX, rawurlencode(self::MAILBOX), 'support@', 'users/', self::GRAPH_ERROR_TEXT, 'Graph API error', 'subscriptions/'];
+    }
+
+    /** @return list<array{0: string, 1: array<string, mixed>}> [level, context] of each 'Graph API request failed' record */
+    private function graphFailedRecords(): array
+    {
+        return array_values(array_map(
+            fn (MessageLogged $m) => [$m->level, $m->context],
+            array_filter($this->logged, fn (MessageLogged $m) => $m->message === 'Graph API request failed'),
+        ));
     }
 
     /** @return list<string> the needles $text carries */
@@ -153,6 +167,7 @@ class GraphWebhookManagerLoggingTest extends TestCase
             ['error', ['status' => 400, 'exception' => GraphClientException::class]],
             $this->webhookRecords()['[GraphWebhook] Failed to create subscription'] ?? null,
         );
+        $this->assertSame([['error', ['method' => 'POST', 'operation' => 'subscriptions', 'status' => 400]]], $this->graphFailedRecords(), '#5671');
         $this->assertNoNeedleInAnyRecord();
     }
 
@@ -169,6 +184,7 @@ class GraphWebhookManagerLoggingTest extends TestCase
             ['error', ['subscription_id' => self::SUBSCRIPTION_ID, 'status' => 404, 'exception' => GraphClientException::class]],
             $this->webhookRecords()['[GraphWebhook] Failed to renew subscription'] ?? null,
         );
+        $this->assertSame([['error', ['method' => 'PATCH', 'operation' => 'subscriptions', 'status' => 404]]], $this->graphFailedRecords(), '#5671');
         $this->assertNoNeedleInAnyRecord();
     }
 
@@ -181,6 +197,7 @@ class GraphWebhookManagerLoggingTest extends TestCase
             ['warning', ['subscription_id' => self::SUBSCRIPTION_ID, 'status' => 500, 'exception' => GraphClientException::class]],
             $this->webhookRecords()['[GraphWebhook] Failed to delete subscription'] ?? null,
         );
+        $this->assertSame([['error', ['method' => 'DELETE', 'operation' => 'subscriptions', 'status' => 500]]], $this->graphFailedRecords(), '#5671');
         $this->assertNull(Setting::getValue('graph_subscription_id'), 'the delete still clears the settings');
         $this->assertNoNeedleInAnyRecord();
     }

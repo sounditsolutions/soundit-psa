@@ -859,6 +859,39 @@ class GraphClient
     }
 
     /**
+     * #5671: Graph resource nouns that may name a failed request's operation in a log record.
+     * Only these literals ever reach the record.
+     */
+    private const OPERATION_NOUNS = [
+        'messages', 'attachments', 'mailFolders', 'sendMail', 'reply', 'events', 'calendar',
+        'calendarView', 'subscriptions', 'chats', 'channels', 'teams', 'hostedContents', 'photo',
+        'users', 'groups',
+    ];
+
+    /**
+     * #5671 / C-56: an endpoint-free operation label for a request path or an absolute URL. The
+     * query and fragment are cut off and, for an absolute URL, the scheme and host are dropped.
+     * The remaining path segments are compared exactly against OPERATION_NOUNS, and the last
+     * one that matches is returned. With no match the label is 'other'. The returned value is
+     * always one of those literals, never a segment taken from the endpoint.
+     */
+    private static function operationLabel(string $endpoint): string
+    {
+        $path = preg_split('/[?#]/', $endpoint, 2)[0];
+        $path = preg_replace('#^[A-Za-z][A-Za-z0-9+.\-]*://[^/]*#', '', $path);
+
+        $label = 'other';
+        foreach (explode('/', $path) as $segment) {
+            $noun = array_search($segment, self::OPERATION_NOUNS, true);
+            if ($noun !== false) {
+                $label = self::OPERATION_NOUNS[$noun];
+            }
+        }
+
+        return $label;
+    }
+
+    /**
      * Convert a Guzzle exception into a GraphClientException.
      *
      * @throws GraphClientException
@@ -873,17 +906,20 @@ class GraphClient
             $responseBody = json_decode((string) $e->getResponse()->getBody(), true);
         }
 
-        // #5533 / #5679 / C-56: the record carries the method and the status, and the exception
+        // #5533 / #5679 / C-56: the record carries the method, the operation label and the status, and the exception
         // message the method and either the status or that no response arrived. Neither carries
         // the endpoint (it holds the mailbox on users/ paths, and the nextLink URL on
         // requestAbsolute) or Guzzle's message (the request URI and the start of Graph's response
         // body). Graph's decoded body stays on getResponseBody() for a caller that reads it on
         // purpose.
+        // #5671: the record also carries 'operation', a label from operationLabel(): one of
+        // OPERATION_NOUNS or 'other', never a segment of the endpoint itself.
         // #5673 / #5723: with no response (status 0) the record also carries the Guzzle exception
         // class, the only cause it can carry; it is a class name, never Guzzle's text.
         if ($log) {
             Log::error('Graph API request failed', [
                 'method' => $method,
+                'operation' => self::operationLabel($endpoint),
                 'status' => $statusCode,
             ] + ($statusCode === 0 ? ['exception' => $e::class] : []));
         }
