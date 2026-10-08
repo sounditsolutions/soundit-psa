@@ -667,7 +667,10 @@ class MeshVendorErrorStatusOnlyTest extends TestCase
             $client->get('api/customers/', ['_size' => 1, 'filter' => self::MARKER]);
             $this->fail('the scripted read was expected to fail');
         } catch (MeshClientException $e) {
-            $this->assertStringContainsString(self::HOST, $e->getMessage(), 'positive control: the raw message carries the host');
+            $this->assertNotNull($e->getPrevious(), 'the Guzzle exception is chained');
+            $this->assertStringContainsString(self::HOST, $e->getPrevious()->getMessage(), 'positive control: the chained raw message carries the host');
+            $this->assertSame('Mesh API error: GET api/customers/ failed with '.($this->mode === '503' ? 'HTTP 503 (GuzzleHttp\Exception\ServerException)' : 'no HTTP status ('.ConnectException::class.')'), $e->getMessage(), 'the rethrown message is status-only (#5761)');
+            $this->assertStringNotContainsString(self::HOST, $e->getMessage(), 'the rethrown message carries no host (#5761)');
         }
 
         $log = $this->loggedBy('[MeshClient]');

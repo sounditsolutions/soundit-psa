@@ -82,6 +82,8 @@ class MeshClient
      * With no leading '//' only the user-info is cut from the first
      * segment, so a scheme-less '[user[:password]@]host:port/...' endpoint
      * keeps its host and port on the line, and 'https:/...' its scheme;
+     * so does a scheme the strip does not take (' https://', '1https://':
+     * the user-info after its '//' is cut, the scheme and host are kept);
      * an endpoint whose user-info cannot be cut safely is logged as
      * '[unparseable endpoint]'), HTTP
      * status and exception class only: Guzzle's message quotes the request
@@ -110,12 +112,15 @@ class MeshClient
      * is empty (#5418, #5427, #5474). Read in the vendored Guzzle, not
      * driven: Client::applyOptions replaces the URI's query whenever the
      * 'query' option is set, so a non-empty $params replaces an endpoint's
-     * query the same way (#5484). The
-     * rethrown MeshClientException is
-     * NOT redacted: its message is 'Mesh API error: ' followed by Guzzle's
-     * message, which can quote the full request URI (customer id included)
-     * and vendor body text, so never log $e->getMessage() from it or from
-     * its previous exception.
+     * query the same way (#5484). The rethrown MeshClientException's
+     * message is 'Mesh API error: ' followed by the same text as the log
+     * line after its '[MeshClient] ' (method, logPath(), status, class),
+     * never Guzzle's message (#5761); its code is Guzzle's. The Guzzle
+     * exception chained as its previous one is NOT redacted: its message
+     * quotes the request URI (user-info, host and customer id included;
+     * Guzzle masks only a parsed password) or names the user as a refused
+     * scheme, plus vendor body text, and it holds the request with its
+     * API-KEY header, so never log getPrevious() or its message.
      */
     private function request(string $method, string $endpoint, array $options = []): array
     {
@@ -128,9 +133,16 @@ class MeshClient
             $response = $this->http->request($method, $endpoint, $options);
         } catch (GuzzleException $e) {
             $status = $e instanceof RequestException ? ($e->getResponse()?->getStatusCode() ?? 0) : 0;
-            Log::error("[MeshClient] {$method} ".self::logPath($endpoint).' failed with '
-                .($status > 0 ? "HTTP {$status}" : 'no HTTP status').' ('.$e::class.')');
-            throw new MeshClientException("Mesh API error: {$e->getMessage()}", $e->getCode(), $e);
+            // One text for the log line and the exception message: method,
+            // logPath() (no user-info, query, fragment or customer id), HTTP
+            // status and exception class. Never Guzzle's message: it quotes
+            // the request URI with its user-info (a real handler's "The
+            // scheme '<user>' is not supported." names the user with no URI
+            // around it) and a summary of the vendor's body (C-56, #5761).
+            $failure = "{$method} ".self::logPath($endpoint).' failed with '
+                .($status > 0 ? "HTTP {$status}" : 'no HTTP status').' ('.$e::class.')';
+            Log::error("[MeshClient] {$failure}");
+            throw new MeshClientException("Mesh API error: {$failure}", $e->getCode(), $e);
         }
 
         $body = (string) $response->getBody();
@@ -140,33 +152,44 @@ class MeshClient
 
     /**
      * The endpoint as logged. First the user-info is dropped, user and
-     * password alike (#5761): the leading authority is the bytes after a
-     * leading '<scheme>://' or '//', or with neither the endpoint's first
-     * segment, up to the first '/', '?' or '#'; everything in it up to its
-     * LAST '@' is cut (so a raw or percent-encoded '@' in the user or
-     * password goes too), and an '@' after that authority, in the path,
-     * query or fragment, is not user-info and is left alone. If what is
-     * left of the authority is not a host (a bracketed IPv6 literal, or
-     * no ':', '[' or ']') with an optional ':' and one or more digits
-     * (so a first segment 'https:', ' https:' or '1https:' is not one)
-     * and the endpoint holds an '@' anywhere, or if that authority ends
-     * at a '?' or '#' and an '@' follows it, the whole line path is the
-     * fixed '[unparseable endpoint]' instead (a user or password holding
-     * '/', '?' or '#' ends the segment early, so it would otherwise be
-     * logged as path; for '?' and '#' this holds even when the bytes
-     * before it read as a host and port, so an endpoint with no '/'
-     * before an '@' in its query or fragment loses its path on the
-     * line). Not caught: user-info holding a '/' whose bytes before that
-     * '/' still read as a host and port ('user/x@...', 'user:1234/x@...'),
-     * which is byte for byte a host, a port and an '@' in the path. And
-     * read as user-info although PSR-7 reads it as path: an '@' in the
-     * FIRST segment of a relative endpoint ('api@v2/...' logs 'v2/...'),
-     * which drops bytes and never adds any. Then cut at
-     * the first '?' or '#' (strcspn, not
-     * strtok, so a leading '?' still drops the query), strip any scheme and
-     * authority (or a scheme-relative //authority: host and port; the
+     * password alike (#5761). The authority starts after the endpoint's
+     * first '//' if no '/', '?', '#' or '@' comes before that '//'
+     * (whatever the bytes before it are, so ' https://' and '1https://',
+     * which PSR-7 accepts as schemes, count), else at the endpoint's
+     * start. If the bytes from there to the first '/', '?' or '#' hold an
+     * '@', everything up to the LAST '@' before the first '?' or '#' is
+     * user-info and is cut (so a raw or percent-encoded '@' in the user
+     * or password goes too, and so does a password holding an '@' and
+     * then a '/'), and the host[:port] is what follows that '@' up to
+     * the next '/', '?' or '#'. An '@' after the first '?' or '#' is not
+     * user-info and is left alone, as is an '@' in the path when the
+     * authority holds none; when it holds one, an '@' later in the path
+     * ends the user-info ('user:pw@host/a@b/' logs 'b/': byte for byte a
+     * password holding '/', so bytes are dropped, never added). If that
+     * host[:port] is not a host (a
+     * bracketed IPv6 literal, or no ':', '[' or ']') with an optional
+     * ':' and one or more digits (so a first segment 'https:' is not
+     * one) and the endpoint holds an '@' anywhere, or if it ends at a
+     * '?' or '#' and an '@' follows, the whole line path is the fixed
+     * '[unparseable endpoint]' instead (a user or password holding '?'
+     * or '#', or with no '@' before the '?' or '#', a ':' with no port
+     * digits, would otherwise be logged; for '?' and '#' this holds even
+     * when the bytes before it read as a host and port, so an endpoint
+     * with no '/' before an '@' in its query or fragment loses its path
+     * on the line). Not caught: user-info holding a '/' whose bytes
+     * before that '/' still read as a host and port and that holds no
+     * '@' before the '/' ('user/x@...', 'user:1234/x@...'), which is
+     * byte for byte a host, a port and an '@' in the path. And read as
+     * user-info although PSR-7 reads it as path: an '@' in the FIRST
+     * segment of a relative endpoint ('api@v2/...' logs 'v2/...'), which
+     * drops bytes and never adds any. Then strip: when the bytes before
+     * that '//' are empty or end in ':' (any scheme PSR-7 takes, RFC 3986
+     * or not), they, the '//' and the host[:port] go; otherwise (' //')
+     * they stay with the host[:port] and only the user-info went. The
      * strip needs '//', so a scheme-less 'host:port/...' endpoint keeps
-     * its host and port on the line, #5608, #5705), then replace EVERYTHING after the
+     * its host and port on the line (#5608, #5705). Then cut at the
+     * first '?' or '#' (strcspn, not strtok, so a leading '?' still drops
+     * the query), then replace EVERYTHING after the
      * first customers/ segment, at any depth (api/customers/,
      * api/v2/customers/, api/partners/x/customers/, an absolute URL), with
      * the literal <customer>: the Mesh customer id and every segment after
@@ -180,14 +203,25 @@ class MeshClient
      */
     private static function logPath(string $endpoint): string
     {
-        // The leading authority: after '<scheme>://' or '//', else the
-        // endpoint's first segment (up to the first '/', '?' or '#'). Its
-        // user-info, everything up to its LAST '@', is dropped (#5761).
-        $start = preg_match('#^(?:[a-z][a-z0-9+.\-]*:)?//#i', $endpoint, $m) === 1 ? strlen($m[0]) : 0;
+        // The leading authority: after the first '//' when no '/', '?',
+        // '#' or '@' comes before it (whatever the other bytes before it
+        // are, so ' https://', '1https://' and ' //' count), else the
+        // endpoint's first segment; it runs to the first '/', '?' or '#'.
+        // If it holds an
+        // '@', the user-info runs to the LAST '@' before the first '?' or
+        // '#' (a '/' does not end it: a password may hold '@' and then
+        // '/'), and the host[:port] is what follows that '@' up to the
+        // next '/', '?' or '#' (#5761).
+        $slashes = strpos($endpoint, '//');
+        $head = $slashes === false ? null : substr($endpoint, 0, $slashes);
+        $start = $head !== null && strpbrk($head, '/?#@') === false ? $slashes + 2 : 0;
         $end = $start + strcspn($endpoint, '/?#', $start);
-        $authority = substr($endpoint, $start, $end - $start);
-        $at = strrpos($authority, '@');
-        $hostPort = $at === false ? $authority : substr($authority, $at + 1);
+        $hostPort = substr($endpoint, $start, $end - $start);
+        if (str_contains($hostPort, '@')) {
+            $at = $start + strrpos(substr($endpoint, $start, strcspn($endpoint, '?#', $start)), '@');
+            $end = $at + 1 + strcspn($endpoint, '/?#', $at + 1);
+            $hostPort = substr($endpoint, $at + 1, $end - $at - 1);
+        }
         // An authority that ends at a '?' or '#' with an '@' after it may
         // be user-info cut short there: the bytes before it would be
         // logged (#5761).
@@ -196,11 +230,15 @@ class MeshClient
         if ($atAfterQuery || (preg_match(self::HOST_PORT, $hostPort) !== 1 && str_contains($endpoint, '@'))) {
             return self::UNPARSEABLE_ENDPOINT;
         }
-        $endpoint = substr($endpoint, 0, $start).$hostPort.substr($endpoint, $end);
+        // The strip: when nothing, or bytes ending in ':' (read as a
+        // scheme, RFC 3986 or not), come before that '//', they go with
+        // the '//' and the host[:port]; otherwise only the user-info went.
+        $strip = $start > 0 && ($head === '' || str_ends_with($head, ':'));
+        $endpoint = ($strip ? '' : substr($endpoint, 0, $start).$hostPort).substr($endpoint, $end);
 
-        $cut = strcspn($endpoint, '?#');
-        $path = substr($endpoint, 0, $cut);
-        $path = (string) preg_replace('#^(?:[a-z][a-z0-9+.\-]*:)?//[^/]*#i', '', $path);
+        // Then the cut at the first '?' or '#' (strcspn, not strtok, so a
+        // leading '?' still drops the query).
+        $path = substr($endpoint, 0, strcspn($endpoint, '?#'));
 
         return (string) preg_replace('#(^|/)(customers/).+$#is', '$1$2<customer>', $path);
     }

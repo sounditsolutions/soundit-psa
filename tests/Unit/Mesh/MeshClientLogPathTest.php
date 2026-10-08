@@ -56,9 +56,10 @@ use Tests\TestCase;
  * test does not see what Guzzle's real transports send (#5405; #5378, #5379,
  * #5380, #5385, #5387). The
  * rethrown exception is checked to be a MeshClientException with Guzzle's
- * code (503) whose message is 'Mesh API error: ' plus Guzzle's own message,
- * wrapping that ServerException; this test does not make its content safe
- * (see MeshClient::request()). The ONE record logged is pinned by exact
+ * code (503) wrapping that ServerException, whose message is exactly
+ * 'Mesh API error: ' plus the log line's text after '[MeshClient] ', never
+ * Guzzle's message (#5761; the chained ServerException is not redacted, see
+ * MeshClient::request()). The ONE record logged is pinned by exact
  * equality.
  *
  * Synthetic data only (G-13): a made-up Mesh uuid, host and query marker.
@@ -251,13 +252,15 @@ class MeshClientLogPathTest extends TestCase
             $client->get($endpoint);
             $this->fail('the 503 must throw');
         } catch (MeshClientException $e) {
-            // What the rethrow is (not that its content is safe: it is not).
             $this->assertSame(MeshClientException::class, $e::class);
             $previous = $e->getPrevious();
             $this->assertInstanceOf(ServerException::class, $previous);
             $this->assertSame(ServerException::class, $previous::class);
             $this->assertSame(503, $e->getCode(), "the rethrow keeps Guzzle's code");
-            $this->assertSame('Mesh API error: '.$previous->getMessage(), $e->getMessage());
+            // Positive control: Guzzle's own message is the unredacted one.
+            $this->assertStringContainsString('503 Service Unavailable', $previous->getMessage(), 'positive control: the chained message is Guzzle\'s');
+            // #5761: the rethrow's message is the log line's text, not Guzzle's.
+            $this->assertSame("Mesh API error: GET {$expectedPath} failed with HTTP 503 (".ServerException::class.')', $e->getMessage());
         }
 
         $this->assertSame(0, $mock->count(), 'the request went through the swapped-in MockHandler');
@@ -364,7 +367,28 @@ class MeshClientLogPathTest extends TestCase
             "raw '@' in the password" => ["{$u}:{$p}@y@{$h}:{$port}/api/customers/{$id}/", "{$h}:{$port}/api/customers/<customer>", [$h, ":{$port}", '/api/customers/'], true, 'redacted'],
             "'@' in the path, no user-info" => ['api/devices/p-7@x/', 'api/devices/p-7@x/', ['api/devices/p-7@x/'], false, 'kept'],
             "'@' in the query, no user-info" => ['api/devices/?q=p-7@x', 'api/devices/', ['api/devices/'], false, 'query cut only'],
-            "user-info, and '@' in the path" => ["{$u}:{$p}@{$h}:{$port}/api/devices/p-7@x/", "{$h}:{$port}/api/devices/p-7@x/", [$h, ":{$port}", '/api/devices/p-7@x/'], true, 'user-info drop'],
+            // With user-info, an '@' in the path cannot be told from a
+            // password holding '/' and '@' (the next rows): the user-info
+            // runs to the last '@' before any '?' or '#', so only the bytes
+            // after it are logged (#5761, r2; bytes dropped, none added).
+            "user-info, and '@' in the path" => ["{$u}:{$p}@{$h}:{$port}/api/devices/p-7@x/", 'x/', ['x/'], true, 'user-info drop'],
+            // #5761 r2 (contract:2): a password holding an '@' and then a
+            // '/'; the user-info runs to the LAST '@' before any '?' or '#'.
+            "password holding '@' then '/'" => ["{$u}:pre@mid/{$p}@{$h}:{$port}/api/customers/{$id}/", "{$h}:{$port}/api/customers/<customer>", [$h, ":{$port}", '/api/customers/'], true, 'redacted'],
+            "absolute, password holding '@' then '/'" => ["https://{$u}:pre@mid/{$p}@{$h}:{$port}/api/devices/", '/api/devices/', ['/api/devices/'], false, 'authority strip only'],
+            // #5761 r2 (contract:3): an '@' splitting the password itself,
+            // so a first-'@' cut would log a piece of it, not all of it.
+            "raw '@' splitting the password" => ["{$u}:".substr($p, 0, 5).'@'.substr($p, 5)."@{$h}:{$port}/api/devices/", "{$h}:{$port}/api/devices/", [$h, ":{$port}", '/api/devices/'], true, 'user-info drop'],
+            // The '@' search stops at the first '?' or '#': an '@' in the
+            // query is not user-info.
+            "user-info, and '@' in the query" => ["{$u}:{$p}@{$h}:{$port}/api/devices/?q=p-7@x", "{$h}:{$port}/api/devices/", [$h, ":{$port}", '/api/devices/'], true, 'user-info drop'],
+            // #5761 r2 (contract:1): a scheme RFC 3986 refuses but PSR-7
+            // takes (a leading space, digit, '.' or '-'): the authority
+            // after its '//' is found and stripped all the same.
+            'space before the scheme' => [" https://{$u}:{$p}@{$h}:{$port}/api/customers/{$id}/", '/api/customers/<customer>', ['/api/customers/'], false, 'redacted'],
+            'digit before the scheme' => ["1https://{$u}:{$p}@{$h}/api/devices/", '/api/devices/', ['/api/devices/'], false, 'authority strip only'],
+            "scheme starting with '.'" => [".x://{$u}:{$p}@{$h}:{$port}/api/devices/", '/api/devices/', ['/api/devices/'], false, 'authority strip only'],
+            "scheme starting with '-'" => ["-x://{$u}:{$p}@{$h}/api/customers/{$id}/", '/api/customers/<customer>', ['/api/customers/'], false, 'redacted'],
             'IPv6 host, user and password' => ["{$u}:{$p}@{$v6}:{$port}/api/customers/{$id}/", "{$v6}:{$port}/api/customers/<customer>", [$v6, ":{$port}", '/api/customers/'], true, 'redacted'],
             'absolute, IPv6 host, user and password' => ["https://{$u}:{$p}@{$v6}:{$port}/api/customers/{$id}/", '/api/customers/<customer>', ['/api/customers/'], false, 'redacted'],
             "scheme-less '//user:password@host'" => ["//{$u}:{$p}@{$h}/api/customers/{$id}/", '/api/customers/<customer>', ['/api/customers/'], false, 'redacted'],
@@ -381,15 +405,20 @@ class MeshClientLogPathTest extends TestCase
             // '#' reads as a host and port; the '@' after it is caught.
             "user holding '?' (unparseable)" => ["{$u}?z@{$h}:{$port}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], false, 'unparseable'],
             "numeric password holding '#' (unparseable)" => ["{$u}:4821#z@{$h}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
+            // #5761 r2 (context:1): the other '?'/'#' shapes.
+            "user holding '#' (unparseable)" => ["{$u}#z@{$h}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], false, 'unparseable'],
+            "numeric password holding '?' (unparseable)" => ["{$u}:4821?z@{$h}:{$port}/api/customers/{$id}/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
+            "empty password, then '?' (unparseable)" => ["{$u}:?z@{$h}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
             'bare path, no authority (unchanged)' => ["/api/customers/{$id}/", '/api/customers/<customer>', ['/api/customers/'], false, 'redacted'],
         ];
     }
 
     /**
-     * #5761, the MockHandler 503 line: on every user-info shape the line
-     * holds neither the user nor the password (assertUserInfoAbsent()),
-     * still holds the row's host, port and path (positive control), and
-     * is exactly the row's text.
+     * #5761, the MockHandler 503 line and the rethrown exception: on every
+     * user-info shape the line and the MeshClientException message hold
+     * no piece of the user or the password (assertUserInfoAbsent()), the
+     * line still holds the row's host, port and path (positive control),
+     * and both are exactly the row's text.
      *
      * @param  list<string>  $mustAppear
      */
@@ -397,11 +426,15 @@ class MeshClientLogPathTest extends TestCase
     public function test_the_failure_line_drops_the_user_info(string $endpoint, string $expectedPath, array $mustAppear): void
     {
         [$client, $mock, $seen] = $this->clientAnswering503();
+        $thrown = null;
         try {
             $client->get($endpoint);
             $this->fail('the 503 must throw');
-        } catch (MeshClientException) {
+        } catch (MeshClientException $e) {
+            $thrown = $e;
         }
+        $this->assertUserInfoAbsent($endpoint, $thrown->getMessage());
+        $this->assertSame("Mesh API error: GET {$expectedPath} failed with HTTP 503 (".ServerException::class.')', $thrown->getMessage(), 'the exception message (#5761)');
         $this->assertSame(0, $mock->count(), 'the request went through the swapped-in MockHandler');
         $this->assertCount(1, $seen->uris, 'exactly one request reached the handler');
         $this->assertCount(1, $this->logged, 'records: '.json_encode($this->logged));
@@ -448,6 +481,9 @@ class MeshClientLogPathTest extends TestCase
                     $this->assertSame(RequestException::class, $previous::class, "{$handler} {$name}");
                     $this->assertNull($previous->getResponse(), "{$handler} {$name}: no response");
                     $this->assertSame("The scheme '".self::USER."' is not supported.", $previous->getMessage(), "{$handler} {$name}: precondition, refused before any connection");
+                    // #5761: Guzzle's message names the user; the rethrow's does not.
+                    $this->assertUserInfoAbsent($endpoint, $e->getMessage());
+                    $this->assertSame("Mesh API error: GET {$expectedPath} failed with no HTTP status (".RequestException::class.')', $e->getMessage(), "{$handler} {$name}: the exception message");
                 }
                 $this->assertCount(1, $this->logged, "{$handler} {$name}");
                 $message = $this->logged[0]['message'];
@@ -459,7 +495,7 @@ class MeshClientLogPathTest extends TestCase
                 $driven++;
             }
         }
-        $this->assertSame(2 * 10, $driven, 'ten rows on each real handler');
+        $this->assertSame(2 * 15, $driven, 'fifteen rows on each real handler');
     }
 
     /**
@@ -480,16 +516,13 @@ class MeshClientLogPathTest extends TestCase
             $kinds[$kind] = ($kinds[$kind] ?? 0) + 1;
         }
         ksort($kinds);
-        $this->assertSame(['kept' => 1, 'query cut only' => 1, 'redacted' => 8, 'unparseable' => 6, 'user-info drop' => 4], $kinds, 'user-info rows by kind');
+        $this->assertSame(['authority strip only' => 3, 'kept' => 1, 'query cut only' => 1, 'redacted' => 11, 'unparseable' => 9, 'user-info drop' => 6], $kinds, 'user-info rows by kind');
         // '//user:password@' with a '/' in the password: PSR-7 refuses it
         // (no request, no line), so it is checked here only.
         $this->assertSame('[unparseable endpoint]', $logPath->invoke(null, '//'.self::USER.':'.self::PASS.'/z@'.self::ENDPOINT_HOST.'/api/'));
-        // #5761: a first segment that reads as 'host:' only because a
-        // space or a digit comes before the scheme. Neither ' https' nor
-        // '1https' is a valid scheme name, so these are checked here only.
-        foreach ([' https://', '1https://'] as $head) {
-            $this->assertSame('[unparseable endpoint]', $logPath->invoke(null, $head.self::USER.':'.self::PASS.'@'.self::ENDPOINT_HOST.'/api/devices/'), json_encode($head));
-        }
+        // #5761 r2: a '//' after a space, with no scheme; PSR-7 reads it
+        // as a path, logPath() as an authority whose user-info it drops.
+        $this->assertSame(' //'.self::ENDPOINT_HOST.'/api/devices/', $logPath->invoke(null, ' //'.self::USER.':'.self::PASS.'@'.self::ENDPOINT_HOST.'/api/devices/'));
         // The limit logPath()'s docblock names, driven: an '@' in the first
         // segment of a relative endpoint is read as user-info (bytes
         // dropped, none added).
@@ -497,18 +530,85 @@ class MeshClientLogPathTest extends TestCase
     }
 
     /**
-     * Neither the user nor the password the endpoint holds reached $line
-     * (each matched whole, in any case), and no '%40' did (only the
-     * user-info rows write one).
+     * No piece of the user or the password the endpoint holds reached
+     * $line (#5761, contract:3): every slice of USER or PASS of 4 or more
+     * characters that the endpoint holds is looked for in any case, and
+     * every 3-character slice case-sensitively (in any case 'ser', from
+     * the user, is in every line's 'ServerException'); and each slice
+     * with every byte percent-encoded, in any case of hex digit
+     * (rawurlencode() would leave these alphanumeric and '-' bytes as
+     * they are). And no '%40' reached it (only the
+     * user-info rows write one). A slice the endpoint does not hold is
+     * not looked for, so a row that splits the password still has its
+     * pieces checked.
      */
     private function assertUserInfoAbsent(string $endpoint, string $line): void
     {
-        foreach ([self::USER, self::PASS] as $secret) {
-            if (str_contains($endpoint, $secret)) {
-                $this->assertStringNotContainsStringIgnoringCase($secret, $line, 'user-info reached the line (#5761)');
+        foreach ($this->userInfoSlices($endpoint) as $slice) {
+            if (strlen($slice) === 3) {
+                $this->assertStringNotContainsString($slice, $line, 'a piece of the user-info reached the line (#5761): '.json_encode($slice));
+            } else {
+                $this->assertStringNotContainsStringIgnoringCase($slice, $line, 'a piece of the user-info reached the line (#5761): '.json_encode($slice));
             }
+            $encoded = implode('', array_map(fn (string $c) => '%'.bin2hex($c), str_split($slice)));
+            $this->assertStringNotContainsStringIgnoringCase($encoded, $line, 'a percent-encoded piece of the user-info reached the line (#5761): '.json_encode($slice));
         }
         $this->assertStringNotContainsString('%40', $line, "a percent-encoded '@' of the user-info reached the line");
+    }
+
+    /**
+     * Every slice of USER and PASS, 3 or more characters long, that
+     * $endpoint holds.
+     *
+     * @return list<string>
+     */
+    private function userInfoSlices(string $endpoint): array
+    {
+        $slices = [];
+        foreach ([self::USER, self::PASS] as $secret) {
+            for ($len = 3; $len <= strlen($secret); $len++) {
+                for ($i = 0; $i + $len <= strlen($secret); $i++) {
+                    $slice = substr($secret, $i, $len);
+                    if (str_contains($endpoint, $slice)) {
+                        $slices[] = $slice;
+                    }
+                }
+            }
+        }
+
+        return array_values(array_unique($slices));
+    }
+
+    /**
+     * #5761 (contract:3): assertUserInfoAbsent() fails on a PARTIAL leak,
+     * not only on a whole USER or PASS: the bytes a first-'@' cut leaves
+     * on the "raw '@' splitting the password" row, a password tail, a
+     * user head, an upper-cased piece, a 3-character piece, and a piece
+     * with every byte percent-encoded. And it
+     * passes on that row's real line (the control: it is not refusing
+     * everything).
+     */
+    public function test_the_user_info_check_fails_on_a_partial_leak(): void
+    {
+        $p = self::PASS;
+        $endpoint = self::USER.':'.substr($p, 0, 5).'@'.substr($p, 5).'@'.self::ENDPOINT_HOST.':'.self::PORT.'/api/devices/';
+        $this->assertUserInfoAbsent($endpoint, '[MeshClient] GET '.self::ENDPOINT_HOST.':'.self::PORT.'/api/devices/ failed with HTTP 503 ('.ServerException::class.')');
+        $partials = [
+            'first-@ cut' => substr($p, 5).'@'.self::ENDPOINT_HOST.':'.self::PORT.'/api/devices/',
+            'password tail' => 'x/'.substr($p, -4).'/',
+            'user head' => substr(self::USER, 0, 5).'/api/',
+            'upper-cased piece' => strtoupper(substr(self::USER, 0, 6)),
+            'three characters' => 'a'.substr($p, 2, 3).'b',
+            'percent-encoded piece' => 'x/'.implode('', array_map(fn (string $c) => '%'.strtoupper(bin2hex($c)), str_split(substr($p, -4)))).'/',
+        ];
+        foreach ($partials as $what => $line) {
+            try {
+                $this->assertUserInfoAbsent($endpoint, $line);
+            } catch (\PHPUnit\Framework\AssertionFailedError) {
+                continue;
+            }
+            $this->fail("{$what}: assertUserInfoAbsent() passed a partial leak: ".json_encode($line));
+        }
     }
 
     /**
@@ -1060,10 +1160,19 @@ class MeshClientLogPathTest extends TestCase
         // '//' strip removes the authority anyway.
         $slashes = strpos($endpoint, '//');
         $head = $slashes === false ? null : substr($endpoint, 0, $slashes);
-        $start = $head !== null && ($head === '' || (str_ends_with($head, ':') && strpbrk($head, '/?#@') === false)) ? $slashes + 2 : 0;
+        $start = $head !== null && strpbrk($head, '/?#@') === false ? $slashes + 2 : 0;
         $end = $start + strcspn($endpoint, '/?#', $start);
         $pieces = explode('@', substr($endpoint, $start, $end - $start));
-        $hostPort = end($pieces);
+        if (count($pieces) > 1) {
+            // #5761 r2: the user-info runs to the last '@' before any '?'
+            // or '#', across '/'; the host[:port] follows it.
+            $beforeQuery = explode('@', substr($endpoint, $start, strcspn($endpoint, '?#', $start)));
+            $tail = end($beforeQuery);
+            $hostPort = substr($tail, 0, strcspn($tail, '/'));
+            $end = $start + strcspn($endpoint, '?#', $start) - strlen($tail) + strlen($hostPort);
+        } else {
+            $hostPort = $pieces[0];
+        }
         $parsed = $hostPort === '' ? ['host' => ''] : parse_url('//'.$hostPort);
         $notHost = ! is_array($parsed) || array_diff(array_keys($parsed), ['host', 'port']) !== [] || str_ends_with($hostPort, ':');
         $atPastQuery = strpbrk(substr($endpoint, $end, 1), '?#') !== false && str_contains(substr($endpoint, $end), '@');

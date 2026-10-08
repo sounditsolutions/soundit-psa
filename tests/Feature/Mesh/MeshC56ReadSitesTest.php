@@ -1344,8 +1344,13 @@ class MeshC56ReadSitesTest extends TestCase
         $thrown = $this->realFailure();
         $this->assertInstanceOf(\GuzzleHttp\Exception\GuzzleException::class, $thrown->getPrevious(), 'precondition: the Guzzle exception is chained');
         $this->assertSame([self::$apiKey], $thrown->getPrevious()->getRequest()->getHeader('API-KEY'), 'positive control: the chained request carries the key');
-        $this->assertStringContainsString(self::HOST, $thrown->getMessage(), 'positive control: the message carries the host');
-        $this->assertStringContainsString(self::$queryMarker, $thrown->getMessage(), 'positive control: the message carries the query');
+        // #5761: the rethrow's own message is status-only; the vendor text
+        // the handler must keep out is on the chained Guzzle exception.
+        $this->assertSame('Mesh API error: GET api/customers/ failed with '.($mode === '503' ? 'HTTP 503 ('.ServerException::class.')' : 'no HTTP status ('.ConnectException::class.')'), $thrown->getMessage(), 'the rethrown message is status-only (#5761)');
+        $this->assertStringContainsString(self::HOST, $thrown->getPrevious()->getMessage(), 'positive control: the chained message carries the host');
+        $this->assertStringContainsString(self::$queryMarker, $thrown->getPrevious()->getMessage(), 'positive control: the chained message carries the query');
+        $this->assertStringNotContainsString(self::HOST, $thrown->getMessage(), 'the rethrown message does not carry the host (#5761)');
+        $this->assertStringNotContainsString(self::$queryMarker, $thrown->getMessage(), 'the rethrown message does not carry the query (#5761)');
 
         // Configured only now, so the client's own failure line is not in it.
         $path = tempnam(sys_get_temp_dir(), 'c56log');
