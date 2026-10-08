@@ -17,13 +17,19 @@ use Illuminate\Console\Command;
  * --accept-short-read=<refusal code> (repeatable, #5577) is the one way
  * through the short-read bound for a client whose change an admin has checked
  * is real (a re-enrollment wave, a decommission, a single-device client's
- * last machine retired). The code is the value a refusal message prints: the
- * PSA client id, the rule and the counts the admin checked. That run passes
- * that refusal only, and only if its read refuses the client with exactly that
- * rule and those counts (#5680); any other refusal of the client is refused as
- * usual. An accept that passed nothing is reported by PSA client id (#5688).
- * It applies to that run only, nothing stores it, and neither the schedule
- * nor the Sync buttons pass it.
+ * last machine retired). The code is the value a refusal message prints on a
+ * line of its own, nothing after it (#5786): the PSA client id, the rule and
+ * the counts the admin checked. Paste that line exactly; a bare client id is
+ * rejected and nothing is read. A manual run without the option prints the
+ * code; a scheduled run's output goes nowhere, so its code is in the
+ * log: on the line after '[LitsrmmAssetSync] refusal code for
+ * --accept-short-read, on the next line:', and under 'code' in the
+ * '[LitsrmmAssetSync] client refused: short read' line.
+ * That run passes that refusal only, and only if its read refuses the client
+ * with exactly that rule and those counts (#5680); any other refusal of the
+ * client is refused as usual. A code that passed nothing is reported by PSA
+ * client id (#5688). It applies to that run only, nothing stores it, and
+ * neither the schedule nor the Sync buttons pass it.
  */
 class LitsrmmSyncDevices extends Command
 {
@@ -51,7 +57,7 @@ class LitsrmmSyncDevices extends Command
         foreach ($accept as $code) {
             if (! LitsrmmAssetSyncService::isRefusalCode((string) $code)) {
                 $this->error('--accept-short-read takes the refusal code a short-read refusal printed '
-                    .'(PSA client id, rule and counts, e.g. 12:b:1:5:4:5:1:0). Nothing was read.');
+                    .'(PSA client id, rule and counts, e.g. 12:b:1:5:4:5:1:0), pasted exactly; a bare client id is rejected. Nothing was read.');
 
                 return self::FAILURE;
             }
@@ -104,10 +110,11 @@ class LitsrmmSyncDevices extends Command
         }
 
         if (($result->details['short_read_accept_unused'] ?? []) !== []) {
-            $this->warn('  --accept-short-read passed nothing for PSA client ID(s): '
+            $this->warn('  For each of PSA client ID(s) '
                 .implode(', ', $result->details['short_read_accept_unused'])
-                .' (outside --client, not a mapped active client, its read did not refuse it with exactly that code,'
-                .' or it was then refused as a degraded detail read)');
+                .', an --accept-short-read code given for it passed nothing (outside --client, not a mapped active client, its read did not refuse it with exactly that code,'
+                .' it was then refused as a degraded detail read, the device list read failed so no client was examined,'
+                .' or another code for the same client passed)');
         }
 
         foreach ($result->skippedMessages as $message) {
@@ -115,7 +122,17 @@ class LitsrmmSyncDevices extends Command
         }
 
         foreach ($result->errorMessages as $error) {
-            $this->error("  Error: {$error}");
+            // A refusal ends with its code on a line of its own: printed
+            // plain, with nothing before or after it, so it can be pasted.
+            $code = LitsrmmAssetSyncService::refusalCodeLine($error);
+            if ($code === null) {
+                $this->error("  Error: {$error}");
+
+                continue;
+            }
+
+            $this->error('  Error: '.substr($error, 0, -strlen($code) - 1));
+            $this->line($code);
         }
 
         return $result->errors > 0 ? self::FAILURE : self::SUCCESS;

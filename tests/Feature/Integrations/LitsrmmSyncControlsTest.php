@@ -123,7 +123,7 @@ class LitsrmmSyncControlsTest extends TestCase
             ->once();
     }
 
-    /** #5690: the schedule never passes the admin's per-run accept (#5577). */
+    /** #5690: the schedule never passes the admin's per-run accept (#5577). CONTROL (#5792): no change in #5745 made it red. */
     public function test_the_schedule_never_passes_the_accept(): void
     {
         $command = (string) $this->event()->command;
@@ -165,6 +165,42 @@ class LitsrmmSyncControlsTest extends TestCase
         $this->actingAs(User::factory()->admin()->create())
             ->post(route('clients.litsrmm.sync', $client))
             ->assertSessionHas('error', fn ($message) => str_contains($message, 'boom') && str_contains($message, 'SHARED'));
+    }
+
+    public function test_the_button_shows_a_refusal_code_as_its_last_line_and_passes_no_accept(): void
+    {
+        // #5786 / #5690: the button run's message ends with the code on a
+        // line of its own, nothing after it; the button itself never accepts.
+        $client = $this->mapped();
+        $code = "{$client->id}:b:1:5:4:5:1:0";
+        $result = new SyncResult;
+        $result->recordError("client {$client->id}: refused as a short read (rule b: fixture). If the change is real, re-run litsrmm:sync-devices with --accept-short-read set to the code that follows, pasted exactly (a bare client id is rejected):\n{$code}");
+        $result->recordSkipped('WORKSTATION-1: a fixture skip');
+        $this->syncService()->shouldReceive('sync')->once()
+            ->withArgs(fn (...$args) => $args[0]?->id === $client->id && ($args[1] ?? []) === [])
+            ->andReturn($result);
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->post(route('clients.litsrmm.sync', $client))
+            ->assertSessionHas('error', function ($message) use ($code) {
+                $lines = explode("\n", $message);
+
+                return end($lines) === $code && LitsrmmAssetSyncService::isRefusalCode(end($lines));
+            });
+    }
+
+    public function test_the_settings_button_passes_no_accept_whatever_the_last_run_refused(): void
+    {
+        // #5690: a refusal shown on the page is display only. CONTROL
+        // (#5792): green at base 6144b475 too.
+        $this->mapped();
+        $this->syncService()->shouldReceive('sync')->once()
+            ->withArgs(fn (...$args) => count($args) <= 2 && ($args[0] ?? null) === null && ($args[1] ?? []) === [])
+            ->andReturn(new SyncResult);
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->post(route('settings.integrations.litsrmm.sync-devices'), ['accept_short_read' => '1:a:0:1:1:0:0:0', '--accept-short-read' => '1:a:0:1:1:0:0:0'])
+            ->assertSessionHas('success');
     }
 
     public function test_an_unmapped_client_is_refused_without_reading(): void
