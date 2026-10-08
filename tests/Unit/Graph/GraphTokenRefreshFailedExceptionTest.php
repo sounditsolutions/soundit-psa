@@ -935,6 +935,34 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
     }
 
     /**
+     * #5678: what a reporter that serialises getTrace() itself (not the log line) would print.
+     * getTraceAsString(), which the render above and stringArguments() read, shows an array
+     * argument only as 'Array', so those scans cannot see a credential inside
+     * authenticatedRequest()'s $options. frameArgumentsForScan() reads every argument of every
+     * frame of both links; FlattensLogContextTest plants a credential in an array argument and
+     * shows that it fires.
+     *
+     * Arguments on (zend.exception_ignore_args=Off): the seeded bearer IS in a frame argument,
+     * authenticatedRequest()'s $options, and the rendered trace still does not print it. This
+     * pins the exposure the issue describes rather than hiding it: removing the bearer from that
+     * frame is a GraphClient change, not made here. Arguments off (php.ini-production): no
+     * frame keeps an argument, so the chain carries no credential.
+     */
+    public function test_frame_arguments_hold_the_bearer_only_with_arguments_on(): void
+    {
+        ini_set('zend.exception_ignore_args', '0');
+        $on = $this->refreshFailure(self::echoingTokenResponse(400, ['error' => 'invalid_client']));
+        $args = self::frameArgumentsForScan($on);
+        $this->assertStringContainsString('users/'.self::MAILBOX, $args, 'positive control: the scan reads this chain\'s frame arguments');
+        $this->assertMatchesRegularExpression('/authenticatedRequest arg 2: [^\n]*Bearer '.preg_quote(self::SEEDED_ACCESS_FIXTURE, '/').'/', $args, 'the bearer is in authenticatedRequest()\'s $options');
+        $this->assertStringNotContainsString(self::SEEDED_ACCESS_FIXTURE, $on->getTraceAsString(), 'the trace string prints $options only as Array');
+
+        ini_set('zend.exception_ignore_args', '1');
+        $off = $this->refreshFailure(self::echoingTokenResponse(400, ['error' => 'invalid_client']));
+        $this->assertCarriesNone([...$this->credentialNeedles(), self::SECRET_FIXTURE], self::frameArgumentsForScan($off), 'the frame arguments with arguments off');
+    }
+
+    /**
      * Every quoted string argument a rendered trace prints in its frames ("#n file(line):
      * Class->method('a', ...)"), deduplicated. include/require frames are skipped: PHP prints
      * the included file's path whatever exception_ignore_args says, and which of them appear

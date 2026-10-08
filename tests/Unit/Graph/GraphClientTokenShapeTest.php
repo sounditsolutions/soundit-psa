@@ -27,7 +27,12 @@ use Tests\TestCase;
  *   only the class tells apart from a Graph request that received no response;
  * - #5734: a 429 on the last retry ends in throwFromGuzzle's 429, not another message.
  *
- * G-5: a scripted MockHandler with a history, Http::preventStrayRequests(). Synthetic values only.
+ * G-5 (#5831): GraphClient sends through raw Guzzle clients, which Laravel's
+ * Http::preventStrayRequests() never sees, so that call (kept in setUp()) guards only a request
+ * made through the Http facade. What keeps GraphClient's requests off the network here: graph()
+ * checks that both constructor clients carry the scripted stack, whose MockHandler throws on
+ * any request it has no scripted response for, and setUp() checks that a raw Guzzle client
+ * built without that stack defaults to the dead proxy phpunit.xml sets. Synthetic values only.
  */
 class GraphClientTokenShapeTest extends TestCase
 {
@@ -50,7 +55,13 @@ class GraphClientTokenShapeTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Covers the Http facade only; GraphClient's raw Guzzle clients never reach it (#5831).
         Http::preventStrayRequests();
+        $this->assertSame(
+            ['http' => 'http://127.0.0.1:9', 'https' => 'http://127.0.0.1:9'],
+            (new \GuzzleHttp\Client)->getConfig('proxy'),
+            'a raw Guzzle client must default to the dead proxy phpunit.xml sets',
+        );
         Event::listen(MessageLogged::class, function (MessageLogged $m): void {
             $this->logged[] = $m;
         });

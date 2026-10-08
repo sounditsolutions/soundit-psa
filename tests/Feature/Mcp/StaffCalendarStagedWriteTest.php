@@ -5,12 +5,14 @@ namespace Tests\Feature\Mcp;
 use App\Enums\NoteType;
 use App\Enums\TechnicianRunState;
 use App\Models\Setting;
+use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
+use App\Services\Graph\GraphTokenException;
 use App\Services\Mcp\StaffCalendarToolExecutor;
 use App\Support\McpToolModes;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -346,6 +348,42 @@ class StaffCalendarStagedWriteTest extends TestCase
 
         // Re-approve is a no-op — not AwaitingApproval, so the cancel cannot fire a second time.
         $this->assertSame('already_handled', $exec->approveStagedRun($run->fresh(), $this->approver->id)->status);
+    }
+
+    /**
+     * #5833: a GraphTokenException is thrown by getToken() before the write request is sent, so
+     * nothing can have committed. The run is reopened (AwaitingApproval) through the same
+     * releaseClaim() the pre-write refusals use, the audit row says the write was not sent, and
+     * no 'indeterminate outcome' is recorded. A re-approve then executes the write once.
+     */
+    public function test_a_token_failure_at_approval_reopens_the_run_and_is_not_indeterminate(): void
+    {
+        $owner = 'owner@example.test';
+        $this->enableCalendar([$owner]);
+        $ticket = Ticket::factory()->create();
+        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->twice()->andReturnUsing(
+            fn () => throw new GraphTokenException('Failed to obtain Graph API token (HTTP 400)'),
+            fn () => null,
+        ));
+
+        $exec = app(StaffCalendarToolExecutor::class);
+        $staged = $exec->execute('calendar_stage_cancel_event', [
+            'user_upn' => $owner, 'event_id' => 'EVT-SYNTHETIC-1', 'comment' => 'x', 'ticket_id' => $ticket->id, 'reason' => 'Resolved.',
+        ], 0, 'mcp-staff:chet', 'chet');
+        $run = TechnicianRun::find($staged['run_id']);
+
+        $r = $exec->approveStagedRun($run, $this->approver->id);
+        $this->assertSame('gate_declined', $r->status);
+        $this->assertSame('The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar; the run is reopened, so re-approve to retry.', $r->message);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, 'nothing was sent, so the run is reopened, not held Executing');
+
+        $errors = TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->pluck('summary')->all();
+        $this->assertSame(['Graph calendar write not sent (no Graph access token was obtained): Failed to obtain Graph API token (HTTP 400)'], $errors);
+        $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%indeterminate%')->count(), 'no indeterminate-outcome row');
+
+        // Re-approve executes the write once (the second cancelEvent call succeeds).
+        $this->assertSame('executed', $exec->approveStagedRun($run->fresh(), $this->approver->id)->status);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
     }
 
     /**

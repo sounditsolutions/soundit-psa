@@ -19,10 +19,16 @@ use Tests\TestCase;
  * silent empty/all-free grid. The validator's exhaustive drift cases live in
  * CalendarGraphShapesTest; this proves the transport methods actually call it.
  *
- * G-5 (#5781): Http::preventStrayRequests(), and client() checks that both constructor clients
- * carry the scripted stack before any request; tearDown() checks that every scripted response
- * was consumed and that every request went through the stack's history, so a request built on
- * a per-call client without the handler fails here by name. Synthetic mailboxes only (G-13).
+ * G-5 (#5781, #5831): GraphClient sends through raw Guzzle clients, which Laravel's
+ * Http::preventStrayRequests() never sees, so that call (kept in setUp()) guards only a request
+ * made through the Http facade. What keeps GraphClient's requests off the network here:
+ * - client() checks, before any request, that both constructor clients carry the scripted
+ *   stack, whose MockHandler throws on any request it has no scripted response for;
+ * - setUp() checks that a raw Guzzle client built without that stack defaults to the dead proxy
+ *   phpunit.xml sets, so such a request fails instead of leaving the box;
+ * - tearDown() checks that every scripted response was consumed and that every request went
+ *   through the stack's history, so a per-call client built without the handler fails by name.
+ * Synthetic mailboxes only (G-13).
  */
 class GraphClientCalendarShapeTest extends TestCase
 {
@@ -34,7 +40,13 @@ class GraphClientCalendarShapeTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Covers the Http facade only; GraphClient's raw Guzzle clients never reach it (#5831).
         Http::preventStrayRequests();
+        $this->assertSame(
+            ['http' => 'http://127.0.0.1:9', 'https' => 'http://127.0.0.1:9'],
+            (new \GuzzleHttp\Client)->getConfig('proxy'),
+            'a raw Guzzle client must default to the dead proxy phpunit.xml sets',
+        );
     }
 
     protected function tearDown(): void

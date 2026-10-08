@@ -4,11 +4,13 @@ namespace Tests\Feature\Mcp;
 
 use App\Enums\NoteType;
 use App\Models\Setting;
+use App\Models\TechnicianActionLog;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
+use App\Services\Graph\GraphTokenException;
 use App\Services\Mcp\StaffCalendarToolExecutor;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -500,5 +502,29 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
 
         $this->assertArrayHasKey('error', $result);
         $this->assertStringContainsString('INDETERMINATE', $result['error']);
+    }
+
+    /**
+     * #5833: a GraphTokenException comes from getToken() before the write request is sent, so the
+     * immediate path reports a determinate failure: not sent, nothing written, no indeterminate
+     * outcome in the error or the audit row.
+     */
+    public function test_an_immediate_cancel_token_failure_is_reported_as_not_sent(): void
+    {
+        $owner = 'owner@example.test';
+        $this->enableCalendar([$owner]);
+        $ticket = $this->ticket();
+        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->once()->andThrow(new GraphTokenException('Failed to obtain Graph API token (HTTP 400)')));
+
+        $result = app(StaffCalendarToolExecutor::class)->execute('calendar_cancel_event', [
+            'user_upn' => $owner, 'event_id' => 'EVT-SYNTHETIC-1', 'comment' => 'x', 'ticket_id' => $ticket->id, 'reason' => 'Resolved.',
+        ], 0, 'mcp-staff:chet');
+
+        $this->assertSame(['error' => 'The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar, so a retry cannot duplicate it.'], $result);
+        $this->assertSame(
+            ['Graph calendar write not sent (no Graph access token was obtained): Failed to obtain Graph API token (HTTP 400)'],
+            TechnicianActionLog::where('ticket_id', $ticket->id)->where('result_status', 'error')->pluck('summary')->all(),
+        );
+        $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%indeterminate%')->count(), 'no indeterminate-outcome row');
     }
 }

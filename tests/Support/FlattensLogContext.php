@@ -14,10 +14,18 @@ namespace Tests\Support;
  * array is walked key by key, and a Throwable is written as its class, its message, the response
  * body when it has one (GraphClientException::getResponseBody()), and then the same for every
  * getPrevious() link. Any other object is read in the order Monolog's NormalizerFormatter (under
- * Laravel's LineFormatter) reads it: jsonSerialize() for a JsonSerializable, then __toString()
- * for an object that has one (a PSR-7 Uri prints its whole URL in the log line; #5770), and
- * otherwise every property, private and protected ones included. Monolog prints only the public
- * ones there; the scan reads more than the log line, never less.
+ * Laravel's LineFormatter) reads it: jsonSerialize() for a JsonSerializable (a PSR-7 Uri is one,
+ * and its jsonSerialize() returns the whole URL; #5841), then __toString() for an object that
+ * has one and is not JsonSerializable (#5770), and otherwise every property, private and
+ * protected ones included, a private property shadowed by a subclass's same-named one too
+ * (#5832). Monolog prints only the public ones there; the scan reads more than the log line,
+ * never less.
+ *
+ * A Throwable's frame arguments are not read by flattenForScan(): the log line prints a trace
+ * through getTraceAsString(), which shows an array argument only as 'Array'. A reporter that
+ * serialises getTrace() itself prints every argument when zend.exception_ignore_args is Off, so
+ * frameArgumentsForScan() reads a frame's scalar and array arguments for a test that scans what
+ * such a reporter sees (#5678); an object argument is named by its class only.
  */
 trait FlattensLogContext
 {
@@ -72,7 +80,57 @@ trait FlattensLogContext
     }
 
     /**
-     * Every property of $object, private and protected included, keyed by its bare name.
+     * #5678: every argument of every frame of $e and of each getPrevious() link, as getTrace()
+     * holds them. getTrace() holds function arguments only when zend.exception_ignore_args was
+     * Off when the exception was created; with it On only an include/require frame keeps its
+     * file path. A string or other scalar is written as it is and an array is walked key by key
+     * (an Authorization header in an $options array is found). An object argument is written as
+     * its class only and is not walked: frames hold the container, the test case and the client
+     * itself, and walking those exhausts memory. A credential held inside an object argument is
+     * therefore outside this scan.
+     */
+    protected static function frameArgumentsForScan(\Throwable $e): string
+    {
+        $parts = [];
+        for ($link = $e, $links = 0; $link !== null && $links < 8; $link = $link->getPrevious(), $links++) {
+            foreach ($link->getTrace() as $i => $frame) {
+                foreach ($frame['args'] ?? [] as $n => $arg) {
+                    $parts[] = $link::class."#{$i} ".($frame['function'] ?? '?')." arg {$n}: ".self::frameArgumentForScan($arg, 0);
+                }
+            }
+        }
+
+        return implode("\n", $parts);
+    }
+
+    private static function frameArgumentForScan(mixed $value, int $depth): string
+    {
+        if (is_string($value)) {
+            return $value;
+        }
+        if ($value === null || is_scalar($value)) {
+            return var_export($value, true);
+        }
+        if (is_array($value)) {
+            if ($depth > 8) {
+                return '<depth>';
+            }
+            $parts = [];
+            foreach ($value as $key => $item) {
+                $parts[] = $key.' => '.self::frameArgumentForScan($item, $depth + 1);
+            }
+
+            return '['.implode(', ', $parts).']';
+        }
+
+        return get_debug_type($value);
+    }
+
+    /**
+     * Every property of $object, private and protected included. A property is keyed by its bare
+     * name; one whose bare name an earlier one already took (a parent's private property shadowed
+     * by a subclass's property of the same name, #5832) is keyed 'DeclaringClass::name' ('*' for
+     * protected, 'public' for public) instead, so both values are kept.
      *
      * @return array<string, mixed>
      */
@@ -81,7 +139,14 @@ trait FlattensLogContext
         $out = [];
         foreach ((array) $object as $key => $item) {
             // (array) prefixes a private key with "\0Class\0" and a protected one with "\0*\0".
-            $out[(string) preg_replace('/^\0[^\0]*\0/', '', (string) $key)] = $item;
+            $key = (string) $key;
+            $name = (string) preg_replace('/^\0[^\0]*\0/', '', $key);
+            if (array_key_exists($name, $out)) {
+                // The prefix names the declaring class of a private property; a public or
+                // protected one has no class in its key.
+                $name = (preg_match('/^\0([^\0]+)\0/', $key, $declaring) ? $declaring[1] : 'public').'::'.$name;
+            }
+            $out[$name] = $item;
         }
 
         return $out;

@@ -14,6 +14,7 @@ use App\Models\TicketNote;
 use App\Models\User;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
+use App\Services\Graph\GraphTokenException;
 use App\Services\Technician\TechnicianApprovalResult;
 use App\Support\CalendarConfig;
 use App\Support\TechnicianConfig;
@@ -44,6 +45,12 @@ use Illuminate\Support\Str;
  */
 class StaffCalendarToolExecutor
 {
+    /**
+     * #5833: the audit summary prefix for a GraphTokenException. getToken() runs before every
+     * Graph request, so on this arm the write request was never sent.
+     */
+    private const TOKEN_FAILURE_AUDIT = 'Graph calendar write not sent (no Graph access token was obtained): ';
+
     public function __construct(private readonly GraphClient $graph) {}
 
     /**
@@ -442,6 +449,13 @@ class StaffCalendarToolExecutor
             $this->safeAudit($directTool, 'blocked', $ticket, $contentHash, 'Calendar update refused to protect a Teams join link: '.mb_substr($e->getMessage(), 0, 160), $actorLabel);
 
             return ['error' => $e->getMessage()];
+        } catch (GraphTokenException $e) {
+            // #5833: getToken() failed. It runs at the start of every Graph request, so the write
+            // request was never sent and nothing can have reached the calendar: a determinate
+            // failure, not the indeterminate outcome below.
+            $this->safeAudit($directTool, 'error', $ticket, $contentHash, self::TOKEN_FAILURE_AUDIT.mb_substr($e->getMessage(), 0, 140), $actorLabel);
+
+            return ['error' => 'The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar, so a retry cannot duplicate it.'];
         } catch (GraphClientException $e) {
             // review diff:2 + contract:1: the immediate path must NOT let an upstream failure escape
             // as an uncaught exception (a generic MCP 500 the agent blindly retries). A 15s timeout is
@@ -890,6 +904,13 @@ class StaffCalendarToolExecutor
                 $run->releaseClaim();
 
                 return $this->declined($e->getMessage());
+            } catch (GraphTokenException $e) {
+                // #5833: no token, so the write request was never sent and nothing committed.
+                // Release the claim as on the refusal above; re-approving cannot double-send.
+                $this->safeAudit($run->action_type, 'error', $ticket, $run->content_hash, self::TOKEN_FAILURE_AUDIT.mb_substr($e->getMessage(), 0, 140), $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined('The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar; the run is reopened, so re-approve to retry.');
             } catch (GraphClientException $e) {
                 // review contract:1: the outcome is INDETERMINATE — a 15s timeout or a post-POST
                 // shape-drift can leave a non-idempotent write already committed, so "nothing changed,

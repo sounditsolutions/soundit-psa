@@ -339,17 +339,98 @@ class TeamsMessageAttachmentsTest extends TestCase
         $this->assertTrue((bool) $r->json('result.isError'));
         $this->assertStringContainsString('HTTP 403', $text);
         $this->assertStringContainsString('Chat.Read.All application permission', $text);
+        $this->assertNoPermissionClaim($text);
         $this->assertOperatorResult(self::PERMISSION_REFUSAL_403, $r);
+    }
+
+    /**
+     * #5833: a cold-cache token failure. getToken() throws GraphTokenException (status 0) before
+     * the Graph read is sent, so the operator text says the token was not obtained and never
+     * prints 'HTTP 0'. Both getToken() arms that have a Guzzle exception: the token endpoint
+     * answered 400, and no response arrived.
+     *
+     * @return array<string, array{0: \Closure(): (Response|\Throwable), 1: int|null, 2: class-string}>
+     */
+    public static function coldTokenFailures(): array
+    {
+        return [
+            'token endpoint answered 400' => [fn () => new Response(400, [], (string) json_encode(['error' => 'invalid_client', 'error_description' => self::IDP_MARKER])), 400, ClientException::class],
+            'no response from the token endpoint' => [fn () => new \GuzzleHttp\Exception\ConnectException('cURL error 7: '.self::IDP_MARKER, new \GuzzleHttp\Psr7\Request('POST', 'https://login.microsoftonline.com/synthetic-tenant/oauth2/v2.0/token')), null, \GuzzleHttp\Exception\ConnectException::class],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('coldTokenFailures')]
+    public function test_a_cold_cache_token_failure_says_no_token_was_obtained_not_http_0(\Closure $tokenFailure, ?int $tokenStatus, string $exceptionClass): void
+    {
+        $logs = $this->captureLogs();
+        $this->graphQueue($tokenFailure());
+
+        $r = $this->fetch([]);
+        $text = (string) $r->json('result.content.0.text');
+
+        $this->assertSame([], $this->graphPaths(), 'positive control: no Graph read was sent');
+        $this->assertSame(0, $this->queue->count(), 'positive control: the token request ran');
+        $failures = $this->attachmentReadFailures($logs);
+        $this->assertEveryRecord([
+            [Level::Error, 'Graph API token request failed', ['status' => $tokenStatus, 'exception' => $exceptionClass]],
+            [Level::Warning, self::ATTACHMENT_READ_FAILED, ['chat_id' => self::CHAT, 'stage' => 'message', 'status' => 0]],
+        ], $logs);
+        $this->assertCount(1, $failures);
+        $this->assertNoVendorText($logs->getRecords(), $r);
+
+        $this->assertStringNotContainsString('HTTP 0', $text);
+        $this->assertOperatorResult(self::TOKEN_FAILED, $r);
+    }
+
+    /**
+     * #5833 control for the arm above: a Graph read that received no response is a plain
+     * GraphClientException with status 0, not a token failure. It says no HTTP status arrived,
+     * never 'HTTP 0', and does not claim a token failure.
+     */
+    public function test_a_graph_read_with_no_response_names_no_status_and_no_token_failure(): void
+    {
+        $logs = $this->captureLogs();
+        $this->graph(fn (RequestInterface $request) => new \GuzzleHttp\Exception\ConnectException('cURL error 28: '.self::GRAPH_401_MARKER, $request));
+
+        $r = $this->fetch([]);
+        $text = (string) $r->json('result.content.0.text');
+
+        $this->assertCount(1, $this->graphPaths(), 'positive control: the Graph read was sent');
+        $this->assertEveryRecord([
+            [Level::Error, 'Graph API request failed', ['method' => 'GET', 'status' => 0, 'exception' => \GuzzleHttp\Exception\ConnectException::class]],
+            [Level::Warning, self::ATTACHMENT_READ_FAILED, ['chat_id' => self::CHAT, 'stage' => 'message', 'status' => 0]],
+        ], $logs);
+        $this->assertNoVendorText($logs->getRecords(), $r);
+        $this->assertStringNotContainsString('HTTP 0', $text);
+        $this->assertStringNotContainsString('token', $text);
+        $this->assertOperatorResult(self::NO_STATUS, $r);
     }
 
     /**
      * #5621: the operator text on the 401/403 arms, pinned whole. assertOperatorResult()
      * compares the decoded JSON-RPC response with exactly this one error, so any added text,
      * content part or key fails, needle or not.
+     *
+     * #5670: the arm knows only the status, so the text names the missing permission as one
+     * possible cause and never asserts it is missing (assertNoPermissionClaim()).
      */
-    private const PERMISSION_REFUSAL_403 = "Teams refused the message read (HTTP 403): the PSA's Microsoft Graph app registration needs the Chat.Read.All application permission with admin consent to read chat images. Ask the operator to grant it; nothing was read.";
+    private const PERMISSION_REFUSAL_403 = "Teams refused the message read (HTTP 403); nothing was read. The status alone does not show why. Ask the operator to check that the PSA's Microsoft Graph app registration has the Chat.Read.All application permission with admin consent; a missing permission is one possible cause.";
 
-    private const PERMISSION_REFUSAL_401 = "Teams refused the message read (HTTP 401): the PSA's Microsoft Graph app registration needs the Chat.Read.All application permission with admin consent to read chat images. Ask the operator to grant it; nothing was read.";
+    private const PERMISSION_REFUSAL_401 = "Teams refused the message read (HTTP 401); nothing was read. The status alone does not show why. Ask the operator to check that the PSA's Microsoft Graph app registration has the Chat.Read.All application permission with admin consent; a missing permission is one possible cause.";
+
+    /** #5833: a token failure before the read was sent; no HTTP status is named. */
+    private const TOKEN_FAILED = 'Teams message read failed: the PSA could not obtain a Microsoft Graph access token, so the read was not sent; nothing was read.';
+
+    /** #5833: a Graph read that received no response; there is no HTTP status to name. */
+    private const NO_STATUS = 'Teams message read failed with no HTTP status from Microsoft Graph; nothing was read.';
+
+    /** #5670: the phrasings that assert the permission is missing, which the 401/403 arm cannot know. */
+    private function assertNoPermissionClaim(string $text): void
+    {
+        foreach (['needs the', 'grant it', 'lacks the'] as $claim) {
+            $this->assertStringNotContainsString($claim, $text, '#5670: the arm does not know the permission is missing');
+        }
+    }
 
     private const TOKEN_REFRESH_FAILED_401 = "Teams message read failed: Microsoft Graph answered HTTP 401 and the PSA's Graph token refresh then failed, so no fresh token was obtained; nothing was read.";
 
@@ -579,8 +660,11 @@ class TeamsMessageAttachmentsTest extends TestCase
      * #5726 positive control: a GraphClient rebound after graph() (so the tool would read
      * through a client with no scripted queue) fails mcp()'s guard before the request is sent.
      * #5771: the rebound client is itself scripted to refuse every request, so if the guard
-     * were weakened the tool would reach this refusing handler, never the network, and the
-     * refusal list below would not be empty.
+     * were weakened the tool would reach this refusing handler, never the network.
+     * #5838: the refusal list is asserted after the try/catch, on every path, and before the
+     * guard's own failure is checked, so a weakened or deleted guard fails through the refusal
+     * list (the tool's token request reaches the refusing handler). The last block is the
+     * positive control: a request sent through the rebound client does land in the list.
      */
     public function test_the_per_call_guard_fails_when_the_tool_would_resolve_another_client(): void
     {
@@ -599,16 +683,24 @@ class TeamsMessageAttachmentsTest extends TestCase
             $this->assertSame($refusing, (new \ReflectionProperty(GraphClient::class, $property))->getValue($rebound)->getConfig('handler'), "the rebound GraphClient::\${$property} refuses every request");
         }
 
+        $guard = null;
         try {
             $this->fetch([]);
         } catch (\PHPUnit\Framework\AssertionFailedError $e) {
-            $this->assertStringContainsString('the tool resolves this client (before the tool request)', $e->getMessage());
-            $this->assertSame(0, McpAuditLog::count(), 'no tool request was sent');
-            $this->assertSame([], $refused, 'the rebound client was sent nothing');
-
-            return;
+            $guard = $e;
         }
-        $this->fail('the guard did not fire on a rebound GraphClient');
+        $this->assertSame([], $refused, 'the rebound client was sent nothing');
+        $this->assertNotNull($guard, 'the guard did not fire on a rebound GraphClient');
+        $this->assertStringContainsString('the tool resolves this client (before the tool request)', $guard->getMessage());
+        $this->assertSame(0, McpAuditLog::count(), 'no tool request was sent');
+
+        // Positive control: the refusing handler records a request that reaches it.
+        try {
+            $rebound->get('chats/'.self::CHAT.'/messages/'.self::MSG);
+            $this->fail('the refusing handler let a request through');
+        } catch (GraphClientException) {
+        }
+        $this->assertSame(['login.microsoftonline.com'], $refused, 'positive control: a request through the rebound client is refused and listed');
     }
 
     /** #5622 control: an on-demand logger bypasses the TestHandler; the MessageLogged list sees it. */
@@ -708,6 +800,7 @@ class TeamsMessageAttachmentsTest extends TestCase
         $this->assertOperatorResult(self::PERMISSION_REFUSAL_401, $r);
         $this->assertStringContainsString('HTTP 401', $text);
         $this->assertStringContainsString('application permission', $text);
+        $this->assertNoPermissionClaim($text);
         $this->assertStringNotContainsString('token refresh', $text);
     }
 
@@ -852,11 +945,17 @@ class TeamsMessageAttachmentsTest extends TestCase
     /** Install a real GraphClient whose only network is this scripted queue. */
     private function graph(Response|\Closure ...$responses): void
     {
+        $this->graphQueue(new Response(200, [], (string) json_encode(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => 3600])), ...$responses);
+    }
+
+    /**
+     * The same scripted client, with the first (token) response given by the caller too (#5833:
+     * a cold-cache token failure).
+     */
+    private function graphQueue(Response|\Closure|\Throwable ...$queue): void
+    {
         $this->history = [];
-        $this->queue = new MockHandler([
-            new Response(200, [], (string) json_encode(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => 3600])),
-            ...$responses,
-        ]);
+        $this->queue = new MockHandler($queue);
         $stack = HandlerStack::create($this->queue);
         $stack->push(Middleware::history($this->history));
 
