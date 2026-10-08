@@ -165,9 +165,11 @@ class RetryEmailAttachments implements ShouldQueue
      * The job failed: a timeout kill, a throw out of handle(), or a failure the worker records in
      * another process (#5799: a job whose worker died is failed by the next worker that reserves
      * it, as MaxAttemptsExceededException). Final, never re-queued. On a timeout the worker calls
-     * this in the killed process, after rolling back any open transaction. When handle() already
-     * had the retry's outcome, that outcome stands: a re-queued run owns what follows; otherwise
-     * only the marker and the commit work handle() had not started are run. When the kill landed
+     * this in the killed process, after rolling back any open transaction. When the handle() it
+     * interrupted is still on the stack and already had the retry's outcome, that outcome stands:
+     * a re-queued run owns what follows; otherwise only the marker and the commit work handle()
+     * had not started are run. A throw out of handle() has already erased that progress
+     * (handle()'s finally), so it is reported as below (#5820). When the kill landed
      * inside the retry, abandonRetry discards what the read stored unless the link committed, and
      * the marker is written unless the link is known to have committed. When the failure is not a
      * timeout and no handle() of this dispatch is on this process's stack (it ran in another
