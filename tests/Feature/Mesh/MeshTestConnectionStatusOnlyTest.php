@@ -32,6 +32,9 @@ use Tests\TestCase;
  * the container is asked for carries the 10 s timeout. #5987: every leak
  * marker is first shown on the raw text the controller caught. #5980: a
  * failure after Mesh answered 200 is not reported as a connection failure.
+ * #6052: a base URL PSR-7 cannot parse and an API key a header cannot carry
+ * are settings faults: the test 'did not run' and the handler is never
+ * reached. #6059: a non-200 answer writes the same warning line.
  *
  * G-5: Http::preventStrayRequests(), and the controller's own Guzzle client
  * is resolved from the container with a MockHandler (an unparseable base
@@ -49,6 +52,8 @@ class MeshTestConnectionStatusOnlyTest extends TestCase
     private const HOST = 'mesh-test.example.test';
 
     private const BODY = 'VENDOR-BODY-MARKER-5879';
+
+    private const BAD_KEY = "SECRET_FIXTURE-6052\r\nX-Injected: 1";
 
     /** @var list<string> */
     private array $logged = [];
@@ -96,7 +101,8 @@ class MeshTestConnectionStatusOnlyTest extends TestCase
         return [
             'HTTP 503 with a vendor body' => ['503', 'Mesh connection test failed with HTTP 503 ('.ServerException::class.').'],
             'connect failure, no status' => ['connect', 'Mesh connection test failed without an HTTP status ('.ConnectException::class.').'],
-            'unparseable base URL' => ['malformed', 'Mesh connection test failed without an HTTP status ('.MalformedUriException::class.').'],
+            'unparseable base URL' => ['malformed', 'Mesh connection test did not run: the Mesh base URL could not be parsed; nothing was sent.'],
+            'API key a header cannot carry' => ['badkey', 'Mesh connection test did not run: the Mesh API key holds a character an HTTP header cannot carry; nothing was sent.'],
         ];
     }
 
@@ -106,6 +112,9 @@ class MeshTestConnectionStatusOnlyTest extends TestCase
         Setting::setValue('mesh_base_url', $mode === 'malformed'
             ? '//'.self::USER.':'.self::PASS.'@'.self::HOST.':99999'
             : 'https://'.self::USER.':'.self::PASS.'@'.self::HOST);
+        if ($mode === 'badkey') {
+            Setting::setEncrypted('mesh_api_key', self::BAD_KEY);
+        }
         $this->bindMock(fn (RequestInterface $request) => match ($mode) {
             '503' => new Response(503, ['Content-Type' => 'text/plain'], self::BODY),
             default => throw new ConnectException('cURL error 7: Failed to connect for '.$request->getUri(), $request, null, ['errno' => 7]),
@@ -115,7 +124,7 @@ class MeshTestConnectionStatusOnlyTest extends TestCase
         $response = $this->postJson(route('settings.integrations.mesh.test'));
 
         $response->assertOk()->assertExactJson(['success' => false, 'message' => $expected]);
-        $this->assertSame($mode === 'malformed' ? 1 : 0, $this->mock->count(), 'the handler was reached exactly when the URI parses');
+        $this->assertSame(in_array($mode, ['malformed', 'badkey'], true) ? 1 : 0, $this->mock->count(), 'the handler is reached only when the URI and the key would pass PSR-7');
         $this->assertNull(Setting::getValue('mesh_connected_at'));
         $this->assertWarnedAndTimed($expected);
 
@@ -125,13 +134,23 @@ class MeshTestConnectionStatusOnlyTest extends TestCase
         // (Psr7\Utils::redactUserInfo), so for the 503 row PASS is read on
         // the request URI instead.
         if ($mode === 'malformed') {
+            // #6057: the URI the controller parses (rtrim, as it does).
             try {
-                new \GuzzleHttp\Psr7\Uri(Setting::getValue('mesh_base_url').'/api/customers/');
+                new \GuzzleHttp\Psr7\Uri(rtrim((string) Setting::getValue('mesh_base_url'), '/').'/api/customers/');
                 $this->fail('PSR-7 accepted the base URL; the row tests nothing');
             } catch (MalformedUriException $raw) {
                 $rawText = $raw->getMessage();
             }
             $markers = [self::USER, self::PASS, self::HOST, 'Unable to parse URI'];
+        } elseif ($mode === 'badkey') {
+            // The premise, driven: PSR-7 refuses this header value and quotes it.
+            try {
+                new \GuzzleHttp\Psr7\Request('GET', 'https://'.self::HOST.'/', ['API-KEY' => self::BAD_KEY]);
+                $this->fail('PSR-7 accepted the header value; the row tests nothing');
+            } catch (\InvalidArgumentException $raw) {
+                $rawText = $raw->getMessage();
+            }
+            $markers = ['SECRET_FIXTURE-6052', 'is not valid header value'];
         } else {
             $raw = $this->lastRejection();
             $rawText = $raw->getMessage().' '.$raw->getRequest()->getUri();
@@ -143,10 +162,26 @@ class MeshTestConnectionStatusOnlyTest extends TestCase
 
         $surfaces = ['response' => (string) $response->getContent(), 'log' => implode("\n", $this->logged)];
         foreach ($surfaces as $where => $text) {
-            foreach ([self::USER, self::PASS, self::HOST, self::BODY, 'cURL error', 'Unable to parse URI'] as $leak) {
+            foreach ([self::USER, self::PASS, self::HOST, self::BODY, 'cURL error', 'Unable to parse URI', 'SECRET_FIXTURE-6052', 'is not valid header value'] as $leak) {
                 $this->assertStringNotContainsString($leak, $text, "{$where} carries '{$leak}'");
             }
         }
+    }
+
+    /** #6059: a non-200 answer goes through the helper: one warning line, the response text. */
+    public function test_a_non_200_answer_is_logged_as_a_failed_test(): void
+    {
+        Setting::setValue('mesh_base_url', 'https://'.self::HOST);
+        $this->bindMock(fn () => new Response(204));
+
+        $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
+        $response = $this->postJson(route('settings.integrations.mesh.test'));
+
+        $expected = 'Mesh answered the connection test with HTTP 204, not 200.';
+        $response->assertOk()->assertExactJson(['success' => false, 'message' => $expected]);
+        $this->assertSame(0, $this->mock->count(), 'Mesh was asked, and answered');
+        $this->assertWarnedAndTimed($expected);
+        $this->assertNull(Setting::getValue('mesh_connected_at'));
     }
 
     public function test_a_successful_connection_test_still_connects(): void

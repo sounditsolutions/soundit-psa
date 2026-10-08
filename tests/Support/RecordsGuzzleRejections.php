@@ -41,7 +41,20 @@ trait RecordsGuzzleRejections
         return $stack;
     }
 
-    /** The last raw Guzzle exception the client caught; fails if there was none. */
+    /**
+     * #6057: forget what earlier calls in this test recorded, so the next
+     * lastRejection() can only be a rejection of the call that follows.
+     */
+    protected function forgetRejections(): void
+    {
+        $this->guzzleRejections = [];
+    }
+
+    /**
+     * The last raw Guzzle exception the client caught; fails if there was
+     * none. Test-wide unless forgetRejections() ran before the asserted
+     * call (#6057).
+     */
     protected function lastRejection(): \Throwable
     {
         $this->assertNotSame([], $this->guzzleRejections, 'positive control: Guzzle rejected the request');

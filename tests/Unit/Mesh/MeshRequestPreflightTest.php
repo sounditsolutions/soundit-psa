@@ -28,10 +28,17 @@ use Tests\TestCase;
  *  - #5990: those refusals carry nothingSent.
  *  - #5979: any other InvalidArgumentException from the HTTP client is
  *    reported by class, not as a Mesh status, and claims nothing about
- *    what was sent.
+ *    what was sent. #6061: that arm is not only client-side: a 3xx whose
+ *    Location PSR-7 cannot parse reaches it AFTER Mesh answered.
+ *  - #6056: every arm's log line is asserted whole, so the mechanism it
+ *    states ('nothing was sent') is checked where it is written.
+ *  - #6048 / #6049 / #6060: the endpoint is parsed first and refused with
+ *    the fixed '[unparseable endpoint]', client-detected; the write
+ *    client's other arms never log user-info.
  *
  * Every premise is driven first: PSR-7 really quotes the secret. G-5:
- * MockHandler only, nothing leaves the process. Synthetic data (G-13).
+ * MockHandler only, stray Http requests prevented, nothing leaves the
+ * process. Synthetic data (G-13).
  */
 class MeshRequestPreflightTest extends TestCase
 {
@@ -51,6 +58,7 @@ class MeshRequestPreflightTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        \Illuminate\Support\Facades\Http::preventStrayRequests();
         Event::listen(MessageLogged::class, function (MessageLogged $e): void {
             $this->logged[] = ['level' => $e->level, 'message' => $e->message, 'context' => $e->context];
         });
@@ -90,6 +98,15 @@ class MeshRequestPreflightTest extends TestCase
         return [new GuzzleClient(['base_uri' => 'https://'.self::HOST.'/', 'handler' => HandlerStack::create($mock)]), $mock];
     }
 
+    /** #6056: exactly one log line, at error, with this whole text. */
+    private function assertLoggedOnce(string $which, string $text): void
+    {
+        $prefix = $which === 'read' ? '[MeshClient] ' : '[MeshWriteClient] ';
+        $this->assertSame([['level' => 'error', 'message' => $prefix.$text]], array_map(
+            fn (array $l): array => ['level' => $l['level'], 'message' => $l['message']], $this->logged,
+        ));
+    }
+
     /** No surface of the exception, and no log record, carries any of $secrets. */
     private function assertNothingCarries(MeshClientException $e, array $secrets): void
     {
@@ -125,8 +142,7 @@ class MeshRequestPreflightTest extends TestCase
         $this->assertSame(0, $e->getCode());
         $this->assertTrue($e->nothingWasSent(), '#5990: nothing was sent');
         $this->assertSame('The Mesh base URL could not be parsed; nothing was sent.', $e->statusPhrase('the read'));
-        $this->assertCount(1, $this->logged, 'one line');
-        $this->assertSame('error', $this->logged[0]['level']);
+        $this->assertLoggedOnce($which, ($which === 'read' ? 'GET api/customers/' : 'GET api/rule-allows-blocks/').' refused: the Mesh base URL could not be parsed; nothing was sent');
         $this->assertNothingCarries($e, [self::USER, self::PASS, self::HOST, 'Unable to parse URI']);
     }
 
@@ -150,6 +166,7 @@ class MeshRequestPreflightTest extends TestCase
         $this->assertSame($e->getMessage(), $e->statusPhrase('the read'));
         $this->assertTrue($e->nothingWasSent());
         $this->assertSame(1, $mock->count(), 'no request reached the handler');
+        $this->assertLoggedOnce($which, ($which === 'read' ? 'GET api/customers/' : 'GET api/rule-allows-blocks/').' refused: the Mesh API key holds a character an HTTP header cannot carry; nothing was sent');
         $this->assertNothingCarries($e, ['SECRET_FIXTURE-b6f', 'X-Injected', 'is not valid header value']);
     }
 
@@ -182,18 +199,21 @@ class MeshRequestPreflightTest extends TestCase
         }
 
         $this->assertInstanceOf(MeshClientException::class, $e, 'a MeshClientException, not a raw MalformedUriException (#5984)');
-        $this->assertStringStartsWith('Mesh API error: GET ', $e->getMessage());
-        $this->assertStringContainsString('failed with no HTTP status (GuzzleHttp\Psr7\Exception\MalformedUriException)', $e->getMessage());
+        $this->assertSame('The Mesh request endpoint could not be parsed; nothing was sent.', $e->getMessage());
+        $this->assertSame(0, $e->getCode());
         $this->assertTrue($e->nothingWasSent(), '#5990: PSR-7 refused it before any handler ran');
-        $this->assertSame('the read failed without an HTTP status from Mesh; nothing was sent', $e->statusPhrase('the read'));
+        // #6060: decided in the PSA, so not phrased as a Mesh-side failure.
+        $this->assertSame($e->getMessage(), $e->statusPhrase('the read'));
         $this->assertSame(1, $mock->count(), 'no request reached the handler');
+        $this->assertLoggedOnce($which, 'GET [unparseable endpoint] refused: the endpoint could not be parsed (GuzzleHttp\Psr7\Exception\MalformedUriException); nothing was sent');
         $this->assertNothingCarries($e, [self::USER, self::PASS, self::HOST, 'Unable to parse URI']);
     }
 
     /**
      * #5979: an InvalidArgumentException from inside the HTTP client that
      * preflight() does not cover (here a handler that throws one, as the
-     * vendored CurlFactory does for bad request options) is reported by
+     * vendored CurlFactory does for bad request options; #6061: it is not
+     * necessarily client-side, see the redirect row below) is reported by
      * class, says no Mesh status was recorded, claims nothing about what
      * was sent, and quotes nothing from its message.
      */
@@ -210,6 +230,50 @@ class MeshRequestPreflightTest extends TestCase
         $this->assertSame(0, $e->getCode());
         $this->assertFalse($e->nothingWasSent(), 'not measured, so not claimed: a create stays may-have-committed');
         $this->assertSame(0, $mock->count(), 'the handler ran');
+        $this->assertLoggedOnce($which, ($which === 'read' ? 'GET api/customers/' : 'GET api/rule-allows-blocks/').' failed in the HTTP client with no Mesh status recorded (InvalidArgumentException)');
         $this->assertNothingCarries($e, [self::HOST, self::PASS, 'SSL CA bundle']);
+    }
+
+    /**
+     * #6061: the class-only arm after a SEND. Mesh answers a 3xx whose
+     * Location PSR-7 cannot parse; the vendored RedirectMiddleware throws
+     * the MalformedUriException unwrapped, after the handler answered. So
+     * the arm is reachable post-send and nothingSent must stay unset.
+     */
+    #[DataProvider('clients')]
+    public function test_the_class_only_arm_follows_a_send_and_claims_nothing_sent(string $which): void
+    {
+        $location = '//'.self::USER.':'.self::PASS.'@'.self::HOST.':99999/elsewhere';
+        [$guzzle, $mock] = $this->mockGuzzle(new Response(302, ['Location' => $location]));
+        $e = $this->callMesh($which, ['api_key' => 'test-placeholder-not-a-key', 'base_url' => 'https://'.self::HOST], $guzzle);
+
+        $this->assertInstanceOf(MeshClientException::class, $e);
+        $this->assertSame(0, $mock->count(), 'premise: the request reached the handler and Mesh answered 302');
+        $this->assertStringEndsWith('failed in the HTTP client with no Mesh status recorded ('.\GuzzleHttp\Psr7\Exception\MalformedUriException::class.')', $e->getMessage());
+        $this->assertFalse($e->nothingWasSent(), 'sent and answered: nothingSent must stay unset (fail closed)');
+        $this->assertSame('the read failed without an HTTP status from Mesh', $e->statusPhrase('the read'));
+        $this->assertNothingCarries($e, [self::USER, self::PASS, self::HOST, 'Unable to parse URI']);
+    }
+
+    /**
+     * #6048: with a base URL PSR-7 refused, the write client's base-URL arm
+     * logs logPath() of the endpoint; an endpoint carrying user-info (one
+     * PSR-7 parses, so the endpoint arm does not take it) is logged as the
+     * fixed '[unparseable endpoint]', never with its user-info or host.
+     */
+    public function test_the_write_clients_base_url_arm_never_logs_an_endpoints_user_info(): void
+    {
+        $client = new MeshWriteClient(['api_key' => 'test-placeholder-not-a-key', 'base_url' => self::BAD_BASE_URL]);
+        $e = null;
+        try {
+            (new \ReflectionMethod($client, 'request'))->invoke($client, 'GET', '//'.self::USER.':'.self::PASS.'@'.self::HOST.'/x');
+        } catch (MeshClientException $caught) {
+            $e = $caught;
+        }
+
+        $this->assertInstanceOf(MeshClientException::class, $e);
+        $this->assertSame('The Mesh base URL could not be parsed; nothing was sent.', $e->getMessage());
+        $this->assertLoggedOnce('write', 'GET [unparseable endpoint] refused: the Mesh base URL could not be parsed; nothing was sent');
+        $this->assertNothingCarries($e, [self::USER, self::PASS, self::HOST]);
     }
 }

@@ -1457,7 +1457,10 @@ class IntegrationsController extends Controller
 
         // #5980: three phases, each with its own failure text, so a fault
         // in the PSA's own settings is never reported as a Mesh failure.
-        // Every text is status and class only (#5879, C-56).
+        // Every text is status and class only (#5879, C-56). #6052: the
+        // request URI and the API-KEY header value are checked here, with
+        // the parse and the header rule PSR-7 applies inside get(), so a
+        // base URL or key it would refuse is a 'did not run' too.
         try {
             // Resolved through the container so a test can hand it a
             // MockHandler (G-5); in production this is a plain new client.
@@ -1466,6 +1469,15 @@ class IntegrationsController extends Controller
             $apiKey = MeshConfig::get('api_key');
         } catch (\Throwable $e) {
             return $this->meshTestFailure('Mesh connection test did not run: the PSA could not prepare the request ('.$e::class.'); nothing was sent.');
+        }
+        try {
+            new \GuzzleHttp\Psr7\Uri("{$baseUrl}/api/customers/");
+        } catch (\InvalidArgumentException) {
+            return $this->meshTestFailure('Mesh connection test did not run: the Mesh base URL could not be parsed; nothing was sent.');
+        }
+        $keyRefusal = \App\Services\Mesh\MeshClient::headerValueRefusal($apiKey);
+        if ($keyRefusal !== null) {
+            return $this->meshTestFailure("Mesh connection test did not run: the Mesh API key {$keyRefusal}; nothing was sent.");
         }
 
         try {
@@ -1488,7 +1500,8 @@ class IntegrationsController extends Controller
         }
 
         if ($response->getStatusCode() !== 200) {
-            return response()->json(['success' => false, 'message' => "Unexpected status: {$response->getStatusCode()}"]);
+            // #6059: through the helper, so this failure is logged too.
+            return $this->meshTestFailure("Mesh answered the connection test with HTTP {$response->getStatusCode()}, not 200.");
         }
 
         try {

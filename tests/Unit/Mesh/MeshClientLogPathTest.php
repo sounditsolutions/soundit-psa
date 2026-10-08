@@ -631,8 +631,9 @@ class MeshClientLogPathTest extends TestCase
      * authority ('https:///...') is checked here only: the PSR-7 Uri
      * refuses to parse it, so get() throws before any request (measured),
      * and it cannot be a 503 row. Since #5878 request() catches that
-     * MalformedUriException and writes the status-only line with this
-     * logPath(). With '[^/]+' in place of '[^/]*' the scheme would stay on.
+     * MalformedUriException; since #6049 its line shows the fixed
+     * '[unparseable endpoint]', not this logPath(). With '[^/]+' in place of
+     * '[^/]*' the scheme would stay on.
      */
     public function test_log_path_strips_an_empty_authority_and_only_a_leading_one(): void
     {
@@ -647,13 +648,13 @@ class MeshClientLogPathTest extends TestCase
             $client->get("https:///api/customers/{$id}/");
             $this->fail('the empty-authority endpoint must throw');
         } catch (MeshClientException $e) {
-            // #5878: status-only, no previous exception.
-            $this->assertSame('Mesh API error: GET /api/customers/<customer> failed with no HTTP status (GuzzleHttp\Psr7\Exception\MalformedUriException)', $e->getMessage());
+            // #5878: status-only, no previous exception. #6060: client-detected.
+            $this->assertSame('The Mesh request endpoint could not be parsed; nothing was sent.', $e->getMessage());
             $this->assertNull($e->getPrevious());
         }
         $this->assertSame([], $seen->uris, 'no request reached the handler');
         $this->assertSame(1, $mock->count(), 'the 503 was never taken');
-        $this->assertSame(['[MeshClient] GET /api/customers/<customer> failed with no HTTP status (GuzzleHttp\Psr7\Exception\MalformedUriException)'], array_column($this->logged, 'message'), 'one status-only line (#5878)');
+        $this->assertSame(['[MeshClient] GET [unparseable endpoint] refused: the endpoint could not be parsed (GuzzleHttp\Psr7\Exception\MalformedUriException); nothing was sent'], array_column($this->logged, 'message'), 'one status-only line (#5878, #6049)');
     }
 
     /**

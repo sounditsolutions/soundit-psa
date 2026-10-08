@@ -33,7 +33,7 @@ class MeshTest extends Command
         try {
             $client->get('api/customers/', ['_size' => 1]);
         } catch (MeshClientException $e) {
-            $this->error('Mesh connection test failed: '.$e->statusPhrase('the health read').'.');
+            $this->error('Mesh connection test failed: '.self::sentence($e->statusPhrase('the health read')));
 
             return self::FAILURE;
         }
@@ -46,7 +46,7 @@ class MeshTest extends Command
         try {
             $customers = $client->getCustomers(size: 1);
         } catch (MeshClientException $e) {
-            $this->error('Connected, but '.$e->statusPhrase('the customer read').'.');
+            $this->error('Connected, but '.self::sentence($e->statusPhrase('the customer read')));
 
             return self::FAILURE;
         }
@@ -55,5 +55,14 @@ class MeshTest extends Command
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * #6053: a client-detected phrase is the PSA's own sentence and already
+     * ends in '.'; an upstream phrase does not. One full stop either way.
+     */
+    private static function sentence(string $phrase): string
+    {
+        return rtrim($phrase, '.').'.';
     }
 }

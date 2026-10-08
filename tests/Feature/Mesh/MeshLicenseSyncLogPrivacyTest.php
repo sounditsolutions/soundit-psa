@@ -131,7 +131,7 @@ class MeshLicenseSyncLogPrivacyTest extends TestCase
                 ['error', $catch.'Mesh answered the customer read with HTTP 503 ('.MeshClientException::class.')'],
             ]],
             'catch: MeshClientException, connect error' => ['connect', ['errors' => 1, 'created' => 0], [
-                ['error', '[MeshClient] GET api/customers/<customer> failed with no HTTP status ('.ConnectException::class.')'],
+                ['error', '[MeshClient] GET api/customers/<customer> failed with no HTTP status (cURL errno 7, '.ConnectException::class.')'],
                 ['error', $catch.'the customer read failed without an HTTP status from Mesh ('.MeshClientException::class.')'],
             ]],
             'catch: foreign Throwable' => ['foreign', ['errors' => 1, 'created' => 0], [

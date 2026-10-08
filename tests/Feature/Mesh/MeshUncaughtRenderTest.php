@@ -22,14 +22,28 @@ use Tests\TestCase;
  * which walks getPrevious()) and (string) $e, which a queue worker stores in
  * failed_jobs.exception and which prints every previous exception. The
  * request() throw sites no longer chain Guzzle's exception, so neither
- * surface can carry its URI, user-info or vendor body.
+ * surface can carry ITS message: URI, user-info or vendor body.
+ *
+ * #6051: (string) $e also prints the stack trace. Its frames show string
+ * arguments whenever zend.exception_ignore_args is Off (PHP's built-in
+ * default), cut to zend.exception_string_param_max_len bytes. The rows
+ * above pass under the ini the suite runs with; the last test measures
+ * both settings instead of assuming one, and pins that not chaining does
+ * NOT cover trace arguments.
  *
  * Positive control: every marker is on the raw Guzzle exception the client
- * caught (RecordsGuzzleRejections). G-5: MockHandler only. Synthetic data.
+ * caught (RecordsGuzzleRejections). G-5: MockHandler only, stray Http
+ * requests prevented. Synthetic data.
  */
 class MeshUncaughtRenderTest extends TestCase
 {
     use RecordsGuzzleRejections;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        \Illuminate\Support\Facades\Http::preventStrayRequests();
+    }
 
     private const USER = 'synthuser-5978';
 
@@ -92,6 +106,37 @@ class MeshUncaughtRenderTest extends TestCase
                 $this->assertStringNotContainsString($leak, $text, "{$where} carries '{$leak}'");
             }
         }
+    }
+
+    /**
+     * #6051, measured: a refused endpoint's frame in (string) $e. With
+     * exception_ignore_args On no argument is printed; with it Off and the
+     * built-in 15-byte cut, the first 15 bytes of the endpoint are.
+     */
+    public function test_trace_arguments_in_the_string_form_depend_on_exception_ignore_args(): void
+    {
+        $endpoint = '//synthuser-6051:SYNTHPASS-6051@'.self::HOST.':99999/api/customers/';
+        $saved = [ini_get('zend.exception_ignore_args'), ini_get('zend.exception_string_param_max_len')];
+        $strings = [];
+        try {
+            foreach (['1', '0'] as $ignore) {
+                ini_set('zend.exception_ignore_args', $ignore);
+                ini_set('zend.exception_string_param_max_len', '15');
+                try {
+                    (new MeshClient(['api_key' => 'test-placeholder-not-a-key', 'base_url' => 'https://'.self::HOST]))->get($endpoint);
+                    $this->fail('the endpoint must be refused');
+                } catch (MeshClientException $e) {
+                    $strings[$ignore] = (string) $e;
+                }
+            }
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $saved[0]);
+            ini_set('zend.exception_string_param_max_len', (string) $saved[1]);
+        }
+
+        $this->assertStringNotContainsString('synthuser-6051', $strings['1'], 'ignore_args On: no argument in the trace');
+        $this->assertStringContainsString("'//synthuser-605...'", $strings['0'], 'ignore_args Off: the endpoint prefix is in the trace; not chaining does not cover it');
+        $this->assertStringNotContainsString('SYNTHPASS-6051', $strings['0'], 'the 15-byte cut stops before the password');
     }
 
     private function renderForConsole(\Throwable $e): string

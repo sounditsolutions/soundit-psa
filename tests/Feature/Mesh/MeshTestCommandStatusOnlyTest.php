@@ -24,7 +24,8 @@ use Tests\TestCase;
  * read is reported the same way, never as 'Failed to connect' (Mesh may
  * have answered it). #5987: every leak marker is first shown on the raw
  * Guzzle text the client caught, so its absence from the output is not
- * vacuous. (The uncaught path is MeshUncaughtRenderTest.)
+ * vacuous. #6053: one full stop after a client-detected refusal. (The
+ * uncaught path is MeshUncaughtRenderTest.)
  *
  * G-5: Http::preventStrayRequests(), and the container's MeshClient is a
  * real one whose Guzzle is a MockHandler: the health read answers 200,
@@ -141,6 +142,27 @@ class MeshTestCommandStatusOnlyTest extends TestCase
         foreach ([...$markers, 'Mesh API error', 'resulted in'] as $leak) {
             $this->assertStringNotContainsString($leak, $output, "the output carries '{$leak}'");
         }
+    }
+
+    /**
+     * #6053: a client-detected refusal is the PSA's own sentence, already
+     * ending in '.'; the command prints exactly one full stop after it.
+     */
+    public function test_a_client_detected_refusal_prints_one_full_stop(): void
+    {
+        $mock = new MockHandler([new Response(200, [], '{"results":[]}')]);
+        $client = new MeshClient(['base_url' => 'https://mesh.example.test', 'api_key' => "SECRET_FIXTURE-6053\r\nX: 1"]);
+        (new \ReflectionProperty($client, 'http'))->setValue($client, new GuzzleClient(['handler' => HandlerStack::create($mock)]));
+        $this->app->instance(MeshClient::class, $client);
+
+        $exit = Artisan::call('mesh:test');
+        $output = Artisan::output();
+
+        $this->assertSame(Command::FAILURE, $exit);
+        $this->assertSame(1, $mock->count(), 'nothing was sent');
+        $this->assertStringContainsString('Mesh connection test failed: The Mesh API key holds a character an HTTP header cannot carry; nothing was sent.'.PHP_EOL, $output);
+        $this->assertStringNotContainsString('sent..', $output);
+        $this->assertStringNotContainsString('SECRET_FIXTURE-6053', $output);
     }
 
     public function test_a_successful_customer_read_still_succeeds(): void
