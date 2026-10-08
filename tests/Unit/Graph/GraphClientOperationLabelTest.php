@@ -34,7 +34,7 @@ class GraphClientOperationLabelTest extends TestCase
 
     private const MESSAGE_ID = 'AAMkSYNTHETIC5671MSGID';
 
-    private const SKIP_TOKEN = 'SKIPTOKEN5671SYNTHETIC';
+    private const SKIP_CURSOR = 'SKIPTOKEN5671SYNTHETIC';
 
     /** @var array<int, array<string, mixed>> */
     private array $history = [];
@@ -156,7 +156,7 @@ class GraphClientOperationLabelTest extends TestCase
     public function test_a_next_link_label_ignores_the_host_and_the_query(): void
     {
         $host = 'calendar.chats.example.test';
-        $next = "https://{$host}/v1.0/users/".self::MAILBOX.'/messages?$skiptoken='.self::SKIP_TOKEN.'&x=/attachments';
+        $next = "https://{$host}/v1.0/users/".self::MAILBOX.'/messages?$skiptoken='.self::SKIP_CURSOR.'&x=/attachments';
         $graph = $this->graph(self::page($next), self::failure(503));
         try {
             $graph->getAllPages('users/'.self::MAILBOX.'/messages/'.self::MESSAGE_ID);
@@ -167,7 +167,7 @@ class GraphClientOperationLabelTest extends TestCase
         $this->assertSame($host, $this->history[1]['request']->getUri()->getHost(), 'positive control: the nextLink host was requested');
 
         $this->assertSame([['method' => 'GET', 'operation' => 'messages', 'status' => 503]], $this->failedContexts());
-        $this->assertSame([], $this->needlesInAnyRecord([self::MAILBOX, self::MESSAGE_ID, self::SKIP_TOKEN, $host, 'example.test', 'https:', 'v1.0']));
+        $this->assertSame([], $this->needlesInAnyRecord([self::MAILBOX, self::MESSAGE_ID, self::SKIP_CURSOR, $host, 'example.test', 'https:', 'v1.0']));
     }
 
     /**
