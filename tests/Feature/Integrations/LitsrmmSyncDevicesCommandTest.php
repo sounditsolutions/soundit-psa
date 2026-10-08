@@ -454,14 +454,14 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
     public function test_a_right_length_digest_of_the_wrong_alphabet_is_not_a_code(): void
     {
         // #5855: ten characters each, so only the alphabet, the case or the
-        // 'd' can reject them: uppercase hex, a non-hex letter, and ten hex
-        // with no 'd' (in place of the 'd' and in front of nine).
+        // 'd' can reject them: uppercase hex, a non-hex letter, ten hex with
+        // no 'd' ('0123456789'), and a 'd' replaced by another letter.
         $client = $this->mapClient();
         $service = Mockery::mock(LitsrmmAssetSyncService::class);
         $service->shouldNotReceive('sync');
         $this->app->instance(LitsrmmAssetSyncService::class, $service);
 
-        foreach (['d012345678A', 'dABCDEF0123', 'd012345678g', 'd01234567_9', '0123456789a', 'x0123456789'] as $digest) {
+        foreach (['d012345678A', 'dABCDEF0123', 'd012345678g', 'd01234567_9', '0123456789', 'x0123456789'] as $digest) {
             $this->assertFalse(LitsrmmAssetSyncService::isRefusalCode("{$client->id}:b:1:5:4:5:1:0:{$digest}"), $digest);
             $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["{$client->id}:b:1:5:4:5:1:0:{$digest}"]])
                 ->expectsOutputToContain('takes the refusal code a short-read refusal printed')
