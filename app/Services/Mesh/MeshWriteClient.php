@@ -649,7 +649,9 @@ class MeshWriteClient
                 // chained and the client-detected flag is NOT set, so
                 // statusPhrase() never returns this message, whatever the
                 // transport's wording. nothingSent is what callers branch on.
-                throw new MeshClientException("Mesh API unreachable: {$e->getMessage()}; nothing was sent.", 0, $e, nothingSent: true);
+                // #5884: the message is built like the log line, never from
+                // Guzzle's, which quotes the request URI (user-info, host).
+                throw new MeshClientException("Mesh API unreachable: {$method} ".self::logPath($endpoint).' could not connect (cURL errno '.$neverSentErrno.', '.$e::class.'); nothing was sent.', 0, $e, nothingSent: true);
             }
 
             if ($status === 400) {
@@ -667,7 +669,10 @@ class MeshWriteClient
             Log::error("[MeshWriteClient] {$method} ".self::logPath($endpoint).' failed with '
                 .($status > 0 ? "HTTP {$status}" : 'no HTTP status').' ('.$e::class.')');
 
-            throw new MeshClientException("Mesh API error: {$e->getMessage()}", $status, $e);
+            // #5884: status and logPath() only, as the line above; Guzzle's
+            // message quotes the request URI and a vendor body summary.
+            throw new MeshClientException("Mesh API error: {$method} ".self::logPath($endpoint).' failed with '
+                .($status > 0 ? "HTTP {$status}" : 'no HTTP status').' ('.$e::class.')', $status, $e);
         }
 
         $decoded = json_decode((string) $response->getBody(), true);
