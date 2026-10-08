@@ -94,6 +94,12 @@ class StaffMeshAdminToolExecutor
 
     private const REASON_MAX = 500;
 
+    /** faultedExecution(): a fault row with a run whose PSA record lookup found none (#5923). */
+    private const FAULT_RECORD_NOT_FOUND = 'record_not_found';
+
+    /** faultedExecution(): a fault row audited against no run; no record lookup is possible (#5923). */
+    private const FAULT_NO_RUN = 'no_run';
+
     /**
      * `mesh_add_allow_rule` is STAGED-ONLY BY CONSTRUCTION — see the class
      * docblock. The canonical name has no immediate implementation; execute()
@@ -928,17 +934,27 @@ class StaffMeshAdminToolExecutor
         }
 
         // ...and one fault path leaves NO row for either of those two brakes to
-        // find: record_unwritable, where the rule IS live upstream and the row
-        // that would reap it is precisely what could not be written. Its
+        // find: record_unwritable, where the rule may be live upstream and the
+        // row that would reap it is precisely what could not be written. Its
         // 'executed_with_fault' audit line is then the only trace the write
         // left, and alreadyExecuted() matches 'executed' alone, so without this
         // check a second card for the same sender walks past every brake and
         // opens a SECOND hole — one of them untracked, and therefore never
         // reaped. Unknown is a refusal, never a pass.
-        if ($this->faultedExecution($tool, $clientId, $contentHash)) {
-            $message = "An earlier create for '{$target['sender']}' on this client FAULTED after the write reached Mesh, and no PSA record of it exists, "
+        $fault = $this->faultedExecution($tool, $clientId, $contentHash);
+        if ($fault !== null) {
+            // #5923: say only what was measured, as changedSinceStaging()
+            // does (#5747, contract-s2:3). A record_unwritable row is also
+            // written when Mesh never acknowledged the create, so the text
+            // does not say the write reached Mesh; and only a fault row WITH
+            // a run had its record looked up, so only that arm says none
+            // exists.
+            $message = "An earlier create for '{$target['sender']}' on this client "
+                .($fault === self::FAULT_RECORD_NOT_FOUND
+                    ? 'FAULTED (this refusal does not show whether a rule reached Mesh), and no PSA record of it exists, '
+                    : 'was audited against no proposal and FAULTED (this refusal does not show whether a rule reached Mesh), and no PSA record can be tied to it, ')
                 .'so a rule may be live upstream with nothing tracking it and a second rule was not created. '
-                .'Find that rule in the Mesh portal and remove it by hand — the earlier audit row for this write says what happened — '
+                .'Check for that rule in the Mesh portal and remove it by hand if it is there — the earlier audit row for this write says what happened — '
                 .'and note that the lifetime on this proposal is NOT in force. No upstream call was made.';
             $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
 
@@ -2125,8 +2141,13 @@ class StaffMeshAdminToolExecutor
      * So the question is not "did a fault happen" but "did a fault happen that
      * left NO row of its own": run_id ties an audit row to its proposal, and
      * mesh_allow_rules.technician_run_id ties the row back to the same one.
+     *
+     * Returns null when no such fault is in the window, FAULT_RECORD_NOT_FOUND
+     * when a fault row's run was looked up and carries no record, else
+     * FAULT_NO_RUN (a run-less fault row: nothing was looked up). Which one
+     * decides only the refusal's wording, never whether it refuses (#5923).
      */
-    private function faultedExecution(string $tool, ?int $clientId, string $contentHash): bool
+    private function faultedExecution(string $tool, ?int $clientId, string $contentHash): ?string
     {
         $faultRunIds = $this->actionLogQuery($tool, $clientId)
             ->where('content_hash', $contentHash)
@@ -2136,7 +2157,7 @@ class StaffMeshAdminToolExecutor
             ->all();
 
         if ($faultRunIds === []) {
-            return false;
+            return null;
         }
 
         $recordedRunIds = MeshAllowRule::query()
@@ -2145,16 +2166,21 @@ class StaffMeshAdminToolExecutor
             ->map(static fn ($id): int => (int) $id)
             ->all();
 
+        // A fault with a run whose record lookup found nothing is the
+        // measured case and is answered first. A fault audited against no
+        // run cannot be tied to a row either way, and unknown is a refusal
+        // here as everywhere else in this verb; the two are worded apart
+        // (#5923).
+        $runLess = false;
         foreach ($faultRunIds as $runId) {
-            // A fault audited against no run cannot be tied to a row either
-            // way, and unknown is a refusal here as everywhere else in this
-            // verb.
-            if ($runId === null || ! in_array((int) $runId, $recordedRunIds, true)) {
-                return true;
+            if ($runId === null) {
+                $runLess = true;
+            } elseif (! in_array((int) $runId, $recordedRunIds, true)) {
+                return self::FAULT_RECORD_NOT_FOUND;
             }
         }
 
-        return false;
+        return $runLess ? self::FAULT_NO_RUN : null;
     }
 
     /**
