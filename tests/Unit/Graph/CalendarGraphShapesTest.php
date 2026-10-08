@@ -189,7 +189,7 @@ class CalendarGraphShapesTest extends TestCase
             );
             $this->fail('Expected drift for a per-mailbox error');
         } catch (GraphShapeDriftException $e) {
-            $this->assertSame('Microsoft Graph getSchedule returned an error for the mailbox in row 1; its availability is unknown, so the whole free/busy read is refused rather than shown as free.', $e->getMessage());
+            $this->assertSame('Microsoft Graph getSchedule returned an error for requested mailbox 1 (zero-based position in the request; row 1 of the response); its availability is unknown, so the whole free/busy read is refused rather than shown as free.', $e->getMessage());
             $this->assertStringNotContainsString('b4k2.second', $e->getMessage());
         }
     }
@@ -211,22 +211,22 @@ class CalendarGraphShapesTest extends TestCase
         };
 
         return [
-            'per-mailbox error' => [fn (object $r) => $r->error = (object) ['responseCode' => 'ErrorMailboxMoveInProgress'], $g.'returned an error for the mailbox in row 1; its availability is unknown, so the whole free/busy read is refused rather than shown as free.'],
+            'per-mailbox error' => [fn (object $r) => $r->error = (object) ['responseCode' => 'ErrorMailboxMoveInProgress'], $g.'returned an error for requested mailbox 1 (zero-based position in the request; row 1 of the response); its availability is unknown, so the whole free/busy read is refused rather than shown as free.'],
             'no availabilityView' => [function (object $r): void {
                 unset($r->availabilityView);
-            }, $g.'row 1 has no non-empty availabilityView string — a degraded row must not read as free.'],
-            'scheduleItems not a list' => [fn (object $r) => $r->scheduleItems = (object) ['a' => 'b'], $g.'row 1 has a scheduleItems that is not a JSON list.'],
-            'busy block not an object' => [fn (object $r) => $r->scheduleItems = ['busy'], $g.'busy block in row 1 is not an object.'],
-            'busy block without status' => [fn (object $r) => $r->scheduleItems[0]->status = null, $g.'busy block in row 1 has no string status.'],
-            'busy block start malformed' => [fn (object $r) => $r->scheduleItems[0]->start = 'x', $g.'busy block in row 1 has a malformed start (expected a dateTimeTimeZone object with a string dateTime).'],
-            'busy block end malformed' => [fn (object $r) => $r->scheduleItems[0]->end = (object) ['timeZone' => 'UTC'], $g.'busy block in row 1 has a malformed end (expected a dateTimeTimeZone object with a string dateTime).'],
-            'workingHours not an object' => [fn (object $r) => $r->workingHours = 'x', $g.'workingHours in row 1 is present but is not an object.'],
-            'daysOfWeek not a list' => [$wh(['daysOfWeek' => (object) ['x' => 'monday']]), $g.'workingHours.daysOfWeek in row 1 is not a JSON list.'],
-            'non-string day' => [$wh(['daysOfWeek' => [1]]), $g.'workingHours.daysOfWeek in row 1 has a non-string day.'],
-            'startTime not a string' => [$wh(['startTime' => ['x']]), $g.'workingHours.startTime in row 1 is present but is not a string.'],
-            'endTime not a string' => [$wh(['endTime' => 1700]), $g.'workingHours.endTime in row 1 is present but is not a string.'],
-            'timeZone not an object' => [$wh(['timeZone' => 'UTC']), $g.'workingHours.timeZone in row 1 is present but is not an object.'],
-            'duplicate mailbox' => [fn (object $r) => $r->scheduleId = 'B4K1.First@Synthetic.test', $g.'returned the mailbox in row 1 more than once — an ambiguous grid must not be read as complete.'],
+            }, $g.'requested mailbox 1 (zero-based position in the request; row 1 of the response) has no non-empty availabilityView string — a degraded row must not read as free.'],
+            'scheduleItems not a list' => [fn (object $r) => $r->scheduleItems = (object) ['a' => 'b'], $g.'requested mailbox 1 (zero-based position in the request; row 1 of the response) has a scheduleItems that is not a JSON list.'],
+            'busy block not an object' => [fn (object $r) => $r->scheduleItems = ['busy'], $g.'busy block in requested mailbox 1 (zero-based position in the request; row 1 of the response) is not an object.'],
+            'busy block without status' => [fn (object $r) => $r->scheduleItems[0]->status = null, $g.'busy block in requested mailbox 1 (zero-based position in the request; row 1 of the response) has no string status.'],
+            'busy block start malformed' => [fn (object $r) => $r->scheduleItems[0]->start = 'x', $g.'busy block in requested mailbox 1 (zero-based position in the request; row 1 of the response) has a malformed start (expected a dateTimeTimeZone object with a string dateTime).'],
+            'busy block end malformed' => [fn (object $r) => $r->scheduleItems[0]->end = (object) ['timeZone' => 'UTC'], $g.'busy block in requested mailbox 1 (zero-based position in the request; row 1 of the response) has a malformed end (expected a dateTimeTimeZone object with a string dateTime).'],
+            'workingHours not an object' => [fn (object $r) => $r->workingHours = 'x', $g.'workingHours in requested mailbox 1 (zero-based position in the request; row 1 of the response) is present but is not an object.'],
+            'daysOfWeek not a list' => [$wh(['daysOfWeek' => (object) ['x' => 'monday']]), $g.'workingHours.daysOfWeek in requested mailbox 1 (zero-based position in the request; row 1 of the response) is not a JSON list.'],
+            'non-string day' => [$wh(['daysOfWeek' => [1]]), $g.'workingHours.daysOfWeek in requested mailbox 1 (zero-based position in the request; row 1 of the response) has a non-string day.'],
+            'startTime not a string' => [$wh(['startTime' => ['x']]), $g.'workingHours.startTime in requested mailbox 1 (zero-based position in the request; row 1 of the response) is present but is not a string.'],
+            'endTime not a string' => [$wh(['endTime' => 1700]), $g.'workingHours.endTime in requested mailbox 1 (zero-based position in the request; row 1 of the response) is present but is not a string.'],
+            'timeZone not an object' => [$wh(['timeZone' => 'UTC']), $g.'workingHours.timeZone in requested mailbox 1 (zero-based position in the request; row 1 of the response) is present but is not an object.'],
+            'duplicate mailbox' => [fn (object $r) => $r->scheduleId = 'B4K1.First@Synthetic.test', $g.'returned requested mailbox 0 (zero-based position in the request; row 1 of the response) more than once — an ambiguous grid must not be read as complete.'],
             'missing requested mailbox' => [fn (object $r) => $r->scheduleId = 'b4k1.first@synthetic.test', ''],
         ];
     }
@@ -259,6 +259,64 @@ class CalendarGraphShapesTest extends TestCase
         }
     }
 
+    /**
+     * #5777: the request is [a, b] and Graph returns the rows as [b (with an error), a]. The
+     * message names b by its request position, 1, so a caller holding the request can tell which
+     * mailbox it is. Before #5777 it said 'row 0', the response position, which reads as a.
+     * The same holds for a degraded row (no availabilityView) and a busy block.
+     */
+    public function test_a_reordered_response_names_the_mailbox_by_its_request_position(): void
+    {
+        $a = 'b4j2.first@synthetic.test';
+        $b = 'b4j2.second@synthetic.test';
+        $g = 'Microsoft Graph getSchedule ';
+        $at = 'requested mailbox 1 (zero-based position in the request; row 0 of the response)';
+        $cases = [
+            'per-mailbox error' => [fn (object $r) => $r->error = (object) ['responseCode' => 'ErrorMailboxMoveInProgress'], $g."returned an error for {$at}; its availability is unknown, so the whole free/busy read is refused rather than shown as free."],
+            'no availabilityView' => [function (object $r): void {
+                unset($r->availabilityView);
+            }, $g."{$at} has no non-empty availabilityView string — a degraded row must not read as free."],
+            'busy block not an object' => [fn (object $r) => $r->scheduleItems = ['busy'], $g."busy block in {$at} is not an object."],
+        ];
+        foreach ($cases as $name => [$mutate, $expected]) {
+            $bRow = $this->wire($this->scheduleRow($b));
+            $mutate($bRow);
+            try {
+                CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$bRow, $this->scheduleRow($a)]), [$a, $b]);
+                $this->fail("{$name}: expected drift");
+            } catch (GraphShapeDriftException $e) {
+                $this->assertSame($expected, $e->getMessage(), $name);
+                $this->assertStringNotContainsString('synthetic.test', $e->getMessage(), $name);
+            }
+        }
+    }
+
+    /**
+     * #5777: a row that cannot be tied to a requested mailbox is named by its response position
+     * only: one with no scheduleId, and one for a mailbox that was not requested.
+     */
+    public function test_a_row_with_no_request_position_is_named_by_its_response_position(): void
+    {
+        $a = 'b4j2.first@synthetic.test';
+        $noId = $this->scheduleRow($a);
+        unset($noId->scheduleId);
+        try {
+            CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$this->scheduleRow($a), $noId]), [$a]);
+            $this->fail('expected drift');
+        } catch (GraphShapeDriftException $e) {
+            $this->assertSame('Microsoft Graph getSchedule returned a scheduleInformation row (row 1 of the response) without a string scheduleId — the mailbox it describes cannot be identified.', $e->getMessage());
+        }
+
+        $stranger = $this->scheduleRow('b4j2.stranger@synthetic.test');
+        $stranger->error = (object) [];
+        try {
+            CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$this->scheduleRow($a), $stranger]), [$a]);
+            $this->fail('expected drift');
+        } catch (GraphShapeDriftException $e) {
+            $this->assertSame('Microsoft Graph getSchedule returned an error for an unrequested mailbox (row 1 of the response); its availability is unknown, so the whole free/busy read is refused rather than shown as free.', $e->getMessage());
+        }
+    }
+
     /** #5732: the row position counts the response's value list from zero, and so does the request position. */
     public function test_the_row_and_request_positions_are_zero_based(): void
     {
@@ -268,7 +326,7 @@ class CalendarGraphShapesTest extends TestCase
             CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['b4k1.only@synthetic.test']);
             $this->fail('Expected drift');
         } catch (GraphShapeDriftException $e) {
-            $this->assertStringContainsString('in row 0;', $e->getMessage());
+            $this->assertStringContainsString('for requested mailbox 0 (zero-based position in the request; row 0 of the response);', $e->getMessage());
         }
 
         try {
