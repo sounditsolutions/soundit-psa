@@ -2240,10 +2240,15 @@ class StaffMeshAdminToolExecutor
                 default => "another proposal for '{$sender}' on this client was approved",
             };
             // A fault is matched only when no record carries its run, so a
-            // faulted create never reaches the record arm.
+            // faulted create never reaches the record arm. contract-s2:3: a
+            // fault row is also written when Mesh never acknowledged the
+            // create (reconcileUnacknowledgedCreate), so the text does not say
+            // the create reached Mesh; and only a row WITH a run had its
+            // record looked up, so only that arm says none exists now.
             $what = match (true) {
                 $record !== null => " and wrote PSA record #{$record->id} (now in state '{$record->state}')",
-                $faulted => ' and its create FAULTED after reaching Mesh, and no PSA record of it exists now',
+                $faulted && $create->run_id !== null => ' and its create ended in a fault (this refusal does not show whether a rule reached Mesh), and no PSA record of it exists now',
+                $faulted => ', and that create ended in a fault (this refusal does not show whether a rule reached Mesh)',
                 $create->run_id === null => ', and no PSA record can be tied to it',
                 default => ', and no PSA record of its create exists now',
             };

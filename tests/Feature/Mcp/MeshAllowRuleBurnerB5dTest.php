@@ -367,8 +367,112 @@ class MeshAllowRuleBurnerB5dTest extends TestCase
 
         $this->travel(25)->hours();
         $this->assertRefusedSinceStaging($actor, $cardC,
-            "another proposal for '".self::SENDER."' on this client was approved and its create FAULTED after reaching Mesh, and no PSA record of it exists now");
+            "another proposal for '".self::SENDER."' on this client was approved and its create ended in a fault (this refusal does not show whether a rule reached Mesh), and no PSA record of it exists now");
         $this->assertSame(1, $this->creates);
+    }
+
+    /**
+     * contract-s2:3 (contract-s1:2): the same fault row is also written when
+     * Mesh never acknowledged the create (reconcileUnacknowledgedCreate,
+     * record_unwritable), and nothing then shows the create reached Mesh.
+     * Sibling A's create times out, the re-read finds no rule and the
+     * record insert fails. Card C, staged before A, is refused past the
+     * window with text that does not say the create reached Mesh; the
+     * lookup by A's run was made and found nothing, so "no PSA record of
+     * it exists now" stands.
+     */
+    public function test_an_unacknowledged_create_fault_refuses_the_card_without_saying_it_reached_mesh(): void
+    {
+        $actor = $this->configure();
+        $client = $this->client();
+        $write = Mockery::mock(MeshWriteClient::class);
+        $write->shouldReceive('isConfigured')->andReturn(true)->byDefault();
+        $write->shouldReceive('createAllowRule')->once()->andReturnUsing(function (): never {
+            $this->creates++;
+
+            throw new \App\Services\Mesh\MeshClientException('Mesh API error: timeout', 0);
+        });
+        $write->shouldReceive('findRuleByComment')->once()->andReturn(null);
+        $this->app->instance(MeshWriteClient::class, $write);
+
+        $cardC = $this->stageAdd($client);
+        $this->travel(1)->seconds();
+        $unwritable = true;
+        MeshAllowRule::creating(function () use (&$unwritable): void {
+            if ($unwritable) {
+                throw new \RuntimeException('synthetic: the record insert fails');
+            }
+        });
+        $cardA = $this->stageAdd($client);
+        $this->approve($actor, $cardA);
+        $unwritable = false;
+        $this->assertSame(1, $this->creates);
+        $fault = TechnicianActionLog::where('result_status', 'executed_with_fault')->sole();
+        $this->assertSame($cardA->id, (int) $fault->run_id);
+        $this->assertStringStartsWith('Mesh did not acknowledge the create', (string) $fault->summary);
+        $this->assertStringContainsString('could not be written', (string) $fault->summary);
+        $this->assertSame(0, MeshAllowRule::count(), 'no record was written');
+
+        $this->travel(25)->hours();
+        $this->assertRefusedSinceStaging($actor, $cardC,
+            "another proposal for '".self::SENDER."' on this client was approved and its create ended in a fault (this refusal does not show whether a rule reached Mesh), and no PSA record of it exists now");
+        $this->assertSame(1, $this->creates);
+    }
+
+    /**
+     * contract-s2:3: a run-less executed_with_fault row (HAND-WRITTEN, run_id
+     * null; the verb is staged-only, so no verb writes one) beside an
+     * existing run-less record for this sender. No record lookup is made for
+     * a row with no run, so the refusal claims nothing about a PSA record,
+     * and it does not say the create reached Mesh. (The record is closed
+     * before the card is staged, so no live brake decides first.)
+     */
+    public function test_a_run_less_fault_beside_a_run_less_record_claims_nothing_about_a_record(): void
+    {
+        $actor = $this->configure();
+        $client = $this->client();
+        $this->write();
+
+        $runLess = MeshAllowRule::create([
+            'client_id' => $client->id,
+            'technician_run_id' => null,
+            'mesh_customer_id' => self::TENANT,
+            'sender' => self::SENDER,
+            'comment' => 'PSA allow b5drunless',
+            'mesh_rule_id' => 'rule-b5d-runless',
+            'expires_at' => null,
+            'state' => MeshAllowRule::STATE_REMOVED,
+            'removed_at' => now()->subDay()->startOfSecond(),
+            'scope_proved' => true,
+        ]);
+        $this->travel(1)->seconds();
+
+        $card = $this->stageAdd($client);
+        $direct = hash('sha256', json_encode([
+            'tool' => 'mesh_stage_add_allow_rule',
+            'client_id' => $client->id,
+            'target' => 'allow-rule-'.self::SENDER,
+            'params' => ['mesh_customer_id' => self::TENANT],
+        ]));
+        TechnicianActionLog::create([
+            'actor_id' => $actor->id,
+            'actor_label' => 'hand-written',
+            'action_type' => 'mesh_add_allow_rule',
+            'tier' => \App\Enums\TechnicianTier::Approve->value,
+            'result_status' => 'executed_with_fault',
+            'client_id' => $client->id,
+            'run_id' => null,
+            'content_hash' => $direct,
+            'summary' => 'Synthetic run-less fault.',
+            'correlation_id' => (string) \Illuminate\Support\Str::uuid(),
+        ]);
+        $this->assertNull($runLess->fresh()->technician_run_id, 'a run-less record exists');
+
+        $this->travel(25)->hours();
+        $change = "a create of an allow rule for '".self::SENDER."' on this client was audited against no proposal, and that create ended in a fault (this refusal does not show whether a rule reached Mesh)";
+        $this->assertRefusedSinceStaging($actor, $card, $change);
+        $this->assertStringNotContainsString('PSA record', $change);
+        $this->assertSame(0, $this->creates);
     }
 
     /**
