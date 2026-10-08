@@ -156,6 +156,10 @@ class AttachmentStoreRollbackTest extends TestCase
         $this->assertCount(1, $skipped, 'the refused write is reported, not silent');
         $this->assertSame(['ATT-1', 'store_failed'], [$skipped[0]->context['attachment_id'], $skipped[0]->context['reason']]);
         $this->assertStringNotContainsString('Payroll', json_encode($skipped[0]->context));
+        // #6044 (C-56): the email id, never the Graph message id.
+        $this->assertSame($email->id, $skipped[0]->context['email_id']);
+        $this->assertArrayNotHasKey('graph_id', $skipped[0]->context);
+        $this->assertStringNotContainsString('MSG-1', json_encode($skipped[0]->context));
     }
 
     public function test_a_cleanup_step_that_throws_is_recorded_by_id_step_and_class(): void
@@ -270,5 +274,116 @@ class AttachmentStoreRollbackTest extends TestCase
             }
         }
         $this->assertStringNotContainsString('payroll', $thrown->getMessage());
+    }
+
+    /** The storage_path UPDATE throws a QueryException whose driver message is $message. */
+    private function storagePathUpdateThrows(string $message, int|string $code = 0, int $times = PHP_INT_MAX): void
+    {
+        $left = $times;
+        \Illuminate\Support\Facades\DB::beforeExecuting(function (string $sql, array $bindings) use ($message, $code, &$left) {
+            if (str_starts_with(strtolower($sql), 'update "attachments" set "storage_path"') && $left-- > 0) {
+                // The driver's code is a string ('40001'), which PDOException's constructor refuses.
+                $pdo = new class($message, $code) extends \PDOException
+                {
+                    public function __construct(string $message, int|string $code)
+                    {
+                        parent::__construct($message);
+                        $this->code = $code;
+                    }
+                };
+
+                throw new \Illuminate\Database\QueryException('sqlite', $sql, $bindings, $pdo);
+            }
+        });
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('stores')]
+    public function test_the_failed_jobs_row_for_a_storage_path_failure_carries_no_filename_or_sql(\Closure $store): void
+    {
+        // #6028: the database-uuids failer prod ships stores (string) $e in failed_jobs.exception.
+        // PHP's own string form appends each previous message (the SQL with the bound path) and,
+        // with exception_ignore_args off, each frame's arguments (the filename passed in).
+        $this->storagePathUpdateThrows('B6-SYNTHETIC-LOCK-REFUSED');
+        $ignoreArgs = ini_set('zend.exception_ignore_args', '0');
+        try {
+            $thrown = null;
+            try {
+                $store(app(AttachmentService::class), $this);
+            } catch (\Throwable $e) {
+                $thrown = $e;
+            }
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $ignoreArgs);
+        }
+        $this->assertInstanceOf(AttachmentStorePathFailedException::class, $thrown);
+        $this->assertStringContainsString('payroll-q3-example', (string) $thrown->getPrevious(), 'positive control: the chain carries the filename');
+
+        $this->assertSame('database-uuids', config('queue.failed.driver'), 'precondition: the shipped failer');
+        $uuid = (string) \Illuminate\Support\Str::uuid();
+        app('queue.failer')->log('database', 'default', json_encode(['uuid' => $uuid]), $thrown);
+        $stored = (string) \Illuminate\Support\Facades\DB::table('failed_jobs')->where('uuid', $uuid)->value('exception');
+
+        $this->assertStringContainsString($thrown->getMessage(), $stored, 'positive control: the row holds this exception');
+        $this->assertStringContainsString(\Illuminate\Database\QueryException::class, $stored, 'the previous class is kept');
+        foreach (['payroll', 'Payroll', '.xlsx', 'B6-SYNTHETIC-LOCK-REFUSED', '"storage_path"', 'update "attachments"', 'attachments/'] as $needle) {
+            $this->assertStringNotContainsString($needle, $stored, "#6028: no filename, path or SQL in failed_jobs.exception ({$needle})");
+        }
+    }
+
+    /** @return array<string, array{0: string, 1: int|string}> */
+    public static function passedThrough(): array
+    {
+        return [
+            'deadlock' => ['Deadlock found when trying to get lock; try restarting transaction', 0],
+            'lock wait' => ['Lock wait timeout exceeded; try restarting transaction', 0],
+            'serialization (40001)' => ['B6-SYNTHETIC-SERIALIZATION', '40001'],
+            'lost connection' => ['MySQL server has gone away', 0],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('passedThrough')]
+    public function test_a_concurrency_or_lost_connection_throw_is_not_wrapped(string $message, int|string $code): void
+    {
+        // #6029: the framework's detectors read the thrown exception itself, so these go out as
+        // the QueryException they are; the row and file are still rolled back.
+        $this->storagePathUpdateThrows($message, $code);
+
+        $thrown = null;
+        try {
+            app(AttachmentService::class)->storeFromContent('synthetic-bytes', self::FILENAME, 'text/plain');
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+
+        $this->assertInstanceOf(\Illuminate\Database\QueryException::class, $thrown, 'a caller catching QueryException still matches');
+        $this->assertSame(0, Attachment::withTrashed()->count(), 'rolled back as before');
+        $this->assertSame([], Storage::disk('local')->allFiles('attachments'));
+    }
+
+    public function test_a_deadlock_inside_a_transaction_reaches_the_frameworks_deadlock_handling(): void
+    {
+        // #6029: inside a nested DB::transaction (RefreshDatabase holds the outer one) the
+        // framework turns a deadlock into DeadlockException for the outermost level to retry;
+        // a wrapped throw was rethrown as itself.
+        $this->storagePathUpdateThrows('Deadlock found when trying to get lock; try restarting transaction', 0, 1);
+
+        $thrown = null;
+        try {
+            \Illuminate\Support\Facades\DB::transaction(fn () => app(AttachmentService::class)->storeFromContent('synthetic-bytes', self::FILENAME, 'text/plain'), 3);
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+
+        $this->assertInstanceOf(\Illuminate\Database\DeadlockException::class, $thrown);
+        $this->assertInstanceOf(\Illuminate\Database\QueryException::class, $thrown->getPrevious());
+    }
+
+    public function test_another_query_exception_is_still_wrapped(): void
+    {
+        // #6029 control: only the detectors' errors pass through; any other is id-only (#5805).
+        $this->storagePathUpdateThrows('B6-SYNTHETIC-CONSTRAINT');
+
+        $this->expectException(AttachmentStorePathFailedException::class);
+        app(AttachmentService::class)->storeFromContent('synthetic-bytes', self::FILENAME, 'text/plain');
     }
 }

@@ -70,15 +70,21 @@ class RetryEmailAttachments implements ShouldQueue
 
     /**
      * #5810/#5994: the after-commit push of this job threw. Context queued_row says what the
-     * read-back by push_id found: false (no row), null (not read back). ERROR (#5993).
+     * read-back by push_id found: false (no row of this dispatch in jobs or failed_jobs), null
+     * (not read back). ERROR (#5993). The commit work then runs inline; it runs a second time
+     * when a row was written after all: with null, or (#6026) with false when a worker had
+     * already run and deleted the row before the read-back (see queueAfterCommit()).
      */
     public const NOT_QUEUED = '[RetryEmailAttachments] Retry push threw';
 
-    /** #5994: the push threw, and the read-back found this dispatch's queue row; the job owns the rest. */
+    /**
+     * #5994: the push threw, and the read-back found this dispatch's row; the job owns the rest.
+     * Context found_in names the table: jobs, or (#6026) failed_jobs, where failed() ran.
+     */
     public const PUSH_THREW_ROW_FOUND = '[RetryEmailAttachments] Retry push threw; its queue row was found';
 
-    /** #5997: failed()'s rollback or re-delete of the queue row threw; 'step' names which. */
-    public const TIMEOUT_STEP_THREW = '[RetryEmailAttachments] Timeout rollback step threw';
+    /** #5997/#6043: failed()'s rollback or re-delete of the queue row threw; 'step' names which. */
+    public const TIMEOUT_STEP_THREW = '[RetryEmailAttachments] Timeout rollback or re-delete step threw';
 
     /** #5811: the commit work found no ticket or no email row and ran nothing. */
     public const COMMIT_SKIPPED = '[RetryEmailAttachments] Email-added commit work skipped';
@@ -144,8 +150,15 @@ class RetryEmailAttachments implements ShouldQueue
      */
     private static array $progress = [];
 
-    /** The progressKey() of the dispatch queueAfterCommit() is pushing; handle() clears it. */
-    private static ?string $pushing = null;
+    /**
+     * The progressKey()s of the dispatches queueAfterCommit() is pushing (#6038: a set, so a push
+     * nested inside another, for another key, leaves the outer key in place). Set before the
+     * push; removed by handle() or failed() of that dispatch when the sync queue runs it inside
+     * the push, and by queueAfterCommit() itself when the push throws and when it returns (#6041).
+     *
+     * @var array<string, true>
+     */
+    private static array $pushing = [];
 
     /**
      * #5457/#5810: queues this job once the outermost transaction commits (nothing on a
@@ -154,13 +167,22 @@ class RetryEmailAttachments implements ShouldQueue
      * unchanged: that run's failed() has already reported it, and it clears the push key so it
      * is not reported again here (#6004).
      *
-     * #5994: a throw means only that the push threw; the row may still have been written (an
-     * error after the INSERT committed, or a JobQueued listener). So the database queue is read
-     * back by $pushId first. A row found: PUSH_THREW_ROW_FOUND, and nothing more runs here, since
-     * the queued job owns the marker and the commit work. No row found (queued_row false), or not
-     * read back (queued_row null: another driver, or the read-back threw): NOT_QUEUED at ERROR
-     * (#5993: the record a monitor filtering at error sees) and notQueued(). With queued_row null
-     * a row may exist after all, and its run then does the commit work a second time.
+     * #5994: a throw means only that the push threw; the row may still have been written (in
+     * this app, a JobQueued listener that throws; #6027: a lost reply to the INSERT is not this
+     * shape, since at level 0 the connection re-runs the INSERT and the push returns, leaving two
+     * rows and no read-back). So this dispatch is read back by $pushId first (queuedRowFound()):
+     * its row in the queue table, its row in failed_jobs (#6026: failed() already ran), or the
+     * started marker its handle() writes (#6026: a worker ran it and deleted the row). Found:
+     * PUSH_THREW_ROW_FOUND with found_in, and nothing more runs here, since the job owns the
+     * marker and the commit work. Not found (queued_row false), or not read back (queued_row
+     * null: another driver, or a read-back step threw): NOT_QUEUED at ERROR (#5993: the record a
+     * monitor filtering at error sees) and notQueued().
+     *
+     * Which arms may run the commit work twice: queued_row null, when a row was written after
+     * all; and queued_row false when the row was consumed but its started marker is missing (the
+     * cache write in handle() threw, the entry expired before the read-back, or the cache store
+     * is not one the workers share, such as the array store). With null the
+     * note says the attachments may not have been added (#6035), since the queued run may add them.
      *
      * #6007: on that path the marker and the commit work run inside this callback, so in the
      * webhook they run before its 202 is sent.
@@ -169,60 +191,121 @@ class RetryEmailAttachments implements ShouldQueue
     {
         \Illuminate\Support\Facades\DB::afterCommit(function (): void {
             $key = $this->progressKey();
-            self::$pushing = $key;
+            self::$pushing[$key] = true;
             $this->pushId = (string) \Illuminate\Support\Str::uuid();
             try {
                 dispatch($this);
             } catch (\Throwable $e) {
-                if (self::$pushing !== $key) {
+                if (! isset(self::$pushing[$key])) {
                     throw $e;
                 }
-                self::$pushing = null;
+                unset(self::$pushing[$key]);
                 $found = $this->queuedRowFound();
                 try {
                     $context = ['email_id' => $this->emailId, 'ticket_id' => $this->ticketId, 'exception' => $e::class];
-                    if ($found === true) {
-                        Log::warning(self::PUSH_THREW_ROW_FOUND, $context);
+                    if (is_string($found)) {
+                        Log::warning(self::PUSH_THREW_ROW_FOUND, $context + ['found_in' => $found]);
                     } else {
                         Log::error(self::NOT_QUEUED, $context + ['queued_row' => $found]);
                     }
                 } catch (\Throwable) {
                 }
-                if ($found !== true) {
-                    $this->notQueued();
+                if (! is_string($found)) {
+                    $this->notQueued($found === null ? null : false);
                 }
             } finally {
-                self::$pushing = null;
+                unset(self::$pushing[$key]);
             }
         });
     }
 
+    /** #6026: the cache key handle() sets when a dispatch read back by $pushId starts. */
+    private static function startedKey(string $pushId): string
+    {
+        return 'retry-email-attachments:started:'.$pushId;
+    }
+
     /**
-     * #5994: whether this dispatch's row is in the database queue's table, read back by $pushId.
-     * Null when it cannot be told: not a database queue, or the read-back threw.
+     * #5994: where this dispatch was found, read back by $pushId: 'jobs' (its queue row),
+     * 'failed_jobs' (#6026: failed and recorded) or 'started' (#6026: its handle() ran, and the
+     * row may be gone). False: none of them. Null when it cannot be told: not a database queue,
+     * or a step threw before anything was found.
+     *
+     * #6025/#6034: a row counts only when it is this job's own: its displayName is this class and
+     * its command carries this pushId as its own property, so a row that embeds this command
+     * (another job's payload) or merely mentions the uuid does not. #6037: read on the write PDO,
+     * so a read replica cannot miss the row just inserted. #6031: narrowed to this dispatch's
+     * queue (an indexed column); the payload match itself is still a LIKE scan of that queue.
      */
-    private function queuedRowFound(): ?bool
+    private function queuedRowFound(): string|bool|null
     {
         try {
             $config = config('queue.connections.'.($this->connection ?? config('queue.default')));
             if (($config['driver'] ?? null) !== 'database' || $this->pushId === null) {
                 return null;
             }
-
-            return \Illuminate\Support\Facades\DB::connection($config['connection'] ?? null)
-                ->table($config['table'] ?? 'jobs')
+            $rows = \Illuminate\Support\Facades\DB::connection($config['connection'] ?? null)
+                ->table($config['table'] ?? 'jobs')->useWritePdo()
+                ->where('queue', $this->queue ?? $config['queue'] ?? 'default')
                 ->where('payload', 'like', '%'.$this->pushId.'%')
-                ->exists();
+                ->pluck('payload');
+            if ($this->ownRowIn($rows)) {
+                return 'jobs';
+            }
+
+            $failed = config('queue.failed');
+            if (in_array($failed['driver'] ?? null, ['database', 'database-uuids'], true)) {
+                $rows = \Illuminate\Support\Facades\DB::connection($failed['database'] ?? null)
+                    ->table($failed['table'] ?? 'failed_jobs')->useWritePdo()
+                    ->where('payload', 'like', '%'.$this->pushId.'%')
+                    ->pluck('payload');
+                if ($this->ownRowIn($rows)) {
+                    return 'failed_jobs';
+                }
+            }
+
+            return \Illuminate\Support\Facades\Cache::has(self::startedKey($this->pushId)) ? 'started' : false;
         } catch (\Throwable) {
             return null;
         }
     }
 
+    /**
+     * Whether one of $payloads is this dispatch's own: a job of this class whose command, itself
+     * this class, carries this pushId as its own property. Only this class is unserialised.
+     *
+     * @param  iterable<string>  $payloads
+     */
+    private function ownRowIn(iterable $payloads): bool
+    {
+        foreach ($payloads as $payload) {
+            $decoded = json_decode((string) $payload, true);
+            $command = $decoded['data']['command'] ?? null;
+            if (($decoded['displayName'] ?? null) !== self::class || ! is_string($command)
+                || ! str_starts_with($command, 'O:'.strlen(self::class).':"'.self::class.'"')) {
+                continue;
+            }
+            $job = @unserialize($command, ['allowed_classes' => [self::class]]);
+            if ($job instanceof self && $job->pushId === $this->pushId) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public function handle(EmailService $emails): void
     {
         $key = $this->progressKey();
-        if (self::$pushing === $key) {
-            self::$pushing = null;
+        unset(self::$pushing[$key]);
+        if ($this->pushId !== null) {
+            // #6026: what queueAfterCommit()'s read-back finds once a worker has run this
+            // dispatch and deleted its row; the read-back follows the push at once, so the entry
+            // is short-lived. Best effort: a miss here is the false arm's remainder.
+            try {
+                \Illuminate\Support\Facades\Cache::put(self::startedKey($this->pushId), true, now()->addMinutes(10));
+            } catch (\Throwable) {
+            }
         }
         // #5800: the level failed() rolls back to, whatever queue.failed says.
         self::$progress[$key] = ['level' => \Illuminate\Support\Facades\DB::transactionLevel()];
@@ -283,10 +366,11 @@ class RetryEmailAttachments implements ShouldQueue
      * another process (#5799: a job whose worker died is failed by the next worker that reserves
      * it, as MaxAttemptsExceededException). Final, never re-queued. On a timeout the worker calls
      * this in the killed process. The framework rolls an open transaction back first only when
-     * queue.failed names a database failer (Job::fail); #5800: so a timeout rolls back here to
-     * the level handle() started at, whatever that config says, before anything is read or
-     * written, and deletes the queue row again, since the framework's delete of it was inside
-     * that transaction. When the handle() of this dispatch already had the retry's outcome (it is still
+     * queue.failed names a database failer on this connection (Job::fail); #5800/#6040: when it
+     * did not, so a timeout finds the connection still above the level handle() started at, it
+     * rolls back here to that level before anything is read or written, and deletes the queue
+     * row again, since the framework's delete of it was inside that transaction. Under the
+     * shipped database-uuids failer neither runs here. When the handle() of this dispatch already had the retry's outcome (it is still
      * on the stack under a kill, or it threw after the outcome, #5820), that outcome is the one
      * reported: a re-queued run owns what follows; otherwise only the marker and the commit work
      * handle() had not started are run. When the kill landed inside the retry, abandonRetry
@@ -299,20 +383,22 @@ class RetryEmailAttachments implements ShouldQueue
     public function failed(?\Throwable $e): void
     {
         $key = $this->progressKey();
-        if (self::$pushing === $key) {
-            // #6004: the sync queue failed this run inside the push, before handle() ran (a
-            // JobProcessing listener, or resolving handle()'s arguments); it is reported here,
-            // so queueAfterCommit() rethrows the throw rather than reporting it as not queued.
-            self::$pushing = null;
-        }
+        // #6004: when the sync queue failed this run inside the push, before handle() ran (a
+        // JobProcessing listener, or resolving handle()'s arguments), it is reported here, so
+        // queueAfterCommit() rethrows the throw rather than reporting it as not queued.
+        unset(self::$pushing[$key]);
         $here = array_key_exists($key, self::$progress);
         $progress = self::$progress[$key] ?? [];
         $timedOut = $e instanceof \Illuminate\Queue\TimeoutExceededException;
         if ($here && $timedOut && \Illuminate\Support\Facades\DB::transactionLevel() > $progress['level']) {
-            // #5998: reached only when Job::fail did not roll back first, i.e. queue.failed names
-            // no database failer ('null' in the b4n queue:work kill evidence). Under the shipped
-            // database-uuids failer on the job's connection, Job::fail has already rolled back to
-            // level 0 and this branch is skipped (RetryEmailAttachmentsFailerTest).
+            // #5998/#6039: reached when this connection is still above handle()'s level after
+            // Job::fail. Job::fail rolls back to level 0 only for a timeout, and only on the
+            // connection queue.failed.database names, when queue.failed.driver is database or
+            // database-uuids; so this runs with no database failer ('null' in the b4n queue:work
+            // kill evidence), with queue.failed.database null, or naming another connection.
+            // Under the shipped database-uuids failer on the job's connection Job::fail has
+            // already rolled back to level 0 and this branch is skipped
+            // (RetryEmailAttachmentsFailerTest).
             $step = 'rollback';
             try {
                 \Illuminate\Support\Facades\DB::rollBack($progress['level']);
@@ -411,15 +497,18 @@ class RetryEmailAttachments implements ShouldQueue
     /**
      * #5810/#5994: this retry's push threw after the creating transaction committed, and no
      * queue row for it was found (or none could be read back; see queueAfterCommit()). Nothing
-     * was read or stored by a retry, so the marker names no ids. The commit work the job would
-     * have owned runs here instead. #5995: the notification runs here; the technician loop is
-     * only dispatched, onto the same queue whose push just threw, so while that queue is failing
-     * its dispatch fails too and is lost, recorded only as COMMIT_STEP_THREW (technician_dispatch).
-     * Never throws.
+     * was read or stored by a retry here, so the marker names no ids. #6035: $linked null (not
+     * read back) writes the link-unknown marker, since a row written after all may still link
+     * the attachments; false says they were not added. The commit work the job would have owned
+     * runs here instead. #5995/#6030: the notification runs here; the technician loop is only
+     * dispatched (afterCommit), onto the queue the technician job names. When that dispatch
+     * throws (as it does while the same database queue's inserts are failing) the loop is lost
+     * and recorded as COMMIT_STEP_THREW (technician_dispatch); when the push threw for another
+     * reason, it may be queued. Never throws.
      */
-    public function notQueued(): void
+    public function notQueued(?bool $linked = false): void
     {
-        $this->writeMarker('not_queued', []);
+        $this->writeMarker('not_queued', [], $linked);
         $this->runCommitWork();
     }
 
