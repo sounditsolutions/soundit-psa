@@ -297,15 +297,21 @@ class GraphWebhookControllerLoggingTest extends TestCase
     }
 
     /**
-     * #5770 positive control: an object Laravel's log line prints through __toString() (a PSR-7
-     * Uri, whose properties are private, and a Stringable whose properties hold only an encoded
-     * form) and an object with only private properties are read by the scan. Before #5770 each
-     * flattened to [] and a needle inside it was missed.
+     * #5770 positive control: three objects the scan must read, one per branch of
+     * flattenForScan()'s object walk.
+     * - A PSR-7 Uri. It is JsonSerializable and its jsonSerialize() returns the whole URL, so it
+     *   takes the jsonSerialize() branch, as in Monolog's NormalizerFormatter; the scan already
+     *   read it before #5770 (#5841). It stays as a plant for the JsonSerializable branch.
+     * - A Stringable that is not JsonSerializable and whose properties hold only an encoded form,
+     *   so only the __toString() branch yields the needles.
+     * - An object with only private properties, read by allProperties().
+     * Before #5770 the last two flattened to [] and a needle inside them was missed.
      */
     public function test_the_needle_scan_reads_a_stringable_and_a_private_property_object(): void
     {
         $uri = new \GuzzleHttp\Psr7\Uri('https://graph.microsoft.com/v1.0/'.self::resource());
-        $this->assertSame([], get_object_vars($uri), 'positive control: the Uri has no public property');
+        $this->assertInstanceOf(\JsonSerializable::class, $uri, 'positive control: the Uri takes the jsonSerialize() branch');
+        $this->assertSame((string) $uri, $uri->jsonSerialize(), 'positive control: its jsonSerialize() is the whole URL');
         $private = new class(self::resource())
         {
             public function __construct(private string $resource) {}
@@ -320,6 +326,7 @@ class GraphWebhookControllerLoggingTest extends TestCase
                 return (string) base64_decode($this->encoded);
             }
         };
+        $this->assertNotInstanceOf(\JsonSerializable::class, $stringable, 'positive control: the Stringable takes the __toString() branch');
         $this->logged = [
             new MessageLogged('error', 'Graph probe', ['uri' => $uri]),
             new MessageLogged('error', 'Graph probe', ['held' => $private]),

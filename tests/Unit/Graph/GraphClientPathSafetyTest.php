@@ -64,12 +64,12 @@ class GraphClientPathSafetyTest extends TestCase
 
         // The classic attack from the security review: an allowlisted owner, but an event_id
         // that tries to walk up and re-target a non-allowlisted mailbox.
-        $client->getEvent('charlie@soundit.co', '../../../users/billing@soundit.co/events/KNOWN');
+        $client->getEvent('owner@example.test', '../../../users/billing@example.test/events/KNOWN');
 
         $uri = $this->lastUri();
 
         // The mailbox segment on the wire MUST remain the allowlisted owner...
-        $this->assertStringContainsString('users/charlie%40soundit.co/events/', $uri);
+        $this->assertStringContainsString('users/owner%40example.test/events/', $uri);
         // ...and the traversal target must NOT appear as its own live path segment.
         $this->assertStringNotContainsString('/users/billing', $uri);
     }
@@ -78,10 +78,10 @@ class GraphClientPathSafetyTest extends TestCase
     {
         $client = $this->client(new Response(200, [], json_encode(['id' => 'x'])));
 
-        $client->getEvent('charlie@soundit.co', 'AAA/../BBB');
+        $client->getEvent('owner@example.test', 'AAA/../BBB');
 
         $uri = $this->lastUri();
-        $this->assertStringContainsString('users/charlie%40soundit.co/events/', $uri);
+        $this->assertStringContainsString('users/owner%40example.test/events/', $uri);
         // No bare separator survives inside the id — the slash is encoded.
         $this->assertStringContainsString('events/AAA%2F', $uri);
     }
@@ -90,10 +90,10 @@ class GraphClientPathSafetyTest extends TestCase
     {
         $client = $this->client(new Response(200, [], json_encode(['id' => 'x'])));
 
-        $client->getEvent('charlie@soundit.co', 'AAA?$select=secret#frag');
+        $client->getEvent('owner@example.test', 'AAA?$select=secret#frag');
 
         $uri = $this->lastUri();
-        $this->assertStringContainsString('users/charlie%40soundit.co/events/', $uri);
+        $this->assertStringContainsString('users/owner%40example.test/events/', $uri);
         // The ? and # are encoded, so no query string or fragment is introduced by the id.
         $this->assertStringNotContainsString('?$select', $uri);
         $this->assertStringNotContainsString('#frag', $uri);
@@ -105,10 +105,10 @@ class GraphClientPathSafetyTest extends TestCase
 
         // Defense in depth: even though the executor allowlist-gates the UPN, the transport
         // seam encodes it too, so it can never itself carry a traversal.
-        $client->calendarView('a/../b@soundit.co', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z');
+        $client->calendarView('a/../b@example.test', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z');
 
         $uri = $this->lastUri();
-        $this->assertStringContainsString('users/a%2F..%2Fb%40soundit.co/calendarView', $uri);
-        $this->assertStringNotContainsString('users/b@soundit.co', $uri);
+        $this->assertStringContainsString('users/a%2F..%2Fb%40example.test/calendarView', $uri);
+        $this->assertStringNotContainsString('users/b@example.test', $uri);
     }
 }

@@ -70,7 +70,7 @@ class GraphClientCalendarWriteTest extends TestCase
     {
         $client = $this->client(new Response(201, [], json_encode($this->returnedEvent())));
 
-        $event = $client->createEvent('charlie@soundit.co', [
+        $event = $client->createEvent('owner@example.test', [
             'subject' => 'Onsite: printer swap',
             'start' => ['dateTime' => '2026-07-29T15:00:00', 'timeZone' => 'UTC'],
             'end' => ['dateTime' => '2026-07-29T16:00:00', 'timeZone' => 'UTC'],
@@ -79,7 +79,7 @@ class GraphClientCalendarWriteTest extends TestCase
 
         $req = $this->last();
         $this->assertSame('POST', $req->getMethod());
-        $this->assertStringContainsString('users/charlie%40soundit.co/events', (string) $req->getUri());
+        $this->assertStringContainsString('users/owner%40example.test/events', (string) $req->getUri());
 
         $body = json_decode((string) $req->getBody(), true);
         $this->assertSame('Onsite: printer swap', $body['subject']);
@@ -94,20 +94,20 @@ class GraphClientCalendarWriteTest extends TestCase
         // A 201 with a malformed/empty event body (no id) must SCREAM, never read as created.
         $client = $this->client(new Response(201, [], json_encode(['subject' => 'no id'])));
         $this->expectException(GraphShapeDriftException::class);
-        $client->createEvent('charlie@soundit.co', ['subject' => 'x']);
+        $client->createEvent('owner@example.test', ['subject' => 'x']);
     }
 
     public function test_update_event_patches_and_encodes_the_event_id(): void
     {
         $client = $this->client(new Response(200, [], json_encode($this->returnedEvent())));
 
-        $event = $client->updateEvent('charlie@soundit.co', 'AAA/../BBB', ['subject' => 'Rescheduled']);
+        $event = $client->updateEvent('owner@example.test', 'AAA/../BBB', ['subject' => 'Rescheduled']);
 
         $req = $this->last();
         $this->assertSame('PATCH', $req->getMethod());
         $uri = (string) $req->getUri();
         // Owner stays the allowlisted mailbox; the id's slash is encoded so it cannot escape the segment.
-        $this->assertStringContainsString('users/charlie%40soundit.co/events/AAA%2F', $uri);
+        $this->assertStringContainsString('users/owner%40example.test/events/AAA%2F', $uri);
         $this->assertStringNotContainsString('/users/billing', $uri);
         $this->assertSame('Rescheduled', json_decode((string) $req->getBody(), true)['subject']);
         $this->assertSame('AAMkAG-new', $event['id']);
@@ -117,19 +117,19 @@ class GraphClientCalendarWriteTest extends TestCase
     {
         $client = $this->client(new Response(200, [], json_encode(['subject' => 'no id'])));
         $this->expectException(GraphShapeDriftException::class);
-        $client->updateEvent('charlie@soundit.co', 'AAA', ['subject' => 'x']);
+        $client->updateEvent('owner@example.test', 'AAA', ['subject' => 'x']);
     }
 
     public function test_cancel_event_posts_comment_to_the_cancel_action_and_cannot_escape_the_mailbox(): void
     {
         $client = $this->client(new Response(202, [], ''));
         // An allowlisted owner but an event_id that tries to walk to another mailbox.
-        $client->cancelEvent('charlie@soundit.co', '../../../users/billing@soundit.co/events/KNOWN', 'Rescheduling to next week');
+        $client->cancelEvent('owner@example.test', '../../../users/billing@example.test/events/KNOWN', 'Rescheduling to next week');
 
         $req = $this->last();
         $this->assertSame('POST', $req->getMethod());
         $uri = (string) $req->getUri();
-        $this->assertStringContainsString('users/charlie%40soundit.co/events/', $uri);
+        $this->assertStringContainsString('users/owner%40example.test/events/', $uri);
         $this->assertStringContainsString('/cancel', $uri);
         $this->assertStringNotContainsString('/users/billing', $uri);
         // Documented lowercase `comment` (parameter table is normative; the doc's example shows Comment).
@@ -139,7 +139,7 @@ class GraphClientCalendarWriteTest extends TestCase
     public function test_cancel_event_sends_an_empty_object_when_no_comment(): void
     {
         $client = $this->client(new Response(202, [], ''));
-        $client->cancelEvent('charlie@soundit.co', 'AAA', null);
+        $client->cancelEvent('owner@example.test', 'AAA', null);
         // An optional-body action with no comment posts {} (a JSON object), never a stray comment key.
         $this->assertSame('{}', (string) $this->last()->getBody());
     }
@@ -147,11 +147,11 @@ class GraphClientCalendarWriteTest extends TestCase
     public function test_respond_event_maps_tentative_to_the_tentatively_accept_action(): void
     {
         $client = $this->client(new Response(202, [], ''));
-        $client->respondEvent('charlie@soundit.co', 'AAA', 'tentative', 'Maybe', true);
+        $client->respondEvent('owner@example.test', 'AAA', 'tentative', 'Maybe', true);
 
         $req = $this->last();
         $this->assertSame('POST', $req->getMethod());
-        $this->assertStringContainsString('users/charlie%40soundit.co/events/AAA/tentativelyAccept', (string) $req->getUri());
+        $this->assertStringContainsString('users/owner%40example.test/events/AAA/tentativelyAccept', (string) $req->getUri());
         $body = json_decode((string) $req->getBody(), true);
         $this->assertSame('Maybe', $body['comment']);
         $this->assertTrue($body['sendResponse']);
@@ -161,7 +161,7 @@ class GraphClientCalendarWriteTest extends TestCase
     {
         foreach (['accept', 'decline'] as $response) {
             $client = $this->client(new Response(202, [], ''));
-            $client->respondEvent('charlie@soundit.co', 'AAA', $response, null, false);
+            $client->respondEvent('owner@example.test', 'AAA', $response, null, false);
             $req = $this->last();
             $this->assertStringContainsString("events/AAA/{$response}", (string) $req->getUri());
             // No comment key when none supplied; sendResponse always carried.
@@ -175,6 +175,6 @@ class GraphClientCalendarWriteTest extends TestCase
     {
         $client = $this->client(new Response(202, [], ''));
         $this->expectException(\InvalidArgumentException::class);
-        $client->respondEvent('charlie@soundit.co', 'AAA', 'maybe-later', null, true);
+        $client->respondEvent('owner@example.test', 'AAA', 'maybe-later', null, true);
     }
 }

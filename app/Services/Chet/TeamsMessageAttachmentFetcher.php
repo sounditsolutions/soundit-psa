@@ -7,6 +7,7 @@ use App\Services\Assistant\AssistantToolExecutor;
 use App\Services\AttachmentService;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
+use App\Services\Graph\GraphTokenException;
 use App\Services\Graph\GraphTokenRefreshFailedException;
 use Closure;
 use Illuminate\Support\Carbon;
@@ -308,10 +309,19 @@ class TeamsMessageAttachmentFetcher
         if ($tokenRefreshFailed) {
             return ['error' => "Teams {$what} read failed: Microsoft Graph answered HTTP {$status} and the PSA's Graph token refresh then failed, so no fresh token was obtained; nothing was read."];
         }
+        // #5833: getToken() failed before the read was sent, so there is no HTTP status to name.
+        if ($e instanceof GraphTokenException) {
+            return ['error' => "Teams {$what} read failed: the PSA could not obtain a Microsoft Graph access token, so the read was not sent; nothing was read."];
+        }
 
         return match ($status) {
-            401, 403 => ['error' => "Teams refused the {$what} read (HTTP {$status}): the PSA's Microsoft Graph app registration needs the ".TeamsChatReadToolset::HOSTED_CONTENT_PERMISSION.' application permission with admin consent to read chat images. Ask the operator to grant it; nothing was read.'],
+            // #5670: the status alone does not show why Graph refused, so the permission is named
+            // as something to check, never as the cause.
+            401, 403 => ['error' => "Teams refused the {$what} read (HTTP {$status}); nothing was read. The status alone does not show why. Ask the operator to check that the PSA's Microsoft Graph app registration has the ".TeamsChatReadToolset::HOSTED_CONTENT_PERMISSION.' application permission with admin consent; a missing permission is one possible cause.'],
             404 => ['error' => 'Attachment not found on this message'],
+            // #5833: status 0 is no HTTP status at all (no response arrived, or the failure was
+            // not a Graph HTTP failure), so it is never printed as 'HTTP 0'.
+            0 => ['error' => "Teams {$what} read failed with no HTTP status from Microsoft Graph; nothing was read."],
             default => ['error' => "Teams {$what} read failed (HTTP {$status}); nothing was read."],
         };
     }
