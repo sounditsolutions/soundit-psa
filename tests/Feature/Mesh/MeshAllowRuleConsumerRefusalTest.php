@@ -200,6 +200,41 @@ class MeshAllowRuleConsumerRefusalTest extends TestCase
         $this->assertStringNotContainsString('mesh-6062', $summary);
     }
 
+    /**
+     * #6105: Mesh answers the create with a redirect, which is not
+     * followed. Mesh received the create, so it may have committed: the
+     * approval reconciles (re-read, UNRESOLVED row, executed_with_fault),
+     * never a clean rejection, and nothing goes to the Location's host.
+     */
+    public function test_a_redirected_create_is_reconciled_fail_closed(): void
+    {
+        $actor = $this->actor();
+        $history = [];
+        $mock = new MockHandler([
+            new Response(307, ['Location' => 'http://elsewhere-6105.example.test/api/rule-allows-blocks/']),
+            new Response(200, [], '{"results":[],"count":0}'),
+        ]);
+        $stack = HandlerStack::create($mock);
+        $stack->push(\GuzzleHttp\Middleware::history($history));
+        $this->bindWrite(new MeshWriteClient(['api_key' => 'test-placeholder-not-a-key'], new GuzzleClient([
+            'base_uri' => 'https://mesh-6062.example.test/',
+            'handler' => $stack,
+        ])));
+        $run = $this->stageAdd();
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run));
+
+        $this->assertSame(['POST', 'GET'], array_map(fn (array $h): string => $h['request']->getMethod(), $history), 'the create, then the reconciling re-read; no hop to the Location');
+        foreach ($history as $h) {
+            $this->assertSame('mesh-6062.example.test', $h['request']->getUri()->getHost());
+        }
+        $this->assertSame(['executed_with_fault'], $this->auditStatuses());
+        $this->assertSame(MeshAllowRule::STATE_UNRESOLVED, MeshAllowRule::sole()->state);
+        $summary = (string) TechnicianActionLog::where('result_status', 'executed_with_fault')->value('summary');
+        $this->assertStringStartsWith('Mesh did not acknowledge the create (Mesh answered the create with HTTP 307)', $summary);
+        $this->assertStringNotContainsString('elsewhere-6105', $summary);
+    }
+
     /** ruleAbsent() with a null http: unmeasured (null), never absent. */
     public function test_rule_absent_with_a_null_http_is_unmeasured(): void
     {
