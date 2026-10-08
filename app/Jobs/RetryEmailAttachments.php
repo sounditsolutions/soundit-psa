@@ -68,8 +68,17 @@ class RetryEmailAttachments implements ShouldQueue
     /** #5811: one step of the email-added commit work threw; 'step' names which. */
     public const COMMIT_STEP_THREW = '[RetryEmailAttachments] Email-added commit work step threw';
 
-    /** #5810: the after-commit push of this job threw; the commit work ran without it. */
-    public const NOT_QUEUED = '[RetryEmailAttachments] Retry could not be queued';
+    /**
+     * #5810/#5994: the after-commit push of this job threw. Context queued_row says what the
+     * read-back by push_id found: false (no row), null (not read back). ERROR (#5993).
+     */
+    public const NOT_QUEUED = '[RetryEmailAttachments] Retry push threw';
+
+    /** #5994: the push threw, and the read-back found this dispatch's queue row; the job owns the rest. */
+    public const PUSH_THREW_ROW_FOUND = '[RetryEmailAttachments] Retry push threw; its queue row was found';
+
+    /** #5997: failed()'s rollback or re-delete of the queue row threw; 'step' names which. */
+    public const TIMEOUT_STEP_THREW = '[RetryEmailAttachments] Timeout rollback step threw';
 
     /** #5811: the commit work found no ticket or no email row and ran nothing. */
     public const COMMIT_SKIPPED = '[RetryEmailAttachments] Email-added commit work skipped';
@@ -85,6 +94,12 @@ class RetryEmailAttachments implements ShouldQueue
      * @var list<int>
      */
     public array $earlierUndiscarded = [];
+
+    /**
+     * #5994: a uuid set by queueAfterCommit() just before its push, carried in the queued
+     * payload, so a push that throws can be read back by it. Null on any other dispatch.
+     */
+    public ?string $pushId = null;
 
     /** @param  list<int>  $earlierUndiscarded */
     public function __construct(
@@ -134,37 +149,73 @@ class RetryEmailAttachments implements ShouldQueue
 
     /**
      * #5457/#5810: queues this job once the outermost transaction commits (nothing on a
-     * rollback). If the push itself throws (the jobs insert fails), the ticket is committed
-     * without a retry: that is recorded (NOT_QUEUED, a private ticket note via notQueued()) and
-     * the notification and technician loop run here instead of being lost. The push's throw is
-     * not rethrown, so the import is not reported as failed. A throw from a run of the job itself
-     * (the sync queue runs it inside the push) is rethrown unchanged: that run's failed() has
-     * already reported it.
+     * rollback). The push's throw is not rethrown, so the import is not reported as failed. A
+     * throw from a run of the job itself (the sync queue runs it inside the push) is rethrown
+     * unchanged: that run's failed() has already reported it, and it clears the push key so it
+     * is not reported again here (#6004).
+     *
+     * #5994: a throw means only that the push threw; the row may still have been written (an
+     * error after the INSERT committed, or a JobQueued listener). So the database queue is read
+     * back by $pushId first. A row found: PUSH_THREW_ROW_FOUND, and nothing more runs here, since
+     * the queued job owns the marker and the commit work. No row found (queued_row false), or not
+     * read back (queued_row null: another driver, or the read-back threw): NOT_QUEUED at ERROR
+     * (#5993: the record a monitor filtering at error sees) and notQueued(). With queued_row null
+     * a row may exist after all, and its run then does the commit work a second time.
+     *
+     * #6007: on that path the marker and the commit work run inside this callback, so in the
+     * webhook they run before its 202 is sent.
      */
     public function queueAfterCommit(): void
     {
         \Illuminate\Support\Facades\DB::afterCommit(function (): void {
             $key = $this->progressKey();
             self::$pushing = $key;
+            $this->pushId = (string) \Illuminate\Support\Str::uuid();
             try {
                 dispatch($this);
             } catch (\Throwable $e) {
                 if (self::$pushing !== $key) {
                     throw $e;
                 }
+                self::$pushing = null;
+                $found = $this->queuedRowFound();
                 try {
-                    Log::warning(self::NOT_QUEUED, [
-                        'email_id' => $this->emailId,
-                        'ticket_id' => $this->ticketId,
-                        'exception' => $e::class,
-                    ]);
+                    $context = ['email_id' => $this->emailId, 'ticket_id' => $this->ticketId, 'exception' => $e::class];
+                    if ($found === true) {
+                        Log::warning(self::PUSH_THREW_ROW_FOUND, $context);
+                    } else {
+                        Log::error(self::NOT_QUEUED, $context + ['queued_row' => $found]);
+                    }
                 } catch (\Throwable) {
                 }
-                $this->notQueued();
+                if ($found !== true) {
+                    $this->notQueued();
+                }
             } finally {
                 self::$pushing = null;
             }
         });
+    }
+
+    /**
+     * #5994: whether this dispatch's row is in the database queue's table, read back by $pushId.
+     * Null when it cannot be told: not a database queue, or the read-back threw.
+     */
+    private function queuedRowFound(): ?bool
+    {
+        try {
+            $config = config('queue.connections.'.($this->connection ?? config('queue.default')));
+            if (($config['driver'] ?? null) !== 'database' || $this->pushId === null) {
+                return null;
+            }
+
+            return \Illuminate\Support\Facades\DB::connection($config['connection'] ?? null)
+                ->table($config['table'] ?? 'jobs')
+                ->where('payload', 'like', '%'.$this->pushId.'%')
+                ->exists();
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     public function handle(EmailService $emails): void
@@ -248,20 +299,41 @@ class RetryEmailAttachments implements ShouldQueue
     public function failed(?\Throwable $e): void
     {
         $key = $this->progressKey();
+        if (self::$pushing === $key) {
+            // #6004: the sync queue failed this run inside the push, before handle() ran (a
+            // JobProcessing listener, or resolving handle()'s arguments); it is reported here,
+            // so queueAfterCommit() rethrows the throw rather than reporting it as not queued.
+            self::$pushing = null;
+        }
         $here = array_key_exists($key, self::$progress);
         $progress = self::$progress[$key] ?? [];
         $timedOut = $e instanceof \Illuminate\Queue\TimeoutExceededException;
-        if ($here && $timedOut) {
+        if ($here && $timedOut && \Illuminate\Support\Facades\DB::transactionLevel() > $progress['level']) {
+            // #5998: reached only when Job::fail did not roll back first, i.e. queue.failed names
+            // no database failer ('null' in the b4n queue:work kill evidence). Under the shipped
+            // database-uuids failer on the job's connection, Job::fail has already rolled back to
+            // level 0 and this branch is skipped (RetryEmailAttachmentsFailerTest).
+            $step = 'rollback';
             try {
-                if (\Illuminate\Support\Facades\DB::transactionLevel() > $progress['level']) {
-                    \Illuminate\Support\Facades\DB::rollBack($progress['level']);
-                    // Job::fail deleted the queue row inside the transaction just rolled back;
-                    // without this the row comes back and a later worker fails it a second time
-                    // (a second marker and commit work; measured with a real queue:work kill).
-                    $this->job?->delete();
+                \Illuminate\Support\Facades\DB::rollBack($progress['level']);
+                // Job::fail deleted the queue row inside the transaction just rolled back;
+                // without this the row comes back and a later worker fails it a second time, as
+                // MaxAttemptsExceeded, never re-running handle() (#5996): a second marker and
+                // commit work, measured with a real queue:work kill under the 'null' failer.
+                $step = 'requeue_delete';
+                $this->job?->delete();
+            } catch (\Throwable $stepFailure) {
+                // #5997: the re-delete did not run or did not finish, so the queue row may come
+                // back. C-56: ids, the step and the exception class only.
+                try {
+                    Log::warning(self::TIMEOUT_STEP_THREW, [
+                        'email_id' => $this->emailId,
+                        'ticket_id' => $this->ticketId,
+                        'step' => $step,
+                        'exception' => $stepFailure::class,
+                    ]);
+                } catch (\Throwable) {
                 }
-            } catch (\Throwable) {
-                // The kill that follows drops the connection, which rolls back as well.
             }
         }
         if ($here) {
@@ -337,10 +409,13 @@ class RetryEmailAttachments implements ShouldQueue
     }
 
     /**
-     * #5810: this retry could not be queued after the creating transaction committed (the push
-     * threw). Nothing was read or stored by a retry, so the marker names no ids; the commit work
-     * the job would have owned runs here instead, so the notification and the technician loop
-     * are not lost with the job. Never throws.
+     * #5810/#5994: this retry's push threw after the creating transaction committed, and no
+     * queue row for it was found (or none could be read back; see queueAfterCommit()). Nothing
+     * was read or stored by a retry, so the marker names no ids. The commit work the job would
+     * have owned runs here instead. #5995: the notification runs here; the technician loop is
+     * only dispatched, onto the same queue whose push just threw, so while that queue is failing
+     * its dispatch fails too and is lost, recorded only as COMMIT_STEP_THREW (technician_dispatch).
+     * Never throws.
      */
     public function notQueued(): void
     {

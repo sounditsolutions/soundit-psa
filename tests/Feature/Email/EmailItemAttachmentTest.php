@@ -1701,10 +1701,11 @@ class EmailItemAttachmentTest extends TestCase
         // any more. Exactly these keys and values, so a returning 'error' key fails here.
         $this->assertSame([
             'email_id' => $email->id,
-            'graph_id' => 'MSG-1',
             'status' => 500,
             'exception' => \App\Services\Graph\GraphClientException::class,
         ], $records[1]->context);
+        // #5804: the email id is enough; the Graph message id is not in the record.
+        $this->assertStringNotContainsString('MSG-1', $records[1]->message.json_encode($records[1]->context));
         $this->assertSame([], $this->graphFailureLeaks($records[1]), 'the WARNING carries no forbidden needle');
         // Positive control: the request that failed did hold the mailbox in its path.
         $this->assertStringContainsString('users/'.self::MAILBOX.'/messages/MSG-1', urldecode((string) end($this->history)['request']->getUri()));
@@ -1724,7 +1725,7 @@ class EmailItemAttachmentTest extends TestCase
         $this->assertCount(1, $records, $this->describe($records));
         $this->assertSame('[AttachmentService] Failed to fetch email attachments', $records[0]->message);
         $this->assertSame(
-            ['email_id' => $email->id, 'graph_id' => 'MSG-1', 'status' => null, 'exception' => \RuntimeException::class],
+            ['email_id' => $email->id, 'status' => null, 'exception' => \RuntimeException::class],
             $records[0]->context,
         );
         $this->assertNoLeakInLogs([self::NON_GRAPH_DETAIL, self::MAILBOX]);
