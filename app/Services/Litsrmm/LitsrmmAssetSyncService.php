@@ -172,10 +172,10 @@ use Illuminate\Support\Sleep;
  *    details['short_read_accept_unused'] (#5688, #5788, #5789). When a
  *    client's transaction throws, it is rolled back and the exception
  *    reaches the caller, so no result is returned: the PSA client ids of
- *    the codes that passed nothing (that client's, and those of clients
- *    the walk never reached) are only in the log record '[LitsrmmAssetSync]
- *    for each of these PSA client ids, an --accept-short-read code given
- *    for it passed nothing' (#5868). Nothing stores it: the
+ *    the codes that passed nothing are only in the log record
+ *    '[LitsrmmAssetSync] for each of these PSA client ids, an
+ *    --accept-short-read code given for it passed nothing', and the log
+ *    record lists them (#5868). Nothing stores it: the
  *    next run applies the bound again. The schedule and the Sync buttons
  *    never pass it. It does not override a degraded detail read.
  *  - A DEVICE THAT LEAVES loses only our link (litsrmm_device_id,
@@ -576,11 +576,11 @@ class LitsrmmAssetSyncService
      * first DIGEST_LENGTH lowercase hex digits of the sha256 of these bytes:
      * one line per vendor device id the read lists for the client (every
      * row, retired ones included), lowercased and sorted as strings, a line
-     * being the id alone for a device not listed as retired, the id then
-     * ' r' for one listed as retired, and the id then ' h' for one listed as
-     * half-retired (#5863: so the code binds which listed devices are
-     * retired, not only how many); then a line '--'; then the ids of the
-     * linked assets in $assetIds, sorted as integers; all joined by "\n",
+     * being the id alone for a device listed neither retired nor
+     * half-retired, the id then ' r' for one listed as retired, and the id
+     * then ' h' for one listed as half-retired (#5863: so the code binds
+     * which listed devices are retired, not only how many); then a line
+     * '--'; then the ids of the linked assets in $assetIds, sorted as integers; all joined by "\n",
      * with no line break at the end. An empty set adds no line, so an empty
      * read of a client whose assets 3 and 4 are linked hashes "--\n3\n4".
      * A read with no retired or half-retired device hashes the same bytes
@@ -588,11 +588,21 @@ class LitsrmmAssetSyncService
      * a message, a record or a log.
      *
      * refuseShortRead() passes as $assetIds every link the accepted run
-     * could release (#5864, #5869): the links the bound counts as unlisted,
-     * and each link whose device id the read lists while another asset of
-     * the client carries the same id (syncClient() keeps only one of them).
+     * could release (#5864, #5869), a link being an asset with a device id
+     * and no retired stamp (litsrmm_retired_at):
+     *  - the links the bound counts as unlisted;
+     *  - for each device the read lists and does not list as retired (a
+     *    half-retired one included), every link carrying its id except the
+     *    first asset by id that carries it, which is the asset syncClient()
+     *    takes as its link. An asset the sync stamped retired counts as
+     *    that first asset too, so when it is first by id every link
+     *    carrying the id is in the set;
+     *  - for each device the read lists as retired, every link carrying its
+     *    id that is not active, first or not (the retire step stamps only
+     *    active assets, so the release step clears this one). An active
+     *    link of a retired device is not in the set, first or not.
      * The run may release fewer of them, not more: it relinks some unlisted
-     * links by serial or hostname, and keeps one of each duplicate.
+     * links by serial or hostname, for example.
      *
      * @param  list<string>  $deviceIds
      * @param  list<int>  $assetIds
