@@ -1187,8 +1187,10 @@ PROMPT;
             }
         }
 
-        // #5394: a failed FIRST read is retried once, after the outermost transaction commits, by
-        // the queued RetryEmailAttachments job (#5457: the webhook's 202 no longer waits on it).
+        // #5394: a failed FIRST read is retried after the outermost transaction commits, by the
+        // queued RetryEmailAttachments job (#5457: the webhook's 202 no longer waits on it). The
+        // job makes one Graph read; a refusal whose cause can clear is re-queued once and that
+        // run reads Graph again, so a retry makes at most two reads (#5558, #5812).
         // #5455: only that retry is off the lock. The first read above still runs inside
         // autoCreateTicketFromEmail's transaction, under its lockForUpdate on the email row (and
         // under any lock a caller's own transaction holds), so it holds those locks through
@@ -1217,11 +1219,13 @@ PROMPT;
         // this method makes to the ticket and note. A write a caller makes later in the same
         // transaction is not in it and would refuse the retry. The job is queued only now, with
         // the note id and this baseline in its payload (#5711), and only once the outermost
-        // transaction commits (afterCommit): a rollback queues nothing.
+        // transaction commits (afterCommit): a rollback queues nothing. #5810: a push that throws
+        // after the commit is recorded and the commit work runs without the job
+        // (RetryEmailAttachments::queueAfterCommit).
         if ($messageReadFailed) {
-            \App\Jobs\RetryEmailAttachments::dispatch(
+            (new \App\Jobs\RetryEmailAttachments(
                 $email->id, $ticket->id, $note?->id, $this->retryBaseline($ticket->id, $note?->id),
-            )->afterCommit();
+            ))->queueAfterCommit();
         }
 
         Log::info('[EmailService] Auto-created ticket from email', [
@@ -1413,8 +1417,9 @@ PROMPT;
     }
 
     /**
-     * #5394: the one retry of a new ticket's failed message read, run by the queued
-     * RetryEmailAttachments job after the creating transaction commits. Its Graph read holds
+     * #5394: one run of the retry of a new ticket's failed message read, by the queued
+     * RetryEmailAttachments job after the creating transaction commits (a refusal whose cause
+     * can clear is re-queued once, and that run reads Graph again, #5812). Its Graph read holds
      * no lock and no transaction. What it writes on success matches a first-read success:
      * attachToNewTicket, then the note's body_html as linkEmailToTicket builds it (forward
      * provenance line included) and the note links. The job runs notifyEmailAdded and the
@@ -1449,7 +1454,9 @@ PROMPT;
      * Returns null when the retry linked what it read or the read had no attachments;
      * otherwise the outcome for the job's #5558 marker: the reason, whether the job may
      * re-queue it (a refusal whose cause can clear may, see refusalCanClear; a failed read or a
-     * throw may not) and the ids left undiscarded.
+     * throw may not) and the ids left undiscarded. #5801: a throw after the link wrote, whose
+     * read-back of the link also threw, returns RETRY_LINK_UNKNOWN with the kept rows' ids, so
+     * the job's marker says the link state is unknown instead of nothing being written.
      *
      * @param  array<string, mixed>|null  $baseline  retryBaseline() as the creating transaction left it
      * @return array{reason: string, requeueable: bool, undiscarded_attachment_ids: list<int>}|null
@@ -1580,7 +1587,12 @@ PROMPT;
                 // (a ticket note as well as a record) still reports the outcome.
             }
 
-            return $committed !== false ? null : self::retryOutcome('retry_threw', false, ($discard ?? self::NOTHING_DISCARDED)['undiscarded_attachment_ids']);
+            if ($committed === null) {
+                // #5801: the rows were kept unread; whether they are linked is not known.
+                return self::retryOutcome(self::RETRY_LINK_UNKNOWN, false, array_values(array_unique(self::$retryStoredIds ?? [])));
+            }
+
+            return $committed ? null : self::retryOutcome('retry_threw', false, ($discard ?? self::NOTHING_DISCARDED)['undiscarded_attachment_ids']);
         } finally {
             self::$retryStoredIds = $outerStoredIds;
             self::$retryLinked = $outerLinked;
@@ -1664,6 +1676,9 @@ PROMPT;
     }
 
     private const NOTHING_DISCARDED = ['stored_attachments' => 0, 'discarded_attachments' => 0, 'undiscarded_attachment_ids' => []];
+
+    /** #5801: the retry's reason when its link could not be read back after a throw. */
+    public const RETRY_LINK_UNKNOWN = 'link_state_unknown';
 
     /**
      * Force-deletes (row and stored file) the Attachment rows this retry stored. Does not throw.

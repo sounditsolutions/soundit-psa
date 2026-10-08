@@ -872,4 +872,201 @@ class RetryEmailAttachmentsJobTest extends TestCase
             'seen' => [['notifyEmailAdded', $ticketId, 1]],
         ], $atKill, 'the committed link is read back: nothing discarded, no not-added marker, notified once');
     }
+    // ── b4n fold-ins (#5782 residuals): #5800 #5820 #5810 #5811 #5816 ──
+
+    public function test_a_timeout_inside_the_link_rolls_back_in_failed_without_a_database_failer(): void
+    {
+        // #5800: the framework's Job::fail rolls back only with a database failer; with the
+        // failer switched off (as timeOut() does) and NO helper rollback, failed() itself must
+        // roll the link transaction back before it writes, or its marker and discard ride a
+        // transaction the kill then drops.
+        $this->graph([$this->failedRead()]);
+        $ticketId = $this->ticketWithQueuedRetry()->id;
+        $job = $this->popRetry();
+        $this->mock->append($this->read());
+        $atKill = null;
+        Attachment::updated(function (Attachment $a) use ($job, &$atKill, $ticketId) {
+            if ($a->attachable_type !== TicketNote::class || $atKill !== null) {
+                return;
+            }
+            config(['queue.failed.database' => null]);
+            $open = DB::transactionLevel() - $this->testLevel;
+            $e = \Illuminate\Queue\TimeoutExceededException::forJob($job);
+            $worker = app('queue.worker');
+            (fn () => $this->markJobAsFailedIfItShouldFailOnTimeout('database', $job, $e))->call($worker);
+            $atKill = [
+                'open_before' => $open,
+                'open_after' => DB::transactionLevel() - $this->testLevel,
+                'rows' => Attachment::withTrashed()->count(),
+                'markers' => array_map(fn ($r) => $r->context['reason'], $this->withMessage(RetryEmailAttachments::MARKER)),
+                'notes' => count($this->markerNotes($ticketId)),
+                // The framework's delete of the queue row ran inside the rolled-back transaction.
+                'queued_rows' => DB::table('jobs')->count(),
+            ];
+            for ($i = $atKill['open_after']; $i < $open; $i++) {
+                DB::beginTransaction();
+            }
+            throw new \RuntimeException('B4N-SYNTHETIC-KILLED'); // stands in for the kill
+        });
+
+        $job->fire();
+
+        $this->assertNotNull($atKill, 'positive control: the kill point was reached');
+        $this->assertSame(
+            ['open_before' => 1, 'open_after' => 0, 'rows' => 0, 'markers' => ['timed_out'], 'notes' => 1, 'queued_rows' => 0],
+            $atKill,
+            '#5800: failed() rolled the link back itself, then discarded and marked outside it, and the queue row stays deleted',
+        );
+    }
+
+    public function test_a_throw_out_of_handle_after_the_outcome_reports_that_outcome(): void
+    {
+        // #5820: the refusal leaves one id undiscarded, then its re-queue dispatch throws. The
+        // worker calls failed() next; it must report the refusal and the id, not job_failed [].
+        $this->graph([$this->failedRead(), $this->readWhileEditing('tech edit: lasting')]);
+        $ticket = $this->ticketWithQueuedRetry();
+        Attachment::forceDeleting(fn () => throw new \RuntimeException('B4N-SYNTHETIC-LOCK-WAIT'));
+        $job = $this->popRetry();
+        $command = $this->commandOf($job);
+        DB::beforeExecuting(function (string $sql) {
+            if (str_starts_with(strtolower($sql), 'insert into "jobs"')) {
+                throw new \RuntimeException('B4N-SYNTHETIC-JOBS-DOWN');
+            }
+        });
+
+        $thrown = null;
+        try {
+            $command->handle(app(EmailService::class));
+        } catch (\RuntimeException $e) {
+            $thrown = $e;
+        }
+        $this->assertSame('B4N-SYNTHETIC-JOBS-DOWN', $thrown?->getMessage(), 'positive control: the re-queue dispatch threw');
+        $command->failed($thrown);
+
+        $left = Attachment::withTrashed()->sole();
+        $marker = $this->withMessage(RetryEmailAttachments::MARKER);
+        $this->assertCount(1, $marker);
+        $this->assertSame(['ticket_changed', [$left->id]], [$marker[0]->context['reason'], $marker[0]->context['undiscarded_attachment_ids']],
+            "#5820: handle()'s outcome and its undiscarded id, not job_failed []");
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 0]], $this->seen->getArrayCopy());
+        $command->failed(new \RuntimeException('B4N-SYNTHETIC-OTHER'));
+        $this->assertSame([null], array_map(fn ($r) => $r->context['undiscarded_attachment_ids'], array_slice($this->withMessage(RetryEmailAttachments::MARKER), 1)),
+            'the kept progress is spent by that one failed(): a later failure reports unknown ids');
+    }
+
+    public function test_a_retry_push_that_throws_after_commit_is_recorded_and_the_commit_work_still_runs(): void
+    {
+        // #5810: the jobs insert fails after the ticket committed.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        DB::beforeExecuting(function (string $sql) {
+            if (str_starts_with(strtolower($sql), 'insert into "jobs"')) {
+                throw new \RuntimeException('B4N-SYNTHETIC-JOBS-DOWN');
+            }
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertNotNull($ticket, 'the import is not reported as failed');
+        $this->assertSame([], $this->retryRows(), 'positive control: nothing was queued');
+        $notQueued = $this->withMessage(RetryEmailAttachments::NOT_QUEUED);
+        $this->assertCount(1, $notQueued);
+        $this->assertSame(['email_id' => $email->id, 'ticket_id' => $ticket->id, 'exception' => \RuntimeException::class], $notQueued[0]->context);
+        $marker = $this->withMessage(RetryEmailAttachments::MARKER);
+        $this->assertSame(['not_queued', []], [$marker[0]->context['reason'] ?? null, $marker[0]->context['undiscarded_attachment_ids'] ?? null]);
+        $this->assertCount(1, $this->markerNotes($ticket->id));
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 0]], $this->seen->getArrayCopy(), 'the notification is not lost');
+    }
+
+    public static function commitStepThrows(): array
+    {
+        return [
+            'lookup' => ['lookup', 'select * from "tickets" where "tickets"."id" = ?'],
+            'technician dispatch' => ['technician_dispatch', null],
+            'notification' => ['notification', null],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('commitStepThrows')]
+    public function test_the_commit_work_warning_names_the_step_that_threw(string $step, ?string $sql): void
+    {
+        // #5811: the record names what threw, not "notification or technician dispatch".
+        $this->graph([$this->failedRead()]);
+        $ticket = $this->ticketWithQueuedRetry();
+        Setting::setValue('technician_enabled', true);
+        $command = $this->commandOf($this->popRetry());
+        $this->seen->exchangeArray([]);
+        if ($step === 'technician_dispatch') {
+            // The loop's push onto the database queue fails (its jobs insert).
+            DB::beforeExecuting(function (string $q) {
+                if (str_starts_with(strtolower($q), 'insert into "jobs"')) {
+                    throw new \RuntimeException('B4N-SYNTHETIC-PUSH');
+                }
+            });
+        } elseif ($step === 'notification') {
+            $this->app->instance(NotificationService::class, new class extends NotificationService
+            {
+                public function __construct() {}
+
+                public function notifyEmailAdded(Ticket $ticket, Email $email): void
+                {
+                    throw new \RuntimeException('B4N-SYNTHETIC-NOTIFY');
+                }
+            });
+        } else {
+            DB::beforeExecuting(function (string $q) use ($sql) {
+                if (str_starts_with($q, $sql)) {
+                    throw new \RuntimeException('B4N-SYNTHETIC-LOOKUP');
+                }
+            });
+        }
+
+        (fn () => $this->runCommitWork())->call($command);
+
+        $threw = $this->withMessage(RetryEmailAttachments::COMMIT_STEP_THREW);
+        $this->assertCount(1, $threw, 'one record, from the step that threw');
+        $this->assertSame(['email_id' => $command->emailId, 'ticket_id' => $ticket->id, 'step' => $step, 'exception' => \RuntimeException::class],
+            $threw[0]->context);
+    }
+
+    public function test_the_commit_work_records_a_missing_ticket_or_email(): void
+    {
+        // #5811: the arm that found no row used to return with no record.
+        $command = new RetryEmailAttachments(999001, 999002, null, []);
+
+        (fn () => $this->runCommitWork())->call($command);
+
+        $skipped = $this->withMessage(RetryEmailAttachments::COMMIT_SKIPPED);
+        $this->assertCount(1, $skipped);
+        $this->assertSame(['email_id' => 999001, 'ticket_id' => 999002, 'ticket_found' => false, 'email_found' => false], $skipped[0]->context);
+    }
+
+    public function test_the_commit_work_dispatches_the_technician_loop_after_commit(): void
+    {
+        // #5816: inside an open transaction the loop is not queued until it commits, and a
+        // rollback queues none.
+        $this->graph([$this->failedRead()]);
+        $ticket = $this->ticketWithQueuedRetry();
+        Setting::setValue('technician_enabled', true);
+        $command = $this->commandOf($this->popRetry());
+        $loops = fn () => DB::table('jobs')->get()->filter(fn ($r) => (json_decode($r->payload, true)['displayName'] ?? null) === \App\Jobs\RunTechnicianLoop::class)->count();
+
+        $inside = null;
+        DB::transaction(function () use ($command, $loops, &$inside) {
+            (fn () => $this->runCommitWork())->call($command);
+            $inside = $loops();
+        });
+        $this->assertSame([0, 1], [$inside, $loops()], 'queued at commit, not inside the transaction');
+
+        DB::table('jobs')->delete();
+        try {
+            DB::transaction(function () use ($command) {
+                (fn () => $this->runCommitWork())->call($command);
+                throw new \RuntimeException('B4N-SYNTHETIC-ROLLBACK');
+            });
+        } catch (\RuntimeException) {
+        }
+        $this->assertSame(0, $loops(), 'a rolled-back transaction queues no loop');
+    }
 }

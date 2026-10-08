@@ -62,6 +62,18 @@ class RetryEmailAttachments implements ShouldQueue
 
     public const EARLIER_UNDISCARDED = '[RetryEmailAttachments] Attachments an earlier run stored left undiscarded';
 
+    /** #5801: the marker when whether the retry's link committed could not be read back. */
+    public const MARKER_LINK_UNKNOWN = '[RetryEmailAttachments] Email attachments link state unknown';
+
+    /** #5811: one step of the email-added commit work threw; 'step' names which. */
+    public const COMMIT_STEP_THREW = '[RetryEmailAttachments] Email-added commit work step threw';
+
+    /** #5810: the after-commit push of this job threw; the commit work ran without it. */
+    public const NOT_QUEUED = '[RetryEmailAttachments] Retry could not be queued';
+
+    /** #5811: the commit work found no ticket or no email row and ran nothing. */
+    public const COMMIT_SKIPPED = '[RetryEmailAttachments] Email-added commit work skipped';
+
     /**
      * @param  array<string, mixed>|null  $baseline  EmailService::retryBaseline as the creating transaction left it
      */
@@ -117,10 +129,53 @@ class RetryEmailAttachments implements ShouldQueue
      */
     private static array $progress = [];
 
+    /** The progressKey() of the dispatch queueAfterCommit() is pushing; handle() clears it. */
+    private static ?string $pushing = null;
+
+    /**
+     * #5457/#5810: queues this job once the outermost transaction commits (nothing on a
+     * rollback). If the push itself throws (the jobs insert fails), the ticket is committed
+     * without a retry: that is recorded (NOT_QUEUED, a private ticket note via notQueued()) and
+     * the notification and technician loop run here instead of being lost. The push's throw is
+     * not rethrown, so the import is not reported as failed. A throw from a run of the job itself
+     * (the sync queue runs it inside the push) is rethrown unchanged: that run's failed() has
+     * already reported it.
+     */
+    public function queueAfterCommit(): void
+    {
+        \Illuminate\Support\Facades\DB::afterCommit(function (): void {
+            $key = $this->progressKey();
+            self::$pushing = $key;
+            try {
+                dispatch($this);
+            } catch (\Throwable $e) {
+                if (self::$pushing !== $key) {
+                    throw $e;
+                }
+                try {
+                    Log::warning(self::NOT_QUEUED, [
+                        'email_id' => $this->emailId,
+                        'ticket_id' => $this->ticketId,
+                        'exception' => $e::class,
+                    ]);
+                } catch (\Throwable) {
+                }
+                $this->notQueued();
+            } finally {
+                self::$pushing = null;
+            }
+        });
+    }
+
     public function handle(EmailService $emails): void
     {
         $key = $this->progressKey();
-        self::$progress[$key] = [];
+        if (self::$pushing === $key) {
+            self::$pushing = null;
+        }
+        // #5800: the level failed() rolls back to, whatever queue.failed says.
+        self::$progress[$key] = ['level' => \Illuminate\Support\Facades\DB::transactionLevel()];
+        $threw = false;
         try {
             $outcome = $emails->retryMessageRead($this->emailId, $this->ticketId, $this->noteId, $this->baseline);
             if (self::$progress[$key]['failed'] ?? false) {
@@ -147,7 +202,7 @@ class RetryEmailAttachments implements ShouldQueue
             if ($outcome !== null) {
                 self::uninterrupted(function () use ($key, $outcome): void {
                     self::$progress[$key]['marked'] = true;
-                    $this->writeMarker($outcome['reason'], $this->withEarlier($outcome['undiscarded_attachment_ids']));
+                    $this->writeMarker($outcome['reason'], $this->withEarlier($outcome['undiscarded_attachment_ids']), self::linkedOf($outcome));
                 });
             } elseif ($this->earlierUndiscarded !== []) {
                 self::uninterrupted(function () use ($key): void {
@@ -159,8 +214,16 @@ class RetryEmailAttachments implements ShouldQueue
                 self::$progress[$key]['committed'] = true;
                 $this->runCommitWork();
             });
+        } catch (\Throwable $e) {
+            // #5820: kept for the failed() the worker calls next in this process, so an outcome
+            // handle() already had (a refusal whose re-queue dispatch threw) is the one reported.
+            $threw = true;
+
+            throw $e;
         } finally {
-            unset(self::$progress[$key]);
+            if (! $threw) {
+                unset(self::$progress[$key]);
+            }
         }
     }
 
@@ -168,24 +231,45 @@ class RetryEmailAttachments implements ShouldQueue
      * The job failed: a timeout kill, a throw out of handle(), or a failure the worker records in
      * another process (#5799: a job whose worker died is failed by the next worker that reserves
      * it, as MaxAttemptsExceededException). Final, never re-queued. On a timeout the worker calls
-     * this in the killed process, after rolling back any open transaction. When the handle() it
-     * interrupted is still on the stack and already had the retry's outcome, that outcome stands:
-     * a re-queued run owns what follows; otherwise only the marker and the commit work handle()
-     * had not started are run. A throw out of handle() has already erased that progress
-     * (handle()'s finally), so it is reported as below (#5820). When the kill landed
-     * inside the retry, abandonRetry discards what the read stored unless the link committed, and
-     * the marker is written unless the link is known to have committed. When the failure is not a
-     * timeout and no handle() of this dispatch is on this process's stack (it ran in another
-     * process, or already returned or threw), what its retry stored is not known here: the
-     * marker's undiscarded_attachment_ids is null, not [].
+     * this in the killed process. The framework rolls an open transaction back first only when
+     * queue.failed names a database failer (Job::fail); #5800: so a timeout rolls back here to
+     * the level handle() started at, whatever that config says, before anything is read or
+     * written, and deletes the queue row again, since the framework's delete of it was inside
+     * that transaction. When the handle() of this dispatch already had the retry's outcome (it is still
+     * on the stack under a kill, or it threw after the outcome, #5820), that outcome is the one
+     * reported: a re-queued run owns what follows; otherwise only the marker and the commit work
+     * handle() had not started are run. When the kill landed inside the retry, abandonRetry
+     * discards what the read stored unless the link committed, and the marker is written unless
+     * the link is known to have committed. When the failure is not a timeout and no handle() of
+     * this dispatch had the retry's outcome in this process (it ran in another, or threw before
+     * the outcome), what its retry stored is not known here: the marker's
+     * undiscarded_attachment_ids is null, not [].
      */
     public function failed(?\Throwable $e): void
     {
         $key = $this->progressKey();
         $here = array_key_exists($key, self::$progress);
         $progress = self::$progress[$key] ?? [];
+        $timedOut = $e instanceof \Illuminate\Queue\TimeoutExceededException;
+        if ($here && $timedOut) {
+            try {
+                if (\Illuminate\Support\Facades\DB::transactionLevel() > $progress['level']) {
+                    \Illuminate\Support\Facades\DB::rollBack($progress['level']);
+                    // Job::fail deleted the queue row inside the transaction just rolled back;
+                    // without this the row comes back and a later worker fails it a second time
+                    // (a second marker and commit work; measured with a real queue:work kill).
+                    $this->job?->delete();
+                }
+            } catch (\Throwable) {
+                // The kill that follows drops the connection, which rolls back as well.
+            }
+        }
         if ($here) {
             self::$progress[$key]['failed'] = true;
+        }
+        if (! $timedOut) {
+            // A throw: handle() kept its progress for this call only (#5820).
+            unset(self::$progress[$key]);
         }
         if (array_key_exists('outcome', $progress)) {
             if ($progress['requeued'] ?? false) {
@@ -193,7 +277,7 @@ class RetryEmailAttachments implements ShouldQueue
             }
             $outcome = $progress['outcome'];
             if ($outcome !== null && ! ($progress['marked'] ?? false)) {
-                $this->writeMarker($outcome['reason'], $this->withEarlier($outcome['undiscarded_attachment_ids']));
+                $this->writeMarker($outcome['reason'], $this->withEarlier($outcome['undiscarded_attachment_ids']), self::linkedOf($outcome));
             } elseif ($outcome === null && $this->earlierUndiscarded !== [] && ! ($progress['marked'] ?? false)) {
                 $this->warnEarlierUndiscarded();
             }
@@ -204,10 +288,10 @@ class RetryEmailAttachments implements ShouldQueue
             return;
         }
 
-        $timedOut = $e instanceof \Illuminate\Queue\TimeoutExceededException;
         $discard = ['linked' => false, 'undiscarded_attachment_ids' => []];
-        if (! $here && ! $timedOut) {
-            // #5799: not this process's run; its tracking died with the process that stored.
+        if (! $timedOut) {
+            // #5799: not this process's run, or (#5820) a handle() here that threw before it had
+            // the retry's outcome; what that retry stored is not tracked any more.
             $discard['undiscarded_attachment_ids'] = null;
         } else {
             try {
@@ -216,7 +300,7 @@ class RetryEmailAttachments implements ShouldQueue
             }
         }
         if ($discard['linked'] !== true) {
-            $this->writeMarker($timedOut ? 'timed_out' : 'job_failed', $this->withEarlier($discard['undiscarded_attachment_ids']));
+            $this->writeMarker($timedOut ? 'timed_out' : 'job_failed', $this->withEarlier($discard['undiscarded_attachment_ids']), $discard['linked']);
         } elseif ($this->earlierUndiscarded !== []) {
             $this->warnEarlierUndiscarded();
         }
@@ -246,6 +330,24 @@ class RetryEmailAttachments implements ShouldQueue
         return "{$this->emailId}:{$this->ticketId}:{$this->refusals}";
     }
 
+    /** #5801: null when the retry's outcome says its link state could not be read back. */
+    private static function linkedOf(array $outcome): ?bool
+    {
+        return $outcome['reason'] === EmailService::RETRY_LINK_UNKNOWN ? null : false;
+    }
+
+    /**
+     * #5810: this retry could not be queued after the creating transaction committed (the push
+     * threw). Nothing was read or stored by a retry, so the marker names no ids; the commit work
+     * the job would have owned runs here instead, so the notification and the technician loop
+     * are not lost with the job. Never throws.
+     */
+    public function notQueued(): void
+    {
+        $this->writeMarker('not_queued', []);
+        $this->runCommitWork();
+    }
+
     /**
      * #5803: an earlier run left rows undiscarded, and the final run linked or its marker carries
      * null (its own ids not known in this process, #5799). C-56: ids only.
@@ -268,11 +370,16 @@ class RetryEmailAttachments implements ShouldQueue
      *                                       earlier runs' ids (#5803), known from the payload, then
      *                                       go in their own EARLIER_UNDISCARDED record
      */
-    private function writeMarker(string $reason, ?array $undiscarded): void
+    private function writeMarker(string $reason, ?array $undiscarded, ?bool $linked = false): void
     {
         if ($undiscarded === null && $this->earlierUndiscarded !== []) {
             $this->warnEarlierUndiscarded();
         }
+        // #5801: linked null means whether the link committed could not be read back; the rows
+        // were kept, so the record says the state is unknown rather than "not added".
+        $body = $linked === null
+            ? "Attachments from email #{$this->emailId} may not have been added to this ticket: whether they were linked could not be read back (reason: {$reason})."
+            : "Attachments from email #{$this->emailId} were not added to this ticket automatically (reason: {$reason}).";
         $noted = false;
         try {
             if (Ticket::whereKey($this->ticketId)->exists()) {
@@ -281,7 +388,7 @@ class RetryEmailAttachments implements ShouldQueue
                     'author_id' => null,
                     'author_name' => 'System',
                     'who_type' => WhoType::System,
-                    'body' => "Attachments from email #{$this->emailId} were not added to this ticket automatically (reason: {$reason}).",
+                    'body' => $body,
                     'note_type' => NoteType::System,
                     'is_private' => true,
                     'noted_at' => now(),
@@ -294,7 +401,7 @@ class RetryEmailAttachments implements ShouldQueue
 
         // C-56: ids, the reason, the re-queue count and whether the note was written only.
         try {
-            Log::warning(self::MARKER, [
+            Log::warning($linked === null ? self::MARKER_LINK_UNKNOWN : self::MARKER, [
                 'email_id' => $this->emailId,
                 'ticket_id' => $this->ticketId,
                 'reason' => $reason,
@@ -310,28 +417,59 @@ class RetryEmailAttachments implements ShouldQueue
     /**
      * The technician loop dispatch, then notifyEmailAdded, as linkEmailToTicket registers them.
      * Never throws: a throw here would fail the job and run failed(), which would run it again.
+     * #5811: each step is tried on its own, and a throw is recorded under the step that threw
+     * (lookup, technician_dispatch, notification); a missing ticket or email row is recorded
+     * too. #5816: the dispatch is afterCommit, as linkEmailToTicket's is, so a loop is never
+     * queued for writes a still-open transaction could roll back.
      */
     private function runCommitWork(): void
     {
         try {
             $ticket = Ticket::find($this->ticketId);
             $email = Email::find($this->emailId);
-            if ($ticket === null || $email === null) {
-                return;
-            }
-            if (TechnicianConfig::enabled() && ! $ticket->isUnverifiedContactIntake()) {
-                RunTechnicianLoop::dispatch($ticket->id);
-            }
-            app(NotificationService::class)->notifyEmailAdded($ticket, $email);
         } catch (\Throwable $e) {
+            $this->warnCommitStep('lookup', $e);
+
+            return;
+        }
+        if ($ticket === null || $email === null) {
             try {
-                Log::warning('[RetryEmailAttachments] Email-added notification or technician dispatch threw', [
+                Log::warning(self::COMMIT_SKIPPED, [
                     'email_id' => $this->emailId,
                     'ticket_id' => $this->ticketId,
-                    'exception' => $e::class,
+                    'ticket_found' => $ticket !== null,
+                    'email_found' => $email !== null,
                 ]);
             } catch (\Throwable) {
             }
+
+            return;
+        }
+        try {
+            if (TechnicianConfig::enabled() && ! $ticket->isUnverifiedContactIntake()) {
+                RunTechnicianLoop::dispatch($ticket->id)->afterCommit();
+            }
+        } catch (\Throwable $e) {
+            $this->warnCommitStep('technician_dispatch', $e);
+        }
+        try {
+            app(NotificationService::class)->notifyEmailAdded($ticket, $email);
+        } catch (\Throwable $e) {
+            $this->warnCommitStep('notification', $e);
+        }
+    }
+
+    /** #5811 / C-56: ids, the step that threw and the exception class only. */
+    private function warnCommitStep(string $step, \Throwable $e): void
+    {
+        try {
+            Log::warning(self::COMMIT_STEP_THREW, [
+                'email_id' => $this->emailId,
+                'ticket_id' => $this->ticketId,
+                'step' => $step,
+                'exception' => $e::class,
+            ]);
+        } catch (\Throwable) {
         }
     }
 }

@@ -224,9 +224,10 @@ class EmailItemAttachmentLoggingTest extends TestCase
         $this->assertNoRecordContains([self::MAILBOX, rawurlencode(self::MAILBOX), 'support%40', 'support@']);
     }
 
-    public function test_message_read_429_backoff_redacts_an_unencoded_mailbox_too(): void
+    public function test_message_read_429_backoff_record_carries_no_unencoded_mailbox(): void
     {
-        // getMessageAttachments interpolates the mailbox without seg(); the redaction covers it.
+        // getMessageAttachments interpolates the mailbox without seg(); the record carries no
+        // endpoint, so the unencoded mailbox is absent, not redacted (#5817).
         $graph = $this->graph([
             new Response(429, ['Retry-After' => '1'], '{}'),
             $this->expandResponse([]),
@@ -306,6 +307,27 @@ class EmailItemAttachmentLoggingTest extends TestCase
     }
 
     // ── #5398: a 401 whose token refresh fails is reported as Graph's 401 ──
+
+    public function test_message_read_401_then_failed_refresh_records_status_401_and_the_token_refresh_cause(): void
+    {
+        // #5813: the message read's record names the token failure as the item read's does.
+        $graph = $this->graph([
+            new Response(401, [], (string) json_encode(['error' => ['code' => 'InvalidAuthenticationToken']])),
+            $this->tokenRefusal(),
+        ]);
+        $email = $this->email();
+
+        $this->assertNull(app(AttachmentService::class)->downloadEmailAttachments($email, $graph, self::MAILBOX));
+
+        $this->assertCount(1, $this->requestsEndingWith('/oauth2/v2.0/token'), 'positive control: the refresh ran');
+        $failed = $this->withMessage('[AttachmentService] Failed to fetch email attachments');
+        $this->assertCount(1, $failed);
+        $this->assertSame([
+            'email_id' => $email->id, 'graph_id' => 'MSG-1', 'status' => 401,
+            'exception' => GraphTokenRefreshFailedException::class, 'token_refresh' => 'failed',
+        ], $failed[0]->context);
+        $this->assertNoRecordContains([self::TENANT, self::MAILBOX]);
+    }
 
     public function test_item_401_then_failed_refresh_is_reported_as_fetch_failed_401(): void
     {
