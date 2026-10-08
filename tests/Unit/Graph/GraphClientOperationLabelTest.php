@@ -156,7 +156,7 @@ class GraphClientOperationLabelTest extends TestCase
     public function test_a_next_link_label_ignores_the_host_and_the_query(): void
     {
         $host = 'calendar.chats.example.test';
-        $next = "https://{$host}/v1.0/users/".self::MAILBOX.'/messages?$skiptoken='.self::SKIP_CURSOR.'&x=/attachments';
+        $next = sprintf('https://%s/v1.0/users/%s/messages?$skiptoken=%s&x=/attachments', $host, self::MAILBOX, self::SKIP_CURSOR);
         $graph = $this->graph(self::page($next), self::failure(503));
         try {
             $graph->getAllPages('users/'.self::MAILBOX.'/messages/'.self::MESSAGE_ID);
