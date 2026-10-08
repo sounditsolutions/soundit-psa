@@ -1950,8 +1950,10 @@ class LitsrmmAssetSyncTest extends TestCase
         $this->assertSame([$this->client->id], $result->details['short_read_accept_unused']);
         $this->assertSame(5, Asset::whereNotNull('litsrmm_device_id')->count(), 'nothing released');
         // #5790: at every level and through Log::log / Log::write, not only
-        // warning. CONTROL (#5849): green at base 6144b475 too, where the
-        // degraded continue already came before the accepted log line.
+        // warning. CONTROL (#5849): green at base 8dfd830c too (the base of
+        // the L5 batch, as its other CONTROL labels; re-measured in L6,
+        // #5858), where the degraded continue already came before the
+        // accepted log line.
         self::assertNeverLogged('[LitsrmmAssetSync] client short read accepted by the operator for this run');
     }
 
@@ -2294,28 +2296,54 @@ class LitsrmmAssetSyncTest extends TestCase
     }
 
     /**
+     * #5870: no record at any level, nor through Log::log / Log::write, for
+     * which $matches($message, $context) holds.
+     */
+    private static function assertNoRecordMatches(callable $matches): void
+    {
+        foreach (self::LOG_LEVELS as $level) {
+            Log::shouldNotHaveReceived($level, fn ($message = null, $context = []) => $matches((string) $message, (array) $context));
+        }
+        foreach (['log', 'write'] as $generic) {
+            Log::shouldNotHaveReceived($generic, fn ($level = null, $message = null, $context = []) => $matches((string) $message, (array) $context));
+        }
+    }
+
+    /**
      * #5785: the device-set digest as the class docblock defines its bytes,
      * written out here rather than calling deviceSetDigest(), so a change to
      * any input, the sort or the length is seen: device ids lowercased and
-     * sorted as strings, a '--' line, the asset ids sorted as integers, joined
-     * by "\n"; 'd' and the first 10 hex of sha256.
+     * sorted as strings, each followed by ' r' when listed retired or ' h'
+     * when half-retired (#5863), a '--' line, the asset ids sorted as
+     * integers, joined by "\n"; 'd' and the first 10 hex of sha256.
      *
      * @param  list<string>  $deviceIds
      * @param  list<int>  $assetIds
+     * @param  array<string, string>  $marks  lowercased device id => 'r' or 'h'
      */
-    private static function digest(array $deviceIds, array $assetIds): string
+    private static function digest(array $deviceIds, array $assetIds, array $marks = []): string
     {
         $deviceIds = array_map('strtolower', $deviceIds);
         sort($deviceIds, SORT_STRING);
         sort($assetIds, SORT_NUMERIC);
+        $lines = array_map(fn (string $id) => isset($marks[$id]) ? "{$id} {$marks[$id]}" : $id, $deviceIds);
 
-        return 'd'.substr(hash('sha256', implode("\n", array_merge($deviceIds, ['--'], array_map('strval', $assetIds)))), 0, 10);
+        return 'd'.substr(hash('sha256', implode("\n", array_merge($lines, ['--'], array_map('strval', $assetIds)))), 0, 10);
     }
 
-    /** The digest of the rows the fake vendor serves now, and these assets released. */
+    /** The digest of the rows the fake vendor serves now (their retired states marked), and these assets released. */
     private function rowsDigest(array $assets = []): string
     {
-        return self::digest(array_column($this->rows, 'id'), array_map(fn (Asset $a) => $a->id, $assets));
+        $marks = [];
+        foreach ($this->rows as $row) {
+            $enrolled = $row['enrollmentState'] === 'retired';
+            $available = $row['availabilityState'] === 'retired';
+            if ($enrolled || $available) {
+                $marks[strtolower($row['id'])] = $enrolled && $available ? 'r' : 'h';
+            }
+        }
+
+        return self::digest(array_column($this->rows, 'id'), array_map(fn (Asset $a) => $a->id, $assets), $marks);
     }
 
     /** The lines of $text that are a refusal code exactly, untrimmed: what an admin copies. */
@@ -2635,6 +2663,14 @@ class LitsrmmAssetSyncTest extends TestCase
 
         $this->assertSame('d994d59dd6d', $digest);
         $this->assertSame('da16f4be135', LitsrmmAssetSyncService::deviceSetDigest([], [4, 3]), 'an empty read: "--\n3\n4"');
+        // #5863: sha256 of "<id 01> r\n<id 02>\n<id 0b> h\n--\n3\n12", computed
+        // outside PHP: a retired id carries ' r', a half-retired one ' h'.
+        $this->assertSame('d8130e54908', LitsrmmAssetSyncService::deviceSetDigest(
+            ['8f14e45f-ceea-467a-9f38-00000000000B', '8f14e45f-ceea-467a-9f38-000000000002', '8f14e45f-ceea-467a-9f38-000000000001'],
+            [12, 3],
+            ['8f14e45f-ceea-467a-9f38-000000000001'],
+            ['8f14e45f-ceea-467a-9f38-00000000000B'],
+        ));
         $this->assertSame(self::digest(['B', 'a'], [12, 3]), LitsrmmAssetSyncService::deviceSetDigest(['a', 'B'], [3, 12]));
     }
 
@@ -2697,9 +2733,7 @@ class LitsrmmAssetSyncTest extends TestCase
         foreach ($this->rows as $row) {
             $this->assertStringNotContainsString(substr($row['id'], -12), $text);
         }
-        foreach (self::LOG_LEVELS as $level) {
-            Log::shouldNotHaveReceived($level, fn ($message = null, $context = []) => str_contains($message.json_encode($context), substr($this->rows[0]['id'], -12)));
-        }
+        self::assertNoRecordMatches(fn (string $message, array $context) => str_contains($message.json_encode($context), substr($this->rows[0]['id'], -12)));
     }
 
     public function test_a_code_given_twice_in_one_run_passes_nothing(): void
@@ -2713,7 +2747,7 @@ class LitsrmmAssetSyncTest extends TestCase
 
         $this->assertArrayNotHasKey('short_read_accepted', $result->details);
         $this->assertSame(1, $result->details['short_read_refused']);
-        $this->assertStringContainsString('Its code was given to --accept-short-read more than once; a code passes one refusal once, so it was not passed.', $result->errorMessages[0]);
+        $this->assertStringContainsString('Its code was given to --accept-short-read more than once; a code passes one refusal once in a run, so it was not passed.', $result->errorMessages[0]);
         $this->assertStringNotContainsString('named a different refusal', $result->errorMessages[0]);
         $this->assertSame([$this->client->id], $result->details['short_read_accept_unused']);
         $this->assertNotNull($assets[4]->fresh()->litsrmm_device_id, 'nothing released');
@@ -2736,7 +2770,7 @@ class LitsrmmAssetSyncTest extends TestCase
         Sleep::assertSlept(fn ($duration) => (int) $duration->totalSeconds === LitsrmmAssetSyncService::EMPTY_READ_RETRY_SECONDS);
         $this->assertArrayNotHasKey('short_read_accepted', $result->details);
         $this->assertSame(1, $result->details['short_read_refused']);
-        $this->assertSame("client {$this->client->id}: the accepted empty read (rule a) was not confirmed: a second device list read 5 seconds later listed 2 device(s), so the empty read was transient; nothing of this client was changed", $result->errorMessages[0]);
+        $this->assertSame("client {$this->client->id}: the accepted empty read (rule a) was not confirmed: a second device list read, made 5 seconds after this client's turn in the run came, listed 2 of its device(s); nothing of this client was changed", $result->errorMessages[0]);
         $this->assertSame([$this->client->id], $result->details['short_read_accept_unused']);
         foreach ($assets as $asset) {
             $this->assertNotNull($asset->fresh()->litsrmm_device_id, 'nothing released');
@@ -2760,6 +2794,47 @@ class LitsrmmAssetSyncTest extends TestCase
         $this->assertArrayNotHasKey('short_read_accepted', $result->details);
         $this->assertSame("client {$this->client->id}: the accepted empty read (rule a) was not confirmed: the second device list read failed (HTTP 503); nothing of this client was changed", $result->errorMessages[0]);
         $this->assertNotNull($assets[0]->fresh()->litsrmm_device_id, 'nothing released');
+    }
+
+    public function test_a_failed_confirming_read_is_audited_and_counted(): void
+    {
+        // #5856: the catch arm of confirmEmptyRead() is fail-closed AND
+        // audited: a status-only record (C-56), the refusal counted, the code
+        // reported unused, the wait taken, and nothing of the client changed.
+        Log::spy();
+        $assets = $this->linkedAssets(2);
+        $this->service()->sync();
+        $this->rows = [];
+        $code = self::acceptCode($this->service()->sync());
+        $this->listQueue = [[], 503];
+
+        $result = $this->service()->sync(null, [$code]);
+
+        Sleep::assertSleptTimes(1);
+        $this->assertSame(1, $result->details['short_read_refused']);
+        $this->assertSame([$this->client->id], $result->details['short_read_accept_unused']);
+        $this->assertSame(1, $result->errors);
+        foreach ($assets as $asset) {
+            $this->assertNotNull($asset->fresh()->litsrmm_device_id, 'nothing released');
+        }
+        $this->assertSame(2, $this->licenses($this->client)['workstation']->quantity, 'nor the seats cut');
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmAssetSync] accepted empty read not confirmed: second list read failed'
+                && $context === ['client_id' => $this->client->id, 'kind' => 'http', 'status' => 503])
+            ->once();
+    }
+
+    public function test_the_refusal_says_the_code_changes_with_the_device_set_too(): void
+    {
+        // #5860: same counts, other links to release, a new code: the
+        // message says the code changes with more than the counts.
+        $this->linkedAssets(5);
+        $this->service()->sync();
+        $this->rows = array_slice($this->rows, 0, 1);
+
+        $result = $this->service()->sync();
+
+        $this->assertStringContainsString('so a later read refused the same way is refused again, with a code of its own when its counts, its device set or the links it could release differ.', $result->errorMessages[0]);
     }
 
     public function test_two_empty_reads_in_the_accept_run_release(): void
@@ -2810,9 +2885,104 @@ class LitsrmmAssetSyncTest extends TestCase
             ->withArgs(fn ($message, $context = []) => $message === '[LitsrmmAssetSync] refusal code for --accept-short-read'
                 && $context === ['client_id' => $this->client->id, 'refusal_code' => $code])
             ->once();
-        foreach (self::LOG_LEVELS as $level) {
-            Log::shouldNotHaveReceived($level, fn ($message = null) => str_contains((string) $message, "\n") || str_contains((string) $message, $code));
+        self::assertNoRecordMatches(fn (string $message) => str_contains($message, "\n") || str_contains($message, $code));
+    }
+
+    // ---- L6 (#5863, #5869): the digest binds retired state and every link the run releases ----
+
+    public function test_a_code_does_not_pass_a_read_whose_retired_devices_swapped(): void
+    {
+        // #5863: the admin checked a read listing device 1 live and device 2
+        // retired (rule b: 4 of 6 links unlisted). By the accept run device 1
+        // is retired and device 2 live: the same ids and the same counts.
+        Log::spy();
+        $assets = $this->linkedAssets(6);
+        $this->service()->sync();
+        $all = $this->rows;
+        $this->rows = [$all[0], array_merge($all[1], ['enrollmentState' => 'retired', 'availabilityState' => 'retired', 'retiredAt' => '2026-09-30T10:00:00.000Z'])];
+        $checked = $this->service()->sync();
+        $code = self::acceptCode($checked);
+        $this->assertStringContainsString('(rule b: the read lists 2 device(s); 4 of 6', $checked->errorMessages[0]);
+        $this->rows = [array_merge($all[0], ['enrollmentState' => 'retired', 'availabilityState' => 'retired', 'retiredAt' => '2026-09-30T10:00:00.000Z']), $all[1]];
+
+        $result = $this->service()->sync(null, [$code]);
+
+        $this->assertArrayNotHasKey('short_read_accepted', $result->details);
+        $this->assertSame(1, $result->details['short_read_refused']);
+        $this->assertStringContainsString('named a different refusal', $result->errorMessages[0]);
+        $this->assertSame(substr($code, 0, strrpos($code, ':')), substr(self::acceptCode($result), 0, strrpos(self::acceptCode($result), ':')), 'only the digest differs');
+        $this->assertTrue((bool) $assets[0]->fresh()->is_active, 'the asset the checked read showed live is not retired');
+        $this->assertNull($assets[0]->fresh()->litsrmm_retired_at);
+        foreach ($assets as $asset) {
+            $this->assertNotNull($asset->fresh()->litsrmm_device_id, 'nothing released');
         }
+        $this->assertSame([$this->client->id], $result->details['short_read_accept_unused']);
+    }
+
+    public function test_a_code_does_not_pass_a_read_whose_retired_device_became_half_retired(): void
+    {
+        // #5863: retired and half-retired count alike in retired_listed, so
+        // only the digest tells a retired device from a half-retired one.
+        $assets = $this->linkedAssets(6);
+        $this->service()->sync();
+        $all = $this->rows;
+        $this->rows = [$all[0], array_merge($all[1], ['enrollmentState' => 'retired', 'availabilityState' => 'retired', 'retiredAt' => '2026-09-30T10:00:00.000Z'])];
+        $code = self::acceptCode($this->service()->sync());
+        $this->rows = [$all[0], array_merge($all[1], ['enrollmentState' => 'enrolled', 'availabilityState' => 'retired'])];
+
+        $result = $this->service()->sync(null, [$code]);
+
+        $this->assertArrayNotHasKey('short_read_accepted', $result->details);
+        $this->assertStringContainsString('named a different refusal', $result->errorMessages[0]);
+        $this->assertStringEndsWith(':'.$this->rowsDigest(array_slice($assets, 2)), self::acceptCode($result), 'the half-retired row hashes with its own mark');
+    }
+
+    public function test_a_duplicate_link_the_accept_releases_is_in_the_digest(): void
+    {
+        // #5869: assets 1..5 link devices 1..5 and asset 6 also links device
+        // 1. The read lists device 1 only (rule b: 4 of 6 unlisted). The
+        // accepted run keeps asset 1 and releases assets 2..6, asset 6
+        // included, so the digest names exactly those.
+        $assets = $this->linkedAssets(5);
+        $this->service()->sync();
+        $dup = Asset::factory()->create(['client_id' => $this->client->id, 'hostname' => 'WORKSTATION-1-OLD', 'litsrmm_device_id' => $this->rows[0]['id'], 'last_user' => 'before']);
+        $this->assertSame($assets[0]->id, Asset::where('litsrmm_device_id', $this->rows[0]['id'])->orderBy('id')->value('id'));
+        $this->rows = array_slice($this->rows, 0, 1);
+
+        $refused = $this->service()->sync();
+        $code = self::acceptCode($refused);
+
+        $this->assertStringContainsString('(rule b: the read lists 1 device(s); 4 of 6', $refused->errorMessages[0]);
+        $this->assertStringEndsWith(':'.$this->rowsDigest([$assets[1], $assets[2], $assets[3], $assets[4], $dup]), $code);
+
+        $accepted = $this->service()->sync(null, [$code]);
+
+        $this->assertSame(1, $accepted->details['short_read_accepted']);
+        $this->assertNotNull($assets[0]->fresh()->litsrmm_device_id, 'the first carrier keeps its link');
+        $released = Asset::where('client_id', $this->client->id)->whereNull('litsrmm_device_id')->orderBy('id')->pluck('id')->all();
+        $this->assertSame([$assets[1]->id, $assets[2]->id, $assets[3]->id, $assets[4]->id, $dup->id], $released, 'exactly the digest\'s assets released');
+    }
+
+    public function test_an_inactive_asset_of_a_listed_retired_device_is_in_the_digest(): void
+    {
+        // #5869: an asset a person made inactive is not stamped retired, so
+        // the release step clears its link though the read lists its device.
+        $assets = $this->linkedAssets(6);
+        $this->service()->sync();
+        $assets[1]->update(['is_active' => false]);
+        $assets[1]->update(['litsrmm_device_id' => $this->rows[1]['id']]);
+        $all = $this->rows;
+        $this->rows = [$all[0], array_merge($all[1], ['enrollmentState' => 'retired', 'availabilityState' => 'retired', 'retiredAt' => '2026-09-30T10:00:00.000Z'])];
+
+        $code = self::acceptCode($this->service()->sync());
+
+        $this->assertStringEndsWith(':'.$this->rowsDigest([$assets[1], $assets[2], $assets[3], $assets[4], $assets[5]]), $code);
+
+        $accepted = $this->service()->sync(null, [$code]);
+
+        $this->assertSame(1, $accepted->details['short_read_accepted']);
+        $this->assertNull($assets[1]->fresh()->litsrmm_device_id, 'released, as the digest said');
+        $this->assertFalse((bool) $assets[1]->fresh()->is_active);
     }
 
     // ---- #5846: the zero-arm warning on rule (c) ----

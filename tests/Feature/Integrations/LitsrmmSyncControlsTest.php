@@ -140,13 +140,22 @@ class LitsrmmSyncControlsTest extends TestCase
     }
 
     /**
-     * #5853 / #5844: the scheduled path itself. The schedule event's own
-     * command line (what schedule:run hands the shell) is run through the
-     * console kernel in this process, with the real sync over a fake
-     * transport, after the event's own filters pass. Nothing is enabled
-     * outside this test's database. The log channel uses a JSON formatter,
-     * under which a line break in a message is escaped: the code is still
-     * found as the 'refusal_code' field and passes when fed back.
+     * #5853 / #5844 / #5857: the scheduled path, from the event's own
+     * command. The event's command ($event->command, which buildCommand()
+     * wraps in the redirect and the schedule:finish call) is split into its
+     * shell words: the first must be this PHP binary and the second
+     * 'artisan', and EVERY word after 'artisan' (not a name picked out of
+     * the line) is handed to the console kernel in this process, with the
+     * real sync over a fake transport, after the event's own filters pass;
+     * then onFailure runs through finish() with that exit code, as
+     * schedule:finish would. NOT exercised: a separate PHP process, its
+     * environment, schedule:run's dispatch, the overlap mutex and the
+     * background wrapper. A child process could not see this test's
+     * in-memory database and would reach the network (G-5). Nothing is
+     * enabled outside this test's database. The log channel uses a JSON
+     * formatter, under which a line break in a message is escaped: the
+     * code is still found as the 'refusal_code' field and passes when fed
+     * back.
      */
     public function test_a_scheduled_run_logs_its_refusal_code_as_a_field_under_a_json_formatter(): void
     {
@@ -169,11 +178,15 @@ class LitsrmmSyncControlsTest extends TestCase
         Setting::setValue('litsrmm_sync_schedule_enabled', '1');
         $event = $this->event();
         $this->assertTrue($event->filtersPass($this->app));
-        $line = $event->buildCommand();
-        $this->assertSame(1, preg_match("/'?artisan'?\\s+(litsrmm:sync-devices)\\s*>/", $line, $m), $line);
+        $this->assertStringStartsWith('('.$event->command." > '/dev/null' 2>&1 ; ", $event->buildCommand(), 'the shell runs the event command first, output discarded');
+        $words = str_getcsv((string) $event->command, ' ', "'", '');
+        $this->assertSame(\Illuminate\Support\php_binary(), $words[0], 'the PHP binary schedule:run would use');
+        $this->assertSame('artisan', $words[1], 'artisan, from the base path schedule:run works in');
+        $this->assertFileExists(base_path($words[1]));
+        $arguments = implode(' ', array_slice($words, 2));
 
         try {
-            $exit = Artisan::call($m[1]);
+            $exit = Artisan::call($arguments);
             $event->finish($this->app, $exit);
             $records = array_map(fn ($l) => json_decode($l, true), array_filter(explode("\n", (string) file_get_contents($path))));
         } finally {
