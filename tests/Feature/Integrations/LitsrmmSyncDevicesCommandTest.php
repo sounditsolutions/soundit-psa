@@ -13,6 +13,8 @@ use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
 use Mockery;
 use Psr\Http\Message\RequestInterface;
 use Tests\TestCase;
@@ -31,6 +33,11 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // G-5; #5785: an accepted empty read waits before its second list
+        // read, through the Sleep facade, faked here.
+        Http::preventStrayRequests();
+        Sleep::fake();
 
         Setting::setEncrypted('litsrmm_api_key', 'fake-'.bin2hex(random_bytes(8)));
         Setting::setValue('litsrmm_base_url', 'https://litsrmm.test');
@@ -136,12 +143,12 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $this->mapClient();
         $service = Mockery::mock(LitsrmmAssetSyncService::class);
         $service->shouldReceive('sync')->once()
-            ->withArgs(fn ($only, $accept) => $only === null && $accept === ['12:b:1:5:4:5:1:0', '34:d:2:0:0:1:0:2'])
+            ->withArgs(fn ($only, $accept) => $only === null && $accept === ['12:b:1:5:4:5:1:0:d0123456789', '34:d:2:0:0:1:0:2:dabcdef0123'])
             ->andReturn(new SyncResult);
         $this->app->instance(LitsrmmAssetSyncService::class, $service);
 
-        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ['12:b:1:5:4:5:1:0', '34:d:2:0:0:1:0:2']])
-            ->expectsOutputToContain('a short-read refusal is passed only if it matches exactly: 12:b:1:5:4:5:1:0, 34:d:2:0:0:1:0:2')
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ['12:b:1:5:4:5:1:0:d0123456789', '34:d:2:0:0:1:0:2:dabcdef0123']])
+            ->expectsOutputToContain('a short-read refusal is passed only if it matches exactly: 12:b:1:5:4:5:1:0:d0123456789, 34:d:2:0:0:1:0:2:dabcdef0123')
             ->doesntExpectOutputToContain('Accepting a short read')
             ->assertSuccessful();
     }
@@ -151,11 +158,11 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $client = $this->mapClient();
         $service = Mockery::mock(LitsrmmAssetSyncService::class);
         $service->shouldReceive('sync')->once()
-            ->withArgs(fn ($only, $accept) => $only?->id === $client->id && $accept === ["{$client->id}:a:0:1:1:0:0:0"])
+            ->withArgs(fn ($only, $accept) => $only?->id === $client->id && $accept === ["{$client->id}:a:0:1:1:0:0:0:d0123456789"])
             ->andReturn(new SyncResult);
         $this->app->instance(LitsrmmAssetSyncService::class, $service);
 
-        $this->artisan('litsrmm:sync-devices', ['--client' => $client->id, '--accept-short-read' => ["{$client->id}:a:0:1:1:0:0:0"]])
+        $this->artisan('litsrmm:sync-devices', ['--client' => $client->id, '--accept-short-read' => ["{$client->id}:a:0:1:1:0:0:0:d0123456789"]])
             ->assertSuccessful();
     }
 
@@ -209,6 +216,12 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         ])));
     }
 
+    /** The code of an empty read of a client whose only link is $asset (#5785). */
+    private static function emptyReadCode(Client $client, Asset $asset): string
+    {
+        return "{$client->id}:a:0:1:1:0:0:0:".LitsrmmAssetSyncService::deviceSetDigest([], [$asset->id]);
+    }
+
     private static function row(int $n): array
     {
         return [
@@ -237,7 +250,7 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $asset = Asset::factory()->create(['client_id' => $client->id, 'litsrmm_device_id' => self::row(1)['id']]);
         $this->realSync([]);
 
-        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["{$client->id}:a:0:1:1:0:0:0"]])
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => [self::emptyReadCode($client, $asset)]])
             ->expectsOutputToContain('Short read accepted by --accept-short-read: 1 client(s)')
             ->assertSuccessful();
         $this->assertNull($asset->fresh()->litsrmm_device_id);
@@ -290,7 +303,7 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $this->assertSame(1, \Illuminate\Support\Facades\Artisan::call('litsrmm:sync-devices'));
         $printed = \Illuminate\Support\Facades\Artisan::output();
         $codes = array_values(array_filter(explode("\n", $printed), fn (string $line) => LitsrmmAssetSyncService::isRefusalCode($line)));
-        $this->assertSame(["{$client->id}:a:0:1:1:0:0:0"], $codes, $printed);
+        $this->assertSame([self::emptyReadCode($client, $asset)], $codes, $printed);
 
         $this->assertSame(0, \Illuminate\Support\Facades\Artisan::call('litsrmm:sync-devices', ['--accept-short-read' => $codes]));
         $this->assertNull($asset->fresh()->litsrmm_device_id);
@@ -316,7 +329,7 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $service->shouldNotReceive('sync');
         $this->app->instance(LitsrmmAssetSyncService::class, $service);
 
-        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["0{$client->id}:a:0:1:1:0:0:0"]])
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["0{$client->id}:a:0:1:1:0:0:0:d0123456789"]])
             ->expectsOutputToContain('takes the refusal code a short-read refusal printed')
             ->assertFailed();
     }
@@ -330,7 +343,7 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $result->details['short_read_accept_unused'] = [$client->id];
         $this->syncReturns($result);
 
-        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["{$client->id}:a:0:1:1:0:0:0"]])
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["{$client->id}:a:0:1:1:0:0:0:d0123456789"]])
             ->expectsOutputToContain('the device list read failed so no client was examined')
             ->assertFailed();
     }
@@ -340,8 +353,19 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $install = (string) file_get_contents(base_path('docs/INSTALL.md'));
 
         $this->assertStringContainsString('**A bare client id is rejected; paste the code exactly.**', $install);
-        $this->assertStringContainsString('`[LitsrmmAssetSync] refusal code for --accept-short-read, on the next line:`', $install);
-        $this->assertStringContainsString("a Sync button's message shows it as the very last text of the message, after a space", $install);
+        // #5844: the scheduled path names the context field, not a line.
+        $this->assertStringContainsString('`refusal_code` of the `[LitsrmmAssetSync] refusal code for --accept-short-read` record', $install);
+        $this->assertStringNotContainsString('on the next line', $install);
+        // #5843: with two or more refusals only the last code ends the flash.
+        $this->assertStringContainsString('only the last refusal\'s code is the last text of the message; with two or more refused clients every other code is followed by a space and the next refusal', $install);
+        $this->assertStringNotContainsString('the very last text of the message, after a space', $install);
+        // #5785: the code shape line.
+        $this->assertStringContainsString('`<PSA client id>:<rule>:<listed>:<linked>:<unlisted>:<seats held>:<seats read>:<retired listed>:d<10 hex>`', $install);
+        // #5842: exactly half is not all skips.
+        $this->assertStringContainsString('each failure other than a 404 is an error that fails the run', $install);
+        $this->assertStringNotContainsString('is still skips', $install);
+        // #5850: why a code passed nothing, the degraded and rolled-back cases included.
+        $this->assertStringContainsString('when the client was then refused as a degraded detail read, when its changes were rolled back by an error', $install);
         $this->assertStringContainsString('`left_before_detail_read`', $install, '#5794: the renamed skip reason');
     }
 
@@ -350,7 +374,7 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $client = $this->mapClient();
         $this->realSync([self::row(1)]);
 
-        $this->artisan('litsrmm:sync-devices', ['--client' => $client->id, '--accept-short-read' => ['71:a:0:1:1:0:0:0']])
+        $this->artisan('litsrmm:sync-devices', ['--client' => $client->id, '--accept-short-read' => ['71:a:0:1:1:0:0:0:d0123456789']])
             ->expectsOutputToContain('For each of PSA client ID(s) 71, an --accept-short-read code given for it passed nothing')
             ->doesntExpectOutputToContain('Short read accepted')
             ->assertSuccessful();
@@ -366,10 +390,53 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         // fed back, is what passes the refusal.
         $this->artisan('litsrmm:sync-devices')
             ->expectsOutputToContain('--accept-short-read set to the code that follows, pasted exactly')
-            ->expectsOutput("{$client->id}:a:0:1:1:0:0:0")
+            ->expectsOutput(self::emptyReadCode($client, $asset))
             ->assertFailed();
-        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["{$client->id}:a:0:1:1:0:0:0"]])
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => [self::emptyReadCode($client, $asset)]])
             ->assertSuccessful();
+        $this->assertNull($asset->fresh()->litsrmm_device_id);
+    }
+
+    // ---- #5785: old-format codes, the code shape ----
+
+    public function test_an_old_format_code_is_rejected_with_the_re_run_message(): void
+    {
+        $client = $this->mapClient();
+        $service = Mockery::mock(LitsrmmAssetSyncService::class);
+        $service->shouldNotReceive('sync');
+        $this->app->instance(LitsrmmAssetSyncService::class, $service);
+
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["{$client->id}:b:1:5:4:5:1:0"]])
+            ->expectsOutputToContain('a refusal code in the old shape, without the device-set digest that now ends it (e.g. 12:b:1:5:4:5:1:0:d0123456789). Re-run litsrmm:sync-devices without the option and paste the new code it prints. Nothing was read.')
+            ->assertFailed();
+    }
+
+    public function test_a_code_with_a_wrong_length_digest_is_not_a_code(): void
+    {
+        // CONTROL: green at base 8dfd830c too (base rejected any 9th field);
+        // it kills the truncation-length and the case mutants of the shape.
+        $client = $this->mapClient();
+        $service = Mockery::mock(LitsrmmAssetSyncService::class);
+        $service->shouldNotReceive('sync');
+        $this->app->instance(LitsrmmAssetSyncService::class, $service);
+
+        foreach (["{$client->id}:b:1:5:4:5:1:0:d012345678", "{$client->id}:b:1:5:4:5:1:0:d0123456789a", "{$client->id}:b:1:5:4:5:1:0:d0123456789A", "{$client->id}:b:1:5:4:5:1:0:0123456789a"] as $code) {
+            $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => [$code]])
+                ->expectsOutputToContain('takes the refusal code a short-read refusal printed')
+                ->assertFailed();
+        }
+    }
+
+    public function test_the_accept_run_of_an_empty_read_reads_the_list_twice(): void
+    {
+        // #5785 (ii) through the command: the second read confirms.
+        $client = $this->mapClient();
+        $asset = Asset::factory()->create(['client_id' => $client->id, 'litsrmm_device_id' => self::row(1)['id']]);
+        $this->realSync([]);
+
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => [self::emptyReadCode($client, $asset)]])
+            ->assertSuccessful();
+        Sleep::assertSleptTimes(1);
         $this->assertNull($asset->fresh()->litsrmm_device_id);
     }
 }

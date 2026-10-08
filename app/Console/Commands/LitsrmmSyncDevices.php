@@ -18,24 +18,28 @@ use Illuminate\Console\Command;
  * through the short-read bound for a client whose change an admin has checked
  * is real (a re-enrollment wave, a decommission, a single-device client's
  * last machine retired). The code is the value a refusal message prints on a
- * line of its own, nothing after it (#5786): the PSA client id, the rule and
- * the counts the admin checked. Paste that line exactly; a bare client id is
- * rejected and nothing is read. A manual run without the option prints the
- * code; a scheduled run's output goes nowhere, so its code is in the
- * log: on the line after '[LitsrmmAssetSync] refusal code for
- * --accept-short-read, on the next line:', and under 'code' in the
- * '[LitsrmmAssetSync] client refused: short read' line.
+ * line of its own, nothing after it (#5786): the PSA client id, the rule,
+ * the counts the admin checked and the device-set digest (#5785). Paste that
+ * line exactly; a bare client id is rejected, and so is a code in the shape
+ * from before the digest (re-run and paste the new code); nothing is read.
+ * A manual run without the option prints the code; a scheduled run's output
+ * goes nowhere, so its code is in the log, as the context field
+ * 'refusal_code' of the '[LitsrmmAssetSync] refusal code for
+ * --accept-short-read' record and 'code' of the '[LitsrmmAssetSync] client
+ * refused: short read' record (#5844).
  * That run passes that refusal only, and only if its read refuses the client
- * with exactly that rule and those counts (#5680); any other refusal of the
- * client is refused as usual. A code that passed nothing is reported by PSA
- * client id (#5688). It applies to that run only, nothing stores it, and
- * neither the schedule nor the Sync buttons pass it.
+ * with exactly that rule, those counts and that device set (#5680, #5785);
+ * any other refusal of the client is refused as usual. A code given twice
+ * passes nothing, and an accepted empty read (rule a) passes only if a
+ * second list read in the run is empty too. A code that passed nothing is
+ * reported by PSA client id (#5688). It applies to that run only, nothing
+ * stores it, and neither the schedule nor the Sync buttons pass it.
  */
 class LitsrmmSyncDevices extends Command
 {
     protected $signature = 'litsrmm:sync-devices
         {--client= : Sync devices for one client ID only}
-        {--accept-short-read=* : The refusal code a short-read refusal printed (PSA client id, rule and counts), once you have checked the change is real; applies to this run only}';
+        {--accept-short-read=* : The refusal code a short-read refusal printed (PSA client id, rule, counts and device-set digest), once you have checked the change is real; applies to this run only}';
 
     protected $description = 'Sync devices from LITSRMM into PSA assets for mapped clients';
 
@@ -55,9 +59,16 @@ class LitsrmmSyncDevices extends Command
 
         $accept = $this->option('accept-short-read');
         foreach ($accept as $code) {
+            if (LitsrmmAssetSyncService::isPreDigestRefusalCode((string) $code)) {
+                // #5785: a code from before the device-set digest can never match.
+                $this->error('--accept-short-read was given a refusal code in the old shape, without the device-set digest that now ends it '
+                    .'(e.g. 12:b:1:5:4:5:1:0:d0123456789). Re-run litsrmm:sync-devices without the option and paste the new code it prints. Nothing was read.');
+
+                return self::FAILURE;
+            }
             if (! LitsrmmAssetSyncService::isRefusalCode((string) $code)) {
                 $this->error('--accept-short-read takes the refusal code a short-read refusal printed '
-                    .'(PSA client id, rule and counts, e.g. 12:b:1:5:4:5:1:0), pasted exactly; a bare client id is rejected. Nothing was read.');
+                    .'(PSA client id, rule, counts and device-set digest, e.g. 12:b:1:5:4:5:1:0:d0123456789), pasted exactly; a bare client id is rejected. Nothing was read.');
 
                 return self::FAILURE;
             }
@@ -113,7 +124,8 @@ class LitsrmmSyncDevices extends Command
             $this->warn('  For each of PSA client ID(s) '
                 .implode(', ', $result->details['short_read_accept_unused'])
                 .', an --accept-short-read code given for it passed nothing (outside --client, not a mapped active client, its read did not refuse it with exactly that code,'
-                .' it was then refused as a degraded detail read, the device list read failed so no client was examined,'
+                .' the code was given more than once, a second list read did not confirm an empty read,'
+                .' it was then refused as a degraded detail read, its changes were rolled back, the device list read failed so no client was examined,'
                 .' or another code for the same client passed)');
         }
 

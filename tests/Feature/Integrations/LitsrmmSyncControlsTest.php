@@ -10,11 +10,18 @@ use App\Models\LicenseType;
 use App\Models\Setting;
 use App\Models\User;
 use App\Services\Litsrmm\LitsrmmAssetSyncService;
+use App\Services\Litsrmm\LitsrmmClient;
 use App\Services\SyncResult;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Promise\Create;
+use GuzzleHttp\Psr7\Response;
 use Illuminate\Console\Scheduling\Event;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Sleep;
 use Mockery;
 use Tests\TestCase;
 
@@ -132,6 +139,57 @@ class LitsrmmSyncControlsTest extends TestCase
         $this->assertMatchesRegularExpression("/litsrmm:sync-devices'?\\s*$/", $command, 'the scheduled command carries no option at all');
     }
 
+    /**
+     * #5853 / #5844: the scheduled path itself. The schedule event's own
+     * command line (what schedule:run hands the shell) is run through the
+     * console kernel in this process, with the real sync over a fake
+     * transport, after the event's own filters pass. Nothing is enabled
+     * outside this test's database. The log channel uses a JSON formatter,
+     * under which a line break in a message is escaped: the code is still
+     * found as the 'refusal_code' field and passes when fed back.
+     */
+    public function test_a_scheduled_run_logs_its_refusal_code_as_a_field_under_a_json_formatter(): void
+    {
+        Http::preventStrayRequests();
+        Sleep::fake();
+        $client = $this->mapped();
+        $asset = Asset::factory()->create(['client_id' => $client->id, 'litsrmm_device_id' => '8f14e45f-ceea-467a-9f38-000000000001']);
+        $handler = fn ($request) => Create::promiseFor(new Response(200, ['Content-Type' => 'application/json'], json_encode(['devices' => [], 'nextCursor' => null])));
+        $this->app->instance(LitsrmmAssetSyncService::class, new LitsrmmAssetSyncService(new LitsrmmClient([
+            'api_key' => 'fake-'.bin2hex(random_bytes(8)),
+            'base_url' => 'https://litsrmm.test',
+            'handler' => HandlerStack::create($handler),
+            'request_timeout' => 5,
+        ])));
+        $path = storage_path('logs/litsrmm-l5-json-'.bin2hex(random_bytes(4)).'.log');
+        config([
+            'logging.channels.l5json' => ['driver' => 'single', 'path' => $path, 'level' => 'debug', 'formatter' => \Monolog\Formatter\JsonFormatter::class],
+            'logging.default' => 'l5json',
+        ]);
+        Setting::setValue('litsrmm_sync_schedule_enabled', '1');
+        $event = $this->event();
+        $this->assertTrue($event->filtersPass($this->app));
+        $line = $event->buildCommand();
+        $this->assertSame(1, preg_match("/'?artisan'?\\s+(litsrmm:sync-devices)\\s*>/", $line, $m), $line);
+
+        try {
+            $exit = Artisan::call($m[1]);
+            $event->finish($this->app, $exit);
+            $records = array_map(fn ($l) => json_decode($l, true), array_filter(explode("\n", (string) file_get_contents($path))));
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertSame(1, $exit, 'a refused client fails the scheduled run');
+        $codes = array_values(array_filter(array_map(fn ($r) => $r['context']['refusal_code'] ?? null, $records)));
+        $expected = "{$client->id}:a:0:1:1:0:0:0:".LitsrmmAssetSyncService::deviceSetDigest([], [$asset->id]);
+        $this->assertSame([$expected], $codes);
+        $this->assertContains('[LitsrmmSyncDevices] scheduled run failed', array_column($records, 'message'));
+
+        $this->assertSame(0, Artisan::call('litsrmm:sync-devices', ['--accept-short-read' => $codes]), 'the field, as logged, is accepted');
+        $this->assertNull($asset->fresh()->litsrmm_device_id);
+    }
+
     public function test_the_scheduled_output_is_not_written_to_a_file(): void
     {
         // The skip lines it prints carry hostnames (C-56).
@@ -172,7 +230,7 @@ class LitsrmmSyncControlsTest extends TestCase
         // #5786 / #5690: the button run's message ends with the code on a
         // line of its own, nothing after it; the button itself never accepts.
         $client = $this->mapped();
-        $code = "{$client->id}:b:1:5:4:5:1:0";
+        $code = "{$client->id}:b:1:5:4:5:1:0:d0123456789";
         $result = new SyncResult;
         $result->recordError("client {$client->id}: refused as a short read (rule b: fixture). If the change is real, re-run litsrmm:sync-devices with --accept-short-read set to the code that follows, pasted exactly (a bare client id is rejected):\n{$code}");
         $result->recordSkipped('WORKSTATION-1: a fixture skip');
@@ -199,7 +257,7 @@ class LitsrmmSyncControlsTest extends TestCase
             ->andReturn(new SyncResult);
 
         $this->actingAs(User::factory()->admin()->create())
-            ->post(route('settings.integrations.litsrmm.sync-devices'), ['accept_short_read' => '1:a:0:1:1:0:0:0', '--accept-short-read' => '1:a:0:1:1:0:0:0'])
+            ->post(route('settings.integrations.litsrmm.sync-devices'), ['accept_short_read' => '1:a:0:1:1:0:0:0:d0123456789', '--accept-short-read' => '1:a:0:1:1:0:0:0:d0123456789'])
             ->assertSessionHas('success');
     }
 
