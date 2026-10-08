@@ -55,12 +55,12 @@ class CalendarGraphShapesTest extends TestCase
     public function test_valid_grid_returns_assoc_rows_for_exactly_the_requested_mailboxes(): void
     {
         $rows = CalendarGraphShapes::assertScheduleCollection(
-            $this->scheduleResponse([$this->scheduleRow('charlie@soundit.co'), $this->scheduleRow('justin@soundit.co', '000000')]),
-            ['charlie@soundit.co', 'justin@soundit.co'],
+            $this->scheduleResponse([$this->scheduleRow('b4k2.first@synthetic.test'), $this->scheduleRow('b4k2.second@synthetic.test', '000000')]),
+            ['b4k2.first@synthetic.test', 'b4k2.second@synthetic.test'],
         );
 
         $this->assertCount(2, $rows);
-        $this->assertSame('charlie@soundit.co', $rows[0]['scheduleId']);
+        $this->assertSame('b4k2.first@synthetic.test', $rows[0]['scheduleId']);
         // Deep-converted to assoc arrays for the projection layer.
         $this->assertSame('busy', $rows[0]['scheduleItems'][0]['status']);
         $this->assertSame('2026-07-28T14:00:00.0000000', $rows[0]['scheduleItems'][0]['start']['dateTime']);
@@ -69,17 +69,17 @@ class CalendarGraphShapesTest extends TestCase
     public function test_case_insensitive_reconciliation(): void
     {
         $rows = CalendarGraphShapes::assertScheduleCollection(
-            $this->scheduleResponse([$this->scheduleRow('Charlie@SoundIT.co')]),
-            ['charlie@soundit.co'],
+            $this->scheduleResponse([$this->scheduleRow('B4K2.First@Synthetic.TEST')]),
+            ['b4k2.first@synthetic.test'],
         );
         $this->assertCount(1, $rows);
     }
 
     public function test_empty_schedule_items_with_valid_availability_view_is_ok(): void
     {
-        $row = $this->scheduleRow('charlie@soundit.co');
+        $row = $this->scheduleRow('b4k2.first@synthetic.test');
         $row->scheduleItems = []; // free mailbox: no busy blocks, but availabilityView is present
-        $rows = CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['charlie@soundit.co']);
+        $rows = CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['b4k2.first@synthetic.test']);
         $this->assertSame([], $rows[0]['scheduleItems']);
     }
 
@@ -89,9 +89,9 @@ class CalendarGraphShapesTest extends TestCase
     {
         // workingHours is validated ONLY when present — a mailbox may legitimately omit it, and a
         // missing working-hours block is a constraint we lack, not a false-clear.
-        $row = $this->scheduleRow('charlie@soundit.co');
+        $row = $this->scheduleRow('b4k2.first@synthetic.test');
         unset($row->workingHours);
-        $rows = CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['charlie@soundit.co']);
+        $rows = CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['b4k2.first@synthetic.test']);
         $this->assertArrayNotHasKey('workingHours', $rows[0]);
     }
 
@@ -108,10 +108,10 @@ class CalendarGraphShapesTest extends TestCase
             (object) ['daysOfWeek' => ['monday'], 'startTime' => '08:00:00', 'endTime' => '17:00:00', 'timeZone' => 'UTC'],                            // timeZone not an object
         ];
         foreach ($bads as $bad) {
-            $row = $this->scheduleRow('charlie@soundit.co');
+            $row = $this->scheduleRow('b4k2.first@synthetic.test');
             $row->workingHours = $bad;
             try {
-                CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['charlie@soundit.co']);
+                CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['b4k2.first@synthetic.test']);
                 $this->fail('Expected drift for malformed workingHours='.json_encode($bad));
             } catch (GraphShapeDriftException) {
                 $this->addToAssertionCount(1);
@@ -124,20 +124,20 @@ class CalendarGraphShapesTest extends TestCase
     public function test_top_level_list_instead_of_object_screams(): void
     {
         $this->expectException(GraphShapeDriftException::class);
-        CalendarGraphShapes::assertScheduleCollection($this->wire([]), ['charlie@soundit.co']);
+        CalendarGraphShapes::assertScheduleCollection($this->wire([]), ['b4k2.first@synthetic.test']);
     }
 
     public function test_value_as_empty_json_object_screams_not_empty_grid(): void
     {
         // {"value":{}} — assoc decode would collapse to [] and read as an empty grid.
         $this->expectException(GraphShapeDriftException::class);
-        CalendarGraphShapes::assertScheduleCollection($this->wire((object) ['value' => (object) []]), ['charlie@soundit.co']);
+        CalendarGraphShapes::assertScheduleCollection($this->wire((object) ['value' => (object) []]), ['b4k2.first@synthetic.test']);
     }
 
     public function test_value_as_populated_json_object_screams(): void
     {
         $this->expectException(GraphShapeDriftException::class);
-        CalendarGraphShapes::assertScheduleCollection($this->wire((object) ['value' => (object) ['0' => 'x']]), ['charlie@soundit.co']);
+        CalendarGraphShapes::assertScheduleCollection($this->wire((object) ['value' => (object) ['0' => 'x']]), ['b4k2.first@synthetic.test']);
     }
 
     // ---- assertScheduleCollection: drift (missing availability = false all-clear) ----
@@ -146,22 +146,22 @@ class CalendarGraphShapesTest extends TestCase
     {
         $this->expectException(GraphShapeDriftException::class);
         CalendarGraphShapes::assertScheduleCollection(
-            $this->scheduleResponse([(object) ['scheduleId' => 'charlie@soundit.co']]),
-            ['charlie@soundit.co'],
+            $this->scheduleResponse([(object) ['scheduleId' => 'b4k2.first@synthetic.test']]),
+            ['b4k2.first@synthetic.test'],
         );
     }
 
     public function test_missing_or_empty_or_nonstring_availability_view_screams(): void
     {
         foreach ([null, '', ['not', 'a', 'string']] as $bad) {
-            $row = $this->scheduleRow('charlie@soundit.co');
+            $row = $this->scheduleRow('b4k2.first@synthetic.test');
             if ($bad === null) {
                 unset($row->availabilityView);
             } else {
                 $row->availabilityView = $bad;
             }
             try {
-                CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['charlie@soundit.co']);
+                CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['b4k2.first@synthetic.test']);
                 $this->fail('Expected drift for availabilityView='.json_encode($bad));
             } catch (GraphShapeDriftException) {
                 $this->addToAssertionCount(1);
@@ -171,26 +171,26 @@ class CalendarGraphShapesTest extends TestCase
 
     public function test_non_list_schedule_items_screams(): void
     {
-        $row = $this->scheduleRow('charlie@soundit.co');
+        $row = $this->scheduleRow('b4k2.first@synthetic.test');
         $row->scheduleItems = (object) ['a' => 'b'];
         $this->expectException(GraphShapeDriftException::class);
-        CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['charlie@soundit.co']);
+        CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['b4k2.first@synthetic.test']);
     }
 
     /** #5732: the per-mailbox error names the row by position, not by the mailbox address. */
     public function test_per_mailbox_error_refuses_the_whole_read_and_names_its_row(): void
     {
-        $row = $this->scheduleRow('justin@soundit.co');
+        $row = $this->scheduleRow('b4k2.second@synthetic.test');
         $row->error = (object) ['message' => 'ErrorMailboxMoveInProgress', 'responseCode' => 'MailboxMoveInProgress'];
         try {
             CalendarGraphShapes::assertScheduleCollection(
-                $this->scheduleResponse([$this->scheduleRow('charlie@soundit.co'), $row]),
-                ['charlie@soundit.co', 'justin@soundit.co'],
+                $this->scheduleResponse([$this->scheduleRow('b4k2.first@synthetic.test'), $row]),
+                ['b4k2.first@synthetic.test', 'b4k2.second@synthetic.test'],
             );
             $this->fail('Expected drift for a per-mailbox error');
         } catch (GraphShapeDriftException $e) {
             $this->assertSame('Microsoft Graph getSchedule returned an error for the mailbox in row 1; its availability is unknown, so the whole free/busy read is refused rather than shown as free.', $e->getMessage());
-            $this->assertStringNotContainsString('justin', $e->getMessage());
+            $this->assertStringNotContainsString('b4k2.second', $e->getMessage());
         }
     }
 
@@ -281,28 +281,28 @@ class CalendarGraphShapesTest extends TestCase
 
     public function test_an_empty_error_object_is_still_treated_as_error(): void
     {
-        $row = $this->scheduleRow('charlie@soundit.co');
+        $row = $this->scheduleRow('b4k2.first@synthetic.test');
         $row->error = (object) []; // present but empty — availability is not trustworthy
         $this->expectException(GraphShapeDriftException::class);
-        CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['charlie@soundit.co']);
+        CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['b4k2.first@synthetic.test']);
     }
 
     // ---- assertScheduleCollection: drift (malformed busy block) ----
 
     public function test_busy_block_without_status_screams(): void
     {
-        $row = $this->scheduleRow('charlie@soundit.co');
+        $row = $this->scheduleRow('b4k2.first@synthetic.test');
         $row->scheduleItems = [(object) ['start' => (object) ['dateTime' => 'x', 'timeZone' => 'UTC'], 'end' => (object) ['dateTime' => 'y', 'timeZone' => 'UTC']]];
         $this->expectException(GraphShapeDriftException::class);
-        CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['charlie@soundit.co']);
+        CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['b4k2.first@synthetic.test']);
     }
 
     public function test_busy_block_with_malformed_start_screams(): void
     {
-        $row = $this->scheduleRow('charlie@soundit.co');
+        $row = $this->scheduleRow('b4k2.first@synthetic.test');
         $row->scheduleItems = [(object) ['status' => 'busy', 'start' => 'not-an-object', 'end' => (object) ['dateTime' => 'y', 'timeZone' => 'UTC']]];
         $this->expectException(GraphShapeDriftException::class);
-        CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['charlie@soundit.co']);
+        CalendarGraphShapes::assertScheduleCollection($this->scheduleResponse([$row]), ['b4k2.first@synthetic.test']);
     }
 
     // ---- assertScheduleCollection: drift (reconciliation) ----
@@ -311,17 +311,35 @@ class CalendarGraphShapesTest extends TestCase
     {
         $this->expectException(GraphShapeDriftException::class);
         CalendarGraphShapes::assertScheduleCollection(
-            $this->scheduleResponse([$this->scheduleRow('charlie@soundit.co')]),
-            ['charlie@soundit.co', 'justin@soundit.co'],
+            $this->scheduleResponse([$this->scheduleRow('b4k2.first@synthetic.test')]),
+            ['b4k2.first@synthetic.test', 'b4k2.second@synthetic.test'],
         );
+    }
+
+    /**
+     * #5775: a mailbox requested twice (case and whitespace aside) is named by its FIRST position
+     * in the request. Requested ['B4K2.Missing@…', 'b4k2.first@…', ' b4k2.missing@… '] with no
+     * row for the missing one: the message names position 0, not 2.
+     */
+    public function test_a_duplicate_requested_mailbox_is_named_by_its_first_position(): void
+    {
+        try {
+            CalendarGraphShapes::assertScheduleCollection(
+                $this->scheduleResponse([$this->scheduleRow('b4k2.first@synthetic.test')]),
+                ['B4K2.Missing@synthetic.test', 'b4k2.first@synthetic.test', ' b4k2.missing@synthetic.test '],
+            );
+            $this->fail('Expected drift for a missing requested mailbox');
+        } catch (GraphShapeDriftException $e) {
+            $this->assertSame('Microsoft Graph getSchedule did not return availability for requested mailbox 0 (zero-based position in the request) — a grid missing a requested mailbox must not be read as complete.', $e->getMessage());
+        }
     }
 
     public function test_unrequested_extra_mailbox_screams(): void
     {
         $this->expectException(GraphShapeDriftException::class);
         CalendarGraphShapes::assertScheduleCollection(
-            $this->scheduleResponse([$this->scheduleRow('charlie@soundit.co'), $this->scheduleRow('billing@soundit.co')]),
-            ['charlie@soundit.co'],
+            $this->scheduleResponse([$this->scheduleRow('b4k2.first@synthetic.test'), $this->scheduleRow('b4k2.extra@synthetic.test')]),
+            ['b4k2.first@synthetic.test'],
         );
     }
 
@@ -329,8 +347,8 @@ class CalendarGraphShapesTest extends TestCase
     {
         $this->expectException(GraphShapeDriftException::class);
         CalendarGraphShapes::assertScheduleCollection(
-            $this->scheduleResponse([$this->scheduleRow('charlie@soundit.co'), $this->scheduleRow('charlie@soundit.co')]),
-            ['charlie@soundit.co'],
+            $this->scheduleResponse([$this->scheduleRow('b4k2.first@synthetic.test'), $this->scheduleRow('b4k2.first@synthetic.test')]),
+            ['b4k2.first@synthetic.test'],
         );
     }
 
@@ -386,7 +404,7 @@ class CalendarGraphShapesTest extends TestCase
         // not be followed with the tenant app bearer (must-fix psa-abl0i.4 #4: "the expected
         // continuation path"). The host/scheme check alone would wave these through.
         foreach ([
-            'https://graph.microsoft.com/v1.0/users/billing%40soundit.co/messages?$skip=1',
+            'https://graph.microsoft.com/v1.0/users/b4k2.extra%40synthetic.test/messages?$skip=1',
             'https://graph.microsoft.com/v1.0/users/x%40y/events/AAA',
             'https://graph.microsoft.com/v1.0/me/calendarView/../messages',
         ] as $next) {

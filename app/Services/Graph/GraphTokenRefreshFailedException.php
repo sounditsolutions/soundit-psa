@@ -16,18 +16,18 @@ namespace App\Services\Graph;
  *
  * $tokenFailure is the exception getToken() threw, and it is also chained as getPrevious()
  * (#5461) so a reporter that walks the chain keeps the cause. getToken() throws a
- * GraphClientException on four arms (#5397, #5511), and what its message carries differs by
- * arm (#5724):
- * - the HTTP status of the response Guzzle threw on, the only arm whose message has a status.
- *   That is 400 or more, or a 3xx when Guzzle refuses a redirect (more than five, or a Location
- *   whose scheme is not http/https; #5674), and after a followed redirect it is the status of
- *   the last response, not the first;
+ * GraphTokenException (#5728) on four arms (#5397, #5511), and what its message carries differs
+ * by arm (#5724, #5776):
+ * - the HTTP status of the token response when it is a 3xx or 400 or more, the only arm whose
+ *   message has a status. A 3xx is never followed (#5736), so its Location is never parsed
+ *   (#5739) and the status is the first response's;
  * - the Guzzle exception class when no response arrived (no status);
- * - a fixed string, with no status, when the response Guzzle returned (one it did not follow,
- *   such as a 2xx or a 3xx without Location; #5620) had no access_token;
- * - a fixed string, with no status, naming the field when access_token is not a string or
- *   expires_in is not numeric (#5659). That response is not cached, and its record names the
- *   field and the PHP type it decoded as, never the value.
+ * - a fixed string, with no status, when a 2xx response had no access_token or a null one
+ *   (#5620), or was not a JSON object;
+ * - a fixed string, with no status, naming the field when access_token is present but is not a
+ *   string, is '' or '0', or carries a control character (#5659, #5729, #5738), or expires_in is
+ *   null, not numeric or under one second (#5730). That response is not cached, and its record
+ *   names the field and the PHP type it decoded as, never the value.
  * None of the four carries the token URL, the tenant or the identity provider's body.
  * Tests\Unit\Graph\GraphTokenRefreshFailedExceptionTest reports
  * the chain through Laravel's exception handler and renders it with Laravel's log formatter,

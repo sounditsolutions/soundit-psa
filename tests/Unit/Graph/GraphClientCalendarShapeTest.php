@@ -6,9 +6,11 @@ use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphShapeDriftException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Cache\ArrayStore;
 use Illuminate\Cache\Repository;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
@@ -16,19 +18,54 @@ use Tests\TestCase;
  * (psa-abl0i.2) — raw vendor-shape JSON in, GraphShapeDriftException out on drift, never a
  * silent empty/all-free grid. The validator's exhaustive drift cases live in
  * CalendarGraphShapesTest; this proves the transport methods actually call it.
+ *
+ * G-5 (#5781): Http::preventStrayRequests(), and client() checks that both constructor clients
+ * carry the scripted stack before any request; tearDown() checks that every scripted response
+ * was consumed and that every request went through the stack's history, so a request built on
+ * a per-call client without the handler fails here by name. Synthetic mailboxes only (G-13).
  */
 class GraphClientCalendarShapeTest extends TestCase
 {
+    /** @var array<int, array<string, mixed>> */
+    private array $history = [];
+
+    private ?MockHandler $queue = null;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Http::preventStrayRequests();
+    }
+
+    protected function tearDown(): void
+    {
+        if ($this->queue !== null) {
+            $this->assertSame(0, $this->queue->count(), 'every scripted response was consumed through the scripted stack');
+            $this->assertNotSame([], $this->history, 'positive control: the request went through the scripted stack');
+            foreach ($this->history as $sent) {
+                $this->assertSame('graph.microsoft.com', $sent['request']->getUri()->getHost());
+            }
+        }
+        parent::tearDown();
+    }
+
     private function client(array $responses): GraphClient
     {
-        $stack = HandlerStack::create(new MockHandler($responses));
+        $this->history = [];
+        $stack = HandlerStack::create($this->queue = new MockHandler($responses));
+        $stack->push(Middleware::history($this->history));
         $cache = new Repository(new ArrayStore);
-        $cache->put('graph_api_token', 'test-token', 3600);
+        $cache->put('graph_api_token', 'b4k2-synthetic-seeded-bearer', 3600);
 
-        return new GraphClient([
-            'tenant_id' => 't', 'client_id' => 'c', 'client_secret' => 's',
+        $graph = new GraphClient([
+            'tenant_id' => 'tenant-b4k2-synthetic', 'client_id' => 'b4k2-client', 'client_secret' => 'b4k2-synthetic-secret-not-real',
             'request_timeout' => 15, 'token_timeout' => 10, 'handler' => $stack,
         ], $cache);
+        foreach (['http', 'authHttp'] as $property) {
+            $this->assertSame($stack, (new \ReflectionProperty(GraphClient::class, $property))->getValue($graph)->getConfig('handler'), "GraphClient::\${$property} must use the scripted handler");
+        }
+
+        return $graph;
     }
 
     /** A valid scheduleInformation row (documented shape) for wire fixtures. */
@@ -47,15 +84,15 @@ class GraphClientCalendarShapeTest extends TestCase
 
     public function test_get_schedule_screams_on_a_per_mailbox_error(): void
     {
-        $errored = $this->scheduleRow('justin@soundit.co');
+        $errored = $this->scheduleRow('b4k2.second@synthetic.test');
         $errored['error'] = ['message' => 'x', 'responseCode' => 'y'];
         $client = $this->client([new Response(200, [], json_encode(['value' => [
-            $this->scheduleRow('charlie@soundit.co'), // valid, so the ONLY drift is the error below
+            $this->scheduleRow('b4k2.first@synthetic.test'), // valid, so the ONLY drift is the error below
             $errored,
         ]]))]);
 
         $this->expectException(GraphShapeDriftException::class);
-        $client->getSchedule('charlie@soundit.co', ['charlie@soundit.co', 'justin@soundit.co'], '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z');
+        $client->getSchedule('b4k2.first@synthetic.test', ['b4k2.first@synthetic.test', 'b4k2.second@synthetic.test'], '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z');
     }
 
     /**
@@ -87,21 +124,21 @@ class GraphClientCalendarShapeTest extends TestCase
         // A row carrying only scheduleId used to project as availability_view=null + busy_blocks=[]
         // and read as all-clear (psa-abl0i.4/.5). It must now scream.
         $client = $this->client([new Response(200, [], json_encode(['value' => [
-            ['scheduleId' => 'charlie@soundit.co'],
+            ['scheduleId' => 'b4k2.first@synthetic.test'],
         ]]))]);
 
         $this->expectException(GraphShapeDriftException::class);
-        $client->getSchedule('charlie@soundit.co', ['charlie@soundit.co'], '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z');
+        $client->getSchedule('b4k2.first@synthetic.test', ['b4k2.first@synthetic.test'], '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z');
     }
 
     public function test_get_schedule_returns_validated_rows_on_a_clean_grid(): void
     {
         $client = $this->client([new Response(200, [], json_encode(['value' => [
-            ['scheduleId' => 'charlie@soundit.co', 'availabilityView' => '002200', 'scheduleItems' => []],
+            ['scheduleId' => 'b4k2.first@synthetic.test', 'availabilityView' => '002200', 'scheduleItems' => []],
         ]]))]);
 
-        $rows = $client->getSchedule('charlie@soundit.co', ['charlie@soundit.co'], '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z');
-        $this->assertSame('charlie@soundit.co', $rows[0]['scheduleId']);
+        $rows = $client->getSchedule('b4k2.first@synthetic.test', ['b4k2.first@synthetic.test'], '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z');
+        $this->assertSame('b4k2.first@synthetic.test', $rows[0]['scheduleId']);
     }
 
     public function test_calendar_view_screams_on_silent_truncation(): void
@@ -109,18 +146,18 @@ class GraphClientCalendarShapeTest extends TestCase
         // One page returned, cap = 1, but a nextLink is still pending => truncated window.
         $client = $this->client([new Response(200, [], json_encode([
             'value' => [['id' => 'e1']],
-            '@odata.nextLink' => 'https://graph.microsoft.com/v1.0/users/charlie%40soundit.co/calendarView?$skip=1',
+            '@odata.nextLink' => 'https://graph.microsoft.com/v1.0/users/b4k2.first%40synthetic.test/calendarView?$skip=1',
         ]))]);
 
         $this->expectException(GraphShapeDriftException::class);
-        $client->calendarView('charlie@soundit.co', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z', maxPages: 1);
+        $client->calendarView('b4k2.first@synthetic.test', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z', maxPages: 1);
     }
 
     public function test_calendar_view_returns_events_when_not_truncated(): void
     {
         $client = $this->client([new Response(200, [], json_encode(['value' => [['id' => 'e1'], ['id' => 'e2']]]))]);
 
-        $events = $client->calendarView('charlie@soundit.co', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z', maxPages: 5);
+        $events = $client->calendarView('b4k2.first@synthetic.test', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z', maxPages: 5);
         $this->assertCount(2, $events);
     }
 
@@ -129,11 +166,11 @@ class GraphClientCalendarShapeTest extends TestCase
         // Page 1 carries a valid https graph.microsoft.com nextLink; page 2 ends the list. Proves
         // provenNextLink accepts a real cursor and requestJsonAbsolute follows it.
         $client = $this->client([
-            new Response(200, [], json_encode(['value' => [['id' => 'e1']], '@odata.nextLink' => 'https://graph.microsoft.com/v1.0/users/charlie%40soundit.co/calendarView?$skip=1'])),
+            new Response(200, [], json_encode(['value' => [['id' => 'e1']], '@odata.nextLink' => 'https://graph.microsoft.com/v1.0/users/b4k2.first%40synthetic.test/calendarView?$skip=1'])),
             new Response(200, [], json_encode(['value' => [['id' => 'e2']]])),
         ]);
 
-        $events = $client->calendarView('charlie@soundit.co', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z', maxPages: 5);
+        $events = $client->calendarView('b4k2.first@synthetic.test', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z', maxPages: 5);
         $this->assertSame(['e1', 'e2'], array_column($events, 'id'));
     }
 
@@ -143,7 +180,7 @@ class GraphClientCalendarShapeTest extends TestCase
         $client = $this->client([new Response(200, [], '{"value":{}}')]);
 
         $this->expectException(GraphShapeDriftException::class);
-        $client->calendarView('charlie@soundit.co', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z');
+        $client->calendarView('b4k2.first@synthetic.test', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z');
     }
 
     public function test_calendar_view_screams_on_a_foreign_next_link(): void
@@ -155,7 +192,7 @@ class GraphClientCalendarShapeTest extends TestCase
         ]))]);
 
         $this->expectException(GraphShapeDriftException::class);
-        $client->calendarView('charlie@soundit.co', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z', maxPages: 5);
+        $client->calendarView('b4k2.first@synthetic.test', '2026-07-28T00:00:00Z', '2026-07-29T00:00:00Z', maxPages: 5);
     }
 
     public function test_get_event_screams_on_a_malformed_event_body(): void
@@ -163,6 +200,6 @@ class GraphClientCalendarShapeTest extends TestCase
         $client = $this->client([new Response(200, [], json_encode(['subject' => 'no id here']))]);
 
         $this->expectException(GraphShapeDriftException::class);
-        $client->getEvent('charlie@soundit.co', 'AAA');
+        $client->getEvent('b4k2.first@synthetic.test', 'AAA');
     }
 }

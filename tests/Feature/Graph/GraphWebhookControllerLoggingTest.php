@@ -225,7 +225,56 @@ class GraphWebhookControllerLoggingTest extends TestCase
         $this->assertSame([self::MAILBOX, 'support@', self::IMPORT_ERROR_TEXT], self::carried(self::flattenForScan($thrown)));
         $this->assertSame([], self::carried((string) json_encode($thrown)), 'json_encode renders a Throwable as {}');
 
-        $this->logged[] = new MessageLogged('error', '[GraphWebhook] Failed to fetch message', $old);
-        $this->assertNotSame([], $this->recordsCarryingANeedle(), 'a planted record turns the scan red');
+        // #5779: through recordsCarryingANeedle() itself, with exact needle lists, so a helper
+        // that went back to json_encode() fails here: it would miss 'users/' in $old and the
+        // whole Throwable plant.
+        $this->logged = [
+            new MessageLogged('error', '[GraphWebhook] Failed to fetch message', $old),
+            new MessageLogged('error', 'Graph probe', $thrown),
+        ];
+        $this->assertSame([
+            ['error [GraphWebhook] Failed to fetch message', [self::MAILBOX, 'support@', 'users/', 'MSG-1', 'Graph API error']],
+            ['error Graph probe', [self::MAILBOX, 'support@', self::IMPORT_ERROR_TEXT]],
+        ], $this->recordsCarryingANeedle(), 'the planted records turn the scan red');
+    }
+
+    /**
+     * #5770 positive control: an object Laravel's log line prints through __toString() (a PSR-7
+     * Uri, whose properties are private, and a Stringable whose properties hold only an encoded
+     * form) and an object with only private properties are read by the scan. Before #5770 each
+     * flattened to [] and a needle inside it was missed.
+     */
+    public function test_the_needle_scan_reads_a_stringable_and_a_private_property_object(): void
+    {
+        $uri = new \GuzzleHttp\Psr7\Uri('https://graph.microsoft.com/v1.0/'.self::resource());
+        $this->assertSame([], get_object_vars($uri), 'positive control: the Uri has no public property');
+        $private = new class(self::resource())
+        {
+            public function __construct(private string $resource) {}
+        };
+        // Its properties hold the resource encoded, so only __toString() yields the needles.
+        $stringable = new class(base64_encode(self::resource())) implements \Stringable
+        {
+            public function __construct(private string $encoded) {}
+
+            public function __toString(): string
+            {
+                return (string) base64_decode($this->encoded);
+            }
+        };
+        $this->logged = [
+            new MessageLogged('error', 'Graph probe', ['uri' => $uri]),
+            new MessageLogged('error', 'Graph probe', ['held' => $private]),
+            new MessageLogged('error', 'Graph probe', ['rendered' => $stringable]),
+        ];
+        $this->assertSame([
+            ['error Graph probe', [self::MAILBOX, 'support@', 'users/', 'MSG-1']],
+            ['error Graph probe', [self::MAILBOX, 'support@', 'users/', 'MSG-1']],
+            ['error Graph probe', [self::MAILBOX, 'support@', 'users/', 'MSG-1']],
+        ], $this->recordsCarryingANeedle());
+        // And the line Laravel's formatter writes for the Uri does carry the URL.
+        $formatter = (fn () => $this->formatter())->call(app('log'));
+        $line = $formatter->format(new \Monolog\LogRecord(new \DateTimeImmutable, 'testing', \Monolog\Level::Error, 'Graph probe', ['uri' => $uri]));
+        $this->assertStringContainsString(self::MAILBOX, str_replace('\\/', '/', $line), 'the log line prints the Uri');
     }
 }

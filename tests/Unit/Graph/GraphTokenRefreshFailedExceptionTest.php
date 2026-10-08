@@ -4,14 +4,13 @@ namespace Tests\Unit\Graph;
 
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
+use App\Services\Graph\GraphTokenException;
 use App\Services\Graph\GraphTokenRefreshFailedException;
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\BadResponseException;
 use GuzzleHttp\Exception\ClientException;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Exception\ServerException;
-use GuzzleHttp\Exception\TooManyRedirectsException;
 use GuzzleHttp\Exception\TransferException;
 use GuzzleHttp\Handler\CurlFactory;
 use GuzzleHttp\Handler\EasyHandle;
@@ -43,14 +42,16 @@ use Tests\TestCase;
  * message may carry the token URL, the tenant, the secret, Graph's 401 text or the identity
  * provider's text (#5450, C-56).
  *
- * getToken() throws a GraphClientException on four arms (#5511), and their messages differ
- * (#5741): a GuzzleException with a response (message "(HTTP n)", the only arm with a status),
- * a GuzzleException without one (message "(<exception class>)"), a returned response without
- * access_token (a fixed string with no status; #5620), and a returned response whose
- * access_token is not a string or whose expires_in is not numeric (a fixed string with no
- * status that names the field; #5659). tokenFailures() names the arm of each case; the response arm gets two
- * inputs, the no-response arm three, built by Guzzle's own curl handler (#5616), and the
- * malformed arm five.
+ * getToken() throws a GraphTokenException (#5728) on four arms (#5511), and their messages
+ * differ (#5741): a token response with a 3xx (#5736, redirects are never followed) or a 4xx/5xx
+ * status (message "(HTTP n)", the only arm with a status), a GuzzleException without a response
+ * (message "(<exception class>)"), a 2xx response with no access_token or a null one (a fixed
+ * string with no status; #5620), and a 2xx response whose access_token is present but not a
+ * usable bearer (not a string, '', '0', or carrying a control character; #5729, #5738) or whose
+ * expires_in is null, not numeric or under one second (#5730, #5721) (a fixed string with no
+ * status that names the field; #5659). tokenFailures() names the arm of each case; the response
+ * arm gets two inputs, the no-response arm three, built by Guzzle's own curl handler (#5616),
+ * and the malformed arm the rest. The 3xx cases are in their own test.
  *
  * Every value here is synthetic; the handler is a scripted MockHandler.
  */
@@ -79,6 +80,14 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
     private const CLIENT_ID = 'b4c-client';
 
     private const TOKEN_URL = 'https://login.microsoftonline.com/'.self::TENANT.'/oauth2/v2.0/token';
+
+    /** #5736: a redirect target on another host; a followed 307/308 would re-POST the form there. */
+    private const REDIRECT_HOST = 'b4k2-redirect.example.test';
+
+    private const REDIRECT_TARGET = 'https://'.self::REDIRECT_HOST.'/token';
+
+    /** #5739: a Location Psr7\Uri cannot parse (MalformedUriException when a redirect is followed). */
+    private const UNPARSEABLE_LOCATION = 'http://[::1';
 
     /** @var array<int, array<string, mixed>> */
     private array $history = [];
@@ -212,6 +221,96 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
                 'Graph API token response carried a malformed access_token',
                 'malformed',
                 ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'bool']],
+            ],
+            // #5729: a falsy access_token that is present used to take the no-token arm with no
+            // record. It is malformed, with the record naming its type.
+            'malformed arm: false access_token' => [
+                fn () => self::malformedTokenResponse(['access_token' => false, 'expires_in' => 3600]),
+                'Graph API token response carried a malformed access_token',
+                'malformed',
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'bool']],
+            ],
+            'malformed arm: zero access_token' => [
+                fn () => self::malformedTokenResponse(['access_token' => 0, 'expires_in' => 3600]),
+                'Graph API token response carried a malformed access_token',
+                'malformed',
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'int']],
+            ],
+            'malformed arm: [] access_token' => [
+                fn () => self::malformedTokenResponse(['access_token' => [], 'expires_in' => 3600]),
+                'Graph API token response carried a malformed access_token',
+                'malformed',
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'array']],
+            ],
+            'malformed arm: empty string access_token' => [
+                fn () => self::malformedTokenResponse(['access_token' => '', 'expires_in' => 3600]),
+                'Graph API token response carried a malformed access_token',
+                'malformed',
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string']],
+            ],
+            'malformed arm: "0" access_token' => [
+                fn () => self::malformedTokenResponse(['access_token' => '0', 'expires_in' => 3600]),
+                'Graph API token response carried a malformed access_token',
+                'malformed',
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string']],
+            ],
+            // #5738: a string token with a control character would fail psr7's header check with
+            // an exception that prints the whole bearer. Refused before it is cached or sent.
+            'malformed arm: control character (CR) access_token' => [
+                fn () => self::malformedTokenResponse(['access_token' => self::MALFORMED_VALUE_MARKER."\rx", 'expires_in' => 3600]),
+                'Graph API token response carried a malformed access_token',
+                'malformed',
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string']],
+            ],
+            'malformed arm: control character (LF) access_token' => [
+                fn () => self::malformedTokenResponse(['access_token' => self::MALFORMED_VALUE_MARKER."\nx", 'expires_in' => 3600]),
+                'Graph API token response carried a malformed access_token',
+                'malformed',
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string']],
+            ],
+            'malformed arm: control character (NUL) access_token' => [
+                fn () => self::malformedTokenResponse(['access_token' => self::MALFORMED_VALUE_MARKER."\0x", 'expires_in' => 3600]),
+                'Graph API token response carried a malformed access_token',
+                'malformed',
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string']],
+            ],
+            'malformed arm: control character (DEL) access_token' => [
+                fn () => self::malformedTokenResponse(['access_token' => self::MALFORMED_VALUE_MARKER."\x7Fx", 'expires_in' => 3600]),
+                'Graph API token response carried a malformed access_token',
+                'malformed',
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string']],
+            ],
+            // #5730 / #5721: an explicit null expires_in is no longer read as 3600, and an
+            // expires_in under one second is no longer cached for the 60-second floor.
+            'malformed arm: null expires_in' => [
+                fn () => self::malformedTokenResponse(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => null]),
+                'Graph API token response carried a malformed expires_in',
+                'malformed',
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'null']],
+            ],
+            'malformed arm: zero expires_in' => [
+                fn () => self::malformedTokenResponse(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => 0]),
+                'Graph API token response carried a malformed expires_in',
+                'malformed',
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'int']],
+            ],
+            'malformed arm: negative expires_in' => [
+                fn () => self::malformedTokenResponse(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => -100]),
+                'Graph API token response carried a malformed expires_in',
+                'malformed',
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'int']],
+            ],
+            'malformed arm: "0" expires_in' => [
+                fn () => self::malformedTokenResponse(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => '0']),
+                'Graph API token response carried a malformed expires_in',
+                'malformed',
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'string']],
+            ],
+            'malformed arm: sub-second expires_in' => [
+                fn () => self::malformedTokenResponse(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => 0.5]),
+                'Graph API token response carried a malformed expires_in',
+                'malformed',
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'float']],
             ],
             'malformed arm: non-numeric expires_in' => [
                 fn () => self::malformedTokenResponse(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => 'soon']),
@@ -466,7 +565,9 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
         $e = $this->refreshFailure($tokenFailure());
 
         // #5450: the public $tokenFailure is getToken()'s own exception; pin its exact message.
-        $this->assertSame(GraphClientException::class, $e->tokenFailure::class);
+        // #5728: a token failure is a GraphTokenException, so a record that keeps only the class
+        // tells it from a Graph request that received no response (also status 0).
+        $this->assertSame(GraphTokenException::class, $e->tokenFailure::class);
         $this->assertSame($expected, $e->tokenFailure->getMessage());
         $this->assertSame(0, $e->tokenFailure->getHttpStatus(), 'the token failure is not a Graph status');
         $this->assertNull($e->tokenFailure->getResponseBody(), 'no identity-provider body rides on it');
@@ -507,77 +608,105 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
     }
 
     /**
-     * #5620: getToken()'s client follows a 3xx only when it carries a Location (a followed and a
-     * refused redirect are the next test), so a 300, a 304 or a 302 without Location is read as
-     * a token response, and with no access_token it takes the no-token arm: same fixed message,
-     * no token record.
+     * #5736 / #5739: the token POST never follows a redirect. Every 3xx, with a Location to the
+     * same host, to another host, with a 307/308 that would replay the form body, with an
+     * unparseable Location or with none, is one token request and takes the response arm: the
+     * message is "(HTTP 3xx)", the token record is the status alone, and the Location appears
+     * in no message or record. Before #5736 a 302/307 to another host was followed and the 307
+     * re-sent client_secret there; before #5739 an unparseable Location escaped getToken() as
+     * Guzzle's MalformedUriException, which is not a GraphClientException.
      */
-    public function test_a_3xx_that_is_not_followed_takes_the_no_token_arm(): void
+    public function test_the_token_request_refuses_every_redirect_by_its_status(): void
     {
-        foreach ([300, 302, 304] as $status) {
+        $cases = [
+            '302 same host' => [302, ['Location' => self::TOKEN_URL.'?hop=1']],
+            '307 another host' => [307, ['Location' => self::REDIRECT_TARGET]],
+            '308 another host' => [308, ['Location' => self::REDIRECT_TARGET]],
+            '301 another host' => [301, ['Location' => self::REDIRECT_TARGET]],
+            '302 unparseable Location' => [302, ['Location' => self::UNPARSEABLE_LOCATION]],
+            '302 without Location' => [302, []],
+            '300' => [300, []],
+            '304' => [304, []],
+        ];
+        foreach ($cases as $name => [$status, $headers]) {
             $this->logs->clear();
-            $e = $this->refreshFailure(new Response($status, [], '{}'));
-
-            $this->assertSame('Graph API token response did not contain access_token', $e->tokenFailure->getMessage(), (string) $status);
-            $this->assertSame($status, $this->tokenRequests()[0]['response']->getStatusCode(), 'positive control: the 3xx itself was read');
-            $this->assertSame(['Graph API request failed'], array_map(fn (LogRecord $r) => $r->message, $this->logs->getRecords()), "{$status}: no token record");
-        }
-    }
-
-    /**
-     * #5666 / #5674: Guzzle's default redirect handling on the token request. A 302 with a
-     * Location is followed, and the token at the end of it is used. A redirect loop past
-     * Guzzle's limit of five, or a Location whose scheme is not http/https, makes Guzzle throw a
-     * RequestException carrying the 3xx, so the response arm reports a 3xx status, not one of 400
-     * or more.
-     */
-    public function test_the_token_request_follows_a_redirect_and_reports_a_refused_one_as_its_3xx(): void
-    {
-        $graph = $this->client(null,
-            new Response(401, [], '{}'),
-            new Response(302, ['Location' => self::TOKEN_URL.'?hop=1'], ''),
-            new Response(200, ['Content-Type' => 'application/json'], (string) json_encode(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => 3600])),
-            new Response(200, ['Content-Type' => 'application/json'], (string) json_encode(['id' => 'MSG-1', 'attachments' => []])),
-        );
-        $this->assertSame([], $graph->getMessageAttachments(self::MAILBOX, 'MSG-1'), 'followed: the read succeeded');
-        $this->assertCount(2, $this->tokenRequests(), 'followed: the 302 and the request to its Location');
-        $this->assertSame('hop=1', $this->tokenRequests()[1]['request']->getUri()->getQuery());
-        $this->assertSame('Bearer '.self::ISSUED_ACCESS_FIXTURE, end($this->history)['request']->getHeaderLine('Authorization'));
-        $this->assertScriptedHandler($graph, 'followed: after the requests');
-
-        foreach ([
-            'redirect loop' => [array_fill(0, 6, new Response(302, ['Location' => self::TOKEN_URL], '')), TooManyRedirectsException::class],
-            'disallowed scheme' => [[new Response(302, ['Location' => 'ftp://example.test/token'], '')], BadResponseException::class],
-        ] as $name => [$responses, $class]) {
-            $this->logs->clear();
-            $graph = $this->client(null, new Response(401, [], '{}'), ...$responses);
+            $this->logged = [];
+            $graph = $this->client(null,
+                new Response(401, [], '{}'),
+                new Response($status, $headers, (string) json_encode(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => 3600])),
+                // A follow would consume this; a refused redirect leaves it queued.
+                new Response(200, ['Content-Type' => 'application/json'], (string) json_encode(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => 3600])),
+            );
             try {
                 $graph->getMessageAttachments(self::MAILBOX, 'MSG-1');
                 $this->fail("{$name}: expected GraphTokenRefreshFailedException");
             } catch (GraphTokenRefreshFailedException $e) {
-                $this->assertSame('Failed to obtain Graph API token (HTTP 302)', $e->tokenFailure->getMessage(), $name);
+                $this->assertSame(GraphTokenException::class, $e->tokenFailure::class, $name);
+                $this->assertSame("Failed to obtain Graph API token (HTTP {$status})", $e->tokenFailure->getMessage(), $name);
                 $this->assertSame('response', self::armOf($e->tokenFailure->getMessage()), $name);
             }
-            $this->assertCount(count($responses), $this->tokenRequests(), "{$name}: positive control: every hop was sent");
+            $this->assertCount(1, $this->tokenRequests(), "{$name}: one token request, nothing followed");
+            $this->assertSame([], array_values(array_filter($this->history, fn (array $h) => $h['request']->getUri()->getHost() !== 'login.microsoftonline.com' && $h['request']->getUri()->getHost() !== 'graph.microsoft.com')), "{$name}: no request left the two hosts");
+            $this->assertSame($status, $this->tokenRequests()[0]['response']->getStatusCode(), "{$name}: positive control: the 3xx itself was read");
+            $this->assertFalse($this->cache->has('graph_api_token'), "{$name}: nothing cached");
             $this->assertScriptedHandler($graph, "{$name}: after the requests");
             $this->assertSame(
-                ['Graph API token request failed', ['status' => 302, 'exception' => $class]],
-                [$this->logs->getRecords()[0]->message, $this->logs->getRecords()[0]->context],
-                $name,
+                [
+                    [Level::Error, 'Graph API token request failed', ['status' => $status]],
+                    [Level::Error, 'Graph API request failed', ['method' => 'GET', 'status' => 401, 'token_refresh' => 'failed']],
+                ],
+                array_map(fn (LogRecord $r) => [$r->level, $r->message, $r->context], $this->logs->getRecords()),
+                "{$name}: the token record is the status alone",
             );
+            foreach ($this->logged as $m) {
+                $this->assertCarriesNone([self::REDIRECT_HOST, 'hop=1', self::UNPARSEABLE_LOCATION, 'Location', self::ISSUED_ACCESS_FIXTURE], $m->message.' '.json_encode($m->context), "{$name}: '{$m->message}'");
+            }
+            $this->assertCarriesNone([self::REDIRECT_HOST, 'hop=1', self::UNPARSEABLE_LOCATION], $e->getMessage().' '.$e->tokenFailure->getMessage(), "{$name}: the messages");
+        }
+    }
+
+    /**
+     * #5736 / #5739 positive controls: the fixtures above exercise the hazard. A Guzzle client
+     * with its default redirect handling, on the same scripted stack, follows the 307 to the
+     * other host and re-sends the form body with the secret, and on the unparseable Location
+     * throws MalformedUriException, which is not a GuzzleException. The client getToken() posts
+     * with has redirects off; the Graph client is unchanged.
+     */
+    public function test_a_default_client_would_follow_and_replay_the_secret(): void
+    {
+        $graph = $this->client(null,
+            new Response(307, ['Location' => self::REDIRECT_TARGET], ''),
+            new Response(200, [], '{}'),
+            new Response(302, ['Location' => self::UNPARSEABLE_LOCATION], ''),
+        );
+        $this->assertFalse((new \ReflectionProperty(GraphClient::class, 'authHttp'))->getValue($graph)->getConfig('allow_redirects'));
+        $this->assertNotFalse((new \ReflectionProperty(GraphClient::class, 'http'))->getValue($graph)->getConfig('allow_redirects'));
+
+        $default = new Client(['base_uri' => 'https://login.microsoftonline.com/', 'handler' => $this->stack]);
+        $default->post(self::TENANT.'/oauth2/v2.0/token', ['form_params' => ['client_secret' => self::SECRET_FIXTURE]]);
+        $this->assertCount(2, $this->history);
+        $this->assertSame(self::REDIRECT_HOST, $this->history[1]['request']->getUri()->getHost());
+        $this->assertSame('POST', $this->history[1]['request']->getMethod());
+        $this->assertStringContainsString(self::SECRET_FIXTURE, (string) $this->history[1]['request']->getBody(), 'a followed 307 replays the secret');
+
+        try {
+            $default->post(self::TENANT.'/oauth2/v2.0/token', ['form_params' => ['client_secret' => self::SECRET_FIXTURE]]);
+            $this->fail('a followed unparseable Location did not throw');
+        } catch (\GuzzleHttp\Psr7\Exception\MalformedUriException $e) {
+            $this->assertNotInstanceOf(\GuzzleHttp\Exception\GuzzleException::class, $e);
         }
     }
 
     /**
      * #5659: a malformed 200 from the token endpoint. A body that is not JSON, not an object, or
-     * with an empty access_token takes the no-token arm. An access_token that is not a string or
-     * an expires_in that is not numeric takes the malformed arm (the provider cases above pin its
-     * message, chain and record). Here: nothing is cached, and the next call requests a new token
+     * with no access_token or a null one takes the no-token arm. A present access_token that is
+     * not a usable bearer, or a bad expires_in, takes the malformed arm (the provider cases above
+     * pin its message, chain and record; #5729 moved '' and the other falsy values there). Here: nothing is cached, and the next call requests a new token
      * and succeeds with it instead of failing on a cached value.
      */
     public function test_a_malformed_200_from_the_token_endpoint_is_refused_and_not_cached(): void
     {
-        foreach (['not json', '["x"]', '{"access_token":""}'] as $body) {
+        foreach (['not json', '["x"]', '{"access_token":null}', '{"expires_in":3600}'] as $body) {
             $e = $this->refreshFailure(new Response(200, [], $body));
             $this->assertSame('Graph API token response did not contain access_token', $e->tokenFailure->getMessage(), $body);
         }
@@ -637,7 +766,8 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
      * the secret, the tenant and the identity provider's text, so copying that message anywhere
      * a test reads trips the scan. On the malformed arm nothing is thrown, so the control reads
      * the 200 body getToken() decoded: it echoes the secret and carries the identity provider's
-     * marker, and the array-token case carries MALFORMED_VALUE_MARKER (#5727).
+     * marker, and the array-token and control-character cases carry MALFORMED_VALUE_MARKER
+     * (#5727, #5738).
      */
     public function test_the_token_fixtures_carry_the_secret_into_what_get_token_catches(): void
     {
@@ -653,7 +783,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
                     $body = (string) $token['response']->getBody();
                     $this->assertSame(200, $token['response']->getStatusCode(), $name);
                     $carried = ['client_secret='.self::SECRET_FIXTURE, self::IDP_MARKER];
-                    if (str_contains($name, 'array access_token')) {
+                    if (str_contains($name, 'array access_token') || str_contains($name, 'control character')) {
                         $carried[] = self::MALFORMED_VALUE_MARKER;
                     }
                     foreach ($carried as $needle) {
@@ -772,7 +902,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
             // Class names render JSON-escaped (App\\Services\\...), so match the short name.
             $this->assertTrue(str_contains($outer, 'GraphTokenRefreshFailedException(code: 401)'), "{$mode}: outer link");
             $this->assertTrue(str_contains($outer, '[stacktrace]'), "{$mode}: outer trace");
-            $this->assertTrue(str_contains($previous, 'GraphClientException(code: 0): '.addslashes($expected)), "{$mode}: previous link");
+            $this->assertTrue(str_contains($previous, 'GraphTokenException(code: 0): '.addslashes($expected)), "{$mode}: previous link");
             $this->assertTrue(str_contains($previous, '[stacktrace]'), "{$mode}: previous trace");
             $this->assertTrue(str_contains($previous, 'GraphClient->getToken('), "{$mode}: previous trace frames");
             $this->assertSame($ignoreArgs === '0', str_contains($outer, "'users/".self::MAILBOX), "{$mode}: frame arguments render as configured");

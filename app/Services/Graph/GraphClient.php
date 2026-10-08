@@ -46,9 +46,13 @@ class GraphClient
         // It is the only request that carries `client_secret`, so leaving it unseamed made
         // the one credential-bearing call the one no test could observe or refuse. Production
         // config never sets `handler`; the seam is test-only in effect (see :35-36).
+        // #5736: the token POST never follows a redirect. Guzzle's default replays the form body,
+        // client_secret included, to the Location of a 307/308, which can be another host. A 3xx
+        // is refused in getToken() by its status alone; its Location is never parsed (#5739).
         $authOptions = [
             'base_uri' => 'https://login.microsoftonline.com/',
             'timeout' => $this->config['token_timeout'],
+            'allow_redirects' => false,
         ];
 
         if (isset($this->config['handler'])) {
@@ -533,7 +537,10 @@ class GraphClient
 
         $maxRetries = 3;
 
-        for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
+        // #5734: no loop condition. Every iteration returns, throws (throwFromGuzzle is never), or
+        // continues on a 401 at attempt 0 or a 429 below $maxRetries, so the loop ends by the
+        // fourth request at the latest and nothing after it can run.
+        for ($attempt = 0; ; $attempt++) {
             try {
                 $response = $this->http->request($method, $endpoint, $options);
 
@@ -550,8 +557,9 @@ class GraphClient
                         $freshToken = $this->getToken();
                     } catch (GraphClientException $tokenFailure) {
                         // #5398: Graph answered 401 and the refresh failed. getToken() writes its
-                        // own record when the token request itself failed or its response was
-                        // malformed (#5659); a response without access_token writes none. This
+                        // own record when the token request failed or answered a 3xx, or its
+                        // response was malformed (#5659, #5729); a response with no access_token
+                        // or a null one writes none. This
                         // arm never goes through throwFromGuzzle. With $logFailure its record
                         // carries exactly three fields: method, status (401) and token_refresh
                         // ('failed').
@@ -592,9 +600,6 @@ class GraphClient
                 $this->throwFromGuzzle($e, $method, $endpoint, $logFailure);
             }
         }
-
-        // Should never reach here, but satisfy static analysis
-        throw new GraphClientException("Max retries exceeded: {$method}");
     }
 
     /**
@@ -637,12 +642,26 @@ class GraphClient
 
     /**
      * Get an OAuth2 access token, cached across requests.
+     *
+     * Every failure is a GraphTokenException (#5728) on one of four arms: the token endpoint
+     * answered a 3xx or a 4xx/5xx (message "(HTTP n)"), no response arrived (message names the
+     * Guzzle exception class), the response had no access_token or a null one, or the response
+     * carried a malformed access_token or expires_in (see tokenShapeFault()).
      */
     private function getToken(): string
     {
         $cached = $this->cache->get(self::TOKEN_CACHE_KEY);
-        if ($cached) {
-            return $cached;
+        if ($cached !== null) {
+            // #5720: a cached value passes the same access_token check as a fresh one before it
+            // is sent. One that fails it (an older build cached it, or the store was written by
+            // hand) is dropped and a new token is requested; the record names the PHP type only.
+            if (self::tokenShapeFault($cached) === null) {
+                return $cached;
+            }
+            Log::warning('Graph API cached token malformed, requesting a new one', [
+                'type' => get_debug_type($cached),
+            ]);
+            $this->cache->forget(self::TOKEN_CACHE_KEY);
         }
 
         $tenantId = $this->config['tenant_id'];
@@ -668,43 +687,73 @@ class GraphClient
                 'status' => $status,
                 'exception' => $e::class,
             ]);
-            throw new GraphClientException(
+            throw new GraphTokenException(
                 'Failed to obtain Graph API token'.($status !== null ? " (HTTP {$status})" : ' ('.$e::class.')'),
             );
         }
 
-        $data = json_decode((string) $response->getBody(), true);
-        $token = $data['access_token'] ?? null;
+        // #5736 / #5739: redirects are off on this client, so Guzzle returns a 3xx instead of
+        // following it. It is refused by its status alone; the Location header is never read,
+        // parsed or recorded.
+        $status = $response->getStatusCode();
+        if ($status >= 300) {
+            Log::error('Graph API token request failed', [
+                'status' => $status,
+            ]);
+            throw new GraphTokenException("Failed to obtain Graph API token (HTTP {$status})");
+        }
 
-        if (! $token) {
-            throw new GraphClientException(
+        $data = json_decode((string) $response->getBody(), true);
+        $token = is_array($data) ? ($data['access_token'] ?? null) : null;
+
+        if ($token === null) {
+            throw new GraphTokenException(
                 'Graph API token response did not contain access_token',
             );
         }
 
-        // #5659: prove the shape before anything is cached. An access_token that is not a string
-        // would otherwise be cached and fail every later call until the TTL ran out, and an
-        // expires_in that is not numeric would break the TTL arithmetic. Neither is cached; the
-        // record names the field and the type PHP decoded it as, never its value (C-56).
-        $expiresIn = $data['expires_in'] ?? 3600;
+        // #5659 / #5729 / #5730 / #5738: prove the shape before anything is cached. A present
+        // access_token that tokenShapeFault() refuses, and an expires_in that is null, not
+        // numeric, or under one second, take this arm and nothing is cached. An absent
+        // expires_in is read as 3600. The record names the field and the type PHP decoded it
+        // as, never its value (C-56).
+        $expiresIn = array_key_exists('expires_in', $data) ? $data['expires_in'] : 3600;
         $malformed = match (true) {
-            ! is_string($token) => ['access_token', $token],
-            ! is_numeric($expiresIn) => ['expires_in', $expiresIn],
+            self::tokenShapeFault($token) !== null => ['access_token', $token],
+            ! is_numeric($expiresIn) || (int) $expiresIn < 1 => ['expires_in', $expiresIn],
             default => null,
         };
         if ($malformed !== null) {
             Log::error('Graph API token response malformed', [
-                'status' => $response->getStatusCode(),
+                'status' => $status,
                 'field' => $malformed[0],
                 'type' => get_debug_type($malformed[1]),
             ]);
-            throw new GraphClientException("Graph API token response carried a malformed {$malformed[0]}");
+            throw new GraphTokenException("Graph API token response carried a malformed {$malformed[0]}");
         }
 
-        $ttl = (int) $expiresIn - self::TOKEN_SAFETY_MARGIN;
-        $this->cache->put(self::TOKEN_CACHE_KEY, $token, max($ttl, 60));
+        // The token is cached for expires_in less the safety margin, but never under 60 seconds
+        // and never past expires_in itself (#5735).
+        $seconds = (int) $expiresIn;
+        $this->cache->put(self::TOKEN_CACHE_KEY, $token, min(max($seconds - self::TOKEN_SAFETY_MARGIN, 60), $seconds));
 
         return $token;
+    }
+
+    /**
+     * Why $token cannot be sent as a bearer, or null when it can. It must be a string, not '' or
+     * '0' (both were refused before #5729 as a missing token, and neither is a bearer), with no
+     * control character (#5738: psr7 refuses such a header value with an exception whose
+     * message holds the whole value, the token included). Never returns the value.
+     */
+    private static function tokenShapeFault(mixed $token): ?string
+    {
+        return match (true) {
+            ! is_string($token) => 'not a string',
+            $token === '' || $token === '0' => 'empty',
+            preg_match('/[\x00-\x1F\x7F]/', $token) === 1 => 'control character',
+            default => null,
+        };
     }
 
     /**
@@ -722,12 +771,14 @@ class GraphClient
             $responseBody = json_decode((string) $e->getResponse()->getBody(), true);
         }
 
-        // #5533 / #5679 / C-56: the record and the exception message are status only. The endpoint
-        // holds the mailbox on users/ paths (and the nextLink URL on requestAbsolute), and Guzzle's
-        // message holds the request URI and the start of Graph's response body. Graph's decoded
-        // body stays on getResponseBody() for a caller that reads it on purpose.
-        // #5673: with no response (status 0) the exception class is the only cause the record
-        // can carry; it is a class name, never Guzzle's text.
+        // #5533 / #5679 / C-56: the record carries the method and the status, and the exception
+        // message the method and either the status or that no response arrived. Neither carries
+        // the endpoint (it holds the mailbox on users/ paths, and the nextLink URL on
+        // requestAbsolute) or Guzzle's message (the request URI and the start of Graph's response
+        // body). Graph's decoded body stays on getResponseBody() for a caller that reads it on
+        // purpose.
+        // #5673 / #5723: with no response (status 0) the record also carries the Guzzle exception
+        // class, the only cause it can carry; it is a class name, never Guzzle's text.
         if ($log) {
             Log::error('Graph API request failed', [
                 'method' => $method,
@@ -735,8 +786,11 @@ class GraphClient
             ] + ($statusCode === 0 ? ['exception' => $e::class] : []));
         }
 
+        // #5722: status 0 means nothing answered, so the message says that, not "returned 0".
         throw new GraphClientException(
-            "Graph API error: {$method} returned {$statusCode}",
+            $statusCode === 0
+                ? "Graph API error: {$method} received no response"
+                : "Graph API error: {$method} returned {$statusCode}",
             $statusCode,
             $responseBody,
         );
