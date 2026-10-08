@@ -25,14 +25,17 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Testing\TestResponse;
 use Psr\Http\Message\RequestInterface;
+use Tests\Support\RecordsGuzzleRejections;
 use Tests\TestCase;
 
 /**
  * C-56 / #5248 (card 6ac4439b): a failed Mesh call is reported by its HTTP
  * status only, never by the MeshClientException message.
  *
- * That message is built by MeshWriteClient::request() from Guzzle's own, and
- * Guzzle's quotes the request URI and up to 120 chars of the response body.
+ * Guzzle's own message quotes the request URI and up to 120 chars of the
+ * response body. Since #5884 MeshWriteClient::request() no longer builds its
+ * message from it, and since #5978 it is not chained; the positive controls
+ * read it where the client caught it (RecordsGuzzleRejections).
  * So these tests drive the REAL client over a scripted Guzzle handler, which
  * produces exactly that message, rather than a mock throwing a tidy string.
  * Every failure body carries MARKER; each site must keep MARKER, the host and
@@ -65,6 +68,7 @@ use Tests\TestCase;
  */
 class MeshVendorErrorStatusOnlyTest extends TestCase
 {
+    use RecordsGuzzleRejections;
     use RefreshDatabase;
 
     private const MARKER = 'SYNTHETIC-VENDOR-BODY-7f3a';
@@ -658,7 +662,7 @@ class MeshVendorErrorStatusOnlyTest extends TestCase
         // No network: the client builds its own Guzzle, so swap in a scripted one.
         $guzzle = new GuzzleClient([
             'base_uri' => 'https://'.self::HOST.'/',
-            'handler' => HandlerStack::create(fn (RequestInterface $r) => $this->failure($r)),
+            'handler' => $this->recordRejections(HandlerStack::create(fn (RequestInterface $r) => $this->failure($r))),
             'http_errors' => true,
         ]);
         (new \ReflectionProperty($client, 'http'))->setValue($client, $guzzle);
@@ -667,8 +671,8 @@ class MeshVendorErrorStatusOnlyTest extends TestCase
             $client->get('api/customers/', ['_size' => 1, 'filter' => self::MARKER]);
             $this->fail('the scripted read was expected to fail');
         } catch (MeshClientException $e) {
-            $this->assertNotNull($e->getPrevious(), 'the Guzzle exception is chained');
-            $this->assertStringContainsString(self::HOST, $e->getPrevious()->getMessage(), 'positive control: the chained raw message carries the host');
+            $this->assertNull($e->getPrevious(), 'the Guzzle exception is not chained (#5978)');
+            $this->assertStringContainsString(self::HOST, $this->lastRejection()->getMessage(), 'positive control: the raw message the client caught carries the host');
             $this->assertSame('Mesh API error: GET api/customers/ failed with '.($this->mode === '503' ? 'HTTP 503 (GuzzleHttp\Exception\ServerException)' : 'no HTTP status ('.ConnectException::class.')'), $e->getMessage(), 'the rethrown message is status-only (#5761)');
             $this->assertStringNotContainsString(self::HOST, $e->getMessage(), 'the rethrown message carries no host (#5761)');
         }
@@ -689,11 +693,11 @@ class MeshVendorErrorStatusOnlyTest extends TestCase
         if (is_numeric($this->mode)) {
             $this->assertStringContainsString('failed with HTTP '.$this->mode, $log, "{$where}: the status is the report");
         } else {
-            $this->assertMatchesRegularExpression('/no HTTP status|could not connect/', $log, "{$where}: a status-less failure says so");
+            $this->assertMatchesRegularExpression('/no HTTP status|failed at the resolve, connect or TLS stage/', $log, "{$where}: a status-less failure says so");
         }
     }
 
-    /** MeshWriteClient's two log lines ("failed" and "could not connect"). */
+    /** MeshWriteClient's two log lines ("failed with" and the never-sent one, #5982). */
     #[\PHPUnit\Framework\Attributes\DataProvider('clientLogModes')]
     public function test_the_write_client_logs_method_path_status_and_class_only(string $mode): void
     {
@@ -705,7 +709,8 @@ class MeshVendorErrorStatusOnlyTest extends TestCase
         $this->assertStringContainsString('GET api/rule-allows-blocks/', $log, 'the method and path are kept');
         $this->assertStatusOnlyLog($log, 'write client log');
         if (in_array($mode, ['connect', 'bare-connect'], true)) {
-            $this->assertStringContainsString('could not connect', $log);
+            $this->assertStringContainsString('failed at the resolve, connect or TLS stage (cURL errno 7', $log);
+            $this->assertStringNotContainsString('could not connect', $log, '#5982: not every never-sent errno is a connect failure');
         }
     }
 
@@ -799,8 +804,9 @@ class MeshVendorErrorStatusOnlyTest extends TestCase
             $this->app->make(MeshWriteClient::class)->deleteRule(self::RULE_ID);
             $this->fail('the scripted DELETE was expected to fail');
         } catch (MeshClientException $e) {
-            $this->assertStringNotContainsString('://', $e->getPrevious()->getMessage(), 'positive control: the transport message names no URI');
-            $this->assertStringContainsString(self::LEAK_IP, $e->getPrevious()->getMessage(), 'positive control: the raw message carries the host');
+            $this->assertNull($e->getPrevious(), 'the Guzzle exception is not chained (#5978)');
+            $this->assertStringNotContainsString('://', $this->lastRejection()->getMessage(), 'positive control: the transport message names no URI');
+            $this->assertStringContainsString(self::LEAK_IP, $this->lastRejection()->getMessage(), 'positive control: the raw message carries the host');
             $this->assertStringNotContainsString(self::LEAK_IP, $e->getMessage(), 'the client message carries no host (#5884)');
             $this->assertSame(0, $e->getCode());
             $this->assertTrue($e->nothingWasSent(), 'the never-sent arm still says so, structurally');
@@ -921,7 +927,7 @@ class MeshVendorErrorStatusOnlyTest extends TestCase
 
         $guzzle = new GuzzleClient([
             'base_uri' => 'https://'.self::HOST.'/',
-            'handler' => HandlerStack::create($handler),
+            'handler' => $this->recordRejections(HandlerStack::create($handler)),
             'http_errors' => true,
         ]);
 
@@ -974,7 +980,8 @@ class MeshVendorErrorStatusOnlyTest extends TestCase
             $client->listCustomerRules(self::TENANT);
             $this->fail('the scripted list read was expected to fail');
         } catch (MeshClientException $e) {
-            $raw = (string) $e->getPrevious()?->getMessage();
+            $this->assertNull($e->getPrevious(), 'the Guzzle exception is not chained (#5978)');
+            $raw = $this->lastRejection()->getMessage();
             $this->assertStringContainsString(self::MARKER, $raw, 'positive control: the raw message carries the vendor body');
             $this->assertStringContainsString(self::HOST, $raw, 'positive control: the raw message carries the host');
             $this->assertStringNotContainsString(self::MARKER, $e->getMessage(), 'the client message carries no vendor body (#5884)');

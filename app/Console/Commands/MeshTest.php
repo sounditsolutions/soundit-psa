@@ -27,29 +27,33 @@ class MeshTest extends Command
         // values (AppServiceProvider); resolving it is the test seam (G-5).
         $client = app(MeshClient::class);
 
-        if ($client->isHealthy()) {
-            $this->info('Connected to Mesh Email Security successfully!');
+        // #5988: the health read is reported by statusPhrase(), not as
+        // 'Failed to connect': Mesh may have answered it with a status.
+        // The same read isHealthy() makes.
+        try {
+            $client->get('api/customers/', ['_size' => 1]);
+        } catch (MeshClientException $e) {
+            $this->error('Mesh connection test failed: '.$e->statusPhrase('the health read').'.');
 
-            // Show customer count. #5882: a failure here is reported by
-            // statusPhrase() only. Left uncaught, the console renderer would
-            // print the chained Guzzle exception's message (request URI with
-            // user-info and host, vendor body summary).
-            try {
-                $customers = $client->getCustomers(size: 1);
-            } catch (MeshClientException $e) {
-                $this->error('Connected, but '.$e->statusPhrase('the customer read').'.');
-
-                return self::FAILURE;
-            }
-            if (is_array($customers)) {
-                $this->info('API responded with customer data.');
-            }
-
-            return self::SUCCESS;
+            return self::FAILURE;
         }
 
-        $this->error('Failed to connect to Mesh API. Check your API key and base URL.');
+        $this->info('Connected to Mesh Email Security successfully!');
 
-        return self::FAILURE;
+        // Show customer count. #5882: a failure here is reported by
+        // statusPhrase() only, never by the exception's message or its
+        // console rendering.
+        try {
+            $customers = $client->getCustomers(size: 1);
+        } catch (MeshClientException $e) {
+            $this->error('Connected, but '.$e->statusPhrase('the customer read').'.');
+
+            return self::FAILURE;
+        }
+        if (is_array($customers)) {
+            $this->info('API responded with customer data.');
+        }
+
+        return self::SUCCESS;
     }
 }
