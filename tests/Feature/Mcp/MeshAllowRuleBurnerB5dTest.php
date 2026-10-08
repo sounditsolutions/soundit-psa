@@ -84,6 +84,7 @@ class MeshAllowRuleBurnerB5dTest extends TestCase
         Http::assertNothingSent();
         parent::tearDown();
     }
+
     private function configure(): User
     {
         Setting::setEncrypted('mesh_api_key', 'test-placeholder-not-a-key');
@@ -127,7 +128,6 @@ class MeshAllowRuleBurnerB5dTest extends TestCase
     {
         return Ticket::factory()->for($client)->create(['subject' => 'Vendor mail quarantined']);
     }
-
 
     /**
      * The MeshWriteClient double. Every createAllowRule() is COUNTED, so a
