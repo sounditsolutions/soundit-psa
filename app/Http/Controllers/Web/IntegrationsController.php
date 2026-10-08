@@ -40,6 +40,7 @@ use App\Support\TranscriptionConfig;
 use App\Support\UnifiConfig;
 use App\Support\ZorusConfig;
 use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Exception\RequestException;
 use Illuminate\Contracts\Cache\Repository as CacheInterface;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -1455,7 +1456,9 @@ class IntegrationsController extends Controller
         }
 
         try {
-            $client = new GuzzleClient(['timeout' => 10]);
+            // Resolved through the container so a test can hand it a
+            // MockHandler (G-5); in production this is a plain new client.
+            $client = app()->make(GuzzleClient::class, ['config' => ['timeout' => 10]]);
             $baseUrl = rtrim(MeshConfig::get('base_url'), '/');
             $response = $client->get("{$baseUrl}/api/customers/", [
                 'query' => ['_size' => 1],
@@ -1473,7 +1476,16 @@ class IntegrationsController extends Controller
 
             return response()->json(['success' => false, 'message' => "Unexpected status: {$response->getStatusCode()}"]);
         } catch (\Throwable $e) {
-            return response()->json(['success' => false, 'message' => $e->getMessage()]);
+            // #5879: status and class only. Guzzle's message quotes the
+            // request URI (user-info, host) and a summary of the vendor body,
+            // and a MalformedUriException's is the whole URI with its
+            // password (C-56), so it reaches neither this response nor a log.
+            $status = $e instanceof RequestException ? ($e->getResponse()?->getStatusCode() ?? 0) : 0;
+            $failure = 'Mesh connection test failed '
+                .($status > 0 ? "with HTTP {$status}" : 'without an HTTP status').' ('.$e::class.').';
+            Log::warning("[IntegrationsController] {$failure}");
+
+            return response()->json(['success' => false, 'message' => $failure]);
         }
     }
 
