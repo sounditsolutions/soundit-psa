@@ -168,6 +168,81 @@ class MeshTestConnectionStatusOnlyTest extends TestCase
         }
     }
 
+    /**
+     * #6105: testMesh does not follow a redirect. The container's client is
+     * built with Guzzle's default redirect setting, so the option on the
+     * request is what is graded: one request reached the handler, the
+     * queued 200 from the other host was never asked for, and the answer is
+     * the 3xx by status, not 'Connected'.
+     */
+    public function test_a_redirect_is_not_followed_and_is_reported_by_status(): void
+    {
+        Setting::setValue('mesh_base_url', 'https://'.self::HOST);
+        $history = [];
+        $this->mock = new MockHandler([
+            new Response(302, ['Location' => 'http://elsewhere-6105.example.test/api/customers/']),
+            new Response(200, [], '{"results":[]}'),
+        ]);
+        $this->app->bind(GuzzleClient::class, function ($app, array $params) use (&$history) {
+            $this->configs[] = $params['config'] ?? [];
+            $stack = HandlerStack::create($this->mock);
+            $stack->push(\GuzzleHttp\Middleware::history($history));
+
+            return new GuzzleClient(array_merge($params['config'] ?? [], ['handler' => $stack]));
+        });
+
+        $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
+        $response = $this->postJson(route('settings.integrations.mesh.test'));
+
+        $expected = 'Mesh answered the connection test with HTTP 302, not 200.';
+        $response->assertOk()->assertExactJson(['success' => false, 'message' => $expected]);
+        $this->assertCount(1, $history, 'one request: the redirect was not followed');
+        $this->assertSame(self::HOST, $history[0]['request']->getUri()->getHost());
+        $this->assertSame(1, $this->mock->count(), 'the other host\'s 200 was never asked for');
+        $this->assertWarnedAndTimed($expected);
+        $this->assertNull(Setting::getValue('mesh_connected_at'));
+        $this->assertStringNotContainsString('elsewhere-6105', implode("\n", $this->logged).$response->getContent());
+    }
+
+    /**
+     * #6115: an InvalidArgumentException from inside the HTTP client that
+     * the pre-checks do not cover is not reported as a Mesh failure: no
+     * status was recorded and whether a request was sent is not known.
+     */
+    public function test_a_non_transport_exception_in_the_client_is_not_called_a_mesh_failure(): void
+    {
+        Setting::setValue('mesh_base_url', 'https://'.self::HOST);
+        $this->bindMock(function () {
+            throw new \InvalidArgumentException('synthetic: option refused for '.self::HOST);
+        });
+
+        $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
+        $response = $this->postJson(route('settings.integrations.mesh.test'));
+
+        $expected = "Mesh connection test stopped in the PSA's HTTP client with no Mesh status recorded (InvalidArgumentException); whether a request was sent is not known.";
+        $response->assertOk()->assertExactJson(['success' => false, 'message' => $expected]);
+        $this->assertWarnedAndTimed($expected);
+        $this->assertStringNotContainsString(self::HOST, implode("\n", $this->logged).$response->getContent());
+    }
+
+    /**
+     * #6103: a blank key (MeshConfig::isConfigured() passes it: empty()
+     * is false for ' ') is refused before send as the clients refuse it.
+     */
+    public function test_a_blank_key_is_refused_before_send(): void
+    {
+        Setting::setValue('mesh_base_url', 'https://'.self::HOST);
+        Setting::setEncrypted('mesh_api_key', '   ');
+        $this->bindMock(fn () => new Response(200, [], '{"results":[]}'));
+
+        $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
+        $response = $this->postJson(route('settings.integrations.mesh.test'));
+
+        $expected = 'Mesh connection test did not run: the Mesh API key is not configured; nothing was sent.';
+        $response->assertOk()->assertExactJson(['success' => false, 'message' => $expected]);
+        $this->assertSame(1, $this->mock->count(), 'nothing reached the handler');
+    }
+
     /** #6059: a non-200 answer goes through the helper: one warning line, the response text. */
     public function test_a_non_200_answer_is_logged_as_a_failed_test(): void
     {

@@ -1029,10 +1029,9 @@ class StaffMeshAdminToolExecutor
                 $expiresAt?->toIso8601String(),
             );
         } catch (MeshWriteRejectedException $e) {
-            // Status only (C-56, card FLzMLDxF): the refusal text is the
-            // vendor's own response body (MeshWriteClient::refusalText()), so
-            // it is not quoted here; the status says Mesh validated the
-            // request and declined it.
+            // Status only (C-56, card FLzMLDxF): the status says Mesh
+            // validated the request and declined it. Since #6106 the
+            // exception carries no vendor text either.
             $message = 'Mesh refused the allow rule: '.$e->statusPhrase('the create');
             $this->auditAttempt($tool, 'rejected', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
 
@@ -1359,10 +1358,10 @@ class StaffMeshAdminToolExecutor
     /**
      * Could this failure be sitting on top of a rule Mesh already committed?
      *
-     * Only two shapes can: a request that reached Mesh and got no readable
+     * Only three shapes can: a request that reached Mesh and got no readable
      * answer (status 0 — read timeout, reset connection, transport failure
-     * mid-flight) and a 5xx from a server that may have committed before it
-     * fell over. Everything else is a server that ANSWERED without acting —
+     * mid-flight), a 5xx from a server that may have committed before it
+     * fell over, and a 3xx redirect, which is not followed (#6105). Everything else is a server that ANSWERED without acting —
      * 401/403 (credential), 404 (route), 429 — and MeshWriteClient's own
      * pre-flight guards and its connect-phase failures never put a request
      * on the wire at all; the exception says so structurally
@@ -1379,7 +1378,10 @@ class StaffMeshAdminToolExecutor
 
         $status = (int) $error->getCode();
 
-        return $status === 0 || $status >= 500;
+        // #6105: a 3xx is an answer the client does not follow. Mesh, or
+        // something in front of it, received the create and answered; what
+        // it did with it is not known, so it is reconciled like a 5xx.
+        return $status === 0 || ($status >= 300 && $status < 400) || $status >= 500;
     }
 
     public function approveStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult

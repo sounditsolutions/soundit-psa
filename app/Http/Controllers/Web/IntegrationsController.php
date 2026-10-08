@@ -1458,9 +1458,12 @@ class IntegrationsController extends Controller
         // #5980: three phases, each with its own failure text, so a fault
         // in the PSA's own settings is never reported as a Mesh failure.
         // Every text is status and class only (#5879, C-56). #6052: the
-        // request URI and the API-KEY header value are checked here, with
-        // the parse and the header rule PSR-7 applies inside get(), so a
-        // base URL or key it would refuse is a 'did not run' too.
+        // request URI is parsed here as PSR-7 parses it inside get(), and
+        // the key is checked with MeshClient::apiKeyRefusal(), the rule
+        // both Mesh clients apply before send: PSR-7's header rule, plus
+        // two PSA refusals PSR-7 does not make (#6111): a missing key
+        // (blank or true, #6103) and an array. A refusal is a 'did not
+        // run'.
         try {
             // Resolved through the container so a test can hand it a
             // MockHandler (G-5); in production this is a plain new client.
@@ -1475,7 +1478,7 @@ class IntegrationsController extends Controller
         } catch (\InvalidArgumentException) {
             return $this->meshTestFailure('Mesh connection test did not run: the Mesh base URL could not be parsed; nothing was sent.');
         }
-        $keyRefusal = \App\Services\Mesh\MeshClient::headerValueRefusal($apiKey);
+        $keyRefusal = \App\Services\Mesh\MeshClient::apiKeyRefusal($apiKey);
         if ($keyRefusal !== null) {
             return $this->meshTestFailure("Mesh connection test did not run: the Mesh API key {$keyRefusal}; nothing was sent.");
         }
@@ -1483,6 +1486,11 @@ class IntegrationsController extends Controller
         try {
             $response = $client->get("{$baseUrl}/api/customers/", [
                 'query' => ['_size' => 1],
+                // #6105: never follow a redirect: Guzzle would carry the
+                // API-KEY header to the Location's host, and a 200 there
+                // would read as 'Connected'. A 3xx is reported by status
+                // below, as any other non-200 answer.
+                'allow_redirects' => false,
                 'headers' => [
                     'API-KEY' => $apiKey,
                     'Accept' => 'application/json',
@@ -1494,6 +1502,13 @@ class IntegrationsController extends Controller
             // MalformedUriException's is the whole URI with its password
             // (C-56), so it reaches neither this response nor a log.
             $status = $e instanceof RequestException ? ($e->getResponse()?->getStatusCode() ?? 0) : 0;
+            if (! $e instanceof \GuzzleHttp\Exception\GuzzleException) {
+                // #6115: not a transport failure. The HTTP client threw
+                // before any Mesh status was recorded, and whether a
+                // request left the PSA is not known, so this is not
+                // reported as a Mesh failure.
+                return $this->meshTestFailure('Mesh connection test stopped in the PSA\'s HTTP client with no Mesh status recorded ('.$e::class.'); whether a request was sent is not known.');
+            }
 
             return $this->meshTestFailure('Mesh connection test failed '
                 .($status > 0 ? "with HTTP {$status}" : 'without an HTTP status').' ('.$e::class.').');
@@ -1550,7 +1565,8 @@ class IntegrationsController extends Controller
             // which carries the request URI, the host and a summary of the
             // vendor's body. Any other failure is named by class in the log only.
             if ($e instanceof \App\Services\Mesh\MeshClientException) {
-                return back()->with('error', 'Mesh sync failed: '.$e->statusPhrase('the license sync').'.');
+                // #6114: one full stop: a client-detected phrase ends in one.
+                return back()->with('error', 'Mesh sync failed: '.rtrim($e->statusPhrase('the license sync'), '.').'.');
             }
 
             Log::error('[MeshSync] Sync failed with an unexpected error ('.$e::class.')');

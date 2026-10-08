@@ -51,14 +51,16 @@ trait RecordsGuzzleRejections
     }
 
     /**
-     * The last raw Guzzle exception the client caught; fails if there was
-     * none. Test-wide unless forgetRejections() ran before the asserted
-     * call (#6057).
+     * The raw Guzzle exception the client caught. #6057: call-scoped, not
+     * test-wide: it fails unless exactly ONE rejection was recorded since
+     * the last forgetRejections(), so a control cannot read an earlier
+     * call's rejection when the asserted call never reached Guzzle. Call
+     * forgetRejections() right before the asserted call.
      */
     protected function lastRejection(): \Throwable
     {
-        $this->assertNotSame([], $this->guzzleRejections, 'positive control: Guzzle rejected the request');
+        $this->assertCount(1, $this->guzzleRejections, 'positive control: exactly one Guzzle rejection since forgetRejections(), the asserted call\'s (#6057)');
 
-        return $this->guzzleRejections[array_key_last($this->guzzleRejections)];
+        return $this->guzzleRejections[0];
     }
 }

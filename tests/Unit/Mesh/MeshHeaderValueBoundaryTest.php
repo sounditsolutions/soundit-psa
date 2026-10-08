@@ -25,7 +25,11 @@ use Tests\TestCase;
  * #6054: a non-string scalar key is accepted, as PSR-7 accepts and casts
  * it; a value that is not a scalar is refused with a reason that says so,
  * not 'holds a character'. An array is refused although PSR-7 reads it as
- * a list of values: one key is one value.
+ * a list of values: one key is one value (#6111: and the reason says so).
+ * #6113: false and the non-finite floats are rows; NAN, INF and -INF
+ * pass the byte rule as text, as PSR-7 accepts them, so they need no
+ * branch of their own. #6103: what the PSA refuses before send as a
+ * missing key, although PSR-7 would carry it.
  *
  * G-5: MockHandler only, stray Http requests prevented. Synthetic data.
  */
@@ -58,9 +62,67 @@ class MeshHeaderValueBoundaryTest extends TestCase
             'int' => [60556055],
             'float' => [6055.5],
             'true' => [true],
+            'false' => [false],
             'null' => [null],
+            'NAN' => [NAN],
+            'INF' => [INF],
+            '-INF' => [-INF],
             'object' => [new \stdClass],
         ];
+    }
+
+    /**
+     * #6103: keys the PSA refuses before send as 'is not configured',
+     * although PSR-7 would carry them (as '' or '1'). The same set
+     * MeshWriteClient::isConfigured() refuses.
+     *
+     * @return array<string, array{0: mixed}>
+     */
+    public static function missingKeys(): array
+    {
+        return [
+            'null' => [null],
+            'false' => [false],
+            'true' => [true],
+            'empty' => [''],
+            'blanks' => [" \t "],
+            'int 0' => [0],
+            "'0'" => ['0'],
+        ];
+    }
+
+    #[DataProvider('missingKeys')]
+    public function test_a_missing_key_is_refused_as_not_configured_by_both_clients(mixed $key): void
+    {
+        $this->assertSame('is not configured', MeshClient::apiKeyRefusal($key));
+        $this->assertFalse((new MeshWriteClient(['api_key' => $key]))->isConfigured(), 'the write client refuses the same set');
+
+        foreach (['read', 'write'] as $which) {
+            $mock = new MockHandler([new Response(200, [], '{"results":[],"count":0}')]);
+            $guzzle = new GuzzleClient(['base_uri' => 'https://mesh-header.example.test/', 'handler' => HandlerStack::create($mock)]);
+            try {
+                if ($which === 'read') {
+                    $client = new MeshClient(['api_key' => $key, 'base_url' => 'https://mesh-header.example.test']);
+                    (new \ReflectionProperty($client, 'http'))->setValue($client, $guzzle);
+                    $client->get('api/customers/', ['_size' => 1]);
+                } else {
+                    (new MeshWriteClient(['api_key' => $key], $guzzle))->listCustomerRules('11111111-2222-3333-4444-555555555555');
+                }
+                $this->fail("{$which}: a missing key must be refused before send");
+            } catch (MeshClientException $e) {
+                $this->assertTrue($e->nothingWasSent(), "{$which}: nothing was sent");
+                $this->assertSame($e->getMessage(), $e->statusPhrase('the read'), "{$which}: client-detected, not a Mesh failure");
+                $this->assertStringContainsString('not configured; nothing was sent.', $e->getMessage());
+            }
+            $this->assertSame(1, $mock->count(), "{$which}: no request reached the handler");
+        }
+    }
+
+    /** A configured key passes apiKeyRefusal() and reaches the header rule. */
+    public function test_a_configured_key_is_not_refused_as_missing(): void
+    {
+        $this->assertNull(MeshClient::apiKeyRefusal('SECRET_FIXTURE-6103'));
+        $this->assertSame('holds a character an HTTP header cannot carry', MeshClient::apiKeyRefusal("SECRET_FIXTURE\n"));
     }
 
     #[DataProvider('values')]
@@ -83,8 +145,9 @@ class MeshHeaderValueBoundaryTest extends TestCase
         $this->assertSame('holds a character an HTTP header cannot carry', MeshClient::headerValueRefusal("SECRET_FIXTURE\n"));
         $this->assertSame('is not a value an HTTP header can carry', MeshClient::headerValueRefusal(new \stdClass));
         // Stricter than PSR-7 on purpose: PSR-7 reads an array as a LIST of
-        // header values; one API key is one value.
-        $this->assertSame('is not a value an HTTP header can carry', MeshClient::headerValueRefusal(['SECRET_FIXTURE-6055']));
+        // header values; one API key is one value. #6111: the reason says
+        // that, not that a header cannot carry it.
+        $this->assertSame('is a list of values, and the PSA sends one key as one header value', MeshClient::headerValueRefusal(['SECRET_FIXTURE-6055']));
         $this->assertNull(MeshClient::headerValueRefusal(60556055), 'an int key is not refused');
     }
 

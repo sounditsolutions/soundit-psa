@@ -925,7 +925,7 @@ class MeshAddAllowRuleTest extends TestCase
         $run = $this->stagedRun($fixture);
 
         $write->shouldReceive('createAllowRule')->once()
-            ->andThrow(new MeshWriteRejectedException('Invalid sender — sender: reserved domain', ['errors' => ['reserved domain']]));
+            ->andThrow(new MeshWriteRejectedException('Invalid sender — sender: reserved domain'));
 
         $this->actingAs($actor)->post(route('cockpit.approve', $run));
 
