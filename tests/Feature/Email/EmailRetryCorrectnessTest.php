@@ -740,7 +740,9 @@ class EmailRetryCorrectnessTest extends TestCase
         $skipped = $this->withMessage(self::SKIPPED);
         $this->assertCount(1, $skipped);
         $this->assertSame('baseline_missing', $skipped[0]->context['reason']);
-        Bus::assertDispatched(\App\Jobs\RetryEmailAttachments::class, fn ($j) => $j->refusals === 1 && $j->baseline === null);
+        // #5802: a re-queued run would carry the same null baseline, so the refusal is final now.
+        Bus::assertNotDispatched(\App\Jobs\RetryEmailAttachments::class);
+        $this->assertSame('baseline_missing', $this->withMessage(\App\Jobs\RetryEmailAttachments::MARKER)[0]->context['reason'] ?? null);
     }
 
     public function test_a_retry_with_model_events_suppressed_is_refused_as_tracking_unavailable(): void

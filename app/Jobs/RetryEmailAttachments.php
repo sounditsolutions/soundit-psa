@@ -23,7 +23,8 @@ use Illuminate\Support\Facades\Log;
  * `queue:work --tries=2 --timeout=30`): one attempt, killed after 20 seconds. The retry is one
  * Graph message read (the expand read carries the file attachments' bytes) plus one $value read
  * per attached Outlook item; a 429 backoff can still outrun 20 seconds, and that kill is final
- * (failed() below). A refusal is a separate budget: it is re-queued once as a fresh, delayed
+ * (failed() below). A refusal whose cause can clear (#5802, EmailService::refusalCanClear) is a
+ * separate budget: it is re-queued once as a fresh, delayed
  * dispatch carrying $refusals + 1, which starts its own single attempt. So a timeout never
  * spends the refusal re-queue, and a refusal never spends a worker try.
  *
@@ -59,16 +60,48 @@ class RetryEmailAttachments implements ShouldQueue
 
     public const MARKER = '[RetryEmailAttachments] Email attachments not added';
 
+    public const EARLIER_UNDISCARDED = '[RetryEmailAttachments] Attachments an earlier run stored left undiscarded';
+
     /**
      * @param  array<string, mixed>|null  $baseline  EmailService::retryBaseline as the creating transaction left it
      */
+    /**
+     * #5803: the attachment ids earlier runs of this retry left undiscarded, carried through a
+     * re-queue so the final run reports them. A plain property with a default, so a payload
+     * queued before it existed unserialises with [].
+     *
+     * @var list<int>
+     */
+    public array $earlierUndiscarded = [];
+
+    /** @param  list<int>  $earlierUndiscarded */
     public function __construct(
         public readonly int $emailId,
         public readonly int $ticketId,
         public readonly ?int $noteId,
         public readonly ?array $baseline,
         public readonly int $refusals = 0,
-    ) {}
+        array $earlierUndiscarded = [],
+    ) {
+        $this->earlierUndiscarded = $earlierUndiscarded;
+    }
+
+    /**
+     * $ids with the earlier runs' undiscarded ids (#5803); null (not known, #5799) stays null.
+     *
+     * @param  list<int>|null  $ids
+     * @return list<int>|null
+     */
+    private function withEarlier(?array $ids): ?array
+    {
+        if ($ids === null) {
+            return null;
+        }
+        $all = array_values(array_unique(array_merge($this->earlierUndiscarded, $ids)));
+        sort($all);
+
+        return $all;
+    }
 
     /**
      * What handle() has reached for each dispatch running in this process, by progressKey(): the
@@ -92,8 +125,9 @@ class RetryEmailAttachments implements ShouldQueue
             self::$progress[$key]['outcome'] = $outcome;
 
             if ($outcome !== null && $outcome['requeueable'] && $this->refusals < self::MAX_REFUSAL_REQUEUES) {
-                self::uninterrupted(function () use ($key): void {
-                    self::dispatch($this->emailId, $this->ticketId, $this->noteId, $this->baseline, $this->refusals + 1)
+                self::uninterrupted(function () use ($key, $outcome): void {
+                    self::dispatch($this->emailId, $this->ticketId, $this->noteId, $this->baseline, $this->refusals + 1,
+                        $this->withEarlier($outcome['undiscarded_attachment_ids']))
                         ->delay(self::REQUEUE_DELAY_SECONDS);
                     self::$progress[$key]['requeued'] = true;
                 });
@@ -104,7 +138,12 @@ class RetryEmailAttachments implements ShouldQueue
             if ($outcome !== null) {
                 self::uninterrupted(function () use ($key, $outcome): void {
                     self::$progress[$key]['marked'] = true;
-                    $this->writeMarker($outcome['reason'], $outcome['undiscarded_attachment_ids']);
+                    $this->writeMarker($outcome['reason'], $this->withEarlier($outcome['undiscarded_attachment_ids']));
+                });
+            } elseif ($this->earlierUndiscarded !== []) {
+                self::uninterrupted(function () use ($key): void {
+                    self::$progress[$key]['marked'] = true;
+                    $this->warnEarlierUndiscarded();
                 });
             }
             self::uninterrupted(function () use ($key): void {
@@ -117,24 +156,32 @@ class RetryEmailAttachments implements ShouldQueue
     }
 
     /**
-     * A timeout kill, or a throw out of handle() (only a failed re-queue dispatch can throw
-     * there): final, never re-queued. On a timeout the worker calls this in the killed process,
-     * after rolling back any open transaction. When handle() already had the retry's outcome,
-     * that outcome stands: a re-queued run owns what follows; otherwise only the marker and the
-     * commit work handle() had not started are run. When the kill landed inside the retry,
-     * abandonRetry discards what the read stored unless the link committed, and the marker is
-     * written unless the link is known to have committed.
+     * The job failed: a timeout kill, a throw out of handle(), or a failure the worker records in
+     * another process (#5799: a job whose worker died is failed by the next worker that reserves
+     * it, as MaxAttemptsExceededException). Final, never re-queued. On a timeout the worker calls
+     * this in the killed process, after rolling back any open transaction. When handle() already
+     * had the retry's outcome, that outcome stands: a re-queued run owns what follows; otherwise
+     * only the marker and the commit work handle() had not started are run. When the kill landed
+     * inside the retry, abandonRetry discards what the read stored unless the link committed, and
+     * the marker is written unless the link is known to have committed. When the failure is not a
+     * timeout and no handle() of this dispatch is on this process's stack (it ran in another
+     * process, or already returned or threw), what its retry stored is not known here: the
+     * marker's undiscarded_attachment_ids is null, not [].
      */
     public function failed(?\Throwable $e): void
     {
-        $progress = self::$progress[$this->progressKey()] ?? [];
+        $key = $this->progressKey();
+        $here = array_key_exists($key, self::$progress);
+        $progress = self::$progress[$key] ?? [];
         if (array_key_exists('outcome', $progress)) {
             if ($progress['requeued'] ?? false) {
                 return;
             }
             $outcome = $progress['outcome'];
             if ($outcome !== null && ! ($progress['marked'] ?? false)) {
-                $this->writeMarker($outcome['reason'], $outcome['undiscarded_attachment_ids']);
+                $this->writeMarker($outcome['reason'], $this->withEarlier($outcome['undiscarded_attachment_ids']));
+            } elseif ($outcome === null && $this->earlierUndiscarded !== [] && ! ($progress['marked'] ?? false)) {
+                $this->warnEarlierUndiscarded();
             }
             if (! ($progress['committed'] ?? false)) {
                 $this->runCommitWork();
@@ -143,16 +190,21 @@ class RetryEmailAttachments implements ShouldQueue
             return;
         }
 
+        $timedOut = $e instanceof \Illuminate\Queue\TimeoutExceededException;
         $discard = ['linked' => false, 'undiscarded_attachment_ids' => []];
-        try {
-            $discard = app(EmailService::class)->abandonRetry($this->noteId);
-        } catch (\Throwable) {
+        if (! $here && ! $timedOut) {
+            // #5799: not this process's run; its tracking died with the process that stored.
+            $discard['undiscarded_attachment_ids'] = null;
+        } else {
+            try {
+                $discard = app(EmailService::class)->abandonRetry($this->noteId);
+            } catch (\Throwable) {
+            }
         }
         if ($discard['linked'] !== true) {
-            $this->writeMarker(
-                $e instanceof \Illuminate\Queue\TimeoutExceededException ? 'timed_out' : 'job_failed',
-                $discard['undiscarded_attachment_ids'],
-            );
+            $this->writeMarker($timedOut ? 'timed_out' : 'job_failed', $this->withEarlier($discard['undiscarded_attachment_ids']));
+        } elseif ($this->earlierUndiscarded !== []) {
+            $this->warnEarlierUndiscarded();
         }
         $this->runCommitWork();
     }
@@ -180,8 +232,24 @@ class RetryEmailAttachments implements ShouldQueue
         return "{$this->emailId}:{$this->ticketId}:{$this->refusals}";
     }
 
-    /** @param  list<int>  $undiscarded */
-    private function writeMarker(string $reason, array $undiscarded): void
+    /**
+     * #5803: the final run linked, and an earlier run left rows undiscarded. C-56: ids only.
+     */
+    private function warnEarlierUndiscarded(): void
+    {
+        try {
+            Log::warning(self::EARLIER_UNDISCARDED, [
+                'email_id' => $this->emailId,
+                'ticket_id' => $this->ticketId,
+                'refusals_requeued' => $this->refusals,
+                'undiscarded_attachment_ids' => $this->earlierUndiscarded,
+            ]);
+        } catch (\Throwable) {
+        }
+    }
+
+    /** @param  list<int>|null  $undiscarded  null when not known in this process (#5799) */
+    private function writeMarker(string $reason, ?array $undiscarded): void
     {
         $noted = false;
         try {

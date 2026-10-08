@@ -444,6 +444,116 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertSame([['notifyEmailAdded', $ticket->id, 0]], $this->seen->getArrayCopy());
     }
 
+    /** @return array<string, array{0: \Closure(): void, 1: string}> */
+    public static function refusalsThatCannotClear(): array
+    {
+        return [
+            'client note deleted' => [fn () => TicketNote::whereNotNull('email_id')->firstOrFail()->delete(), 'client_note_missing'],
+            'email moved to another ticket' => [function () {
+                $other = Ticket::factory()->create(['client_id' => Client::query()->value('id')]);
+                Email::where('graph_id', 'MSG-1')->update(['ticket_id' => $other->id]);
+            }, 'email_relinked'],
+            'ticket soft-deleted' => [fn () => Ticket::query()->firstOrFail()->delete(), 'ticket_gone'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('refusalsThatCannotClear')]
+    public function test_a_refusal_that_cannot_clear_is_final_at_the_first_run(\Closure $cause, string $reason): void
+    {
+        // #5802: a re-queued run reads the same rows and payload, so it is not re-queued; the
+        // marker and the commit work run now, not 60 s later.
+        $this->graph([$this->failedRead()]); // #5714: refused before any Graph read
+        $ticket = $this->ticketWithQueuedRetry();
+        $cause();
+
+        $this->popRetry()->fire();
+
+        $this->assertSame(1, $this->messageReads(), 'refused at the pre-check');
+        $this->assertSame([], $this->retryRows(), 'no re-queue');
+        $marker = $this->withMessage(RetryEmailAttachments::MARKER);
+        $this->assertCount(1, $marker, 'final now: the marker');
+        $this->assertSame([$reason, 0], [$marker[0]->context['reason'], $marker[0]->context['refusals_requeued']]);
+        // A ticket that is gone gets no notification (runCommitWork finds no ticket).
+        $this->assertSame($reason === 'ticket_gone' ? 0 : 1, count($this->seen), 'the commit work ran at the first run');
+    }
+
+    /** @return array<string, array{0: bool}> */
+    public static function secondRunOutcomes(): array
+    {
+        return ['the cause clears and the second run links' => [true], 'the cause lasts' => [false]];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('secondRunOutcomes')]
+    public function test_the_first_runs_undiscarded_ids_reach_the_final_runs_record(bool $clears): void
+    {
+        // #5803: the first run is refused and the force-delete of its stored row throws, so that
+        // row is left undiscarded; the re-queue carries its id to the final run's record.
+        $this->graph([$this->failedRead(), $this->readWhileEditing('tech edit: transient')]);
+        $ticket = $this->ticketWithQueuedRetry();
+        $original = $ticket->fresh()->description;
+        $throws = true;
+        Attachment::forceDeleting(function () use (&$throws) {
+            if ($throws) {
+                throw new \RuntimeException('B4M-SYNTHETIC-LOCK-WAIT');
+            }
+        });
+
+        $this->popRetry()->fire();
+
+        $left = Attachment::withTrashed()->sole();
+        $this->assertSame([$left->id], $this->withMessage('[EmailService] Attachment retry after ticket creation skipped')[0]->context['undiscarded_attachment_ids'],
+            'positive control: the first run left the row undiscarded');
+        $throws = false;
+        $this->travel(RetryEmailAttachments::REQUEUE_DELAY_SECONDS + 1)->seconds();
+        $second = $this->popRetry();
+        $this->assertSame([$left->id], $this->commandOf($second)->earlierUndiscarded, 'the re-queue carries the id');
+        if ($clears) {
+            Ticket::whereKey($ticket->id)->update(['description' => $original]);
+            $this->mock->append($this->read());
+        }
+
+        $second->fire();
+
+        if ($clears) {
+            $this->assertSame(TicketNote::class, Attachment::where('id', '!=', $left->id)->sole()->attachable_type, 'positive control: the second run linked');
+            $this->assertSame([], $this->withMessage(RetryEmailAttachments::MARKER), 'linked: no not-added marker');
+            $earlier = $this->withMessage(RetryEmailAttachments::EARLIER_UNDISCARDED);
+            $this->assertCount(1, $earlier);
+            $this->assertSame(Level::Warning, $earlier[0]->level);
+            $email = Email::where('graph_id', 'MSG-1')->sole();
+            $this->assertSame(['email_id' => $email->id, 'ticket_id' => $ticket->id, 'refusals_requeued' => 1,
+                'undiscarded_attachment_ids' => [$left->id]], $earlier[0]->context, 'C-56: ids only');
+        } else {
+            $marker = $this->withMessage(RetryEmailAttachments::MARKER);
+            $this->assertCount(1, $marker);
+            $this->assertSame(['ticket_changed', [$left->id]], [$marker[0]->context['reason'], $marker[0]->context['undiscarded_attachment_ids']]);
+            $this->assertSame([], $this->withMessage(RetryEmailAttachments::EARLIER_UNDISCARDED));
+        }
+        $this->assertSame(1, count($this->seen), 'the commit work ran once');
+    }
+
+    public function test_a_failure_recorded_in_another_process_reports_its_undiscarded_ids_as_unknown(): void
+    {
+        // #5799: a worker died (OOM, SIGKILL) inside the retry after its read stored a row; the
+        // next worker to reserve the job fails it as MaxAttemptsExceeded in a fresh process,
+        // where what the dead one stored is not known. The marker says so: null, not [].
+        $this->graph([$this->failedRead()]);
+        $ticket = $this->ticketWithQueuedRetry();
+        $job = $this->popRetry();
+        app(\App\Services\AttachmentService::class)->storeFromContent('synthetic-orphan', 'orphan.txt', 'text/plain');
+
+        $job->fail(\Illuminate\Queue\MaxAttemptsExceededException::forJob($job));
+
+        $this->assertSame(1, Attachment::count(), 'positive control: the dead run\'s row is still there');
+        $marker = $this->withMessage(RetryEmailAttachments::MARKER);
+        $this->assertCount(1, $marker);
+        $this->assertSame('job_failed', $marker[0]->context['reason']);
+        $this->assertArrayHasKey('undiscarded_attachment_ids', $marker[0]->context);
+        $this->assertNull($marker[0]->context['undiscarded_attachment_ids'], 'not known in this process, never []');
+        $this->assertCount(1, $this->markerNotes($ticket->id));
+        $this->assertSame(1, count($this->seen), 'the commit work still ran');
+    }
+
     // ── A timeout kill and a refusal do not share or double-count one budget ──
 
     /**
