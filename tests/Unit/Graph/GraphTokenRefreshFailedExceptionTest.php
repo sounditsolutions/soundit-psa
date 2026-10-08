@@ -33,6 +33,7 @@ use Monolog\Handler\TestHandler;
 use Monolog\Level;
 use Monolog\LogRecord;
 use Psr\Http\Message\RequestInterface;
+use Tests\Support\FlattensLogContext;
 use Tests\TestCase;
 
 /**
@@ -57,6 +58,8 @@ use Tests\TestCase;
  */
 class GraphTokenRefreshFailedExceptionTest extends TestCase
 {
+    use FlattensLogContext;
+
     private const TENANT = 'tenant-b4c-synthetic';
 
     /** A synthetic client-secret fixture, not a credential (G-13). The token fixtures echo it back (#5517). */
@@ -208,19 +211,19 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
                 fn () => self::malformedTokenResponse(['access_token' => [self::MALFORMED_VALUE_MARKER], 'expires_in' => 3600]),
                 'Graph API token response carried a malformed access_token',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'array']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'array', 'reason' => 'not a string']],
             ],
             'malformed arm: int access_token' => [
                 fn () => self::malformedTokenResponse(['access_token' => 735911, 'expires_in' => 3600]),
                 'Graph API token response carried a malformed access_token',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'int']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'int', 'reason' => 'not a string']],
             ],
             'malformed arm: true access_token' => [
                 fn () => self::malformedTokenResponse(['access_token' => true, 'expires_in' => 3600]),
                 'Graph API token response carried a malformed access_token',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'bool']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'bool', 'reason' => 'not a string']],
             ],
             // #5729: a falsy access_token that is present used to take the no-token arm with no
             // record. It is malformed, with the record naming its type.
@@ -228,31 +231,31 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
                 fn () => self::malformedTokenResponse(['access_token' => false, 'expires_in' => 3600]),
                 'Graph API token response carried a malformed access_token',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'bool']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'bool', 'reason' => 'not a string']],
             ],
             'malformed arm: zero access_token' => [
                 fn () => self::malformedTokenResponse(['access_token' => 0, 'expires_in' => 3600]),
                 'Graph API token response carried a malformed access_token',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'int']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'int', 'reason' => 'not a string']],
             ],
             'malformed arm: [] access_token' => [
                 fn () => self::malformedTokenResponse(['access_token' => [], 'expires_in' => 3600]),
                 'Graph API token response carried a malformed access_token',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'array']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'array', 'reason' => 'not a string']],
             ],
             'malformed arm: empty string access_token' => [
                 fn () => self::malformedTokenResponse(['access_token' => '', 'expires_in' => 3600]),
                 'Graph API token response carried a malformed access_token',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string', 'reason' => 'empty']],
             ],
             'malformed arm: "0" access_token' => [
                 fn () => self::malformedTokenResponse(['access_token' => '0', 'expires_in' => 3600]),
                 'Graph API token response carried a malformed access_token',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string', 'reason' => 'empty']],
             ],
             // #5738: a string token with a control character would fail psr7's header check with
             // an exception that prints the whole bearer. Refused before it is cached or sent.
@@ -260,25 +263,25 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
                 fn () => self::malformedTokenResponse(['access_token' => self::MALFORMED_VALUE_MARKER."\rx", 'expires_in' => 3600]),
                 'Graph API token response carried a malformed access_token',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string', 'reason' => 'control character']],
             ],
             'malformed arm: control character (LF) access_token' => [
                 fn () => self::malformedTokenResponse(['access_token' => self::MALFORMED_VALUE_MARKER."\nx", 'expires_in' => 3600]),
                 'Graph API token response carried a malformed access_token',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string', 'reason' => 'control character']],
             ],
             'malformed arm: control character (NUL) access_token' => [
                 fn () => self::malformedTokenResponse(['access_token' => self::MALFORMED_VALUE_MARKER."\0x", 'expires_in' => 3600]),
                 'Graph API token response carried a malformed access_token',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string', 'reason' => 'control character']],
             ],
             'malformed arm: control character (DEL) access_token' => [
                 fn () => self::malformedTokenResponse(['access_token' => self::MALFORMED_VALUE_MARKER."\x7Fx", 'expires_in' => 3600]),
                 'Graph API token response carried a malformed access_token',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'access_token', 'type' => 'string', 'reason' => 'control character']],
             ],
             // #5730 / #5721: an explicit null expires_in is no longer read as 3600, and an
             // expires_in under one second is no longer cached for the 60-second floor.
@@ -286,43 +289,43 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
                 fn () => self::malformedTokenResponse(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => null]),
                 'Graph API token response carried a malformed expires_in',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'null']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'null', 'reason' => 'not numeric']],
             ],
             'malformed arm: zero expires_in' => [
                 fn () => self::malformedTokenResponse(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => 0]),
                 'Graph API token response carried a malformed expires_in',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'int']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'int', 'reason' => 'under one second']],
             ],
             'malformed arm: negative expires_in' => [
                 fn () => self::malformedTokenResponse(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => -100]),
                 'Graph API token response carried a malformed expires_in',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'int']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'int', 'reason' => 'under one second']],
             ],
             'malformed arm: "0" expires_in' => [
                 fn () => self::malformedTokenResponse(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => '0']),
                 'Graph API token response carried a malformed expires_in',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'string']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'string', 'reason' => 'under one second']],
             ],
             'malformed arm: sub-second expires_in' => [
                 fn () => self::malformedTokenResponse(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => 0.5]),
                 'Graph API token response carried a malformed expires_in',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'float']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'float', 'reason' => 'under one second']],
             ],
             'malformed arm: non-numeric expires_in' => [
                 fn () => self::malformedTokenResponse(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => 'soon']),
                 'Graph API token response carried a malformed expires_in',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'string']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'string', 'reason' => 'not numeric']],
             ],
             'malformed arm: leading-numeric expires_in' => [
                 fn () => self::malformedTokenResponse(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => '3600s']),
                 'Graph API token response carried a malformed expires_in',
                 'malformed',
-                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'string']],
+                ['Graph API token response malformed', ['status' => 200, 'field' => 'expires_in', 'type' => 'string', 'reason' => 'not numeric']],
             ],
         ];
     }
@@ -658,8 +661,10 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
                 array_map(fn (LogRecord $r) => [$r->level, $r->message, $r->context], $this->logs->getRecords()),
                 "{$name}: the token record is the status alone",
             );
+            // #5828: the context is flattened, not json_encode()d, which writes '/' as '\/' (so the
+            // unparseable Location needle could never match) and a Throwable as {}.
             foreach ($this->logged as $m) {
-                $this->assertCarriesNone([self::REDIRECT_HOST, 'hop=1', self::UNPARSEABLE_LOCATION, 'Location', self::ISSUED_ACCESS_FIXTURE], $m->message.' '.json_encode($m->context), "{$name}: '{$m->message}'");
+                $this->assertCarriesNone([self::REDIRECT_HOST, 'hop=1', self::UNPARSEABLE_LOCATION, 'Location', self::ISSUED_ACCESS_FIXTURE], $m->message.' '.self::flattenForScan($m->context), "{$name}: '{$m->message}'");
             }
             $this->assertCarriesNone([self::REDIRECT_HOST, 'hop=1', self::UNPARSEABLE_LOCATION], $e->getMessage().' '.$e->tokenFailure->getMessage(), "{$name}: the messages");
         }
@@ -670,7 +675,10 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
      * with its default redirect handling, on the same scripted stack, follows the 307 to the
      * other host and re-sends the form body with the secret, and on the unparseable Location
      * throws MalformedUriException, which is not a GuzzleException. The client getToken() posts
-     * with has redirects off; the Graph client is unchanged.
+     * with has redirects off, and since #5824 so has the Graph data client.
+     *
+     * #5828 positive control: the record scan above sees the unparseable Location when a context
+     * carries it as a string or inside the MalformedUriException, where json_encode() did not.
      */
     public function test_a_default_client_would_follow_and_replay_the_secret(): void
     {
@@ -680,7 +688,7 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
             new Response(302, ['Location' => self::UNPARSEABLE_LOCATION], ''),
         );
         $this->assertFalse((new \ReflectionProperty(GraphClient::class, 'authHttp'))->getValue($graph)->getConfig('allow_redirects'));
-        $this->assertNotFalse((new \ReflectionProperty(GraphClient::class, 'http'))->getValue($graph)->getConfig('allow_redirects'));
+        $this->assertFalse((new \ReflectionProperty(GraphClient::class, 'http'))->getValue($graph)->getConfig('allow_redirects'));
 
         $default = new Client(['base_uri' => 'https://login.microsoftonline.com/', 'handler' => $this->stack]);
         $default->post(self::TENANT.'/oauth2/v2.0/token', ['form_params' => ['client_secret' => self::SECRET_FIXTURE]]);
@@ -694,6 +702,12 @@ class GraphTokenRefreshFailedExceptionTest extends TestCase
             $this->fail('a followed unparseable Location did not throw');
         } catch (\GuzzleHttp\Psr7\Exception\MalformedUriException $e) {
             $this->assertNotInstanceOf(\GuzzleHttp\Exception\GuzzleException::class, $e);
+        }
+
+        // The exception's message holds the part of the Location psr7 could not parse.
+        foreach (['the Location as a string' => [self::UNPARSEABLE_LOCATION, ['location' => self::UNPARSEABLE_LOCATION]], 'the exception' => [$e->getMessage(), ['exception' => $e]]] as $what => [$needle, $context]) {
+            $this->assertStringNotContainsString($needle, (string) json_encode($context), "json_encode() hides {$what}");
+            $this->assertStringContainsString($needle, self::flattenForScan($context), "the scan sees {$what}");
         }
     }
 

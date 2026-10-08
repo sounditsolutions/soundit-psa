@@ -11,7 +11,9 @@ namespace App\Services\Graph;
  * status 0 but is a plain GraphClientException: a record that carries only the status and the
  * exception class (GraphWebhookManager::failure(), GraphWebhookController) then still names
  * the token leg. getToken()'s own record, where it writes one, carries the token endpoint's
- * status. Callers that catch GraphClientException catch this too.
+ * status when the endpoint answered; when no response arrived its status is null and it names
+ * the Guzzle exception class instead (#5830). Callers that catch GraphClientException catch
+ * this too.
  */
 class GraphTokenException extends GraphClientException
 {

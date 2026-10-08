@@ -104,7 +104,7 @@ class GraphClientCalendarShapeTest extends TestCase
         $errored = $this->scheduleRow('b4k1.second@synthetic.test');
         $errored['error'] = ['message' => 'x', 'responseCode' => 'y'];
         $cases = [
-            'per-mailbox error' => [[$this->scheduleRow('b4k1.first@synthetic.test'), $errored], 'Microsoft Graph getSchedule returned an error for the mailbox in row 1; its availability is unknown, so the whole free/busy read is refused rather than shown as free.'],
+            'per-mailbox error' => [[$this->scheduleRow('b4k1.first@synthetic.test'), $errored], 'Microsoft Graph getSchedule returned an error for requested mailbox 1 (zero-based position in the request; row 1 of the response); its availability is unknown, so the whole free/busy read is refused rather than shown as free.'],
             'missing mailbox' => [[$this->scheduleRow('b4k1.first@synthetic.test')], 'Microsoft Graph getSchedule did not return availability for requested mailbox 1 (zero-based position in the request) — a grid missing a requested mailbox must not be read as complete.'],
         ];
         foreach ($cases as $name => [$rows, $expected]) {

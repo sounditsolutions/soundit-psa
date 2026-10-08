@@ -16,6 +16,7 @@ use Illuminate\Cache\Repository;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
 use Tests\TestCase;
 
 /**
@@ -93,28 +94,30 @@ class GraphClientTokenShapeTest extends TestCase
         return array_map(fn (array $h) => $h['request']->getUri()->getHost(), $this->history);
     }
 
-    /** @return array<string, array{0: mixed, 1: string}> [cached value, the type the record names] */
+    /** @return array<string, array{0: mixed, 1: string, 2: string}> [cached value, the type and the reason the record names] */
     public static function malformedCachedTokens(): array
     {
         return [
-            'array' => [[self::CACHED_VALUE_MARKER], 'array'],
-            'int' => [735911, 'int'],
-            'true' => [true, 'bool'],
-            'empty string' => ['', 'string'],
-            'CR' => [self::CACHED_VALUE_MARKER."\rx", 'string'],
-            'LF' => [self::CACHED_VALUE_MARKER."\nx", 'string'],
-            'tab' => [self::CACHED_VALUE_MARKER."\tx", 'string'],
+            'array' => [[self::CACHED_VALUE_MARKER], 'array', 'not a string'],
+            'int' => [735911, 'int', 'not a string'],
+            'true' => [true, 'bool', 'not a string'],
+            'empty string' => ['', 'string', 'empty'],
+            'CR' => [self::CACHED_VALUE_MARKER."\rx", 'string', 'control character'],
+            'LF' => [self::CACHED_VALUE_MARKER."\nx", 'string', 'control character'],
+            'tab' => [self::CACHED_VALUE_MARKER."\tx", 'string', 'control character'],
         ];
     }
 
     /**
      * #5720: a malformed value already in the cache is dropped with a warning naming its type,
      * a new token is requested, and the Graph request carries the new bearer. Before #5720 an
-     * array or a control-character string threw a non-GraphClientException on every call until
-     * the TTL ran out, and an int was sent as the bearer.
+     * array, or a string with a control character other than TAB, threw a non-GraphClientException
+     * on every call until the TTL ran out, and an int was sent as the bearer. #5835: a TAB string
+     * did not throw (psr7 accepts TAB); it was sent as the bearer. #5840: the record names the
+     * reason as well as the type.
      */
     #[\PHPUnit\Framework\Attributes\DataProvider('malformedCachedTokens')]
-    public function test_a_malformed_cached_token_is_dropped_and_a_new_one_requested(mixed $cached, string $type): void
+    public function test_a_malformed_cached_token_is_dropped_and_a_new_one_requested(mixed $cached, string $type, string $reason): void
     {
         $graph = $this->graph(self::token(), self::ok());
         $this->cache->put('graph_api_token', $cached, 3600);
@@ -124,7 +127,7 @@ class GraphClientTokenShapeTest extends TestCase
         $this->assertSame('Bearer '.self::ISSUED_BEARER_FIXTURE, $this->history[1]['request']->getHeaderLine('Authorization'));
         $this->assertSame(self::ISSUED_BEARER_FIXTURE, $this->cache->get('graph_api_token'), 'the new token replaced it');
         $this->assertSame(
-            [['warning', 'Graph API cached token malformed, requesting a new one', ['type' => $type]]],
+            [['warning', 'Graph API cached token malformed, requesting a new one', ['type' => $type, 'reason' => $reason]]],
             array_map(fn (MessageLogged $m) => [$m->level, $m->message, $m->context], $this->logged),
         );
     }
@@ -213,12 +216,16 @@ class GraphClientTokenShapeTest extends TestCase
     /**
      * #5734: authenticatedRequest has no exit after its loop. A 429 on every attempt is retried
      * three times and the fourth 429 is thrown by throwFromGuzzle with its status.
+     *
+     * #5836: this is a pin on the loop end, not a red-at-base test: at base the fourth 429 also
+     * reached throwFromGuzzle. It does not count toward a failing-at-base figure.
      */
     public function test_a_429_on_every_attempt_ends_in_the_429(): void
     {
-        // '0.0' is truthy and numeric, so the back-off sleeps 0 seconds ('0' is falsy and would
-        // fall back to 10, 20 and 30 seconds).
-        $tooMany = fn () => new Response(429, ['Retry-After' => '0.0'], '{}');
+        // #5825: a zero Retry-After takes the default 10, 20 and 30 second back-off; Sleep::fake()
+        // stands in for the waits, so the test does not really sleep.
+        Sleep::fake();
+        $tooMany = fn () => new Response(429, ['Retry-After' => '0'], '{}');
         $graph = $this->graph($tooMany(), $tooMany(), $tooMany(), $tooMany());
         $this->cache->put('graph_api_token', 'b4k2-synthetic-cached-bearer', 3600);
 
@@ -230,5 +237,6 @@ class GraphClientTokenShapeTest extends TestCase
             $this->assertSame(429, $e->getHttpStatus());
         }
         $this->assertCount(4, $this->history, 'the first request and three retries');
+        Sleep::assertSequence([Sleep::for(10)->seconds(), Sleep::for(20)->seconds(), Sleep::for(30)->seconds()]);
     }
 }

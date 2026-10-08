@@ -41,9 +41,13 @@ final class CalendarGraphShapes
      *    dateTimeTimeZone object with a string dateTime);
      *  - a requested mailbox missing, an unrequested mailbox present, or a duplicate.
      *
-     * #5732 / C-56: no message carries a mailbox address. A row is named by its zero-based
-     * position in the response's value list ("row N"), and a missing mailbox by its zero-based
-     * position in $requestedUpns, so a caller that holds the request can still tell which one.
+     * #5732 / C-56: no message carries a mailbox address. #5777: a row whose scheduleId names a
+     * requested mailbox is named by that mailbox's zero-based position in $requestedUpns
+     * ("requested mailbox N"), with its response position after it, so a caller that holds the
+     * request can tell which mailbox it is whatever order Graph returned the rows in. A row
+     * that is not an object or has no scheduleId can only be named by its response position
+     * ("row N of the response"), and so can a row for a mailbox that was not requested. A
+     * missing mailbox is named by its request position.
      *
      * @param  list<string>  $requestedUpns  the mailboxes asked for (already allowlist-proven)
      * @return list<array<string, mixed>>
@@ -57,21 +61,22 @@ final class CalendarGraphShapes
             throw new GraphShapeDriftException('Microsoft Graph getSchedule "value" is not a JSON list — refusing to read a malformed envelope as an empty grid.');
         }
 
-        /** @var array<string, true> $seen scheduleId (lowercased) => present */
-        $seen = [];
-        $rows = [];
-        foreach ($response->value as $index => $row) {
-            $rows[] = self::assertScheduleRow($row, $index, $seen);
-        }
-
-        // Reconcile 1:1 with the requested set — no missing, no unrequested extras.
-        // #5732: a missing mailbox is named by its zero-based position in $requestedUpns, never
-        // by its address.
         /** @var array<string, int> $requested lowercased => first position in $requestedUpns */
         $requested = [];
         foreach (array_values($requestedUpns) as $i => $upn) {
             $requested[mb_strtolower(trim((string) $upn))] ??= $i;
         }
+
+        /** @var array<string, true> $seen scheduleId (lowercased) => present */
+        $seen = [];
+        $rows = [];
+        foreach ($response->value as $index => $row) {
+            $rows[] = self::assertScheduleRow($row, $index, $requested, $seen);
+        }
+
+        // Reconcile 1:1 with the requested set — no missing, no unrequested extras.
+        // #5732: a missing mailbox is named by its zero-based position in $requestedUpns, never
+        // by its address.
         foreach ($requested as $key => $i) {
             if (! isset($seen[$key])) {
                 throw new GraphShapeDriftException("Microsoft Graph getSchedule did not return availability for requested mailbox {$i} (zero-based position in the request) — a grid missing a requested mailbox must not be read as complete.");
@@ -87,15 +92,17 @@ final class CalendarGraphShapes
     }
 
     /**
+     * @param  array<string, int>  $requested  lowercased mailbox => zero-based request position
      * @param  array<string, true>  $seen
      * @return array<string, mixed>
      */
-    private static function assertScheduleRow(mixed $row, int $index, array &$seen): array
+    private static function assertScheduleRow(mixed $row, int $index, array $requested, array &$seen): array
     {
-        // #5732 / C-56: messages name the row by its zero-based position in the response's value
-        // list, never by its scheduleId (the mailbox address). GraphShapeDriftException is a
-        // GraphClientException, and a caller may surface its message.
-        $at = "row {$index}";
+        // #5732 / C-56: messages never carry the scheduleId (the mailbox address).
+        // GraphShapeDriftException is a GraphClientException, and a caller may surface its
+        // message. Until the scheduleId is proven the row can only be named by its zero-based
+        // position in the response's value list.
+        $at = "row {$index} of the response";
 
         if (! $row instanceof stdClass) {
             throw new GraphShapeDriftException("Microsoft Graph getSchedule returned a scheduleInformation entry ({$at}) that is not an object.");
@@ -106,9 +113,17 @@ final class CalendarGraphShapes
             throw new GraphShapeDriftException("Microsoft Graph getSchedule returned a scheduleInformation row ({$at}) without a string scheduleId — the mailbox it describes cannot be identified.");
         }
 
+        // #5777: from here the row is named by the request position of the mailbox its scheduleId
+        // names, which the caller holds; the response position follows it. Nothing pins that
+        // Graph returns rows in request order.
+        $key = mb_strtolower(trim($scheduleId));
+        $at = isset($requested[$key])
+            ? "requested mailbox {$requested[$key]} (zero-based position in the request; row {$index} of the response)"
+            : "an unrequested mailbox (row {$index} of the response)";
+
         // ANY present error means availability is UNKNOWN for that mailbox — never read it as free.
         if (isset($row->error) && $row->error !== null) {
-            throw new GraphShapeDriftException("Microsoft Graph getSchedule returned an error for the mailbox in {$at}; its availability is unknown, so the whole free/busy read is refused rather than shown as free.");
+            throw new GraphShapeDriftException("Microsoft Graph getSchedule returned an error for {$at}; its availability is unknown, so the whole free/busy read is refused rather than shown as free.");
         }
 
         // REQUIRE the availability-bearing fields. A row with only scheduleId would otherwise
@@ -129,9 +144,8 @@ final class CalendarGraphShapes
             self::assertWorkingHours($row->workingHours, $at);
         }
 
-        $key = mb_strtolower(trim($scheduleId));
         if (isset($seen[$key])) {
-            throw new GraphShapeDriftException("Microsoft Graph getSchedule returned the mailbox in {$at} more than once — an ambiguous grid must not be read as complete.");
+            throw new GraphShapeDriftException("Microsoft Graph getSchedule returned {$at} more than once — an ambiguous grid must not be read as complete.");
         }
         $seen[$key] = true;
 

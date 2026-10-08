@@ -47,17 +47,13 @@ class GraphWebhookController extends Controller
                 continue;
             }
 
+            // #5829 / G-14: the fetch and the import are caught separately, so each record names
+            // the step that failed. Before, one try covered both, and a GraphClientException
+            // thrown inside the import was recorded as 'Failed to fetch message'.
             try {
                 // Fetch the full message from Graph API
                 $message = $this->graphClient->get($resource, [
                     '$select' => 'id,internetMessageId,conversationId,from,toRecipients,ccRecipients,subject,bodyPreview,body,hasAttachments,importance,receivedDateTime,internetMessageHeaders',
-                ]);
-
-                $this->emailService->importSingleMessage($message);
-
-                Log::info('[GraphWebhook] Email imported', [
-                    'graph_id' => $message['id'] ?? 'unknown',
-                    'subject' => $message['subject'] ?? '',
                 ]);
             } catch (GraphClientException $e) {
                 // #5731 / C-56: the HTTP status and the exception class only. The resource
@@ -66,11 +62,34 @@ class GraphWebhookController extends Controller
                     'status' => $e->getHttpStatus(),
                     'exception' => $e::class,
                 ]);
+
+                continue;
             } catch (\Throwable $e) {
-                // #5731 / C-56: the exception class only. The try block covers the fetch and the
-                // import, so this arm takes any non-GraphClientException from either, and its
-                // message can carry any text; it is not logged. (A GraphClientException thrown
-                // inside the import takes the arm above, whose record says 'fetch'; #5774.)
+                // #5731 / C-56: the exception class only; its message can carry any text.
+                Log::error('[GraphWebhook] Failed to fetch message', [
+                    'exception' => $e::class,
+                ]);
+
+                continue;
+            }
+
+            try {
+                $this->emailService->importSingleMessage($message);
+
+                Log::info('[GraphWebhook] Email imported', [
+                    'graph_id' => $message['id'] ?? 'unknown',
+                    'subject' => $message['subject'] ?? '',
+                ]);
+            } catch (GraphClientException $e) {
+                // #5829: a Graph call made by the import (an attachment read, a token refresh)
+                // failed. Its status and class only, as on the fetch arm.
+                Log::error('[GraphWebhook] Failed to import message', [
+                    'status' => $e->getHttpStatus(),
+                    'exception' => $e::class,
+                ]);
+            } catch (\Throwable $e) {
+                // #5731 / C-56: the exception class only; an import or database failure's message
+                // can carry any text, and it is not logged.
                 Log::error('[GraphWebhook] Failed to import message', [
                     'exception' => $e::class,
                 ]);

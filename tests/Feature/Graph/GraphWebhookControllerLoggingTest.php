@@ -6,6 +6,7 @@ use App\Models\Setting;
 use App\Services\EmailService;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
+use App\Services\Graph\GraphTokenException;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
@@ -28,6 +29,9 @@ use Tests\TestCase;
  *   exception class.
  * - The Throwable arm ('Failed to import message') logs the exception class only, because its
  *   message is not GraphClient's (an import or database failure can carry any text).
+ * - #5829: the fetch and the import are caught separately, so a GraphClientException from the
+ *   import is an import failure (status and class), and any other exception from the fetch is a
+ *   fetch failure (class only).
  * Neither logs the notification's resource (users/{mailbox}/messages/{id}). The response is
  * unchanged: 202 {"status":"accepted"} whether the fetch or the import fails.
  *
@@ -73,11 +77,18 @@ class GraphWebhookControllerLoggingTest extends TestCase
     /** Bind a real GraphClient whose only network is this scripted queue. */
     private function graph(Response|\Throwable ...$responses): void
     {
+        $this->graphWithCache(true, ...$responses);
+    }
+
+    private function graphWithCache(bool $seeded, Response|\Throwable ...$responses): void
+    {
         $this->history = [];
         $stack = HandlerStack::create(new MockHandler($responses));
         $stack->push(Middleware::history($this->history));
         $cache = new Repository(new ArrayStore);
-        $cache->put('graph_api_token', 'b4k1-synthetic-seeded-access', 3600);
+        if ($seeded) {
+            $cache->put('graph_api_token', 'b4k1-synthetic-seeded-access', 3600);
+        }
 
         $this->app->instance(GraphClient::class, new GraphClient([
             'tenant_id' => 'tenant-b4k1-synthetic',
@@ -182,6 +193,53 @@ class GraphWebhookControllerLoggingTest extends TestCase
 
         $this->assertSame(
             [['error', '[GraphWebhook] Failed to import message', ['exception' => \RuntimeException::class]]],
+            $this->webhookRecords(),
+        );
+        $this->assertSame([], $this->recordsCarryingANeedle());
+    }
+
+    /**
+     * #5829: a GraphClientException thrown inside the import (here an attachment read) is
+     * recorded as an import failure with its status and class. Before #5829 the fetch and the
+     * import shared one try, and this record said 'Failed to fetch message'.
+     */
+    public function test_a_graph_failure_inside_the_import_is_recorded_as_an_import_failure(): void
+    {
+        $this->graph(new Response(200, ['Content-Type' => 'application/json'], (string) json_encode([
+            'id' => 'MSG-1', 'subject' => 'synthetic',
+        ])));
+        $this->mock(EmailService::class, function ($m): void {
+            $m->shouldReceive('importSingleMessage')->once()
+                ->andThrow(new GraphClientException('Graph API error: GET returned 503', 503));
+        });
+
+        $this->assertAccepted($this->notify());
+
+        $this->assertCount(1, $this->history, 'positive control: the fetch succeeded');
+        $this->assertSame(
+            [['error', '[GraphWebhook] Failed to import message', ['status' => 503, 'exception' => GraphClientException::class]]],
+            $this->webhookRecords(),
+        );
+        $this->assertSame([], $this->recordsCarryingANeedle());
+    }
+
+    /**
+     * #5839: on a cold cache a token failure reaches the fetch arm as a GraphTokenException with
+     * status 0; the class tells it apart from a fetch that received no response (also status 0,
+     * GraphClientException; pinned above).
+     */
+    public function test_a_cold_cache_token_failure_is_recorded_on_the_fetch_arm_with_its_class(): void
+    {
+        $this->graphWithCache(false, new Response(400, ['Content-Type' => 'application/json'], (string) json_encode([
+            'error' => 'invalid_client', 'error_description' => self::GRAPH_ERROR_TEXT,
+        ])));
+
+        $this->assertAccepted($this->notify());
+
+        $this->assertSame('login.microsoftonline.com', $this->history[0]['request']->getUri()->getHost(), 'positive control: the token request was the one that failed');
+        $this->assertCount(1, $this->history, 'no Graph request was sent');
+        $this->assertSame(
+            [['error', '[GraphWebhook] Failed to fetch message', ['status' => 0, 'exception' => GraphTokenException::class]]],
             $this->webhookRecords(),
         );
         $this->assertSame([], $this->recordsCarryingANeedle());
