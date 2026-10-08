@@ -279,7 +279,8 @@ class MeshRequestPreflightTest extends TestCase
      * #6048: with a base URL PSR-7 refused, the write client's base-URL arm
      * logs logPath() of the endpoint; an endpoint carrying user-info (one
      * PSR-7 parses, so the endpoint arm does not take it) is logged as the
-     * fixed '[unparseable endpoint]', never with its user-info or host.
+     * fixed '[endpoint outside the rule route]' (#6157: it parsed, so not
+     * '[unparseable endpoint]'), never with its user-info or host.
      */
     public function test_the_write_clients_base_url_arm_never_logs_an_endpoints_user_info(): void
     {
@@ -293,7 +294,7 @@ class MeshRequestPreflightTest extends TestCase
 
         $this->assertInstanceOf(MeshClientException::class, $e);
         $this->assertSame('The Mesh base URL could not be parsed; nothing was sent.', $e->getMessage());
-        $this->assertLoggedOnce('write', 'GET [unparseable endpoint] refused: the Mesh base URL could not be parsed; nothing was sent');
+        $this->assertLoggedOnce('write', 'GET '.MeshWriteClient::OTHER_ENDPOINT.' refused: the Mesh base URL could not be parsed; nothing was sent');
         $this->assertNothingCarries($e, [self::USER, self::PASS, self::HOST]);
     }
 }

@@ -109,12 +109,17 @@ class MeshClientException extends \RuntimeException
      * report() does not cover the console renderer or (string) $e; not
      * chaining covers the MESSAGES those print. (string) $e also prints the
      * stack trace, whose frames show string arguments when
-     * zend.exception_ignore_args is Off (#6051). #6108: the Mesh clients'
-     * endpoint, tenant id, sender, comment and rule id parameters are
-     * #[\SensitiveParameter], so their frames show a
-     * SensitiveParameterValue object instead, at any
-     * zend.exception_string_param_max_len (MeshUncaughtRenderTest). Frames
-     * of callers outside the Mesh clients are not covered by that.
+     * zend.exception_ignore_args is Off (#6051). #6108, #6154, #6155: the
+     * Mesh clients' endpoint, tenant id, filter, sender, comment, rule id
+     * and patch-field parameters, get()'s $params and both request()
+     * methods' $options (API-KEY header, json body, query) are
+     * #[\SensitiveParameter], so with ignore_args Off the clients' own
+     * frames in getTrace() show a SensitiveParameterValue object for
+     * each. Measured per parameter, through each public method that can
+     * throw, in MeshTraceArgumentRedactionTest; MeshUncaughtRenderTest
+     * measures (string) $e for MeshClient::get() and getCustomer() at a
+     * 1000-byte zend.exception_string_param_max_len. Frames of callers
+     * outside the Mesh clients are not covered by that.
      */
     public function report(): bool
     {

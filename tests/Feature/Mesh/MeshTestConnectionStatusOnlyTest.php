@@ -226,8 +226,8 @@ class MeshTestConnectionStatusOnlyTest extends TestCase
     }
 
     /**
-     * #6103: a blank key (MeshConfig::isConfigured() passes it: empty()
-     * is false for ' ') is refused before send as the clients refuse it.
+     * #6103: a blank key is refused before send as the clients refuse it.
+     * #6162: MeshConfig::isConfigured() now agrees (MeshKeyDefinitionTest).
      */
     public function test_a_blank_key_is_refused_before_send(): void
     {
@@ -240,6 +240,25 @@ class MeshTestConnectionStatusOnlyTest extends TestCase
 
         $expected = 'Mesh connection test did not run: the Mesh API key is not configured; nothing was sent.';
         $response->assertOk()->assertExactJson(['success' => false, 'message' => $expected]);
+        $this->assertSame(1, $this->mock->count(), 'nothing reached the handler');
+    }
+
+    /**
+     * #6161: a stored key of '0' is a value, not a missing key: the text
+     * says it is set and is not sent, never 'is not configured'.
+     */
+    public function test_a_stored_zero_key_is_refused_as_set_but_unusable_not_as_missing(): void
+    {
+        Setting::setValue('mesh_base_url', 'https://'.self::HOST);
+        Setting::setEncrypted('mesh_api_key', '0');
+        $this->bindMock(fn () => new Response(200, [], '{"results":[]}'));
+
+        $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
+        $response = $this->postJson(route('settings.integrations.mesh.test'));
+
+        $expected = 'Mesh connection test did not run: the Mesh API key is set, but to zero or true, which the PSA does not send as a key; nothing was sent.';
+        $response->assertOk()->assertExactJson(['success' => false, 'message' => $expected]);
+        $this->assertStringNotContainsString('not configured', (string) $response->getContent());
         $this->assertSame(1, $this->mock->count(), 'nothing reached the handler');
     }
 

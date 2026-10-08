@@ -205,6 +205,10 @@ class MeshAllowRuleConsumerRefusalTest extends TestCase
      * followed. Mesh received the create, so it may have committed: the
      * approval reconciles (re-read, UNRESOLVED row, executed_with_fault),
      * never a clean rejection, and nothing goes to the Location's host.
+     * #6156: the whole audit text and the staff flash (the same text, on
+     * the error channel) are pinned, and a second approve sends nothing.
+     * The MCP tool is staged-only, so the cockpit approval is the one
+     * consumer of this outcome.
      */
     public function test_a_redirected_create_is_reconciled_fail_closed(): void
     {
@@ -222,7 +226,7 @@ class MeshAllowRuleConsumerRefusalTest extends TestCase
         ])));
         $run = $this->stageAdd();
 
-        $this->actingAs($actor)->post(route('cockpit.approve', $run));
+        $approved = $this->actingAs($actor)->post(route('cockpit.approve', $run));
 
         $this->assertSame(['POST', 'GET'], array_map(fn (array $h): string => $h['request']->getMethod(), $history), 'the create, then the reconciling re-read; no hop to the Location');
         foreach ($history as $h) {
@@ -233,6 +237,32 @@ class MeshAllowRuleConsumerRefusalTest extends TestCase
         $summary = (string) TechnicianActionLog::where('result_status', 'executed_with_fault')->value('summary');
         $this->assertStringStartsWith('Mesh did not acknowledge the create (Mesh answered the create with HTTP 307)', $summary);
         $this->assertStringNotContainsString('elsewhere-6105', $summary);
+
+        // #6156: the whole text, not only its prefix: it says whether the
+        // rule was created is unmeasured and that it is recorded
+        // unresolved, never that nothing was created or the create was
+        // refused. The same text is the staff flash, on the error channel.
+        $comment = (string) MeshAllowRule::sole()->comment;
+        $this->assertSame(
+            "Mesh did not acknowledge the create (Mesh answered the create with HTTP 307), and a re-read of this client's tenant did not find the rule. "
+            .'Whether the rule was created is UNMEASURED, so it is recorded unresolved (PSA record #'.MeshAllowRule::sole()->id.') and it is PERMANENT — '
+            .'the expiry job keeps trying to identify it, but it never removes it. Look for a rule with the comment '.$comment
+            ." on this client's Mesh tenant and remove it by hand. Check the Mesh portal before allowing this sender again.",
+            $summary,
+        );
+        foreach (['nothing was sent', 'not created', 'refused', 'redirect'] as $false) {
+            $this->assertStringNotContainsStringIgnoringCase($false, $summary);
+        }
+        $approved->assertSessionHas('error', $summary);
+        $approved->assertSessionMissing('success');
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state, 'the card is spent, not released for another approve');
+
+        // A second approve of the same card sends nothing: no re-POST, no
+        // second row, no second audit row.
+        $this->actingAs($actor)->post(route('cockpit.approve', $run));
+        $this->assertCount(2, $history, 'no request after the reconciling re-read');
+        $this->assertSame(1, MeshAllowRule::count());
+        $this->assertSame(['executed_with_fault'], $this->auditStatuses());
     }
 
     /** ruleAbsent() with a null http: unmeasured (null), never absent. */

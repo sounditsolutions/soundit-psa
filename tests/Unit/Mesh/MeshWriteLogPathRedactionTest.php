@@ -2,7 +2,6 @@
 
 namespace Tests\Unit\Mesh;
 
-use App\Services\Mesh\MeshClient;
 use App\Services\Mesh\MeshClientException;
 use App\Services\Mesh\MeshWriteClient;
 use App\Services\Mesh\MeshWriteRejectedException;
@@ -20,8 +19,8 @@ use Tests\TestCase;
  * #6107, #6117, #6118: MeshWriteClient::logPath() is an allowlist. The
  * rule collection path is logged as it is; a path under it (a rule id,
  * encoded or not) is logged as 'api/rule-allows-blocks/<rule>/'; anything
- * else is '[unparseable endpoint]'. Each row names the predicate it
- * kills. The 400 warning line and the other failure lines are driven
+ * else is '[endpoint outside the rule route]' (#6157: they parse, so
+ * not '[unparseable endpoint]'). Each row names the predicate it kills. The 400 warning line and the other failure lines are driven
  * through the public methods with a rule id, so they no longer log the
  * same text as the raw endpoint (#6117).
  *
@@ -51,7 +50,8 @@ class MeshWriteLogPathRedactionTest extends TestCase
     /** @return array<string, array{0: string, 1: string}> endpoint => logged */
     public static function endpoints(): array
     {
-        $u = MeshClient::UNPARSEABLE_ENDPOINT;
+        // #6157: not '[unparseable endpoint]': these all parse.
+        $u = MeshWriteClient::OTHER_ENDPOINT;
 
         return [
             // Kept: the collection path itself, with a query or a fragment cut.
@@ -60,7 +60,7 @@ class MeshWriteLogPathRedactionTest extends TestCase
             'collection, fragment cut' => ['api/rule-allows-blocks/#frag', 'api/rule-allows-blocks/'],
             // Redacted: any id under it.
             'rule id' => ['api/rule-allows-blocks/'.self::RULE_ID.'/', 'api/rule-allows-blocks/<rule>/'],
-            'uuid rule id' => ['api/rule-allows-blocks/dafddde3-1111-2222-3333-444455556666/', 'api/rule-allows-blocks/<rule>/'],
+            'uuid rule id' => ['api/rule-allows-blocks/99999999-1111-2222-3333-444455556666/', 'api/rule-allows-blocks/<rule>/'],
             'encoded mailbox id' => ['api/rule-allows-blocks/billing%40vendor.example.test/', 'api/rule-allows-blocks/<rule>/'],
             'encoded colon id' => ['api/rule-allows-blocks/a%3Ab/', 'api/rule-allows-blocks/<rule>/'],
             'id then query' => ['api/rule-allows-blocks/'.self::RULE_ID.'/?x=1', 'api/rule-allows-blocks/<rule>/'],
