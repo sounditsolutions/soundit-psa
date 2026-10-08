@@ -28,6 +28,7 @@ class SignalEventTypesTest extends TestCase
             'integration.sync_failed',
             'tactical.alert_created',
             'signal.delivery_failed',
+            'mesh.allow_rule_unresolved',
             'digest.daily',
             'asset.watch_fired',
             'system.test',

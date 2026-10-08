@@ -87,6 +87,12 @@ class SignalEventTypes
                 'core' => true,
                 'routable' => true,
             ],
+            // #5160: emitted by MeshAllowRuleReaper, at most once per row per 24h.
+            'mesh.allow_rule_unresolved' => [
+                'label' => 'Mesh allow rule unresolved (scope unproved)',
+                'core' => false,
+                'routable' => true,
+            ],
             'digest.daily' => [
                 'label' => 'Daily digest',
                 'core' => false,
