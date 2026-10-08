@@ -1352,7 +1352,7 @@ class MeshC56ReadSitesTest extends TestCase
         $this->assertSame([self::$apiKey], $raw->getRequest()->getHeader('API-KEY'), 'positive control: the caught request carries the key');
         // #5761: the rethrow's own message is status-only; the vendor text
         // the handler must keep out is on the chained Guzzle exception.
-        $this->assertSame('Mesh API error: GET api/customers/ failed with '.($mode === '503' ? 'HTTP 503 ('.ServerException::class.')' : 'no HTTP status ('.ConnectException::class.')'), $thrown->getMessage(), 'the rethrown message is status-only (#5761)');
+        $this->assertSame('Mesh API error: GET api/customers/ failed with '.($mode === '503' ? 'HTTP 503 ('.ServerException::class.')' : 'no HTTP status (cURL errno 7, '.ConnectException::class.')'), $thrown->getMessage(), 'the rethrown message is status-only (#5761)');
         $this->assertStringContainsString(self::HOST, $raw->getMessage(), 'positive control: the caught message carries the host');
         $this->assertStringContainsString(self::$queryMarker, $raw->getMessage(), 'positive control: the caught message carries the query');
         $this->assertStringNotContainsString(self::HOST, $thrown->getMessage(), 'the rethrown message does not carry the host (#5761)');
@@ -1644,7 +1644,7 @@ class MeshC56ReadSitesTest extends TestCase
     private function meshClientFailureRecord(string $mode = '503'): string
     {
         return $mode === 'connect'
-            ? 'error [MeshClient] GET api/customers/<customer> failed with no HTTP status ('.ConnectException::class.') []'
+            ? 'error [MeshClient] GET api/customers/<customer> failed with no HTTP status (cURL errno 7, '.ConnectException::class.') []'
             : 'error [MeshClient] GET api/customers/<customer> failed with HTTP 503 ('.ServerException::class.') []';
     }
 

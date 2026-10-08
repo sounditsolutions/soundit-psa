@@ -20,9 +20,12 @@ use Tests\TestCase;
  * MalformedUriException, quoting the raw endpoint (user-info and password
  * included), before any handler runs. It is not a GuzzleException, so
  * MeshClient::request() must catch it separately: a status-only
- * [MeshClient] line, a MeshClientException whose message is built from
- * logPath() and the class only, and no previous exception carrying the
- * raw text.
+ * [MeshClient] line, a MeshClientException, and no previous exception
+ * carrying the raw text. #6049: the line shows the fixed
+ * '[unparseable endpoint]', never logPath() of an endpoint PSR-7 refused,
+ * so a scheme-less 'host:port/...' endpoint keeps no host on it. #6060:
+ * the refusal is client-detected, so statusPhrase() does not read it as
+ * a Mesh-side failure.
  *
  * G-5: a real MeshClient whose Guzzle is a MockHandler (never reached: the
  * URI is refused first; its queue is asserted untouched). Synthetic data
@@ -51,8 +54,10 @@ class MeshClientMalformedUriTest extends TestCase
     public static function malformed(): array
     {
         return [
-            'scheme-relative user-info, out-of-range port' => ['//'.self::USER.':'.self::PASS.'@'.self::HOST.':99999/api/customers/', '/api/customers/'],
+            'scheme-relative user-info, out-of-range port' => ['//'.self::USER.':'.self::PASS.'@'.self::HOST.':99999/api/customers/', '[unparseable endpoint]'],
             "scheme-relative user-info, '/' in the password" => ['//'.self::USER.':'.self::PASS.'/z@'.self::HOST.'/api/', '[unparseable endpoint]'],
+            // #6049: no '//' and no '@', so logPath() would keep host:port.
+            'scheme-less host, out-of-range port' => [self::HOST.':99999/api/customers/', '[unparseable endpoint]'],
         ];
     }
 
@@ -78,7 +83,7 @@ class MeshClientMalformedUriTest extends TestCase
             new \GuzzleHttp\Psr7\Uri($endpoint);
             $this->fail('PSR-7 accepted the endpoint; the row tests nothing');
         } catch (MalformedUriException $raw) {
-            $this->assertStringContainsString(self::PASS, $raw->getMessage());
+            $this->assertStringContainsString(str_contains($endpoint, '@') ? self::PASS : self::HOST, $raw->getMessage());
         }
 
         [$client, $mock] = $this->client();
@@ -90,8 +95,11 @@ class MeshClientMalformedUriTest extends TestCase
         }
 
         $this->assertInstanceOf(MeshClientException::class, $thrown);
-        $expected = "GET {$expectedPath} failed with no HTTP status (".MalformedUriException::class.')';
-        $this->assertSame("Mesh API error: {$expected}", $thrown->getMessage());
+        $this->assertSame('[unparseable endpoint]', $expectedPath, '#6049: every row logs the fixed text');
+        $expected = "GET {$expectedPath} refused: the endpoint could not be parsed (".MalformedUriException::class.'); nothing was sent';
+        $this->assertSame('The Mesh request endpoint could not be parsed; nothing was sent.', $thrown->getMessage());
+        $this->assertSame($thrown->getMessage(), $thrown->statusPhrase('the read'), '#6060: client-detected, not a Mesh-side failure');
+        $this->assertTrue($thrown->nothingWasSent());
         $this->assertSame(0, $thrown->getCode());
         $this->assertNull($thrown->getPrevious(), 'the raw-URI exception is not chained');
         $this->assertSame(1, $mock->count(), 'no request reached the handler');

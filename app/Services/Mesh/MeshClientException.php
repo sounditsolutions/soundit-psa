@@ -95,7 +95,12 @@ class MeshClientException extends \RuntimeException
      * body. So this writes one status-only line by class and statusPhrase(),
      * and returns true so the handler does not also write its default record.
      * report() does not cover the console renderer or (string) $e; not
-     * chaining is what covers those.
+     * chaining covers the MESSAGES those print. (string) $e also prints the
+     * stack trace, and its frames show string arguments (a method, an
+     * endpoint, a tenant id) cut to zend.exception_string_param_max_len
+     * bytes whenever zend.exception_ignore_args is Off, which is PHP's
+     * built-in default (#6051, measured in MeshUncaughtRenderTest). Not
+     * chaining does not cover those; only that setting does.
      */
     public function report(): bool
     {
