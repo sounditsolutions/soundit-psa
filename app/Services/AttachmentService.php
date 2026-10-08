@@ -117,8 +117,13 @@ class AttachmentService
      * detector), judged on the driver's exception, whose message has no bindings, never on the
      * QueryException, whose message carries the bound path and so a sender-chosen filename: that
      * throw is rethrown as a QueryException on the driver's exception with the bindings withheld,
-     * so the class, the code and the driver text that DB::transaction, the queue worker and a
-     * caller's catch (QueryException) read are kept, and its SQL shows ? for the path.
+     * so the class, the code and the driver text are kept and its SQL shows ? for the path.
+     * #6089: what reads them: a nested DB::transaction turns a concurrency error into
+     * DeadlockException and unwinds its level (the outermost retries it only when the caller
+     * passed attempts > 1, and no caller of these store methods does), and the queue worker
+     * stops on a lost connection (stopWorkerIfLostConnection). A lost connection is neither
+     * retried nor reconnected on this throw: the connection reconnects inside its own query
+     * call, at transaction level 0, before a throw ever reaches here.
      */
     private function writeOrRollBack(Attachment $attachment, string $path, \Closure $write): void
     {
@@ -148,20 +153,29 @@ class AttachmentService
                 'file' => fn () => Storage::disk('local')->delete($path),
                 'row' => fn () => Attachment::withTrashed()->whereKey($attachment->id)->forceDelete(),
             ] as $step => $cleanup) {
+                // #6003: the step runs alone in the try, so a logger throw below is never
+                // recorded as the cleanup step's own throw.
                 try {
-                    if ($cleanup() === false && $step === 'file') {
-                        Log::warning('[Attachment] Cleanup after a failed store returned false', [
-                            'attachment_id' => $attachment->id,
-                            'step' => $step,
-                            'exception' => null,
-                        ]);
-                    }
+                    $result = $cleanup();
                 } catch (\Throwable $cleanupFailure) {
                     Log::warning('[Attachment] Cleanup after a failed store threw', [
                         'attachment_id' => $attachment->id,
                         'step' => $step,
                         'exception' => $cleanupFailure::class,
                     ]);
+
+                    continue;
+                }
+                if ($result === false && $step === 'file') {
+                    try {
+                        Log::warning('[Attachment] Cleanup after a failed store returned false', [
+                            'attachment_id' => $attachment->id,
+                            'step' => $step,
+                            'exception' => null,
+                        ]);
+                    } catch (\Throwable) {
+                        // The log channel itself failed; the store's own failure is still thrown.
+                    }
                 }
             }
 

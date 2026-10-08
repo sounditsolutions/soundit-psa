@@ -21,7 +21,9 @@ use Illuminate\Support\Facades\Log;
  * this exception: its class, the id-only message and the frames' file:line and function, with no
  * arguments and nothing from getPrevious() but its class. getPrevious() itself still returns the
  * original, so a sink that walks the chain itself (Monolog's normalizer given ['exception' => $e])
- * still reaches its message; nothing in the app logs this exception that way. The cut holds while
+ * still reaches its message. #6099: the handler's own path stays clear only because report()
+ * returns nothing, so Handler::reportThrowable stops here (AttachmentStoreRollbackTest pins
+ * that record); no guard stops a later Log call that passes this exception as context. The cut holds while
  * this is the outermost exception: one that wraps it prints the chain by PHP's own string form,
  * which reads each previous message directly and never calls this method.
  */

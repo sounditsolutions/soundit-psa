@@ -45,6 +45,7 @@ use Tests\TestCase;
 class RetryEmailAttachmentsJobTest extends TestCase
 {
     use RefreshDatabase;
+    use ResetsRetryEmailAttachmentsStatics;
 
     private const MAILBOX = 'support@example.test';
 
@@ -97,27 +98,6 @@ class RetryEmailAttachmentsJobTest extends TestCase
             $this->assertSame(0, $this->mock->count(), 'G-5 (#5714): every queued Graph response was used; no spare to serve a stray request');
         }
         parent::assertPostConditions();
-    }
-
-    /** #6042: the job's per-process statics survive between tests in one PHP process. */
-    protected function tearDown(): void
-    {
-        self::resetJobStatics();
-        parent::tearDown();
-    }
-
-    private static function resetJobStatics(): void
-    {
-        (function () {
-            self::$progress = [];
-            self::$pushing = is_array(self::$pushing) ? [] : null;
-        })->bindTo(null, RetryEmailAttachments::class)();
-    }
-
-    /** @return array{progress: array<string, mixed>, pushing: array<string, true>} */
-    private static function jobStatics(): array
-    {
-        return (fn () => ['progress' => self::$progress, 'pushing' => self::$pushing])->bindTo(null, RetryEmailAttachments::class)();
     }
 
     private function graph(array $responses): void
@@ -235,6 +215,13 @@ class RetryEmailAttachmentsJobTest extends TestCase
     }
 
     // ── Jeeves 15:50Z: the job's own budget, inside the worker's 30s / --tries=2 ──
+
+    public function test_the_job_statics_start_empty_whatever_ran_before(): void
+    {
+        // #6102: first in this class, so a class run before it in the same process (the failer
+        // test leaves a kept progress entry under its own key) cannot leak into these tests.
+        $this->assertSame(['progress' => [], 'pushing' => []], self::retryEmailAttachmentsStatics());
+    }
 
     public function test_the_job_sets_its_own_timeout_and_tries_and_the_queued_payload_carries_them(): void
     {
@@ -946,7 +933,8 @@ class RetryEmailAttachmentsJobTest extends TestCase
         // #6005: the re-delete removes this job's row only; other rows already in the queue (here
         // pushRaw'd before the job fires, outside the link transaction) survive it. #6033: rows
         // this process queues INSIDE the link transaction are discarded by failed()'s rollBack;
-        // that is not tested here.
+        // test_a_row_this_process_queues_inside_the_link_transaction_is_discarded_by_the_timeout_rollback
+        // pins that.
         $this->graph([$this->failedRead()]);
         $ticketId = $this->ticketWithQueuedRetry()->id;
         $job = $this->popRetry();
@@ -1220,12 +1208,19 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertCount(1, $this->markerNotes($ticket->id));
         $this->assertSame([['notifyEmailAdded', $ticket->id, 0]], $this->seen->getArrayCopy());
         // #6035: a row may have been written after all, and its run may link the attachments,
-        // so the note does not say they were not added.
+        // so the note does not say they were not added. #6101: and it names what is unknown
+        // (whether a retry is queued), not a link read-back that never ran on this path.
         $this->assertSame([], $this->withMessage(RetryEmailAttachments::MARKER));
-        $unknown = $this->withMessage(RetryEmailAttachments::MARKER_LINK_UNKNOWN);
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::MARKER_LINK_UNKNOWN), '#6101: no link was read back here');
+        $unknown = $this->withMessage(RetryEmailAttachments::MARKER_QUEUE_UNKNOWN);
         $this->assertCount(1, $unknown);
         $this->assertSame('not_queued', $unknown[0]->context['reason']);
-        $this->assertStringContainsString('may not have been added', $this->markerNotes($ticket->id)[0]);
+        $this->assertSame(['jobs', \RuntimeException::class], [$notQueued[0]->context['read_back_step'], $notQueued[0]->context['read_back_exception']],
+            '#6092: the null names the step that threw and its class');
+        $note = $this->markerNotes($ticket->id)[0];
+        $this->assertStringContainsString('may not have been added', $note);
+        $this->assertStringContainsString('whether a retry to add them is queued could not be read back', $note);
+        $this->assertStringNotContainsString('whether they were linked', $note, '#6101');
     }
 
     /** Runs $whenQueued (once) when this test's first-run retry is being pushed, then throws out of the push. */
@@ -1309,7 +1304,7 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->graph([$this->failedRead()]);
         $email = $this->email();
         $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueued::class, function () {
-            $pushing = self::jobStatics()['pushing'];
+            $pushing = self::retryEmailAttachmentsStatics()['pushing'];
             $this->mock->append($this->read());
             $this->popRetry()->fire();
             (fn () => self::$pushing = $pushing)->bindTo(null, RetryEmailAttachments::class)();
@@ -1349,7 +1344,7 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $notQueued = $this->withMessage(RetryEmailAttachments::NOT_QUEUED);
         $this->assertCount(1, $notQueued);
         $this->assertFalse($notQueued[0]->context['queued_row']);
-        $this->assertSame([], self::jobStatics()['pushing'], 'no push key is left behind');
+        $this->assertSame([], self::retryEmailAttachmentsStatics()['pushing'], 'no push key is left behind');
     }
 
     public function test_a_push_that_throws_for_its_own_payload_still_queues_the_technician_loop(): void
@@ -1527,7 +1522,25 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $skipped = $this->withMessage(RetryEmailAttachments::COMMIT_SKIPPED);
         $this->assertCount(1, $skipped);
         $this->assertSame(Level::Warning, $skipped[0]->level, '#6006');
-        $this->assertSame(['email_id' => 999001, 'ticket_id' => 999002, 'ticket_found' => false, 'email_found' => false], $skipped[0]->context);
+        $this->assertSame(['email_id' => 999001, 'ticket_id' => 999002, 'ticket_found' => false, 'ticket_trashed' => false, 'email_found' => false], $skipped[0]->context);
+    }
+
+    public function test_the_commit_work_skip_says_a_soft_deleted_ticket_exists(): void
+    {
+        // #6008: the ticket row is present but trashed; the record must not read as a missing row.
+        $this->graph([$this->failedRead()]);
+        $ticket = $this->ticketWithQueuedRetry();
+        $command = $this->commandOf($this->popRetry());
+        $ticket->delete();
+        $this->assertTrue(Ticket::withTrashed()->whereKey($ticket->id)->exists(), 'positive control: the row is kept, trashed');
+        $this->seen->exchangeArray([]);
+
+        (fn () => $this->runCommitWork())->call($command);
+
+        $skipped = $this->withMessage(RetryEmailAttachments::COMMIT_SKIPPED);
+        $this->assertCount(1, $skipped);
+        $this->assertSame(['email_id' => $command->emailId, 'ticket_id' => $ticket->id, 'ticket_found' => true, 'ticket_trashed' => true, 'email_found' => true], $skipped[0]->context);
+        $this->assertSame([], $this->seen->getArrayCopy(), 'nothing runs for a trashed ticket');
     }
 
     public function test_the_commit_work_dispatches_the_technician_loop_after_commit(): void
@@ -1556,5 +1569,432 @@ class RetryEmailAttachmentsJobTest extends TestCase
         } catch (\RuntimeException) {
         }
         $this->assertSame(0, $loops(), 'a rolled-back transaction queues no loop');
+        $rolled = $this->withMessage(RetryEmailAttachments::COMMIT_STEP_ROLLED_BACK);
+        $this->assertCount(1, $rolled, '#6000: the dropped loop is recorded');
+        $this->assertSame(['email_id' => $command->emailId, 'ticket_id' => $ticket->id, 'step' => 'technician_dispatch', 'exception' => null], $rolled[0]->context);
+    }
+
+    public function test_a_technician_push_that_throws_at_commit_is_recorded_and_not_thrown_to_the_committer(): void
+    {
+        // #6000: the loop's push runs at the open transaction's commit, outside runCommitWork's
+        // own try; it is still caught and recorded under technician_dispatch, and the commit's
+        // caller sees no exception.
+        $this->graph([$this->failedRead()]);
+        $ticket = $this->ticketWithQueuedRetry();
+        Setting::setValue('technician_enabled', true);
+        $command = $this->commandOf($this->popRetry());
+        DB::table('jobs')->delete();
+        $inside = null;
+        $thrown = null;
+        try {
+            DB::transaction(function () use ($command, &$inside) {
+                (fn () => $this->runCommitWork())->call($command);
+                $inside = count($this->withMessage(RetryEmailAttachments::COMMIT_STEP_THREW));
+                DB::beforeExecuting(function (string $sql) {
+                    if (str_starts_with(strtolower($sql), 'insert into "jobs"')) {
+                        throw new \RuntimeException('B7-SYNTHETIC-PUSH-AT-COMMIT');
+                    }
+                });
+            });
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+
+        $this->assertSame(0, $inside, 'positive control: nothing was pushed inside the transaction');
+        $this->assertNull($thrown, '#6000: the commit does not throw');
+        $threw = $this->withMessage(RetryEmailAttachments::COMMIT_STEP_THREW);
+        $this->assertCount(1, $threw);
+        $this->assertSame(['email_id' => $command->emailId, 'ticket_id' => $ticket->id, 'step' => 'technician_dispatch', 'exception' => \RuntimeException::class], $threw[0]->context);
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::COMMIT_STEP_ROLLED_BACK));
+    }
+
+    public function test_a_row_this_process_queues_inside_the_link_transaction_is_discarded_by_the_timeout_rollback(): void
+    {
+        // #6033: the #6005 risk the re-delete test does not reach. A row this process queues
+        // inside the link transaction (as signal routing would) is in that transaction, so
+        // failed()'s rollBack under a non-database failer discards it with the link; a row
+        // queued before the transaction survives. Pinned as the current behaviour.
+        $this->graph([$this->failedRead()]);
+        $this->ticketWithQueuedRetry();
+        $job = $this->popRetry();
+        $queue = app('queue')->connection('database');
+        $before = $queue->pushRaw('{"displayName":"B7Before"}', 'default');
+        $this->mock->append($this->read());
+        $atKill = null;
+        Attachment::updated(function (Attachment $a) use ($job, $queue, &$atKill) {
+            if ($a->attachable_type !== TicketNote::class || $atKill !== null) {
+                return;
+            }
+            $inside = $queue->pushRaw('{"displayName":"B7Inside"}', 'default');
+            $visible = DB::table('jobs')->where('id', $inside)->exists();
+            config(['queue.failed.database' => null]);
+            $open = DB::transactionLevel() - $this->testLevel;
+            $worker = app('queue.worker');
+            (fn () => $this->markJobAsFailedIfItShouldFailOnTimeout('database', $job, \Illuminate\Queue\TimeoutExceededException::forJob($job)))->call($worker);
+            $atKill = ['inside_visible' => $visible, 'rows' => DB::table('jobs')->orderBy('id')->pluck('payload')->all()];
+            for ($i = DB::transactionLevel() - $this->testLevel; $i < $open; $i++) {
+                DB::beginTransaction();
+            }
+            throw new \RuntimeException('B7-SYNTHETIC-KILLED');
+        });
+
+        $job->fire();
+
+        $this->assertNotNull($atKill, 'positive control: the kill point was reached');
+        $this->assertTrue($atKill['inside_visible'], 'positive control: the inside row was written');
+        $this->assertSame(['{"displayName":"B7Before"}'], $atKill['rows'], 'the inside row went with the rollback; the earlier row stayed');
+        $this->assertGreaterThan(0, $before);
+    }
+
+    // ── b7 (card 6ac7c168): the push read-back's cache entries, window and timing ──
+
+    /** The default cache store, an array store whose put/has/forget throw for keys matching $failing. */
+    private function cacheFailing(string $failing, array $methods = ['put']): void
+    {
+        $store = new class($failing, $methods) extends ArrayStore
+        {
+            public function __construct(private string $failing, private array $methods)
+            {
+                parent::__construct();
+            }
+
+            private function check(string $method, string $key): void
+            {
+                if (in_array($method, $this->methods, true) && str_contains($key, $this->failing)) {
+                    throw new \RuntimeException('B7-SYNTHETIC-CACHE-DOWN '.self::class);
+                }
+            }
+
+            public function put($key, $value, $seconds)
+            {
+                $this->check('put', $key);
+
+                return parent::put($key, $value, $seconds);
+            }
+
+            public function get($key)
+            {
+                $this->check('get', $key);
+
+                return parent::get($key);
+            }
+
+            public function forget($key)
+            {
+                $this->check('forget', $key);
+
+                return parent::forget($key);
+            }
+        };
+        \Illuminate\Support\Facades\Cache::swap(new Repository($store));
+    }
+
+    /** The read-back's cache keys still present. */
+    private function readBackCacheKeys(): array
+    {
+        $store = \Illuminate\Support\Facades\Cache::getStore();
+        $storage = (fn () => $this->storage)->call($store);
+
+        return array_values(array_filter(array_keys($storage), fn ($k) => str_starts_with($k, 'retry-email-attachments:')));
+    }
+
+    public function test_the_webhook_answers_202_before_a_not_queued_marker_and_notification_run(): void
+    {
+        // #6007/#6045: on the not_queued path the marker and notifyEmailAdded run after the
+        // response, in the request's terminate phase, not inside the afterCommit callback.
+        $this->databaseQueue();
+        Setting::setValue('graph_webhook_client_state', 'state-b7-synthetic');
+        Setting::setValue('email_auto_ticket', '1');
+        $client = Client::create(['name' => 'Example Client']);
+        Person::create(['client_id' => $client->id, 'person_type' => \App\Enums\PersonType::User,
+            'first_name' => 'Ada', 'last_name' => 'Contact', 'email' => 'user@example.test', 'is_active' => true]);
+        $this->graph([
+            new Response(200, ['Content-Type' => 'application/json'], (string) json_encode([
+                'id' => 'MSG-1', 'internetMessageId' => '<m1@example.test>',
+                'from' => ['emailAddress' => ['address' => 'user@example.test', 'name' => 'User']],
+                'subject' => 'Printer offline', 'body' => ['contentType' => 'html', 'content' => self::CID_HTML],
+                'hasAttachments' => false, 'receivedDateTime' => now()->toIso8601String(),
+            ])),
+            $this->failedRead(),
+        ]);
+        DB::beforeExecuting(function (string $sql, array $bindings) {
+            if (str_starts_with(strtolower($sql), 'insert into "jobs"') && str_contains(implode(' ', array_filter($bindings, 'is_string')), 'RetryEmailAttachments')) {
+                throw new \RuntimeException('B7-SYNTHETIC-JOBS-DOWN');
+            }
+        });
+        $atResponse = null;
+        \Illuminate\Support\Facades\Event::listen(\Illuminate\Foundation\Http\Events\RequestHandled::class, function ($event) use (&$atResponse) {
+            $atResponse = [
+                'status' => $event->response->getStatusCode(),
+                'not_queued' => count($this->withMessage(RetryEmailAttachments::NOT_QUEUED)),
+                'markers' => count($this->withMessage(RetryEmailAttachments::MARKER)),
+                'notified' => count($this->seen),
+            ];
+        });
+
+        $response = $this->postJson('/api/webhooks/graph/mail', ['value' => [[
+            'clientState' => 'state-b7-synthetic', 'resource' => 'users/MSG-OWNER/messages/MSG-1',
+        ]]]);
+
+        $response->assertStatus(202);
+        $this->assertSame(['status' => 202, 'not_queued' => 1, 'markers' => 0, 'notified' => 0], $atResponse,
+            '#6007: the push and its read-back ran before the response; the marker and the notification did not');
+        $ticketId = (int) Email::where('graph_id', 'MSG-1')->value('ticket_id');
+        $this->assertGreaterThan(0, $ticketId);
+        $this->assertCount(1, $this->withMessage(RetryEmailAttachments::MARKER), 'the marker ran after the response');
+        $this->assertCount(1, $this->markerNotes($ticketId));
+        $this->assertSame([['notifyEmailAdded', $ticketId, 0]], $this->seen->getArrayCopy(), 'and the notification');
+    }
+
+    public function test_outside_a_request_the_not_queued_work_runs_inline(): void
+    {
+        // #6007 control: in the console or a worker there is no response to hold; nothing is deferred.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueueing::class, fn () => null);
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertCount(1, $this->markerNotes($ticket->id), 'written before autoCreateTicketFromEmail returned');
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 0]], $this->seen->getArrayCopy());
+        $this->assertSame(0, count(\Illuminate\Support\defer()), 'nothing deferred');
+    }
+
+    public function test_a_run_failed_before_handle_is_found_while_its_failed_runs(): void
+    {
+        // #6093: a worker reserves the row and the run fails before handle(); Job::fail deletes
+        // the row and calls failed(), and only after that does the failer write failed_jobs (a
+        // JobFailed listener the worker registers; none here, so the window stays open). A
+        // read-back in that window finds the started entry failed() wrote, not "not queued".
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueued::class, function () {
+            $pushing = self::retryEmailAttachmentsStatics()['pushing'];
+            $this->popRetry()->fail(new \RuntimeException('B7-SYNTHETIC-BEFORE-HANDLE'));
+            (fn () => self::$pushing = $pushing)->bindTo(null, RetryEmailAttachments::class)();
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertSame([], $this->retryRows(), 'positive control: Job::fail deleted the row');
+        $this->assertSame(0, DB::table('failed_jobs')->count(), 'positive control: failed_jobs not written yet');
+        $found = $this->withMessage(RetryEmailAttachments::PUSH_THREW_ROW_FOUND);
+        $this->assertCount(1, $found);
+        $this->assertSame('started', $found[0]->context['found_in']);
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::NOT_QUEUED), 'not reported as not queued');
+        $this->assertSame(['job_failed'], array_map(fn ($r) => $r->context['reason'], $this->withMessage(RetryEmailAttachments::MARKER)), 'one marker, from failed()');
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 0]], $this->seen->getArrayCopy(), 'the commit work ran once');
+        $this->assertSame([], $this->readBackCacheKeys(), '#6094: no entry is left');
+    }
+
+    public function test_a_normal_dispatch_and_its_run_leave_no_cache_entry(): void
+    {
+        // #6094: the file store deletes an expired entry only when it is read; a run of a push
+        // that has finished writes nothing, so no entry is left per retry.
+        $this->graph([$this->failedRead()]);
+        $ticket = $this->ticketWithQueuedRetry();
+        $this->assertSame([], $this->readBackCacheKeys(), 'the pending entry is removed once the push returns');
+        $this->mock->append($this->read());
+        $this->popRetry()->fire();
+
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy(), 'positive control: the run linked');
+        $this->assertSame([], $this->readBackCacheKeys(), 'no started entry is written');
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::CACHE_STEP_FAILED));
+    }
+
+    public function test_the_started_entry_of_a_run_inside_the_push_is_removed_after_the_read_back(): void
+    {
+        // #6094: the run that wrote a started entry while the push was pending; once its read-back
+        // has used it, queueAfterCommit() removes both entries.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $keys = null;
+        $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueued::class, function () use (&$keys) {
+            $pushing = self::retryEmailAttachmentsStatics()['pushing'];
+            $this->mock->append($this->read());
+            $this->popRetry()->fire();
+            $keys = $this->readBackCacheKeys();
+            (fn () => self::$pushing = $pushing)->bindTo(null, RetryEmailAttachments::class)();
+        });
+
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertCount(2, $keys ?? [], 'positive control: pending and started were both present during the push');
+        $this->assertSame('started', $this->withMessage(RetryEmailAttachments::PUSH_THREW_ROW_FOUND)[0]->context['found_in'] ?? null);
+        $this->assertSame([], $this->readBackCacheKeys());
+    }
+
+    public function test_a_started_write_that_fails_is_recorded_and_the_run_goes_on(): void
+    {
+        // #6092 / #6096 (c): the store throws on the started write. The run still links the
+        // attachment; the failure is a status-only record, not silence.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $this->cacheFailing(':started:');
+        $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueued::class, function () {
+            $pushing = self::retryEmailAttachmentsStatics()['pushing'];
+            $this->mock->append($this->read());
+            $this->popRetry()->fire();
+            (fn () => self::$pushing = $pushing)->bindTo(null, RetryEmailAttachments::class)();
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertSame(TicketNote::class, Attachment::sole()->attachable_type, 'the run was not stopped by the cache');
+        $failed = $this->withMessage(RetryEmailAttachments::CACHE_STEP_FAILED);
+        $this->assertCount(1, $failed);
+        $this->assertSame(Level::Warning, $failed[0]->level);
+        $this->assertSame(['email_id' => $email->id, 'ticket_id' => $ticket->id, 'step' => 'started_put', 'exception' => \RuntimeException::class], $failed[0]->context);
+        $this->assertStringNotContainsString('B7-SYNTHETIC', json_encode($failed[0]->context), 'C-56: no message text');
+        // The stated remainder: without the entry the read-back says false, and the work runs twice.
+        $this->assertFalse($this->withMessage(RetryEmailAttachments::NOT_QUEUED)[0]->context['queued_row']);
+    }
+
+    public function test_a_pending_write_that_fails_makes_a_not_found_read_back_unknown(): void
+    {
+        // #6091/#6092: with no pending entry a run cannot leave its started entry, so "no row
+        // found" is not "not added": queued_row null, the queue-unknown note, and the record.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $this->cacheFailing(':pending:');
+        $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueueing::class, fn () => null);
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertSame(['pending_put'], array_map(fn ($r) => $r->context['step'], $this->withMessage(RetryEmailAttachments::CACHE_STEP_FAILED)));
+        $notQueued = $this->withMessage(RetryEmailAttachments::NOT_QUEUED);
+        $this->assertCount(1, $notQueued);
+        $this->assertSame([null, 'pending', null], [$notQueued[0]->context['queued_row'], $notQueued[0]->context['read_back_step'], $notQueued[0]->context['read_back_exception']]);
+        $this->assertCount(1, $this->withMessage(RetryEmailAttachments::MARKER_QUEUE_UNKNOWN));
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::MARKER));
+        $this->assertCount(1, $this->markerNotes($ticket->id));
+    }
+
+    public function test_a_started_read_that_throws_is_unknown_and_names_the_step(): void
+    {
+        // #6096 (d) / #6092: both tables were read and held no row; the started read threw.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $this->cacheFailing(':started:', ['get']);
+        $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueueing::class, fn () => null);
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $notQueued = $this->withMessage(RetryEmailAttachments::NOT_QUEUED);
+        $this->assertCount(1, $notQueued);
+        $this->assertSame([null, 'started', \RuntimeException::class], [$notQueued[0]->context['queued_row'], $notQueued[0]->context['read_back_step'], $notQueued[0]->context['read_back_exception']]);
+        $this->assertCount(1, $this->withMessage(RetryEmailAttachments::MARKER_QUEUE_UNKNOWN));
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 0]], $this->seen->getArrayCopy());
+    }
+
+    public function test_the_read_back_reads_only_rows_inserted_since_the_push_began(): void
+    {
+        // #6031/#6095: each table is read above the id it held before the push (the primary
+        // key), on this dispatch's queue, never a scan of every payload. An older row that
+        // carries this dispatch's own command (as a replay would) is outside the window.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $queue = app('queue')->connection('database');
+        $old = ['jobs' => $queue->pushRaw('{"displayName":"Old"}', 'default'), 'failed_jobs' => null];
+        app('queue.failer')->log('database', 'default', (string) json_encode(['uuid' => (string) \Illuminate\Support\Str::uuid(), 'displayName' => 'Old']), new \RuntimeException('B7-SYNTHETIC-OLD'));
+        $old['failed_jobs'] = (int) DB::table('failed_jobs')->max('id');
+        $atPush = null;
+        $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueueing::class, function (RetryEmailAttachments $job) use (&$atPush) {
+            $atPush = (int) DB::table('jobs')->max('id');
+            // A row of this very dispatch, inserted below the floors (as if before the push).
+            DB::table('jobs')->insert(['id' => 0, 'queue' => 'default', 'payload' => json_encode(['displayName' => RetryEmailAttachments::class,
+                'data' => ['commandName' => RetryEmailAttachments::class, 'command' => serialize($job)]]), 'attempts' => 0, 'available_at' => 0, 'created_at' => 0]);
+        });
+        $reads = [];
+        DB::listen(function ($q) use (&$reads) {
+            $sql = strtolower($q->sql);
+            if (str_contains($sql, 'like')) {
+                $reads[] = [$sql, $q->bindings, $q->readWriteType];
+            }
+        });
+
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertCount(2, $reads, 'jobs, then failed_jobs');
+        [$jobsSql, $jobsBindings, $jobsPdo] = $reads[0];
+        [$failedSql, $failedBindings, $failedPdo] = $reads[1];
+        $this->assertStringContainsString('from "jobs" where "id" > ? and "queue" = ? and "payload" like ?', $jobsSql);
+        $this->assertGreaterThanOrEqual($old['jobs'], $atPush, 'positive control');
+        $this->assertSame([$atPush, 'default'], array_slice($jobsBindings, 0, 2), 'the floor is the newest id before the push; the queue is this one');
+        $this->assertStringContainsString('from "failed_jobs" where "id" > ? and "payload" like ?', $failedSql);
+        $this->assertSame($old['failed_jobs'], $failedBindings[0]);
+        $this->assertSame(['write', 'write'], [$jobsPdo, $failedPdo], '#6096 (a): both reads on the write PDO');
+        $this->assertFalse($this->withMessage(RetryEmailAttachments::NOT_QUEUED)[0]->context['queued_row'], 'the row below the floor is not read');
+    }
+
+    public function test_a_row_on_another_queue_is_not_this_dispatchs(): void
+    {
+        // #6096 (b): the jobs read is narrowed to this dispatch's queue.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueued::class, function (RetryEmailAttachments $job, $event) {
+            DB::table('jobs')->where('id', $event->id)->update(['queue' => 'b7-other']);
+        });
+
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertSame(1, DB::table('jobs')->where('queue', 'b7-other')->count(), 'positive control: the row is on another queue');
+        $this->assertFalse($this->withMessage(RetryEmailAttachments::NOT_QUEUED)[0]->context['queued_row']);
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::PUSH_THREW_ROW_FOUND));
+    }
+
+    public function test_the_plain_database_failer_is_read_back_too(): void
+    {
+        // #6096 (e): queue.failed.driver 'database' (no uuid column needed) is a database failer.
+        config(['queue.failed.driver' => 'database']);
+        app()->forgetInstance('queue.failer');
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueued::class, function (RetryEmailAttachments $job, $event) {
+            $payload = DB::table('jobs')->where('id', $event->id)->value('payload');
+            DB::table('jobs')->where('id', $event->id)->delete();
+            DB::table('failed_jobs')->insert(['uuid' => (string) \Illuminate\Support\Str::uuid(), 'connection' => 'database', 'queue' => 'default',
+                'payload' => $payload, 'exception' => 'B7-SYNTHETIC', 'failed_at' => now()]);
+        });
+
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $found = $this->withMessage(RetryEmailAttachments::PUSH_THREW_ROW_FOUND);
+        $this->assertCount(1, $found);
+        $this->assertSame('failed_jobs', $found[0]->context['found_in']);
+    }
+
+    public function test_a_floor_that_cannot_be_read_makes_the_read_back_unknown(): void
+    {
+        // #6031: no floor means no bounded read: the table is not scanned, queued_row is null.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $scans = 0;
+        DB::beforeExecuting(function (string $sql) use (&$scans) {
+            $sql = strtolower($sql);
+            if (str_contains($sql, 'max("id")') && str_contains($sql, 'from "jobs"')) {
+                throw new \RuntimeException('B7-SYNTHETIC-MAX-DOWN');
+            }
+            if (str_contains($sql, 'like')) {
+                $scans++;
+            }
+        });
+        $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueueing::class, fn () => null);
+
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertSame(0, $scans, 'no unbounded scan');
+        $notQueued = $this->withMessage(RetryEmailAttachments::NOT_QUEUED);
+        $this->assertSame([null, 'jobs', null], [$notQueued[0]->context['queued_row'], $notQueued[0]->context['read_back_step'], $notQueued[0]->context['read_back_exception']]);
     }
 }
