@@ -12,8 +12,8 @@ class MeshClient
     /** What logPath() logs for an endpoint whose user-info it cannot cut off safely (#5761). */
     private const UNPARSEABLE_ENDPOINT = '[unparseable endpoint]';
 
-    /** A host (bracketed IPv6 literal, or no ':', '[' or ']') with an optional ':' and digits. */
-    private const HOST_PORT = '#^(?:\[[^\]]*\]|[^:\[\]]*)(?::[0-9]*)?$#';
+    /** A host (bracketed IPv6 literal, or no ':', '[' or ']') with an optional ':' and one or more digits. */
+    private const HOST_PORT = '#^(?:\[[^\]]*\]|[^:\[\]]*)(?::[0-9]+)?$#';
 
     private Client $http;
 
@@ -147,11 +147,16 @@ class MeshClient
      * password goes too), and an '@' after that authority, in the path,
      * query or fragment, is not user-info and is left alone. If what is
      * left of the authority is not a host (a bracketed IPv6 literal, or
-     * no ':', '[' or ']') with an optional ':' and digits, and the
-     * endpoint holds an '@' anywhere, the whole line path is the fixed
-     * '[unparseable endpoint]' instead (a password holding '/', '?' or
-     * '#' ends the segment early, so it would otherwise be logged as
-     * path). Not caught: user-info holding a '/' whose bytes before that
+     * no ':', '[' or ']') with an optional ':' and one or more digits
+     * (so a first segment 'https:', ' https:' or '1https:' is not one)
+     * and the endpoint holds an '@' anywhere, or if that authority ends
+     * at a '?' or '#' and an '@' follows it, the whole line path is the
+     * fixed '[unparseable endpoint]' instead (a user or password holding
+     * '/', '?' or '#' ends the segment early, so it would otherwise be
+     * logged as path; for '?' and '#' this holds even when the bytes
+     * before it read as a host and port, so an endpoint with no '/'
+     * before an '@' in its query or fragment loses its path on the
+     * line). Not caught: user-info holding a '/' whose bytes before that
      * '/' still read as a host and port ('user/x@...', 'user:1234/x@...'),
      * which is byte for byte a host, a port and an '@' in the path. And
      * read as user-info although PSR-7 reads it as path: an '@' in the
@@ -183,7 +188,12 @@ class MeshClient
         $authority = substr($endpoint, $start, $end - $start);
         $at = strrpos($authority, '@');
         $hostPort = $at === false ? $authority : substr($authority, $at + 1);
-        if (preg_match(self::HOST_PORT, $hostPort) !== 1 && str_contains($endpoint, '@')) {
+        // An authority that ends at a '?' or '#' with an '@' after it may
+        // be user-info cut short there: the bytes before it would be
+        // logged (#5761).
+        $rest = substr($endpoint, $end);
+        $atAfterQuery = $rest !== '' && $rest[0] !== '/' && str_contains($rest, '@');
+        if ($atAfterQuery || (preg_match(self::HOST_PORT, $hostPort) !== 1 && str_contains($endpoint, '@'))) {
             return self::UNPARSEABLE_ENDPOINT;
         }
         $endpoint = substr($endpoint, 0, $start).$hostPort.substr($endpoint, $end);

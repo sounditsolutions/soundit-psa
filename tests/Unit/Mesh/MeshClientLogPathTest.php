@@ -373,6 +373,14 @@ class MeshClientLogPathTest extends TestCase
             "password holding '/' (unparseable)" => ["{$u}:{$p}/z@{$h}:{$port}/api/customers/{$id}/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
             "password holding '?' (unparseable)" => ["{$u}:{$p}?z@{$h}:{$port}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
             "password holding '#' (unparseable)" => ["{$u}:{$p}#z@{$h}:{$port}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
+            // A first segment that reads as 'host:' with no port digits
+            // ('https:' here) is not a host, so user-info after it is not
+            // logged as path.
+            'single slash after the scheme, user and password (unparseable)' => ["https:/{$u}:{$p}@{$h}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], false, 'unparseable'],
+            // A user, or a user and a numeric password, ending at '?' or
+            // '#' reads as a host and port; the '@' after it is caught.
+            "user holding '?' (unparseable)" => ["{$u}?z@{$h}:{$port}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], false, 'unparseable'],
+            "numeric password holding '#' (unparseable)" => ["{$u}:4821#z@{$h}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
             'bare path, no authority (unchanged)' => ["/api/customers/{$id}/", '/api/customers/<customer>', ['/api/customers/'], false, 'redacted'],
         ];
     }
@@ -451,7 +459,7 @@ class MeshClientLogPathTest extends TestCase
                 $driven++;
             }
         }
-        $this->assertSame(2 * 9, $driven, 'nine rows on each real handler');
+        $this->assertSame(2 * 10, $driven, 'ten rows on each real handler');
     }
 
     /**
@@ -472,10 +480,16 @@ class MeshClientLogPathTest extends TestCase
             $kinds[$kind] = ($kinds[$kind] ?? 0) + 1;
         }
         ksort($kinds);
-        $this->assertSame(['kept' => 1, 'query cut only' => 1, 'redacted' => 8, 'unparseable' => 3, 'user-info drop' => 4], $kinds, 'user-info rows by kind');
+        $this->assertSame(['kept' => 1, 'query cut only' => 1, 'redacted' => 8, 'unparseable' => 6, 'user-info drop' => 4], $kinds, 'user-info rows by kind');
         // '//user:password@' with a '/' in the password: PSR-7 refuses it
         // (no request, no line), so it is checked here only.
         $this->assertSame('[unparseable endpoint]', $logPath->invoke(null, '//'.self::USER.':'.self::PASS.'/z@'.self::ENDPOINT_HOST.'/api/'));
+        // #5761: a first segment that reads as 'host:' only because a
+        // space or a digit comes before the scheme. Neither ' https' nor
+        // '1https' is a valid scheme name, so these are checked here only.
+        foreach ([' https://', '1https://'] as $head) {
+            $this->assertSame('[unparseable endpoint]', $logPath->invoke(null, $head.self::USER.':'.self::PASS.'@'.self::ENDPOINT_HOST.'/api/devices/'), json_encode($head));
+        }
         // The limit logPath()'s docblock names, driven: an '@' in the first
         // segment of a relative endpoint is read as user-info (bytes
         // dropped, none added).
@@ -1039,8 +1053,10 @@ class MeshClientLogPathTest extends TestCase
         // start or follows only '<scheme>:' (no '/', '?', '#' or '@'
         // before it), else at the start; it runs to the first '/', '?' or
         // '#'. What follows its last '@' must be a host[:port] to PHP's
-        // parse_url() (or empty), else an endpoint holding any '@' is the
-        // fixed '[unparseable endpoint]'. A kind of its own only where no
+        // parse_url() (or empty), with digits after any ':', else an
+        // endpoint holding any '@' is the fixed '[unparseable endpoint]';
+        // so is one whose authority ends at a '?' or '#' with an '@'
+        // after it. A kind of its own only where no
         // '//' strip removes the authority anyway.
         $slashes = strpos($endpoint, '//');
         $head = $slashes === false ? null : substr($endpoint, 0, $slashes);
@@ -1049,7 +1065,9 @@ class MeshClientLogPathTest extends TestCase
         $pieces = explode('@', substr($endpoint, $start, $end - $start));
         $hostPort = end($pieces);
         $parsed = $hostPort === '' ? ['host' => ''] : parse_url('//'.$hostPort);
-        if (str_contains($endpoint, '@') && (! is_array($parsed) || array_diff(array_keys($parsed), ['host', 'port']) !== [])) {
+        $notHost = ! is_array($parsed) || array_diff(array_keys($parsed), ['host', 'port']) !== [] || str_ends_with($hostPort, ':');
+        $atPastQuery = strpbrk(substr($endpoint, $end, 1), '?#') !== false && str_contains(substr($endpoint, $end), '@');
+        if ($atPastQuery || (str_contains($endpoint, '@') && $notHost)) {
             return $out === '[unparseable endpoint]' ? 'unparseable' : null;
         }
         $userInfoDrop = count($pieces) > 1;
