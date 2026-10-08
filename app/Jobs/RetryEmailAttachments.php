@@ -62,7 +62,12 @@ class RetryEmailAttachments implements ShouldQueue
 
     public const EARLIER_UNDISCARDED = '[RetryEmailAttachments] Attachments an earlier run stored left undiscarded';
 
-    /** #5801: the marker when whether the retry's link committed could not be read back. */
+    /**
+     * #5801: the marker when whether the retry's link committed could not be read back. #6136:
+     * since b7 (#6101) the not_queued null arm writes MARKER_QUEUE_UNKNOWN instead, so a monitor
+     * or saved search on this literal with reason not_queued must match that one too (no such
+     * consumer was found when b7 landed; the change is recorded for any added later).
+     */
     public const MARKER_LINK_UNKNOWN = '[RetryEmailAttachments] Email attachments link state unknown';
 
     /** #5811: one step of the email-added commit work threw; 'step' names which. */
@@ -72,11 +77,12 @@ class RetryEmailAttachments implements ShouldQueue
      * #5810/#5994: the after-commit push of this job threw. Context queued_row says what the
      * read-back by push_id found (#6097): false when neither table's read window held this
      * dispatch's row and no started entry was found, with the pending entry recorded; null when
-     * it could not be told, and then read_back_step names where the read-back stopped (driver:
-     * not a database queue; jobs or failed_jobs: that read threw, or its window did not reach
-     * back to the push; started: the entry read threw; pending: the pending entry was not
-     * recorded, so a run could not have left its started entry) and read_back_exception the
-     * class that threw, or null. ERROR (#5993). The marker and the commit work then run here
+     * it could not be told, and then read_back_step names the first read that failed (driver:
+     * not a database queue; jobs or failed_jobs: that table's read, or (#6150) the read of its
+     * floor before the push, threw; started: the entry read threw; pending: the pending entry
+     * was not recorded, so a run could not have left its started entry) and read_back_exception
+     * the class that threw, or null (driver, pending). #6149: a failed read no longer stops the
+     * read-back; the reads after it still run, and one that finds this dispatch wins. ERROR (#5993). The marker and the commit work then run here
      * (see queueAfterCommit() for when, and for the arms on which they run a second time).
      */
     public const NOT_QUEUED = '[RetryEmailAttachments] Retry push threw';
@@ -112,17 +118,44 @@ class RetryEmailAttachments implements ShouldQueue
 
     /**
      * #6092/#6094: a step on the pending or started cache entry the push read-back uses failed
-     * (threw, or the store returned false). Context step: pending_put, started_put or cleanup;
-     * exception: the class that threw, or null. A failed pending_put makes a later not-found
+     * (threw, or the store returned false). Context step: pending_put, started_put, cleanup, or
+     * (#6153) pending_read, a run's read of the pending entry, after which it writes its started
+     * entry anyway; exception: the class that threw, or null. A failed pending_put makes a later not-found
      * read-back report queued_row null, never false.
      */
     public const CACHE_STEP_FAILED = '[RetryEmailAttachments] Push read-back cache step failed';
 
     /**
-     * #6101: the not_queued marker when whether this dispatch's queue row exists could not be
-     * read back (queued_row null): a queued run may still add the attachments.
+     * #6100: a run of a dispatch read back by $pushId found a later queue row of the same push
+     * (a lost reply to the INSERT that the connection re-ran) and exited without running, so
+     * the later row's run is the only one. Context job_id: this run's row; later_job_ids: the
+     * later rows of this push.
+     */
+    public const DUPLICATE_ROW_SKIPPED = '[RetryEmailAttachments] Duplicate queue row of one push skipped';
+
+    /**
+     * #6100: the read for a later queue row of this push threw, so this run went ahead without
+     * the de-duplication (a second row of the push, if any, may run too). Context exception: the
+     * class that threw.
+     */
+    public const DUPLICATE_CHECK_FAILED = '[RetryEmailAttachments] Duplicate queue row check failed';
+
+    /**
+     * #6101: the not_queued marker when the read-back could not tell (queued_row null). #6135:
+     * context queue_read_back says which unknown: false when a queue table could not be read
+     * (a queued run may still add the attachments); true when both tables were read and held no
+     * row of this dispatch, but whether a run already ran (and may have added them) could not be
+     * read back (read_back_step started or pending). The note says the same. #6136: replaces
+     * MARKER_LINK_UNKNOWN on this arm since b7.
      */
     public const MARKER_QUEUE_UNKNOWN = '[RetryEmailAttachments] Email attachments retry queue state unknown';
+
+    /**
+     * #6150: the highest id of the queue table or of failed_jobs could not be read before the
+     * push, so a read-back after a throw cannot read that table. Context step: jobs or
+     * failed_jobs; exception: the class that threw. Recorded whether or not the push throws.
+     */
+    public const FLOOR_READ_FAILED = '[RetryEmailAttachments] Push read-back floor read failed';
 
     /**
      * @param  array<string, mixed>|null  $baseline  EmailService::retryBaseline as the creating transaction left it
@@ -205,39 +238,57 @@ class RetryEmailAttachments implements ShouldQueue
      * #5994: a throw means only that the push threw; the row may still have been written (in
      * this app, a JobQueued listener that throws). #6100: a lost reply to the INSERT is handled
      * by the connection, not here: at level 0 the connection reconnects and re-runs the INSERT,
-     * and when that succeeds the push returns with two rows for this dispatch, both of which run
-     * (nothing de-duplicates on pushId; a stated remainder); when the reconnect or re-run fails,
-     * the push throws with the first row committed, and this read-back on the dead connection
-     * throws (queued_row null), so the commit work may run here as well as in that row's run.
+     * and when that succeeds the push returns with two rows for this dispatch. Both carry this
+     * pushId, and the earlier row's run exits when it finds the later one (handle(),
+     * DUPLICATE_ROW_SKIPPED), so one runs; both still run when the later row's run has finished
+     * and deleted its row before the earlier one reads, or when that read throws
+     * (DUPLICATE_CHECK_FAILED). #6151: when the reconnect fails, the push throws with the first
+     * row committed and this read-back's reconnect fails too (queued_row null, so the commit
+     * work may run here as well as in that row's run); when the reconnect succeeds and only the
+     * re-run INSERT fails, the read-back runs on a live connection and finds the first row
+     * (found_in jobs).
      *
      * So this dispatch is read back by $pushId first (queuedRowFound()): its row in the queue
      * table, its row in failed_jobs (#6026: failed() already ran), or the started entry its
      * handle() or failed() writes (#6026/#6093: a worker ran it and deleted the row, or Job::fail
      * deleted it and its failed() is running before the failer's failed_jobs insert). Found:
      * PUSH_THREW_ROW_FOUND with found_in, and nothing more runs here, since the job owns the
-     * marker and the commit work. Not found (queued_row false) or not told (queued_row null):
-     * NOT_QUEUED at ERROR (#5993: the record a monitor filtering at error sees) and notQueued().
+     * marker and the commit work. #6149: all three are read even when one of them cannot be,
+     * so a find in any of them wins over a read that failed. Not found (queued_row false) or not
+     * told (queued_row null): NOT_QUEUED at ERROR (#5993: the record a monitor filtering at
+     * error sees) and notQueued().
      *
-     * #6091/#6094: the started entry is written by a run only while this push's pending entry
+     * #6091/#6094: the started entry is written by a run while this push's pending entry
      * (written here before the push) exists, and both are removed here once the push is done, so
      * a file cache does not fill with them; a run that reads the pending entry just as the push
-     * finishes can still leave one started entry, which expires unread (the file store keeps
-     * its file).
+     * finishes, or (#6153) whose pending read throws, can still leave one started entry, which
+     * expires unread (the file store keeps its file).
      * queued_row false therefore needs the pending entry to have been recorded; when it was not
      * (CACHE_STEP_FAILED pending_put), a not-found read-back is null. Which arms may still run the
-     * commit work twice: null, when a row was written after all (the note then says a queued
-     * retry may still add the attachments, #6101); and false, when a run's own started write
-     * failed (its CACHE_STEP_FAILED started_put names it), the cache store is not one the
-     * workers share (the array store), or a run deleted its row before writing its started
-     * entry (a worker that dies between Job::fail's delete and failed()'s first statement).
+     * commit work twice: null, when a row was written after all, or a run already ran (the note
+     * says which could not be read back, #6101/#6135); and false, where the note's 'were not
+     * added' can then be wrong for attachments the run did add (#6139). False is reached when a
+     * run's own started write failed (its CACHE_STEP_FAILED started_put names it); when the
+     * cache store is not one the workers share (the array store); when it is shared but one side
+     * cannot read or write the other's entries (#6138: the file store reports an unreadable
+     * entry as a miss, never a throw, so web and worker must run with a cache directory both can
+     * read and write: a deployment prerequisite); when the read-back runs while a live worker is
+     * between Job::fail's delete of the row and failed()'s markStarted(), which runs after
+     * failed()'s rollback and re-delete (#6137); or when a run is failed and failed() never runs
+     * (the command cannot be unserialised), until the failer writes failed_jobs.
      *
-     * #6007/#6045: in an HTTP request (the Graph webhook), notQueued() is deferred to the
-     * request's terminate phase (InvokeDeferredCallbacks), so the marker writes and
-     * notifyEmailAdded run after the response is sent and the 202 does not wait on them; under
-     * PHP-FPM the response is flushed (fastcgi_finish_request) before terminate runs. A process
-     * killed after the response and before terminate loses that work (as one killed inside the
-     * callback did before). Outside a routed request (console, queue worker, a direct call) it
-     * runs here, inline. The push itself and its read-back stay in this after-commit callback
+     * #6007/#6045/#6133: in an HTTP request (the Graph webhook), notQueued() is registered as an
+     * app terminating callback, so the marker writes and notifyEmailAdded run after the response
+     * is sent and the 202 does not wait on them; under PHP-FPM the response is flushed
+     * (fastcgi_finish_request) before terminate runs. It runs whatever the response status
+     * (#6134), and also when the push itself ran in the terminate phase (a deferred or
+     * terminating callback), since Application::terminate re-reads its list as it goes. #6148:
+     * the work waits for the rest of the request (in the webhook, every later notification's
+     * Graph fetch and import), and is lost when the process dies before terminate runs: a kill,
+     * or a fatal error (max_execution_time, memory) anywhere in the rest of the request, before
+     * or after the response; inline, it ran before the next notification. Outside a routed
+     * request (console, queue worker, a direct call) it runs here, inline. The push itself and
+     * its read-back stay in this after-commit callback
      * (#5452 (a)).
      */
     public function queueAfterCommit(): void
@@ -247,7 +298,8 @@ class RetryEmailAttachments implements ShouldQueue
             self::$pushing[$key] = true;
             $this->pushId = (string) \Illuminate\Support\Str::uuid();
             $pending = $this->cacheStep('pending_put', fn () => \Illuminate\Support\Facades\Cache::put(self::pendingKey($this->pushId), true, now()->addMinutes(10)));
-            $floors = $this->readBackFloors();
+            $floorFailures = [];
+            $floors = $this->readBackFloors($floorFailures);
             try {
                 dispatch($this);
             } catch (\Throwable $e) {
@@ -255,7 +307,7 @@ class RetryEmailAttachments implements ShouldQueue
                     throw $e;
                 }
                 unset(self::$pushing[$key]);
-                [$found, $step, $stepException] = $this->queuedRowFound($floors, $pending);
+                [$found, $step, $stepException] = $this->queuedRowFound($floors, $pending, $floorFailures);
                 try {
                     $context = ['email_id' => $this->emailId, 'ticket_id' => $this->ticketId, 'exception' => $e::class];
                     if (is_string($found)) {
@@ -269,9 +321,22 @@ class RetryEmailAttachments implements ShouldQueue
                 if (! is_string($found)) {
                     $linked = $found === null ? null : false;
                     if (self::inRoutedRequest()) {
-                        \Illuminate\Support\defer(fn () => $this->notQueued($linked), always: true);
+                        // #6133: an app terminating callback, not defer(): the deferred
+                        // collection is drained once, by middleware terminate, and a callback
+                        // added during or after that drain never runs; Application::terminate
+                        // runs after it and re-reads its list, so one added while it runs still
+                        // runs. It runs whatever the response status (#6134), and once: the
+                        // list is never cleared, so a later terminate in the same process (a
+                        // second request in one test) must not run it again.
+                        $ran = false;
+                        app()->terminating(function () use (&$ran, $linked, $step): void {
+                            if (! $ran) {
+                                $ran = true;
+                                $this->notQueued($linked, $step);
+                            }
+                        });
                     } else {
-                        $this->notQueued($linked);
+                        $this->notQueued($linked, $step);
                     }
                 }
             } finally {
@@ -288,7 +353,7 @@ class RetryEmailAttachments implements ShouldQueue
 
     /**
      * #6007: whether this runs inside a routed HTTP request, whose terminate phase (after the
-     * response is sent) runs the deferred callbacks. False in the console, the queue worker and
+     * response is sent) runs the app's terminating callbacks (#6133). False in the console, the queue worker and
      * a direct call, where there is no response to hold and the work runs inline.
      */
     private static function inRoutedRequest(): bool
@@ -342,8 +407,11 @@ class RetryEmailAttachments implements ShouldQueue
 
     /**
      * #6093/#6094: what a run of a dispatch read back by $pushId writes when it starts (handle())
-     * or fails (failed()): the started entry, only while the pusher's pending entry exists, so a
-     * run of a push that has already finished leaves nothing behind.
+     * or fails (failed()): the started entry, while the pusher's pending entry exists, so a run
+     * of a push that has already finished leaves nothing behind. #6153: also when the pending
+     * read throws (recorded as CACHE_STEP_FAILED pending_read); that entry can outlive a
+     * finished push until it expires. The shipped file store does not throw on that read (it
+     * reports a miss), so this arm is reached on a store whose reads can throw.
      */
     private function markStarted(): void
     {
@@ -356,7 +424,18 @@ class RetryEmailAttachments implements ShouldQueue
             }
         } catch (\Throwable $e) {
             // Whether a push is pending is not known: write the entry, so a pending read-back
-            // still finds it.
+            // still finds it (toward found, never a second commit run). #6153: when no push is
+            // pending after all, the entry outlives it until its TTL (the file store removes it
+            // only when read), so the failed read is recorded, not silent.
+            try {
+                Log::warning(self::CACHE_STEP_FAILED, [
+                    'email_id' => $this->emailId,
+                    'ticket_id' => $this->ticketId,
+                    'step' => 'pending_read',
+                    'exception' => $e::class,
+                ]);
+            } catch (\Throwable) {
+            }
         }
         $this->cacheStep('started_put', fn () => \Illuminate\Support\Facades\Cache::put(self::startedKey($this->pushId), true, now()->addMinutes(10)));
     }
@@ -366,9 +445,13 @@ class RetryEmailAttachments implements ShouldQueue
      * the primary key (an index), so the read-back after a throw reads only rows inserted since.
      * Null for a table whose id could not be read; empty when this is not a database queue.
      *
+     * #6150: $failures gets the class that threw for each table whose id could not be read, and
+     * that failure is recorded as FLOOR_READ_FAILED whether or not the push then throws.
+     *
+     * @param  array<string, class-string>  $failures
      * @return array<string, int|null>
      */
-    private function readBackFloors(): array
+    private function readBackFloors(array &$failures = []): array
     {
         [$queueConfig, $failed] = $this->readBackTables();
         if ($queueConfig === null) {
@@ -382,8 +465,20 @@ class RetryEmailAttachments implements ShouldQueue
             try {
                 $floors[$name] = (int) \Illuminate\Support\Facades\DB::connection($table['connection'])
                     ->table($table['table'])->useWritePdo()->max('id');
-            } catch (\Throwable) {
+            } catch (\Throwable $e) {
+                // #6150: the class is kept for NOT_QUEUED's read_back_exception, and the failure
+                // is recorded now, so a push that then returns still leaves a record of it.
                 $floors[$name] = null;
+                $failures[$name] = $e::class;
+                try {
+                    Log::warning(self::FLOOR_READ_FAILED, [
+                        'email_id' => $this->emailId,
+                        'ticket_id' => $this->ticketId,
+                        'step' => $name,
+                        'exception' => $e::class,
+                    ]);
+                } catch (\Throwable) {
+                }
             }
         }
 
@@ -430,24 +525,34 @@ class RetryEmailAttachments implements ShouldQueue
      * table whose floor could not be read is not scanned (step names it, found null).
      *
      * @param  array<string, int|null>  $floors
+     * @param  array<string, class-string>  $floorFailures  readBackFloors()'s $failures
      * @return array{0: string|bool|null, 1: string|null, 2: class-string|null}
      */
-    private function queuedRowFound(array $floors, bool $pending): array
+    private function queuedRowFound(array $floors, bool $pending, array $floorFailures = []): array
     {
-        $step = 'driver';
         try {
             [$queueTable, $failedTable] = $this->readBackTables();
-            if ($queueTable === null || $this->pushId === null) {
-                return [null, $step, null];
+        } catch (\Throwable $e) {
+            return [null, 'driver', $e::class];
+        }
+        if ($queueTable === null || $this->pushId === null) {
+            return [null, 'driver', null];
+        }
+        // #6149: a table that cannot be read is remembered, not returned: the other table and
+        // the started entry are still read, and any of them finding this dispatch wins. The
+        // started entry stays the last read, so a run that deletes its row after the table read
+        // has already written its entry (handle() and failed() write it before the row goes).
+        $unknown = null;
+        foreach (['jobs' => $queueTable, 'failed_jobs' => $failedTable] as $name => $table) {
+            if ($table === null) {
+                continue;
             }
-            foreach (['jobs' => $queueTable, 'failed_jobs' => $failedTable] as $name => $table) {
-                if ($table === null) {
-                    continue;
-                }
-                $step = $name;
-                if (($floors[$name] ?? null) === null) {
-                    return [null, $step, null];
-                }
+            if (($floors[$name] ?? null) === null) {
+                $unknown ??= [$name, $floorFailures[$name] ?? null];
+
+                continue;
+            }
+            try {
                 $query = \Illuminate\Support\Facades\DB::connection($table['connection'])
                     ->table($table['table'])->useWritePdo()
                     ->where('id', '>', $floors[$name]);
@@ -457,16 +562,22 @@ class RetryEmailAttachments implements ShouldQueue
                 if ($this->ownRowIn($query->where('payload', 'like', '%'.$this->pushId.'%')->pluck('payload'))) {
                     return [$name, null, null];
                 }
+            } catch (\Throwable $e) {
+                $unknown ??= [$name, $e::class];
             }
-            $step = 'started';
+        }
+        try {
             if (\Illuminate\Support\Facades\Cache::has(self::startedKey($this->pushId))) {
                 return ['started', null, null];
             }
-
-            return $pending ? [false, null, null] : [null, 'pending', null];
         } catch (\Throwable $e) {
-            return [null, $step, $e::class];
+            $unknown ??= ['started', $e::class];
         }
+        if ($unknown !== null) {
+            return [null, $unknown[0], $unknown[1]];
+        }
+
+        return $pending ? [false, null, null] : [null, 'pending', null];
     }
 
     /**
@@ -493,10 +604,60 @@ class RetryEmailAttachments implements ShouldQueue
         return false;
     }
 
+    /**
+     * #6100: whether a later queue row carries this same push (a lost reply to the INSERT that
+     * the connection re-ran at level 0 leaves two rows of one dispatch). The earlier row's run
+     * then exits and the later row's run is the one that runs; recorded as
+     * DUPLICATE_ROW_SKIPPED. Read only for a database queue job with a pushId, on the write
+     * PDO, above this row's own id and on its queue. A read that throws is recorded
+     * (DUPLICATE_CHECK_FAILED) and the run goes ahead.
+     */
+    private function laterRowOfThisPush(): bool
+    {
+        if ($this->pushId === null || ! $this->job instanceof \Illuminate\Queue\Jobs\DatabaseJob) {
+            return false;
+        }
+        try {
+            $record = $this->job->getJobRecord();
+            $config = config('queue.connections.'.$this->job->getConnectionName());
+            $later = \Illuminate\Support\Facades\DB::connection($config['connection'] ?? null)
+                ->table($config['table'] ?? 'jobs')->useWritePdo()
+                ->where('id', '>', $record->id)
+                ->where('queue', $record->queue)
+                ->where('payload', 'like', '%'.$this->pushId.'%')
+                ->get(['id', 'payload']);
+            $ids = $later->filter(fn ($row) => $this->ownRowIn([$row->payload]))->pluck('id')->map(fn ($id) => (int) $id)->values()->all();
+        } catch (\Throwable $e) {
+            try {
+                Log::warning(self::DUPLICATE_CHECK_FAILED, ['email_id' => $this->emailId, 'ticket_id' => $this->ticketId, 'exception' => $e::class]);
+            } catch (\Throwable) {
+            }
+
+            return false;
+        }
+        if ($ids === []) {
+            return false;
+        }
+        try {
+            Log::warning(self::DUPLICATE_ROW_SKIPPED, [
+                'email_id' => $this->emailId,
+                'ticket_id' => $this->ticketId,
+                'job_id' => (int) $record->id,
+                'later_job_ids' => $ids,
+            ]);
+        } catch (\Throwable) {
+        }
+
+        return true;
+    }
+
     public function handle(EmailService $emails): void
     {
         $key = $this->progressKey();
         unset(self::$pushing[$key]);
+        if ($this->laterRowOfThisPush()) {
+            return;
+        }
         // #6026: what queueAfterCommit()'s read-back finds once a worker has run this dispatch
         // and deleted its row; written only while that push is pending (#6094), and a failed
         // write is recorded (#6092).
@@ -696,18 +857,21 @@ class RetryEmailAttachments implements ShouldQueue
      * #5810/#5994: this retry's push threw after the creating transaction committed, and no
      * queue row for it was found (or none could be read back; see queueAfterCommit()). Nothing
      * was read or stored by a retry here, so the marker names no ids. #6035/#6101: $linked null
-     * (whether this dispatch's queue row exists could not be read back) writes the
-     * MARKER_QUEUE_UNKNOWN marker, whose note says a queued retry may still add the attachments;
-     * false says they were not added. The commit work the job would have owned
+     * (the read-back could not tell) writes the MARKER_QUEUE_UNKNOWN marker; #6135: with
+     * $readBackStep started or pending both queue tables were read and held no row, so its note
+     * says no queued retry was found and whether one already ran could not be read back;
+     * otherwise that a queued retry may still add the attachments. False says they were not
+     * added. The commit work the job would have owned
      * runs here instead. #5995/#6030: the notification runs here; the technician loop is only
      * dispatched (afterCommit), onto the queue the technician job names. When that dispatch
      * throws (as it does while the same database queue's inserts are failing) the loop is lost
      * and recorded as COMMIT_STEP_THREW (technician_dispatch); when the push threw for another
      * reason, it may be queued. Never throws.
      */
-    public function notQueued(?bool $linked = false): void
+    public function notQueued(?bool $linked = false, ?string $readBackStep = null): void
     {
-        $this->writeMarker('not_queued', [], $linked, queueUnknown: $linked === null);
+        $this->writeMarker('not_queued', [], $linked, queueUnknown: $linked === null,
+            queueRead: in_array($readBackStep, ['started', 'pending'], true));
         $this->runCommitWork();
     }
 
@@ -733,7 +897,7 @@ class RetryEmailAttachments implements ShouldQueue
      *                                       earlier runs' ids (#5803), known from the payload, then
      *                                       go in their own EARLIER_UNDISCARDED record
      */
-    private function writeMarker(string $reason, ?array $undiscarded, ?bool $linked = false, bool $queueUnknown = false): void
+    private function writeMarker(string $reason, ?array $undiscarded, ?bool $linked = false, bool $queueUnknown = false, bool $queueRead = false): void
     {
         if ($undiscarded === null && $this->earlierUndiscarded !== []) {
             $this->warnEarlierUndiscarded();
@@ -743,6 +907,7 @@ class RetryEmailAttachments implements ShouldQueue
         // the not_queued null arm no link was attempted here; what is unknown is whether a
         // queued retry exists, and the record says that instead.
         $body = match (true) {
+            $queueUnknown && $queueRead => "Attachments from email #{$this->emailId} may not have been added to this ticket: no queued retry to add them was found, and whether a retry already ran could not be read back (reason: {$reason}).",
             $queueUnknown => "Attachments from email #{$this->emailId} may not have been added to this ticket: whether a retry to add them is queued could not be read back (reason: {$reason}).",
             $linked === null => "Attachments from email #{$this->emailId} may not have been added to this ticket: whether they were linked could not be read back (reason: {$reason}).",
             default => "Attachments from email #{$this->emailId} were not added to this ticket automatically (reason: {$reason}).",
@@ -775,7 +940,7 @@ class RetryEmailAttachments implements ShouldQueue
                 'refusals_requeued' => $this->refusals,
                 'ticket_note_written' => $noted,
                 'undiscarded_attachment_ids' => $undiscarded,
-            ]);
+            ] + ($queueUnknown ? ['queue_read_back' => $queueRead] : []));
         } catch (\Throwable) {
             // The note, when written, is the durable half of the marker.
         }

@@ -457,17 +457,18 @@ class EmailItemAttachmentTest extends TestCase
      *    encoded;
      *  - base64 (#5623): for the mailbox, the MIME sender and the item name, the encoding of the
      *    secret at each of the three byte alignments, cut to whole 4-character groups and
-     *    unpadded. That is the substring any base64 of a longer text containing the secret
-     *    holds (a Graph contentBytes of the MIME, 'To: <mailbox>', a trailing newline), and
-     *    base64url or unpadded copies hold the same characters while a core has no '+' or '/'
-     *    (needleControls() asserts it has none);
+     *    unpadded. That is the substring an unwrapped, untruncated base64 of a longer text
+     *    containing the secret holds at that alignment (a Graph contentBytes of the MIME,
+     *    'To: <mailbox>', a trailing newline), and base64url or unpadded copies hold the same
+     *    characters while a core has no '+' or '/' (needleControls() asserts it has none);
      *  - text secrets (#5624): the item name, Graph's error text, the email's subject and body,
      *    and the file and reference attachment names (#5634) each have a needle for their first
      *    and their last TRUNCATION_KEEP characters, so a cut copy (Str::limit, a tail) is caught
      *    when it keeps at least that many characters from either end (closing punctuation
      *    aside);
      *  - transport forms (#5630): the item name and the email body with spaces as RFC 2047 / QP
-     *    '=20' and as Q-encoding '_' (subject and body), the phishing URL JSON-escaped and its
+     *    '=20' and as Q-encoding '_' (subject and item name), with ':' bare and (#6001) as
+     *    '=3A', the form Symfony Mime's Q encoder emits, the phishing URL JSON-escaped and its
      *    bare host; a folded header is caught by the start or end needle when the fold falls
      *    outside them;
      *  - the other MIME headers (#5630, #5634): the display name, the sending domain (the
@@ -481,7 +482,9 @@ class EmailItemAttachmentTest extends TestCase
      * at both ends; a fold inside a start or end needle; base64 of any secret not listed above;
      * every other transform (hex, a hash, HTML entities, percent-encoding of the text secrets,
      * RFC 2047 'B' words split across a fold); the mailbox's domain alone (every fixture address
-     * shares it).
+     * shares it); #6002: base64 wrapped into lines (RFC 2045 MIME bodies wrap at 76 characters,
+     * so a core that crosses a line break is split) or truncated inside a core. #6001: a Q
+     * encoding of ':' other than bare or '=3A' (any other encoder's choice is not covered).
      *
      * @return array<string, string>
      */
@@ -516,6 +519,8 @@ class EmailItemAttachmentTest extends TestCase
             'item name QP (start)' => substr(str_replace(' ', '=20', self::ITEM_NAME), 0, self::TRUNCATION_KEEP),
             'item name Q underscore (start)' => substr(str_replace(' ', '_', self::ITEM_NAME), 0, self::TRUNCATION_KEEP),
             'email subject Q underscore' => str_replace(' ', '_', self::EMAIL_SUBJECT),
+            'item name Q =3A underscore (start)' => substr(str_replace([':', ' '], ['=3A', '_'], self::ITEM_NAME), 0, self::TRUNCATION_KEEP),
+            'email subject Q =3A underscore' => str_replace([':', ' '], ['=3A', '_'], self::EMAIL_SUBJECT),
             'email body QP (start)' => substr(str_replace(' ', '=20', self::EMAIL_BODY), 0, self::TRUNCATION_KEEP),
             'item name slug' => \Illuminate\Support\Str::slug(self::ITEM_NAME),
             'file attachment name slug' => \Illuminate\Support\Str::slug(pathinfo(self::FILE_NAME, PATHINFO_FILENAME)),
@@ -1411,10 +1416,12 @@ class EmailItemAttachmentTest extends TestCase
 
         $rows = [
             'mailbox' => [fn (self $t) => 'm '.$mailbox($t).' m', 'mailbox'],
-            'mailbox local part' => [fn (self $t) => strstr($mailbox($t), '@', true).'@', 'mailbox local part'],
-            'mailbox urlencoded' => [fn (self $t) => 'x/'.rawurlencode($mailbox($t)), 'mailbox urlencoded'],
-            'mailbox local part urlencoded' => [fn (self $t) => rawurlencode(strstr($mailbox($t), '@', true).'@').'elsewhere', 'mailbox local part urlencoded'],
-            'mailbox double-urlencoded' => [fn (self $t) => rawurlencode(rawurlencode(strstr($mailbox($t), '@', true).'@')).'x', 'mailbox double-urlencoded'],
+            // #6001: the encoded rows below use a real encoder on the whole text (a query string,
+            // a URL inside a query string), not the transform forbiddenNeedles() builds with.
+            'mailbox local part' => [fn (self $t) => 'mailto:'.$mailbox($t), 'mailbox local part'],
+            'mailbox urlencoded' => [fn (self $t) => http_build_query(['mailbox' => $mailbox($t), 'x' => 1]), 'mailbox urlencoded'],
+            'mailbox local part urlencoded' => [fn (self $t) => http_build_query(['to' => $mailbox($t)]), 'mailbox local part urlencoded'],
+            'mailbox double-urlencoded' => [fn (self $t) => 'next='.urlencode('/send?'.http_build_query(['to' => $mailbox($t)])), 'mailbox double-urlencoded'],
         ];
         // #5623: each alignment, embedded in a longer text, plain/unpadded/base64url.
         foreach ([
@@ -1445,8 +1452,15 @@ class EmailItemAttachmentTest extends TestCase
         return $rows + [
             // #5630: transport forms of the fixtures' text.
             'item name QP (start)' => [fn (self $t) => iconv_mime_encode('Subject', $header($t->valueFixtureMime(), 'Subject'), ['scheme' => 'Q', 'line-length' => 998]), 'item name QP (start)'],
+            // #6001: hand-built, not from an encoder: no encoder in vendor/ emits ':' bare with
+            // '_' for space (iconv keeps ':' and writes '=20'; Symfony writes '=3A' and '_'). Kept
+            // as needles for an encoder that does (RFC 2047 allows it); their controls prove
+            // only that the needle matches its own form.
             'item name Q underscore (start)' => [fn (self $t) => '=?UTF-8?Q?'.substr(str_replace(' ', '_', $item($t)), 0, $keep).'?=', 'item name Q underscore (start)'],
             'email subject Q underscore' => [fn (self $t) => '=?UTF-8?Q?'.str_replace(' ', '_', $email($t)['subject']).'?=', 'email subject Q underscore'],
+            // #6001: a real Q encoder (Symfony Mime, what Laravel's mailer uses), which encodes ':'.
+            'item name Q =3A underscore (start)' => [fn (self $t) => (new \Symfony\Component\Mime\Encoder\QpMimeHeaderEncoder)->encodeString($item($t)), 'item name Q =3A underscore (start)'],
+            'email subject Q =3A underscore' => [fn (self $t) => (new \Symfony\Component\Mime\Encoder\QpMimeHeaderEncoder)->encodeString($email($t)['subject']), 'email subject Q =3A underscore'],
             'email body QP (start)' => [fn (self $t) => iconv_mime_encode('X', $email($t)['body_text'], ['scheme' => 'Q', 'line-length' => 998]), 'email body QP (start)'],
             // #5818: the slugs, as AttachmentService would name the stored file.
             'item name slug' => [fn (self $t) => 'stored '.\Illuminate\Support\Str::slug($item($t)).'.eml', 'item name slug'],
@@ -1457,7 +1471,7 @@ class EmailItemAttachmentTest extends TestCase
             'MIME sending domain' => [fn (self $t) => 'via '.(preg_match('/^Received: from mail\.(\S+)/m', $mime($t), $m) ? $m[1] : ''), 'MIME sending domain'],
             'MIME sending IP' => [fn (self $t) => preg_match('/\((\d+\.\d+\.\d+\.\d+)\)/', $mime($t), $m) ? 'ip '.$m[1] : '', 'MIME sending IP'],
             'MIME phishing URL' => [fn (self $t) => preg_match('#https?://\S+#', $mime($t), $m) ? $m[0] : '', 'MIME phishing URL'],
-            'MIME phishing URL JSON-escaped' => [fn (self $t) => preg_match('#https?://\S+#', $mime($t), $m) ? json_encode(['u' => $m[0]]) : '', 'MIME phishing URL JSON-escaped'],
+            'MIME phishing URL JSON-escaped' => [fn (self $t) => preg_match('#https?://\S+#', $mime($t), $m) ? (new \Illuminate\Http\JsonResponse(['u' => $m[0]]))->getContent() : '', 'MIME phishing URL JSON-escaped'],
             'MIME phishing URL host' => [fn (self $t) => preg_match('#https?://([^/\s]+)#', $mime($t), $m) ? 'host '.$m[1] : '', 'MIME phishing URL host'],
             'email sender / MIME To' => [fn (self $t) => preg_match('/^To: .*<([^>]+)>/m', $mime($t), $m) && $m[1] === $email($t)['from_address'] ? 'to '.$m[1] : '', 'email sender / MIME To'],
             // #5625: what the Graph fixture really sends and is built with.
