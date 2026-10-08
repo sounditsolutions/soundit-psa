@@ -42,9 +42,16 @@ class GraphClient
         private readonly array $config,
         private readonly CacheInterface $cache,
     ) {
+        // #5824: the Graph data clients never follow a redirect either. None of the Graph
+        // endpoints this client calls is documented to answer 3xx, and a followed redirect
+        // replays a POST body to the Location of a 307/308 (another host included) and, on an
+        // unparseable Location, throws psr7's MalformedUriException, whose message is the
+        // Location and which is not a GuzzleException. A 3xx is refused by refuseRedirect()
+        // from its status alone; its Location is never read.
         $httpOptions = [
             'base_uri' => 'https://graph.microsoft.com/v1.0/',
             'timeout' => $this->config['request_timeout'],
+            'allow_redirects' => false,
         ];
 
         // Optional Guzzle handler injection for wire-level tests (mirrors ServosityClient's
@@ -511,7 +518,7 @@ class GraphClient
     {
         $token = $this->getToken();
 
-        $clientOptions = ['timeout' => $this->config['request_timeout']];
+        $clientOptions = ['timeout' => $this->config['request_timeout'], 'allow_redirects' => false];
         if (isset($this->config['handler'])) {
             $clientOptions['handler'] = $this->config['handler'];
         }
@@ -523,6 +530,7 @@ class GraphClient
         } catch (GuzzleException $e) {
             $this->throwFromGuzzle($e, 'GET', $url);
         }
+        $this->refuseRedirect($response, 'GET');
 
         $body = (string) $response->getBody();
         if ($body === '') {
@@ -563,6 +571,7 @@ class GraphClient
         for ($attempt = 0; ; $attempt++) {
             try {
                 $response = $this->http->request($method, $endpoint, $options);
+                $this->refuseRedirect($response, $method, $logFailure);
 
                 return $response;
             } catch (GuzzleException $e) {
@@ -648,7 +657,7 @@ class GraphClient
     {
         $token = $this->getToken();
 
-        $clientOptions = ['timeout' => $this->config['request_timeout']];
+        $clientOptions = ['timeout' => $this->config['request_timeout'], 'allow_redirects' => false];
         if (isset($this->config['handler'])) {
             $clientOptions['handler'] = $this->config['handler'];
         }
@@ -660,6 +669,7 @@ class GraphClient
         } catch (GuzzleException $e) {
             $this->throwFromGuzzle($e, $method, $url);
         }
+        $this->refuseRedirect($response, $method);
 
         $body = (string) $response->getBody();
 
@@ -823,6 +833,29 @@ class GraphClient
             preg_match('/[\x00-\x1F\x7F]/', $token) === 1 => 'control character',
             default => null,
         };
+    }
+
+    /**
+     * #5824: a Graph data request answered 3xx. Redirects are off, so Guzzle returned it as a
+     * response rather than following it or throwing. It is refused by its status alone, like
+     * any other failed request: the record (when $log) carries the method and the status, and
+     * the GraphClientException message the method and the status. The Location header is never
+     * read, parsed or recorded, and neither is the endpoint.
+     */
+    private function refuseRedirect(\Psr\Http\Message\ResponseInterface $response, string $method, bool $log = true): void
+    {
+        $status = $response->getStatusCode();
+        if ($status < 300) {
+            return;
+        }
+        if ($log) {
+            Log::error('Graph API request failed', [
+                'method' => $method,
+                'status' => $status,
+            ]);
+        }
+
+        throw new GraphClientException("Graph API error: {$method} returned {$status}", $status);
     }
 
     /**
