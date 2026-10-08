@@ -117,8 +117,10 @@ use Illuminate\Support\Sleep;
  *    itself under 'code'; a second fixed, single-line record
  *    ('refusal code for --accept-short-read') carries it under
  *    'refusal_code' (#5844, #5845). The code is a context field, not text
- *    the message places on a line, so it reads the same under any log
- *    formatter. Its error message ends with that code on a line of its
+ *    the message places on a line, so a formatter that writes context
+ *    (the default line format and JSON do) writes it as it is; a format
+ *    or handler that leaves out context shows no code at all (#5867).
+ *    Its error message ends with that code on a line of its
  *    own, nothing after it, so the line pasted as it is passes
  *    isRefusalCode() (#5786). The command prints each code as a line of
  *    its own. A Sync button flashes describe(), whose page shows each line
@@ -141,25 +143,39 @@ use Illuminate\Support\Sleep;
  *    message says the accept named another refusal. The code also binds
  *    which devices were read (#5785): it ends with a device-set digest
  *    (deviceSetDigest()), so another read with the same counts but other
- *    devices listed, or other links to release, is refused with a code of
- *    its own. A code without the digest (the shape before #5785) is
+ *    devices listed, other devices of them listed as retired or
+ *    half-retired (#5863), or other links the run could release (#5869),
+ *    is refused with a code of its own. The digest's bytes changed with
+ *    #5863 and #5869 for a read that lists a retired or half-retired
+ *    device or whose release set gained a link, so a code printed before
+ *    them for such a read no longer matches: it is refused like any other
+ *    code that names a different refusal, and the refusal prints the new
+ *    code. A code without the digest (the shape before #5785) is
  *    rejected by the command, which says to re-run and paste the new
  *    code. An empty read hashes the same however it came about, so a rule
- *    (a) accept passes only if a second device list read, a few seconds
- *    later in the same run, lists none of the client's devices either
- *    (confirmEmptyRead()). A code passes once: given more than once in a
- *    run it passes nothing, and nothing is stored between runs, so the
- *    next run checks its own read again. A passed client is synced as if the bound had not fired, and
+ *    (a) accept passes only if a second device list read, made
+ *    EMPTY_READ_RETRY_SECONDS after this client's turn in the walk comes
+ *    (so after every earlier client's detail reads and writes, not that
+ *    long after the first list read), lists none of the client's devices
+ *    either (confirmEmptyRead()). A code passes once in a run: given more
+ *    than once in one run it passes nothing. That holds within the run
+ *    only: nothing is stored between runs, so the same code passes again
+ *    on a later run whose read gives the same code. A passed client is synced as if the bound had not fired, and
  *    only once its transaction has committed is it counted in
  *    details['short_read_accepted'] and logged with the PSA client id
  *    (#5681, #5783). A code that passed nothing (another client than
  *    --client, an id not mapped, no such refusal, a code given more than
  *    once, an empty read the second read did not confirm, a client then
- *    refused as a degraded detail read, a client whose transaction rolled
- *    back, a device list read that failed so no client was examined, or a
- *    second code for a client another code passed) is
- *    listed by its PSA client id in details['short_read_accept_unused']
- *    (#5688, #5788, #5789). Nothing stores it: the
+ *    refused as a degraded detail read, a device list read that failed so
+ *    no client was examined, or a second code for a client another code
+ *    passed) is listed by its PSA client id in
+ *    details['short_read_accept_unused'] (#5688, #5788, #5789). When a
+ *    client's transaction throws, it is rolled back and the exception
+ *    reaches the caller, so no result is returned: the PSA client ids of
+ *    the codes that passed nothing (that client's, and those of clients
+ *    the walk never reached) are only in the log record '[LitsrmmAssetSync]
+ *    for each of these PSA client ids, an --accept-short-read code given
+ *    for it passed nothing' (#5868). Nothing stores it: the
  *    next run applies the bound again. The schedule and the Sync buttons
  *    never pass it. It does not override a degraded detail read.
  *  - A DEVICE THAT LEAVES loses only our link (litsrmm_device_id,
@@ -235,9 +251,11 @@ class LitsrmmAssetSyncService
 
     /**
      * #5785 (ii): an accepted rule (a) refusal (an empty read) releases only
-     * if a second device list read, this many seconds later in the same run,
-     * also lists none of the client's devices. Through the Sleep facade, so
-     * tests fake it.
+     * if a second device list read, made this many seconds after the
+     * client's turn in the run comes, also lists none of the client's
+     * devices. The turn comes after every earlier client's detail reads and
+     * writes, so the gap from the first list read can be much longer
+     * (#5865). Through the Sleep facade, so tests fake it.
      */
     public const EMPTY_READ_RETRY_SECONDS = 5;
 
@@ -337,8 +355,10 @@ class LitsrmmAssetSyncService
      * refusal it names, once: a code given more than once passes nothing
      * (#5785). A client with any code that passed nothing (a second code for
      * a client another code passed included, #5789) is listed by PSA client
-     * id in details['short_read_accept_unused']. Nothing marks a code used
-     * beyond this run.
+     * id in details['short_read_accept_unused'], and logged. When a client's
+     * transaction throws, the exception leaves this method and no result is
+     * returned, so those ids are in the log record only (#5868). Nothing
+     * marks a code used beyond this run.
      *
      * @param  list<string>  $acceptShortRead
      */
@@ -554,24 +574,46 @@ class LitsrmmAssetSyncService
     /**
      * The device-set digest that ends a refusal code (#5785): 'd' and the
      * first DIGEST_LENGTH lowercase hex digits of the sha256 of these bytes:
-     * the vendor device ids the read lists for the client (every row,
-     * retired ones included), lowercased and sorted as strings; then a line
-     * '--'; then the ids of the linked assets the read would release (the
-     * unlisted ones), sorted as integers; all joined by "\n", with no line
-     * break at the end. An empty set adds no line, so an empty read of a
-     * client whose assets 3 and 4 are linked hashes "--\n3\n4". It is a hash:
-     * the device ids themselves never reach a message, a record or a log.
+     * one line per vendor device id the read lists for the client (every
+     * row, retired ones included), lowercased and sorted as strings, a line
+     * being the id alone for a device not listed as retired, the id then
+     * ' r' for one listed as retired, and the id then ' h' for one listed as
+     * half-retired (#5863: so the code binds which listed devices are
+     * retired, not only how many); then a line '--'; then the ids of the
+     * linked assets in $assetIds, sorted as integers; all joined by "\n",
+     * with no line break at the end. An empty set adds no line, so an empty
+     * read of a client whose assets 3 and 4 are linked hashes "--\n3\n4".
+     * A read with no retired or half-retired device hashes the same bytes
+     * as before #5863. It is a hash: the device ids themselves never reach
+     * a message, a record or a log.
+     *
+     * refuseShortRead() passes as $assetIds every link the accepted run
+     * could release (#5864, #5869): the links the bound counts as unlisted,
+     * and each link whose device id the read lists while another asset of
+     * the client carries the same id (syncClient() keeps only one of them).
+     * The run may release fewer of them, not more: it relinks some unlisted
+     * links by serial or hostname, and keeps one of each duplicate.
      *
      * @param  list<string>  $deviceIds
      * @param  list<int>  $assetIds
+     * @param  list<string>  $retiredIds  listed ids the read reports retired (isRetired())
+     * @param  list<string>  $halfRetiredIds  listed ids the read reports half-retired (hasSplitRetiredState())
      */
-    public static function deviceSetDigest(array $deviceIds, array $assetIds): string
+    public static function deviceSetDigest(array $deviceIds, array $assetIds, array $retiredIds = [], array $halfRetiredIds = []): string
     {
         $deviceIds = array_map('strtolower', $deviceIds);
         sort($deviceIds, SORT_STRING);
         sort($assetIds, SORT_NUMERIC);
+        $retired = array_fill_keys(array_map('strtolower', $retiredIds), true);
+        $halfRetired = array_fill_keys(array_map('strtolower', $halfRetiredIds), true);
 
-        $bytes = implode("\n", array_merge($deviceIds, ['--'], array_map('strval', $assetIds)));
+        $lines = array_map(fn (string $id) => match (true) {
+            isset($retired[$id]) => "{$id} r",
+            isset($halfRetired[$id]) => "{$id} h",
+            default => $id,
+        }, $deviceIds);
+
+        $bytes = implode("\n", array_merge($lines, ['--'], array_map('strval', $assetIds)));
 
         return 'd'.substr(hash('sha256', $bytes), 0, self::DIGEST_LENGTH);
     }
@@ -625,13 +667,18 @@ class LitsrmmAssetSyncService
     private function refuseShortRead(Client $client, array $rows, SyncResult $result, array $acceptCodes = [], array $reused = []): array
     {
         $assets = Asset::where('client_id', $client->id)
-            ->get(['id', 'litsrmm_device_id', 'litsrmm_retired_at', 'serial_number']);
+            ->orderBy('id')
+            ->get(['id', 'litsrmm_device_id', 'litsrmm_retired_at', 'serial_number', 'is_active']);
         $links = $assets->filter(fn (Asset $a) => $a->litsrmm_device_id !== null && $a->litsrmm_retired_at === null);
 
+        // $firstCarrier: per device id, the asset syncClient() takes as its
+        // link (the first by id, a retired asset included, #5869).
         $linkedIds = [];
+        $firstCarrier = [];
         foreach ($assets as $asset) {
             if ($asset->litsrmm_device_id !== null) {
                 $linkedIds[strtolower($asset->litsrmm_device_id)] = true;
+                $firstCarrier[strtolower($asset->litsrmm_device_id)] ??= $asset->id;
             }
         }
 
@@ -649,13 +696,20 @@ class LitsrmmAssetSyncService
         $deviceSerials = [];
         $eligible = [];
         $retiredListed = 0;
+        $retiredIds = [];
+        $halfRetiredIds = [];
         foreach ($rows as $device) {
             $id = strtolower($device->id);
             $listed[$id] = true;
             if ($device->isRetired() || $device->hasSplitRetiredState()) {
                 $retiredListed++;
             }
+            if ($device->hasSplitRetiredState()) {
+                $halfRetiredIds[] = $id;
+            }
             if ($device->isRetired()) {
+                $retiredIds[$id] = true;
+
                 continue;
             }
             $liveIds[$id] = true;
@@ -689,6 +743,21 @@ class LitsrmmAssetSyncService
         });
         $unlisted = $unlistedLinks->count();
 
+        // #5869: links the bound does not count but the accepted run
+        // releases, so the digest names them too. For a listed device not
+        // retired: each asset carrying its id other than the first
+        // (syncClient() links the first and releases the rest). For a listed
+        // retired device: an asset that is not active (the retire step marks
+        // only active assets, so the release step clears its link).
+        $releasable = $unlistedLinks->merge($links->filter(function (Asset $a) use ($listed, $firstCarrier, $retiredIds) {
+            $id = strtolower($a->litsrmm_device_id);
+            if (! isset($listed[$id])) {
+                return false;
+            }
+
+            return isset($retiredIds[$id]) ? ! $a->is_active : $firstCarrier[$id] !== $a->id;
+        }));
+
         $seatsHeld = (int) License::where('client_id', $client->id)
             ->whereHas('licenseType', fn ($q) => $q->where('vendor', self::LICENSE_VENDOR))
             ->sum('quantity');
@@ -719,10 +788,13 @@ class LitsrmmAssetSyncService
             'seats_held' => $seatsHeld,
             'seats_read' => $seatsRead,
             'retired_listed' => $retiredListed,
-            // #5785: binds which devices were read and which links would go.
+            // #5785, #5863, #5869: binds which devices were read, which of
+            // them are retired or half-retired, and which links could go.
             'digest' => self::deviceSetDigest(
                 array_map(fn (LitsrmmDevice $d) => $d->id, $rows),
-                $unlistedLinks->map(fn (Asset $a) => (int) $a->id)->values()->all(),
+                $releasable->map(fn (Asset $a) => (int) $a->id)->values()->all(),
+                array_keys($retiredIds),
+                $halfRetiredIds,
             ),
         ];
         $code = self::refusalCode($context);
@@ -740,8 +812,8 @@ class LitsrmmAssetSyncService
         // The code is in the log too: a scheduled run's output goes nowhere,
         // so the log is where its refusal code is found (#5786). It is a
         // context field ('code' here, 'refusal_code' in the record below),
-        // which every formatter writes as it is (#5844); both messages are
-        // fixed and single-line (#5845).
+        // which a formatter that writes context writes as it is (#5844,
+        // #5867); both messages are fixed and single-line (#5845).
         Log::warning('[LitsrmmAssetSync] client refused: short read', $context + ['code' => $code]);
         Log::warning('[LitsrmmAssetSync] refusal code for --accept-short-read', ['client_id' => $client->id, 'refusal_code' => $code]);
         $result->details['short_read_refused'] = ($result->details['short_read_refused'] ?? 0) + 1;
@@ -751,9 +823,9 @@ class LitsrmmAssetSyncService
             ." seats {$seatsHeld} held, {$seatsRead} read; {$retiredListed} listed device(s) retired or half-retired, backing no seat)"
             .self::zeroSeatsClause($rule, $seatsHeld, $seatsRead)
             .'; nothing of this client was changed. Each run checks its own read, so a later read refused the same way'
-            .' is refused again, with a code of its own when its counts differ.'
+            .' is refused again, with a code of its own when its counts, its device set or the links it could release differ.'
             .match (true) {
-                $given => ' Its code was given to --accept-short-read more than once; a code passes one refusal once, so it was not passed.',
+                $given => ' Its code was given to --accept-short-read more than once; a code passes one refusal once in a run, so it was not passed.',
                 $acceptCodes !== [] => ' The --accept-short-read given for this client named a different refusal, so it was not passed.',
                 default => '',
             }
@@ -766,8 +838,10 @@ class LitsrmmAssetSyncService
 
     /**
      * #5785 (ii): an accepted rule (a) refusal (the read lists none of the
-     * client's devices) passes only if a second device list read,
-     * EMPTY_READ_RETRY_SECONDS later in this run, lists none of them either.
+     * client's devices) passes only if a second device list read, made
+     * EMPTY_READ_RETRY_SECONDS after this client's turn in the walk comes
+     * (#5865), lists none of them either. Only the client's devices count:
+     * other clients' rows in that read do not (#5861).
      * A digest cannot tell a real empty read from a transient one: every
      * empty read of a client with the same links hashes the same. When the
      * second read lists any device of the client, or fails, the client is
@@ -801,8 +875,11 @@ class LitsrmmAssetSyncService
 
         Log::warning('[LitsrmmAssetSync] accepted empty read not confirmed: second list read listed devices', ['client_id' => $client->id, 'listed' => $listed]);
         $result->details['short_read_refused'] = ($result->details['short_read_refused'] ?? 0) + 1;
-        $result->recordError("client {$client->id}: the accepted empty read (rule a) was not confirmed: a second device list read "
-            .self::EMPTY_READ_RETRY_SECONDS." seconds later listed {$listed} device(s), so the empty read was transient; nothing of this client was changed");
+        // #5859: the count only. A device listed now may be one enrolled
+        // since the first read, or a retired row, so this does not say the
+        // empty read was wrong; only that it was not confirmed.
+        $result->recordError("client {$client->id}: the accepted empty read (rule a) was not confirmed: a second device list read, made "
+            .self::EMPTY_READ_RETRY_SECONDS." seconds after this client's turn in the run came, listed {$listed} of its device(s); nothing of this client was changed");
 
         return false;
     }
@@ -978,7 +1055,9 @@ class LitsrmmAssetSyncService
     {
         // Live assets of THIS client only. SoftDeletes' default scope excludes
         // trashed rows, so a deleted asset can neither match nor block a match.
-        $assets = Asset::where('client_id', $client->id)->get();
+        // By id: of two assets carrying one device id the first is linked and
+        // the other released, as refuseShortRead()'s digest counts (#5869).
+        $assets = Asset::where('client_id', $client->id)->orderBy('id')->get();
 
         $linked = [];
         foreach ($assets as $asset) {

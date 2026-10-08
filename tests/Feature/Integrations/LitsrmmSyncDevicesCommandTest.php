@@ -192,15 +192,25 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
 
     // ---- #5588: refusal and drift reach the exit code, through the real sync ----
 
-    /** The real service over a fake transport: $rows on the list, $detail for every detail read. */
-    private function realSync(array $rows, array|string $detail = []): void
+    /** Device list reads the fake transport answered (#5862). */
+    private int $listReads = 0;
+
+    /**
+     * The real service over a fake transport: $rows on the list, $detail for
+     * every detail read; $laterRows, when given, on every list read after the
+     * first (#5862).
+     */
+    private function realSync(array $rows, array|string $detail = [], ?array $laterRows = null): void
     {
-        $handler = function (RequestInterface $request) use ($rows, $detail) {
+        $this->listReads = 0;
+        $handler = function (RequestInterface $request) use ($rows, $detail, $laterRows) {
             $path = $request->getUri()->getPath();
             $json = fn (array $body) => Create::promiseFor(new Response(200, ['Content-Type' => 'application/json'], json_encode($body)));
 
             if ($path === '/v1/devices') {
-                return $json(['devices' => $rows, 'nextCursor' => null]);
+                $this->listReads++;
+
+                return $json(['devices' => $this->listReads > 1 && $laterRows !== null ? $laterRows : $rows, 'nextCursor' => null]);
             }
 
             $row = collect($rows)->firstWhere('id', substr($path, strlen('/v1/devices/')));
@@ -365,7 +375,19 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $this->assertStringContainsString('each failure other than a 404 is an error that fails the run', $install);
         $this->assertStringNotContainsString('is still skips', $install);
         // #5850: why a code passed nothing, the degraded and rolled-back cases included.
-        $this->assertStringContainsString('when the client was then refused as a degraded detail read, when its changes were rolled back by an error', $install);
+        $this->assertStringContainsString('when the client was then refused as a degraded detail read, when the device list read failed', $install);
+        // #5868: a rollback prints no list; the ids are in the log record only.
+        $this->assertStringContainsString('If a client\'s changes are rolled back by an error, the run stops with that error and prints no list', $install);
+        // #5866: single use is per run.
+        $this->assertStringContainsString('Nothing marks a code used between runs, so the same code passes again on a later run', $install);
+        // #5867, #5865: no formatter-independence claim; the wait is after the client's turn.
+        $this->assertStringNotContainsString('whatever the log formatter', $install);
+        $this->assertStringContainsString('a log format that leaves out context shows no code', $install);
+        $this->assertStringNotContainsString('a few seconds later in the same run', $install);
+        $this->assertStringContainsString('made 5 seconds after that client\'s turn in the run', $install);
+        // #5863, #5869, #5864: what the digest hashes.
+        $this->assertStringContainsString('each marked when listed retired or half-retired, and of every linked asset the accepted run could release', $install);
+        $this->assertStringNotContainsString('the linked assets it would release', $install);
         $this->assertStringContainsString('`left_before_detail_read`', $install, '#5794: the renamed skip reason');
     }
 
@@ -414,7 +436,9 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
     public function test_a_code_with_a_wrong_length_digest_is_not_a_code(): void
     {
         // CONTROL: green at base 8dfd830c too (base rejected any 9th field);
-        // it kills the truncation-length and the case mutants of the shape.
+        // every sample here fails on its length, so it kills only the
+        // length mutants of the shape. The case, non-hex and missing-'d'
+        // mutants are killed by the right-length samples below (#5855).
         $client = $this->mapClient();
         $service = Mockery::mock(LitsrmmAssetSyncService::class);
         $service->shouldNotReceive('sync');
@@ -427,9 +451,29 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         }
     }
 
+    public function test_a_right_length_digest_of_the_wrong_alphabet_is_not_a_code(): void
+    {
+        // #5855: ten characters each, so only the alphabet, the case or the
+        // 'd' can reject them: uppercase hex, a non-hex letter, and ten hex
+        // with no 'd' (in place of the 'd' and in front of nine).
+        $client = $this->mapClient();
+        $service = Mockery::mock(LitsrmmAssetSyncService::class);
+        $service->shouldNotReceive('sync');
+        $this->app->instance(LitsrmmAssetSyncService::class, $service);
+
+        foreach (['d012345678A', 'dABCDEF0123', 'd012345678g', 'd01234567_9', '0123456789a', 'x0123456789'] as $digest) {
+            $this->assertFalse(LitsrmmAssetSyncService::isRefusalCode("{$client->id}:b:1:5:4:5:1:0:{$digest}"), $digest);
+            $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["{$client->id}:b:1:5:4:5:1:0:{$digest}"]])
+                ->expectsOutputToContain('takes the refusal code a short-read refusal printed')
+                ->assertFailed();
+        }
+        $this->assertTrue(LitsrmmAssetSyncService::isRefusalCode("{$client->id}:b:1:5:4:5:1:0:d0123456789"), 'the positive arm');
+    }
+
     public function test_the_accept_run_of_an_empty_read_reads_the_list_twice(): void
     {
-        // #5785 (ii) through the command: the second read confirms.
+        // #5785 (ii) through the command: the second read confirms. #5862:
+        // the two list reads are counted, not only the wait.
         $client = $this->mapClient();
         $asset = Asset::factory()->create(['client_id' => $client->id, 'litsrmm_device_id' => self::row(1)['id']]);
         $this->realSync([]);
@@ -437,6 +481,37 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => [self::emptyReadCode($client, $asset)]])
             ->assertSuccessful();
         Sleep::assertSleptTimes(1);
+        $this->assertSame(2, $this->listReads, 'the first list read and the confirming one');
         $this->assertNull($asset->fresh()->litsrmm_device_id);
+    }
+
+    public function test_a_second_list_read_that_lists_the_client_refuses_through_the_command(): void
+    {
+        // #5862: the second read differs from the first, so the command can
+        // only fail if that read was really made and really checked.
+        $client = $this->mapClient();
+        $asset = Asset::factory()->create(['client_id' => $client->id, 'litsrmm_device_id' => self::row(1)['id']]);
+        $this->realSync([], [], [self::row(1)]);
+
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => [self::emptyReadCode($client, $asset)]])
+            ->expectsOutputToContain("client {$client->id}: the accepted empty read (rule a) was not confirmed")
+            ->assertFailed();
+        $this->assertSame(2, $this->listReads);
+        $this->assertNotNull($asset->fresh()->litsrmm_device_id, 'nothing released');
+    }
+
+    public function test_the_unused_accept_causes_name_no_rolled_back_client(): void
+    {
+        // #5868: a rollback throws out of the run before report(), so the
+        // printed causes cannot include it.
+        $client = $this->mapClient();
+        $result = new SyncResult;
+        $result->details['short_read_accept_unused'] = [$client->id];
+        $this->syncReturns($result);
+
+        $this->artisan('litsrmm:sync-devices', ['--accept-short-read' => ["{$client->id}:a:0:1:1:0:0:0:d0123456789"]])
+            ->expectsOutputToContain('it was then refused as a degraded detail read, the device list read failed so no client was examined')
+            ->doesntExpectOutputToContain('rolled back')
+            ->assertSuccessful();
     }
 }

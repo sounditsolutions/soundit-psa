@@ -31,9 +31,12 @@ use Illuminate\Console\Command;
  * with exactly that rule, those counts and that device set (#5680, #5785);
  * any other refusal of the client is refused as usual. A code given twice
  * passes nothing, and an accepted empty read (rule a) passes only if a
- * second list read in the run is empty too. A code that passed nothing is
- * reported by PSA client id (#5688). It applies to that run only, nothing
- * stores it, and neither the schedule nor the Sync buttons pass it.
+ * second list read in the run lists none of that client's devices either
+ * (other clients' devices in it do not count, #5861). A code that passed
+ * nothing is reported by PSA client id (#5688); when a client's changes are
+ * rolled back the exception ends the run before anything is reported, so
+ * those ids are in the log only (#5868). It applies to that run only,
+ * nothing stores it, and neither the schedule nor the Sync buttons pass it.
  */
 class LitsrmmSyncDevices extends Command
 {
@@ -125,7 +128,7 @@ class LitsrmmSyncDevices extends Command
                 .implode(', ', $result->details['short_read_accept_unused'])
                 .', an --accept-short-read code given for it passed nothing (outside --client, not a mapped active client, its read did not refuse it with exactly that code,'
                 .' the code was given more than once, a second list read did not confirm an empty read,'
-                .' it was then refused as a degraded detail read, its changes were rolled back, the device list read failed so no client was examined,'
+                .' it was then refused as a degraded detail read, the device list read failed so no client was examined,'
                 .' or another code for the same client passed)');
         }
 
