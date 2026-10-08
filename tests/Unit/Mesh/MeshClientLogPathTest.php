@@ -17,6 +17,7 @@ use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Event;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Psr\Http\Message\RequestInterface;
+use Tests\Support\RecordsGuzzleRejections;
 use Tests\TestCase;
 
 /**
@@ -66,6 +67,8 @@ use Tests\TestCase;
  */
 class MeshClientLogPathTest extends TestCase
 {
+    use RecordsGuzzleRejections;
+
     private const HOST = 'mesh-logpath.example.test';
 
     /** The host an absolute endpoint names; not base_uri's (#5409). */
@@ -253,12 +256,14 @@ class MeshClientLogPathTest extends TestCase
             $this->fail('the 503 must throw');
         } catch (MeshClientException $e) {
             $this->assertSame(MeshClientException::class, $e::class);
-            $previous = $e->getPrevious();
-            $this->assertInstanceOf(ServerException::class, $previous);
+            // #5978: Guzzle's exception is not chained; the recorder holds
+            // what the client caught.
+            $this->assertNull($e->getPrevious(), 'the Guzzle exception is not chained (#5978)');
+            $previous = $this->lastRejection();
             $this->assertSame(ServerException::class, $previous::class);
             $this->assertSame(503, $e->getCode(), "the rethrow keeps Guzzle's code");
             // Positive control: Guzzle's own message is the unredacted one.
-            $this->assertStringContainsString('503 Service Unavailable', $previous->getMessage(), 'positive control: the chained message is Guzzle\'s');
+            $this->assertStringContainsString('503 Service Unavailable', $previous->getMessage(), 'positive control: the caught message is Guzzle\'s');
             // #5761: the rethrow's message is the log line's text, not Guzzle's.
             $this->assertSame("Mesh API error: GET {$expectedPath} failed with HTTP 503 (".ServerException::class.')', $e->getMessage());
         }
@@ -471,10 +476,11 @@ class MeshClientLogPathTest extends TestCase
                     continue;
                 }
                 $this->logged = [];
+                $this->guzzleRejections = [];
                 $client = new MeshClient(['api_key' => 'synthetic-key', 'base_url' => 'https://'.self::HOST]);
                 (new \ReflectionProperty($client, 'http'))->setValue($client, new GuzzleClient([
                     'base_uri' => 'https://'.self::HOST.'/',
-                    'handler' => HandlerStack::create($make()),
+                    'handler' => $this->recordRejections(HandlerStack::create($make())),
                     'connect_timeout' => 2,
                     'timeout' => 2,
                 ]));
@@ -482,7 +488,8 @@ class MeshClientLogPathTest extends TestCase
                     $client->get($endpoint);
                     $this->fail("{$handler} {$name}: the refused scheme must throw");
                 } catch (MeshClientException $e) {
-                    $previous = $e->getPrevious();
+                    $this->assertNull($e->getPrevious(), "{$handler} {$name}: not chained (#5978)");
+                    $previous = $this->lastRejection();
                     $this->assertSame(RequestException::class, $previous::class, "{$handler} {$name}");
                     $this->assertNull($previous->getResponse(), "{$handler} {$name}: no response");
                     $this->assertSame("The scheme '".self::USER."' is not supported.", $previous->getMessage(), "{$handler} {$name}: precondition, refused before any connection");
@@ -1330,7 +1337,7 @@ class MeshClientLogPathTest extends TestCase
             /** @var list<string> */
             public array $uris = [];
         };
-        $stack = HandlerStack::create($mock);
+        $stack = $this->recordRejections(HandlerStack::create($mock));
         $stack->push(function (callable $next) use ($seen) {
             return function (RequestInterface $r, array $o) use ($next, $seen) {
                 $seen->uris[] = (string) $r->getUri();

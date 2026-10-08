@@ -134,10 +134,16 @@ class MeshAllowRuleFaultedWordingTest extends TestCase
         $creates = $this->creates;
         $blocked = TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'blocked')->count();
         $this->approve($actor, $card)->assertSessionHas('error');
-        $this->assertSame($expected, (string) session('error'));
+        $error = (string) session('error');
+        $summary = (string) TechnicianActionLog::where('result_status', 'blocked')->latest('id')->value('summary');
+        $this->assertSame($expected, $error);
         $this->assertSame($blocked + 1, TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'blocked')->count());
-        $this->assertSame($expected, TechnicianActionLog::where('result_status', 'blocked')->latest('id')->value('summary'));
-        $this->assertStringNotContainsString('after the write reached Mesh', $expected);
+        $this->assertSame($expected, $summary);
+        // #5983: read the OUTPUT, not the expected literal.
+        foreach (['session error' => $error, 'audit summary' => $summary] as $where => $text) {
+            $this->assertStringContainsString('FAULTED', $text, "{$where}: positive control, the fault refusal was read");
+            $this->assertStringNotContainsString('after the write reached Mesh', $text, $where);
+        }
         $this->assertSame($creates, $this->creates, 'no second create');
     }
 
@@ -206,7 +212,11 @@ class MeshAllowRuleFaultedWordingTest extends TestCase
 
         $expected = "An earlier create for '".self::SENDER."' on this client was audited against no proposal and FAULTED (this refusal does not show whether a rule reached Mesh), and no PSA record can be tied to it, ".self::TAIL;
         $this->assertFaultRefusal($actor, $card, $expected);
-        $this->assertStringNotContainsString('no PSA record of it exists', $expected);
+        // #5983: read the OUTPUT, not the expected literal.
+        $error = (string) session('error');
+        $this->assertStringContainsString('no PSA record can be tied to it', $error, 'positive control: the run-less arm was read');
+        $this->assertStringNotContainsString('no PSA record of it exists', $error);
+        $this->assertStringNotContainsString('no PSA record of it exists', (string) TechnicianActionLog::where('result_status', 'blocked')->latest('id')->value('summary'));
         $this->assertSame(0, $this->creates);
     }
 

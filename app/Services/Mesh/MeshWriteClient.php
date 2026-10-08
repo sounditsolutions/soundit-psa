@@ -6,6 +6,7 @@ use GuzzleHttp\Client;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Psr7\Uri;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -113,9 +114,15 @@ class MeshWriteClient
      */
     private const NEVER_SENT_CURL_ERRNOS = [5, 6, 7, 35, 51, 60];
 
-    private Client $http;
+    /** Null when PSR-7 rejected the base URL; request() then refuses (#5991). */
+    private ?Client $http;
 
     /**
+     * #5991: a base_url PSR-7 cannot parse makes new Client() throw a
+     * MalformedUriException whose message is the raw URL (user-info
+     * included). It is not thrown here: every call then fails in request()
+     * with a status-only, client-detected MeshClientException.
+     *
      * @param  array{api_key?: string|null, base_url?: string|null}  $config
      * @param  Client|null  $http  Injectable transport (test seam).
      */
@@ -123,10 +130,14 @@ class MeshWriteClient
         private readonly array $config,
         ?Client $http = null,
     ) {
-        $this->http = $http ?? new Client([
-            'base_uri' => rtrim($this->config['base_url'] ?? 'https://hub-us.emailsecurity.app', '/').'/',
-            'timeout' => 30,
-        ]);
+        try {
+            $this->http = $http ?? new Client([
+                'base_uri' => rtrim($this->config['base_url'] ?? 'https://hub-us.emailsecurity.app', '/').'/',
+                'timeout' => 30,
+            ]);
+        } catch (\InvalidArgumentException) {
+            $this->http = null;
+        }
     }
 
     public function isConfigured(): bool
@@ -600,7 +611,12 @@ class MeshWriteClient
      * URI, the host and a summary of the vendor's response body (C-56), so it
      * goes into neither the log line nor anything a caller reports — the
      * thrown exception is upstream by construction (MeshClientException) and
-     * callers report it through statusPhrase().
+     * callers report it through statusPhrase(). The Guzzle exception is not
+     * chained (#5978): the console renderer and (string) $e, which a queue
+     * worker stores in failed_jobs, print every previous message. Before
+     * Guzzle is called, a base URL or endpoint PSR-7 cannot parse and an API
+     * key an HTTP header cannot carry are refused with nothingSent (#5984,
+     * #5985, #5991); PSR-7's own refusals quote the URI or the key.
      *
      * @param  array<string, mixed>  $options
      * @return array<string, mixed>
@@ -610,6 +626,8 @@ class MeshWriteClient
      */
     private function request(string $method, string $endpoint, array $options = []): array
     {
+        $this->preflight($method, $endpoint);
+
         $options['headers'] = [
             'API-KEY' => $this->config['api_key'] ?? '',
             'Accept' => 'application/json',
@@ -643,15 +661,17 @@ class MeshWriteClient
 
             if ($httpResponse === null
                 && in_array($neverSentErrno, self::NEVER_SENT_CURL_ERRNOS, true)) {
-                Log::error("[MeshWriteClient] {$method} ".self::logPath($endpoint).' could not connect (cURL errno '.$neverSentErrno.', '.$e::class.'); nothing was sent');
+                // #5982: the set holds name-resolution (5, 6), connect (7)
+                // and TLS (35, 51, 60) errnos, so the text names all three
+                // stages, not 'could not connect'; the errno says which.
+                $failure = "{$method} ".self::logPath($endpoint).' failed at the resolve, connect or TLS stage (cURL errno '.$neverSentErrno.', '.$e::class.'); nothing was sent';
+                Log::error("[MeshWriteClient] {$failure}");
 
-                // Upstream by construction (#5271): the Guzzle exception is
-                // chained and the client-detected flag is NOT set, so
-                // statusPhrase() never returns this message, whatever the
-                // transport's wording. nothingSent is what callers branch on.
-                // #5884: the message is built like the log line, never from
-                // Guzzle's, which quotes the request URI (user-info, host).
-                throw new MeshClientException("Mesh API unreachable: {$method} ".self::logPath($endpoint).' could not connect (cURL errno '.$neverSentErrno.', '.$e::class.'); nothing was sent.', 0, $e, nothingSent: true);
+                // Upstream by construction (#5271): the client-detected flag
+                // is NOT set, so statusPhrase() never returns this message.
+                // nothingSent is what callers branch on. #5884: built like the
+                // log line, never from Guzzle's message; #5978: not chained.
+                throw new MeshClientException("Mesh API unreachable: {$failure}.", 0, nothingSent: true);
             }
 
             if ($status === 400) {
@@ -671,13 +691,55 @@ class MeshWriteClient
 
             // #5884: status and logPath() only, as the line above; Guzzle's
             // message quotes the request URI and a vendor body summary.
+            // #5978: not chained, for the same reason.
             throw new MeshClientException("Mesh API error: {$method} ".self::logPath($endpoint).' failed with '
-                .($status > 0 ? "HTTP {$status}" : 'no HTTP status').' ('.$e::class.')', $status, $e);
+                .($status > 0 ? "HTTP {$status}" : 'no HTTP status').' ('.$e::class.')', $status);
+        } catch (\InvalidArgumentException $e) {
+            // #5985: preflight() took the endpoint and the key, so this is
+            // something else the HTTP client refused (request options or
+            // handler setup, read in the vendored Guzzle, not driven). Its
+            // message may quote a URI or a header value: class only,
+            // unchained, and no claim about what was sent, so a create
+            // stays may-have-committed and fails closed.
+            $failure = "{$method} ".self::logPath($endpoint).' failed in the HTTP client with no Mesh status recorded ('.$e::class.')';
+            Log::error("[MeshWriteClient] {$failure}");
+            throw new MeshClientException("Mesh API error: {$failure}");
         }
 
         $decoded = json_decode((string) $response->getBody(), true);
 
         return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * Refusals decided before Guzzle is called, so nothing was sent. None
+     * quotes the base URL, the endpoint or the key (#5984, #5985, #5991).
+     */
+    private function preflight(string $method, string $endpoint): void
+    {
+        if ($this->http === null) {
+            Log::error("[MeshWriteClient] {$method} ".self::logPath($endpoint).' refused: the Mesh base URL could not be parsed; nothing was sent');
+            throw new MeshClientException('The Mesh base URL could not be parsed; nothing was sent.', clientDetected: true, nothingSent: true);
+        }
+
+        try {
+            // The same parse Guzzle's Utils::uriFor() does first; its
+            // message is the raw endpoint, so it is neither logged nor chained.
+            // Every public method builds its endpoint from a constant and a
+            // rawurlencode()d id, so this is a guard, not a measured path.
+            new Uri($endpoint);
+        } catch (\InvalidArgumentException $e) {
+            // logPath() here only cuts the query, so an endpoint PSR-7 cannot
+            // parse is not quoted at all (fails closed, as MeshClient's does).
+            $failure = "{$method} [unparseable endpoint] failed with no HTTP status (".$e::class.'); nothing was sent';
+            Log::error("[MeshWriteClient] {$failure}");
+            throw new MeshClientException("Mesh API error: {$failure}.", nothingSent: true);
+        }
+
+        if (! MeshClient::isHeaderValue($this->config['api_key'] ?? '')) {
+            Log::error("[MeshWriteClient] {$method} ".self::logPath($endpoint).' refused: the Mesh API key holds a character an HTTP header cannot carry; nothing was sent');
+            throw new MeshClientException('The Mesh API key holds a character an HTTP header cannot carry; nothing was sent.', clientDetected: true, nothingSent: true);
+        }
     }
 
     /** The endpoint as a log may carry it: the path, never a query string. */

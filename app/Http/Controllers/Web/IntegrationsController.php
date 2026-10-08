@@ -1455,38 +1455,57 @@ class IntegrationsController extends Controller
             return response()->json(['success' => false, 'message' => 'API key not configured.']);
         }
 
+        // #5980: three phases, each with its own failure text, so a fault
+        // in the PSA's own settings is never reported as a Mesh failure.
+        // Every text is status and class only (#5879, C-56).
         try {
             // Resolved through the container so a test can hand it a
             // MockHandler (G-5); in production this is a plain new client.
             $client = app()->make(GuzzleClient::class, ['config' => ['timeout' => 10]]);
             $baseUrl = rtrim(MeshConfig::get('base_url'), '/');
+            $apiKey = MeshConfig::get('api_key');
+        } catch (\Throwable $e) {
+            return $this->meshTestFailure('Mesh connection test did not run: the PSA could not prepare the request ('.$e::class.'); nothing was sent.');
+        }
+
+        try {
             $response = $client->get("{$baseUrl}/api/customers/", [
                 'query' => ['_size' => 1],
                 'headers' => [
-                    'API-KEY' => MeshConfig::get('api_key'),
+                    'API-KEY' => $apiKey,
                     'Accept' => 'application/json',
                 ],
             ]);
-
-            if ($response->getStatusCode() === 200) {
-                Setting::setValue('mesh_connected_at', now()->toDateTimeString());
-
-                return response()->json(['success' => true, 'message' => 'Connected to Mesh Email Security!']);
-            }
-
-            return response()->json(['success' => false, 'message' => "Unexpected status: {$response->getStatusCode()}"]);
         } catch (\Throwable $e) {
-            // #5879: status and class only. Guzzle's message quotes the
-            // request URI (user-info, host) and a summary of the vendor body,
-            // and a MalformedUriException's is the whole URI with its
-            // password (C-56), so it reaches neither this response nor a log.
+            // #5879: Guzzle's message quotes the request URI (user-info,
+            // host) and a summary of the vendor body, and a
+            // MalformedUriException's is the whole URI with its password
+            // (C-56), so it reaches neither this response nor a log.
             $status = $e instanceof RequestException ? ($e->getResponse()?->getStatusCode() ?? 0) : 0;
-            $failure = 'Mesh connection test failed '
-                .($status > 0 ? "with HTTP {$status}" : 'without an HTTP status').' ('.$e::class.').';
-            Log::warning("[IntegrationsController] {$failure}");
 
-            return response()->json(['success' => false, 'message' => $failure]);
+            return $this->meshTestFailure('Mesh connection test failed '
+                .($status > 0 ? "with HTTP {$status}" : 'without an HTTP status').' ('.$e::class.').');
         }
+
+        if ($response->getStatusCode() !== 200) {
+            return response()->json(['success' => false, 'message' => "Unexpected status: {$response->getStatusCode()}"]);
+        }
+
+        try {
+            Setting::setValue('mesh_connected_at', now()->toDateTimeString());
+        } catch (\Throwable $e) {
+            return $this->meshTestFailure('Mesh answered the connection test with HTTP 200, but the PSA could not record the connection time ('.$e::class.').');
+        }
+
+        return response()->json(['success' => true, 'message' => 'Connected to Mesh Email Security!']);
+    }
+
+    /** A failed Mesh connection test: one warning line and the same text as JSON (#5879, #5981). */
+    private function meshTestFailure(string $failure): \Illuminate\Http\JsonResponse
+    {
+        Log::warning("[IntegrationsController] {$failure}");
+
+        return response()->json(['success' => false, 'message' => $failure]);
     }
 
     public function syncMesh()

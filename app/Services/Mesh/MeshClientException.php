@@ -15,14 +15,17 @@ use Illuminate\Support\Facades\Log;
  *    mismatch, a missing tenant or key, a refused field) is written by the
  *    PSA, quotes no vendor text, and may have happened after every call
  *    answered HTTP 200. Its throw site passes `clientDetected: true`.
- *  - Everything else is treated as UPSTREAM. MeshWriteClient::request() wraps
- *    Guzzle's message ("Mesh API error: …" or "Mesh API unreachable: …"), and
- *    that message can quote the request URI, the host and a summary of the
- *    vendor's response body (C-56), so it is not safe to surface.
+ *  - Everything else is treated as UPSTREAM. Since #5761 and #5884, the
+ *    request() throw sites of MeshClient and MeshWriteClient build their
+ *    message ("Mesh API error: …" or "Mesh API unreachable: …") from the
+ *    method, a redacted path, the HTTP status or cURL errno, and the
+ *    exception class, never from Guzzle's message, and since #5978 they do
+ *    not chain the Guzzle exception. The message is still not surfaced:
+ *    it names a route, and statusPhrase() is the reporting contract.
  *
  * The default is upstream on purpose: a throw site that forgets the flag loses
  * its own diagnosis (the report falls back to the status), but it can never
- * leak vendor text. Callers that report a failure to a person, a stored field
+ * pass its message through statusPhrase(). Callers that report a failure to a person, a stored field
  * or a log line use statusPhrase(); callers that branch on whether a request
  * left the PSA use nothingWasSent(), never the message.
  */
@@ -86,12 +89,13 @@ class MeshClientException extends \RuntimeException
      * uncaught or passed to report() (#5282). Without it the handler logs
      * getMessage() as the record message and the exception itself as context,
      * and Monolog's formatters print the message of every exception down the
-     * getPrevious() chain. MeshClient and MeshWriteClient chain the Guzzle
-     * exception there, whose message quotes the request URI, the host and a
-     * summary of the vendor's body, and which also holds the PSR-7 request
-     * (API-KEY header) and response. So this writes one status-only line by
-     * class and statusPhrase(), and returns true so the handler does not also
-     * write its default record.
+     * getPrevious() chain. The request() throw sites no longer chain the
+     * Guzzle exception (#5978), but a future throw site might, and its
+     * message quotes the request URI, the host and a summary of the vendor's
+     * body. So this writes one status-only line by class and statusPhrase(),
+     * and returns true so the handler does not also write its default record.
+     * report() does not cover the console renderer or (string) $e; not
+     * chaining is what covers those.
      */
     public function report(): bool
     {

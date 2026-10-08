@@ -5,6 +5,7 @@ namespace App\Services\Mesh;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Psr7\Uri;
 use Illuminate\Support\Facades\Log;
 
 class MeshClient
@@ -15,15 +16,27 @@ class MeshClient
     /** A host (bracketed IPv6 literal, or no ':', '[' or ']') with an optional ':' and one or more digits. */
     private const HOST_PORT = '#^(?:\[[^\]]*\]|[^:\[\]]*)(?::[0-9]+)?$#';
 
-    private Client $http;
+    /** Null when PSR-7 rejected the base URL; request() then refuses (#5991). */
+    private ?Client $http;
 
+    /**
+     * #5991: a base_url PSR-7 cannot parse makes new Client() throw a
+     * MalformedUriException whose message is the raw URL (user-info
+     * included). It is not thrown here: every call then fails in request()
+     * with a status-only, client-detected MeshClientException, inside the
+     * callers' existing catch.
+     */
     public function __construct(
         private readonly array $config,
     ) {
-        $this->http = new Client([
-            'base_uri' => rtrim($this->config['base_url'] ?? 'https://hub-us.emailsecurity.app', '/').'/',
-            'timeout' => 90,
-        ]);
+        try {
+            $this->http = new Client([
+                'base_uri' => rtrim($this->config['base_url'] ?? 'https://hub-us.emailsecurity.app', '/').'/',
+                'timeout' => 90,
+            ]);
+        } catch (\InvalidArgumentException) {
+            $this->http = null;
+        }
     }
 
     /**
@@ -116,19 +129,22 @@ class MeshClient
      * message is 'Mesh API error: ' followed by the same text as the log
      * line after its '[MeshClient] ' (method, logPath(), status, class),
      * never Guzzle's message (#5761); its code is Guzzle's. The Guzzle
-     * exception chained as its previous one is NOT redacted: its message
+     * exception is NOT chained as its previous one (#5978): its message
      * quotes the request URI (user-info, host and customer id included;
      * Guzzle masks only a parsed password) or names the user as a refused
      * scheme, plus vendor body text, and it holds the request with its
-     * API-KEY header, so never log getPrevious() or its message. An
-     * endpoint PSR-7 cannot parse (MalformedUriException, an
-     * InvalidArgumentException thrown before any handler runs) gets the
-     * same line and message with 'no HTTP status', code 0 and NO previous
-     * exception, because that exception's message is the raw endpoint
-     * (#5878).
+     * API-KEY header, and the console renderer and (string) $e (which a
+     * queue worker stores in failed_jobs) both print every previous
+     * exception's message. Before Guzzle is called, preflight() refuses an
+     * endpoint PSR-7 cannot parse (#5878: the same line and message with
+     * 'no HTTP status', code 0, and nothingSent, #5990) and an API key an
+     * HTTP header cannot carry (#5979). Any other InvalidArgumentException
+     * from the HTTP client is reported by class only, not as a Mesh status.
      */
     private function request(string $method, string $endpoint, array $options = []): array
     {
+        $this->preflight($method, $endpoint);
+
         $options['headers'] = [
             'API-KEY' => $this->config['api_key'] ?? '',
             'Accept' => 'application/json',
@@ -147,16 +163,16 @@ class MeshClient
             $failure = "{$method} ".self::logPath($endpoint).' failed with '
                 .($status > 0 ? "HTTP {$status}" : 'no HTTP status').' ('.$e::class.')';
             Log::error("[MeshClient] {$failure}");
-            throw new MeshClientException("Mesh API error: {$failure}", $e->getCode(), $e);
+            // #5978: not chained. The console renderer and (string) $e walk
+            // getPrevious(), and Guzzle's message is exactly what this hides.
+            throw new MeshClientException("Mesh API error: {$failure}", $e->getCode());
         } catch (\InvalidArgumentException $e) {
-            // #5878: an endpoint parse_url rejects makes PSR-7 throw
-            // MalformedUriException ("Unable to parse URI: <the endpoint>",
-            // user-info and password included) before any handler runs. It
-            // is an InvalidArgumentException, not a GuzzleException, so the
-            // catch above never sees it. Same status-only line and message,
-            // and it is NOT chained: its message is the raw endpoint, and no
-            // report() or renderer that walks getPrevious() may reach it.
-            $failure = "{$method} ".self::logPath($endpoint).' failed with no HTTP status ('.$e::class.')';
+            // #5979: endpoint and API key were checked in preflight(), so
+            // this is something else the HTTP client refused (the vendored
+            // Guzzle throws it for request options and handler setup; read,
+            // not driven). Its message may quote a URI or a header value, so
+            // class only, unchained, and no claim about what was sent.
+            $failure = "{$method} ".self::logPath($endpoint).' failed in the HTTP client with no Mesh status recorded ('.$e::class.')';
             Log::error("[MeshClient] {$failure}");
             throw new MeshClientException("Mesh API error: {$failure}");
         }
@@ -164,6 +180,42 @@ class MeshClient
         $body = (string) $response->getBody();
 
         return json_decode($body, true) ?? [];
+    }
+
+    /**
+     * Refusals decided before Guzzle is called, so nothing was sent (#5878,
+     * #5979, #5990, #5991). None quotes the base URL, the endpoint or the key.
+     */
+    private function preflight(string $method, string $endpoint): void
+    {
+        if ($this->http === null) {
+            Log::error("[MeshClient] {$method} ".self::logPath($endpoint).' refused: the Mesh base URL could not be parsed; nothing was sent');
+            throw new MeshClientException('The Mesh base URL could not be parsed; nothing was sent.', clientDetected: true, nothingSent: true);
+        }
+
+        try {
+            // The same parse Guzzle's Utils::uriFor() does first; its
+            // message is the raw endpoint, so it is neither logged nor chained.
+            new Uri($endpoint);
+        } catch (\InvalidArgumentException $e) {
+            $failure = "{$method} ".self::logPath($endpoint).' failed with no HTTP status ('.$e::class.')';
+            Log::error("[MeshClient] {$failure}");
+            throw new MeshClientException("Mesh API error: {$failure}", nothingSent: true);
+        }
+
+        if (! self::isHeaderValue($this->config['api_key'] ?? '')) {
+            Log::error("[MeshClient] {$method} ".self::logPath($endpoint).' refused: the Mesh API key holds a character an HTTP header cannot carry; nothing was sent');
+            throw new MeshClientException('The Mesh API key holds a character an HTTP header cannot carry; nothing was sent.', clientDetected: true, nothingSent: true);
+        }
+    }
+
+    /**
+     * What PSR-7's MessageTrait accepts as a header value (after its own
+     * trim of spaces and tabs), whose refusal quotes the value (#5979, #5985).
+     */
+    public static function isHeaderValue(mixed $value): bool
+    {
+        return is_string($value) && preg_match('/^[\x20\x09\x21-\x7E\x80-\xFF]*$/D', $value) === 1;
     }
 
     /**
