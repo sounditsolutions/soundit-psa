@@ -172,6 +172,138 @@ class StaffCalendarTokenFailureWireTest extends TestCase
         $this->assertCount(1, $this->requestsTo('login.microsoftonline.com'), 'positive control: the token request ran');
         $this->assertSame([], $this->requestsTo('graph.microsoft.com'), 'nothing reached Graph');
         $this->assertCount(1, $this->mock, 'the spare response is still queued');
+        $this->assertCount(1, $this->history, 'and nothing else was requested (#6122)');
+        $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%indeterminate%')->count());
+    }
+
+    /**
+     * #6010: the audit row keeps a 140-character slice of the real GraphTokenException message.
+     * On each getToken() arm the message is fixed text plus a status, the Guzzle exception
+     * class or a field name, so the row carries no tenant, token endpoint path, identity
+     * provider text or token. Each failure below plants all of those where Guzzle's own message
+     * or the response body would carry them.
+     *
+     * @return array<string, array{0: \Closure(): (Response|\Closure), 1: string}>
+     */
+    public static function tokenFailureMessages(): array
+    {
+        $idp = 'AADSTS7000215 B4N-SYNTHETIC-IDP-MARKER';
+
+        return [
+            'token endpoint answered 400' => [fn () => new Response(400, ['Content-Type' => 'application/json'], (string) json_encode(['error' => 'invalid_client', 'error_description' => $idp])), 'Failed to obtain Graph API token (HTTP 400)'],
+            'no response' => [fn () => fn (RequestInterface $request) => new \GuzzleHttp\Exception\ConnectException('cURL error 7: '.$idp.' '.$request->getUri(), $request), 'Failed to obtain Graph API token (GuzzleHttp\Exception\ConnectException)'],
+            'no access_token' => [fn () => new Response(200, ['Content-Type' => 'application/json'], (string) json_encode(['error_description' => $idp])), 'Graph API token response did not contain access_token'],
+            'malformed expires_in' => [fn () => new Response(200, ['Content-Type' => 'application/json'], (string) json_encode(['access_token' => self::ISSUED_ACCESS_FIXTURE, 'expires_in' => $idp])), 'Graph API token response carried a malformed expires_in'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('tokenFailureMessages')]
+    public function test_the_audit_slice_of_a_real_token_failure_carries_no_vendor_text(\Closure $failure, string $message): void
+    {
+        $ticket = Ticket::factory()->create();
+        $this->graph($failure(), self::spare());
+
+        app(StaffCalendarToolExecutor::class)->execute('calendar_cancel_event', self::writes()['cancel'][2] + ['ticket_id' => $ticket->id], 0, 'mcp-staff:chet');
+
+        $this->assertCount(1, $this->requestsTo('login.microsoftonline.com'), 'positive control: the token request ran');
+        $summaries = TechnicianActionLog::where('ticket_id', $ticket->id)->where('result_status', 'error')->pluck('summary')->all();
+        $this->assertSame(['Graph calendar write not sent (no Graph access token was obtained): '.$message], $summaries);
+        foreach (['tenant-wire6022-synthetic', 'login.microsoftonline.com', 'oauth2', 'AADSTS', 'B4N-SYNTHETIC-IDP-MARKER', 'cURL', self::ISSUED_ACCESS_FIXTURE, 'wire6022-synthetic-secret-not-real'] as $needle) {
+            $this->assertStringNotContainsString($needle, $summaries[0]);
+        }
+    }
+
+    /**
+     * #6129: an update with no body makes no getEvent() pre-read, so a cold-token failure is
+     * raised by updateEvent()'s own send, on both paths, and takes the 'not sent' arm.
+     */
+    public function test_a_cold_token_update_without_a_body_fails_on_update_events_own_send(): void
+    {
+        $arguments = ['user_upn' => self::OWNER, 'event_id' => self::EVENT_ID, 'subject' => 'Moved', 'reason' => 'Asked.'];
+        $ticket = Ticket::factory()->create();
+        $this->graph(self::tokenRefused(), self::spare());
+        $this->assertSame(
+            ['error' => 'The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar, so a retry cannot duplicate it.'],
+            app(StaffCalendarToolExecutor::class)->execute('calendar_update_event', $arguments + ['ticket_id' => $ticket->id], 0, 'mcp-staff:chet'),
+        );
+        $this->assertSame([], $this->requestsTo('graph.microsoft.com'), 'nothing reached Graph');
+        $this->assertCount(1, $this->history);
+
+        $run = $this->staged('calendar_stage_update_event', $arguments);
+        $this->graph(self::tokenRefused(), self::spare());
+        $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run, $this->approver->id);
+        $this->assertSame('The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar; the run is reopened, so re-approve to retry.', $r->message);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertCount(1, $this->history);
+
+        // Positive control: with a token, the same update sends exactly one PATCH and no GET.
+        $this->graph(self::tokenIssued(), new Response(200, ['Content-Type' => 'application/json'], (string) json_encode(['id' => self::EVENT_ID, 'subject' => 'Moved'])));
+        $this->assertSame('executed', app(StaffCalendarToolExecutor::class)->approveStagedRun($run->fresh(), $this->approver->id)->status);
+        $this->assertSame(['PATCH'], array_map(fn (RequestInterface $r) => $r->getMethod(), $this->requestsTo('graph.microsoft.com')));
+    }
+
+    /**
+     * #6121: on an update with a body, the getEvent() pre-read is sent and answered 401, and the
+     * refresh fails. Only that GET was sent, so the outcome is determinate: the staged run is
+     * reopened (CAS won) and nothing says indeterminate; the immediate path says not sent.
+     * A 500 on the pre-read is the same.
+     *
+     * @return array<string, array{0: \Closure(): list<Response>}>
+     */
+    public static function preReadFailures(): array
+    {
+        return [
+            '401, refresh fails' => [fn () => [self::tokenIssued(), new Response(401, [], '{}'), self::tokenRefused(), self::spare()]],
+            '500' => [fn () => [self::tokenIssued(), new Response(500, [], '{}'), self::spare()]],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('preReadFailures')]
+    public function test_a_failed_update_pre_read_is_not_sent_and_reopens_the_run(\Closure $responses): void
+    {
+        $run = $this->staged('calendar_stage_update_event', self::writes()['update with a body'][2]);
+        $this->graph(...$responses());
+
+        $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run, $this->approver->id);
+
+        $this->assertSame(['GET'], array_map(fn (RequestInterface $q) => $q->getMethod(), $this->requestsTo('graph.microsoft.com')), 'positive control: only the pre-read was sent');
+        $this->assertCount(1, $this->mock, 'the spare response is still queued: no PATCH');
+        $this->assertSame('gate_declined', $r->status);
+        $this->assertStringStartsWith('The calendar update was not sent: reading the event before the update failed upstream (Microsoft Graph). Nothing was written to the calendar; the run is reopened, so re-approve to retry.', (string) $r->message);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, 'not held Executing');
+        $summaries = TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->pluck('summary')->all();
+        $this->assertCount(1, $summaries);
+        $this->assertStringStartsWith('Graph calendar write not sent (the event read before the update failed): Graph API error: GET ', $summaries[0]);
+        $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%indeterminate%')->count());
+    }
+
+    /** #6121 / #6016: on the pre-read arm too, a lost CAS is not reported as a reopen. */
+    public function test_a_failed_update_pre_read_whose_release_loses_does_not_say_reopened(): void
+    {
+        $run = $this->staged('calendar_stage_update_event', self::writes()['update with a body'][2]);
+        $this->graph(self::tokenIssued(), function () use ($run) {
+            TechnicianRun::whereKey($run->id)->update(['state' => TechnicianRunState::Flagged->value]);
+
+            return new Response(500, [], '{}');
+        });
+
+        $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run, $this->approver->id);
+
+        $this->assertSame('The calendar update was not sent: reading the event before the update failed upstream (Microsoft Graph). Nothing was written to the calendar; the run was not reopened; check its current state before acting on it again.', $r->message);
+        $this->assertSame(TechnicianRunState::Flagged, $run->fresh()->state, 'positive control: the CAS lost');
+        $this->assertSame(['GET'], array_map(fn (RequestInterface $q) => $q->getMethod(), $this->requestsTo('graph.microsoft.com')));
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('preReadFailures')]
+    public function test_a_failed_immediate_update_pre_read_is_not_sent(\Closure $responses): void
+    {
+        $ticket = Ticket::factory()->create();
+        $this->graph(...$responses());
+
+        $result = app(StaffCalendarToolExecutor::class)->execute('calendar_update_event', self::writes()['update with a body'][2] + ['ticket_id' => $ticket->id], 0, 'mcp-staff:chet');
+
+        $this->assertSame(['GET'], array_map(fn (RequestInterface $q) => $q->getMethod(), $this->requestsTo('graph.microsoft.com')));
+        $this->assertSame(['error' => 'The calendar update was not sent: reading the event before the update failed upstream (Microsoft Graph). Nothing was written to the calendar, so a retry cannot duplicate it.'], $result);
         $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%indeterminate%')->count());
     }
 
@@ -224,13 +356,23 @@ class StaffCalendarTokenFailureWireTest extends TestCase
             TechnicianRun::whereKey($run->id)->update(['state' => TechnicianRunState::Flagged->value]);
 
             return self::tokenRefused();
-        });
+        }, self::spare());
 
         $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run, $this->approver->id);
 
         $this->assertSame('gate_declined', $r->status);
-        $this->assertSame('The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar; the run was not reopened (it is no longer executing); check its current state before acting on it again.', $r->message);
+        $this->assertSame('The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar; the run was not reopened; check its current state before acting on it again.', $r->message);
         $this->assertSame(TechnicianRunState::Flagged, $run->fresh()->state, 'positive control: the CAS lost');
+        // #6122: the same controls as the other wire rows.
+        $this->assertCount(1, $this->requestsTo('login.microsoftonline.com'), 'positive control: the token request ran');
+        $this->assertSame([], $this->requestsTo('graph.microsoft.com'), 'nothing reached Graph');
+        $this->assertCount(1, $this->mock, 'the spare response is still queued');
+        $this->assertCount(1, $this->history, 'and nothing else was requested');
+        $this->assertSame(
+            ['Graph calendar write not sent (no Graph access token was obtained): Failed to obtain Graph API token (HTTP 400)'],
+            TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->pluck('summary')->all(),
+        );
+        $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%indeterminate%')->count());
     }
 
     /** #6016: the same on the retry-safe create arm of an upstream failure. */
@@ -246,7 +388,7 @@ class StaffCalendarTokenFailureWireTest extends TestCase
         $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run, $this->approver->id);
 
         $this->assertSame('gate_declined', $r->status);
-        $this->assertSame('The calendar write failed upstream (Microsoft Graph); it is safe to retry (Graph de-duplicates the create by transaction id). The run was not reopened (it is no longer executing); check its current state before acting on it again.', $r->message);
+        $this->assertSame('The calendar write failed upstream (Microsoft Graph); it is safe to retry (Graph de-duplicates the create by transaction id). The run was not reopened; check its current state before acting on it again.', $r->message);
         $this->assertSame(TechnicianRunState::Flagged, $run->fresh()->state, 'positive control: the CAS lost');
     }
 

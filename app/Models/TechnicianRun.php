@@ -114,8 +114,9 @@ class TechnicianRun extends Model
     /**
      * Release a claimed run back to the queue (executing → awaiting_approval). Direct update
      * because claimForExecution bypasses dirty tracking. Returns whether the CAS won — false
-     * means the run was no longer Executing (it completed, or another releaser beat us), which
-     * lets the stale-claim reaper count only the runs it actually rescued.
+     * means the run was no longer Executing (it completed, or another releaser beat us) or is
+     * Executing under a claim this instance does not hold (#6125), which lets the stale-claim
+     * reaper count only the runs it actually rescued.
      */
     public function releaseClaim(): bool
     {
@@ -130,8 +131,18 @@ class TechnicianRun extends Model
      */
     public function releaseClaimTo(TechnicianRunState $state): bool
     {
+        // #6125: claim-owner fence. The CAS also requires the claim this instance holds: the
+        // claimed_at stamp its claimForExecution() / claimQueuedForExecution() wrote (or that
+        // it was loaded with; null for a legacy claim with no stamp). A run that was reopened
+        // and claimed again by another approver carries that claim's stamp, so a stale
+        // release from the first claimant loses instead of reopening the live claim. The
+        // stamp is stored to the second, so a re-claim within the same second as the stale
+        // claim is not told apart.
         $released = static::query()->whereKey($this->getKey())
             ->where('state', TechnicianRunState::Executing->value)
+            ->where(fn (Builder $q) => $this->claimed_at === null
+                ? $q->whereNull('claimed_at')
+                : $q->where('claimed_at', $this->claimed_at))
             ->update(['state' => $state->value]) === 1;
         // Only reflect the transition in memory when the CAS actually won — mirroring the DB so
         // the new bool contract isn't leaky (a lost CAS must not claim it moved the run).

@@ -4,6 +4,7 @@ namespace App\Services\Graph;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Psr7\Request;
 use Illuminate\Contracts\Cache\Repository as CacheInterface;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Sleep;
@@ -524,9 +525,8 @@ class GraphClient
         }
 
         try {
-            $response = (new Client($clientOptions))->request('GET', $url, [
-                'headers' => ['Authorization' => 'Bearer '.$token],
-            ]);
+            // #6120: the bearer rides on the Request object only, never in an options array.
+            $response = (new Client($clientOptions))->send((new Request('GET', $url))->withHeader('Authorization', 'Bearer '.$token));
         } catch (GuzzleException $e) {
             $this->throwFromGuzzle($e, 'GET', $url);
         }
@@ -555,9 +555,16 @@ class GraphClient
      */
     private function authenticatedRequest(string $method, string $endpoint, array $options = [], bool $logFailure = true): \Psr\Http\Message\ResponseInterface
     {
-        // #6023: the bearer is held in the local $token only and merged into the request options
-        // as an argument expression at each send. $options is never written, so this frame's
-        // arguments (which a trace captures with zend.exception_ignore_args=Off) never hold it.
+        // #6023 / #6120: the bearer is held in the local $token only. At each send (the first,
+        // the 401 retry with the refreshed token and every 429 retry) it is set on a PSR-7
+        // Request built in place and handed to Client::send() with $options, which never holds
+        // it. So no string or array argument of this frame, of Guzzle's send/sendAsync/transfer
+        // frames or of the handler stack below them holds the bearer, and a trace captured with
+        // zend.exception_ignore_args=Off (any throwable raised inside the send, Guzzle's or not)
+        // does not carry it. Below the send it is only inside the Request object, an object
+        // argument. The one call that takes it as a string is withHeader() itself, which throws
+        // only for a value tokenShapeFault() already refuses (#5738). Guzzle applies $options
+        // ('query', 'json') and the base URI to the Request exactly as request() did.
         $token = $this->getToken();
 
         $maxRetries = 3;
@@ -569,9 +576,7 @@ class GraphClient
         // RETRY_AFTER_CEILING_SECONDS.
         for ($attempt = 0; ; $attempt++) {
             try {
-                $response = $this->http->request($method, $endpoint, array_merge($options, [
-                    'headers' => array_merge($options['headers'] ?? [], ['Authorization' => 'Bearer '.$token]),
-                ]));
+                $response = $this->http->send((new Request($method, $endpoint))->withHeader('Authorization', 'Bearer '.$token), $options);
                 $this->refuseRedirect($response, $method, $endpoint, $logFailure);
 
                 return $response;
@@ -665,9 +670,8 @@ class GraphClient
         }
 
         try {
-            $response = (new Client($clientOptions))->request($method, $url, [
-                'headers' => ['Authorization' => 'Bearer '.$token],
-            ]);
+            // #6120: as requestJsonAbsolute(), the bearer is on the Request object only.
+            $response = (new Client($clientOptions))->send((new Request($method, $url))->withHeader('Authorization', 'Bearer '.$token));
         } catch (GuzzleException $e) {
             $this->throwFromGuzzle($e, $method, $url);
         }
@@ -879,10 +883,16 @@ class GraphClient
      * (user-info, host and port) are dropped, and so is the authority of a protocol-relative
      * one ('//host/...', #6079). The remaining path segments are compared against
      * OPERATION_NOUNS case-insensitively (#6068: Graph paths are case-insensitive and change
-     * notifications deliver 'Users/{id}/Messages/{id}'), and the canonical spelling of the
-     * last one that matches is returned. With no match the label is 'other'. The returned value
-     * is always one of those literals; it is never copied from the endpoint, but when an id
-     * segment happens to equal a noun, the last-match rule can pick it (#6078).
+     * notifications deliver 'Users/{id}/Messages/{id}'), each after percent-decoding (#6126:
+     * 'm%65ssages' is 'messages', as Graph reads it; an encoded '/' inside a segment stays inside
+     * it), and the canonical spelling of the last one that matches is returned. With no match
+     * the label is 'other'. A leading '///' strips only the empty authority '//' and the path
+     * after it is read as usual. The returned value is always one of those literals; it is never
+     * copied from the endpoint, but the rule does not know which segments are ids: an id (a
+     * folder, chat, message or event id) whose decoded text equals a noun in any letter case
+     * ('teams', 'Events', 'MESSAGES') is matched like the noun, and as the last match it becomes
+     * the label (#6078, #6126). Telling ids from nouns needs each endpoint's shape, which this
+     * label deliberately does not encode.
      */
     private static function operationLabel(string $endpoint): string
     {
@@ -892,7 +902,7 @@ class GraphClient
         $label = 'other';
         foreach (explode('/', $path) as $segment) {
             foreach (self::OPERATION_NOUNS as $noun) {
-                if (strcasecmp($segment, $noun) === 0) {
+                if (strcasecmp(rawurldecode($segment), $noun) === 0) {
                     $label = $noun;
                 }
             }

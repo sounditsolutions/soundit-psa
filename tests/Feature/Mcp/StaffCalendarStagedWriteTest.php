@@ -384,6 +384,17 @@ class StaffCalendarStagedWriteTest extends TestCase
         // Re-approve executes the write once (the second cancelEvent call succeeds).
         $this->assertSame('executed', $exec->approveStagedRun($run->fresh(), $this->approver->id)->status);
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+
+        // #6011: after the re-approve the run's audit trail is exactly the stage, the one
+        // not-sent error and one executed row, in that order, and one back-link note was
+        // written; nothing is double-counted.
+        $this->assertSame(
+            ['awaiting_approval', 'error', 'executed'],
+            TechnicianActionLog::where('run_id', $run->id)->orderBy('id')->pluck('result_status')->all(),
+        );
+        $this->assertSame(['Operator-approved calendar write executed.'], TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed')->pluck('summary')->all());
+        $this->assertSame(1, \App\Models\TicketNote::where('ticket_id', $ticket->id)->count(), 'one back-link note, for the one executed write');
+        $this->assertSame('already_handled', $exec->approveStagedRun($run->fresh(), $this->approver->id)->status, 'a third approve cannot re-send');
     }
 
     /**
