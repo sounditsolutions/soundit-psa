@@ -1300,11 +1300,39 @@ PROMPT;
      * The baseline for retryState: taken inside the creating transaction, after every write
      * createTicketFromLockedEmail makes to the ticket and note.
      *
-     * @return array<string, mixed>
+     * #5807: it travels in the queued job's payload (jobs.payload, and failed_jobs.payload after
+     * a failure), so it carries no content: the ticket and note rows are each reduced to a
+     * sha256 of their serialised values (retryFingerprint), the attachments to their ids.
+     *
+     * @return array{ticket?: string, note?: string|null, attachments?: list<int>}
      */
     private function retryBaseline(int $ticketId, ?int $noteId): array
     {
-        return $this->retryState($ticketId, $noteId) ?? [];
+        return self::retryFingerprint($this->retryState($ticketId, $noteId)) ?? [];
+    }
+
+    /**
+     * #5807: retryState with the ticket and note rows replaced by a sha256 of serialize() of
+     * each, so two states compare equal exactly when their rows are identical in value and type,
+     * as the !== on the rows themselves did. A row given as a hash already is kept. Public so
+     * RetryEmailAttachments re-queues a payload queued before #5807 as its fingerprint, never
+     * its raw rows.
+     *
+     * @param  array<string, mixed>|null  $state
+     * @return array{ticket: mixed, note: mixed, attachments: mixed}|null
+     */
+    public static function retryFingerprint(?array $state): ?array
+    {
+        if ($state === null) {
+            return null;
+        }
+        $hash = fn ($row) => is_array($row) ? hash('sha256', serialize($row)) : $row;
+
+        return [
+            'ticket' => $hash($state['ticket'] ?? null),
+            'note' => $hash($state['note'] ?? null),
+            'attachments' => $state['attachments'] ?? null,
+        ];
     }
 
     /**
@@ -1331,8 +1359,12 @@ PROMPT;
         if ($now['note'] === null) {
             return 'client_note_missing';
         }
+        // #5807: both sides as fingerprints; a payload queued before #5807 carries the raw rows,
+        // which are hashed the same way, so it compares as it did.
+        $now = self::retryFingerprint($now);
+        $was = self::retryFingerprint($baseline);
         foreach (['ticket' => 'ticket_changed', 'note' => 'note_changed', 'attachments' => 'attachments_changed'] as $key => $reason) {
-            if (($baseline[$key] ?? null) !== $now[$key]) {
+            if (($was[$key] ?? null) !== $now[$key]) {
                 return $reason;
             }
         }
@@ -1416,7 +1448,8 @@ PROMPT;
      *
      * Returns null when the retry linked what it read or the read had no attachments;
      * otherwise the outcome for the job's #5558 marker: the reason, whether the job may
-     * re-queue it (a refusal may; a failed read or a throw may not) and the ids left undiscarded.
+     * re-queue it (a refusal whose cause can clear may, see refusalCanClear; a failed read or a
+     * throw may not) and the ids left undiscarded.
      *
      * @param  array<string, mixed>|null  $baseline  retryBaseline() as the creating transaction left it
      * @return array{reason: string, requeueable: bool, undiscarded_attachment_ids: list<int>}|null
@@ -1449,7 +1482,7 @@ PROMPT;
             if ($change !== null) {
                 $this->warnRetrySkipped($emailId, $ticketId, $change);
 
-                return self::retryOutcome($change, true);
+                return self::retryOutcome($change, self::refusalCanClear($change));
             }
 
             $stage = 'download';
@@ -1509,7 +1542,7 @@ PROMPT;
                 $discard = $this->discardRetryStored();
                 $this->warnRetrySkipped($emailId, $ticketId, $change, $discard);
 
-                return self::retryOutcome($change, true, $discard['undiscarded_attachment_ids']);
+                return self::retryOutcome($change, self::refusalCanClear($change), $discard['undiscarded_attachment_ids']);
             }
 
             return null;
@@ -1553,6 +1586,18 @@ PROMPT;
             self::$retryLinked = $outerLinked;
             self::$retryLinkIds = $outerLinkIds;
         }
+    }
+
+    /**
+     * #5802: the refusals a later run against the same payload can find cleared: an edit to the
+     * ticket, note or their attachments that is undone, the mailbox setting restored, or model
+     * events available again in another worker. The rest (the email or ticket gone, the email
+     * moved to another ticket, no graph_id, no client note, no baseline) read the same rows or
+     * the same payload again, so they are final at the first run.
+     */
+    private static function refusalCanClear(string $reason): bool
+    {
+        return in_array($reason, ['ticket_changed', 'note_changed', 'attachments_changed', 'mailbox_unset', 'tracking_unavailable'], true);
     }
 
     /** @return array{reason: string, requeueable: bool, undiscarded_attachment_ids: list<int>} */

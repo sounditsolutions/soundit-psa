@@ -283,7 +283,55 @@ class EmailRetryCorrectnessTest extends TestCase
                     $t->assertNull($t->ticketOf()->description_html, 'nothing of the retry was written');
                 },
             ],
+            // #5807: the baseline is a hash of each row, so each column alone must still refuse.
+            'note body alone' => [
+                fn () => TicketNote::whereNotNull('email_id')->firstOrFail()->update(['body' => 'tech edit body only']),
+                'note_changed',
+                fn (self $t) => $t->assertSame('tech edit body only', TicketNote::whereNotNull('email_id')->sole()->body),
+            ],
+            'note body_html alone' => [
+                fn () => TicketNote::whereNotNull('email_id')->firstOrFail()->update(['body_html' => '<p>tech edit html only</p>']),
+                'note_changed',
+                fn (self $t) => $t->assertSame('<p>tech edit html only</p>', TicketNote::whereNotNull('email_id')->sole()->body_html),
+            ],
         ];
+    }
+
+    /** @return array<string, array{0: bool, 1: string|null}> */
+    public static function legacyBaselines(): array
+    {
+        return ['unchanged since the baseline' => [false, null], 'edited since the baseline' => [true, 'ticket_changed']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('legacyBaselines')]
+    public function test_a_payload_queued_before_5807_with_raw_rows_compares_as_before(bool $edit, ?string $reason): void
+    {
+        // #5807: a job queued before the deploy carries retryState's raw rows; it is hashed on
+        // read, so an unchanged ticket still links and an edited one is still refused.
+        Bus::fake([\App\Jobs\RetryEmailAttachments::class]); // this test drives the retry itself
+        // The edit lands during the retry's read, so the locked re-check is what refuses.
+        $this->graph([$this->failedRead(), $this->readDuring(function () use ($edit) {
+            if ($edit) {
+                Ticket::whereNotNull('id')->firstOrFail()->update(['description' => 'tech edit: legacy']);
+            }
+        })]);
+        $email = $this->email();
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+        $ticketId = (int) $email->fresh()->ticket_id;
+        $noteId = TicketNote::where('email_id', $email->id)->sole()->id;
+        $service = app(EmailService::class);
+        $raw = (fn () => $this->retryState($ticketId, $noteId))->call($service);
+        $this->assertIsArray($raw['ticket'], 'positive control: a raw, pre-#5807 baseline');
+
+        $outcome = $service->retryMessageRead($email->id, $ticketId, $noteId, $raw);
+
+        $this->assertSame(2, $this->messageReads(), 'positive control: the retry read ran');
+        $this->assertSame($reason, $outcome['reason'] ?? null);
+        if ($reason === null) {
+            $this->assertSame(TicketNote::class, Attachment::sole()->attachable_type, 'linked');
+        } else {
+            $this->assertSkipped($reason, discarded: 1);
+        }
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('editsDuringTheRetryRead')]
@@ -692,7 +740,9 @@ class EmailRetryCorrectnessTest extends TestCase
         $skipped = $this->withMessage(self::SKIPPED);
         $this->assertCount(1, $skipped);
         $this->assertSame('baseline_missing', $skipped[0]->context['reason']);
-        Bus::assertDispatched(\App\Jobs\RetryEmailAttachments::class, fn ($j) => $j->refusals === 1 && $j->baseline === null);
+        // #5802: a re-queued run would carry the same null baseline, so the refusal is final now.
+        Bus::assertNotDispatched(\App\Jobs\RetryEmailAttachments::class);
+        $this->assertSame('baseline_missing', $this->withMessage(\App\Jobs\RetryEmailAttachments::MARKER)[0]->context['reason'] ?? null);
     }
 
     public function test_a_retry_with_model_events_suppressed_is_refused_as_tracking_unavailable(): void
@@ -956,6 +1006,58 @@ class EmailRetryCorrectnessTest extends TestCase
         $skipped = $this->withMessage(self::SKIPPED);
         $this->assertSame([1, 0, [$left->id]], [$skipped[0]->context['stored_attachments'],
             $skipped[0]->context['discarded_attachments'], $skipped[0]->context['undiscarded_attachment_ids']]);
+    }
+
+    public function test_a_halted_force_delete_leaves_the_kept_rows_directory_alone(): void
+    {
+        // #5814 (mutant: deleteDirectory without the $halted guard): the kept row's directory
+        // holds a second file the model's own hook does not touch; a halted delete must not
+        // remove it, or the kept row loses what lives beside its file.
+        $this->graph([$this->failedRead(), $this->readDuring(
+            fn () => Ticket::query()->firstOrFail()->update(['description' => 'tech edit']),
+        )]);
+        $email = $this->email();
+        // It removes the row's file as the model's own hook would (as the #5718 test does), then halts.
+        Attachment::forceDeleting(function (Attachment $a) {
+            Storage::disk('local')->delete($a->storage_path);
+            Storage::disk('local')->put("attachments/{$a->id}/sidecar.txt", 'synthetic-sidecar');
+
+            return false;
+        });
+
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $left = Attachment::withTrashed()->sole();
+        $this->assertSame(["attachments/{$left->id}/sidecar.txt"], $this->storedFiles(), 'the kept row\'s directory is not removed');
+        $this->assertSame([1, 0, [$left->id]], [$this->withMessage(self::SKIPPED)[0]->context['stored_attachments'],
+            $this->withMessage(self::SKIPPED)[0]->context['discarded_attachments'], $this->withMessage(self::SKIPPED)[0]->context['undiscarded_attachment_ids']]);
+    }
+
+    public function test_a_halted_force_delete_is_never_counted_discarded_whatever_the_read_back_says(): void
+    {
+        // #5814 (mutant: $gone without its ! $halted term): a halting listener that removed the
+        // row by query itself leaves nothing to read back; the halted delete is still reported
+        // as left, not as discarded, since what the guard did is not this discard's to count.
+        $this->graph([$this->failedRead(), $this->readDuring(
+            fn () => Ticket::query()->firstOrFail()->update(['description' => 'tech edit']),
+        )]);
+        $email = $this->email();
+        $halted = null;
+        Attachment::forceDeleting(function (Attachment $a) use (&$halted) {
+            $halted = $a->id;
+            Storage::disk('local')->delete($a->storage_path);
+            DB::table('attachments')->where('id', $a->id)->delete();
+
+            return false;
+        });
+
+        app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertNotNull($halted, 'positive control: the delete was halted');
+        $this->assertSame(0, Attachment::withTrashed()->count(), 'positive control: the read-back finds no row');
+        $this->assertSame([], $this->storedFiles(), 'positive control: and no file');
+        $skipped = $this->withMessage(self::SKIPPED)[0]->context;
+        $this->assertSame([1, 0, [$halted]], [$skipped['stored_attachments'], $skipped['discarded_attachments'], $skipped['undiscarded_attachment_ids']]);
     }
 
     public function test_a_check_that_throws_after_a_successful_force_delete_reports_the_id_as_left_and_does_not_escape(): void
