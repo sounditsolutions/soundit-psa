@@ -21,7 +21,9 @@ use Tests\TestCase;
  *
  *  - 'is not configured' only for a key that is really absent: null,
  *    false, '' or only spaces and tabs (#6161).
- *  - a stored '0', 0, 0.0 or true is a value the PSA does not send; its
+ *  - a stored '0' (with or without spaces and tabs around it, which
+ *    PSR-7 trims from a header value), 0, 0.0 or true is a value the
+ *    PSA does not send; its
  *    text says it is set (MeshClient::UNUSABLE_KEY), never 'not
  *    configured' (#6161).
  *  - MeshConfig::isConfigured(), MeshWriteClient::isConfigured() and
@@ -58,9 +60,13 @@ class MeshKeyDefinitionTest extends TestCase
             'int 0' => [0, $unusable, false],
             'float 0.0' => [0.0, $unusable, false],
             'true' => [true, $unusable, false],
+            // PSR-7 trims spaces and tabs from a header value, so these
+            // would go out as '0'.
+            "' 0'" => [' 0', $unusable, false],
+            "'0' then a tab" => ["0\t", $unusable, false],
+            'spaces and a tab around 0' => [" \t0 ", $unusable, false],
             // Not degenerate: a key that merely contains or reads as zero.
             "'00'" => ['00', null, true],
-            "' 0'" => [' 0', null, true],
             'int 1' => [1, null, true],
             'plain key' => ['SECRET_FIXTURE-6161', null, true],
         ];
@@ -107,7 +113,7 @@ class MeshKeyDefinitionTest extends TestCase
     /** @return array<string, array{0: mixed}> */
     public static function unusableKeys(): array
     {
-        return ["'0'" => ['0'], 'int 0' => [0], 'true' => [true]];
+        return ["'0'" => ['0'], "' 0'" => [' 0'], "'0' then a tab" => ["0\t"], 'int 0' => [0], 'true' => [true]];
     }
 
     /**

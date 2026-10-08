@@ -53,11 +53,13 @@ class MeshConfig
     /**
      * #6161: a value IS stored, but the PSA does not send it as a key:
      * '0', 0 or 0.0 (which the old empty() test counted as missing) and
-     * true (which would be sent as '1'). Reported as set but unusable,
-     * never as 'not configured'.
+     * true (which would be sent as '1'). A string is trimmed of spaces
+     * and tabs first, as apiKeyMissing() trims it, because PSR-7 trims
+     * them from a header value: ' 0' or "0\t" would go out as '0'.
+     * Reported as set but unusable, never as 'not configured'.
      */
     public static function apiKeyUnusable(mixed $key): bool
     {
-        return $key === true || $key === '0' || $key === 0 || $key === 0.0;
+        return $key === true || $key === 0 || $key === 0.0 || (is_string($key) && trim($key, " \t") === '0');
     }
 }
