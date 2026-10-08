@@ -196,7 +196,8 @@ class GraphClientExceptionMessageTest extends TestCase
 
     /**
      * #5661 / #5673: on a failure with no response, throwFromGuzzle writes exactly one record:
-     * the method, status 0 and the Guzzle exception class. Guzzle's message (cURL text and the
+     * the method, the operation label (#5671; 'messages', the query cut off), status 0 and the
+     * Guzzle exception class. Guzzle's message (cURL text and the
      * request URI) is in no part of it, and no other record is written on any logger (#5742).
      */
     public function test_the_no_response_record_is_method_status_zero_and_exception_class(): void
@@ -210,11 +211,11 @@ class GraphClientExceptionMessageTest extends TestCase
 
         $records = $this->logs->getRecords();
         $this->assertSame(
-            [['ERROR', 'Graph API request failed', ['method' => 'GET', 'status' => 0, 'exception' => ConnectException::class]]],
+            [['ERROR', 'Graph API request failed', ['method' => 'GET', 'operation' => 'messages', 'status' => 0, 'exception' => ConnectException::class]]],
             array_map(fn (LogRecord $r) => [$r->level->getName(), $r->message, $r->context], $records),
         );
         $this->assertSame(
-            [['error', 'Graph API request failed', ['method' => 'GET', 'status' => 0, 'exception' => ConnectException::class]]],
+            [['error', 'Graph API request failed', ['method' => 'GET', 'operation' => 'messages', 'status' => 0, 'exception' => ConnectException::class]]],
             array_map(fn (MessageLogged $m) => [$m->level, $m->message, $m->context], $this->logged),
             'every record on any logger (#5742)',
         );

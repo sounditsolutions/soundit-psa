@@ -331,7 +331,7 @@ class TeamsMessageAttachmentsTest extends TestCase
         // #5660: every record on this arm, GraphClient's throwFromGuzzle record included, is
         // pinned and scanned.
         $this->assertEveryRecord([
-            [Level::Error, 'Graph API request failed', ['method' => 'GET', 'status' => 403]],
+            [Level::Error, 'Graph API request failed', ['method' => 'GET', 'operation' => 'messages', 'status' => 403]],
             [Level::Warning, self::ATTACHMENT_READ_FAILED, $failures[0]->context],
         ], $logs);
         $this->assertNoVendorText($logs->getRecords(), $r);
@@ -397,7 +397,7 @@ class TeamsMessageAttachmentsTest extends TestCase
 
         $this->assertCount(1, $this->graphPaths(), 'positive control: the Graph read was sent');
         $this->assertEveryRecord([
-            [Level::Error, 'Graph API request failed', ['method' => 'GET', 'status' => 0, 'exception' => \GuzzleHttp\Exception\ConnectException::class]],
+            [Level::Error, 'Graph API request failed', ['method' => 'GET', 'operation' => 'messages', 'status' => 0, 'exception' => \GuzzleHttp\Exception\ConnectException::class]],
             [Level::Warning, self::ATTACHMENT_READ_FAILED, ['chat_id' => self::CHAT, 'stage' => 'message', 'status' => 0]],
         ], $logs);
         $this->assertNoVendorText($logs->getRecords(), $r);
@@ -791,7 +791,7 @@ class TeamsMessageAttachmentsTest extends TestCase
         // #5660: every record on this arm, GraphClient's throwFromGuzzle record included, is
         // pinned and scanned; the refreshed bearer is live here.
         $this->assertEveryRecord([
-            [Level::Error, 'Graph API request failed', ['method' => 'GET', 'status' => 401]],
+            [Level::Error, 'Graph API request failed', ['method' => 'GET', 'operation' => 'messages', 'status' => 401]],
             [Level::Warning, self::ATTACHMENT_READ_FAILED, $failures[0]->context],
         ], $logs);
         $this->assertNoVendorText($logs->getRecords(), $r);

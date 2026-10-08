@@ -1614,30 +1614,31 @@ class EmailItemAttachmentTest extends TestCase
         return $hits;
     }
 
-    /** @return array<string, array{0: \Closure, 1: list<Response>, 2: string, 3: string, 4: bool}> */
+    /** @return array<string, array{0: \Closure, 1: list<Response>, 2: string, 3: string, 4: bool, 5: string}> */
     public static function otherGraphCallFailures(): array
     {
         $fail = fn () => new Response(500, [], json_encode(['error' => ['code' => 'InternalServerError', 'message' => self::GRAPH_ERROR_TEXT]]));
 
-        // [call, responses, method, the failing request's URI, whether the path holds the mailbox]
+        // [call, responses, method, the failing request's URI, whether the path holds the mailbox,
+        // the record's operation label (#5671)]
         return [
-            'get' => [fn (GraphClient $g) => $g->get('users/MSG-OWNER/messages'), [$fail()], 'GET', 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/messages', false],
-            'post' => [fn (GraphClient $g) => $g->post('users/MSG-OWNER/sendMail', ['x' => 1]), [$fail()], 'POST', 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/sendMail', false],
-            'patch' => [fn (GraphClient $g) => $g->patch('users/MSG-OWNER/messages/MSG-1', ['isRead' => true]), [$fail()], 'PATCH', 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/messages/MSG-1', false],
-            'delete' => [fn (GraphClient $g) => $g->delete('users/MSG-OWNER/messages/MSG-1'), [$fail()], 'DELETE', 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/messages/MSG-1', false],
-            'getRaw' => [fn (GraphClient $g) => $g->getRaw('users/MSG-OWNER/photo/$value'), [$fail()], 'GET', 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/photo/$value', false],
-            'message read (expand)' => [fn (GraphClient $g) => $g->getMessageAttachments(self::MAILBOX, 'MSG-1'), [$fail()], 'GET', 'https://graph.microsoft.com/v1.0/users/support@example.test/messages/MSG-1?%24expand=attachments', true],
-            'calendar event' => [fn (GraphClient $g) => $g->getEvent('MSG-OWNER', 'EVT-1'), [$fail()], 'GET', 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/events/EVT-1', false],
+            'get' => [fn (GraphClient $g) => $g->get('users/MSG-OWNER/messages'), [$fail()], 'GET', 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/messages', false, 'messages'],
+            'post' => [fn (GraphClient $g) => $g->post('users/MSG-OWNER/sendMail', ['x' => 1]), [$fail()], 'POST', 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/sendMail', false, 'sendMail'],
+            'patch' => [fn (GraphClient $g) => $g->patch('users/MSG-OWNER/messages/MSG-1', ['isRead' => true]), [$fail()], 'PATCH', 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/messages/MSG-1', false, 'messages'],
+            'delete' => [fn (GraphClient $g) => $g->delete('users/MSG-OWNER/messages/MSG-1'), [$fail()], 'DELETE', 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/messages/MSG-1', false, 'messages'],
+            'getRaw' => [fn (GraphClient $g) => $g->getRaw('users/MSG-OWNER/photo/$value'), [$fail()], 'GET', 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/photo/$value', false, 'photo'],
+            'message read (expand)' => [fn (GraphClient $g) => $g->getMessageAttachments(self::MAILBOX, 'MSG-1'), [$fail()], 'GET', 'https://graph.microsoft.com/v1.0/users/support@example.test/messages/MSG-1?%24expand=attachments', true, 'messages'],
+            'calendar event' => [fn (GraphClient $g) => $g->getEvent('MSG-OWNER', 'EVT-1'), [$fail()], 'GET', 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/events/EVT-1', false, 'events'],
             // The failing request is the absolute nextLink URL (checked against the history).
             'nextLink page' => [fn (GraphClient $g) => $g->getAllPages('users/MSG-OWNER/messages'), [
                 new Response(200, ['Content-Type' => 'application/json'], json_encode(['value' => [], '@odata.nextLink' => 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/messages?$skip=10'])),
                 $fail(),
-            ], 'GET', 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/messages?$skip=10', false],
+            ], 'GET', 'https://graph.microsoft.com/v1.0/users/MSG-OWNER/messages?$skip=10', false, 'messages'],
         ];
     }
 
     #[DataProvider('otherGraphCallFailures')]
-    public function test_other_graph_call_failure_still_writes_the_request_failed_error(\Closure $call, array $responses, string $method, string $uri, bool $pathHoldsMailbox): void
+    public function test_other_graph_call_failure_still_writes_the_request_failed_error(\Closure $call, array $responses, string $method, string $uri, bool $pathHoldsMailbox, string $operation): void
     {
         $graph = $this->graph($responses);
 
@@ -1655,9 +1656,9 @@ class EmailItemAttachmentTest extends TestCase
         $record = $failed[0];
         $this->assertSame(Level::Error, $record->level);
         $this->assertSame([$method, 500], [$record->context['method'] ?? null, $record->context['status'] ?? null]);
-        // #5533: exactly method and status, and no needle anywhere in the record. Any new key or
-        // any needle in any part fails here.
-        $this->assertSame(['method' => $method, 'status' => 500], $record->context);
+        // #5533 / #5671: exactly method, operation label and status, and no needle anywhere in the
+        // record. Any new key or any needle in any part fails here.
+        $this->assertSame(['method' => $method, 'operation' => $operation, 'status' => 500], $record->context);
         $this->assertSame([], $this->graphFailureLeaks($record), '#5533: the record carries no forbidden needle');
         // Positive control: the failure this record reports did carry the needles, in the request
         // path ($pathHoldsMailbox) and in Graph's body; the record leaves them out.
@@ -1693,8 +1694,8 @@ class EmailItemAttachmentTest extends TestCase
             [['ERROR', 'Graph API request failed'], ['WARNING', '[AttachmentService] Failed to fetch email attachments']],
             array_map(fn (LogRecord $r) => [$r->level->getName(), $r->message], $records),
         );
-        // #5533: GraphClient's record is status-only.
-        $this->assertSame(['method' => 'GET', 'status' => 500], $records[0]->context);
+        // #5533 / #5671: GraphClient's record is status-only plus the endpoint-free operation label.
+        $this->assertSame(['method' => 'GET', 'operation' => 'messages', 'status' => 500], $records[0]->context);
         $this->assertSame([], $this->graphFailureLeaks($records[0]), '#5533: GraphClient record');
         // b4i / C-56: AttachmentService::downloadEmailAttachments' message-read catch logs ids,
         // the HTTP status and the exception class only; the exception message is not a carrier
