@@ -2588,6 +2588,10 @@ class LitsrmmAssetSyncTest extends TestCase
         $this->assertFalse(LitsrmmAssetSyncService::isRefusalCode('12:b:1:5:4:5:1:0:d0123456789.'));
         $this->assertTrue(LitsrmmAssetSyncService::isRefusalCode('12:b:1:5:4:5:1:0:d0123456789'));
         $this->assertTrue(LitsrmmAssetSyncService::isRefusalCode('12:d:0:0:0:10:0:0:dabcdef0123'));
+        // #5785: anchored to the shape with the digest; the old shape is not a code.
+        $this->assertFalse(LitsrmmAssetSyncService::isRefusalCode('12:b:1:5:4:5:1:0'));
+        $this->assertTrue(LitsrmmAssetSyncService::isPreDigestRefusalCode('12:b:1:5:4:5:1:0'));
+        $this->assertFalse(LitsrmmAssetSyncService::isPreDigestRefusalCode('12:b:1:5:4:5:1:0:d0123456789'));
     }
 
     public function test_exactly_half_the_reads_answering_404_is_reported_and_keeps_every_link(): void
@@ -2680,7 +2684,8 @@ class LitsrmmAssetSyncTest extends TestCase
 
     public function test_the_digest_names_no_device_id(): void
     {
-        // C-56: a hash, never the ids it is made from.
+        // C-56: a hash, never the ids it is made from. CONTROL: green at
+        // base 8dfd830c too (no digest then); it guards the new field.
         Log::spy();
         $this->linkedAssets(5);
         $this->service()->sync();
@@ -2777,6 +2782,7 @@ class LitsrmmAssetSyncTest extends TestCase
     public function test_an_accepted_link_rule_needs_no_second_read(): void
     {
         // Only rule (a) is confirmed: a digest binds any non-empty read.
+        // CONTROL: green at base 8dfd830c too (no second read then).
         $this->linkedAssets(5);
         $this->service()->sync();
         $this->rows = array_slice($this->rows, 0, 1);
@@ -2815,6 +2821,8 @@ class LitsrmmAssetSyncTest extends TestCase
     {
         // Two links, both unlisted (rule c; (b) never fires at 2); the read
         // lists one agentless device, so it would write 0 of 2 seats.
+        // CONTROL: green at base 8dfd830c too; #5846 is a test gap, and this
+        // kills the mutant that limits the warning to rules (a) and (b).
         $assets = $this->linkedAssets(2);
         $this->service()->sync();
         $this->rows = [];

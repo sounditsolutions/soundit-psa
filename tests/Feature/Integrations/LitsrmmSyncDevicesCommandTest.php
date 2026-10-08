@@ -413,6 +413,8 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
 
     public function test_a_code_with_a_wrong_length_digest_is_not_a_code(): void
     {
+        // CONTROL: green at base 8dfd830c too (base rejected any 9th field);
+        // it kills the truncation-length and the case mutants of the shape.
         $client = $this->mapClient();
         $service = Mockery::mock(LitsrmmAssetSyncService::class);
         $service->shouldNotReceive('sync');
