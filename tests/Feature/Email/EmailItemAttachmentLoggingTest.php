@@ -514,7 +514,7 @@ class EmailItemAttachmentLoggingTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('tokenRefreshFailures')]
-    public function test_401_refresh_failure_on_a_logging_caller_writes_a_status_only_record(\Closure $tokenFailure): void
+    public function test_401_refresh_failure_on_a_logging_caller_writes_a_label_and_status_record(\Closure $tokenFailure): void
     {
         // getMessageAttachments keeps logFailure=true and puts the raw mailbox in its endpoint.
         $graph = $this->graph([$this->graph401(), $tokenFailure()]);
@@ -534,7 +534,8 @@ class EmailItemAttachmentLoggingTest extends TestCase
         $failed = $this->withMessage('Graph API request failed');
         $this->assertCount(1, $failed, 'logFailure=true: the arm writes its record');
         $this->assertSame(Level::Error, $failed[0]->level);
-        $this->assertSame(['method' => 'GET', 'status' => 401, 'token_refresh' => 'failed'], $failed[0]->context);
+        // #6075: the record carries the operation label as the other two arms' records do.
+        $this->assertSame(['method' => 'GET', 'operation' => 'messages', 'status' => 401, 'token_refresh' => 'failed'], $failed[0]->context);
         foreach ($this->refreshArmSecrets() as $needle) {
             $this->assertStringNotContainsString($needle, $thrown->getMessage());
         }
@@ -677,6 +678,11 @@ class EmailItemAttachmentLoggingTest extends TestCase
             'Graph API request failed', '[AttachmentService] Failed to fetch email attachments',
             \App\Jobs\RetryEmailAttachments::MARKER,
         ], $loud);
+        // #6081: and each failed read's GraphClient record is pinned exactly, label included.
+        $this->assertSame(
+            array_fill(0, 2, [Level::Error, ['method' => 'GET', 'operation' => 'messages', 'status' => 503]]),
+            array_map(fn (LogRecord $r) => [$r->level, $r->context], $this->withMessage('Graph API request failed')),
+        );
         $this->assertSame('read_failed', $this->withMessage(\App\Jobs\RetryEmailAttachments::MARKER)[0]->context['reason'] ?? null);
         $this->assertSame(1, TicketNote::where('ticket_id', $ticket->id)->where('note_type', 'system')->where('is_private', true)->count(), '#5558: the ticket carries the marker note');
     }

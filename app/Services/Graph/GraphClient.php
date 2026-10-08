@@ -530,7 +530,7 @@ class GraphClient
         } catch (GuzzleException $e) {
             $this->throwFromGuzzle($e, 'GET', $url);
         }
-        $this->refuseRedirect($response, 'GET');
+        $this->refuseRedirect($response, 'GET', $url);
 
         $body = (string) $response->getBody();
         if ($body === '') {
@@ -555,11 +555,10 @@ class GraphClient
      */
     private function authenticatedRequest(string $method, string $endpoint, array $options = [], bool $logFailure = true): \Psr\Http\Message\ResponseInterface
     {
+        // #6023: the bearer is held in the local $token only and merged into the request options
+        // as an argument expression at each send. $options is never written, so this frame's
+        // arguments (which a trace captures with zend.exception_ignore_args=Off) never hold it.
         $token = $this->getToken();
-
-        $options['headers'] = array_merge($options['headers'] ?? [], [
-            'Authorization' => 'Bearer '.$token,
-        ]);
 
         $maxRetries = 3;
 
@@ -570,8 +569,10 @@ class GraphClient
         // RETRY_AFTER_CEILING_SECONDS.
         for ($attempt = 0; ; $attempt++) {
             try {
-                $response = $this->http->request($method, $endpoint, $options);
-                $this->refuseRedirect($response, $method, $logFailure);
+                $response = $this->http->request($method, $endpoint, array_merge($options, [
+                    'headers' => array_merge($options['headers'] ?? [], ['Authorization' => 'Bearer '.$token]),
+                ]));
+                $this->refuseRedirect($response, $method, $endpoint, $logFailure);
 
                 return $response;
             } catch (GuzzleException $e) {
@@ -593,11 +594,12 @@ class GraphClient
                         // this call unless another process cached a value in between (#5830).
                         // This
                         // arm never goes through throwFromGuzzle. With $logFailure its record
-                        // carries exactly three fields: method, status (401) and token_refresh
-                        // ('failed').
+                        // carries exactly four fields: method, operation (operationLabel(), as on
+                        // the other two arms; #6075), status (401) and token_refresh ('failed').
                         if ($logFailure) {
                             Log::error('Graph API request failed', [
                                 'method' => $method,
+                                'operation' => self::operationLabel($endpoint),
                                 'status' => 401,
                                 'token_refresh' => 'failed',
                             ]);
@@ -605,7 +607,7 @@ class GraphClient
 
                         throw new GraphTokenRefreshFailedException($method, $tokenFailure);
                     }
-                    $options['headers']['Authorization'] = 'Bearer '.$freshToken;
+                    $token = $freshToken;
 
                     continue;
                 }
@@ -669,7 +671,7 @@ class GraphClient
         } catch (GuzzleException $e) {
             $this->throwFromGuzzle($e, $method, $url);
         }
-        $this->refuseRedirect($response, $method);
+        $this->refuseRedirect($response, $method, $url);
 
         $body = (string) $response->getBody();
 
@@ -837,12 +839,13 @@ class GraphClient
 
     /**
      * #5824: a Graph data request answered 3xx. Redirects are off, so Guzzle returned it as a
-     * response rather than following it or throwing. It is refused by its status alone, like
-     * any other failed request: the record (when $log) carries the method and the status, and
-     * the GraphClientException message the method and the status. The Location header is never
-     * read, parsed or recorded, and neither is the endpoint.
+     * response rather than following it or throwing. It is refused by its status alone: the
+     * record (when $log) carries the method, the operation label (operationLabel() of the
+     * request path or nextLink, as throwFromGuzzle's does; #6075) and the status, and the
+     * GraphClientException message the method and the status. The Location header is never
+     * read, parsed or recorded, and the endpoint is read only by operationLabel().
      */
-    private function refuseRedirect(\Psr\Http\Message\ResponseInterface $response, string $method, bool $log = true): void
+    private function refuseRedirect(\Psr\Http\Message\ResponseInterface $response, string $method, string $endpoint, bool $log = true): void
     {
         $status = $response->getStatusCode();
         if ($status < 300) {
@@ -851,6 +854,7 @@ class GraphClient
         if ($log) {
             Log::error('Graph API request failed', [
                 'method' => $method,
+                'operation' => self::operationLabel($endpoint),
                 'status' => $status,
             ]);
         }
@@ -859,8 +863,9 @@ class GraphClient
     }
 
     /**
-     * #5671: Graph resource nouns that may name a failed request's operation in a log record.
-     * Only these literals ever reach the record.
+     * #5671: the Graph resource nouns and actions ('sendMail', 'reply') that may name a failed
+     * request's operation in a log record, each in its canonical spelling. The record's
+     * 'operation' is one of these literals or the fallback 'other' (#6070).
      */
     private const OPERATION_NOUNS = [
         'messages', 'attachments', 'mailFolders', 'sendMail', 'reply', 'events', 'calendar',
@@ -870,21 +875,26 @@ class GraphClient
 
     /**
      * #5671 / C-56: an endpoint-free operation label for a request path or an absolute URL. The
-     * query and fragment are cut off and, for an absolute URL, the scheme and host are dropped.
-     * The remaining path segments are compared exactly against OPERATION_NOUNS, and the last
-     * one that matches is returned. With no match the label is 'other'. The returned value is
-     * always one of those literals, never a segment taken from the endpoint.
+     * query and fragment are cut off. For an absolute URL the scheme and the whole authority
+     * (user-info, host and port) are dropped, and so is the authority of a protocol-relative
+     * one ('//host/...', #6079). The remaining path segments are compared against
+     * OPERATION_NOUNS case-insensitively (#6068: Graph paths are case-insensitive and change
+     * notifications deliver 'Users/{id}/Messages/{id}'), and the canonical spelling of the
+     * last one that matches is returned. With no match the label is 'other'. The returned value
+     * is always one of those literals; it is never copied from the endpoint, but when an id
+     * segment happens to equal a noun, the last-match rule can pick it (#6078).
      */
     private static function operationLabel(string $endpoint): string
     {
         $path = preg_split('/[?#]/', $endpoint, 2)[0];
-        $path = preg_replace('#^[A-Za-z][A-Za-z0-9+.\-]*://[^/]*#', '', $path);
+        $path = preg_replace('#^(?:[A-Za-z][A-Za-z0-9+.\-]*:)?//[^/]*#', '', $path);
 
         $label = 'other';
         foreach (explode('/', $path) as $segment) {
-            $noun = array_search($segment, self::OPERATION_NOUNS, true);
-            if ($noun !== false) {
-                $label = self::OPERATION_NOUNS[$noun];
+            foreach (self::OPERATION_NOUNS as $noun) {
+                if (strcasecmp($segment, $noun) === 0) {
+                    $label = $noun;
+                }
             }
         }
 
@@ -906,14 +916,14 @@ class GraphClient
             $responseBody = json_decode((string) $e->getResponse()->getBody(), true);
         }
 
-        // #5533 / #5679 / C-56: the record carries the method, the operation label and the status, and the exception
-        // message the method and either the status or that no response arrived. Neither carries
-        // the endpoint (it holds the mailbox on users/ paths, and the nextLink URL on
+        // #5533 / #5679 / #5671 / C-56: the record carries the method, the status and
+        // 'operation', a label from operationLabel() (one of OPERATION_NOUNS or 'other'; the
+        // refuseRedirect and 401-refresh records carry it too, #6075), and the exception message
+        // the method and either the status or that no response arrived. Neither carries the
+        // endpoint (it holds the mailbox on users/ paths, and the nextLink URL on
         // requestAbsolute) or Guzzle's message (the request URI and the start of Graph's response
         // body). Graph's decoded body stays on getResponseBody() for a caller that reads it on
         // purpose.
-        // #5671: the record also carries 'operation', a label from operationLabel(): one of
-        // OPERATION_NOUNS or 'other', never a segment of the endpoint itself.
         // #5673 / #5723: with no response (status 0) the record also carries the Guzzle exception
         // class, the only cause it can carry; it is a class name, never Guzzle's text.
         if ($log) {

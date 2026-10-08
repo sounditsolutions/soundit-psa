@@ -20,7 +20,9 @@ use Tests\TestCase;
  *
  * @odata.nextLink) never follow a redirect. A 3xx is refused by its status alone: one request,
  * a GraphClientException "Graph API error: <method> returned <status>" with that status, and
- * the same record a failed request writes (method and status). The Location appears in no
+ * a 'Graph API request failed' record with the method, the operation label and the status
+ * (#6075: the same keys throwFromGuzzle's record carries, without its status-0 exception
+ * class). The Location appears in no
  * message or record, a 307/308 POST body is never replayed, and an unparseable Location no
  * longer escapes as psr7's MalformedUriException (which is not a GuzzleException).
  *
@@ -100,26 +102,26 @@ class GraphClientDataRedirectTest extends TestCase
     }
 
     /**
-     * @return array<string, array{0: string, 1: \Closure(GraphClient): mixed}> [method, call]. One per
-     *                                                                          public data path; the
-     *                                                                          nextLink case reaches
-     *                                                                          the per-call client.
+     * @return array<string, array{0: string, 1: \Closure(GraphClient): mixed, 2: string}> [method, call, label]. One per
+     *                                                                                     public data path; the
+     *                                                                                     nextLink case reaches
+     *                                                                                     the per-call client.
      */
     private static function calls(): array
     {
         return [
-            'get' => ['GET', fn (GraphClient $g) => $g->get('users/'.self::MAILBOX.'/messages/MSG-1')],
-            'post (sendMail body)' => ['POST', fn (GraphClient $g) => $g->post('users/'.self::MAILBOX.'/sendMail', ['message' => ['subject' => self::BODY_MARKER]])],
-            'getRaw' => ['GET', fn (GraphClient $g) => $g->getRaw('users/'.self::MAILBOX.'/photo/$value')],
-            'getMessageAttachmentRaw' => ['GET', fn (GraphClient $g) => $g->getMessageAttachmentRaw(self::MAILBOX, 'MSG-1', 'ATT-1')],
-            'createEvent (requestJson)' => ['POST', fn (GraphClient $g) => $g->createEvent(self::MAILBOX, ['subject' => self::BODY_MARKER])],
+            'get' => ['GET', fn (GraphClient $g) => $g->get('users/'.self::MAILBOX.'/messages/MSG-1'), 'messages'],
+            'post (sendMail body)' => ['POST', fn (GraphClient $g) => $g->post('users/'.self::MAILBOX.'/sendMail', ['message' => ['subject' => self::BODY_MARKER]]), 'sendMail'],
+            'getRaw' => ['GET', fn (GraphClient $g) => $g->getRaw('users/'.self::MAILBOX.'/photo/$value'), 'photo'],
+            'getMessageAttachmentRaw' => ['GET', fn (GraphClient $g) => $g->getMessageAttachmentRaw(self::MAILBOX, 'MSG-1', 'ATT-1'), 'attachments'],
+            'createEvent (requestJson)' => ['POST', fn (GraphClient $g) => $g->createEvent(self::MAILBOX, ['subject' => self::BODY_MARKER]), 'events'],
         ];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('redirects')]
     public function test_a_graph_data_request_refuses_a_redirect_by_its_status(int $status, array $headers): void
     {
-        foreach (self::calls() as $name => [$method, $call]) {
+        foreach (self::calls() as $name => [$method, $call, $label]) {
             $graph = $this->graph(new Response($status, $headers, ''), self::ok(), self::ok());
             try {
                 $call($graph);
@@ -134,7 +136,7 @@ class GraphClientDataRedirectTest extends TestCase
             $this->assertSame($status, $this->history[0]['response']->getStatusCode(), "{$name}: positive control: the 3xx itself was read");
 
             $records = array_map(fn (MessageLogged $m) => [$m->level, $m->message, $m->context], $this->logged);
-            $expected = $name === 'getMessageAttachmentRaw' ? [] : [['error', 'Graph API request failed', ['method' => $method, 'status' => $status]]];
+            $expected = $name === 'getMessageAttachmentRaw' ? [] : [['error', 'Graph API request failed', ['method' => $method, 'operation' => $label, 'status' => $status]]];
             $this->assertSame($expected, $records, "{$name}: the record is a failed request's");
 
             $scan = $e->getMessage().' '.implode(' ', array_map(fn (MessageLogged $m) => $m->message.' '.self::flattenForScan($m->context), $this->logged));
@@ -158,7 +160,7 @@ class GraphClientDataRedirectTest extends TestCase
         }
         $this->assertCount(2, $this->history, 'the first page and the refused nextLink; nothing followed');
         $this->assertSame(
-            [['error', 'Graph API request failed', ['method' => 'GET', 'status' => 307]]],
+            [['error', 'Graph API request failed', ['method' => 'GET', 'operation' => 'messages', 'status' => 307]]],
             array_map(fn (MessageLogged $m) => [$m->level, $m->message, $m->context], $this->logged),
         );
     }
@@ -175,6 +177,11 @@ class GraphClientDataRedirectTest extends TestCase
             $this->assertSame('Graph API error: GET returned 302', $e->getMessage());
         }
         $this->assertCount(2, $this->history);
+        // #6075: the refused requestJsonAbsolute page's record names the calendarView operation.
+        $this->assertSame(
+            [['error', 'Graph API request failed', ['method' => 'GET', 'operation' => 'calendarView', 'status' => 302]]],
+            array_map(fn (MessageLogged $m) => [$m->level, $m->message, $m->context], $this->logged),
+        );
     }
 
     /**

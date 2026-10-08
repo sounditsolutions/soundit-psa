@@ -18,9 +18,12 @@ use Tests\Support\FlattensLogContext;
 use Tests\TestCase;
 
 /**
- * #5671 / C-56: throwFromGuzzle's 'Graph API request failed' record carries an endpoint-free
- * 'operation' label: an allowlisted Graph resource noun, the last one among the path's
- * segments, or 'other'. It never carries a mailbox, an id, the query or a nextLink host.
+ * #5671 / C-56: the 'Graph API request failed' record carries an endpoint-free 'operation'
+ * label: the canonical spelling of an allowlisted Graph noun or action, the last one among the
+ * path's segments matched case-insensitively (#6068), or 'other'. The value is always one of
+ * those literals, so it never copies a mailbox, the query, the fragment or a nextLink host
+ * (protocol-relative included, #6079). An id that equals a noun can still be picked by the
+ * last-match rule (#6078); the label is then a wrong literal, not endpoint text.
  *
  * G-5: GraphClient runs over a scripted MockHandler (the per-call nextLink client too) with
  * Http::preventStrayRequests() on. Every value is synthetic (G-13). Records are read from
@@ -97,9 +100,13 @@ class GraphClientOperationLabelTest extends TestCase
     }
 
     /**
-     * @return array<string, array{0: string, 1: string, 2: string}> [method, endpoint, label].
-     *                                                               Endpoints are the shapes
-     *                                                               GraphClient's callers send.
+     * [method, endpoint, label]. Most rows are shapes GraphClient's callers build; the rows
+     * after 'hosted content' are synthetic probes of the query and fragment cut, case folding,
+     * the 'other' fallback and an id that only contains a noun (#6073). A query in an endpoint
+     * passed to get() is not sent (get() replaces it with ['query' => $params]); it reaches the
+     * label only as written, which is what these rows exercise.
+     *
+     * @return array<string, array{0: string, 1: string, 2: string}>
      */
     public static function endpoints(): array
     {
@@ -118,18 +125,47 @@ class GraphClientOperationLabelTest extends TestCase
             'subscriptions' => ['POST', 'subscriptions', 'subscriptions'],
             'chat message' => ['GET', 'chats/19:synthetic5671@thread.v2/messages/1700000000000', 'messages'],
             'hosted content' => ['GET', 'chats/CHAT-1/messages/MSG-1/hostedContents/HC-1/$value', 'hostedContents'],
-            // The query is cut off: 'attachments' after '?' is not a path segment, so the label
-            // is the path's last noun, 'events', not 'attachments'.
-            'query carries a later noun' => ['GET', "users/{$m}/events/EVT-1?\$expand=attachments", 'events'],
+            // #6069: every allowlisted noun is produced by at least one row
+            // (test_every_allowlisted_noun_is_produced_by_a_row checks it).
+            'mail folder' => ['GET', "users/{$m}/mailFolders/inbox", 'mailFolders'],
+            'schedule' => ['POST', "users/{$m}/calendar/getSchedule", 'calendar'],
+            'calendar view' => ['GET', "users/{$m}/calendarView", 'calendarView'],
+            'chat' => ['GET', 'chats/CHAT-1', 'chats'],
+            'team' => ['GET', 'teams/TEAM-1', 'teams'],
+            'channel' => ['GET', 'teams/TEAM-1/channels/CHAN-1', 'channels'],
+            'group' => ['GET', 'groups/GRP-1', 'groups'],
+            // #6066: the query is cut off. Without the cut, '?x=/messages' would split into a
+            // later 'messages' segment, so this row kills a mutant that drops the cut.
             'query after a bare noun' => ['GET', 'subscriptions?x=/messages', 'subscriptions'],
+            'query after an id' => ['GET', "users/{$m}/events/EVT-1?x=/attachments", 'events'],
+            // #6067: the fragment is cut off the same way.
+            'fragment after an id' => ['GET', "users/{$m}/events/EVT-1#/attachments", 'events'],
+            // #6068: segments match case-insensitively and the label is the canonical spelling.
+            'capitalised webhook resource' => ['GET', "Users/{$m}/Messages/{$id}", 'messages'],
+            'upper case' => ['GET', "USERS/{$m}/MAILFOLDERS/inbox", 'mailFolders'],
+            'mixed case action' => ['POST', "users/{$m}/SENDMAIL", 'sendMail'],
+            'lower case of a camel noun' => ['GET', 'chats/CHAT-1/messages/MSG-1/hostedcontents/HC-1', 'hostedContents'],
             // No allowlisted noun: the literal 'other', not a segment.
             'no noun' => ['GET', "organization/{$id}/branding", 'other'],
             'id that contains a noun' => ['GET', 'users/messages-5671/notAResource', 'users'],
         ];
     }
 
+    /**
+     * #6086: every id in endpoints() and the request's other synthetic values; none may reach
+     * any record.
+     *
+     * @return list<string>
+     */
+    private static function endpointNeedles(): array
+    {
+        return [self::MAILBOX, self::MESSAGE_ID, 'users/', 'example.test', '?', '#', '$', 'SUB-5671', 'synthetic5671', 'thread.v2',
+            '1700000000000', 'CHAT-1', 'MSG-1', 'HC-1', 'EVT-1', 'ATT-1', 'TEAM-1', 'CHAN-1', 'GRP-1', 'messages-5671', 'notAResource',
+            'branding', 'inbox', 'getSchedule', 'Users', 'USERS', 'Messages'];
+    }
+
     #[DataProvider('endpoints')]
-    public function test_the_failed_request_record_names_an_allowlisted_operation(string $method, string $endpoint, string $label): void
+    public function test_the_failed_request_record_names_an_allowlisted_operation_or_other(string $method, string $endpoint, string $label): void
     {
         $graph = $this->graph(self::failure(500));
         try {
@@ -144,14 +180,69 @@ class GraphClientOperationLabelTest extends TestCase
         }
         $this->assertCount(1, $this->history, 'positive control: the request was sent');
 
-        $this->assertSame([['method' => $method, 'operation' => $label, 'status' => 500]], $this->failedContexts());
-        $this->assertSame([], $this->needlesInAnyRecord([self::MAILBOX, self::MESSAGE_ID, 'users/', 'example.test', '?', '$']));
+        // #6086: the only record, at ERROR, with its exact context.
+        $this->assertSame(
+            [['error', 'Graph API request failed', ['method' => $method, 'operation' => $label, 'status' => 500]]],
+            array_map(fn (MessageLogged $m) => [$m->level, $m->message, $m->context], $this->logged),
+        );
+        $this->assertSame([], $this->needlesInAnyRecord(self::endpointNeedles()));
+    }
+
+    /**
+     * #6069: each OPERATION_NOUNS entry is the expected label of at least one endpoints() row,
+     * so a typo in or deletion of any entry turns that row red. 'other' is produced too.
+     */
+    public function test_every_allowlisted_noun_is_produced_by_a_row(): void
+    {
+        $nouns = (new \ReflectionClassConstant(GraphClient::class, 'OPERATION_NOUNS'))->getValue();
+        $produced = array_unique(array_column(self::endpoints(), 2));
+        $this->assertSame([], array_values(array_diff($nouns, $produced)), 'nouns no row produces');
+        $this->assertSame(['other'], array_values(array_diff($produced, $nouns)), 'labels outside the allowlist');
+        $this->assertCount(16, $nouns, 'positive control: the allowlist as #5671 landed it');
+    }
+
+    /**
+     * #6079: a protocol-relative nextLink ('//host/...') has its authority dropped too, so a
+     * single-label host spelled as a noun ('teams') is not the label. Guzzle sends it as
+     * http://teams/... (positive control below). This also kills a mutant that removes the
+     * authority strip without resting on the https single-label test (#6072).
+     */
+    public function test_a_protocol_relative_next_link_host_is_not_the_label(): void
+    {
+        $graph = $this->graph(self::page('//teams/v1.0/organization/ORG-5671/branding'), self::failure(500));
+        try {
+            $graph->getAllPages('users/'.self::MAILBOX.'/messages');
+            $this->fail('no throw');
+        } catch (GraphClientException) {
+        }
+        $this->assertSame('teams', $this->history[1]['request']->getUri()->getHost(), 'positive control: the nextLink host was requested');
+        $this->assertSame([['method' => 'GET', 'operation' => 'other', 'status' => 500]], $this->failedContexts());
+    }
+
+    /**
+     * #6080: the calendar paginator's nextLink page (requestJsonAbsolute) labels its failure
+     * from the proven graph.microsoft.com URL: 'calendarView', with no host, mailbox or cursor.
+     */
+    public function test_a_calendar_next_link_failure_is_labelled_calendar_view(): void
+    {
+        $next = sprintf('https://graph.microsoft.com/v1.0/users/%s/calendarView?$skiptoken=%s', self::MAILBOX, self::SKIP_CURSOR);
+        $graph = $this->graph(self::page($next), self::failure(503));
+        try {
+            $graph->calendarView(self::MAILBOX, '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z');
+            $this->fail('no throw');
+        } catch (GraphClientException) {
+        }
+        $this->assertCount(2, $this->history, 'positive control: the nextLink was requested');
+        $this->assertSame([['method' => 'GET', 'operation' => 'calendarView', 'status' => 503]], $this->failedContexts());
+        $this->assertSame([], $this->needlesInAnyRecord([self::MAILBOX, self::SKIP_CURSOR, 'graph.microsoft.com', 'v1.0']));
     }
 
     /**
      * The needle case from the brief: a mailbox-bearing message path and an absolute nextLink on
-     * another host give labels carrying neither the mailbox, the id nor the host. The nextLink's
-     * host and query each carry an allowlisted noun, so a label taken from either would show.
+     * another host give labels carrying neither the mailbox, the id nor the host. The query
+     * carries a later noun ('/attachments'), so a label taken from it would show. The dotted
+     * host is one segment that never equals a noun, so this test does not exercise the
+     * authority strip (#6072); the single-label and protocol-relative host tests do.
      */
     public function test_a_next_link_label_ignores_the_host_and_the_query(): void
     {

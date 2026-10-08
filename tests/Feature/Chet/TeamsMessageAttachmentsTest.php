@@ -747,10 +747,11 @@ class TeamsMessageAttachmentsTest extends TestCase
         ], $failures[0]->context);
 
         // #5512 / #5516: every record on this arm, read. getToken()'s ERROR is status-only and
-        // GraphClient's refresh-failure ERROR carries exactly method, status and token_refresh.
+        // GraphClient's refresh-failure ERROR carries exactly method, the operation label (#6075),
+        // status and token_refresh.
         $this->assertSame([
             [Level::Error, 'Graph API token request failed', ['status' => 400, 'exception' => ClientException::class]],
-            [Level::Error, 'Graph API request failed', ['method' => 'GET', 'status' => 401, 'token_refresh' => 'failed']],
+            [Level::Error, 'Graph API request failed', ['method' => 'GET', 'operation' => 'messages', 'status' => 401, 'token_refresh' => 'failed']],
             [Level::Warning, self::ATTACHMENT_READ_FAILED, $failures[0]->context],
         ], array_map(fn (LogRecord $rec) => [$rec->level, $rec->message, $rec->context], $logs->getRecords()));
         // #5622: and Laravel's logger wrote nothing else, on any channel or on-demand logger.

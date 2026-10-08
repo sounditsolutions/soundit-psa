@@ -30,7 +30,8 @@ use Tests\TestCase;
  * getHttpStatus() and getResponseBody() are unchanged.
  *
  * #5661: throwFromGuzzle's record on a failure with no response (status 0) is pinned too: the
- * method, status 0 and the Guzzle exception class (#5673), nothing else. It is read from the
+ * method, the operation label (#5671), status 0 and the Guzzle exception class (#5673),
+ * nothing else (#6071). It is read from the
  * configured channels' TestHandler and from a MessageLogged listener, which also sees an
  * on-demand or stacked logger (#5742, as #5622), and scanned through FlattensLogContext so a
  * 'users/' value or a Throwable in context is visible (#5733).
@@ -200,7 +201,7 @@ class GraphClientExceptionMessageTest extends TestCase
      * Guzzle exception class. Guzzle's message (cURL text and the
      * request URI) is in no part of it, and no other record is written on any logger (#5742).
      */
-    public function test_the_no_response_record_is_method_status_zero_and_exception_class(): void
+    public function test_the_no_response_record_is_method_operation_status_zero_and_exception_class(): void
     {
         $graph = $this->graph(new ConnectException('cURL error 7: refused for https://graph.microsoft.com/v1.0/users/'.self::MAILBOX.'/messages/MSG-1', new Request('GET', 'x')));
         try {

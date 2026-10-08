@@ -81,7 +81,9 @@ trait FlattensLogContext
 
     /**
      * #5678: every argument of every frame of $e and of each getPrevious() link, as getTrace()
-     * holds them. getTrace() holds function arguments only when zend.exception_ignore_args was
+     * holds them, within two bounds (#6019): at most 8 links ($e and 7 previous ones) are read,
+     * and an array nested more than 8 levels deep is written as the literal '<depth>' and not
+     * walked, so a needle beyond either bound is not seen. getTrace() holds function arguments only when zend.exception_ignore_args was
      * Off when the exception was created; with it On only an include/require frame keeps its
      * file path. A string or other scalar is written as it is and an array is walked key by key
      * (an Authorization header in an $options array is found). An object argument is written as

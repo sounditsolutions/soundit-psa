@@ -94,14 +94,26 @@ class GraphWebhookManagerLoggingTest extends TestCase
     }
 
     /**
-     * #5671: 'subscriptions/' (an endpoint carrying a subscription id), not the bare noun, which
-     * is now the failed request's operation label.
+     * #6065: the bare 'subscriptions' (createSubscription's endpoint carries no id, so
+     * 'subscriptions/' would miss it). The failed request's 'operation' label is the same
+     * literal, so recordsCarryingANeedle() leaves out exactly that key when its value is the
+     * label, and graphFailedRecords() pins it exactly instead.
      *
      * @return list<string>
      */
     private static function needles(): array
     {
-        return [self::MAILBOX, rawurlencode(self::MAILBOX), 'support@', 'users/', self::GRAPH_ERROR_TEXT, 'Graph API error', 'subscriptions/'];
+        return [self::MAILBOX, rawurlencode(self::MAILBOX), 'support@', 'users/', self::GRAPH_ERROR_TEXT, 'Graph API error', 'subscriptions'];
+    }
+
+    /** $context without an 'operation' key whose value is exactly the 'subscriptions' label. */
+    private static function withoutLabel(array $context): array
+    {
+        if (($context['operation'] ?? null) === 'subscriptions') {
+            unset($context['operation']);
+        }
+
+        return $context;
     }
 
     /** @return list<array{0: string, 1: array<string, mixed>}> [level, context] of each 'Graph API request failed' record */
@@ -137,7 +149,7 @@ class GraphWebhookManagerLoggingTest extends TestCase
     {
         $out = [];
         foreach ($this->logged as $m) {
-            $carried = self::carried($m->message.' '.self::flattenForScan($m->context));
+            $carried = self::carried($m->message.' '.self::flattenForScan(self::withoutLabel($m->context)));
             if ($carried !== []) {
                 $out[] = ["{$m->level} {$m->message}", $carried];
             }
@@ -230,6 +242,34 @@ class GraphWebhookManagerLoggingTest extends TestCase
         $old = json_encode(['mailbox' => self::MAILBOX, 'error' => 'Graph API error: POST subscriptions returned 400']);
         $this->assertContains(self::MAILBOX, self::carried((string) $old));
         $this->assertContains('Graph API error', self::carried((string) $old));
+        $this->assertContains('subscriptions', self::carried((string) $old), '#6065: the bare create endpoint is a needle again');
+    }
+
+    /**
+     * #6084 positive control: after a real failing create, a planted record carrying the bare
+     * create URI, a subscription-id endpoint, or an 'operation' that is not exactly the label,
+     * turns the 'any record' scan red on 'subscriptions'; the real label alone does not.
+     */
+    public function test_the_any_record_scan_fails_on_a_planted_subscriptions_endpoint(): void
+    {
+        $manager = $this->manager(self::graphError(400));
+        try {
+            $manager->createSubscription();
+        } catch (GraphClientException) {
+        }
+        $this->assertSame([['error', ['method' => 'POST', 'operation' => 'subscriptions', 'status' => 400]]], $this->graphFailedRecords(), 'positive control: the real record carries the label');
+        $this->assertSame([], $this->recordsCarryingANeedle(), 'clean before the plant');
+        $real = count($this->logged);
+
+        foreach ([
+            'bare create URI' => ['error' => 'POST https://graph.microsoft.com/v1.0/subscriptions resulted in a 400'],
+            'subscription id endpoint' => ['endpoint' => 'subscriptions/'.self::SUBSCRIPTION_ID],
+            'operation that is not the label' => ['operation' => 'subscriptions/'.self::SUBSCRIPTION_ID],
+        ] as $name => $context) {
+            $this->logged = array_slice($this->logged, 0, $real);
+            $this->logged[] = new MessageLogged('error', 'Graph API request failed', $context);
+            $this->assertSame([['error Graph API request failed', ['subscriptions']]], $this->recordsCarryingANeedle(), $name);
+        }
     }
 
     /**

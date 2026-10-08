@@ -46,10 +46,19 @@ use Illuminate\Support\Str;
 class StaffCalendarToolExecutor
 {
     /**
-     * #5833: the audit summary prefix for a GraphTokenException. getToken() runs before every
-     * Graph request, so on this arm the write request was never sent.
+     * #5833: the audit summary prefix for a GraphTokenException. authenticatedRequest() calls
+     * getToken() once before it sends anything, so on this arm the write request was never
+     * sent. A token failure on the 401 refresh, after a request was sent, is a
+     * GraphTokenRefreshFailedException, a sibling class that takes the indeterminate arm
+     * (#6014, #6015).
      */
     private const TOKEN_FAILURE_AUDIT = 'Graph calendar write not sent (no Graph access token was obtained): ';
+
+    /**
+     * #6016: the decline tail when releaseClaim() returned false: the run had already left
+     * Executing (another path moved it), so it was not reopened and a re-approve is not offered.
+     */
+    private const NOT_REOPENED = 'the run was not reopened (it is no longer executing); check its current state before acting on it again.';
 
     public function __construct(private readonly GraphClient $graph) {}
 
@@ -450,9 +459,10 @@ class StaffCalendarToolExecutor
 
             return ['error' => $e->getMessage()];
         } catch (GraphTokenException $e) {
-            // #5833: getToken() failed. It runs at the start of every Graph request, so the write
+            // #5833: getToken() failed before authenticatedRequest() sent anything, so the write
             // request was never sent and nothing can have reached the calendar: a determinate
-            // failure, not the indeterminate outcome below.
+            // failure, not the indeterminate outcome below. A refresh failure after a sent
+            // request is GraphTokenRefreshFailedException, which is not caught here (#6014).
             $this->safeAudit($directTool, 'error', $ticket, $contentHash, self::TOKEN_FAILURE_AUDIT.mb_substr($e->getMessage(), 0, 140), $actorLabel);
 
             return ['error' => 'The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar, so a retry cannot duplicate it.'];
@@ -907,19 +917,23 @@ class StaffCalendarToolExecutor
             } catch (GraphTokenException $e) {
                 // #5833: no token, so the write request was never sent and nothing committed.
                 // Release the claim as on the refusal above; re-approving cannot double-send.
+                // #6016: the text says the run is reopened only when releaseClaim()'s CAS won.
                 $this->safeAudit($run->action_type, 'error', $ticket, $run->content_hash, self::TOKEN_FAILURE_AUDIT.mb_substr($e->getMessage(), 0, 140), $this->approverLabel($approverId), $run->id, $approverId);
-                $run->releaseClaim();
+                $reopened = $run->releaseClaim();
 
-                return $this->declined('The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar; the run is reopened, so re-approve to retry.');
+                return $this->declined('The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar; '
+                    .($reopened ? 'the run is reopened, so re-approve to retry.' : self::NOT_REOPENED));
             } catch (GraphClientException $e) {
                 // review contract:1: the outcome is INDETERMINATE — a 15s timeout or a post-POST
                 // shape-drift can leave a non-idempotent write already committed, so "nothing changed,
                 // re-approve to retry" can double-send. Only create is retry-safe (transactionId).
                 $this->safeAudit($run->action_type, 'error', $ticket, $run->content_hash, 'Graph calendar write failed/timed out at approval (indeterminate outcome): '.mb_substr($e->getMessage(), 0, 140), $this->approverLabel($approverId), $run->id, $approverId);
                 if ($this->isRetrySafe($directTool)) {
-                    $run->releaseClaim();
+                    // #6016: 'Re-approve' only when releaseClaim()'s CAS won.
+                    $reopened = $run->releaseClaim();
 
-                    return $this->declined('The calendar write failed upstream (Microsoft Graph); it is safe to retry (Graph de-duplicates the create by transaction id). Re-approve to retry.');
+                    return $this->declined('The calendar write failed upstream (Microsoft Graph); it is safe to retry (Graph de-duplicates the create by transaction id). '
+                        .($reopened ? 'Re-approve to retry.' : ucfirst(self::NOT_REOPENED)));
                 }
 
                 // Non-idempotent + indeterminate: do NOT reopen to AwaitingApproval — leave the run
