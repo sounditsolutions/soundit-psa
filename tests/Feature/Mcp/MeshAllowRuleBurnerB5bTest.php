@@ -16,6 +16,7 @@ use App\Services\Mesh\MeshClientException;
 use App\Services\Mesh\MeshWriteClient;
 use App\Support\McpConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Testing\TestResponse;
 use Mockery;
 use Tests\TestCase;
@@ -51,19 +52,31 @@ class MeshAllowRuleBurnerB5bTest extends TestCase
     private const PERMANENT_UNTIL_NO_ID = 'the PSA holds no upstream rule id for it, so mesh_edit_allow_rule cannot give it a date, mesh_remove_allow_rule would not close this record, and the expiry job never removes a rule with no expiry; this PSA record keeps blocking new allow rules for this sender until someone checks the rule in the Mesh portal and clears the record by hand';
 
     /**
-     * G-5 (#5651, #5656): Mesh is never reached from this file. MeshClient
+     * G-5 (#5651, #5656, #5753): Http is faked and stray requests are
+     * prevented for anything that goes through the Http facade. MeshClient
      * and MeshWriteClient build their own Guzzle clients, so neither the
-     * Http fake nor preventStrayRequests() sees their traffic; the guard is
-     * at the container instead. Both are bound to Mockery doubles with no
-     * expectations, so any call a test did not set up throws. A test that
-     * needs MeshWriteClient replaces its double with one carrying
-     * expectations (mockWrite()).
+     * Http fake nor preventStrayRequests() sees their traffic; their guard
+     * is at the container instead. Both are bound to Mockery doubles with
+     * no expectations. A call a double was not set up for throws AT THE
+     * CALL; a path that catches Throwable can turn that throw into a
+     * refusal the test never sees, so the doubles prove no real Mesh
+     * traffic left the box, not that every stray call fails a test (#5757).
+     * A test that needs MeshWriteClient replaces its double with one
+     * carrying expectations (mockWrite()).
      */
     protected function setUp(): void
     {
         parent::setUp();
+        Http::fake([]);
+        Http::preventStrayRequests();
         $this->app->instance(MeshClient::class, Mockery::mock(MeshClient::class));
         $this->app->instance(MeshWriteClient::class, Mockery::mock(MeshWriteClient::class));
+    }
+
+    protected function tearDown(): void
+    {
+        Http::assertNothingSent();
+        parent::tearDown();
     }
 
     private const ONE_ID_ONLY = 'That proves only that the rule this record tracked is gone; the PSA has not checked whether any other rule for this sender is in force on the tenant.';

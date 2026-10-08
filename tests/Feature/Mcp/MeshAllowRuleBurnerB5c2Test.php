@@ -33,9 +33,12 @@ use Tests\TestCase;
  *    the expiry job's promise executed where the arm makes one.
  *
  * Mesh is reached only through container doubles: MeshWriteClient's
- * carries each test's expectations and MeshClient's has none, so any
- * unexpected call throws (G-5, #5651; their Guzzle traffic never reaches
- * the Http facade, whose fake covers only facade requests). Synthetic data
+ * carries each test's expectations and MeshClient's has none (G-5, #5651;
+ * their Guzzle traffic never reaches the Http facade, whose fake covers
+ * only facade requests). An unexpected call throws AT THE CALL; a path that
+ * catches Throwable can turn that throw into a refusal the test never sees,
+ * so the doubles prove no real Mesh traffic left the box, not that every
+ * stray call fails a test (#5757). Synthetic data
  * only (G-13): example.test senders and tenants, no client names.
  */
 class MeshAllowRuleBurnerB5c2Test extends TestCase

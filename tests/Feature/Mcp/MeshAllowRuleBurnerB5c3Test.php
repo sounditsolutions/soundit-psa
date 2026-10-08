@@ -16,6 +16,7 @@ use App\Services\Mesh\MeshWriteClient;
 use App\Support\McpConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Testing\TestResponse;
 use Mockery;
 use Tests\TestCase;
@@ -34,8 +35,13 @@ use Tests\TestCase;
  *  - #5648 / #5640: the remove card's unlinked match is this tenant, an
  *    open state, exactly one record, case-exact; the delivery caveat stays.
  *
- * G-5: MeshClient and MeshWriteClient are container doubles; any call a
- * test did not set up throws. Synthetic data only (G-13).
+ * G-5 (#5753, #5757): Http is faked with stray requests prevented, and
+ * MeshClient and MeshWriteClient (which bypass the Http facade) are
+ * container doubles. A call a double was not set up for throws AT THE
+ * CALL; a path that catches Throwable can turn that throw into a refusal
+ * the test never sees, so the doubles prove no real Mesh traffic left the
+ * box, not that every stray call fails a test. write() counts creates for
+ * that reason. Synthetic data only (G-13).
  */
 class MeshAllowRuleBurnerB5c3Test extends TestCase
 {
@@ -56,7 +62,7 @@ class MeshAllowRuleBurnerB5c3Test extends TestCase
 
     private const CAVEAT = 'The PSA cannot prove it tracks this rule, and the comment can be edited in the Mesh portal, so the rule may have been set up outside this system: removing it may break mail delivery that is working today. ';
 
-    private const FOREIGN = 'This rule is FOREIGN: the PSA did not create it and holds no record of it.';
+    private const FOREIGN = 'This rule is FOREIGN: this client holds no PSA record under this rule id, and the PSA cannot match it by its exact sender and comment to exactly one open PSA record of this client on this tenant, so the PSA cannot show that it created this rule.';
 
     private const SAME_SECOND = 'In the same second this card was staged (the PSA records these times only to the second, so it cannot say which came first), ';
 
@@ -67,8 +73,16 @@ class MeshAllowRuleBurnerB5c3Test extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        Http::fake([]);
+        Http::preventStrayRequests();
         $this->app->instance(MeshClient::class, Mockery::mock(MeshClient::class));
         $this->app->instance(MeshWriteClient::class, Mockery::mock(MeshWriteClient::class));
+    }
+
+    protected function tearDown(): void
+    {
+        Http::assertNothingSent();
+        parent::tearDown();
     }
 
     private function configure(): User
@@ -255,15 +269,17 @@ class MeshAllowRuleBurnerB5c3Test extends TestCase
             "another proposal for '".self::SENDER."' on this client was approved and wrote PSA record #{$record->id} (now in state 'reaped')");
 
         MeshAllowRule::query()->delete();
+        // #5747: a hand-deleted record is a fact about now; the text no
+        // longer says the create left no record.
         $this->assertRefusedSinceStaging($actor, $cardC,
-            "another proposal for '".self::SENDER."' on this client was approved and its create left no PSA record");
+            "another proposal for '".self::SENDER."' on this client was approved, and no PSA record of its create exists now");
         $this->assertSame(1, $this->creates);
     }
 
     /**
      * #5653 (contract:7): a run-less 'executed' create (HAND-WRITTEN audit
-     * row, run_id null, as a direct-mode write would leave it) after the
-     * card was staged. Inside the window the dedup refuses it as "no
+     * row, run_id null; mesh_add_allow_rule is staged-only, so no verb
+     * writes one) after the card was staged. Inside the window the dedup refuses it as "no
      * record"; this card waited past the window, and the since-staging fact
      * still refuses and closes it rather than letting a second create run.
      */
@@ -284,7 +300,7 @@ class MeshAllowRuleBurnerB5c3Test extends TestCase
         ]));
         TechnicianActionLog::create([
             'actor_id' => $actor->id,
-            'actor_label' => 'direct',
+            'actor_label' => 'hand-written',
             'action_type' => 'mesh_add_allow_rule',
             'tier' => \App\Enums\TechnicianTier::Approve->value,
             'result_status' => 'executed',
@@ -296,8 +312,9 @@ class MeshAllowRuleBurnerB5c3Test extends TestCase
         ]);
 
         $this->travel(25)->hours();
+        // #5747: tied to no proposal, so not called an approved proposal.
         $this->assertRefusedSinceStaging($actor, $card,
-            "another proposal for '".self::SENDER."' on this client was approved and its create left no PSA record");
+            "a create of an allow rule for '".self::SENDER."' on this client was audited against no proposal, and no PSA record can be tied to it");
         $this->assertSame(0, $this->creates);
     }
 
@@ -445,8 +462,9 @@ class MeshAllowRuleBurnerB5c3Test extends TestCase
     /**
      * Boundaries the brake must not over-reach: a create on ANOTHER tenant
      * mapping (another write key) and a removal on another tenant do not
-     * refuse this tenant's card; a fault that wrote its own record (the
-     * corrected retry its text promises) is that record's business.
+     * refuse this tenant's card. (#5751: no fault is written here; the
+     * fault arm and its own-record exemption are pinned with real
+     * executed_with_fault rows in MeshAllowRuleBurnerB5dTest.)
      */
     public function test_the_since_staging_brake_is_scoped_to_this_write(): void
     {
@@ -476,7 +494,10 @@ class MeshAllowRuleBurnerB5c3Test extends TestCase
      * While the dedup refusal is being written (the blocked audit row), the
      * stale-claim path releases the run and a second approver re-claims it.
      * At base advanceTo(Done) was a plain save and overwrote that second
-     * claim with Done. Here the close only lands on this request's claim.
+     * claim with Done. Here the close only lands on this request's claim,
+     * and (#5746) neither the approver nor the blocked row is told the card
+     * is closed. The interference now lands just before the close, which
+     * runs before the refusal is audited.
      */
     public function test_the_dedup_close_does_not_overwrite_a_claim_taken_meanwhile(): void
     {
@@ -489,8 +510,11 @@ class MeshAllowRuleBurnerB5c3Test extends TestCase
         MeshAllowRule::query()->delete();
 
         $reclaimedAt = now()->addMinutes(20)->startOfSecond();
-        TechnicianActionLog::creating(function (TechnicianActionLog $log) use ($cardB, $reclaimedAt): void {
-            if ($log->result_status === 'blocked' && (int) $log->run_id === $cardB->id) {
+        $armed = true;
+        // The dedup arm's record lookup is the last query before the close.
+        DB::listen(function ($query) use (&$armed, $cardB, $reclaimedAt): void {
+            if ($armed && str_contains($query->sql, 'from "mesh_allow_rules"') && str_contains($query->sql, '"technician_run_id" = ?')) {
+                $armed = false;
                 DB::table('technician_runs')->where('id', $cardB->id)->update([
                     'state' => TechnicianRunState::Executing->value,
                     'claimed_at' => $reclaimedAt,
@@ -499,7 +523,10 @@ class MeshAllowRuleBurnerB5c3Test extends TestCase
         });
 
         $this->approve($actor, $cardB)->assertSessionHas('error');
-        $this->assertStringContainsString('This card is closed', (string) session('error'));
+        $this->assertFalse($armed, 'the interference fired');
+        $this->assertStringNotContainsString('This card is closed', (string) session('error'));
+        $this->assertStringContainsString('This card was NOT closed: while this refusal was being written it was released or claimed again elsewhere', (string) session('error'));
+        $this->assertSame((string) session('error'), TechnicianActionLog::where('result_status', 'blocked')->latest('id')->value('summary'));
         $fresh = $cardB->fresh();
         $this->assertSame(TechnicianRunState::Executing, $fresh->state, 'the second claim is not overwritten with Done');
         $this->assertTrue($fresh->claimed_at->equalTo($reclaimedAt));
@@ -661,8 +688,15 @@ class MeshAllowRuleBurnerB5c3Test extends TestCase
     /**
      * Each narrowing, one at a time, falls back to FOREIGN: another tenant,
      * a closed state (removed, reaped), two matches, a case difference in
-     * the comment or in the stored sender. At base every one of these was
+     * the comment or in the stored sender. At base the first four were
      * named as the matching record and the FOREIGN warning was dropped.
+     * The two case cases were NOT red at base on this suite (#5755):
+     * SQLite's = is case-exact, so the base equality already declined them;
+     * the defect was MariaDB's case-insensitive collation, which this suite
+     * does not run. What they do pin on SQLite is the PHP === filter: the
+     * LOWER() prefilter returns the case-variant record here and only that
+     * filter drops it, so deleting the filter turns both red. A revert to
+     * the base equality is not caught here.
      */
     public function test_the_unlinked_match_is_this_tenant_an_open_state_exactly_one_and_case_exact(): void
     {

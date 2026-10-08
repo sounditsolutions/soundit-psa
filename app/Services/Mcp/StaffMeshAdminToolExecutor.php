@@ -76,6 +76,12 @@ class StaffMeshAdminToolExecutor
      * closed, cancelled or re-checked by it, so the text claims nothing about
      * the sender beyond this card (G-14, b5c-2 contract:2).
      */
+    /** Opener for a change the PSA cannot place before or after the staging (second precision). */
+    private const SAME_SECOND = 'In the same second this card was staged (the PSA records these times only to the second, so it cannot say which came first), ';
+
+    /** #5746: the close lost its compare-and-set; the card keeps whatever state took it. */
+    private const DEDUP_CARD_NOT_CLOSED = 'This card was NOT closed: while this refusal was being written it was released or claimed again elsewhere, so it keeps that state and is not changed by this approval.';
+
     private const DEDUP_CARD_CLOSED = 'This card is closed, not returned to the approval queue, so approving it again cannot create a rule. Only this card is closed; any other proposal already staged for this sender stays as it is.';
 
     /**
@@ -809,7 +815,9 @@ class StaffMeshAdminToolExecutor
                 ? "An allow rule for '{$target['sender']}' was created for this client recently, but the PSA holds no record of it, so whether it is in force cannot be stated. Resolve it in the Mesh portal by hand. No upstream call was made and the lifetime on this proposal was NOT applied."
                 : self::recordRefusal($created, "An allow rule for '{$target['sender']}' was created for this client recently as PSA record #{$created->id}", true);
             if ($refusal !== null) {
-                $refusal .= ' '.self::DEDUP_CARD_CLOSED;
+                // #5746: the card is closed BEFORE the text is written, so
+                // the sentence about the card says what the close did.
+                $refusal .= ' '.$this->closeSpentCard($run);
                 $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $refusal, $actorLabel, $run?->id, $approverId);
 
                 return ['error' => $refusal, 'close_card' => true];
@@ -900,8 +908,13 @@ class StaffMeshAdminToolExecutor
                             : 'That record is PERMANENT (no expiry) and Mesh never confirmed its scope, so the expiry job never removes it while it has no expiry, and identifying it does not clear this block — recovering its id is not scope evidence. '
                                 .'This block clears when the PSA proves that rule removed: an approved mesh_remove_allow_rule does that directly, and an approved mesh_edit_allow_rule that gives the rule a date leaves it to the hourly expiry job once that date passes. Both need the PSA to have recorded the rule\'s upstream id first; otherwise someone has to check that rule in the Mesh portal AND clear the PSA record by hand. Checking the portal alone changes nothing here. In the meantime, ')
                         : (! $unsettled->expires_at->isFuture()
-                            ? 'Its expiry ('.$unsettled->expires_at->toIso8601String().') has passed, so the hourly expiry job does not settle it: it tries to identify and remove it, '
-                                .'and this block clears once that removal is proved. Until then, '
+                            // #5748: an ACTIVE record past its expiry, not
+                            // reaped yet; nothing about it needs settling.
+                            ? ($unsettled->state === MeshAllowRule::STATE_ACTIVE
+                                ? 'That record is active and its expiry ('.$unsettled->expires_at->toIso8601String().') has passed, but Mesh does not expire rules on its own and the hourly expiry job has not removed it yet, '
+                                    .'so the rule is treated as live: this block stays until the PSA proves it removed (the expiry job tries that on its next run). Until then, '
+                                : 'Its expiry ('.$unsettled->expires_at->toIso8601String().') has passed, so the hourly expiry job does not settle it: it tries to identify and remove it, '
+                                    .'and this block clears once that removal is proved. Until then, ')
                             : ($unsettled->scope_proved
                                 ? 'Its scope WAS confirmed when it was created, so the hourly expiry job only has to IDENTIFY it, and this block clears on the first run before its expiry ('
                                     .$unsettled->expires_at->toIso8601String().') that finds exactly one rule in Mesh carrying its sender and comment. Until then, '
@@ -948,7 +961,7 @@ class StaffMeshAdminToolExecutor
         if ($changed !== null) {
             $message = "{$changed}, so the card was not approved against what the PSA now records for this sender and no rule was created."
                 .' No upstream call was made and the lifetime on this proposal was NOT applied. '
-                .self::DEDUP_CARD_CLOSED
+                .$this->closeSpentCard($run)
                 .' If the sender still needs allowing, check its rules in the Mesh portal and stage a new proposal; it is checked against what the PSA records when it is staged and again when it is approved.';
             $this->auditAttempt($tool, 'blocked', $clientId, null, $contentHash, $message, $actorLabel, $run?->id, $approverId);
 
@@ -1410,26 +1423,11 @@ class StaffMeshAdminToolExecutor
                 // released card was approvable again after the window, and
                 // then nothing stopped a second create. Same terminal state
                 // as the idempotent dedup answer, still on the error channel.
-                if (($result['close_card'] ?? false) === true) {
-                    // #5652: compare-and-set, like the claim and the release.
-                    // Only a run this request still holds (Executing, under
-                    // this claim) is closed; a run something else released or
-                    // re-claimed meanwhile keeps that state rather than being
-                    // overwritten with Done.
-                    // The claim's own claimed_at is part of the compare, so a
-                    // later claim of the same run (Executing again) is not
-                    // taken for this one.
-                    if (TechnicianRun::query()->whereKey($run->getKey())
-                        ->where('state', TechnicianRunState::Executing->value)
-                        ->when(
-                            $run->claimed_at !== null,
-                            fn ($q) => $q->where('claimed_at', $run->claimed_at),
-                            fn ($q) => $q->whereNull('claimed_at'),
-                        )
-                        ->update(['state' => TechnicianRunState::Done->value]) === 1) {
-                        $run->state = TechnicianRunState::Done;
-                    }
-                } else {
+                // executeAllowRule() has already tried the close
+                // (closeSpentCard()) and said in the text what it did. A
+                // close that lost is NOT released either: the run is no
+                // longer this request's to move.
+                if (($result['close_card'] ?? false) !== true) {
                     $run->releaseClaim();
                 }
 
@@ -1467,6 +1465,47 @@ class StaffMeshAdminToolExecutor
 
             throw $e;
         }
+    }
+
+    /**
+     * Close a card an approval-time refusal spent (#5568), and return the
+     * sentence that says what happened to it (#5746).
+     *
+     * #5652: compare-and-set, like the claim and the release. Only a run this
+     * request still holds (Executing, under this claim) is closed; a run
+     * something else released or re-claimed meanwhile keeps that state rather
+     * than being overwritten with Done. The claim's own claimed_at is part of
+     * the compare, so a later claim of the same run (Executing again) is not
+     * taken for this one, and a release (which keeps claimed_at) fails on the
+     * state.
+     *
+     * Run BEFORE the refusal is audited, so neither the approver nor the
+     * blocked row is told the card is closed when the compare lost.
+     */
+    private function closeSpentCard(?TechnicianRun $run): string
+    {
+        if ($run === null) {
+            return 'No card is involved, so none was closed.';
+        }
+
+        $closed = TechnicianRun::query()->whereKey($run->getKey())
+            ->where('state', TechnicianRunState::Executing->value)
+            ->when(
+                $run->claimed_at !== null,
+                fn ($q) => $q->where('claimed_at', $run->claimed_at),
+                fn ($q) => $q->whereNull('claimed_at'),
+            )
+            ->update(['state' => TechnicianRunState::Done->value]) === 1;
+
+        if ($closed) {
+            $run->state = TechnicianRunState::Done;
+
+            return self::DEDUP_CARD_CLOSED;
+        }
+
+        \Illuminate\Support\Facades\Log::warning("[Mesh] Allow-rule card #{$run->id} was refused at approval but not closed: it was released or claimed again while the refusal was being written.");
+
+        return self::DEDUP_CARD_NOT_CLOSED;
     }
 
     /**
@@ -1697,19 +1736,54 @@ class StaffMeshAdminToolExecutor
      */
     private function liveAllowRule(int $clientId, string $sender): ?MeshAllowRule
     {
+        return $this->openAllowRecords($clientId, $sender)
+            ->where(fn ($q) => self::measuredLive($q))
+            ->latest('id')
+            ->first();
+    }
+
+    /**
+     * The states in which a record still answers for a rule that may be live
+     * upstream: every state but the two that PROVED its rule absent (#5748).
+     *
+     * ONE rule for every approval-time question "is there a live record for
+     * this sender": a record is live until a removal or a reap proves its
+     * rule gone, whatever its expiry says. Mesh expires nothing (measured
+     * 2026-09-01), so an ACTIVE record past its expiry and not yet reaped is
+     * exactly as live as an unexpired one. The two brakes split these
+     * states between them (liveAllowRule() takes the measured-live part,
+     * unsettledAllowRule() the rest), and changedSinceStaging()'s ended fact
+     * reads the complement, so every state a record can be in is answered by
+     * one of them, including the record of a fault (#5751).
+     */
+    private const OPEN_STATES = [MeshAllowRule::STATE_ACTIVE, MeshAllowRule::STATE_UNRESOLVED, MeshAllowRule::STATE_REAP_FAILED];
+
+    /** The complement of OPEN_STATES: a removal or a reap proved the record's rule absent. */
+    private const ABSENT_STATES = [MeshAllowRule::STATE_REMOVED, MeshAllowRule::STATE_REAPED];
+
+    /** This client's records for $sender in an OPEN_STATES state (#5748). */
+    private function openAllowRecords(int $clientId, string $sender): \Illuminate\Database\Eloquent\Builder
+    {
         return MeshAllowRule::query()
             ->where('client_id', $clientId)
             ->where('sender', $sender)
-            ->where('state', MeshAllowRule::STATE_ACTIVE)
-            // #1133: a permanent rule (NULL expiry) is the MOST live row this
-            // query can find, and `expires_at > now()` evaluates to NULL for
-            // it — not true. Without the null arm the strongest duplicate
-            // brake in the verb would silently stop seeing exactly the rules
-            // that never go away, and a second permanent hole could be opened
-            // for the same sender.
-            ->where(fn ($q) => $q->whereNull('expires_at')->orWhere('expires_at', '>', now()))
-            ->latest('id')
-            ->first();
+            ->whereIn('state', self::OPEN_STATES);
+    }
+
+    /**
+     * ACTIVE and unexpired: the only open record answered from as an allow
+     * MEASURED in force (subject to recordRefusal()).
+     *
+     * #1133: a permanent rule (NULL expiry) is the MOST live row this can
+     * find, and `expires_at > now()` evaluates to NULL for it — not true.
+     * Without the null arm the strongest duplicate brake in the verb would
+     * silently stop seeing exactly the rules that never go away, and a
+     * second permanent hole could be opened for the same sender.
+     */
+    private static function measuredLive($query): void
+    {
+        $query->where('state', MeshAllowRule::STATE_ACTIVE)
+            ->where(fn ($q) => $q->whereNull('expires_at')->orWhere('expires_at', '>', now()));
     }
 
     /**
@@ -1757,13 +1831,18 @@ class StaffMeshAdminToolExecutor
      *
      * Not filtered on expiry: Mesh expires nothing (measured 2026-09-01), so an
      * expired row that was never reaped is exactly as live as an unexpired one.
+     *
+     * #5748: the same rule covers an ACTIVE record past its expiry that the
+     * hourly expiry job has not reaped yet. liveAllowRule() does not answer
+     * from it (it is not measured in force now), and before this it fell
+     * through every brake, so a card approved in that window created a
+     * second rule beside one that is still live upstream. It is every open
+     * record the live brake does not take (OPEN_STATES).
      */
     private function unsettledAllowRule(int $clientId, string $sender): ?MeshAllowRule
     {
-        return MeshAllowRule::query()
-            ->where('client_id', $clientId)
-            ->where('sender', $sender)
-            ->whereIn('state', [MeshAllowRule::STATE_UNRESOLVED, MeshAllowRule::STATE_REAP_FAILED])
+        return $this->openAllowRecords($clientId, $sender)
+            ->whereNot(fn ($q) => self::measuredLive($q))
             ->latest('id')
             ->first();
     }
@@ -2093,11 +2172,16 @@ class StaffMeshAdminToolExecutor
      *    approved first, whatever became of its record since (removed, reaped,
      *    or never written). Ordered by audit row id, not by clock, so a create
      *    in the same second as the staging is still placed on the right side
-     *    of it. A fault that DID write a record is that record's business,
-     *    exactly as in faultedExecution(): the unsettled brake refuses it
-     *    while it is unsettled, and the second fact below once it is proved
-     *    absent, so the corrected retry the fault text promises stays
-     *    possible from a NEW proposal;
+     *    of it. A fault that DID write a record is that record's business
+     *    and is not matched here. While that record is open, in ANY open
+     *    state (OPEN_STATES, #5748), an ACTIVE one past its expiry and not
+     *    yet reaped included, the two brakes above have already refused the
+     *    card before this is asked. Once it is proved absent, the second
+     *    fact below refuses a card staged before that if the record is on
+     *    this tenant; a scope fault's record stores the tenant Mesh
+     *    attested instead, and then the card is the corrected retry both
+     *    fault texts promise and it creates (MeshAddAllowRuleTest,
+     *    MeshAllowRuleBurnerB5dTest pin both);
      *  - a record for this sender on this tenant proved absent after the card
      *    was staged: removed by an approved mesh_remove_allow_rule
      *    (removed_at) or reaped by the expiry job (reaped_at). This is the
@@ -2143,9 +2227,34 @@ class StaffMeshAdminToolExecutor
                 ->latest('id')
                 ->first();
 
-            return $record !== null
-                ? "Since this card was staged, another proposal for '{$sender}' on this client was approved and wrote PSA record #{$record->id} (now in state '{$record->state}')"
-                : "Since this card was staged, another proposal for '{$sender}' on this client was approved and its create left no PSA record";
+            // #5747: say only what the audit row and the record show. A row
+            // with no run is tied to no proposal (the verb is staged-only, so
+            // nothing in it approved that create); a row of THIS card is not
+            // "another proposal"; a fault is not a clean create; and a
+            // missing record is a fact about now, not about what the create
+            // wrote (a record can be written and later deleted by hand).
+            $faulted = $create->result_status === 'executed_with_fault';
+            $who = match (true) {
+                $create->run_id === null => "a create of an allow rule for '{$sender}' on this client was audited against no proposal",
+                (int) $create->run_id === (int) $run->id => "an earlier approval of this same card ran its create for '{$sender}'",
+                default => "another proposal for '{$sender}' on this client was approved",
+            };
+            // A fault is matched only when no record carries its run, so a
+            // faulted create never reaches the record arm.
+            $what = match (true) {
+                $record !== null => " and wrote PSA record #{$record->id} (now in state '{$record->state}')",
+                $faulted => ' and its create FAULTED after reaching Mesh, and no PSA record of it exists now',
+                $create->run_id === null => ', and no PSA record can be tied to it',
+                default => ', and no PSA record of its create exists now',
+            };
+            // The no-staging-row fallback is by clock, inclusive: a create in
+            // the staging second cannot be placed after it.
+            $opener = $stagedAuditId === null && $run->created_at !== null
+                && $create->created_at?->format('Y-m-d H:i:s') === $run->created_at->format('Y-m-d H:i:s')
+                ? self::SAME_SECOND
+                : 'Since this card was staged, ';
+
+            return $opener.$who.$what;
         }
 
         $ended = MeshAllowRule::query()
@@ -2167,7 +2276,7 @@ class StaffMeshAdminToolExecutor
         $endedAt = $ended->state === MeshAllowRule::STATE_REMOVED ? $ended->removed_at : $ended->reaped_at;
         $opener = $endedAt !== null && $run->created_at !== null
             && \Illuminate\Support\Carbon::parse($endedAt)->format('Y-m-d H:i:s') === $run->created_at->format('Y-m-d H:i:s')
-            ? 'In the same second this card was staged (the PSA records these times only to the second, so it cannot say which came first), '
+            ? self::SAME_SECOND
             : 'Since this card was staged, ';
 
         return $opener.($ended->state === MeshAllowRule::STATE_REMOVED
@@ -2581,9 +2690,13 @@ class StaffMeshAdminToolExecutor
                 ->where('mesh_customer_id', $tenant)
                 ->whereNull('mesh_rule_id')
                 ->whereIn('state', [MeshAllowRule::STATE_ACTIVE, MeshAllowRule::STATE_UNRESOLVED, MeshAllowRule::STATE_REAP_FAILED])
-                // Case-folded in SQL on every engine (SQLite's = is exact,
-                // MariaDB's default collation is not), so the PHP filter
-                // below is the one exact compare, the same everywhere.
+                // A case-insensitive PREFILTER (SQLite's = is exact, MariaDB's
+                // default collation is not). It is not the same on every
+                // engine (#5750): SQLite's LOWER() folds ASCII letters only,
+                // so a non-ASCII capital in a stored sender or comment drops
+                // the record here on SQLite (the card errs toward FOREIGN)
+                // while MariaDB keeps it. The PHP === filter below is the one
+                // exact compare, and it is the same everywhere.
                 ->whereRaw('LOWER(sender) = ?', [mb_strtolower($sender)])
                 ->whereRaw('LOWER(comment) = ?', [mb_strtolower($comment)])
                 ->get()
@@ -2595,9 +2708,10 @@ class StaffMeshAdminToolExecutor
         // reap pass needs an expiry, the settle pass an unsettled state), so
         // the note makes no identify or re-check promise for it.
         $unlinkedUnvisited = $unlinked !== null && $unlinked->state === MeshAllowRule::STATE_ACTIVE && $unlinked->isPermanent();
-        // #5641: the record stays, and the live brake (active, unexpired)
-        // or the unsettled brake still refuses a new allow rule for this
-        // sender at approval on it, whatever its id. #5647: approval re-derives the target, so if the record gets
+        // #5641 / #5749: the record stays, and the live brake (active,
+        // unexpired) or the unsettled brake (every other open state, an
+        // ACTIVE record past its expiry included, #5748) still refuses a new
+        // allow rule for this sender at approval on it, whatever its id. #5647: approval re-derives the target, so if the record gets
         // this rule's id before then, approval closes it after all; the note
         // says so rather than promising a state the approval may not keep.
         $unlinkedNote = $unlinked === null ? null
@@ -2636,8 +2750,12 @@ class StaffMeshAdminToolExecutor
                 // gets this rule's id before then is closed after all.
                 : ($unlinkedNote !== null
                     ? $unlinkedNote.($unlinkedUnvisited ? '' : ' Approval re-checks this: if the expiry job records this rule\'s id on that record before the card is approved, approving closes the record as removed.')
-                    : 'This rule is FOREIGN: the PSA did not create it and holds no record of it. Somebody set it up outside this system, '
-                        .'possibly deliberately and possibly for a reason this system cannot see — removing it may break mail delivery that is working today.'),
+                    // #5754: true on every arm that reaches it: no record at
+                    // all, and every record the narrowed match above declines
+                    // (another tenant, removed or reaped, two or more, a case
+                    // difference). The label and the warning are unchanged.
+                    : 'This rule is FOREIGN: this client holds no PSA record under this rule id, and the PSA cannot match it by its exact sender and comment to exactly one open PSA record of this client on this tenant, so the PSA cannot show that it created this rule. '
+                        .'It may have been set up outside this system, possibly deliberately and possibly for a reason this system cannot see — removing it may break mail delivery that is working today.'),
             'expiry_note' => is_scalar($row['date_expiry'] ?? null) && trim((string) $row['date_expiry']) !== ''
                 ? 'Mesh displays an expiry of '.trim((string) $row['date_expiry']).' on this rule (display only — Mesh does not act on it).'
                 : 'Mesh displays no expiry on this rule.',
