@@ -37,6 +37,8 @@ use Tests\TestCase;
  */
 class RetryEmailAttachmentsFailerTest extends TestCase
 {
+    use ResetsRetryEmailAttachmentsStatics;
+
     private TestHandler $logs;
 
     private ?MockHandler $mock = null;
@@ -203,5 +205,46 @@ class RetryEmailAttachmentsFailerTest extends TestCase
         $this->assertSame('jobs', $found[0]->context['found_in']);
         $this->assertSame([], $this->withMessage(RetryEmailAttachments::NOT_QUEUED));
         $this->assertSame([], $this->seen->getArrayCopy(), 'no inline commit work');
+    }
+
+    public function test_both_read_back_tables_are_read_on_the_write_connection(): void
+    {
+        // #6096 (a): with no jobs row to find, the read-back goes on to failed_jobs; at prod's
+        // level 0 both reads must use the write PDO, where a read replica would serve the select.
+        $this->assertSame(0, DB::transactionLevel(), "precondition: prod's level 0");
+        config(['queue.default' => 'database']);
+        $client = Client::create(['name' => 'Example Client']);
+        $email = Email::create([
+            'graph_id' => 'MSG-1', 'direction' => 'inbound', 'from_address' => 'user@example.test', 'from_name' => 'User',
+            'subject' => 'Printer offline', 'body_text' => 'B7-SYNTHETIC-BODY', 'body_html' => '<p>B7</p>',
+            'client_id' => $client->id, 'received_at' => now(),
+        ]);
+        $thrown = 0;
+        \Illuminate\Support\Facades\Event::listen(\Illuminate\Queue\Events\JobQueueing::class, function ($event) use (&$thrown) {
+            if ($event->job instanceof RetryEmailAttachments && $thrown++ === 0) {
+                DB::connection()->setReadPdo(new \PDO('sqlite::memory:'));
+
+                throw new \RuntimeException('B7-SYNTHETIC-BEFORE-INSERT');
+            }
+        });
+        $reads = [];
+        DB::listen(function ($q) use (&$reads) {
+            $sql = strtolower($q->sql);
+            if (str_contains($sql, 'like')) {
+                $reads[] = [str_contains($sql, 'from "failed_jobs"') ? 'failed_jobs' : 'jobs', $q->readWriteType];
+            }
+        });
+
+        try {
+            app(EmailService::class)->autoCreateTicketFromEmail($email);
+        } finally {
+            DB::connection()->setReadPdo(null);
+        }
+
+        $this->assertSame(1, $thrown, 'positive control: the push threw');
+        $this->assertSame([['jobs', 'write'], ['failed_jobs', 'write']], $reads);
+        $notQueued = $this->withMessage(RetryEmailAttachments::NOT_QUEUED);
+        $this->assertCount(1, $notQueued);
+        $this->assertFalse($notQueued[0]->context['queued_row'], 'read on the write PDO, both tables answered: no row');
     }
 }
