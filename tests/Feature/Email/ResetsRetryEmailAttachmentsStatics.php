@@ -6,9 +6,12 @@ use App\Jobs\RetryEmailAttachments;
 
 /**
  * #6042/#6102: RetryEmailAttachments keeps per-process statics ($progress, $pushing) that survive
- * between tests in one PHP process. Every test class that runs the job uses this trait, so they
- * are reset before and after each test (Laravel's setUp<Trait>/tearDown<Trait> hooks), whatever
- * class ran before.
+ * between tests in one PHP process. A class that uses this trait has them reset before and after
+ * each of its tests (Laravel's setUp<Trait>/tearDown<Trait> hooks), whatever class ran before.
+ * #6142: only RetryEmailAttachmentsJobTest and RetryEmailAttachmentsFailerTest use it. Other
+ * classes run the job too (the email, intake, webhook and MCP email tests that import a message
+ * or post to the Graph webhook) and do not reset; a class that asserts on the statics, or on a
+ * path that reads them, must use it.
  */
 trait ResetsRetryEmailAttachmentsStatics
 {

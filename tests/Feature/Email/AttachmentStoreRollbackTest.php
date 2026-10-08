@@ -221,6 +221,54 @@ class AttachmentStoreRollbackTest extends TestCase
         $this->assertSame([], $this->withMessage('[Attachment] Cleanup after a failed store threw'));
     }
 
+    public function test_a_logger_throw_on_the_cleanup_threw_record_does_not_skip_the_row_step(): void
+    {
+        // #6146: the file delete throws and the log channel throws writing that 'threw' record.
+        // The row step still runs, and the store's own failure is what propagates.
+        Attachment::updating(function (Attachment $a) {
+            if ($a->isDirty('storage_path')) {
+                throw new \RuntimeException('B8-SYNTHETIC-UPDATE-FAIL');
+            }
+        });
+        $real = Storage::disk('local');
+        $disk = \Mockery::mock(FilesystemAdapter::class, [$real->getDriver(), $real->getAdapter(), $real->getConfig()])->makePartial();
+        $disk->shouldReceive('delete')->andThrow(new \RuntimeException('B8-SYNTHETIC-DELETE-THREW'));
+        Storage::set('local', $disk);
+        $logged = 0;
+        $throwing = new class($logged) extends \Monolog\Handler\AbstractProcessingHandler
+        {
+            public function __construct(public int &$logged)
+            {
+                parent::__construct();
+            }
+
+            protected function write(LogRecord $record): void
+            {
+                if ($record->message === '[Attachment] Cleanup after a failed store threw') {
+                    $this->logged++;
+
+                    throw new \LogicException('B8-SYNTHETIC-LOG-CHANNEL-DOWN');
+                }
+            }
+        };
+        foreach (array_keys(config('logging.channels')) as $name) {
+            config(["logging.channels.{$name}" => ['driver' => 'custom', 'via' => fn () => new \Monolog\Logger($name, [$throwing])]]);
+            Log::forgetChannel($name);
+        }
+
+        $thrown = null;
+        try {
+            app(AttachmentService::class)->storeFromContent('synthetic-bytes', self::FILENAME, 'text/plain');
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+
+        $this->assertSame(1, $logged, "positive control: the 'threw' record was attempted and its channel threw");
+        $this->assertInstanceOf(AttachmentStorePathFailedException::class, $thrown, "the store's own failure is what propagates");
+        $this->assertSame('B8-SYNTHETIC-UPDATE-FAIL', $thrown->getPrevious()?->getMessage());
+        $this->assertSame(0, Attachment::withTrashed()->count(), 'the row step still ran');
+    }
+
     public function test_a_logger_throw_on_the_returned_false_record_is_not_reported_as_a_cleanup_throw(): void
     {
         // #6003: the delete returns false and the log channel throws writing that record. The
@@ -442,8 +490,11 @@ class AttachmentStoreRollbackTest extends TestCase
     {
         // #6029: inside a nested DB::transaction (RefreshDatabase holds the outer one) the
         // framework turns a deadlock into DeadlockException for the outermost level; a wrapped
-        // throw was rethrown as itself. #6089: with the default attempts (as every caller in the
-        // app passes) the callback runs once: nothing is retried, and nothing is stored.
+        // throw was rethrown as itself. #6089/#6140: the callback runs once, and nothing is
+        // stored. That count is not evidence about attempts: at this nested level the framework
+        // throws DeadlockException without retrying whatever attempts is, and RefreshDatabase
+        // keeps this test from reaching the outermost level, so the docblock's attempts claim
+        // is not tested here (a stated remainder of #6140).
         $this->storagePathUpdateThrows('Deadlock found when trying to get lock; try restarting transaction', 0, 1);
 
         $thrown = null;
@@ -458,7 +509,7 @@ class AttachmentStoreRollbackTest extends TestCase
             $thrown = $e;
         }
 
-        $this->assertSame(1, $runs, '#6089: no retry');
+        $this->assertSame(1, $runs, 'one run at a nested level (#6140: holds whatever attempts is)');
         $this->assertSame(0, Attachment::withTrashed()->count());
         $this->assertInstanceOf(\Illuminate\Database\DeadlockException::class, $thrown);
         $this->assertInstanceOf(\Illuminate\Database\QueryException::class, $thrown->getPrevious());

@@ -122,8 +122,10 @@ class AttachmentService
      * DeadlockException and unwinds its level (the outermost retries it only when the caller
      * passed attempts > 1, and no caller of these store methods does), and the queue worker
      * stops on a lost connection (stopWorkerIfLostConnection). A lost connection is neither
-     * retried nor reconnected on this throw: the connection reconnects inside its own query
-     * call, at transaction level 0, before a throw ever reaches here.
+     * retried nor reconnected here. #6147: it reaches here inside a transaction (the store
+     * methods run inside the import and link transactions, and the connection reconnects only
+     * at level 0), and at level 0 when the connection's own reconnect or re-run of the query
+     * failed; at level 0 with a successful re-run no throw reaches here.
      */
     private function writeOrRollBack(Attachment $attachment, string $path, \Closure $write): void
     {
@@ -158,11 +160,17 @@ class AttachmentService
                 try {
                     $result = $cleanup();
                 } catch (\Throwable $cleanupFailure) {
-                    Log::warning('[Attachment] Cleanup after a failed store threw', [
-                        'attachment_id' => $attachment->id,
-                        'step' => $step,
-                        'exception' => $cleanupFailure::class,
-                    ]);
+                    // #6146: guarded like the returned-false record below, so a logger throw
+                    // neither skips the row step nor replaces the store's own failure.
+                    try {
+                        Log::warning('[Attachment] Cleanup after a failed store threw', [
+                            'attachment_id' => $attachment->id,
+                            'step' => $step,
+                            'exception' => $cleanupFailure::class,
+                        ]);
+                    } catch (\Throwable) {
+                        // The log channel itself failed; the store's own failure is still thrown.
+                    }
 
                     continue;
                 }

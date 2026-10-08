@@ -218,8 +218,12 @@ class RetryEmailAttachmentsJobTest extends TestCase
 
     public function test_the_job_statics_start_empty_whatever_ran_before(): void
     {
-        // #6102: first in this class, so a class run before it in the same process (the failer
-        // test leaves a kept progress entry under its own key) cannot leak into these tests.
+        // #6102/#6141: the trait's reset, exercised: entries a class run before would leave
+        // are planted, and the hook Laravel calls before each test (setUp<Trait>) empties
+        // them. Deleting that hook fails here; the tearDown hook is not what this reaches.
+        (fn () => [self::$progress = ['b8:leftover' => ['level' => 0]], self::$pushing = ['b8:leftover' => true]])->bindTo(null, RetryEmailAttachments::class)();
+        $this->assertNotSame(['progress' => [], 'pushing' => []], self::retryEmailAttachmentsStatics(), 'positive control: planted');
+        $this->setUpResetsRetryEmailAttachmentsStatics();
         $this->assertSame(['progress' => [], 'pushing' => []], self::retryEmailAttachmentsStatics());
     }
 
@@ -1215,6 +1219,7 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $unknown = $this->withMessage(RetryEmailAttachments::MARKER_QUEUE_UNKNOWN);
         $this->assertCount(1, $unknown);
         $this->assertSame('not_queued', $unknown[0]->context['reason']);
+        $this->assertFalse($unknown[0]->context['queue_read_back'], '#6135: the jobs table could not be read');
         $this->assertSame(['jobs', \RuntimeException::class], [$notQueued[0]->context['read_back_step'], $notQueued[0]->context['read_back_exception']],
             '#6092: the null names the step that threw and its class');
         $note = $this->markerNotes($ticket->id)[0];
@@ -1586,10 +1591,12 @@ class RetryEmailAttachmentsJobTest extends TestCase
         DB::table('jobs')->delete();
         $inside = null;
         $thrown = null;
+        $loopRows = fn () => DB::table('jobs')->get()->filter(fn ($r) => (json_decode($r->payload, true)['displayName'] ?? null) === \App\Jobs\RunTechnicianLoop::class)->count();
         try {
-            DB::transaction(function () use ($command, &$inside) {
+            DB::transaction(function () use ($command, &$inside, $loopRows) {
                 (fn () => $this->runCommitWork())->call($command);
-                $inside = count($this->withMessage(RetryEmailAttachments::COMMIT_STEP_THREW));
+                // #6145: counted in the jobs table, so a push inside the transaction shows here.
+                $inside = $loopRows();
                 DB::beforeExecuting(function (string $sql) {
                     if (str_starts_with(strtolower($sql), 'insert into "jobs"')) {
                         throw new \RuntimeException('B7-SYNTHETIC-PUSH-AT-COMMIT');
@@ -1850,8 +1857,12 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertSame(Level::Warning, $failed[0]->level);
         $this->assertSame(['email_id' => $email->id, 'ticket_id' => $ticket->id, 'step' => 'started_put', 'exception' => \RuntimeException::class], $failed[0]->context);
         $this->assertStringNotContainsString('B7-SYNTHETIC', json_encode($failed[0]->context), 'C-56: no message text');
-        // The stated remainder: without the entry the read-back says false, and the work runs twice.
+        // #6139: a known wrong answer, pinned so a change to it is seen, not endorsed: without
+        // the entry the read-back says false, the note says 'were not added' though the run
+        // added them, and the commit work runs twice. The started_put record above is the
+        // only sign; listed among the false arms in queueAfterCommit()'s docblock.
         $this->assertFalse($this->withMessage(RetryEmailAttachments::NOT_QUEUED)[0]->context['queued_row']);
+        $this->assertCount(2, $this->seen, '#6139: the commit work ran twice (the run, then inline)');
     }
 
     public function test_a_pending_write_that_fails_makes_a_not_found_read_back_unknown(): void
@@ -1870,9 +1881,16 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $notQueued = $this->withMessage(RetryEmailAttachments::NOT_QUEUED);
         $this->assertCount(1, $notQueued);
         $this->assertSame([null, 'pending', null], [$notQueued[0]->context['queued_row'], $notQueued[0]->context['read_back_step'], $notQueued[0]->context['read_back_exception']]);
-        $this->assertCount(1, $this->withMessage(RetryEmailAttachments::MARKER_QUEUE_UNKNOWN));
+        $unknown = $this->withMessage(RetryEmailAttachments::MARKER_QUEUE_UNKNOWN);
+        $this->assertCount(1, $unknown);
+        $this->assertTrue($unknown[0]->context['queue_read_back'], '#6135: both tables were read');
         $this->assertSame([], $this->withMessage(RetryEmailAttachments::MARKER));
         $this->assertCount(1, $this->markerNotes($ticket->id));
+        // #6135: no row was queued; what is unknown is whether a run already ran.
+        $note = $this->markerNotes($ticket->id)[0];
+        $this->assertStringContainsString('no queued retry to add them was found', $note);
+        $this->assertStringContainsString('whether a retry already ran could not be read back', $note);
+        $this->assertStringNotContainsString('whether a retry to add them is queued', $note);
     }
 
     public function test_a_started_read_that_throws_is_unknown_and_names_the_step(): void
@@ -1930,13 +1948,18 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertSame([$atPush, 'default'], array_slice($jobsBindings, 0, 2), 'the floor is the newest id before the push; the queue is this one');
         $this->assertStringContainsString('from "failed_jobs" where "id" > ? and "payload" like ?', $failedSql);
         $this->assertSame($old['failed_jobs'], $failedBindings[0]);
+        // #6096 (a), a regression pin (#6152: base already read on the write PDO).
         $this->assertSame(['write', 'write'], [$jobsPdo, $failedPdo], '#6096 (a): both reads on the write PDO');
         $this->assertFalse($this->withMessage(RetryEmailAttachments::NOT_QUEUED)[0]->context['queued_row'], 'the row below the floor is not read');
     }
 
-    public function test_a_row_on_another_queue_is_not_this_dispatchs(): void
+    public function test_this_dispatchs_row_moved_to_another_queue_is_missed(): void
     {
-        // #6096 (b): the jobs read is narrowed to this dispatch's queue.
+        // #6096 (b): the jobs read is narrowed to this dispatch's queue. #6143: the row moved
+        // here IS this dispatch's (it carries the push id, and a worker on that queue will run
+        // it), so this pins what the narrowing trades away: a row moved off its queue is
+        // missed, read back as false (the 'not added' note and the inline commit work), and the
+        // row's own run then does the work again. Green at base (#6152): a regression pin.
         $this->databaseQueue();
         $this->graph([$this->failedRead()]);
         $email = $this->email();
@@ -1954,6 +1977,7 @@ class RetryEmailAttachmentsJobTest extends TestCase
     public function test_the_plain_database_failer_is_read_back_too(): void
     {
         // #6096 (e): queue.failed.driver 'database' (no uuid column needed) is a database failer.
+        // #6152: green at base (it already listed 'database'): a regression pin.
         config(['queue.failed.driver' => 'database']);
         app()->forgetInstance('queue.failer');
         $this->databaseQueue();
@@ -1975,26 +1999,246 @@ class RetryEmailAttachmentsJobTest extends TestCase
 
     public function test_a_floor_that_cannot_be_read_makes_the_read_back_unknown(): void
     {
-        // #6031: no floor means no bounded read: the table is not scanned, queued_row is null.
+        // #6031: no floor means no bounded read: the jobs table is not scanned, queued_row is
+        // null. #6149: failed_jobs, whose floor was read, is still scanned above it. #6150: the
+        // class that threw is kept and named.
         $this->databaseQueue();
         $this->graph([$this->failedRead()]);
         $email = $this->email();
-        $scans = 0;
+        $scans = [];
         DB::beforeExecuting(function (string $sql) use (&$scans) {
             $sql = strtolower($sql);
             if (str_contains($sql, 'max("id")') && str_contains($sql, 'from "jobs"')) {
                 throw new \RuntimeException('B7-SYNTHETIC-MAX-DOWN');
             }
             if (str_contains($sql, 'like')) {
-                $scans++;
+                $scans[] = str_contains($sql, 'from "jobs"') ? 'jobs' : 'failed_jobs';
             }
         });
         $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueueing::class, fn () => null);
 
         app(EmailService::class)->autoCreateTicketFromEmail($email);
 
-        $this->assertSame(0, $scans, 'no unbounded scan');
+        $this->assertSame(['failed_jobs'], $scans, 'no unbounded scan of jobs; failed_jobs read above its own floor');
         $notQueued = $this->withMessage(RetryEmailAttachments::NOT_QUEUED);
-        $this->assertSame([null, 'jobs', null], [$notQueued[0]->context['queued_row'], $notQueued[0]->context['read_back_step'], $notQueued[0]->context['read_back_exception']]);
+        $this->assertSame([null, 'jobs', \RuntimeException::class], [$notQueued[0]->context['queued_row'], $notQueued[0]->context['read_back_step'], $notQueued[0]->context['read_back_exception']],
+            '#6150: read_back_exception names the floor read that threw');
+    }
+
+    public function test_a_floor_read_that_fails_is_recorded_when_the_push_returns(): void
+    {
+        // #6150: the push does not throw, so there is no NOT_QUEUED; the degraded read is still
+        // recorded, ids, the table and the class only (C-56).
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        DB::beforeExecuting(function (string $sql) {
+            $sql = strtolower($sql);
+            if (str_contains($sql, 'max("id")') && str_contains($sql, 'from "failed_jobs"')) {
+                throw new \RuntimeException('B8-SYNTHETIC-MAX-DOWN');
+            }
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertCount(1, $this->retryRows(), 'positive control: the push returned and queued the row');
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::NOT_QUEUED));
+        $failed = $this->withMessage(RetryEmailAttachments::FLOOR_READ_FAILED);
+        $this->assertCount(1, $failed);
+        $this->assertSame(Level::Warning, $failed[0]->level);
+        $this->assertSame(['email_id' => $email->id, 'ticket_id' => $ticket->id, 'step' => 'failed_jobs', 'exception' => \RuntimeException::class], $failed[0]->context);
+    }
+
+    /**
+     * The read-back read to fail; true when it is a floor, read before the push (a scan is
+     * failed only once the worker's run inside the push is over, so its own reads still run).
+     *
+     * @return array<string, array{0: \Closure(string): bool, 1: bool}>
+     */
+    public static function failingReadBackReads(): array
+    {
+        return [
+            'the jobs floor' => [fn (string $sql) => str_contains($sql, 'max("id")') && str_contains($sql, 'from "jobs"'), true],
+            'the failed_jobs floor' => [fn (string $sql) => str_contains($sql, 'max("id")') && str_contains($sql, 'from "failed_jobs"'), true],
+            'the jobs scan' => [fn (string $sql) => str_contains($sql, 'from "jobs"') && str_contains($sql, 'like'), false],
+            'the failed_jobs scan' => [fn (string $sql) => str_contains($sql, 'from "failed_jobs"') && str_contains($sql, 'like'), false],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('failingReadBackReads')]
+    public function test_a_read_back_read_that_fails_still_finds_a_run_that_started(\Closure $failing, bool $floor): void
+    {
+        // #6149: a worker ran the dispatch inside the push and deleted its row, so its started
+        // entry is the evidence. A floor or table read that fails no longer returns before the
+        // started entry is read: found_in started, and the commit work runs once, from the run.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $hit = 0;
+        $armed = $floor;
+        DB::beforeExecuting(function (string $sql) use ($failing, &$hit, &$armed) {
+            if ($armed && $failing(strtolower($sql))) {
+                $hit++;
+
+                throw new \RuntimeException('B8-SYNTHETIC-READ-BACK-DOWN');
+            }
+        });
+        $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueued::class, function () use (&$armed) {
+            $pushing = self::retryEmailAttachmentsStatics()['pushing'];
+            $this->mock->append($this->read());
+            $this->popRetry()->fire();
+            $armed = true;
+            (fn () => self::$pushing = $pushing)->bindTo(null, RetryEmailAttachments::class)();
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertGreaterThan(0, $hit, 'positive control: the read failed');
+        $found = $this->withMessage(RetryEmailAttachments::PUSH_THREW_ROW_FOUND);
+        $this->assertSame(['started'], array_map(fn ($r) => $r->context['found_in'], $found));
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::NOT_QUEUED), 'not reported as unknown');
+        $this->assertSame([], $this->markerNotes($ticket->id), 'no second marker note');
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy(), 'the commit work ran once, from the run');
+    }
+
+    // ── b8 (card 6ac7e71d): pending read, cleanup record, duplicate rows, terminate phase ──
+
+    public function test_a_pending_read_that_throws_still_writes_the_started_entry_and_is_recorded(): void
+    {
+        // #6144/#6153: a run inside the push whose pending read throws writes its started entry
+        // anyway (toward found), and the failed read is recorded as pending_read.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $this->cacheFailing(':pending:', ['get']);
+        $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueued::class, function () {
+            $pushing = self::retryEmailAttachmentsStatics()['pushing'];
+            $this->mock->append($this->read());
+            $this->popRetry()->fire();
+            (fn () => self::$pushing = $pushing)->bindTo(null, RetryEmailAttachments::class)();
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertSame(['started'], array_map(fn ($r) => $r->context['found_in'], $this->withMessage(RetryEmailAttachments::PUSH_THREW_ROW_FOUND)));
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::NOT_QUEUED));
+        $failed = $this->withMessage(RetryEmailAttachments::CACHE_STEP_FAILED);
+        $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'step' => 'pending_read', 'exception' => \RuntimeException::class]],
+            array_map(fn ($r) => $r->context, $failed), '#6153: the failed pending read is recorded');
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy(), 'the commit work ran once');
+    }
+
+    public function test_a_cleanup_that_throws_is_recorded_as_the_cleanup_step(): void
+    {
+        // #6144: the pending entry's forget throws once the push has returned.
+        $this->graph([$this->failedRead()]);
+        $this->cacheFailing(':pending:', ['forget']);
+
+        $this->ticketWithQueuedRetry();
+
+        $failed = $this->withMessage(RetryEmailAttachments::CACHE_STEP_FAILED);
+        $this->assertSame([['cleanup', \RuntimeException::class]], array_map(fn ($r) => [$r->context['step'], $r->context['exception']], $failed));
+    }
+
+    public function test_two_rows_of_one_push_run_the_retry_once(): void
+    {
+        // #6100: a lost reply to the INSERT, re-run by the connection at level 0, leaves two
+        // rows of one dispatch with one pushId. The earlier row's run finds the later row and
+        // exits; the later row's run is the one that runs.
+        $this->graph([$this->failedRead()]);
+        $ticket = $this->ticketWithQueuedRetry();
+        $row = $this->retryRows()[0];
+        $copy = (array) $row;
+        unset($copy['id']);
+        $later = DB::table('jobs')->insertGetId($copy);
+        $this->assertCount(2, $this->retryRows(), 'positive control: two rows of one push');
+
+        $first = $this->popRetry();
+        $this->assertSame((int) $row->id, (int) $first->getJobId());
+        $first->fire();
+        $skipped = $this->withMessage(RetryEmailAttachments::DUPLICATE_ROW_SKIPPED);
+        $this->assertCount(1, $skipped);
+        $this->assertSame(['email_id' => (int) Email::where('graph_id', 'MSG-1')->value('id'), 'ticket_id' => $ticket->id, 'job_id' => (int) $row->id, 'later_job_ids' => [$later]], $skipped[0]->context);
+        $this->assertSame([], $this->seen->getArrayCopy(), 'the earlier row did not run');
+
+        $this->mock->append($this->read());
+        $this->popRetry()->fire();
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy(), 'the later row ran, once');
+        $this->assertSame([], $this->markerNotes($ticket->id));
+        $this->assertSame(2, $this->messageReads(), "the import's failed read and one retry read, not two");
+    }
+
+    public function test_a_lone_row_of_a_push_runs(): void
+    {
+        // #6100 control: one row, nothing later, so the run is not skipped.
+        $this->graph([$this->failedRead()]);
+        $ticket = $this->ticketWithQueuedRetry();
+        $this->mock->append($this->read());
+        $this->popRetry()->fire();
+
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROW_SKIPPED));
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy());
+    }
+
+    /** A queued retry's command, its row removed, for a push made from a test route. */
+    private function retryCommand(): array
+    {
+        $this->graph([$this->failedRead()]);
+        $ticket = $this->ticketWithQueuedRetry();
+        $c = $this->commandOf($this->popRetry());
+        DB::table('jobs')->delete();
+        $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueueing::class, fn () => null);
+
+        return [$ticket, fn () => (new RetryEmailAttachments($c->emailId, $c->ticketId, $c->noteId, $c->baseline))->queueAfterCommit()];
+    }
+
+    public function test_a_push_from_a_deferred_callback_still_runs_the_not_queued_work(): void
+    {
+        // #6133: the push runs in the terminate phase (a deferred callback of a routed request)
+        // and throws. A defer() registered while the deferred callbacks are being run is never
+        // run; the work is a terminating callback, which still runs.
+        [$ticket, $push] = $this->retryCommand();
+        \Illuminate\Support\Facades\Route::post('/b8-synthetic/deferred-push', function () use ($push) {
+            \Illuminate\Support\defer($push);
+
+            return response()->json(['status' => 'accepted'], 202);
+        });
+
+        $this->postJson('/b8-synthetic/deferred-push')->assertStatus(202);
+
+        $this->assertCount(1, $this->withMessage(RetryEmailAttachments::NOT_QUEUED), 'positive control: the push threw in terminate');
+        $this->assertCount(1, $this->withMessage(RetryEmailAttachments::MARKER));
+        $this->assertCount(1, $this->markerNotes($ticket->id));
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 0]], $this->seen->getArrayCopy());
+
+        // The app's terminating list is never cleared: a later request in the same process
+        // terminates it again, and the work must not run a second time.
+        \Illuminate\Support\Facades\Route::post('/b8-synthetic/noop', fn () => response()->json([], 202));
+        $this->postJson('/b8-synthetic/noop')->assertStatus(202);
+        $this->assertCount(1, $this->markerNotes($ticket->id), 'run once');
+        $this->assertCount(1, $this->seen);
+    }
+
+    public function test_a_request_that_fails_after_the_push_still_runs_the_not_queued_work(): void
+    {
+        // #6134: the push threw, then the request threw (a 500). The work still runs after the
+        // response, whatever its status.
+        [$ticket, $push] = $this->retryCommand();
+        \Illuminate\Support\Facades\Route::post('/b8-synthetic/failing-request', function () use ($push) {
+            $push();
+
+            throw new \RuntimeException('B8-SYNTHETIC-LATER-FAILURE');
+        });
+        $atResponse = null;
+        \Illuminate\Support\Facades\Event::listen(\Illuminate\Foundation\Http\Events\RequestHandled::class, function () use (&$atResponse) {
+            $atResponse = count($this->seen);
+        });
+
+        $this->postJson('/b8-synthetic/failing-request')->assertStatus(500);
+
+        $this->assertSame(0, $atResponse, 'positive control: nothing ran before the response');
+        $this->assertCount(1, $this->withMessage(RetryEmailAttachments::NOT_QUEUED));
+        $this->assertCount(1, $this->markerNotes($ticket->id), 'the marker ran after a 500');
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 0]], $this->seen->getArrayCopy(), 'and the notification');
     }
 }
