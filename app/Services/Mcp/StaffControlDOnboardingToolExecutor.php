@@ -309,6 +309,9 @@ class StaffControlDOnboardingToolExecutor
      */
     public const RACE_DISCLOSURE = 'The global-profile step sends an unconditional update, so a global profile set after the last read before that update is not detected and the update may replace it. Only a refusal in the Control D error envelope (an HTTP 4xx whose body reports success false with an integer error code) ends the step rejected; any other refusal, an unknown outcome, or a read-back that does not show the configured profile ends it uncertain. If that outcome cannot be recorded, or the process stops after the step is admitted for its update and before its outcome is recorded, the step stays posted instead. Posted and uncertain steps are never retried and keep this client locked until reconciled by hand.';
 
+    /** #6406: appended when advanceTo(Done) returned false (closeRunOrRecordLostFence()). */
+    public const NOT_CLOSED = 'The run was not closed because this request no longer holds it, and this request did not reopen it; check the run before acting on it.';
+
     /** nextStep() refusal at staging when the global-profile state could not be established. */
     public const UNREADABLE_REFUSAL = self::UNREADABLE_REASON.'; nothing was staged.';
 
@@ -367,11 +370,14 @@ class StaffControlDOnboardingToolExecutor
             // globalProfileState() throws before any request (setting missing or invalid,
             // Control D disabled or unconfigured) and after one (transport failure, a
             // malformed body, the org not listed exactly once). The text asserts neither.
-            // #6408: the log carries ids, the exception class and its message only; distinct
-            // arms can share one message. Every ControlDClientException this read
-            // can throw carries a fixed message (no vendor body, setting value or key).
-            \Illuminate\Support\Facades\Log::warning('[StaffControlDOnboardingToolExecutor] The Control D global-profile state could not be read at step derivation', [
-                'client_id' => $client->id, 'org_pk' => (string) $org, 'exception' => $e::class, 'message' => $e->getMessage(),
+            // #6408: the log carries ids, the exception class and a message only; distinct
+            // arms can share one message. #6427: the label names the event, not a failed read
+            // (the pre-request arms send none). #6429: the message is this executor's own
+            // fixed text for the exception's message (readFailureMessage()), never the
+            // exception's text itself, so a client text written for a write is not logged
+            // for this read-only GET.
+            \Illuminate\Support\Facades\Log::warning('[StaffControlDOnboardingToolExecutor] The Control D global-profile state was not established at step derivation', [
+                'client_id' => $client->id, 'org_pk' => (string) $org, 'exception' => $e::class, 'message' => self::readFailureMessage($e),
             ]);
 
             return ['unreadable' => true, 'error' => self::UNREADABLE_REFUSAL, 'reason' => self::UNREADABLE_REASON];
@@ -568,6 +574,11 @@ class StaffControlDOnboardingToolExecutor
      * arm makes no unguarded approver lookup and closes the run Done when the run store
      * accepts it; a failed close is logged and leaves the run claimed, never released for
      * re-approval.
+     *
+     * #6406: every arm that closes the run checks advanceTo()'s bool. On false (this
+     * request no longer holds the run) it writes a lost-fence record (an ids-only warning
+     * line and an audit row), never reports 'executed', and its text says the run was not
+     * closed (NOT_CLOSED) instead of that it was.
      */
     public function approveStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
     {
@@ -673,6 +684,12 @@ class StaffControlDOnboardingToolExecutor
                     return new TechnicianApprovalResult('gate_declined', message: "This organization's global profile does not match the configured profile ({$why}). This proposal cannot be approved, and staging again is refused the same way, while this organization enforces a global profile other than the configured one. Nothing was created.");
                 }
 
+                if ($pinDrift) {
+                    // #6393: the pins drift when the org mapping OR only the configured setting
+                    // moved, so this text does not say the client's Control D state changed.
+                    return new TechnicianApprovalResult('gate_declined', message: "The values pinned on this card are out of date ({$why}). Deny this proposal and stage again so the current values are read and approved on a new card. Nothing was created.");
+                }
+
                 return new TechnicianApprovalResult('gate_declined', message: "The client's Control D state changed since this was staged ({$why}). Deny this proposal and stage again so the current step is read and approved on its own card. Nothing was created.");
             }
 
@@ -719,12 +736,17 @@ class StaffControlDOnboardingToolExecutor
             $state = $intent?->state ?? 'unknown';
 
             if ($state === 'bound') {
-                $run->advanceTo(TechnicianRunState::Done);
+                // #6406: a lost claim-owner fence means this request did not close the run; the
+                // step still executed, so the result is the fault channel, never 'executed'.
+                $closed = $this->closeRunOrRecordLostFence($run, $client->id, $ticket, $contentHash, $targetKey, $approverLabel, $approverId);
                 $this->safeAudit($run->action_type, 'executed', $client->id, $ticket, $contentHash, "{$targetKey}: operator-approved Control D onboarding step '{$step}' executed; intent {$intent->id} bound".match ($step) {
                     self::STEP_ORGANIZATION => " to organization {$intent->org_pk}",
                     self::STEP_GLOBAL_PROFILE => "; global profile confirmed on organization {$intent->org_pk}",
                     default => '; code stored encrypted on the client record',
                 }.'.', $approverLabel, $run->id, $approverId);
+                if (! $closed) {
+                    return TechnicianApprovalResult::executedNotClosed("The Control D '{$step}' step", 'Control D', "Intent {$intent->id} is bound.");
+                }
 
                 return new TechnicianApprovalResult('executed', message: match ($step) {
                     self::STEP_ORGANIZATION => "Control D organization created with the global profile and bound to the client (organization {$intent->org_pk}). Stage the verb again for the provisioning code.",
@@ -741,19 +763,20 @@ class StaffControlDOnboardingToolExecutor
                 $reason = (string) ($intent->reason ?? 'vendor rejected the write');
                 $nothing = $step === self::STEP_GLOBAL_PROFILE ? 'nothing changed' : 'nothing created';
                 $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Control D rejected the '{$step}' write — {$reason} (code {$intent->reason_code}); intent {$intent->id} rejected, {$nothing}.", $approverLabel, $run->id, $approverId);
-                $run->advanceTo(TechnicianRunState::Done);
+                $closed = $this->closeRunOrRecordLostFence($run, $client->id, $ticket, $contentHash, $targetKey, $approverLabel, $approverId);
 
-                return new TechnicianApprovalResult('executed_with_fault', message: "Control D rejected the {$step} write: {$reason}".($intent->reason_code === 40301 ? ' — the API key is a Read token; replace it with a Write token in Settings > Integrations, then stage again.' : '.').' '.ucfirst($nothing).'.');
+                return new TechnicianApprovalResult('executed_with_fault', message: "Control D rejected the {$step} write: {$reason}".($intent->reason_code === 40301 ? ' — the API key is a Read token; replace it with a Write token in Settings > Integrations, then stage again.' : '.').' '.ucfirst($nothing).'.'.($closed ? '' : ' '.self::NOT_CLOSED));
             }
 
             // uncertain, posted, or unknown: a vendor write MAY have happened. Terminal;
             // never re-armed. An intent row that still exists holds the client's lock for manual
             // reconciliation; one whose row is gone holds none, and the text says so.
-            $run->advanceTo(TechnicianRunState::Done);
+            $closed = $this->closeRunOrRecordLostFence($run, $client->id, $ticket, $contentHash, $targetKey, $approverLabel, $approverId);
             $fault = "HARD FAULT: the Control D '{$step}' write for client #{$client->id} ended {$state}".($intent !== null ? " (intent {$intent->id}, phase {$intent->phase}".($intent->vendor_pk !== null ? ($step === self::STEP_GLOBAL_PROFILE ? ", org PK {$intent->vendor_pk}" : ", vendor PK {$intent->vendor_pk}") : '').')' : '')
                 .($step === self::STEP_GLOBAL_PROFILE ? '. The vendor PUT may have committed.' : '. The vendor POST may have committed.').' Do NOT re-approve or re-stage: reconcile upstream and local state by hand; '.($intent !== null
                     ? 'the intent keeps this client\'s onboarding lock until then.'
-                    : "intent {$intentId} could not be found afterwards, so it holds no onboarding lock and does not block a new proposal for this client; do not stage one until then.");
+                    : "intent {$intentId} could not be found afterwards, so it holds no onboarding lock and does not block a new proposal for this client; do not stage one until then.")
+                .($closed ? '' : ' '.self::NOT_CLOSED);
             $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: {$fault}", $approverLabel, $run->id, $approverId);
 
             return new TechnicianApprovalResult('executed_with_fault', message: $fault);
@@ -783,26 +806,33 @@ class StaffControlDOnboardingToolExecutor
                     // keep the id-only label
                 }
                 $this->safeAudit($run->action_type, 'error', (int) $run->client_id, null, (string) $run->content_hash, "onboard: intent {$intentId} could not be read after this approval failed; a vendor write cannot be ruled out; run NOT reopened.", $label, $run->id, $approverId);
+                // #6406: a false close (lost fence) is recorded and the text says the run was
+                // not closed; a close that throws is logged and the run stays claimed.
+                $closed = true;
                 try {
-                    $run->advanceTo(TechnicianRunState::Done);
+                    $closed = $this->closeRunOrRecordLostFence($run, (int) $run->client_id, null, (string) $run->content_hash, "onboard: intent {$intentId}", $label, $approverId);
                 } catch (\Throwable) {
                     \Illuminate\Support\Facades\Log::error('[StaffControlDOnboardingToolExecutor] Closing the run failed after its intent could not be read', ['run_id' => $run->id]);
                 }
 
-                return new TechnicianApprovalResult('executed_with_fault', message: "HARD FAULT: this approval failed and Control D onboarding intent {$intentId} could not be read afterwards, so a vendor write cannot be ruled out. Do NOT re-approve; reconcile by hand.");
+                return new TechnicianApprovalResult('executed_with_fault', message: "HARD FAULT: this approval failed and Control D onboarding intent {$intentId} could not be read afterwards, so a vendor write cannot be ruled out. Do NOT re-approve; reconcile by hand.".($closed ? '' : ' '.self::NOT_CLOSED));
             }
             if ($caughtState === 'rejected') {
-                $this->safeAudit($run->action_type, 'error', (int) $run->client_id, null, (string) $run->content_hash, "onboard: finishing after Control D rejected the write failed; intent {$intentId} rejected; run NOT reopened.", $this->approverLabel($approverId), $run->id, $approverId);
-                $run->advanceTo(TechnicianRunState::Done);
+                $label = $this->approverLabel($approverId);
+                $this->safeAudit($run->action_type, 'error', (int) $run->client_id, null, (string) $run->content_hash, "onboard: finishing after Control D rejected the write failed; intent {$intentId} rejected; run NOT reopened.", $label, $run->id, $approverId);
+                if (! $this->closeRunOrRecordLostFence($run, (int) $run->client_id, null, (string) $run->content_hash, "onboard: intent {$intentId}", $label, $approverId)) {
+                    return new TechnicianApprovalResult('executed_with_fault', message: "Control D rejected the onboarding write (intent {$intentId}); finishing this approval failed afterwards. ".self::NOT_CLOSED.' Stage a fresh proposal once the cause is fixed.');
+                }
 
                 return new TechnicianApprovalResult('executed_with_fault', message: "Control D rejected the onboarding write (intent {$intentId}); finishing this approval failed afterwards. The proposal is closed and was not reopened: stage a fresh one once the cause is fixed.");
             }
             if ($intentId !== null && ! in_array($caughtState, ['staged', ControlDOnboardingStaged::RELEASED], true)) {
                 // Post-admission: a write may have happened. Keep the run terminal.
-                $this->safeAudit($run->action_type, 'error', (int) $run->client_id, null, (string) $run->content_hash, "onboard: finalizing after a possible vendor write failed; intent {$intentId}; run NOT reopened.", $this->approverLabel($approverId), $run->id, $approverId);
-                $run->advanceTo(TechnicianRunState::Done);
+                $label = $this->approverLabel($approverId);
+                $this->safeAudit($run->action_type, 'error', (int) $run->client_id, null, (string) $run->content_hash, "onboard: finalizing after a possible vendor write failed; intent {$intentId}; run NOT reopened.", $label, $run->id, $approverId);
+                $closed = $this->closeRunOrRecordLostFence($run, (int) $run->client_id, null, (string) $run->content_hash, "onboard: intent {$intentId}", $label, $approverId);
 
-                return new TechnicianApprovalResult('executed_with_fault', message: "HARD FAULT: recording the Control D onboarding outcome failed after a possible vendor write (intent {$intentId}). Do NOT re-approve; reconcile by hand.");
+                return new TechnicianApprovalResult('executed_with_fault', message: "HARD FAULT: recording the Control D onboarding outcome failed after a possible vendor write (intent {$intentId}). Do NOT re-approve; reconcile by hand.".($closed ? '' : ' '.self::NOT_CLOSED));
             }
             $run->releaseClaim();
 
@@ -891,12 +921,57 @@ class StaffControlDOnboardingToolExecutor
             ->where('summary', 'like', $targetKey.':%')->exists();
     }
 
+    /**
+     * #6429: the #6408 warning's message for a ControlDClientException from the step
+     * derivation read (globalProfileState()). Each known client message maps to a fixed text
+     * of this executor's own; the two requestParent() texts that say 'outcome may be unknown'
+     * (written for its POST) are logged as read failures, since this path sends only a GET.
+     * Any other message is logged as the fixed fallback, never as itself.
+     */
+    private static function readFailureMessage(ControlDClientException $e): string
+    {
+        return match ($e->getMessage()) {
+            ControlDConfig::DEFAULT_PROFILE_SETTING.' is required to onboard.' => ControlDConfig::DEFAULT_PROFILE_SETTING.' is required to onboard.',
+            'Control D is disabled or unconfigured.' => 'Control D is disabled or unconfigured.',
+            'Control D parent request is invalid or unconfigured.' => 'Control D parent request is invalid or unconfigured.',
+            'Control D parent request failed; outcome may be unknown.' => 'Control D parent request failed (read-only GET).',
+            'Control D parent response is unconfirmed; outcome may be unknown.' => 'Control D parent response is unconfirmed (read-only GET).',
+            'Control D parent inventory is malformed.' => 'Control D parent inventory is malformed.',
+            'Control D organization is not uniquely listed in the parent inventory.' => 'Control D organization is not uniquely listed in the parent inventory.',
+            'Control D global profile field is malformed.' => 'Control D global profile field is malformed.',
+            default => 'Unrecognised Control D client refusal.',
+        };
+    }
+
+    /**
+     * #6406: land the run Done, or record that this request did not. advanceTo() returns false
+     * when this request no longer holds the run (another claim, or the run left Executing);
+     * then the run was not closed here and this request did not reopen it. The record is an
+     * ids-only warning line and an audit row (safeAudit(), so a failed audit is logged
+     * status-only and never throws). A throw from advanceTo() is not caught here.
+     */
+    private function closeRunOrRecordLostFence(TechnicianRun $run, ?int $clientId, ?Ticket $ticket, string $contentHash, string $prefix, string $actorLabel, int $approverId): bool
+    {
+        if ($run->advanceTo(TechnicianRunState::Done)) {
+            return true;
+        }
+        \Illuminate\Support\Facades\Log::warning('[StaffControlDOnboardingToolExecutor] The run was not closed: this request no longer holds it', ['run_id' => $run->id, 'action' => $run->action_type]);
+        $this->safeAudit($run->action_type, 'error', $clientId, $ticket, $contentHash, "{$prefix}: the run was not closed because this request no longer holds it; this request did not reopen it.", $actorLabel, $run->id, $approverId);
+
+        return false;
+    }
+
+    /**
+     * #6394 (C-56): a failed audit row is logged status-only: the run id, the result status and
+     * the exception class. Never the exception message: a QueryException's message carries the
+     * SQL with its bindings (the actor label, the summary, the content hash, the client id).
+     */
     private function safeAudit(string $actionType, string $resultStatus, ?int $clientId, ?Ticket $ticket, string $contentHash, string $summary, string $actorLabel, ?int $runId = null, ?int $approverId = null): void
     {
         try {
             $this->auditAttempt($actionType, $resultStatus, $clientId, $ticket, $contentHash, $summary, $actorLabel, $runId, $approverId);
         } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::error('[StaffControlDOnboardingToolExecutor] Post-write audit row failed', ['run_id' => $runId, 'result_status' => $resultStatus, 'error' => $e->getMessage()]);
+            \Illuminate\Support\Facades\Log::error('[StaffControlDOnboardingToolExecutor] Post-write audit row failed', ['run_id' => $runId, 'result_status' => $resultStatus, 'exception' => $e::class]);
         }
     }
 
