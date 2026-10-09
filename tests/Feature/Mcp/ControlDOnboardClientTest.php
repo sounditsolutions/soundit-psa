@@ -1172,9 +1172,13 @@ class ControlDOnboardClientTest extends TestCase
         $fixture = $this->fixture();
         $run = $this->stage($fixture);
         $this->vendor([new Response(403, [], file_get_contents(base_path('tests/Fixtures/ControlD/read-only-rejection.json')))]);
+        // advanceTo(Done) fails BEFORE its UPDATE reaches the table, whether it saves the model or
+        // writes a compare-and-set query: the first technician_runs UPDATE binding 'done' throws.
         $thrown = false;
-        TechnicianRun::saving(function (TechnicianRun $saving) use (&$thrown): void {
-            if ($saving->state === TechnicianRunState::Done && ! $thrown) {
+        $armed = true;
+        \Illuminate\Support\Facades\DB::connection()->beforeExecuting(function (string $sql, array $bindings) use (&$thrown, &$armed): void {
+            if ($armed && ! $thrown && str_starts_with(strtolower(ltrim($sql)), 'update') && str_contains($sql, 'technician_runs')
+                && in_array(TechnicianRunState::Done->value, $bindings, true)) {
                 $thrown = true;
                 throw new \RuntimeException('synthetic run store failure after rejection');
             }
@@ -1185,7 +1189,7 @@ class ControlDOnboardClientTest extends TestCase
         } catch (\RuntimeException $e) {
             $caught = $e;
         } finally {
-            TechnicianRun::flushEventListeners();
+            $armed = false;
         }
         $this->assertTrue($thrown, 'advanceTo(Done) failed, so the outer catch was reached');
         $this->assertSame('synthetic run store failure after rejection', $caught?->getMessage(), 'rethrown, not turned into a HARD FAULT');
