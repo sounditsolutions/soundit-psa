@@ -351,7 +351,7 @@ class StaffCalendarTokenFailureWireTest extends TestCase
 
         $this->assertCount(1, $this->requestsTo('graph.microsoft.com'), 'positive control: the cancel was sent');
         $this->assertCount(2, $this->requestsTo('login.microsoftonline.com'), 'positive control: the first token and the failed refresh');
-        $this->assertSame('gate_declined', $r->status);
+        $this->assertSame('outcome_unknown', $r->status);
         $this->assertStringContainsString('outcome unknown', (string) $r->message);
         $this->assertStringNotContainsString('not sent', (string) $r->message);
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'held for manual verification, not reopened');
@@ -359,6 +359,41 @@ class StaffCalendarTokenFailureWireTest extends TestCase
         $this->assertCount(1, $summaries);
         $this->assertStringStartsWith('Graph calendar write failed/timed out at approval (indeterminate outcome): ', $summaries[0]);
         $this->assertSame('already_handled', app(StaffCalendarToolExecutor::class)->approveStagedRun($run->fresh(), $this->approver->id)->status, 'a re-approve cannot resend it');
+    }
+
+    /**
+     * #6257 (C-56): the wrapping exception's own message is built from class and status only,
+     * so a planted mailbox/path in the wrapped message is not copied into it.
+     */
+    public function test_the_pre_read_wrapper_does_not_copy_the_wrapped_message(): void
+    {
+        $planted = sprintf('Microsoft Graph returned an error for mailbox %s at users/%s/events/%s', self::OWNER, self::OWNER, self::EVENT_ID);
+        $inner = new \App\Services\Graph\GraphShapeDriftException($planted);
+
+        $wrapped = new \App\Services\Mcp\CalendarPreReadFailedException($inner);
+
+        $this->assertSame('The event read before the update failed: GraphShapeDriftException (no HTTP status)', $wrapped->getMessage());
+        $this->assertSame($inner, $wrapped->getPrevious());
+    }
+
+    /**
+     * #6268 (C-56): an indeterminate write failure whose message names the mailbox and path
+     * writes neither to the audit row, on either path; the row carries class and status only.
+     */
+    public function test_an_indeterminate_write_failure_message_naming_the_mailbox_does_not_reach_the_audit_row(): void
+    {
+        $run = $this->staged('calendar_stage_cancel_event', self::writes()['cancel'][2]);
+        $planted = sprintf('Graph API error: POST users/%s/events/%s/cancel returned 504', self::OWNER, self::EVENT_ID);
+        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->twice()->andThrow(new \App\Services\Graph\GraphClientException($planted, 504)));
+        $ticket = Ticket::factory()->create();
+        app(StaffCalendarToolExecutor::class)->execute('calendar_cancel_event', self::writes()['cancel'][2] + ['ticket_id' => $ticket->id], 0, 'mcp-staff:chet');
+        app(StaffCalendarToolExecutor::class)->approveStagedRun($run, $this->approver->id);
+
+        $summaries = TechnicianActionLog::where('result_status', 'error')->orderBy('id')->pluck('summary')->all();
+        $this->assertSame([
+            'Graph calendar write failed/timed out (indeterminate outcome): GraphClientException (HTTP status 504)',
+            'Graph calendar write failed/timed out at approval (indeterminate outcome): GraphClientException (HTTP status 504)',
+        ], $summaries);
     }
 
     /** #6014: the same on the immediate path: the error is the indeterminate one. */

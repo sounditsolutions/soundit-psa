@@ -246,26 +246,79 @@ class StaffCalendarReleaseHonestyTest extends TestCase
     public function test_an_unexpected_failure_after_the_write_call_was_entered_is_unresolved_not_reopened(array $arguments, string $stagedTool, string $writeMethod): void
     {
         $run = $this->staged($arguments, $stagedTool);
+        $failure = new \TypeError('synthetic non-Graph failure '.self::OWNER);
         $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('getEvent')->andReturn(['id' => 'EVT-6124', 'isOnlineMeeting' => false])
-            ->shouldReceive($writeMethod)->once()->andThrow(new \TypeError('synthetic non-Graph failure '.self::OWNER)));
+            ->shouldReceive($writeMethod)->once()->andThrow($failure));
         $logged = $this->captureLogs();
+        $approving = $run->fresh();
+        $this->travelTo(now()->addMinutes(2)->startOfSecond());
 
-        $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run->fresh(), $this->approver->id);
+        $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($approving, $this->approver->id);
 
-        $this->assertSame('gate_declined', $r->status);
+        // #6250: a status of its own, not gate_declined (which says "not sent" everywhere else).
+        $this->assertSame('outcome_unknown', $r->status);
         $this->assertSame('The calendar write call was entered and an unexpected error was then raised, so whether the write reached the calendar is unknown. The run was not reopened for re-approval; check the calendar before any re-send.', $r->message);
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'held, not reopened');
-        $this->assertEquals($run->fresh()->claimed_at, TechnicianRun::findOrFail($run->id)->claimed_at);
+        // #6260: the row still carries the stamp this approval's claim wrote (captured now, before
+        // any release or re-claim could replace it), and that stamp is this request's clock.
+        $this->assertNotNull($approving->claimed_at);
+        $this->assertTrue($run->fresh()->claimed_at->equalTo($approving->claimed_at), 'still held under this claim');
+        $this->assertTrue($approving->claimed_at->equalTo(now()), 'the stamp is this approval\'s claim');
         $records = array_values(array_filter($logged(), fn (MessageLogged $m) => str_contains($m->message, 'unresolved')));
         $this->assertCount(1, $records);
         $this->assertSame('error', $records[0]->level);
-        $this->assertSame(['run_id' => $run->id, 'action' => $stagedTool, 'exception' => \TypeError::class], $records[0]->context);
+        // #6251: class, file and line locate the fault; the message (which can carry a mailbox) is not logged.
+        $this->assertSame(['run_id' => $run->id, 'action' => $stagedTool, 'exception' => \TypeError::class, 'file' => $failure->getFile(), 'line' => $failure->getLine()], $records[0]->context);
+        $this->assertStringNotContainsString(self::OWNER, json_encode($records[0]->context) ?: '');
         $this->assertSame([], array_values(array_filter($logged(), fn (MessageLogged $m) => str_contains($m->message, 'was not reopened') && ! str_contains($m->message, 'unresolved'))));
         $this->assertSame(
             ['Graph calendar write outcome UNRESOLVED: an unexpected failure was raised after the write call was entered: TypeError'],
             TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->pluck('summary')->all(),
         );
         $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed')->count());
+    }
+
+    /**
+     * #6252: the token arm has already settled "not sent". If its release then throws, the
+     * outer catch must not relabel the write as unresolved: no UNRESOLVED row, no
+     * outcome_unknown, and the throwable goes on to the handler as before.
+     */
+    public function test_a_throw_after_the_token_arm_settled_not_sent_is_not_relabelled_unresolved(): void
+    {
+        $run = $this->staged(['user_upn' => self::OWNER, 'event_id' => 'EVT-6124', 'comment' => 'x', 'reason' => 'Resolved.']);
+        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->once()->andThrow(new \App\Services\Graph\GraphTokenException('Failed to obtain Graph API token (HTTP 400)')));
+        $armed = false;
+        DB::listen(function (QueryExecuted $q) use (&$armed): void {
+            if (str_contains($q->sql, 'insert into "technician_action_logs"') && in_array('error', $q->bindings, true)) {
+                $armed = true;
+            }
+        });
+        DB::beforeExecuting(function (string $sql) use (&$armed): void {
+            if ($armed && str_starts_with(strtolower($sql), 'update "technician_runs"')) {
+                throw new \RuntimeException('synthetic release failure');
+            }
+        });
+
+        $thrown = rescue(fn () => app(StaffCalendarToolExecutor::class)->approveStagedRun($run->fresh(), $this->approver->id), fn ($e) => $e, false);
+
+        $this->assertInstanceOf(\RuntimeException::class, $thrown, 'the release failure is not swallowed into a result');
+        $this->assertSame('synthetic release failure', $thrown->getMessage());
+        $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%UNRESOLVED%')->count());
+    }
+
+    /**
+     * #6250: through the real cockpit route, outcome_unknown reaches the approver on the error
+     * channel with its own text, never as a success and never as the generic decline fallback.
+     */
+    public function test_an_unresolved_outcome_reaches_the_cockpit_on_the_error_channel(): void
+    {
+        $run = $this->staged(['user_upn' => self::OWNER, 'event_id' => 'EVT-6124', 'comment' => 'x', 'reason' => 'Resolved.']);
+        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->once()->andThrow(new \TypeError('synthetic non-Graph failure')));
+
+        $this->actingAs($this->approver)->post(route('cockpit.approve', $run))
+            ->assertSessionHas('error', 'The calendar write call was entered and an unexpected error was then raised, so whether the write reached the calendar is unknown. The run was not reopened for re-approval; check the calendar before any re-send.')
+            ->assertSessionMissing('success');
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state);
     }
 
     /**

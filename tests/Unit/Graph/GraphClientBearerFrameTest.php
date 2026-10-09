@@ -28,8 +28,9 @@ use Tests\TestCase;
  * (the closure the whole Guzzle stack calls last), so its trace holds every frame above it:
  * GraphClient's, Guzzle's Client::send/sendAsync/transfer, and each middleware's. #6188: the
  * production transport handlers (CurlHandler/CurlFactory, StreamHandler) never run here, so
- * nothing is claimed about their frames; test_the_curl_handler_frames_are_outside_the_claim
- * measures that they can hold it. Every
+ * nothing is claimed about their frames. #6258: test_the_curl_handler_frames_are_outside_the_claim
+ * measures that CurlHandler's can hold it, through a bare Guzzle client; StreamHandler is not
+ * measured (source-read only). Every
  * rejection the stack produced and the exception GraphClient finally threw are scanned too.
  * frameArgumentsForScan() writes string and array arguments as they are and names an object
  * argument (the PSR-7 Request that now carries the header) by its class only. So the claim is
@@ -287,7 +288,7 @@ class GraphClientBearerFrameTest extends TestCase
         $client = new \GuzzleHttp\Client(['handler' => HandlerStack::create(new \GuzzleHttp\Handler\CurlHandler)]);
         $request = (new \GuzzleHttp\Psr7\Request('GET', 'https://graph.invalid/v1.0/me'))->withHeader('Authorization', 'Bearer '.self::SEEDED_ACCESS_FIXTURE);
 
-        $thrown = self::attempt(fn () => $client->send($request, ['verify' => '/nonexistent/b4o-ca-bundle.pem']));
+        $thrown = self::attempt(fn () => $client->send($request, ['verify' => '/nonexistent/synthetic-ca-bundle.pem']));
 
         $this->assertInstanceOf(\InvalidArgumentException::class, $thrown);
         $this->assertNotInstanceOf(\GuzzleHttp\Exception\GuzzleException::class, $thrown);

@@ -504,7 +504,7 @@ class StaffCalendarToolExecutor
             // as an uncaught exception (a generic MCP 500 the agent blindly retries). A 15s timeout is
             // outcome-INDETERMINATE — a non-idempotent cancel/respond may already have reached the
             // client — so we never imply a safe retry for those.
-            $this->safeAudit($directTool, 'error', $ticket, $contentHash, 'Graph calendar write failed/timed out (indeterminate outcome): '.mb_substr($e->getMessage(), 0, 140), $actorLabel);
+            $this->safeAudit($directTool, 'error', $ticket, $contentHash, 'Graph calendar write failed/timed out (indeterminate outcome): '.self::graphFailureDetail($e), $actorLabel);
 
             return ['error' => $this->indeterminateWriteMessage($directTool)];
         }
@@ -517,7 +517,7 @@ class StaffCalendarToolExecutor
         try {
             $this->backlinkNote($ticket, $this->writeBacklinkBody($directTool, $upn, $eventId, (string) $ctx['reason'], approved: false));
         } catch (\Throwable $bookkeeping) {
-            Log::error('[Calendar] immediate write committed but post-write back-link failed', ['tool' => $directTool, 'error' => $bookkeeping->getMessage()]);
+            Log::error('[Calendar] immediate write committed but post-write back-link failed', ['tool' => $directTool, 'exception' => $bookkeeping::class]);
         }
 
         return array_merge([
@@ -903,10 +903,11 @@ class StaffCalendarToolExecutor
      * RE-VERIFY the owner allowlist AND the master switch AT APPROVAL (the TOCTOU close: the
      * allowlist can change between staging and approval, and it is the one boundary that matters on
      * a tenant-wide Calendars.ReadWrite token) → execute the SAME plan an immediate call would →
-     * back-link → audit → Done. On any failure the claim is released so the run is never stranded
-     * Executing. External/non-idempotent, so it is deliberately absent from
-     * TechnicianRun::RECOVERY_SAFE_ACTION_TYPES (a stranded run is flagged for manual review, never
-     * auto-reopened — that would risk a double-book).
+     * back-link → audit → Done. A failure before the write call releases the claim. #6266: once
+     * the write call was entered and its outcome is unknown, the run stays Executing on purpose,
+     * where no cockpit lane lists it. External/non-idempotent, so it is deliberately absent from
+     * TechnicianRun::RECOVERY_SAFE_ACTION_TYPES: the stale-claim reaper never reopens it (that
+     * would risk a double-book) and only logs it.
      */
     public function approveStagedRun(TechnicianRun $run, int $approverId, array $approvalInputs = []): TechnicianApprovalResult
     {
@@ -973,6 +974,9 @@ class StaffCalendarToolExecutor
                 // #5833: no token, so the write request was never sent and nothing committed.
                 // Release the claim as on the refusal above; re-approving cannot double-send.
                 // #6016: the text says the run is reopened only when releaseClaim()'s CAS won.
+                // #6252: this arm has settled "not sent", so a later throwable (from the release
+                // below) is not relabelled as an unresolved write by the outer catch.
+                $writeEntered = false;
                 $this->safeAudit($run->action_type, 'error', $ticket, $run->content_hash, self::TOKEN_FAILURE_AUDIT.mb_substr($e->getMessage(), 0, 140), $this->approverLabel($approverId), $run->id, $approverId);
                 $reopened = $run->releaseClaim();
 
@@ -991,7 +995,7 @@ class StaffCalendarToolExecutor
                 // review contract:1: the outcome is INDETERMINATE — a 15s timeout or a post-POST
                 // shape-drift can leave a non-idempotent write already committed, so "nothing changed,
                 // re-approve to retry" can double-send. Only create is retry-safe (transactionId).
-                $this->safeAudit($run->action_type, 'error', $ticket, $run->content_hash, 'Graph calendar write failed/timed out at approval (indeterminate outcome): '.mb_substr($e->getMessage(), 0, 140), $this->approverLabel($approverId), $run->id, $approverId);
+                $this->safeAudit($run->action_type, 'error', $ticket, $run->content_hash, 'Graph calendar write failed/timed out at approval (indeterminate outcome): '.self::graphFailureDetail($e), $this->approverLabel($approverId), $run->id, $approverId);
                 if ($this->isRetrySafe($directTool)) {
                     // #6016: 'Re-approve' only when releaseClaim()'s CAS won.
                     $reopened = $run->releaseClaim();
@@ -1002,8 +1006,8 @@ class StaffCalendarToolExecutor
 
                 // Non-idempotent + indeterminate: do NOT reopen to AwaitingApproval — leave the run
                 // CLAIMED (Executing) so it cannot be one-tap re-approved into a duplicate client send;
-                // calendar is excluded from RECOVERY_SAFE, so the stale-claim path flags it for a human.
-                return $this->declined('The calendar write may already have reached the client (upstream timeout/error) — outcome unknown. The run is held for manual verification, NOT reopened for one-tap re-approval; check the calendar before any re-send.');
+                // calendar is excluded from RECOVERY_SAFE, so the stale-claim reaper never reopens it.
+                return self::outcomeUnknown('The calendar write may already have reached the client (upstream timeout/error) — outcome unknown. The run is held for manual verification, NOT reopened for one-tap re-approval; check the calendar before any re-send.');
             }
 
             // The external Graph write has now COMMITTED. From here NO local failure may
@@ -1032,10 +1036,10 @@ class StaffCalendarToolExecutor
                 // Write done + run already Done: record the partial failure for a human and
                 // return success. Reopening here is the exact double-execute bug this guards.
                 Log::error('[Calendar] post-write bookkeeping failed after an approved calendar write', [
-                    'run_id' => $run->id, 'action' => $run->action_type, 'error' => $bookkeeping->getMessage(),
+                    'run_id' => $run->id, 'action' => $run->action_type, 'exception' => $bookkeeping::class,
                 ]);
                 try {
-                    $this->auditWrite($run->action_type, 'error', $ticket, $run->content_hash, 'Calendar write EXECUTED but post-write back-link/audit failed ('.mb_substr($bookkeeping->getMessage(), 0, 160).') — run left Done; verify the ticket record manually.', $this->approverLabel($approverId), $run->id, $approverId);
+                    $this->auditWrite($run->action_type, 'error', $ticket, $run->content_hash, 'Calendar write EXECUTED but post-write back-link/audit failed ('.class_basename($bookkeeping).') — run left Done; verify the ticket record manually.', $this->approverLabel($approverId), $run->id, $approverId);
                 } catch (\Throwable) {
                     // Audit is best-effort on this already-degraded path; the Log line above is the durable record.
                 }
@@ -1045,11 +1049,11 @@ class StaffCalendarToolExecutor
         } catch (\Throwable $e) {
             // A failure raised outside the arms above. If the write committed but
             // advanceTo(Done) itself threw, do NOT reopen
-            // (double-execute risk): leave the run claimed/Executing to be flagged for manual
-            // review, per this family's exclusion from RECOVERY_SAFE_ACTION_TYPES.
+            // (double-execute risk): leave the run claimed/Executing, which the stale-claim
+            // reaper never reopens (this family is not in RECOVERY_SAFE_ACTION_TYPES).
             if ($writeCommitted) {
                 Log::error('[Calendar] finalizing an executed calendar write failed; run left claimed for manual review', [
-                    'run_id' => $run->id, 'error' => $e->getMessage(),
+                    'run_id' => $run->id, 'exception' => $e::class,
                 ]);
 
                 return new TechnicianApprovalResult('executed', message: 'Calendar write executed; finalizing the run failed and was flagged — do NOT re-approve.');
@@ -1058,16 +1062,20 @@ class StaffCalendarToolExecutor
             // #6185: the write call was entered, and what failed is not a GraphClientException
             // (those are all caught above), so whether the write reached the calendar is
             // unknown. Do not reopen: a re-approval could send it a second time. The run stays
-            // claimed (Executing), as on the indeterminate arm above; calendar is not
-            // RECOVERY_SAFE, so the stale-claim reaper flags it for a human. Before the write
-            // call was entered nothing was sent, so the release below stays safe.
+            // claimed (Executing), as on the indeterminate arm above. #6266: no cockpit lane
+            // lists an Executing run, and the stale-claim reaper only logs a non-recovery-safe
+            // one; this error log line and audit row are the record. Before the write call was
+            // entered nothing was sent, so the release below stays safe.
             if ($writeEntered) {
+                // #6251: the throwable's class, file and line, never its message (C-56: a
+                // message can carry a mailbox or path), so the fault can be located.
                 Log::error('[Calendar] approved calendar write outcome unresolved: an unexpected failure was raised after the write call was entered; run not reopened', [
                     'run_id' => $run->id, 'action' => $run->action_type, 'exception' => $e::class,
+                    'file' => $e->getFile(), 'line' => $e->getLine(),
                 ]);
                 $this->safeAudit($run->action_type, 'error', $ticket, $run->content_hash, self::UNRESOLVED_AUDIT.class_basename($e), $this->approverLabel($approverId), $run->id, $approverId);
 
-                return $this->declined(self::UNRESOLVED_TEXT);
+                return self::outcomeUnknown(self::UNRESOLVED_TEXT);
             }
 
             // #6124: the exception is rethrown, so no text is returned here; a lost CAS is
@@ -1121,17 +1129,34 @@ class StaffCalendarToolExecutor
     private static function preReadFailureDetail(CalendarPreReadFailedException $e): string
     {
         $previous = $e->getPrevious();
-        if (! $previous instanceof GraphClientException) {
-            return 'unknown cause';
-        }
-        $status = $previous->getHttpStatus();
 
-        return class_basename($previous).($status > 0 ? " (HTTP status {$status})" : ' (no HTTP status)');
+        return $previous instanceof GraphClientException ? self::graphFailureDetail($previous) : 'unknown cause';
+    }
+
+    /**
+     * #6268 (C-56): an audit detail for a Graph failure built from its class and HTTP status,
+     * never its message, which any GraphClientException subclass may fill with a mailbox,
+     * event id, path or vendor text. Status 0: no HTTP status was carried.
+     */
+    private static function graphFailureDetail(GraphClientException $e): string
+    {
+        $status = $e->getHttpStatus();
+
+        return class_basename($e).($status > 0 ? " (HTTP status {$status})" : ' (no HTTP status)');
     }
 
     private function declined(string $reason): TechnicianApprovalResult
     {
         return new TechnicianApprovalResult('gate_declined', message: mb_substr($reason, 0, 300));
+    }
+
+    /**
+     * #6250: the write call may have reached the calendar and its outcome is not known. A
+     * status of its own, never gate_declined, which every other arm uses for "not sent".
+     */
+    private static function outcomeUnknown(string $reason): TechnicianApprovalResult
+    {
+        return new TechnicianApprovalResult('outcome_unknown', message: $reason);
     }
 
     private function approverLabel(int $approverId): string

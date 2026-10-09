@@ -565,8 +565,9 @@ class GraphClient
         // headers into its $conf array, and a throwable raised while $conf is a frame argument
         // (for example the InvalidArgumentException applyHandlerOptions() raises for a missing
         // CA bundle) carries the bearer in that array when zend.exception_ignore_args is Off.
-        // StreamHandler likewise builds the header line into its stream-context array. Such a
-        // throwable is not a GuzzleException, so it leaves this method as is. withHeader() and the PSR-7
+        // StreamHandler builds the header line into its stream-context array too; that is read
+        // from Guzzle's source and not measured by any test here. Such a throwable is not a
+        // GuzzleException, so this method's catch does not take it (also source-read only). withHeader() and the PSR-7
         // header validation it calls also take it as a string (withHeader() throws only for a
         // value tokenShapeFault() already refuses, #5738). Guzzle applies $options ('query',
         // 'json') and the base URI to the Request exactly as request() did.

@@ -11,6 +11,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Cipp\CippRestWriteClient;
+use App\Services\Technician\TechnicianApprovalService;
 use App\Support\McpConfig;
 use App\Support\McpToolModes;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -753,5 +754,57 @@ class CippStagedPasswordResetTest extends TestCase
         $response->assertOk();
         $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
         $this->assertSame('Temp-Pass-999!', $this->decoded($response)['temporary_password'] ?? null);
+    }
+
+    /**
+     * #6256: the claim is replaced while the reset call is in flight. The reset executed, but
+     * this request did not close the run: executed_with_fault on the error channel, no
+     * one-time secret on the result, and the other claim stays in place.
+     */
+    public function test_an_executed_reset_whose_claim_was_lost_is_not_reported_as_executed(): void
+    {
+        $this->configureCipp();
+        $actor = $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $staging = Mockery::mock(CippRestWriteClient::class);
+        $staging->shouldNotReceive('resetUserPassword');
+        $this->app->instance(CippRestWriteClient::class, $staging);
+        $token = McpConfig::rotateStaffToken(allowedTools: [self::TOOL.':staged'], label: 'opsbot');
+        $this->callTool($token, self::TOOL, [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['contact']->id,
+            'ticket_id' => $fixture['ticket']->id,
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'User locked out; reset requested on the ticket.',
+            'staged' => true,
+        ])->assertOk();
+        $run = TechnicianRun::query()->where('action_type', self::STAGED)->firstOrFail();
+
+        $approving = Mockery::mock(CippRestWriteClient::class);
+        $approving->shouldReceive('resetUserPassword')->once()->andReturnUsing(function () use ($run) {
+            TechnicianRun::whereKey($run->id)->update(['claimed_at' => now()->addMinute()]);
+
+            return ['success' => true, 'status' => 200, 'body' => ['Results' => ['copyField' => 'synthetic-minted-6256', 'state' => 'success']]];
+        });
+        $this->app->instance(CippRestWriteClient::class, $approving);
+
+        $result = app(TechnicianApprovalService::class)->approveStagedCippWriteAction($run, $actor->id);
+
+        $this->assertSame('executed_with_fault', $result->status);
+        $this->assertNull($result->secret, 'no one-time secret on the fault channel');
+        $this->assertStringStartsWith('The CIPP password reset executed, but the run was not closed', (string) $result->message);
+        $this->assertStringContainsString('withheld from the approver and not stored', (string) $result->message);
+        $this->assertStringNotContainsString('this channel', (string) $result->message);
+        // #6303: the executed row the cooldown rail reads stays, but no row claims a delivery.
+        $rows = \App\Models\TechnicianActionLog::where('run_id', $run->id)->get();
+        $this->assertTrue($rows->contains('result_status', 'executed'), 'the reset cooldown still reads an executed row');
+        $fault = $rows->firstWhere('result_status', 'executed_with_fault');
+        $this->assertNotNull($fault, 'the withheld password is audited');
+        $this->assertStringContainsString('withheld from the approver and not stored', (string) $fault->summary);
+        foreach ($rows as $row) {
+            $this->assertStringNotContainsString('delivered once', (string) $row->summary);
+            $this->assertStringNotContainsString('synthetic-minted-6256', (string) $row->summary);
+        }
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
     }
 }

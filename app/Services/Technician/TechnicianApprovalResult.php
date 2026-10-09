@@ -4,8 +4,11 @@ namespace App\Services\Technician;
 
 /**
  * The outcome of an approve or reconnect-run action. status ∈ {sent, closed,
- * resolved, published, merged, executed, executed_with_fault, queued_offline,
- * already_handled, gate_declined, recipient_invalid}. 'resolved' vs 'closed'
+ * resolved, published, merged, executed, executed_with_fault, outcome_unknown,
+ * queued_offline, already_handled, gate_declined, recipient_invalid}.
+ * 'outcome_unknown' (#6250) is a write call that was entered and may have reached
+ * the vendor, with its outcome not known: never a success, never "not sent", and
+ * $message carries what the approver must check. 'resolved' vs 'closed'
  * distinguishes which terminal target an approved close_ticket run applied
  * (psa-d9ayt). 'executed_with_fault' is an upstream write that LANDED but
  * violated its post-condition (the Huntress resolution_method hard fault), or
@@ -30,4 +33,15 @@ final class TechnicianApprovalResult
         public readonly ?string $message = null,
         public readonly ?string $secret = null,
     ) {}
+
+    /**
+     * #6256: the upstream write executed, but advanceTo() lost the claim-owner fence, so this
+     * request did not close the run. Never a success and never a retry: it goes out on the
+     * error channel (executed_with_fault) and carries no one-time secret. $action names what
+     * executed; $check names where the operator verifies it.
+     */
+    public static function executedNotClosed(string $action, string $check, string $extra = ''): self
+    {
+        return new self('executed_with_fault', message: "{$action} executed, but the run was not closed because this request no longer holds it. Do NOT re-approve it; check {$check} and the run.".($extra !== '' ? ' '.$extra : ''));
+    }
 }

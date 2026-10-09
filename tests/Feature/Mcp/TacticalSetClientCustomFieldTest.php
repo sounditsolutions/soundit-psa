@@ -872,6 +872,32 @@ class TacticalSetClientCustomFieldTest extends TestCase
         ]);
     }
 
+    /**
+     * #6256: the claim is replaced while the field write is in flight. The write executed,
+     * but this request did not close the run: executed_with_fault, never 'executed'.
+     */
+    public function test_an_executed_write_whose_claim_was_lost_is_not_reported_as_executed(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $approver = User::factory()->create();
+        $fixture = $this->fixture();
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->twice()->andReturn($this->upstreamClients());
+        $run = $this->stagedRun($fixture);
+        $client->shouldReceive('setClientCustomField')->once()->andReturnUsing(function () use ($run): array {
+            TechnicianRun::whereKey($run->id)->update(['claimed_at' => now()->addMinute()]);
+
+            return [];
+        });
+
+        $result = app(TechnicianApprovalService::class)->approveStagedTacticalAdminAction($run, $approver->id);
+
+        $this->assertSame('executed_with_fault', $result->status);
+        $this->assertSame('The approved Tactical admin action executed, but the run was not closed because this request no longer holds it. Do NOT re-approve it; check Tactical and the run.', $result->message);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
+    }
+
     public function test_approving_the_same_proposal_twice_makes_only_one_upstream_call(): void
     {
         $this->configureTactical();

@@ -65,6 +65,9 @@ class StaffHuntressActionToolExecutor
 {
     private const DIRECT_DEDUP_HOURS = 24;
 
+    /** #6256: appended when advanceTo() lost the claim-owner fence, so this request did not close the run. */
+    private const NOT_CLOSED = 'The run was not closed because this request no longer holds it; check the run.';
+
     private const COOLDOWN_SECONDS = 0;
 
     /**
@@ -634,7 +637,9 @@ class StaffHuntressActionToolExecutor
 
             if ($this->escalationResolved($escalation)) {
                 $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $contentHash, "{$targetKey}: Escalation already resolved upstream — approved resolve satisfied without an upstream call.", $approverLabel, $run->id, $approverId);
-                $run->advanceTo(TechnicianRunState::Done);
+                if (! $run->advanceTo(TechnicianRunState::Done)) {
+                    return self::resolvedUpstreamNotClosed($escalationId, false);
+                }
 
                 return new TechnicianApprovalResult('executed', message: "Escalation {$escalationId} was already resolved upstream — nothing needed sending.");
             }
@@ -643,7 +648,9 @@ class StaffHuntressActionToolExecutor
                 $resolution = $this->writeClient->resolveEscalation($escalationId);
             } catch (HuntressEscalationAlreadyResolvedException) {
                 $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $contentHash, "{$targetKey}: Upstream answered 409 already-resolved — approved resolve satisfied.", $approverLabel, $run->id, $approverId);
-                $run->advanceTo(TechnicianRunState::Done);
+                if (! $run->advanceTo(TechnicianRunState::Done)) {
+                    return self::resolvedUpstreamNotClosed($escalationId, true);
+                }
 
                 return new TechnicianApprovalResult('executed', message: "Escalation {$escalationId} was already resolved upstream — nothing needed sending.");
             } catch (HuntressEscalationNotApiResolvableException $e) {
@@ -697,9 +704,10 @@ class StaffHuntressActionToolExecutor
                     .'The resolve POST may already have COMMITTED upstream, and its resolution_method post-condition was never evaluated — a `rule` resolution would mean the server CREATED attribute rules. Do NOT re-approve: establish in the Huntress console whether this escalation is resolved, inspect it for created rules, and escalate to a human.';
                 Log::error("[StaffHuntressActionToolExecutor] {$indeterminateFault}", ['run_id' => $run->id, 'escalation_id' => $escalationId]);
                 $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: {$indeterminateFault}", $approverLabel, $run->id, $approverId);
-                $run->advanceTo(TechnicianRunState::Done);
+                // #6256: on a lost claim-owner fence the run was not closed here; say so.
+                $closed = $run->advanceTo(TechnicianRunState::Done);
 
-                return new TechnicianApprovalResult('executed_with_fault', message: $indeterminateFault);
+                return new TechnicianApprovalResult('executed_with_fault', message: $indeterminateFault.($closed ? '' : ' '.self::NOT_CLOSED));
             }
 
             // The upstream resolve has now COMMITTED. Land the run terminal
@@ -711,7 +719,9 @@ class StaffHuntressActionToolExecutor
             // 'executed', laundering a rules-were-created security fault into
             // a green success.
             $writeCommitted = true;
-            $run->advanceTo(TechnicianRunState::Done);
+            // #6256: a lost claim-owner fence means this request did not close the run. The
+            // post-condition below is still evaluated; the result says the run was not closed.
+            $closed = $run->advanceTo(TechnicianRunState::Done);
 
             // POST-CONDITION on the server's own report of what it did. The
             // id-only `{}` body legitimately produces `direct` or `dismiss`;
@@ -732,10 +742,13 @@ class StaffHuntressActionToolExecutor
                 Log::error("[StaffHuntressActionToolExecutor] {$fault}", ['run_id' => $run->id, 'escalation_id' => $escalationId]);
                 $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: {$fault}", $approverLabel, $run->id, $approverId);
 
-                return new TechnicianApprovalResult('executed_with_fault', message: $fault);
+                return new TechnicianApprovalResult('executed_with_fault', message: $fault.($closed ? '' : ' '.self::NOT_CLOSED));
             }
 
             $this->safeAudit($run->action_type, 'executed', $client->id, $ticket, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — escalation {$escalationId} resolved (resolution_method {$method}).", $approverLabel, $run->id, $approverId);
+            if (! $closed) {
+                return TechnicianApprovalResult::executedNotClosed('The Huntress resolve', 'the Huntress console');
+            }
 
             return new TechnicianApprovalResult('executed', message: "Escalation {$escalationId} resolved (server reported resolution_method '{$method}').");
         } catch (\Throwable $e) {
@@ -867,6 +880,21 @@ class StaffHuntressActionToolExecutor
     }
 
     /** @param array<string, mixed> $escalation */
+    /**
+     * #6256: the escalation is already resolved upstream, but the run was not closed because this
+     * request lost the claim-owner fence. Not a success, and this request resolved nothing, so it
+     * is gate_declined like the CIPP sentNothingNotClosed(). $sent says whether the resolve call
+     * went out: false when the read showed it resolved, true when the call got a 409 answer.
+     */
+    private static function resolvedUpstreamNotClosed(int $escalationId, bool $sent): TechnicianApprovalResult
+    {
+        $what = $sent
+            ? "The resolve call for escalation {$escalationId} was sent and Huntress answered that it was already resolved"
+            : "Escalation {$escalationId} reads resolved upstream, so nothing was sent";
+
+        return new TechnicianApprovalResult('gate_declined', message: $what.'; '.lcfirst(self::NOT_CLOSED));
+    }
+
     private function escalationResolved(array $escalation): bool
     {
         $status = is_scalar($escalation['status'] ?? null) ? (string) $escalation['status'] : '';
@@ -955,9 +983,7 @@ class StaffHuntressActionToolExecutor
                 return false;
             }
 
-            $fresh->advanceTo(TechnicianRunState::Done);
-
-            return true;
+            return $fresh->advanceTo(TechnicianRunState::Done);
         });
 
         if (! $finalized) {

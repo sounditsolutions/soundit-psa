@@ -15,6 +15,7 @@ use App\Services\Huntress\HuntressEscalationAlreadyResolvedException;
 use App\Services\Huntress\HuntressEscalationNotApiResolvableException;
 use App\Services\Huntress\HuntressWriteClient;
 use App\Services\Tactical\Actions\ActionRedactor;
+use App\Services\Technician\TechnicianApprovalService;
 use App\Support\McpConfig;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -1100,5 +1101,60 @@ class HuntressResolveEscalationTest extends TestCase
             $revive[0]['message'],
             'the revive warning must still say what happened'
         );
+    }
+
+    /**
+     * #6256: the claim is replaced while the resolve POST is in flight. The resolve committed,
+     * but this request did not close the run, so the result is executed_with_fault with a
+     * not-closed text, never 'executed', and the other claim stays in place.
+     */
+    public function test_a_committed_resolve_whose_claim_was_lost_is_not_reported_as_a_clean_success(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWriteClientNeverCalled();
+        $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+
+        $write = Mockery::mock(HuntressWriteClient::class);
+        $write->shouldReceive('resolveEscalation')->once()->with(900)->andReturnUsing(function () use ($run) {
+            TechnicianRun::whereKey($run->id)->update(['claimed_at' => now()->addMinute()]);
+
+            return ['resolution_method' => 'direct'];
+        });
+        $this->app->instance(HuntressWriteClient::class, $write);
+        $this->mockReadClient($this->escalation());
+
+        $result = app(TechnicianApprovalService::class)->approveStagedHuntressAction($run, $actor->id);
+
+        $this->assertSame('executed_with_fault', $result->status);
+        $this->assertSame('The Huntress resolve executed, but the run was not closed because this request no longer holds it. Do NOT re-approve it; check the Huntress console and the run.', $result->message);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
+    }
+
+    /** #6303: the 409 arm DID send the resolve call, so its lost-fence text must say so. */
+    public function test_an_already_resolved_409_whose_claim_was_lost_says_the_call_was_sent(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWriteClientNeverCalled();
+        $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+
+        $write = Mockery::mock(HuntressWriteClient::class);
+        $write->shouldReceive('resolveEscalation')->once()->with(900)->andReturnUsing(function () use ($run) {
+            TechnicianRun::whereKey($run->id)->update(['claimed_at' => now()->addMinute()]);
+
+            throw new HuntressEscalationAlreadyResolvedException('Escalation 900 has already been resolved upstream.', 409);
+        });
+        $this->app->instance(HuntressWriteClient::class, $write);
+        $this->mockReadClient($this->escalation());
+
+        $result = app(TechnicianApprovalService::class)->approveStagedHuntressAction($run, $actor->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame('The resolve call for escalation 900 was sent and Huntress answered that it was already resolved; the run was not closed because this request no longer holds it; check the run.', $result->message);
+        $this->assertStringNotContainsString('nothing was sent', (string) $result->message);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
     }
 }

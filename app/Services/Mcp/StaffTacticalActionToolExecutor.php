@@ -351,7 +351,13 @@ class StaffTacticalActionToolExecutor
                 && $directTool === 'tactical_run_script'
                 && TacticalConfig::offlineQueueEnabled();
 
-            $status = $result->isOk() ? 'executed' : ($willQueue ? 'queued_offline' : $result->status);
+            // #6254: the queue attempt is audited by enqueueOfflineRun() once its outcome is
+            // known, so a lost claim-owner fence never leaves a queued_offline row behind.
+            if ($willQueue) {
+                return $this->enqueueOfflineRun($run, $agentId, $directTool, $params, $approverId, $ticket, $asset, $result);
+            }
+
+            $status = $result->isOk() ? 'executed' : $result->status;
             $this->auditAttempt(
                 $run->action_type,
                 $status,
@@ -364,10 +370,6 @@ class StaffTacticalActionToolExecutor
                 $run->id,
                 $approverId,
             );
-
-            if ($willQueue) {
-                return $this->enqueueOfflineRun($run, $agentId, $directTool, $params, $approverId);
-            }
 
             // #3971: the action may have run, so the run is NOT released for
             // re-approval or re-queue. It is landed Done rather than left in
@@ -440,12 +442,36 @@ class StaffTacticalActionToolExecutor
      * args): a duplicate approval bumps the existing row's coalesce_count and this
      * run supersedes rather than creating a second queued row. The approver is
      * persisted so the eventual reconnect-run attributes its audit correctly.
+     *
+     * #6254: the audit row is written after the queue attempt: queued_offline when the run was
+     * queued or coalesced, and the bus status with a not-queued summary when the claim-owner
+     * fence was lost.
      */
-    private function enqueueOfflineRun(TechnicianRun $run, string $agentId, string $directTool, array $params, int $approverId): TechnicianApprovalResult
+    private function enqueueOfflineRun(TechnicianRun $run, string $agentId, string $directTool, array $params, int $approverId, Ticket $ticket, Asset $asset, TacticalActionResult $busResult): TechnicianApprovalResult
     {
         $dedupKey = $this->queueDedupKey($agentId, $directTool, $params);
+        $queued = $this->parkOrCoalesce($run, $agentId, $dedupKey, $approverId);
 
-        return DB::transaction(function () use ($run, $agentId, $dedupKey, $approverId) {
+        $this->auditAttempt(
+            $run->action_type,
+            $queued ? 'queued_offline' : $busResult->status,
+            (int) $run->client_id,
+            $ticket,
+            $asset,
+            $run->content_hash,
+            $queued ? $this->approvalSummary($run, $busResult) : "Operator-approved {$run->action_type} {$busResult->status}; not queued: this request no longer holds the run.",
+            $this->approverLabel($approverId),
+            $run->id,
+            $approverId,
+        );
+
+        return $queued ? new TechnicianApprovalResult('queued_offline') : self::notQueuedOffline();
+    }
+
+    /** Park the run, or coalesce it onto an identical queued row. False when the fence was lost. */
+    private function parkOrCoalesce(TechnicianRun $run, string $agentId, string $dedupKey, int $approverId): bool
+    {
+        return DB::transaction(function () use ($run, $agentId, $dedupKey, $approverId): bool {
             // Coalesce onto an identical queued action already waiting. lockForUpdate +
             // the transaction serialize near-concurrent enqueues on MariaDB (no-op on
             // SQLite, which serializes writes anyway); sweepAgent additionally de-dups
@@ -459,14 +485,16 @@ class StaffTacticalActionToolExecutor
                 ->first();
 
             if ($existing !== null) {
-                // #6197: supersede first, under the claim-owner fence; a stale holder neither
-                // supersedes the run nor counts onto the queued row.
+                // #6197 / #6263: supersede first, under the claim-owner fence, which holds only
+                // while the run is still Executing under this request's claim. A holder whose run
+                // was claimed again, or moved on by another path, neither supersedes it nor
+                // counts onto the queued row.
                 if (! $run->advanceTo(TechnicianRunState::Superseded)) {
-                    return self::notQueuedOffline();
+                    return false;
                 }
                 $existing->increment('coalesce_count');
 
-                return new TechnicianApprovalResult('queued_offline');
+                return true;
             }
 
             // Preserve the original window on a re-queue (failed reconnect-run); a fresh
@@ -477,22 +505,19 @@ class StaffTacticalActionToolExecutor
             // Approver folded into the CAS update — no second write to race a concurrent
             // cancel/expire. A false result means this request no longer holds the claim:
             // the run left Executing, or (#6197) another claim now holds it. Nothing queued.
-            if (! $run->queueForOffline($agentId, $dedupKey, $queuedAt, $expiresAt, ['queued_approver_id' => $approverId])) {
-                return self::notQueuedOffline();
-            }
-
-            return new TechnicianApprovalResult('queued_offline');
+            return $run->queueForOffline($agentId, $dedupKey, $queuedAt, $expiresAt, ['queued_approver_id' => $approverId]);
         });
     }
 
     /**
-     * #6197: the decline when the offline queue write lost its claim-owner CAS. Tactical
-     * reported the device offline, so the action did not run, and this request did not queue
-     * it. The queued_offline audit row written before the queue attempt is not rewritten.
+     * #6197: the decline when the offline queue write lost its claim-owner CAS. #6255 / #6271:
+     * it says only what holds on every path that reaches it: the bus classified the call as
+     * offline (a transport failure is classified so too), and the run was not queued by this
+     * request, which is a live approval or the reconnect sweep.
      */
     private static function notQueuedOffline(): TechnicianApprovalResult
     {
-        return new TechnicianApprovalResult('gate_declined', message: 'Tactical reported the device offline, and the action was not queued: this approval no longer holds the run. Check its current state before acting on it again.');
+        return new TechnicianApprovalResult('gate_declined', message: 'The Tactical call was classified as device offline, and the action was not queued: this request no longer holds the run. Check its current state before acting on it again.');
     }
 
     /** sha256 of (agent, direct tool, canonical params) — one queued row per identical action. */

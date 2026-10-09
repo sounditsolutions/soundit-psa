@@ -10,6 +10,7 @@ use App\Models\Person;
 use App\Models\Setting;
 use App\Models\TacticalAsset;
 use App\Models\TacticalScript;
+use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
@@ -231,11 +232,74 @@ class TacticalOfflineQueueApprovalTest extends TestCase
         $result = app(TechnicianApprovalService::class)->approveStagedTacticalAction($run, $approver->id);
 
         $this->assertSame('gate_declined', $result->status);
-        $this->assertSame('Tactical reported the device offline, and the action was not queued: this approval no longer holds the run. Check its current state before acting on it again.', $result->message);
+        $this->assertSame(self::NOT_QUEUED_TEXT, $result->message);
         $fresh = $run->fresh();
         $this->assertSame(TechnicianRunState::Executing, $fresh->state, 'the other claim is still in place');
         $this->assertNull($fresh->queued_agent_id, 'nothing was queued');
         $this->assertSame(0, TechnicianRun::where('state', TechnicianRunState::QueuedOffline->value)->count());
+        $this->assertNotQueuedAudit($run);
+    }
+
+    /**
+     * #6255 / #6271: the not-queued text names no actor (the reconnect sweep reaches it too) and
+     * does not say Tactical reported anything (a transport failure is classified offline).
+     */
+    private const NOT_QUEUED_TEXT = 'The Tactical call was classified as device offline, and the action was not queued: this request no longer holds the run. Check its current state before acting on it again.';
+
+    /** #6254: a lost fence leaves no queued_offline audit row, and one row says it was not queued. */
+    private function assertNotQueuedAudit(TechnicianRun $run): void
+    {
+        $rows = TechnicianActionLog::where('run_id', $run->id)->where('result_status', '!=', 'awaiting_approval')->get();
+        $this->assertSame([], $rows->where('result_status', 'queued_offline')->pluck('summary')->all(), 'no queued_offline row');
+        $this->assertSame(['offline'], $rows->pluck('result_status')->all());
+        $this->assertStringContainsString('not queued', (string) $rows->first()->summary);
+    }
+
+    /** #6254: positive control: a queued run carries exactly one queued_offline row. */
+    public function test_a_queued_run_carries_one_queued_offline_audit_row(): void
+    {
+        $approver = $this->configure();
+        $fixture = $this->endpointFixture();
+        $run = $this->stageScript($fixture['client'], $fixture['ticket'], $this->script());
+        $this->offlineClient();
+
+        $this->assertSame('queued_offline', app(TechnicianApprovalService::class)->approveStagedTacticalAction($run, $approver->id)->status);
+        $this->assertSame(['queued_offline'], TechnicianActionLog::where('run_id', $run->id)->where('result_status', '!=', 'awaiting_approval')->pluck('result_status')->all());
+    }
+
+    /**
+     * #6253 / #6263: the run left Executing during the call (another path reopened it, nobody
+     * claimed it again). On the coalesce branch this request must not supersede it, bump the
+     * queued row, or report queued_offline.
+     */
+    public function test_a_duplicate_offline_approval_whose_run_was_reopened_meanwhile_is_not_coalesced(): void
+    {
+        $approver = $this->configure();
+        $script = $this->script();
+        $fixture = $this->endpointFixture();
+        $ticket2 = Ticket::factory()->for($fixture['client'])->create(['subject' => 'Same device, another ticket']);
+        $ticket2->assets()->attach($fixture['asset']->id, ['is_primary' => true]);
+        $runA = $this->stageScript($fixture['client'], $fixture['ticket'], $script);
+        $runB = $this->stageScript($fixture['client'], $ticket2, $script);
+        $svc = app(TechnicianApprovalService::class);
+        $this->offlineClient();
+        $this->assertSame('queued_offline', $svc->approveStagedTacticalAction($runA, $approver->id)->status, 'positive control: A is queued');
+        $this->travel(3)->minutes();
+
+        $tactical = Mockery::mock(TacticalClient::class);
+        $tactical->shouldReceive('runScript')->andReturnUsing(function () use ($runB) {
+            TechnicianRun::whereKey($runB->id)->update(['state' => TechnicianRunState::AwaitingApproval->value]);
+
+            throw new TacticalClientException('Tactical agent is unreachable', transportFailure: true);
+        });
+        $this->app->instance(TacticalClient::class, $tactical);
+        $result = $svc->approveStagedTacticalAction($runB, $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame(self::NOT_QUEUED_TEXT, $result->message);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $runB->fresh()->state, 'not superseded');
+        $this->assertSame(0, $runA->fresh()->coalesce_count, 'not counted onto the queued row');
+        $this->assertNotQueuedAudit($runB);
     }
 
     /** #6197: on the coalesce branch too, a stale holder neither supersedes the run nor bumps the queued row. */
@@ -257,8 +321,9 @@ class TacticalOfflineQueueApprovalTest extends TestCase
         $result = $svc->approveStagedTacticalAction($runB, $approver->id);
 
         $this->assertSame('gate_declined', $result->status);
-        $this->assertStringStartsWith('Tactical reported the device offline, and the action was not queued', (string) $result->message);
+        $this->assertSame(self::NOT_QUEUED_TEXT, $result->message);
         $this->assertSame(TechnicianRunState::Executing, $runB->fresh()->state, 'not superseded');
         $this->assertSame(0, $runA->fresh()->coalesce_count, 'not counted onto the queued row');
+        $this->assertNotQueuedAudit($runB);
     }
 }

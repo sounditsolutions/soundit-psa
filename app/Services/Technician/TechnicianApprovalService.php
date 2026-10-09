@@ -59,6 +59,26 @@ class TechnicianApprovalService
     ) {}
 
     /**
+     * #6256: close the run inside the gate transaction, or roll the transaction back. A false
+     * advanceTo() means this request no longer holds the claim; throwing undoes the note,
+     * status change or merge and the executed audit row, and no email is sent after it. This
+     * keeps send_reply's RECOVERY_SAFE premise: a run still Executing never sent. approveClose
+     * calls it BEFORE changeStatus, whose notification a rollback cannot recall (#6303).
+     */
+    private static function closeOrRollBack(TechnicianRun $run): void
+    {
+        if (! $run->advanceTo(TechnicianRunState::Done)) {
+            throw new RunClaimLostException((int) $run->id);
+        }
+    }
+
+    /** #6256: the result when closeOrRollBack() rolled the transaction back. */
+    private static function claimLost(): TechnicianApprovalResult
+    {
+        return new TechnicianApprovalResult('gate_declined', message: 'Nothing was applied: this request no longer holds the run, so its changes were rolled back. Check the run\'s current state before acting on it again.');
+    }
+
+    /**
      * The persona that DRAFTED this run, for note attribution and the AI half of the
      * dual credit (psa-u51h). Lives on the run itself so the cockpit approval card
      * previews the SAME drafter this send credits (psa-u51h.2).
@@ -162,7 +182,7 @@ class TechnicianApprovalService
                         'is_private' => false,
                         'noted_at' => now(),
                     ]);
-                    $run->advanceTo(TechnicianRunState::Done); // note + audit + state commit atomically
+                    self::closeOrRollBack($run); // note + audit + state commit atomically
                 },
                 approvalToken: $token,
                 approverUserId: $approverId,
@@ -171,6 +191,8 @@ class TechnicianApprovalService
                 // still leaves the attempted recipients on record.
                 approvedRecipients: $resolved->toAuditArray(),
             );
+        } catch (RunClaimLostException) {
+            return self::claimLost();
         } catch (\Throwable $e) {
             // Unexpected throw between claim and email send — revert so the operator can retry.
             $run->releaseClaim();
@@ -241,7 +263,7 @@ class TechnicianApprovalService
                     // strips scopes, so it comes back TRASHED, not null) — treat as already-gone.
                     $fresh = $ticket?->fresh();
                     if ($fresh === null || $fresh->trashed()) {
-                        $run->advanceTo(TechnicianRunState::Done);
+                        self::closeOrRollBack($run);
 
                         return;
                     }
@@ -252,10 +274,14 @@ class TechnicianApprovalService
                     // legal move). Treat as already-handled rather than letting changeStatus throw.
                     if ($fresh->status === $target
                         || ! in_array($target, $fresh->status->allowedTransitions(), true)) {
-                        $run->advanceTo(TechnicianRunState::Done);
+                        self::closeOrRollBack($run);
 
                         return;
                     }
+                    // #6303: fence first. changeStatus notifies the client inside this transaction
+                    // and a rollback cannot recall that, so a lost claim must throw before it runs.
+                    // The fenced UPDATE locks the run row until commit, so no one re-claims meanwhile.
+                    self::closeOrRollBack($run);
                     // Using $fresh ensures the status-change note's "from" state is accurate.
                     app(TicketService::class)->changeStatus(
                         $fresh,
@@ -271,12 +297,13 @@ class TechnicianApprovalService
                         ->where('body', $closeNote)
                         ->latest('id')
                         ->value('id');
-                    $run->advanceTo(TechnicianRunState::Done);
                 },
                 approvalToken: $token,
                 approverUserId: $approverId,
                 confidence: null,
             );
+        } catch (RunClaimLostException) {
+            return self::claimLost();
         } catch (\Throwable $e) {
             // Unexpected throw between claim and execution — revert so the operator can retry.
             $run->releaseClaim();
@@ -419,7 +446,7 @@ class TechnicianApprovalService
                             ->whereKeyNot($run->id)
                             ->where('state', TechnicianRunState::AwaitingApproval->value)
                             ->get()->each(fn (TechnicianRun $pending) => $pending->markSuperseded());
-                        $run->advanceTo(TechnicianRunState::Done);
+                        self::closeOrRollBack($run);
                     },
                     approvalToken: $token,
                     approverUserId: $approverId,
@@ -427,6 +454,8 @@ class TechnicianApprovalService
 
                 return new TechnicianApprovalResult($gateResult->status === 'executed' ? 'merged' : 'gate_declined');
             });
+        } catch (RunClaimLostException) {
+            return self::claimLost();
         } catch (\Throwable $e) {
             $run->releaseClaim();
             throw $e;
@@ -475,12 +504,14 @@ class TechnicianApprovalService
                         ->get()
                         ->each(fn (TechnicianRun $pending) => $pending->markSuperseded());
 
-                    $run->advanceTo(TechnicianRunState::Done);
+                    self::closeOrRollBack($run);
                 },
                 approvalToken: $token,
                 approverUserId: $approverId,
                 confidence: null,
             );
+        } catch (RunClaimLostException) {
+            return self::claimLost();
         } catch (\Throwable $e) {
             $run->releaseClaim();
             throw $e;
@@ -532,12 +563,14 @@ class TechnicianApprovalService
                 executor: function () use ($run, $survivor, $duplicate, $approverId): void {
                     app(\App\Services\AssetService::class)->mergeAssets($survivor, $duplicate, $approverId);
 
-                    $run->advanceTo(TechnicianRunState::Done);
+                    self::closeOrRollBack($run);
                 },
                 approvalToken: $token,
                 approverUserId: $approverId,
                 confidence: null,
             );
+        } catch (RunClaimLostException) {
+            return self::claimLost();
         } catch (\Throwable $e) {
             $run->releaseClaim();
             throw $e;
@@ -713,7 +746,7 @@ class TechnicianApprovalService
                         'is_private' => false,
                         'noted_at' => now(),
                     ]);
-                    $run->advanceTo(TechnicianRunState::Done);
+                    self::closeOrRollBack($run);
                 },
                 approvalToken: $token,
                 approverUserId: $approverId,
@@ -722,6 +755,8 @@ class TechnicianApprovalService
                 // is committed on the append-only audit row before the external send.
                 approvedRecipients: $resolved?->toAuditArray(),
             );
+        } catch (RunClaimLostException) {
+            return self::claimLost();
         } catch (\Throwable $e) {
             $run->releaseClaim();
             throw $e;
