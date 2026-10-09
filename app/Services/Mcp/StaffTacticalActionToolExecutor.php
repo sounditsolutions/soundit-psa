@@ -380,7 +380,7 @@ class StaffTacticalActionToolExecutor
                 // #6197: advanceTo() refuses when another claim now holds the run. Then this
                 // request neither closed nor reopened it, and the text says only that.
                 if (! $run->advanceTo(TechnicianRunState::Done)) {
-                    return new TechnicianApprovalResult('gate_declined', message: 'Tactical did not answer before the timeout after the approved action was sent; it may have run. The run was not closed: this approval no longer holds it, and it was not reopened for re-approval. Check the device to find out whether it ran, and check the run before acting on it again.');
+                    return new TechnicianApprovalResult('gate_declined', message: 'Tactical did not answer before the timeout after the approved action was sent; it may have run. The run was not closed: this request no longer holds it, and this request did not reopen it. Check the device to find out whether it ran, and check the run before acting on it again.');
                 }
 
                 return new TechnicianApprovalResult('gate_declined', message: 'Tactical did not answer before the timeout after the approved action was sent; it may have run. The run is closed, not reopened for re-approval. Check the device to find out whether it ran.');
@@ -410,7 +410,7 @@ class StaffTacticalActionToolExecutor
             // closed here. Not a retry either, so it goes out on the error channel
             // (executed_with_fault), which carries no one-time secret.
             if (! $run->advanceTo(TechnicianRunState::Done)) {
-                return new TechnicianApprovalResult('executed_with_fault', message: 'The approved Tactical action executed, but the run was not closed because this approval no longer holds it. Do NOT re-approve it; check the device and the run.');
+                return new TechnicianApprovalResult('executed_with_fault', message: 'The approved Tactical action executed, but the run was not closed because this request no longer holds it. Do NOT re-approve it; check the device and the run.');
             }
 
             // psa-5s4r2 Increment 2 — remote-control is the one staged action that

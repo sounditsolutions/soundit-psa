@@ -437,6 +437,44 @@ class TacticalRemoveAgentTest extends TestCase
         $this->assertNotNull(TacticalAsset::find($tacticalAssetId));
     }
 
+    /**
+     * #6325 / #6311 / #6320: an unverified removal whose close then loses the claim-owner fence.
+     * The result carries the not-closed text and the executor's own fault sentence, and never
+     * the vendor's reply (positive control: the DELETE answered with a synthetic marker, which
+     * the executor keeps under upstream_message). A warning line (ids only) is the record.
+     */
+    public function test_an_unverified_removal_whose_close_loses_the_fence_says_so_and_is_recorded(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $approver = User::factory()->create();
+        $fixture = $this->fixture();
+        $marker = 'B4Q-SYNTHETIC-VENDOR-REPLY';
+
+        $client = $this->mockTactical();
+        $client->shouldReceive('getAgent')->with('agent-abc')->andReturn($this->quietAgent());
+        $run = $this->stagedRun($fixture, $client);
+        $client->shouldReceive('deleteAgent')->once()->with('agent-abc')->andReturnUsing(function () use ($run, $marker): string {
+            TechnicianRun::whereKey($run->id)->update(['claimed_at' => now()->addMinute()]);
+
+            return 'RETIRED-01 will now be uninstalled. '.$marker;
+        });
+        $logged = new \ArrayObject;
+        \Illuminate\Support\Facades\Event::listen(\Illuminate\Log\Events\MessageLogged::class, fn ($m) => $logged[] = $m);
+
+        $result = app(TechnicianApprovalService::class)->approveStagedTacticalAdminAction($run, $approver->id);
+
+        $this->assertSame('executed_with_fault', $result->status);
+        $this->assertSame('The approved Tactical admin action executed, but the run was not closed because this request no longer holds it. Do NOT re-approve it; check Tactical and the run. Tactical accepted the removal but the agent is still readable upstream, so removal is UNVERIFIED. The PSA device record was left in place. Re-check before assuming it is gone.', $result->message);
+        $this->assertStringNotContainsString($marker, (string) $result->message);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
+        $records = array_values(array_filter($logged->getArrayCopy(), fn ($m) => str_contains($m->message, 'the run was not closed: this request no longer holds it')));
+        $this->assertCount(1, $records);
+        $this->assertSame('warning', $records[0]->level);
+        $this->assertSame(['run_id' => $run->id, 'action' => $run->action_type], $records[0]->context);
+        $this->assertStringNotContainsString($marker, json_encode($records[0]->context) ?: '');
+    }
+
     public function test_the_executor_reports_verification_honestly_and_never_claims_mesh_removal(): void
     {
         $this->configureTactical();

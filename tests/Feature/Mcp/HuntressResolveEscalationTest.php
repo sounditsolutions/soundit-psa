@@ -1132,6 +1132,88 @@ class HuntressResolveEscalationTest extends TestCase
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
     }
 
+    /**
+     * #6311: a resolve call went out on a run this request did not close. Beside the executed
+     * audit row, a warning line (ids only) is the durable record of the lost fence.
+     */
+    public function test_a_lost_fence_after_a_committed_resolve_leaves_a_durable_record(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWriteClientNeverCalled();
+        $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+
+        $write = Mockery::mock(HuntressWriteClient::class);
+        $write->shouldReceive('resolveEscalation')->once()->with(900)->andReturnUsing(function () use ($run) {
+            TechnicianRun::whereKey($run->id)->update(['claimed_at' => now()->addMinute()]);
+
+            return ['resolution_method' => 'direct'];
+        });
+        $this->app->instance(HuntressWriteClient::class, $write);
+        $this->mockReadClient($this->escalation());
+        $logged = new \ArrayObject;
+        \Illuminate\Support\Facades\Event::listen(\Illuminate\Log\Events\MessageLogged::class, fn ($m) => $logged[] = $m);
+
+        app(TechnicianApprovalService::class)->approveStagedHuntressAction($run, $actor->id);
+
+        $records = array_values(array_filter($logged->getArrayCopy(), fn ($m) => str_contains($m->message, 'the run was not closed: this request no longer holds it')));
+        $this->assertCount(1, $records);
+        $this->assertSame('warning', $records[0]->level);
+        $this->assertSame(['run_id' => $run->id, 'action' => $run->action_type], $records[0]->context);
+    }
+
+    /**
+     * #6321 (C-56): an indeterminate failure's fault text and audit row carry the exception's
+     * class and status, never its message. Positive control (#6326): the message carries a
+     * synthetic vendor marker, so a copying text would contain it.
+     */
+    public function test_an_indeterminate_failure_records_class_and_status_not_the_vendor_message(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWriteClientNeverCalled();
+        $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+
+        $marker = 'B4Q-SYNTHETIC-VENDOR-BODY';
+        $failure = new HuntressClientException('Huntress API error: 502 Bad Gateway '.$marker, 502);
+        $write = Mockery::mock(HuntressWriteClient::class);
+        $write->shouldReceive('resolveEscalation')->once()->with(900)->andThrow($failure);
+        $this->app->instance(HuntressWriteClient::class, $write);
+        $this->mockReadClient($this->escalation());
+
+        $result = app(TechnicianApprovalService::class)->approveStagedHuntressAction($run, $actor->id);
+
+        $this->assertStringContainsString($marker, $failure->getMessage(), 'positive control: the failure carries the vendor text');
+        $this->assertSame('executed_with_fault', $result->status);
+        $this->assertStringContainsString('INDETERMINATE outcome (HuntressClientException (HTTP status 502))', (string) $result->message);
+        $summary = TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->sole()->summary;
+        $this->assertStringContainsString('(HuntressClientException (HTTP status 502))', $summary);
+        $this->assertStringNotContainsString($marker, $summary.$result->message);
+    }
+
+    /** #6321 (C-56): a refused resolve's audit row carries class and status, not the message. */
+    public function test_a_rejected_resolve_records_class_and_status_not_the_vendor_message(): void
+    {
+        $this->configureHuntress();
+        $actor = $this->configureAiActor();
+        $fixture = $this->fixture();
+        $this->mockWriteClientNeverCalled();
+        $run = $this->stageRun($fixture, $this->token(['huntress_stage_resolve_escalation']));
+
+        $marker = 'B4Q-SYNTHETIC-VENDOR-BODY';
+        $write = Mockery::mock(HuntressWriteClient::class);
+        $write->shouldReceive('resolveEscalation')->once()->with(900)->andThrow(new HuntressClientException('Huntress API error: 403 Forbidden '.$marker, 403));
+        $this->app->instance(HuntressWriteClient::class, $write);
+        $this->mockReadClient($this->escalation());
+
+        app(TechnicianApprovalService::class)->approveStagedHuntressAction($run, $actor->id);
+
+        $summary = TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->sole()->summary;
+        $this->assertSame('escalation:900: Huntress rejected the resolve call: HuntressClientException (HTTP status 403)', $summary);
+    }
+
     /** #6303: the 409 arm DID send the resolve call, so its lost-fence text must say so. */
     public function test_an_already_resolved_409_whose_claim_was_lost_says_the_call_was_sent(): void
     {

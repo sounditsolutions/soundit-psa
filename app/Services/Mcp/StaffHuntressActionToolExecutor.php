@@ -271,7 +271,7 @@ class StaffHuntressActionToolExecutor
         try {
             $escalation = $this->readClient()->getEscalation($escalationId);
         } catch (\Throwable $e) {
-            $message = 'Huntress escalation lookup failed: '.mb_substr($e->getMessage(), 0, 200);
+            $message = 'Huntress escalation lookup failed: '.self::failureDetail($e);
             $this->auditAttempt($tool, 'error', $clientId, $ticket, $contentHash, "{$targetKey}: {$message}", $actorLabel);
 
             return ['error' => $message];
@@ -615,7 +615,7 @@ class StaffHuntressActionToolExecutor
             try {
                 $escalation = $this->readClient()->withClampedBackoff()->getEscalation($escalationId);
             } catch (\Throwable $e) {
-                $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Approval refused — escalation lookup failed: ".mb_substr($e->getMessage(), 0, 200), $approverLabel, $run->id, $approverId);
+                $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Approval refused — escalation lookup failed: ".self::failureDetail($e), $approverLabel, $run->id, $approverId);
                 $run->releaseClaim();
 
                 return new TechnicianApprovalResult('gate_declined', message: 'Huntress could not be reached to re-verify the escalation — nothing was resolved. Try again.');
@@ -673,7 +673,7 @@ class StaffHuntressActionToolExecutor
                     // (401/403/404/…): the POST landed at Huntress and wrote
                     // nothing, so the decline is truthful and a retry is
                     // legitimate.
-                    $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: ".mb_substr($e->getMessage(), 0, 300), $approverLabel, $run->id, $approverId);
+                    $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Huntress rejected the resolve call: ".self::failureDetail($e), $approverLabel, $run->id, $approverId);
                     $run->releaseClaim();
 
                     return new TechnicianApprovalResult('gate_declined', message: 'Huntress rejected the resolve call — nothing was resolved. Try again.');
@@ -700,12 +700,15 @@ class StaffHuntressActionToolExecutor
                 // connection), and ordering it first — as the COMMITTED path
                 // below safely can — would here lose the only record that an
                 // indeterminate resolve happened.
-                $indeterminateFault = "HARD FAULT: the Huntress resolve for escalation {$escalationId} failed with an INDETERMINATE outcome (".mb_substr($e->getMessage(), 0, 200).'). '
+                $indeterminateFault = "HARD FAULT: the Huntress resolve for escalation {$escalationId} failed with an INDETERMINATE outcome (".self::failureDetail($e).'). '
                     .'The resolve POST may already have COMMITTED upstream, and its resolution_method post-condition was never evaluated — a `rule` resolution would mean the server CREATED attribute rules. Do NOT re-approve: establish in the Huntress console whether this escalation is resolved, inspect it for created rules, and escalate to a human.';
                 Log::error("[StaffHuntressActionToolExecutor] {$indeterminateFault}", ['run_id' => $run->id, 'escalation_id' => $escalationId]);
                 $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: {$indeterminateFault}", $approverLabel, $run->id, $approverId);
                 // #6256: on a lost claim-owner fence the run was not closed here; say so.
                 $closed = $run->advanceTo(TechnicianRunState::Done);
+                if (! $closed) {
+                    self::logNotClosed($run);
+                }
 
                 return new TechnicianApprovalResult('executed_with_fault', message: $indeterminateFault.($closed ? '' : ' '.self::NOT_CLOSED));
             }
@@ -722,6 +725,9 @@ class StaffHuntressActionToolExecutor
             // #6256: a lost claim-owner fence means this request did not close the run. The
             // post-condition below is still evaluated; the result says the run was not closed.
             $closed = $run->advanceTo(TechnicianRunState::Done);
+            if (! $closed) {
+                self::logNotClosed($run);
+            }
 
             // POST-CONDITION on the server's own report of what it did. The
             // id-only `{}` body legitimately produces `direct` or `dismiss`;
@@ -769,7 +775,7 @@ class StaffHuntressActionToolExecutor
             if ($indeterminateFault !== null) {
                 Log::error('[StaffHuntressActionToolExecutor] Finalizing an INDETERMINATE escalation resolve failed; the run is NOT reopened', [
                     'run_id' => $run->id,
-                    'error' => $e->getMessage(),
+                    'exception' => $e::class,
                 ]);
 
                 return new TechnicianApprovalResult('executed_with_fault', message: $indeterminateFault);
@@ -778,7 +784,7 @@ class StaffHuntressActionToolExecutor
             if ($writeCommitted) {
                 Log::error('[StaffHuntressActionToolExecutor] Finalizing a COMMITTED escalation resolve failed; the run is NOT reopened', [
                     'run_id' => $run->id,
-                    'error' => $e->getMessage(),
+                    'exception' => $e::class,
                 ]);
 
                 return new TechnicianApprovalResult('executed_with_fault', message: 'The escalation WAS resolved upstream, but recording the outcome failed — the resolution_method post-condition and its audit row may be missing. Do NOT re-approve; verify this escalation (and any attribute rules the server may have created) in the Huntress console.');
@@ -872,6 +878,29 @@ class StaffHuntressActionToolExecutor
      * HuntressClientException is Guzzle's: the HTTP status when there was a
      * response, 0 when there was not.
      */
+    /**
+     * #6311: the durable record that a resolve call went out on a run this request did not close
+     * (advanceTo() lost the claim-owner fence). Ids only.
+     */
+    private static function logNotClosed(TechnicianRun $run): void
+    {
+        Log::warning('[StaffHuntressActionToolExecutor] a resolve call went out but the run was not closed: this request no longer holds it', [
+            'run_id' => $run->id, 'action' => $run->action_type,
+        ]);
+    }
+
+    /**
+     * #6321 (C-56): a failure detail built from the exception's class and the HTTP status it
+     * carries, never its message: HuntressClient / HuntressWriteClient build that message from
+     * the Guzzle exception, whose text can carry the request URL and the vendor's reply.
+     */
+    private static function failureDetail(\Throwable $e): string
+    {
+        $status = (int) $e->getCode();
+
+        return class_basename($e).($status > 0 ? " (HTTP status {$status})" : ' (no HTTP status)');
+    }
+
     private static function upstreamFailureMayHaveCommitted(HuntressClientException $e): bool
     {
         $status = (int) $e->getCode();
@@ -879,7 +908,6 @@ class StaffHuntressActionToolExecutor
         return ! ($status >= 400 && $status < 500 && $status !== 408);
     }
 
-    /** @param array<string, mixed> $escalation */
     /**
      * #6256: the escalation is already resolved upstream, but the run was not closed because this
      * request lost the claim-owner fence. Not a success, and this request resolved nothing, so it
@@ -895,6 +923,7 @@ class StaffHuntressActionToolExecutor
         return new TechnicianApprovalResult('gate_declined', message: $what.'; '.lcfirst(self::NOT_CLOSED));
     }
 
+    /** @param array<string, mixed> $escalation */
     private function escalationResolved(array $escalation): bool
     {
         $status = is_scalar($escalation['status'] ?? null) ? (string) $escalation['status'] : '';
@@ -1208,7 +1237,7 @@ class StaffHuntressActionToolExecutor
                 'run_id' => $runId,
                 'result_status' => $resultStatus,
                 'summary' => $summary,
-                'error' => $e->getMessage(),
+                'exception' => $e::class,
             ]);
         }
     }

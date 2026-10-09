@@ -397,7 +397,7 @@ class StaffCalendarStagedWriteTest extends TestCase
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, 'nothing was sent, so the run is reopened, not held Executing');
 
         $errors = TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->pluck('summary')->all();
-        $this->assertSame(['Graph calendar write not sent (no Graph access token was obtained): Failed to obtain Graph API token (HTTP 400)'], $errors);
+        $this->assertSame(['Graph calendar write not sent (no Graph access token was obtained): GraphTokenException'], $errors);
         $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%indeterminate%')->count(), 'no indeterminate-outcome row');
 
         // Re-approve executes the write once (the second cancelEvent call succeeds).

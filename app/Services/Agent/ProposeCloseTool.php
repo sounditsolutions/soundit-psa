@@ -215,6 +215,13 @@ class ProposeCloseTool
                 return;
             }
 
+            // #6317: land the run BEFORE the close. The close fires TicketObserver's
+            // withdrawHeldClosesForClosedTicket(), which withdraws every propose_close still
+            // AwaitingApproval on the ticket, this run included; advanceTo() no longer
+            // overwrites a state another path wrote. Both writes are in the gate's one
+            // transaction, so a failed close still rolls the advance back.
+            $run->advanceTo(TechnicianRunState::Done);
+
             // Close to Closed (silent): Resolved dispatches a client portal email
             // (status_resolved); Closed does not. The deliberate close path is Closed.
             // Using $fresh ensures the status-change note's "from" state is accurate.
@@ -224,8 +231,6 @@ class ProposeCloseTool
                 TechnicianConfig::aiActorUserId(),
                 'Closed by the AI Technician (high confidence, no recent client activity).',
             );
-
-            $run->advanceTo(TechnicianRunState::Done);
         };
 
         $result = $this->gate->dispatch(

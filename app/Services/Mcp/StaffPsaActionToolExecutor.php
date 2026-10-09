@@ -2775,13 +2775,12 @@ class StaffPsaActionToolExecutor
             ]);
         }
 
-        TechnicianRun::where('ticket_id', $ticket->id)
+        // #6306: every sibling is tried; a false return does not stop the sweep.
+        TechnicianRun::supersedeEach(TechnicianRun::where('ticket_id', $ticket->id)
             ->where('action_type', $actionType)
             ->where('state', TechnicianRunState::AwaitingApproval->value)
             ->where('id', '!=', $run->id)
-            ->get()
-            ->each
-            ->markSuperseded();
+            ->get());
 
         $this->gate->dispatch(
             actionType: $actionType,

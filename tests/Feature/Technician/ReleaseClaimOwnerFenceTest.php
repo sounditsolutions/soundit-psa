@@ -224,19 +224,85 @@ class ReleaseClaimOwnerFenceTest extends TestCase
 
     /**
      * #6267 / #6270: a stale holder's unsaved changes are not written either: no unfenced
-     * follow-up save lands them on the row the other claim now owns.
+     * follow-up save lands them on the row the other claim now owns. #6319: A never dirties
+     * claimed_at here, so no claimed_at assertion is made; the claimed_at fence key is covered
+     * by test_a_holder_that_changes_claimed_at_in_memory_does_not_move_the_fence_key().
      */
     public function test_a_stale_holders_other_changes_are_not_written(): void
     {
         [$a, $b] = $this->staleAndLiveHolders();
-        $bStamp = TechnicianRun::findOrFail($b->id)->claimed_at;
         $this->assertTrue($b->advanceTo(TechnicianRunState::Done));
         $a->tokens_used = 6270;
 
         $this->assertFalse($a->advanceTo(TechnicianRunState::Done));
         $row = TechnicianRun::findOrFail($a->id);
         $this->assertSame(0, (int) $row->tokens_used, "A's change is not written");
-        $this->assertTrue($row->claimed_at->equalTo($bStamp), "B's claim stamp is not overwritten by A's");
+    }
+
+    /**
+     * #6323: the fence keys on the claimed_at this instance claimed with, not on a value set in
+     * memory. A stale holder that sets B's stamp in memory still cannot close B's claim.
+     */
+    public function test_a_holder_that_changes_claimed_at_in_memory_does_not_move_the_fence_key(): void
+    {
+        [$a, $b] = $this->staleAndLiveHolders();
+        $bStamp = TechnicianRun::findOrFail($b->id)->claimed_at;
+        $a->claimed_at = $bStamp;
+
+        $this->assertFalse($a->advanceTo(TechnicianRunState::Done), "A's stale advance loses on A's own stamp");
+        $this->assertSame(TechnicianRunState::Executing, TechnicianRun::findOrFail($a->id)->state, "B's claim is still in place");
+        $this->assertFalse($a->releaseClaim(), "A's stale release loses too");
+        $this->assertSame(TechnicianRunState::Executing, TechnicianRun::findOrFail($a->id)->state);
+
+        $b->claimed_at = now()->addHour();
+        $this->assertTrue($b->advanceTo(TechnicianRunState::Done), "positive control: the owner's advance wins on its own stamp");
+        $this->assertSame(TechnicianRunState::Done, TechnicianRun::findOrFail($b->id)->state);
+    }
+
+    /**
+     * #6317: an instance loaded AwaitingApproval (it holds no claim) must not overwrite a run
+     * another request claimed meanwhile: markSuperseded() returns false and the claim stays.
+     */
+    public function test_an_unclaimed_supersede_does_not_overwrite_a_run_another_request_claimed(): void
+    {
+        $run = $this->awaitingRun();
+        $sweep = TechnicianRun::findOrFail($run->id);
+        $this->assertTrue(TechnicianRun::findOrFail($run->id)->claimForExecution(), 'another request claims it');
+
+        $this->assertFalse($sweep->markSuperseded());
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the claim is not overwritten');
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $sweep->state, 'the instance is not told it moved the run');
+    }
+
+    /** #6317: the unclaimed branch is fenced on the in-memory state, whatever that state is. */
+    public function test_an_unclaimed_advance_loses_once_another_path_moved_the_run(): void
+    {
+        $run = $this->awaitingRun();
+        $stale = TechnicianRun::findOrFail($run->id);
+        TechnicianRun::whereKey($run->id)->update(['state' => TechnicianRunState::Withdrawn->value]);
+
+        $this->assertFalse($stale->advanceTo(TechnicianRunState::Denied));
+        $this->assertSame(TechnicianRunState::Withdrawn, $run->fresh()->state);
+
+        $fresh = TechnicianRun::findOrFail($run->id);
+        $this->assertTrue($fresh->advanceTo(TechnicianRunState::Denied), 'positive control: an instance that read the current state moves it');
+        $this->assertSame(TechnicianRunState::Denied, $run->fresh()->state);
+    }
+
+    /**
+     * #6306: supersedeEach() tries every run; one that another request moved (false) does not
+     * stop the sweep, and its id is returned.
+     */
+    public function test_a_supersede_sweep_goes_on_past_a_run_it_cannot_move(): void
+    {
+        $runs = collect([$this->awaitingRun(), $this->awaitingRun(), $this->awaitingRun()])
+            ->map(fn (TechnicianRun $r) => TechnicianRun::findOrFail($r->id));
+        $this->assertTrue(TechnicianRun::findOrFail($runs[0]->id)->claimForExecution(), 'another request claims the first');
+
+        $this->assertSame([$runs[0]->id], TechnicianRun::supersedeEach($runs));
+        $this->assertSame(TechnicianRunState::Executing, $runs[0]->fresh()->state);
+        $this->assertSame(TechnicianRunState::Superseded, $runs[1]->fresh()->state);
+        $this->assertSame(TechnicianRunState::Superseded, $runs[2]->fresh()->state);
     }
 
     /** #6267: the fenced move fires no model event. */

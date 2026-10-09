@@ -539,6 +539,45 @@ class CippWriteGroupMembershipTest extends TestCase
         ]);
     }
 
+    /**
+     * #6311: the membership write executed, then advanceTo(Done) lost the claim-owner fence.
+     * The result says the run was not closed (executed_with_fault), the executed row stays, and
+     * a warning line (ids only) is the durable record of the lost fence.
+     */
+    public function test_a_staged_write_whose_close_loses_the_fence_is_recorded(): void
+    {
+        $this->configureCipp();
+        $actor = $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $stageClient = Mockery::mock(CippRestWriteClient::class);
+        $stageClient->shouldReceive('listGroups')->andReturn([$this->groupRow()]);
+        $this->app->instance(CippRestWriteClient::class, $stageClient);
+        $response = $this->callTool($this->token(['cipp_stage_set_group_membership']), 'cipp_stage_set_group_membership', [
+            'client_id' => $fixture['client']->id, 'person_id' => $fixture['person']->id, 'group_id' => self::GROUP_ID,
+            'operation' => 'add', 'ticket_id' => $fixture['ticket']->id, 'confirm_group_name' => 'Sales Team',
+            'confirm_upn' => 'alex@acme.example', 'reason' => 'Add the new hire to the sales collaboration group.',
+        ]);
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+        $stageClient->shouldReceive('setGroupMembership')->once()->andReturnUsing(function () use ($run): array {
+            TechnicianRun::whereKey($run->id)->update(['claimed_at' => now()->addMinute()]);
+
+            return ['success' => true, 'status' => 200];
+        });
+        $logged = new \ArrayObject;
+        \Illuminate\Support\Facades\Event::listen(\Illuminate\Log\Events\MessageLogged::class, fn ($m) => $logged[] = $m);
+
+        $result = app(\App\Services\Mcp\StaffCippWriteToolExecutor::class)->approveStagedRun($run, $actor->id);
+
+        $this->assertSame('executed_with_fault', $result->status);
+        $this->assertSame('The approved CIPP action executed, but the run was not closed because this request no longer holds it. Do NOT re-approve it; check CIPP and the run.', $result->message);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed')->count());
+        $records = array_values(array_filter($logged->getArrayCopy(), fn ($m) => str_contains($m->message, 'the run was not closed: this request no longer holds it')));
+        $this->assertCount(1, $records);
+        $this->assertSame('warning', $records[0]->level);
+        $this->assertSame(['run_id' => $run->id, 'action' => 'cipp_stage_set_group_membership'], $records[0]->context);
+    }
+
     public function test_staged_add_to_a_security_group_warns_the_approver_and_executes_after_approval(): void
     {
         $this->configureCipp();
