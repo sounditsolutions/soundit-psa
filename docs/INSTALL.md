@@ -382,7 +382,8 @@ These commands execute automatically based on their schedule:
 | `tactical:sweep-queued-actions` | Every `tactical_offline_queue_sweep_minutes` (default 10 min) | Offline-script queue fallback (only if Tactical configured): run approved actions whose device is back online and expire stale ones. The device-sync hook + resolved-alert webhook are the low-latency triggers; this is the safety net |
 | `assets:poll-watched` | Every minute | Asset watch alerts: only while Tactical is enabled AND at least one watch is armed, reads `GET agents/{agent_id}/` for watched agents only (at most `ASSET_WATCH_POLL_MAX_AGENTS`, default 25, per run, each with `ASSET_WATCH_POLL_TIMEOUT_SECONDS`, default 3) and fires watches whose state changed. Writes no asset or `tactical_assets` column |
 | `assets:expire-watches` | Every 15 minutes | Mark asset watches past their `expires_at` as expired (a lapsed watch never fires either way) |
-| `mesh:sync-licenses` | Daily at 04:30 | Sync license counts from Mesh Email Security |
+| `mesh:sync-licenses` | Daily at 04:30 | Sync license counts from Mesh Email Security. Runs only while Mesh is switched on (`mesh_enabled=1`) AND an API key is stored; see [Mesh Email Security](#mesh-email-security) for what a stored key the PSA does not send logs |
+| `mesh:reap-allow-rules` | Hourly | Delete Mesh allow rules past their PSA-recorded expiry (Mesh does not expire them itself). Same gate as `mesh:sync-licenses`: Mesh switched on AND an API key stored |
 | `cipp:sync-licenses` | Daily at 04:45 | Sync M365 license counts from CIPP |
 | `huntress:sync-licenses` | Daily at 05:00 | Sync EDR/ITDR license counts from Huntress (only if configured) |
 | `huntress:reconcile-incidents` | Hourly | Resolve bridged Huntress tickets whose incident was closed/dismissed upstream without a status webhook (only if configured) |
@@ -1047,6 +1048,15 @@ Syncs license counts from Mesh for automated billing.
 4. Click **Test Connection** to verify
 5. Go to Settings > Mesh Customer Mapping to map Mesh customers to PSA clients
 6. Licenses sync daily at 04:30, or run `php artisan mesh:sync-licenses` manually
+
+**Scheduled Mesh commands.** `mesh:sync-licenses` (daily at 04:30) and `mesh:reap-allow-rules` (hourly) are scheduled only while Mesh is switched on (`mesh_enabled=1`, the default) AND a `mesh_api_key` row is stored. The schedule checks only that the row exists; it does not decrypt or check the key. With Mesh switched off, or no key stored at all, neither runs and neither logs anything.
+
+When a key IS stored but the PSA does not send it, each scheduled run refuses before any Mesh call, exits with failure status (1), and logs one warning. This covers a blank key, `0`, a key holding a carriage return or line feed, and a row that no longer decrypts (for example after an `APP_KEY` change). The warnings are:
+
+- `[MeshSyncLicenses] Mesh has a stored API key the PSA does not send (<reason>). Replace it in Settings → Integrations. No Mesh licenses were synced on this run.`
+- `[MeshReapAllowRules] Mesh has a stored API key the PSA does not send (<reason>). Replace it in Settings → Integrations. No allow rules were reaped; expired rules are not being removed and may still be live upstream.`
+
+For a blank key, `Mesh is not configured. Add API key in Settings → Integrations.` (reaper: `Add the API key`) stands in place of `Mesh has a stored API key … Integrations.`. A row that does not decrypt also logs `[MeshConfig] The stored Mesh API key could not be decrypted (<exception class>); …` once per run. With a usable key, `mesh:sync-licenses` exits 1 when its result counts any client error, and `mesh:reap-allow-rules` exits 1 when any expired rule was left unresolved or failed; a run that completes with none exits 0. Run by hand while Mesh is switched off, `mesh:sync-licenses` prints that Mesh is switched off, syncs nothing and exits 0.
 
 ### CIPP / Microsoft 365
 

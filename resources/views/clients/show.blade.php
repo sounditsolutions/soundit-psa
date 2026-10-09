@@ -1077,11 +1077,21 @@
                                         <i class="bi {{ $int['icon'] }} fs-5"></i>
                                         <strong>{{ $int['label'] }}</strong>
                                     </div>
-                                    <span class="badge bg-success">Linked</span>
+                                    @if($int['key_notice'] ?? null)
+                                        <span class="badge bg-warning text-dark">Key unusable</span>
+                                    @else
+                                        <span class="badge bg-success">Linked</span>
+                                    @endif
                                 </div>
                                 <div class="text-muted small mb-2">
                                     <i class="bi bi-link-45deg me-1"></i>{{ $int['entity_display'] }}
                                 </div>
+                                {{-- #6294: configured, but the stored key is not sent; the card says so. --}}
+                                @if($int['key_notice'] ?? null)
+                                <div class="small mb-2" data-integration-key-notice="{{ $vendor }}">
+                                    <i class="bi bi-exclamation-triangle me-1"></i>{{ $int['key_notice'] }}
+                                </div>
+                                @endif
                                 @if($int['license_count'] > 0)
                                 <div class="text-muted small mb-1">
                                     <i class="bi bi-key me-1"></i>{{ $int['license_count'] }} license{{ $int['license_count'] !== 1 ? 's' : '' }}
@@ -1351,13 +1361,24 @@
                                         <i class="bi {{ $int['icon'] }} fs-5 text-muted"></i>
                                         <strong class="text-muted">{{ $int['label'] }}</strong>
                                     </div>
-                                    <span class="badge bg-light text-muted">Not linked</span>
+                                    @if($int['key_notice'] ?? null)
+                                        <span class="badge bg-warning text-dark">Key unusable</span>
+                                    @else
+                                        <span class="badge bg-light text-muted">Not linked</span>
+                                    @endif
                                 </div>
 
+                                {{-- #6294: configured, but the stored key is not sent, so Link (which reads the vendor) is not offered. --}}
+                                @if($int['key_notice'] ?? null)
+                                <div class="small" data-integration-key-notice="{{ $vendor }}">
+                                    <i class="bi bi-exclamation-triangle me-1"></i>{{ $int['key_notice'] }}
+                                </div>
+                                @else
                                 {{-- Link button (shown by default) --}}
                                 <button type="button" class="btn btn-outline-primary btn-sm integration-link-btn" data-vendor="{{ $vendor }}" data-client="{{ $client->id }}">
                                     <i class="bi bi-link me-1"></i>Link
                                 </button>
+                                @endif
 
                                 {{-- Comet Backup: one-click provisioning --}}
                                 @if($vendor === 'comet' && \App\Support\CometConfig::isConfigured())

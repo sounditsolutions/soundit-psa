@@ -332,9 +332,12 @@ class MeshClient
 
     /**
      * Why the PSA will not send $key as the API-KEY header, or null when it
-     * will, as the end of 'the Mesh API key …'. One definition, shared with
-     * MeshConfig::isConfigured() and MeshWriteClient::isConfigured()
-     * (#6161, #6162, #6163): 'is not configured' only for a key that is
+     * will, as the end of 'the Mesh API key …'. #6343: the missing and
+     * unusable sets are MeshConfig's, which MeshConfig::isConfigured() and
+     * MeshWriteClient::isConfigured() also read; only MeshConfig's applies
+     * the header rule to the stored key as well (#6288), so the two
+     * isConfigured() differ on a CR or LF key (#6161, #6162, #6163):
+     * 'is not configured' only for a key that is
      * really absent (MeshConfig::apiKeyMissing(): null, false, '' or only
      * spaces and tabs, which PSR-7 trims to ''). A stored '0', 0, 0.0 or
      * true (which would be sent as '1') is MeshConfig::apiKeyUnusable()
