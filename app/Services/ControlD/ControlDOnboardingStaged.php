@@ -86,8 +86,13 @@ class ControlDOnboardingStaged
      * Read-only: the sub-organization's parent_profile against the configured Global
      * Profile — PROFILE_ENFORCED (equal), PROFILE_ABSENT (the documented unset shape) or
      * PROFILE_DIFFERENT (another PK is already enforced; staging and approval refuse on it).
-     * Throws ControlDClientException when the setting is missing, the parent inventory is
-     * malformed, or the org is not listed exactly once: unknown is never "enforced".
+     * Throws ControlDClientException, so unknown is never "enforced", on every arm:
+     * before any request, when the configured global profile setting is missing or not a
+     * valid PK (globalProfileSetting()) or Control D is disabled or unconfigured
+     * (available()); and after the GET, when the request fails in transport or its
+     * response is not a confirmed success (requestParent()), the inventory is malformed or
+     * does not list the org exactly once (ControlDSubOrganizations::row()), or the org's
+     * parent_profile is malformed (ControlDSubOrganizations::parentProfile()).
      */
     public function globalProfileState(string $orgPk): string
     {
@@ -355,14 +360,19 @@ class ControlDOnboardingStaged
      * Fills a parent_profile that is ABSENT at the pre-admission read; a DIFFERENT one seen
      * there refuses with no write. This code sends an unconditional PUT, so a profile set
      * after that read is not detected and the PUT may replace it; nothing here measures
-     * what Control D does then. A vendor envelope rejection ends the intent `rejected`; an
-     * unknown outcome or a read-back that does not show the configured profile ends it
-     * uncertain. PUT organizations under X-Force-Org-Id (Modify
+     * what Control D does then. Only ControlDClient's ControlDWriteRejectedException (an
+     * HTTP 4xx carrying the vendor error envelope) ends the intent `rejected`; every other
+     * response requestForOrg() refuses (a 4xx without the envelope; a 1xx, 3xx or 5xx,
+     * since redirects are not followed; a 2xx whose body is not JSON or does not carry
+     * success true), an unknown outcome or a read-back that does not show the configured
+     * profile ends it uncertain. If finish() cannot save that outcome, or the process
+     * stops after admit() and before the outcome is recorded, the row stays `posted`;
+     * never retried either way. PUT organizations under X-Force-Org-Id (Modify
      * Organization: the sub-org itself) with the PINNED profile PK under the PINNED org,
      * then the parent's GET sub_organizations read-back. Before admission: pin drift, an
      * unreadable inventory, or a DIFFERENT parent_profile already set are definite
      * refusals with no write; already enforced is a no-op that releases the intent. One
-     * PUT, never retried: a definite vendor envelope rejection is `rejected`; any other
+     * PUT, never retried: a definite HTTP 4xx vendor envelope rejection is `rejected`; any other
      * failure after admission, a read-back that does not show the profile, or a failed
      * bind() re-check, is uncertain and terminal.
      */
