@@ -18,11 +18,12 @@ class MeshTest extends Command
         if (! MeshConfig::isConfigured()) {
             // #6161: 'not configured' only for a key that is really absent;
             // a stored value the PSA does not send says why (#6288: a CR
-            // or LF; #6296: a row that does not decrypt).
-            $refusal = MeshConfig::storedKeyRefusal();
-            $this->error($refusal === null
+            // or LF; #6296: a row that does not decrypt). #6346: in the
+            // wording the other Mesh surfaces use (notConfiguredText()).
+            $note = MeshConfig::storedKeyNote();
+            $this->error($note === null
                 ? 'Mesh is not configured. Add API key in Settings → Integrations.'
-                : "The Mesh API key {$refusal}; nothing was sent. Replace it in Settings → Integrations.");
+                : "Mesh has a stored API key the PSA does not send ({$note}); nothing was sent. Replace it in Settings → Integrations.");
 
             return self::FAILURE;
         }

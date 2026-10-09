@@ -1456,9 +1456,8 @@ class IntegrationsController extends Controller
     public function testMesh()
     {
         // #6161, #6162: only no stored key at all answers here. A blank
-        // key (missing, #6103) and a stored value the PSA does not send
-        // ('0': #6161, its own text) go on to the apiKeyRefusal() check
-        // below, which words each one.
+        // key (missing, #6103), a stored value the PSA does not send and
+        // a row that does not decrypt go on to the key check below.
         if (! MeshConfig::hasStoredKey()) {
             return response()->json(['success' => false, 'message' => 'API key not configured.']);
         }
@@ -1466,13 +1465,14 @@ class IntegrationsController extends Controller
         // #5980: three phases, each with its own failure text, so a fault
         // in the PSA's own settings is never reported as a Mesh failure.
         // Every text is status and class only (#5879, C-56). #6052: the
-        // request URI is parsed here as PSR-7 parses it inside get(), and
-        // the key is checked with MeshClient::apiKeyRefusal(), the rule
-        // both Mesh clients apply before send: PSR-7's header rule, plus
-        // PSA refusals PSR-7 does not make: a missing key (#6103; blank
-        // here, the guard above took null), a stored value the PSA does
-        // not send ('0': #6161, its own text) and an array (#6111). A
-        // refusal is a 'did not run'.
+        // request URI is parsed here as PSR-7 parses it inside get(). #6350:
+        // get('api_key') is null here only for a row that does not decrypt
+        // (#6296: no stored row was answered above), worded with
+        // MeshConfig::UNDECRYPTABLE_KEY; any other key is checked with
+        // MeshClient::apiKeyRefusal(), the rule both Mesh clients apply
+        // before send: PSR-7's header rule, plus PSA refusals PSR-7 does
+        // not make: a missing (blank) key (#6103) and a stored value the
+        // PSA does not send ('0': #6161). A refusal is a 'did not run'.
         try {
             // Resolved through the container so a test can hand it a
             // MockHandler (G-5); in production this is a plain new client.
@@ -1490,7 +1490,14 @@ class IntegrationsController extends Controller
         // #6296: a stored row get() returns as null did not decrypt.
         $keyRefusal = $apiKey === null ? MeshConfig::UNDECRYPTABLE_KEY : \App\Services\Mesh\MeshClient::apiKeyRefusal($apiKey);
         if ($keyRefusal !== null) {
-            return $this->meshTestFailure("Mesh connection test did not run: the Mesh API key {$keyRefusal}; nothing was sent.");
+            // #6346: a stored key the PSA does not send is worded as the
+            // other Mesh surfaces word it (MeshConfig::notConfiguredText()),
+            // not 'the Mesh API key is set, …'; a blank key is missing.
+            $note = $apiKey !== null && MeshConfig::apiKeyMissing($apiKey) ? null : MeshConfig::refusalNote($keyRefusal);
+
+            return $this->meshTestFailure($note === null
+                ? "Mesh connection test did not run: the Mesh API key {$keyRefusal}; nothing was sent."
+                : "Mesh connection test did not run: Mesh has a stored API key the PSA does not send ({$note}); nothing was sent.");
         }
 
         try {

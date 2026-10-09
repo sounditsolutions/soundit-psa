@@ -45,7 +45,12 @@ class ClientIntegrationService
     /**
      * Build integration status data for a client. DB-only — never calls vendor APIs.
      *
-     * @return array<string, array{label: string, icon: string, mapped: bool, entity_id: mixed, entity_display: string, license_count: int, last_synced: ?string}>
+     * #6294: a vendor whose configCheck fails is left out, unless its
+     * registry entry's keyNotice returns a text (Mesh: switched on with a
+     * stored key the PSA does not send); then it is listed with that text
+     * as 'key_notice' and the page says so instead of dropping the card.
+     *
+     * @return array<string, array{label: string, icon: string, mapped: bool, entity_id: mixed, entity_display: string, license_count: int, last_synced: ?string, key_notice: ?string}>
      */
     public function buildIntegrationsData(Client $client): array
     {
@@ -72,8 +77,12 @@ class ClientIntegrationService
 
         foreach ($registry as $vendor => $config) {
             try {
+                $keyNotice = null;
                 if (! ($config['configCheck'])()) {
-                    continue;
+                    $keyNotice = isset($config['keyNotice']) ? ($config['keyNotice'])() : null;
+                    if ($keyNotice === null) {
+                        continue;
+                    }
                 }
 
                 $column = $config['column'];
@@ -111,6 +120,7 @@ class ClientIntegrationService
                     'entity_display' => $entityDisplay,
                     'license_count' => $licenseCount,
                     'last_synced' => $lastSynced,
+                    'key_notice' => $keyNotice,
                 ];
             } catch (\Throwable $e) {
                 Log::warning('[ClientIntegration] Failed to build data for vendor', [
@@ -300,6 +310,11 @@ class ClientIntegrationService
                 'cast' => 'string',
                 'licenseVendor' => 'mesh',
                 'configCheck' => fn () => MeshConfig::isConfigured(),
+                // #6294: switched on with a stored key the PSA does not
+                // send: the card stays, saying so (no vendor call).
+                'keyNotice' => fn () => MeshConfig::isEnabled() && MeshConfig::isKeyStoredButUnusable()
+                    ? MeshConfig::notConfiguredText('')
+                    : null,
                 'fetchEntities' => fn () => app(MeshClient::class)->getCustomers(200),
                 'entityId' => fn ($e) => $e['uuid'] ?? '',
                 'entityName' => fn ($e) => $e['company_name'] ?? '',

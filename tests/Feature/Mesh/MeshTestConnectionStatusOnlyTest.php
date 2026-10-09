@@ -102,7 +102,7 @@ class MeshTestConnectionStatusOnlyTest extends TestCase
             'HTTP 503 with a vendor body' => ['503', 'Mesh connection test failed with HTTP 503 ('.ServerException::class.').'],
             'connect failure, no status' => ['connect', 'Mesh connection test failed without an HTTP status ('.ConnectException::class.').'],
             'unparseable base URL' => ['malformed', 'Mesh connection test did not run: the Mesh base URL could not be parsed; nothing was sent.'],
-            'API key a header cannot carry' => ['badkey', 'Mesh connection test did not run: the Mesh API key holds a character an HTTP header cannot carry; nothing was sent.'],
+            'API key a header cannot carry' => ['badkey', 'Mesh connection test did not run: Mesh has a stored API key the PSA does not send (it holds a character an HTTP header cannot carry); nothing was sent.'],
         ];
     }
 
@@ -256,7 +256,7 @@ class MeshTestConnectionStatusOnlyTest extends TestCase
         $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
         $response = $this->postJson(route('settings.integrations.mesh.test'));
 
-        $expected = 'Mesh connection test did not run: the Mesh API key is set, but to zero or true, which the PSA does not send as a key; nothing was sent.';
+        $expected = 'Mesh connection test did not run: Mesh has a stored API key the PSA does not send (zero or true); nothing was sent.';
         $response->assertOk()->assertExactJson(['success' => false, 'message' => $expected]);
         $this->assertStringNotContainsString('not configured', (string) $response->getContent());
         $this->assertSame(1, $this->mock->count(), 'nothing reached the handler');

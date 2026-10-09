@@ -176,7 +176,7 @@ class MeshTestCommandStatusOnlyTest extends TestCase
     {
         return [
             'blank' => ['   ', 'Mesh is not configured. Add API key in Settings → Integrations.'],
-            "'0'" => ['0', 'The Mesh API key is set, but to zero or true, which the PSA does not send as a key; nothing was sent. Replace it in Settings → Integrations.'],
+            "'0'" => ['0', 'Mesh has a stored API key the PSA does not send (zero or true); nothing was sent. Replace it in Settings → Integrations.'],
         ];
     }
 

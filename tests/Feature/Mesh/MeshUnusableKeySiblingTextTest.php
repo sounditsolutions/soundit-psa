@@ -135,18 +135,22 @@ class MeshUnusableKeySiblingTextTest extends TestCase
     /**
      * #6291: Mesh switched off with a usable key stored is switched off,
      * not 'not configured', on the staff tool refusal; the approval audit
-     * row is driven below. A switched-off Mesh with an unusable key says
-     * switched off too (the switch is checked first).
+     * row is driven below. #6342: a switched-off Mesh with an unusable key
+     * says switched off AND names the unusable key, not masking it.
      */
     public function test_the_staff_tool_refusal_when_mesh_is_switched_off(): void
     {
-        foreach (['SECRET_FIXTURE-6291', '0'] as $key) {
-            $this->store($key);
+        $expected = [
+            'SECRET_FIXTURE-6291' => 'Mesh Email Security is switched off',
+            '0' => 'Mesh Email Security is switched off and has a stored API key the PSA does not send (zero or true)',
+        ];
+        foreach ($expected as $key => $text) {
+            $this->store((string) $key);
             Setting::setValue('mesh_enabled', '0');
 
             $out = app(StaffMeshAdminToolExecutor::class)->execute('mesh_list_allow_rules', [], null, '[Test]');
 
-            $this->assertSame('Mesh Email Security is switched off', $out['error'] ?? null, $key);
+            $this->assertSame($text, $out['error'] ?? null, (string) $key);
         }
     }
 

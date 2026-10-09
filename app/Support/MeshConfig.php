@@ -17,6 +17,14 @@ class MeshConfig
     public const UNDECRYPTABLE_KEY = 'is stored but could not be decrypted';
 
     /**
+     * #6336: the container key of the per-request (per-job, per-command)
+     * record that readKey() has logged its decrypt warning. Bound scoped,
+     * so a queue worker's forgetScopedInstances() between jobs starts a
+     * fresh record and each job logs the warning once again.
+     */
+    private const WARNED_KEY = 'mesh.config.undecryptable-warned';
+
+    /**
      * #6296: get('api_key') is null for a stored row that does not
      * decrypt, so no caller can send it, and logs a status-only warning
      * (the exception class only: never the row, the ciphertext or the
@@ -43,7 +51,9 @@ class MeshConfig
     }
 
     /**
-     * The stored key and whether its row failed to decrypt.
+     * The stored key and whether its row failed to decrypt. #6336: the
+     * decrypt warning is logged once per request, job or command, not
+     * once per helper call (one refusal reads the key several times).
      *
      * @return array{0: string|null, 1: bool}
      */
@@ -52,10 +62,28 @@ class MeshConfig
         try {
             return [Setting::getEncrypted('mesh_api_key'), false];
         } catch (DecryptException $e) {
-            Log::warning('[MeshConfig] The stored Mesh API key could not be decrypted ('.$e::class.'); it is treated as unusable and no Mesh call is made with it.');
+            if (self::firstDecryptWarning()) {
+                Log::warning('[MeshConfig] The stored Mesh API key could not be decrypted ('.$e::class.'); it is treated as unusable and no Mesh call is made with it.');
+            }
 
             return [null, true];
         }
+    }
+
+    /** #6336: true the first time it is called in this request, job or command. */
+    private static function firstDecryptWarning(): bool
+    {
+        $app = app();
+        if (! $app->bound(self::WARNED_KEY)) {
+            $app->scoped(self::WARNED_KEY, fn () => new \ArrayObject);
+        }
+        $record = $app->make(self::WARNED_KEY);
+        if (isset($record['warned'])) {
+            return false;
+        }
+        $record['warned'] = true;
+
+        return true;
     }
 
     /**
@@ -88,7 +116,17 @@ class MeshConfig
      */
     public static function storedKeyNote(): ?string
     {
-        return match ($refusal = self::storedKeyRefusal()) {
+        return self::refusalNote(self::storedKeyRefusal());
+    }
+
+    /**
+     * #6346: the short reason for a storedKeyRefusal()-shaped refusal
+     * (MeshClient::apiKeyRefusal() of a key that is not missing gives the
+     * same texts), or null for null.
+     */
+    public static function refusalNote(?string $refusal): ?string
+    {
+        return match ($refusal) {
             null => null,
             MeshClient::UNUSABLE_KEY => 'zero or true',
             self::UNDECRYPTABLE_KEY => 'it could not be decrypted',

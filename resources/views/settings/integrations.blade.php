@@ -1746,7 +1746,9 @@
                 </div>
                 @endif
 
-                @if($meshHasApiKey)
+                {{-- #6342: an unusable stored key keeps the switch, so the page shows
+                     the on/off state the refusal texts name. --}}
+                @if($meshHasApiKey || ($meshKeyUnusable ?? false))
                 <div class="border-top pt-3 mt-3">
                     <form method="POST" action="{{ route('settings.integrations.toggle') }}">
                         @csrf

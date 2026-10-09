@@ -49,7 +49,13 @@ Schedule::command('litsrmm:sync-devices')
 Schedule::command('mesh:sync-licenses')
     ->dailyAt('04:30')
     ->withoutOverlapping()
-    ->runInBackground();
+    ->runInBackground()
+    // #6335: the reaper's gate (below): not while Mesh is switched off or
+    // has no stored key at all (never set up), so neither logs a daily
+    // warning. A stored key the PSA does not send still runs the command,
+    // which logs that no licenses were synced. hasStoredKey() does not
+    // decrypt, so this filter cannot throw (#6296).
+    ->when(fn () => \App\Support\MeshConfig::isEnabled() && \App\Support\MeshConfig::hasStoredKey());
 
 // Mesh allow-rule expiry — hourly. #1018: Mesh does NOT expire its own rules
 // (measured 2026-09-01 — `date_expiry` is display only), so this job is the only

@@ -12,6 +12,7 @@ use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Http;
 use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
@@ -32,10 +33,14 @@ use Tests\TestCase;
  *    the background, where console output is discarded).
  *  - #6302: the 'set but unusable' text survives the audit redactor.
  *
- * G-5: no row reaches a Mesh client: the container's clients are Mockery
- * doubles that fail on any call, every command and page row refuses at its
- * isConfigured() guard first, and the base URL is a reserved example.test
- * host. Synthetic data (G-13): SECRET_FIXTURE keys.
+ * G-5: the container's Mesh clients are Mockery doubles that fail on any
+ * call; every command row and every unusable-key page row refuses at its
+ * isConfigured() guard first. The usable-key badge row passes that guard
+ * and stays off the network only because the settings page makes no Mesh
+ * call (#6344). Http::preventStrayRequests() covers the Http facade the
+ * other integrations on that page could use (#6348); it does not cover a
+ * Guzzle client. The base URL is a reserved example.test host. Synthetic
+ * data (G-13): SECRET_FIXTURE keys.
  */
 class MeshKeyStateB6kTest extends TestCase
 {
@@ -47,6 +52,7 @@ class MeshKeyStateB6kTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        Http::preventStrayRequests();
         $this->app->instance(MeshClient::class, Mockery::mock(MeshClient::class));
         $this->app->instance(MeshWriteClient::class, Mockery::mock(MeshWriteClient::class));
         Setting::setValue('mesh_base_url', 'https://mesh-b6k.example.test');
@@ -93,8 +99,12 @@ class MeshKeyStateB6kTest extends TestCase
         $this->assertTrue($this->reaperFiltersPass());
     }
 
-    /** #6296: the mesh:sync-licenses schedule has no filter to throw in; its command is driven below. */
-    public function test_the_sync_licenses_schedule_has_no_key_filter(): void
+    /**
+     * #6296, #6335: the mesh:sync-licenses schedule filter (the reaper's
+     * gate) does not throw on a row that does not decrypt; a row is stored,
+     * so it runs. The gate's other arms are MeshKeyStateB6lTest's.
+     */
+    public function test_the_sync_licenses_schedule_gate_does_not_throw_on_an_undecryptable_key(): void
     {
         $this->storeUndecryptable();
         $events = collect(app(Schedule::class)->events())
@@ -173,7 +183,7 @@ class MeshKeyStateB6kTest extends TestCase
 
         $this->artisan('mesh:sync-licenses')->expectsOutput($text)->assertExitCode(1);
 
-        $this->assertContains(['warning', '[MeshSyncLicenses] '.$text.' No Mesh licenses were synced; license counts are not being updated.'], $this->logged);
+        $this->assertContains(['warning', '[MeshSyncLicenses] '.$text.' No Mesh licenses were synced on this run.'], $this->logged);
     }
 
     /** #6297: a missing key is logged too, with the 'not configured' text. */
@@ -183,7 +193,7 @@ class MeshKeyStateB6kTest extends TestCase
 
         $this->artisan('mesh:sync-licenses')->expectsOutput($text)->assertExitCode(1);
 
-        $this->assertSame([['warning', '[MeshSyncLicenses] '.$text.' No Mesh licenses were synced; license counts are not being updated.']], $this->logged);
+        $this->assertSame([['warning', '[MeshSyncLicenses] '.$text.' No Mesh licenses were synced on this run.']], $this->logged);
     }
 
     /**

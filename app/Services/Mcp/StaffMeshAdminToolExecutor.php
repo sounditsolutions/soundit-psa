@@ -1390,17 +1390,22 @@ class StaffMeshAdminToolExecutor
     }
 
     /**
-     * Why Mesh is refused: switched off (#6291), a stored key the PSA does
-     * not send (#6213, with MeshConfig::storedKeyNote()'s reason), else
-     * not configured. Worded so the audit redactor keeps it: 'API key is
+     * Why Mesh is refused: switched off (#6291; with the reason below too
+     * when the stored key is also unusable, #6342), a stored key the PSA
+     * does not send (#6213, with MeshConfig::storedKeyNote()'s reason),
+     * else not configured. Worded so the audit redactor keeps it: 'API key is
      * set, …' reads to it as a key and value and is redacted.
      */
     private static function refusalReason(string $name): string
     {
-        if (! MeshConfig::isEnabled()) {
-            return "{$name} is switched off";
-        }
         $note = MeshConfig::storedKeyNote();
+        if (! MeshConfig::isEnabled()) {
+            // #6342: switched off, and an unusable stored key is named
+            // too rather than masked by the switch.
+            return $note !== null
+                ? "{$name} is switched off and has a stored API key the PSA does not send ({$note})"
+                : "{$name} is switched off";
+        }
 
         return $note !== null
             ? "{$name} has a stored API key the PSA does not send ({$note})"
