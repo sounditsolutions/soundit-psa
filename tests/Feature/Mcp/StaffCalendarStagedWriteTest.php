@@ -289,9 +289,21 @@ class StaffCalendarStagedWriteTest extends TestCase
         // so backlinkNote throws AFTER executeCalendarWrite has already called Graph.
         Setting::setValue('triage_system_user_id', '99999999');
 
+        $logged = [];
+        \Illuminate\Support\Facades\Event::listen(\Illuminate\Log\Events\MessageLogged::class, function ($m) use (&$logged): void {
+            $logged[] = $m;
+        });
         $first = app(StaffCalendarToolExecutor::class)->approveStagedRun($run, $this->approver->id);
 
         $this->assertSame('executed', $first->status);
+        // #6268 (C-56): the bookkeeping failure is recorded by class, never by its message (a
+        // QueryException's SQL bindings carry the back-link body, which names the mailbox).
+        $row = \App\Models\TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->sole();
+        $this->assertMatchesRegularExpression('/^Calendar write EXECUTED but post-write back-link\\/audit failed \\([A-Za-z]+\\) — run left Done/', $row->summary);
+        $record = collect($logged)->first(fn ($m) => str_contains($m->message, 'post-write bookkeeping failed'));
+        $this->assertNotNull($record);
+        $this->assertSame(['run_id', 'action', 'exception'], array_keys($record->context));
+        $this->assertStringNotContainsString('staff@example.test', $row->summary.json_encode($record->context));
         $this->assertSame(
             TechnicianRunState::Done,
             $run->fresh()->state,
