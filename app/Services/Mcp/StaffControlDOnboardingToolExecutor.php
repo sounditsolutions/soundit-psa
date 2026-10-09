@@ -297,15 +297,17 @@ class StaffControlDOnboardingToolExecutor
      * The global-profile race, on the approval card and the client page. True of this
      * code on every arm: the PUT carries no condition; only ControlDClient's
      * ControlDWriteRejectedException (an HTTP 4xx whose body is the vendor error envelope,
-     * success false with an integer error code) ends the intent `rejected`; any other
-     * refusal (a 2xx without success, a 4xx without that envelope, a 5xx), any other
-     * post-admission failure, or a read-back that does not show the configured profile ends
-     * it uncertain; and when B3's finish() cannot save that outcome, or the process stops
-     * after admit(), the row stays `posted`. posted and uncertain both keep the lock and are
-     * never retried. It claims nothing about what Control D does with the PUT. No
-     * apostrophes: the client page renders it escaped.
+     * success false with an integer error code) ends the intent `rejected`; every other
+     * response to the PUT that requestForOrg() refuses (a 4xx without that envelope; a 1xx,
+     * 3xx or 5xx, since redirects are not followed; a 2xx whose body is not JSON or does not
+     * carry success true), any other post-admission failure, or a read-back that does not
+     * show the configured profile ends it uncertain; and when B3's finish() cannot save that
+     * outcome, or the process stops after admit() and before the outcome is recorded, the
+     * row stays `posted`. posted and uncertain both keep the lock and are never retried.
+     * It claims nothing about what Control D does with the PUT. No apostrophes: the client
+     * page renders it escaped.
      */
-    public const RACE_DISCLOSURE = 'The global-profile step sends an unconditional update, so a global profile set after the last read before that update is not detected and the update may replace it. Only a refusal in the Control D error envelope (an HTTP 4xx whose body reports success false with an integer error code) ends the step rejected; any other refusal, an unknown outcome, or a read-back that does not show the configured profile ends it uncertain. If that outcome cannot be recorded, or the process stops after the step is admitted for its update, the step stays posted instead. Posted and uncertain steps are never retried and keep this client locked until reconciled by hand.';
+    public const RACE_DISCLOSURE = 'The global-profile step sends an unconditional update, so a global profile set after the last read before that update is not detected and the update may replace it. Only a refusal in the Control D error envelope (an HTTP 4xx whose body reports success false with an integer error code) ends the step rejected; any other refusal, an unknown outcome, or a read-back that does not show the configured profile ends it uncertain. If that outcome cannot be recorded, or the process stops after the step is admitted for its update and before its outcome is recorded, the step stays posted instead. Posted and uncertain steps are never retried and keep this client locked until reconciled by hand.';
 
     /** nextStep() refusal at staging when the global-profile state could not be established. */
     public const UNREADABLE_REFUSAL = self::UNREADABLE_REASON.'; nothing was staged.';
@@ -539,20 +541,26 @@ class StaffControlDOnboardingToolExecutor
      * `uncertain` = the vendor write (POST for organization and code, PUT for the global
      * profile) may have landed and the intent holds the client's lock — TERMINAL here,
      * executed_with_fault, never re-armed (a retry would repeat a write whose outcome is
-     * unknown). When B3 cannot record its outcome, or the process stops after admission,
-     * the intent stays `posted`; that is reported as a HARD FAULT the same way. A
+     * unknown). When B3's finish() cannot save its outcome, the intent stays `posted` and
+     * that is reported as a HARD FAULT the same way. When the process stops after
+     * admission and before the outcome is recorded, the intent also stays `posted`, but
+     * this method reports nothing: the run stays Executing and claimed. A
      * ControlDClientException BEFORE admission releases the run back to AwaitingApproval
      * with no vendor write issued (read-only GETs, nextStep() and the pre-admission check,
-     * may have been). That branch has three arms: no intent (staging refused, so there
-     * is no intent id), an intent B3 left `staged`, and an intent the already-enforced
-     * no-op `released`. An intent id whose row cannot be found is none of these: it
-     * falls through and is reported as a HARD FAULT that ended `unknown`. Only a staged intent that still holds
-     * the per-client lock (active_client_id = client_id) is named, by id, as holding it; a
-     * released one, or a staged one whose lock is NULL, is not. If anything else throws
+     * may have been). That branch has three arms: no intent id (staging threw before
+     * returning one; stage()'s INSERT may still have committed first, so a staged row
+     * holding the lock can exist under an id this method never received), an intent B3
+     * left `staged`, and an intent the already-enforced no-op `released`. An intent id
+     * whose row cannot be found is none of these: it falls through and is reported as a
+     * HARD FAULT that ended `unknown`. Only a staged intent that still holds the per-client
+     * lock (active_client_id = client_id) is named, by id, as holding it; a released one,
+     * or a staged one whose lock is NULL, is not. If anything else throws
      * once an intent id exists and its row then cannot be read (find() throws or returns
-     * null), admission cannot be ruled out: HARD FAULT, never re-armed. That arm makes no
-     * unguarded approver lookup and closes the run Done when the run store accepts it; a
-     * failed close is logged and leaves the run claimed, never released for re-approval.
+     * null), admission cannot be ruled out: HARD FAULT, never re-armed; a find() that
+     * throws is logged with the intent id, the run id and the exception class only. That
+     * arm makes no unguarded approver lookup and closes the run Done when the run store
+     * accepts it; a failed close is logged and leaves the run claimed, never released for
+     * re-approval.
      */
     public function approveStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
     {
@@ -655,7 +663,7 @@ class StaffControlDOnboardingToolExecutor
                 if ($derived['different'] ?? false) {
                     // Staging again would refuse with the same text (nextStep() returns it while
                     // the org enforces another profile), so this arm does not say 'stage again'.
-                    return new TechnicianApprovalResult('gate_declined', message: "The client's Control D state changed since this was staged ({$why}). This proposal cannot be approved, and staging again is refused the same way, while this organization enforces a global profile other than the configured one. Nothing was created.");
+                    return new TechnicianApprovalResult('gate_declined', message: "This organization's global profile does not match the configured profile ({$why}). This proposal cannot be approved, and staging again is refused the same way, while this organization enforces a global profile other than the configured one. Nothing was created.");
                 }
 
                 return new TechnicianApprovalResult('gate_declined', message: "The client's Control D state changed since this was staged ({$why}). Deny this proposal and stage again so the current step is read and approved on its own card. Nothing was created.");
@@ -677,8 +685,11 @@ class StaffControlDOnboardingToolExecutor
                 $service->execute($approver, $intentId);
             } catch (ControlDClientException $e) {
                 $intent = $intentId !== null ? ControlDOnboardingIntent::find($intentId) : null;
-                // No id: staging itself refused, so nothing was admitted. An id whose row is
-                // gone cannot rule admission out and falls through to the HARD FAULT ('unknown').
+                // No id: staging threw before returning one, so execute() never ran and this
+                // method admitted nothing. stage()'s INSERT may still have committed before the
+                // error, leaving a staged row that holds the lock under an id never returned
+                // here. An id whose row is gone cannot rule admission out and falls through to
+                // the HARD FAULT ('unknown').
                 if ($intentId === null || ($intent !== null && in_array($intent->state, ['staged', ControlDOnboardingStaged::RELEASED], true))) {
                     // Definite local refusal before admission: no vendor write was issued
                     // (read-only GETs may have been). A staged B3 intent whose active_client_id
@@ -749,8 +760,10 @@ class StaffControlDOnboardingToolExecutor
             // throws, or the row is gone) admission cannot be ruled out: 'unknown', terminal.
             try {
                 $caughtState = $intentId !== null ? (ControlDOnboardingIntent::find($intentId)?->state ?? 'unknown') : 'staged';
-            } catch (\Throwable) {
+            } catch (\Throwable $readError) {
                 $caughtState = 'unknown';
+                // C-56: the failed read is not swallowed silently. Ids and the class only.
+                \Illuminate\Support\Facades\Log::error('[StaffControlDOnboardingToolExecutor] The onboarding intent could not be read after this approval failed', ['intent_id' => $intentId, 'run_id' => $run->id, 'exception' => $readError::class]);
             }
             if ($caughtState === 'unknown') {
                 // The failed read is most likely the database itself, so nothing else in this

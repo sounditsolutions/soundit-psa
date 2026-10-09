@@ -361,16 +361,18 @@ class ControlDOnboardingStaged
      * there refuses with no write. This code sends an unconditional PUT, so a profile set
      * after that read is not detected and the PUT may replace it; nothing here measures
      * what Control D does then. Only ControlDClient's ControlDWriteRejectedException (an
-     * HTTP 4xx carrying the vendor error envelope) ends the intent `rejected`; any other
-     * refusal (a 2xx without success, a 4xx without the envelope), an unknown outcome or a
-     * read-back that does not show the configured profile ends it uncertain. If finish()
-     * cannot save that outcome, or the process stops after admit(), the row stays
-     * `posted`; never retried either way. PUT organizations under X-Force-Org-Id (Modify
+     * HTTP 4xx carrying the vendor error envelope) ends the intent `rejected`; every other
+     * response requestForOrg() refuses (a 4xx without the envelope; a 1xx, 3xx or 5xx,
+     * since redirects are not followed; a 2xx whose body is not JSON or does not carry
+     * success true), an unknown outcome or a read-back that does not show the configured
+     * profile ends it uncertain. If finish() cannot save that outcome, or the process
+     * stops after admit() and before the outcome is recorded, the row stays `posted`;
+     * never retried either way. PUT organizations under X-Force-Org-Id (Modify
      * Organization: the sub-org itself) with the PINNED profile PK under the PINNED org,
      * then the parent's GET sub_organizations read-back. Before admission: pin drift, an
      * unreadable inventory, or a DIFFERENT parent_profile already set are definite
      * refusals with no write; already enforced is a no-op that releases the intent. One
-     * PUT, never retried: a definite vendor envelope rejection is `rejected`; any other
+     * PUT, never retried: a definite HTTP 4xx vendor envelope rejection is `rejected`; any other
      * failure after admission, a read-back that does not show the profile, or a failed
      * bind() re-check, is uncertain and terminal.
      */
