@@ -332,33 +332,53 @@ class StaffCalendarReleaseHonestyTest extends TestCase
     /**
      * #6197: the write ran, then advanceTo(Done) lost the claim-owner fence (another approval
      * claimed the run during the call). The run is not closed over that claim, nothing is
-     * reopened, and the approver is told the write executed and the run was not closed, on the
-     * error channel (executed_with_fault), not as a clean success and not as a retry.
+     * reopened, and the approver is told the write executed and that this request did not close
+     * the run, on the error channel (executed_with_fault), not as a clean success and not as a
+     * retry. #6261: the arm skips the back-link, so the audit row and the text carry the event
+     * id; on a create it is the id Graph returned. Rows: [arguments, staged tool, write method,
+     * what the mock returns, the event id].
+     *
+     * @return array<string, array{0: array<string, mixed>, 1: string, 2: string, 3: mixed, 4: string}>
      */
-    public function test_an_executed_write_whose_close_loses_the_fence_says_so(): void
+    public static function fenceLosingWrites(): array
     {
-        $run = $this->staged(['user_upn' => self::OWNER, 'event_id' => 'EVT-6124', 'comment' => 'x', 'reason' => 'Resolved.']);
+        return [
+            'cancel' => [['user_upn' => self::OWNER, 'event_id' => 'EVT-6124', 'comment' => 'x', 'reason' => 'Resolved.'], 'calendar_stage_cancel_event', 'cancelEvent', null, 'EVT-6124'],
+            'create' => [['user_upn' => self::OWNER, 'subject' => 'Onsite', 'start' => '2026-07-29T15:00:00', 'end' => '2026-07-29T16:00:00', 'reason' => 'Asked.'], 'calendar_stage_create_event', 'createEvent', ['id' => 'EVT-NEW-6261', 'subject' => 'Onsite'], 'EVT-NEW-6261'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('fenceLosingWrites')]
+    public function test_an_executed_write_whose_close_loses_the_fence_says_so(array $arguments, string $stagedTool, string $writeMethod, mixed $answer, string $eventId): void
+    {
+        $run = $this->staged($arguments, $stagedTool);
         $taken = now()->addMinute()->startOfSecond();
-        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->once()->andReturnUsing(function () use ($run, $taken) {
+        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive($writeMethod)->once()->andReturnUsing(function () use ($run, $taken, $answer) {
             DB::table('technician_runs')->where('id', $run->id)->update(['claimed_at' => $taken]);
 
-            return null;
+            return $answer;
         }));
         $logged = $this->captureLogs();
 
         $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run->fresh(), $this->approver->id);
 
         $this->assertSame('executed_with_fault', $r->status);
-        $this->assertSame('Calendar write executed, but the run was not closed because this approval no longer holds it. Do NOT re-approve it; check the calendar and the run.', $r->message);
+        $this->assertSame("Calendar write executed (event {$eventId}), but this request did not close the run, because it no longer holds it (another request may have claimed or closed it). Do NOT re-approve it; check the calendar and the run.", $r->message);
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is untouched');
-        $this->assertCount(1, array_filter($logged(), fn (MessageLogged $m) => $m->level === 'warning' && str_contains($m->message, 'was not closed')));
+        $records = array_values(array_filter($logged(), fn (MessageLogged $m) => str_contains($m->message, 'did not close the run')));
+        $this->assertCount(1, $records);
+        $this->assertSame('warning', $records[0]->level);
+        $this->assertSame('[Calendar] an approved calendar write ran, but this request did not close the run, because it no longer holds it', $records[0]->message);
+        $this->assertSame(['run_id' => $run->id, 'action' => $stagedTool], $records[0]->context);
         $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed')->count());
-        // The timeline must show the write landed (executed_with_fault), never a failure.
+        // The timeline must show the write landed (executed_with_fault), never a failure, and
+        // the row is the only record of the event id on this arm.
         $this->assertSame(
-            ['Calendar write EXECUTED, but the run was not closed: this approval no longer holds it. Do NOT re-approve; check the calendar and the run.'],
+            ["Calendar write EXECUTED (event {$eventId}), but this request did not close the run, because it no longer holds it (another request may have claimed or closed it). Do NOT re-approve; check the calendar and the run."],
             TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed_with_fault')->pluck('summary')->all(),
         );
         $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->count());
+        $this->assertSame(0, \App\Models\TicketNote::where('ticket_id', $run->ticket_id)->count(), 'no back-link on this arm');
     }
 
     /**

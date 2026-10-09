@@ -85,6 +85,15 @@ class StaffCalendarToolExecutor
      */
     private const UNRESOLVED_AUDIT = 'Graph calendar write outcome UNRESOLVED: an unexpected failure was raised after the write call was entered: ';
 
+    /**
+     * #6261: what a lost claim-owner fence on the close measures: only that this request's
+     * compare-and-set lost, never what became of the run.
+     */
+    private const LOST_FENCE = 'this request did not close the run, because it no longer holds it (another request may have claimed or closed it)';
+
+    /** #6265: the immediate-path text when a throwable was raised after the write call was entered. */
+    private const IMMEDIATE_UNRESOLVED_TEXT = 'The calendar write call was entered and an unexpected error was then raised, so whether the write reached the calendar is unknown. Check the calendar before any retry.';
+
     /** #6185: the approver-facing text for that failure. */
     private const UNRESOLVED_TEXT = 'The calendar write call was entered and an unexpected error was then raised, so whether the write reached the calendar is unknown. The run was not reopened for re-approval; check the calendar before any re-send.';
 
@@ -478,8 +487,10 @@ class StaffCalendarToolExecutor
         }
 
         $contentHash = $this->contentHash($directTool, $upn, $prep['plan'], $ticket->id);
+        // #6265: as on the approval path (#6185), true once the Graph write call was entered.
+        $writeEntered = false;
         try {
-            $exec = $this->executeCalendarWrite($directTool, $upn, $prep['plan'], $ticket, $contentHash);
+            $exec = $this->executeCalendarWrite($directTool, $upn, $prep['plan'], $ticket, $contentHash, $writeEntered);
         } catch (CalendarWriteRefusedException $e) {
             // Blocker 3 join-link guard — refused before any Graph write; surface it as a clean
             // tool error rather than letting it bubble to a generic MCP 500.
@@ -509,6 +520,21 @@ class StaffCalendarToolExecutor
             $this->safeAudit($directTool, 'error', $ticket, $contentHash, 'Graph calendar write failed/timed out (indeterminate outcome): '.self::graphFailureDetail($e), $actorLabel);
 
             return ['error' => $this->indeterminateWriteMessage($directTool)];
+        } catch (\Throwable $e) {
+            // #6265: any other throwable. Before the write call was entered nothing was sent, so
+            // it propagates as before. Once it was entered, whether the write reached the
+            // calendar is unknown: it is recorded (class, file and line, never the message, C-56)
+            // and returned as a tool error that does not invite a blind retry.
+            if (! $writeEntered) {
+                throw $e;
+            }
+            Log::error('[Calendar] immediate calendar write outcome unresolved: an unexpected failure was raised after the write call was entered', [
+                'tool' => $directTool, 'ticket_id' => $ticket->id, 'exception' => $e::class,
+                'file' => self::relativeSourcePath($e->getFile()), 'line' => $e->getLine(),
+            ]);
+            $this->safeAudit($directTool, 'error', $ticket, $contentHash, self::UNRESOLVED_AUDIT.class_basename($e), $actorLabel);
+
+            return ['error' => self::IMMEDIATE_UNRESOLVED_TEXT];
         }
 
         // The external write has COMMITTED. Record the immutable 'executed' row FIRST (idempotency +
@@ -516,18 +542,29 @@ class StaffCalendarToolExecutor
         // retryable error that re-sends a committed non-idempotent write (review diff:2).
         $eventId = (string) ($exec['event']['id'] ?? $exec['event_id'] ?? '?');
         $this->safeAudit($directTool, 'executed', $ticket, $contentHash, $prep['summary'].' — '.$ctx['reason'], $actorLabel);
+        if (isset($exec['projection_fault'])) {
+            // #6264: Graph answered and the write landed, but its returned event could not be read
+            // (projectAnsweredEvent()). The 'executed' row above keeps the idempotency guard; this
+            // row records the fault for the timeline.
+            $this->safeAudit($directTool, 'executed_with_fault', $ticket, $contentHash, "Calendar write EXECUTED (event {$eventId}), but the event Microsoft Graph returned could not be read ({$exec['projection_fault']}). Do NOT retry; check the calendar.", $actorLabel);
+        }
         try {
             $this->backlinkNote($ticket, $this->writeBacklinkBody($directTool, $upn, $eventId, (string) $ctx['reason'], approved: false));
         } catch (\Throwable $bookkeeping) {
             Log::error('[Calendar] immediate write committed but post-write back-link failed', ['tool' => $directTool, 'exception' => $bookkeeping::class]);
         }
 
-        return array_merge([
+        $result = array_merge([
             'success' => true,
             'action' => $this->actionVerb($directTool),
             'user_upn' => $upn,
             'ticket_id' => $ticket->id,
         ], $exec);
+        if (isset($exec['projection_fault'])) {
+            $result['warning'] = "The calendar write landed (event {$eventId}), but the event Microsoft Graph returned could not be read. Do not retry; check the calendar.";
+        }
+
+        return $result;
     }
 
     /**
@@ -691,7 +728,7 @@ class StaffCalendarToolExecutor
             $body['transactionId'] = $contentHash;
             $writeEntered = true;
 
-            return ['event' => $this->projectEvent($this->graph->createEvent($upn, $body))];
+            return $this->projectAnsweredEvent($directTool, $this->graph->createEvent($upn, $body));
         }
         if ($directTool === 'calendar_update_event') {
             $patch = $plan['patch'];
@@ -703,7 +740,7 @@ class StaffCalendarToolExecutor
             }
             $writeEntered = true;
 
-            return ['event' => $this->projectEvent($this->graph->updateEvent($upn, $plan['event_id'], $patch))];
+            return $this->projectAnsweredEvent($directTool, $this->graph->updateEvent($upn, $plan['event_id'], $patch));
         }
         if ($directTool === 'calendar_cancel_event') {
             $writeEntered = true;
@@ -717,6 +754,30 @@ class StaffCalendarToolExecutor
         $this->graph->respondEvent($upn, $plan['event_id'], $plan['response'], $plan['comment'] ?? null, $plan['send_response'] ?? true);
 
         return ['event_id' => $plan['event_id'], 'response' => $plan['response']];
+    }
+
+    /**
+     * #6264: Graph has answered a create/update with an event that passed
+     * CalendarGraphShapes::assertEvent(), so the write landed. A throwable raised while projecting
+     * that event is therefore not an unknown outcome: it is caught here, logged by class, file and
+     * line (never its message, C-56), and the result keeps the event id (assertEvent() proved it a
+     * string) with 'projection_fault' set, so each caller reports an executed write with a fault.
+     *
+     * @param  array<string, mixed>  $answered
+     * @return array<string, mixed>
+     */
+    private function projectAnsweredEvent(string $directTool, array $answered): array
+    {
+        try {
+            return ['event' => $this->projectEvent($answered)];
+        } catch (\Throwable $e) {
+            Log::error('[Calendar] Graph answered the calendar write, but the returned event could not be projected', [
+                'tool' => $directTool, 'exception' => $e::class,
+                'file' => self::relativeSourcePath($e->getFile()), 'line' => $e->getLine(),
+            ]);
+
+            return ['event' => ['id' => $answered['id'] ?? null], 'projection_fault' => class_basename($e)];
+        }
     }
 
     /**
@@ -1018,22 +1079,33 @@ class StaffCalendarToolExecutor
             // write (review blocker 2). Land the run terminal FIRST, then do best-effort
             // bookkeeping; a bookkeeping failure is recorded for a human, never reopened.
             $writeCommitted = true;
+            $eventId = (string) ($exec['event']['id'] ?? $exec['event_id'] ?? '?');
             if (! $run->advanceTo(TechnicianRunState::Done)) {
                 // #6197: advanceTo() lost the claim-owner fence: the run is Executing under a
-                // claim this request does not hold (or the row is gone), so it was not closed
-                // here. Graph answered the write, so this is not a retry either.
-                Log::warning('[Calendar] an approved calendar write ran but the run was not closed: this approval no longer holds it', [
+                // claim this request does not hold (or the row is gone), so this request did
+                // not close it. Graph answered the write, so this is not a retry either. #6261:
+                // this arm skips the back-link below, so the audit row and the text carry the
+                // event id (on a create, the id Graph returned).
+                Log::warning('[Calendar] an approved calendar write ran, but this request did not close the run, because it no longer holds it', [
                     'run_id' => $run->id, 'action' => $run->action_type,
                 ]);
-                $this->safeAudit($run->action_type, 'executed_with_fault', $ticket, $run->content_hash, 'Calendar write EXECUTED, but the run was not closed: this approval no longer holds it. Do NOT re-approve; check the calendar and the run.', $this->approverLabel($approverId), $run->id, $approverId);
+                $this->safeAudit($run->action_type, 'executed_with_fault', $ticket, $run->content_hash, "Calendar write EXECUTED (event {$eventId}), but ".self::LOST_FENCE.'. Do NOT re-approve; check the calendar and the run.', $this->approverLabel($approverId), $run->id, $approverId);
 
-                return new TechnicianApprovalResult('executed_with_fault', message: 'Calendar write executed, but the run was not closed because this approval no longer holds it. Do NOT re-approve it; check the calendar and the run.');
+                return new TechnicianApprovalResult('executed_with_fault', message: "Calendar write executed (event {$eventId}), but ".self::LOST_FENCE.'. Do NOT re-approve it; check the calendar and the run.');
             }
 
+            // #6264: Graph answered with an event that passed its shape check, but the PSA could
+            // not read it back (projectAnsweredEvent()). The write landed and the run is Done; the
+            // back-link and an executed_with_fault row record it, and the approver gets the fault.
+            $projectionFault = isset($exec['projection_fault']) ? (string) $exec['projection_fault'] : null;
+
             try {
-                $eventId = (string) ($exec['event']['id'] ?? $exec['event_id'] ?? '?');
                 $this->backlinkNote($ticket, $this->writeBacklinkBody($directTool, $upn, $eventId, (string) ($payload['reason'] ?? ''), approved: true));
-                $this->auditWrite($run->action_type, 'executed', $ticket, $run->content_hash, 'Operator-approved calendar write executed.', $this->approverLabel($approverId), $run->id, $approverId);
+                if ($projectionFault !== null) {
+                    $this->auditWrite($run->action_type, 'executed_with_fault', $ticket, $run->content_hash, "Operator-approved calendar write EXECUTED (event {$eventId}), but the event Microsoft Graph returned could not be read ({$projectionFault}). Do NOT re-approve; check the calendar.", $this->approverLabel($approverId), $run->id, $approverId);
+                } else {
+                    $this->auditWrite($run->action_type, 'executed', $ticket, $run->content_hash, 'Operator-approved calendar write executed.', $this->approverLabel($approverId), $run->id, $approverId);
+                }
             } catch (\Throwable $bookkeeping) {
                 // Write done + run already Done: record the partial failure for a human and
                 // return success. Reopening here is the exact double-execute bug this guards.
@@ -1045,6 +1117,10 @@ class StaffCalendarToolExecutor
                 } catch (\Throwable) {
                     // Audit is best-effort on this already-degraded path; the Log line above is the durable record.
                 }
+            }
+
+            if ($projectionFault !== null) {
+                return new TechnicianApprovalResult('executed_with_fault', message: "Calendar write executed (event {$eventId}), but the event Microsoft Graph returned could not be read. Do NOT re-approve it; check the calendar.");
             }
 
             return new TechnicianApprovalResult('executed', message: 'Calendar write executed after approval.');
