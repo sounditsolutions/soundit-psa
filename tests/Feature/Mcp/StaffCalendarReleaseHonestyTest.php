@@ -292,6 +292,12 @@ class StaffCalendarReleaseHonestyTest extends TestCase
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is untouched');
         $this->assertCount(1, array_filter($logged(), fn (MessageLogged $m) => $m->level === 'warning' && str_contains($m->message, 'was not closed')));
         $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed')->count());
+        // The timeline must show the write landed (executed_with_fault), never a failure.
+        $this->assertSame(
+            ['Calendar write EXECUTED, but the run was not closed: this approval no longer holds it. Do NOT re-approve; check the calendar and the run.'],
+            TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed_with_fault')->pluck('summary')->all(),
+        );
+        $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->count());
     }
 
     /** @return \Closure(): list<MessageLogged> */

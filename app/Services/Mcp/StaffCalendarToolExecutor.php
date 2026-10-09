@@ -1019,7 +1019,7 @@ class StaffCalendarToolExecutor
                 Log::warning('[Calendar] an approved calendar write ran but the run was not closed: this approval no longer holds it', [
                     'run_id' => $run->id, 'action' => $run->action_type,
                 ]);
-                $this->safeAudit($run->action_type, 'error', $ticket, $run->content_hash, 'Calendar write EXECUTED, but the run was not closed: this approval no longer holds it. Do NOT re-approve; check the calendar and the run.', $this->approverLabel($approverId), $run->id, $approverId);
+                $this->safeAudit($run->action_type, 'executed_with_fault', $ticket, $run->content_hash, 'Calendar write EXECUTED, but the run was not closed: this approval no longer holds it. Do NOT re-approve; check the calendar and the run.', $this->approverLabel($approverId), $run->id, $approverId);
 
                 return new TechnicianApprovalResult('executed_with_fault', message: 'Calendar write executed, but the run was not closed because this approval no longer holds it. Do NOT re-approve it; check the calendar and the run.');
             }
@@ -1144,7 +1144,7 @@ class StaffCalendarToolExecutor
     /**
      * Append the forensic technician_action_log row (append-only, separate from the controller's
      * mcp_audit_logs transport audit). Lean version of the CIPP auditAttempt — no person/license
-     * target. $resultStatus ∈ awaiting_approval|executed|blocked|error.
+     * target. $resultStatus ∈ awaiting_approval|executed|executed_with_fault|blocked|error.
      */
     /** auditWrite that never throws — for best-effort audit rows on already-committed or failed paths. */
     private function safeAudit(string $actionType, string $resultStatus, ?Ticket $ticket, string $contentHash, string $summary, string $actorLabel, ?int $runId = null, ?int $approverId = null): void
