@@ -550,7 +550,9 @@ class StaffControlDOnboardingToolExecutor
      * the per-client lock (active_client_id = client_id) is named, by id, as holding it; a
      * released one, or a staged one whose lock is NULL, is not. If anything else throws
      * once an intent id exists and its row then cannot be read (find() throws or returns
-     * null), admission cannot be ruled out: HARD FAULT, terminal, never re-armed.
+     * null), admission cannot be ruled out: HARD FAULT, never re-armed. That arm makes no
+     * unguarded approver lookup and closes the run Done when the run store accepts it; a
+     * failed close is logged and leaves the run claimed, never released for re-approval.
      */
     public function approveStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
     {
@@ -727,10 +729,13 @@ class StaffControlDOnboardingToolExecutor
             }
 
             // uncertain, posted, or unknown: a vendor write MAY have happened. Terminal;
-            // never re-armed. The intent holds the client's lock for manual reconciliation.
+            // never re-armed. An intent row that still exists holds the client's lock for manual
+            // reconciliation; one whose row is gone holds none, and the text says so.
             $run->advanceTo(TechnicianRunState::Done);
             $fault = "HARD FAULT: the Control D '{$step}' write for client #{$client->id} ended {$state}".($intent !== null ? " (intent {$intent->id}, phase {$intent->phase}".($intent->vendor_pk !== null ? ($step === self::STEP_GLOBAL_PROFILE ? ", org PK {$intent->vendor_pk}" : ", vendor PK {$intent->vendor_pk}") : '').')' : '')
-                .($step === self::STEP_GLOBAL_PROFILE ? '. The vendor PUT may have committed.' : '. The vendor POST may have committed.').' Do NOT re-approve or re-stage: reconcile upstream and local state by hand; the intent keeps this client\'s onboarding lock until then.';
+                .($step === self::STEP_GLOBAL_PROFILE ? '. The vendor PUT may have committed.' : '. The vendor POST may have committed.').' Do NOT re-approve or re-stage: reconcile upstream and local state by hand; '.($intent !== null
+                    ? 'the intent keeps this client\'s onboarding lock until then.'
+                    : "intent {$intentId} could not be found afterwards, so it holds no onboarding lock and does not block a new proposal for this client; do not stage one until then.");
             $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: {$fault}", $approverLabel, $run->id, $approverId);
 
             return new TechnicianApprovalResult('executed_with_fault', message: $fault);
@@ -748,8 +753,21 @@ class StaffControlDOnboardingToolExecutor
                 $caughtState = 'unknown';
             }
             if ($caughtState === 'unknown') {
-                $this->safeAudit($run->action_type, 'error', (int) $run->client_id, null, (string) $run->content_hash, "onboard: intent {$intentId} could not be read after this approval failed; a vendor write cannot be ruled out; run NOT reopened.", $this->approverLabel($approverId), $run->id, $approverId);
-                $run->advanceTo(TechnicianRunState::Done);
+                // The failed read is most likely the database itself, so nothing else in this
+                // arm may throw past it: the approver lookup falls back to the id, and a failed
+                // close is logged (the run then stays claimed, never released for re-approval).
+                $label = "approver:{$approverId}";
+                try {
+                    $label = $this->approverLabel($approverId);
+                } catch (\Throwable) {
+                    // keep the id-only label
+                }
+                $this->safeAudit($run->action_type, 'error', (int) $run->client_id, null, (string) $run->content_hash, "onboard: intent {$intentId} could not be read after this approval failed; a vendor write cannot be ruled out; run NOT reopened.", $label, $run->id, $approverId);
+                try {
+                    $run->advanceTo(TechnicianRunState::Done);
+                } catch (\Throwable) {
+                    \Illuminate\Support\Facades\Log::error('[StaffControlDOnboardingToolExecutor] Closing the run failed after its intent could not be read', ['run_id' => $run->id]);
+                }
 
                 return new TechnicianApprovalResult('executed_with_fault', message: "HARD FAULT: this approval failed and Control D onboarding intent {$intentId} could not be read afterwards, so a vendor write cannot be ruled out. Do NOT re-approve; reconcile by hand.");
             }

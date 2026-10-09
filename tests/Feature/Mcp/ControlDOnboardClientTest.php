@@ -1391,8 +1391,67 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertStringNotContainsString('refused before any vendor write', $error);
         $this->assertStringContainsString('HARD FAULT', $error);
         $this->assertStringContainsString('ended unknown', $error);
+        // #6249 r2 context:1: the row (and so its active_client_id lock) is gone; the text must not claim the lock.
+        $this->assertStringNotContainsString('keeps this client\'s onboarding lock', $error);
+        $this->assertMatchesRegularExpression('/; intent [0-9a-f-]{36} could not be found afterwards, so it holds no onboarding lock and does not block a new proposal for this client; do not stage one until then\.$/', $error);
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%holds no onboarding lock and does not block a new proposal%')->count(), 'the audit row carries the same text');
+        $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%keeps this client%')->count());
+        $this->assertSame(0, ControlDOnboardingIntent::count(), 'no intent row, so no lock row');
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
         $this->assertSame(['GET', 'GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
+    }
+
+    /**
+     * #6249 r2 contract:2: the outer-catch intent read fails, and so do the approver lookup and the
+     * run close after it (as a database failure would make them). The arm still returns the HARD
+     * FAULT, audits it under the id-only label, and never releases the run for a second approval.
+     */
+    public function test_outer_catch_unknown_arm_survives_a_failing_approver_lookup_and_run_close(): void
+    {
+        $run = $this->stagedGlobalProfileThatBinds();
+        $approver = User::factory()->admin()->create(['is_active' => true]);
+        $intents = 'from "'.(new ControlDOnboardingIntent)->getTable().'"';
+        $users = 'from "'.(new User)->getTable().'"';
+        $armed = true;
+        $outer = false;
+        $doneFailures = 0;
+        $intentReadFailed = false;
+        $userReadFailed = false;
+        \Illuminate\Support\Facades\DB::connection()->beforeExecuting(function (string $sql, array $bindings) use (&$armed, &$outer, &$doneFailures, &$intentReadFailed, &$userReadFailed, $intents, $users): void {
+            if (! $armed) {
+                return;
+            }
+            $lower = strtolower(ltrim($sql));
+            if (str_starts_with($lower, 'update') && str_contains($sql, 'technician_runs') && in_array(TechnicianRunState::Done->value, $bindings, true)) {
+                $doneFailures++;
+                $outer = true;
+                throw new \RuntimeException('synthetic run store failure');
+            }
+            if ($outer && ! $intentReadFailed && str_starts_with($lower, 'select') && str_contains($sql, $intents)) {
+                $intentReadFailed = true;
+                throw new \RuntimeException('synthetic intent read failure');
+            }
+            if ($outer && $intentReadFailed && ! $userReadFailed && str_starts_with($lower, 'select') && str_contains($sql, $users)) {
+                $userReadFailed = true;
+                throw new \RuntimeException('synthetic approver read failure');
+            }
+        });
+        $result = null;
+        try {
+            $result = app(StaffControlDOnboardingToolExecutor::class)->approveStagedRun($run, $approver->id);
+        } finally {
+            $armed = false;
+        }
+        $this->assertTrue($intentReadFailed, 'the outer-catch intent read threw');
+        $this->assertTrue($userReadFailed, 'the approver lookup threw');
+        $this->assertSame(2, $doneFailures, 'the bound-arm close and the unknown-arm close both failed');
+        $intent = ControlDOnboardingIntent::sole();
+        $this->assertSame('executed_with_fault', $result?->status);
+        $this->assertSame("HARD FAULT: this approval failed and Control D onboarding intent {$intent->id} could not be read afterwards, so a vendor write cannot be ruled out. Do NOT re-approve; reconcile by hand.", $result->message);
+        $log = TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%could not be read after this approval failed%')->sole();
+        $this->assertSame("approver:{$approver->id}", $log->actor_label);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'left claimed, never released for re-approval');
+        $this->assertSame(['GET', 'GET', 'PUT', 'GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
     }
 
     /** #6244 (contract-s2:6): a staged intent whose lock is NULL is not said to hold this client's onboarding lock. */
