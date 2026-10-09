@@ -310,7 +310,7 @@ class StaffControlDOnboardingToolExecutor
     public const RACE_DISCLOSURE = 'The global-profile step sends an unconditional update, so a global profile set after the last read before that update is not detected and the update may replace it. Only a refusal in the Control D error envelope (an HTTP 4xx whose body reports success false with an integer error code) ends the step rejected; any other refusal, an unknown outcome, or a read-back that does not show the configured profile ends it uncertain. If that outcome cannot be recorded, or the process stops after the step is admitted for its update and before its outcome is recorded, the step stays posted instead. Posted and uncertain steps are never retried and keep this client locked until reconciled by hand.';
 
     /** #6406: appended when advanceTo(Done) returned false (closeRunOrRecordLostFence()). */
-    public const NOT_CLOSED = 'The run was not closed because this request no longer holds it, and this request did not reopen it; check the run before acting on it.';
+    public const NOT_CLOSED = 'This request did not close the run, because it no longer holds it (another request may have claimed or closed it); check the run before acting on it.';
 
     /** nextStep() refusal at staging when the global-profile state could not be established. */
     public const UNREADABLE_REFUSAL = self::UNREADABLE_REASON.'; nothing was staged.';
@@ -577,8 +577,8 @@ class StaffControlDOnboardingToolExecutor
      *
      * #6406: every arm that closes the run checks advanceTo()'s bool. On false (this
      * request no longer holds the run) it writes a lost-fence record (an ids-only warning
-     * line and an audit row), never reports 'executed', and its text says the run was not
-     * closed (NOT_CLOSED) instead of that it was.
+     * line and an audit row), never reports 'executed', and its text says this request did
+     * not close the run (NOT_CLOSED) instead of that it was closed.
      */
     public function approveStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
     {
@@ -745,7 +745,7 @@ class StaffControlDOnboardingToolExecutor
                     default => '; code stored encrypted on the client record',
                 }.'.', $approverLabel, $run->id, $approverId);
                 if (! $closed) {
-                    return TechnicianApprovalResult::executedNotClosed("The Control D '{$step}' step", 'Control D', "Intent {$intent->id} is bound.");
+                    return new TechnicianApprovalResult('executed_with_fault', message: "The Control D '{$step}' step executed, but this request did not close the run, because it no longer holds it (another request may have claimed or closed it). Do NOT re-approve it; check Control D and the run. Intent {$intent->id} is bound.");
                 }
 
                 return new TechnicianApprovalResult('executed', message: match ($step) {
@@ -806,8 +806,8 @@ class StaffControlDOnboardingToolExecutor
                     // keep the id-only label
                 }
                 $this->safeAudit($run->action_type, 'error', (int) $run->client_id, null, (string) $run->content_hash, "onboard: intent {$intentId} could not be read after this approval failed; a vendor write cannot be ruled out; run NOT reopened.", $label, $run->id, $approverId);
-                // #6406: a false close (lost fence) is recorded and the text says the run was
-                // not closed; a close that throws is logged and the run stays claimed.
+                // #6406: a false close (lost fence) is recorded and the text says this request
+                // did not close the run; a close that throws is logged and the run stays claimed.
                 $closed = true;
                 try {
                     $closed = $this->closeRunOrRecordLostFence($run, (int) $run->client_id, null, (string) $run->content_hash, "onboard: intent {$intentId}", $label, $approverId);
@@ -946,7 +946,8 @@ class StaffControlDOnboardingToolExecutor
     /**
      * #6406: land the run Done, or record that this request did not. advanceTo() returns false
      * when this request no longer holds the run (another claim, or the run left Executing);
-     * then the run was not closed here and this request did not reopen it. The record is an
+     * then this request did not close it (another request may have claimed or closed it)
+     * and did not reopen it. The record is an
      * ids-only warning line and an audit row (safeAudit(), so a failed audit is logged
      * status-only and never throws). A throw from advanceTo() is not caught here.
      */
@@ -955,8 +956,8 @@ class StaffControlDOnboardingToolExecutor
         if ($run->advanceTo(TechnicianRunState::Done)) {
             return true;
         }
-        \Illuminate\Support\Facades\Log::warning('[StaffControlDOnboardingToolExecutor] The run was not closed: this request no longer holds it', ['run_id' => $run->id, 'action' => $run->action_type]);
-        $this->safeAudit($run->action_type, 'error', $clientId, $ticket, $contentHash, "{$prefix}: the run was not closed because this request no longer holds it; this request did not reopen it.", $actorLabel, $run->id, $approverId);
+        \Illuminate\Support\Facades\Log::warning('[StaffControlDOnboardingToolExecutor] This request did not close the run: it no longer holds it', ['run_id' => $run->id, 'action' => $run->action_type]);
+        $this->safeAudit($run->action_type, 'error', $clientId, $ticket, $contentHash, "{$prefix}: this request did not close the run, because it no longer holds it (another request may have claimed or closed it); this request did not reopen it.", $actorLabel, $run->id, $approverId);
 
         return false;
     }

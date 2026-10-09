@@ -1801,10 +1801,10 @@ class ControlDOnboardClientTest extends TestCase
      * by another request first (its claimed_at moved), so the fenced UPDATE matches no row and
      * advanceTo() returns false. Records whether the steal happened.
      */
-    private function loseFenceOnDone(int $throws, bool &$stolen, bool &$armed, ?callable $onThrow = null): void
+    private function loseFenceOnDone(int $throws, bool &$stolen, bool &$armed, ?callable $onThrow = null, bool $closeElsewhere = false): void
     {
         $doneUpdates = 0;
-        \Illuminate\Support\Facades\DB::connection()->beforeExecuting(function (string $sql, array $bindings) use ($throws, &$stolen, &$armed, &$doneUpdates, $onThrow): void {
+        \Illuminate\Support\Facades\DB::connection()->beforeExecuting(function (string $sql, array $bindings) use ($throws, &$stolen, &$armed, &$doneUpdates, $onThrow, $closeElsewhere): void {
             if (! $armed || $stolen || ! str_starts_with(strtolower(ltrim($sql)), 'update') || ! str_contains($sql, 'technician_runs')
                 || ! in_array(TechnicianRunState::Done->value, $bindings, true)) {
                 return;
@@ -1816,7 +1816,9 @@ class ControlDOnboardClientTest extends TestCase
                 throw new \RuntimeException('synthetic run store failure');
             }
             $stolen = true;
-            \Illuminate\Support\Facades\DB::table('technician_runs')->update(['claimed_at' => now()->addHour()]);
+            \Illuminate\Support\Facades\DB::table('technician_runs')->update($closeElsewhere
+                ? ['state' => TechnicianRunState::Done->value]
+                : ['claimed_at' => now()->addHour()]);
         });
     }
 
@@ -1840,8 +1842,8 @@ class ControlDOnboardClientTest extends TestCase
 
     /**
      * #6406: when advanceTo(Done) returns false the arm writes a lost-fence record (one ids-only
-     * warning line and one audit row), never reports 'executed', and its text says the run was
-     * not closed instead of that it was. The run is left where the other request put it.
+     * warning line and one audit row), never reports 'executed', and its text says this request
+     * did not close the run instead of that it was closed. The run is left where the other request put it.
      */
     #[\PHPUnit\Framework\Attributes\DataProvider('lostFenceArms')]
     public function test_a_lost_fence_on_every_closing_arm_is_recorded_and_never_reported_closed(string $arm): void
@@ -1884,10 +1886,10 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertTrue($stolen, 'the close met a lost fence');
         $intent = ControlDOnboardingIntent::sole();
         $this->assertSame('executed_with_fault', $result->status, 'never executed, never a success');
-        $notClosed = 'The run was not closed because this request no longer holds it, and this request did not reopen it; check the run before acting on it.';
+        $notClosed = 'This request did not close the run, because it no longer holds it (another request may have claimed or closed it); check the run before acting on it.';
         $this->assertSame($notClosed, StaffControlDOnboardingToolExecutor::NOT_CLOSED);
         $expected = match ($arm) {
-            'bound' => "The Control D 'global-profile' step executed, but the run was not closed because this request no longer holds it. Do NOT re-approve it; check Control D and the run. Intent {$intent->id} is bound.",
+            'bound' => "The Control D 'global-profile' step executed, but this request did not close the run, because it no longer holds it (another request may have claimed or closed it). Do NOT re-approve it; check Control D and the run. Intent {$intent->id} is bound.",
             'rejected' => 'Control D rejected the organization write: '.$intent->reason.' — the API key is a Read token; replace it with a Write token in Settings > Integrations, then stage again. Nothing created. '.$notClosed,
             'uncertain' => "HARD FAULT: the Control D 'organization' write for client #{$run->client_id} ended uncertain (intent {$intent->id}, phase {$intent->phase}). The vendor POST may have committed. Do NOT re-approve or re-stage: reconcile upstream and local state by hand; the intent keeps this client's onboarding lock until then. ".$notClosed,
             'outer-unknown' => "HARD FAULT: this approval failed and Control D onboarding intent {$intent->id} could not be read afterwards, so a vendor write cannot be ruled out. Do NOT re-approve; reconcile by hand. ".$notClosed,
@@ -1899,9 +1901,39 @@ class ControlDOnboardClientTest extends TestCase
         // The run is not Done: this request did not close it, and did not reopen it either.
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state);
         $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')
-            ->where('summary', 'like', '%the run was not closed because this request no longer holds it; this request did not reopen it.')->count(), 'one lost-fence audit row');
+            ->where('summary', 'like', '%this request did not close the run, because it no longer holds it (another request may have claimed or closed it); this request did not reopen it.')->count(), 'one lost-fence audit row');
         $warnings = array_values(array_filter($logs->calls, fn ($c) => $c[0] === 'warning'));
-        $this->assertSame([['warning', ['[StaffControlDOnboardingToolExecutor] The run was not closed: this request no longer holds it', ['run_id' => $run->id, 'action' => $run->action_type]]]], $warnings);
+        $this->assertSame([['warning', ['[StaffControlDOnboardingToolExecutor] This request did not close the run: it no longer holds it', ['run_id' => $run->id, 'action' => $run->action_type]]]], $warnings);
+    }
+
+    /**
+     * #6406 (r1 diff:1): the other false arm of advanceTo(): the run already LEFT Executing
+     * (another request closed it) before this request's fenced UPDATE. The text says only
+     * that this request did not close the run, which is true here too; the run stays Done.
+     */
+    public function test_a_run_closed_by_another_request_is_not_reported_as_not_closed(): void
+    {
+        $approver = User::factory()->admin()->create(['is_active' => true]);
+        $run = $this->stagedGlobalProfileThatBinds();
+        $stolen = false;
+        $armed = true;
+        $this->loseFenceOnDone(0, $stolen, $armed, null, true);
+        $logs = $this->recordLogs();
+        try {
+            $result = app(StaffControlDOnboardingToolExecutor::class)->approveStagedRun($run, $approver->id);
+        } finally {
+            $armed = false;
+        }
+        $this->assertTrue($stolen, 'the run left Executing before the fenced close');
+        $intent = ControlDOnboardingIntent::sole();
+        $this->assertSame('executed_with_fault', $result->status);
+        $this->assertSame("The Control D 'global-profile' step executed, but this request did not close the run, because it no longer holds it (another request may have claimed or closed it). Do NOT re-approve it; check Control D and the run. Intent {$intent->id} is bound.", $result->message);
+        $this->assertStringNotContainsString('was not closed', $result->message);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state, 'the other request closed it');
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')
+            ->where('summary', 'like', '%this request did not close the run, because it no longer holds it (another request may have claimed or closed it); this request did not reopen it.')->count());
+        $warnings = array_values(array_filter($logs->calls, fn ($c) => $c[0] === 'warning'));
+        $this->assertSame([['warning', ['[StaffControlDOnboardingToolExecutor] This request did not close the run: it no longer holds it', ['run_id' => $run->id, 'action' => $run->action_type]]]], $warnings);
     }
 
     /** #6244 (contract-s2:6): a staged intent whose lock is NULL is not said to hold this client's onboarding lock. */
