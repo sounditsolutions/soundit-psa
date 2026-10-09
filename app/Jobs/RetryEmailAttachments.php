@@ -198,7 +198,9 @@ class RetryEmailAttachments implements ShouldQueue
 
     /**
      * b11 (#6273/#6276), b12 (#6409/#6410): the pass after the push (see dropDuplicateRows())
-     * issued a DELETE for a row it read as unreserved, and that DELETE matched no row. It says
+     * issued a DELETE for a row it read as unreserved, and that DELETE reported no matched row
+     * (0 affected rows; on #6276 below that is the connection's re-run, not the DELETE that
+     * committed). It says
      * nothing about whether the row is still queued. Context run_started: as on
      * DUPLICATE_ROWS_DROPPED; unmatched_job_ids: those rows. The record cannot tell these arms
      * apart:
@@ -224,10 +226,10 @@ class RetryEmailAttachments implements ShouldQueue
      *   with it (ran it, or failed it) in between.
      * Not written for a row the pass read as reserved (no DELETE is issued for it). After a
      * DELETE that threw (DUPLICATE_CHECK_FAILED step push, #6412) it is still written for the
-     * rows whose DELETE matched no row before the throw; the row whose DELETE threw, and the
+     * rows whose DELETE reported no matched row before the throw; the row whose DELETE threw, and the
      * rows after it, are not listed.
      */
-    public const DUPLICATE_ROWS_DELETE_UNMATCHED = '[RetryEmailAttachments] Duplicate queue rows of one push not matched by their DELETE';
+    public const DUPLICATE_ROWS_DELETE_UNMATCHED = '[RetryEmailAttachments] Duplicate queue rows of one push whose DELETE reported no matched row';
 
     /**
      * #6101: the not_queued marker when the read-back could not tell (queued_row null). #6135:
@@ -564,19 +566,21 @@ class RetryEmailAttachments implements ShouldQueue
      * there: nothing is deleted and (#6275) no kept entry is written, as every row is held and
      * a run's check does not count a reserved row anyway. #6183: when no run has started, at
      * least one row read is unreserved and two or more rows read were not deleted by this pass
-     * (one is reserved, or a DELETE matched no row: #6417, that row is counted as left even
+     * (one is reserved, or a DELETE reported no matched row: #6417, that row is counted as left even
      * when it is already gone, as the pass cannot tell, so the entry can be written with one
-     * row left; that row's run then checks, and removes it when it checks clear), the kept
+     * row left; that row's run removes it only when its check read the entry as held and
+     * checked clear (forgetKept()): a run that checked before the entry was written does not,
+     * and the entry then stays until KEPT_TTL_SECONDS), the kept
      * entry is written (a failed write is CACHE_STEP_FAILED kept_put), so a left row's run
      * checks for a later row after the pending entry is gone while the kept entry is held (see
      * keptKey(): not once a run checked clear and removed it, nor past KEPT_TTL_SECONDS).
      * Recorded as
-     * DUPLICATE_ROWS_DROPPED; a DELETE that matched no row as DUPLICATE_ROWS_DELETE_UNMATCHED
+     * DUPLICATE_ROWS_DROPPED; a DELETE that reported no matched row as DUPLICATE_ROWS_DELETE_UNMATCHED
      * (b11, #6273/#6276: reserved after the read, or already gone; written after a DELETE that
      * threw as well, #6412). A read or delete that throws is DUPLICATE_CHECK_FAILED (step
      * push): the rows not yet deleted are left, the kept entry is written, and the rows already
      * deleted before the throw are still recorded as DUPLICATE_ROWS_DROPPED (and those whose
-     * DELETE matched no row before it as DUPLICATE_ROWS_DELETE_UNMATCHED). A database queue
+     * DELETE reported no matched row before it as DUPLICATE_ROWS_DELETE_UNMATCHED). A database queue
      * whose jobs floor could not be read (FLOOR_READ_FAILED step jobs) reads nothing and writes
      * the kept entry. Never throws. Not a database queue or no pushId: nothing is read or
      * written.
@@ -634,7 +638,7 @@ class RetryEmailAttachments implements ShouldQueue
                 if ($table()->where('id', $id)->whereNull('reserved_at')->delete() === 1) {
                     $dropped[] = $id;
                 } else {
-                    // #6273/#6276/#6410: the DELETE matched no row. Reserved by a worker after
+                    // #6273/#6276/#6410: the DELETE reported no matched row. Reserved by a worker after
                     // the read (still queued), or already gone: deleted by this DELETE whose
                     // reply was lost and whose re-run matched nothing, or reserved and finished
                     // with by a worker in between. Which one is not known here.
@@ -643,7 +647,7 @@ class RetryEmailAttachments implements ShouldQueue
             }
             if (! $started && $rows->count() - count($dropped) >= 2) {
                 // #6183: two or more rows read were not deleted by this pass and no run has
-                // started (a row is reserved, or a DELETE matched no row: #6417, a row already
+                // started (a row is reserved, or a DELETE reported no matched row: #6417, a row already
                 // gone is counted here too, as it cannot be told apart): their runs check while
                 // the kept entry is held (see keptKey()).
                 $this->keepChecks();

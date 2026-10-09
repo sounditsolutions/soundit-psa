@@ -56,7 +56,7 @@ class RetryEmailAttachmentsJobTest extends TestCase
      * literal so a base without the constant fails on an assertion, not on an undefined
      * constant (#6411).
      */
-    private const DELETE_UNMATCHED = '[RetryEmailAttachments] Duplicate queue rows of one push not matched by their DELETE';
+    private const DELETE_UNMATCHED = '[RetryEmailAttachments] Duplicate queue rows of one push whose DELETE reported no matched row';
 
     /** @var array<int, array{request: \Psr\Http\Message\RequestInterface}> */
     private array $history = [];
@@ -183,7 +183,7 @@ class RetryEmailAttachmentsJobTest extends TestCase
     {
         $records = array_values(array_filter($this->logs->getRecords(), fn (LogRecord $r) => array_key_exists('unmatched_job_ids', $r->context)));
         foreach ($records as $r) {
-            $this->assertSame(self::DELETE_UNMATCHED, $r->message, '#6409: the record says the DELETE matched no row, not that the row was not deleted');
+            $this->assertSame(self::DELETE_UNMATCHED, $r->message, '#6409: the record says the DELETE reported no matched row, not that the row was not deleted');
         }
 
         return $records;
@@ -2546,7 +2546,7 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_DROPPED));
         $notDeleted = $this->unmatchedRecords();
         $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'run_started' => true, 'unmatched_job_ids' => [$later]]],
-            array_map(fn ($r) => $r->context, $notDeleted), 'the row whose DELETE matched no row is recorded');
+            array_map(fn ($r) => $r->context, $notDeleted), 'the row whose DELETE reported no matched row is recorded');
         $this->assertSame(Level::Warning, $notDeleted[0]->level);
 
         // #6413: the reserved row's run, the second run of the retry.
@@ -2580,8 +2580,8 @@ class RetryEmailAttachmentsJobTest extends TestCase
         // #6276: a DELETE that committed and whose reply was lost is re-run by the connection,
         // and the re-run matches nothing. Modelled here by removing the row just before the
         // pass's DELETE runs: the row is gone but not in DUPLICATE_ROWS_DROPPED. b11: it is in
-        // DUPLICATE_ROWS_DELETE_UNMATCHED, whose text (#6409) says only that the DELETE matched
-        // no row, which is true here although the row is gone. #6417: the pass counts that
+        // DUPLICATE_ROWS_DELETE_UNMATCHED, whose text (#6409) says only that the DELETE reported
+        // no matched row, which is true here although the row is gone. #6417: the pass counts that
         // row as left (it cannot tell it from a reserved one), so with one row left it still
         // writes the kept entry; the later row's run checks, finds nothing, runs and removes it.
         $this->databaseQueue();
@@ -2961,7 +2961,7 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_DROPPED), 'no DELETE matched a row');
         $unmatched = $this->unmatchedRecords();
         $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'run_started' => false, 'unmatched_job_ids' => [$ids[0]]]],
-            array_map(fn ($r) => $r->context, $unmatched), 'the DELETE that matched no row before the throw is recorded; the one that threw is not');
+            array_map(fn ($r) => $r->context, $unmatched), 'the DELETE that reported no matched row before the throw is recorded; the one that threw is not');
         $this->assertSame(Level::Warning, $unmatched[0]->level);
 
         $this->assertTheEarlierRowSkipsAndTheLaterRunsOnce($email, $ticket, [$ids[1], $ids[2]]);
