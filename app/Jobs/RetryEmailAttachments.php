@@ -59,13 +59,18 @@ class RetryEmailAttachments implements ShouldQueue
     public const REQUEUE_DELAY_SECONDS = 60;
 
     /**
-     * #6282: how long the kept entry (see keptKey()) lives: one day. No configuration bounds how
-     * long a row can wait in the queue (a backlog, stopped workers), so this is a fixed bound,
-     * not derived: far above the queue's retry_after (90 seconds by default) and the 10 minutes
-     * of the pending and started entries, and short enough that entries a run never removes
-     * do not pile up.
+     * #6282: how long the kept entry (see keptKey()) lives: seven days (r2 of #6304: one day is
+     * inside a plausible weekend or incident outage). No configuration bounds how long a row
+     * can wait in the queue (a backlog, stopped workers), so this is a fixed bound, not
+     * derived: far above the queue's retry_after (90 seconds by default) and the 10 minutes of
+     * the pending and started entries. The expiry arm: a row of the push still queued after
+     * KEPT_TTL_SECONDS runs without checking for a later row (neither entry is held), so the
+     * earlier and the later row both run, and nothing is recorded (a missing entry is not a
+     * failed read). The TTL bounds how long the entry is held, not how long its file stays
+     * on CACHE_STORE=file: that store deletes an expired file only when the key is read again,
+     * and no run reads the key of a push whose rows have all gone, so its file stays.
      */
-    public const KEPT_TTL_SECONDS = 86400;
+    public const KEPT_TTL_SECONDS = 604800;
 
     public const MARKER = '[RetryEmailAttachments] Email attachments not added';
 
@@ -135,11 +140,14 @@ class RetryEmailAttachments implements ShouldQueue
      * entry anyway; (#6183) kept_put, the kept entry written after the push (see
      * dropDuplicateRows()) or after a push that threw found its row in the queue table (r2
      * diff:1), after which a run of the push checks for a later row only while the pending
-     * entry is held (#6275: during the push, or after it when the cleanup could not remove
-     * it), and not once it is gone; or (r2 diff:7) check_read, a run's read of the pending or
+     * entry is held (during the push, or after it when the cleanup could not remove it), and
+     * not once it is gone; or (r2 diff:7) check_read, a run's read of the pending or
      * kept entry before its check for a later row, which then reads the rows as if one were
-     * held; or (#6282) kept_forget, a finished run's removal of the kept entry (forgetKept()),
-     * which then expires after KEPT_TTL_SECONDS; exception: the class that threw, or null. A
+     * held; or (#6282) kept_forget, a finished run's removal of the kept entry (forgetKept(),
+     * attempted only after that run's check read the rows and found no later row, whether or
+     * not a kept entry was ever written for its push): the removal threw, or the store
+     * returned false and the key is still held (or that read threw); an entry left that way
+     * is held until KEPT_TTL_SECONDS; exception: the class that threw, or null. A
      * failed pending_put makes a later not-found read-back report queued_row null, never false.
      */
     public const CACHE_STEP_FAILED = '[RetryEmailAttachments] Push read-back cache step failed';
@@ -150,8 +158,11 @@ class RetryEmailAttachments implements ShouldQueue
      * later queue row of the same push (a lost reply to the INSERT that the connection
      * re-ran) that is not reserved and has attempts left (#6182), and exited without running.
      * The later row is then the one left to run; it can still fail without running handle() (a
-     * worker that reserves it and dies). Context job_id: this run's row; later_job_ids: the
-     * later rows of this push.
+     * worker that reserves it and dies). Not reached (#6282, the expiry arm) by a run after the
+     * push whose rows waited in the queue past KEPT_TTL_SECONDS, or that started after a run of
+     * the push checked clear and removed the kept entry: neither entry is held, so it does not
+     * check, both rows run, and nothing is recorded. Context job_id: this run's row;
+     * later_job_ids: the later rows of this push.
      */
     public const DUPLICATE_ROW_SKIPPED = '[RetryEmailAttachments] Duplicate queue row of one push skipped';
 
@@ -159,9 +170,11 @@ class RetryEmailAttachments implements ShouldQueue
      * #6100: a de-duplication read or delete threw. Context step: run (a run's check, handle(),
      * which then goes ahead, and nothing is skipped because of it, so a second row of the push,
      * if any, may run too) or (#6179) push (queueAfterCommit()'s pass after the push: the rows
-     * not yet deleted are left, the kept entry is written so their runs still check for a later
-     * row (#6278: which cannot stop the latest row left when a run of the push started before
-     * it was written), and the rows it had already deleted before the throw, if any, follow as
+     * not yet deleted are left, the kept entry is written so their runs check for a later row
+     * while it is held (see keptKey(): it is removed by a run that checked clear, and expires
+     * after KEPT_TTL_SECONDS) (#6278: the check cannot stop the latest row left when a run of
+     * the push started before it was written), and the rows it had already deleted before
+     * the throw, if any, follow as
      * DUPLICATE_ROWS_DROPPED); exception: the class that threw.
      */
     public const DUPLICATE_CHECK_FAILED = '[RetryEmailAttachments] Duplicate queue row check failed';
@@ -201,10 +214,13 @@ class RetryEmailAttachments implements ShouldQueue
      * failed_jobs; exception: the class that threw. Recorded whether or not the push throws.
      * #6179/#6183: step jobs also means a push that returned had no pass after it
      * (dropDuplicateRows() cannot read above a floor), so it wrote the kept entry instead and
-     * each run of the push still checks for a later row, unless that write failed (#6275:
-     * CACHE_STEP_FAILED kept_put, then no run after the push checks). #6278: the check cannot
-     * stop the later row when a run of the push started before that row was written (see
-     * queueAfterCommit(), 'Both still run when').
+     * a run of the push after it checks for a later row while that entry is held, unless that
+     * write failed (CACHE_STEP_FAILED kept_put, then no run after the push checks). The expiry
+     * arm: a row that waits in the queue past KEPT_TTL_SECONDS runs without checking, so the
+     * earlier and the later row both run, and nothing is recorded. A run that checked clear
+     * removes the entry (forgetKept()), and a run after that does not check. #6278: the check
+     * cannot stop the later row when a run of the push started before that row was written
+     * (see queueAfterCommit(), 'Both still run when').
      */
     public const FLOOR_READ_FAILED = '[RetryEmailAttachments] Push read-back floor read failed';
 
@@ -315,7 +331,12 @@ class RetryEmailAttachments implements ShouldQueue
      * and its own check finds nothing later; and when a run of the push started before the
      * re-run INSERT wrote the later row and the pass did not complete (no jobs floor, a read
      * or a DELETE that threw), so the later row is left and the kept entry cannot stop it: it
-     * is the latest row, and its check finds nothing above it. The arms that need two workers
+     * is the latest row, and its check finds nothing above it. #6282 (the expiry arm), also with
+     * nothing recorded: when the rows were left with the kept entry held and a row waits in the
+     * queue past KEPT_TTL_SECONDS (stopped workers, a backlog, a failed deploy), the entry has
+     * expired, so no run checks and the earlier and the later row both run; and when a run of
+     * the push checked clear and removed the kept entry (forgetKept()) before a row written
+     * after its check, or held then by a live worker, was popped. The arms that need two workers
      * reserving at once do not arise under one queue:work process. #6151:
      * when the reconnect fails, the push throws with the first row committed and this
      * read-back's reconnect fails too (queued_row null, so the commit work may run here as well
@@ -329,7 +350,8 @@ class RetryEmailAttachments implements ShouldQueue
      * PUSH_THREW_ROW_FOUND with found_in, and neither the marker nor the commit work runs here,
      * since the job owns them; found_in jobs writes the kept entry (r2 diff:1: no pass runs
      * after a push that threw, and a re-run INSERT may have left two rows, so their runs keep
-     * their check once the pending entry is gone). #6149: all three are read even when one of
+     * their check once the pending entry is gone, while the kept entry is held: see
+     * keptKey()). #6149: all three are read even when one of
      * them cannot be,
      * so a find in any of them wins over a read that failed. Not found (queued_row false) or not
      * told (queued_row null): NOT_QUEUED at ERROR (#5993: the record a monitor filtering at
@@ -402,7 +424,8 @@ class RetryEmailAttachments implements ShouldQueue
                 }
                 if ($found === 'jobs') {
                     // r2 diff:1: no pass runs after a push that threw, and a re-run INSERT may
-                    // have left two rows: their runs keep their check once the pending entry is gone.
+                    // have left two rows: their runs keep their check once the pending entry is
+                    // gone, while the kept entry is held (see keptKey()).
                     $this->keepChecks();
                 }
                 if (! is_string($found)) {
@@ -498,8 +521,10 @@ class RetryEmailAttachments implements ShouldQueue
      * a run's check does not count a reserved row anyway. #6183: when no run has started, at
      * least one row read is unreserved and two or more rows are left (one is reserved, or a
      * worker reserved one before its DELETE), the kept
-     * entry is written (a failed write is CACHE_STEP_FAILED kept_put), so each left row's run
-     * still checks for a later row once the pending entry is gone. Recorded as
+     * entry is written (a failed write is CACHE_STEP_FAILED kept_put), so a left row's run
+     * checks for a later row after the pending entry is gone while the kept entry is held (see
+     * keptKey(): not once a run checked clear and removed it, nor past KEPT_TTL_SECONDS).
+     * Recorded as
      * DUPLICATE_ROWS_DROPPED. A read or delete that throws is DUPLICATE_CHECK_FAILED (step
      * push): the rows not yet deleted are left, the kept entry is written, and the rows already
      * deleted before the throw are still recorded as DUPLICATE_ROWS_DROPPED. A database queue
@@ -517,7 +542,8 @@ class RetryEmailAttachments implements ShouldQueue
         if (($floors['jobs'] ?? null) === null) {
             if (array_key_exists('jobs', $floors)) {
                 // A database queue whose jobs floor could not be read (FLOOR_READ_FAILED step
-                // jobs, already recorded): the pass cannot run, so the runs keep their check.
+                // jobs, already recorded): the pass cannot run, so the runs keep their check
+                // while the kept entry is held (see keptKey()).
                 $this->keepChecks();
             }
 
@@ -548,7 +574,8 @@ class RetryEmailAttachments implements ShouldQueue
             } else {
                 // A row is reserved and no run has started: a worker holds it now (its run's
                 // own check, handle(), sees the rest: the kept entry below keeps that check on
-                // once the pending entry is gone) or died holding it. Left to run. A worker
+                // once the pending entry is gone, while it is held) or died holding it. Left
+                // to run. A worker
                 // whose check ran before the later row was written, and that has not yet
                 // written its started entry, runs as well, as before #6179.
                 $drop = [];
@@ -560,7 +587,8 @@ class RetryEmailAttachments implements ShouldQueue
             }
             if (! $started && $rows->count() - count($dropped) >= 2) {
                 // #6183: two or more rows are left and no run has started (a row is reserved,
-                // or a worker reserved one before its DELETE): their runs' checks stay on.
+                // or a worker reserved one before its DELETE): their runs check while the kept
+                // entry is held (see keptKey()).
                 $this->keepChecks();
             }
         } catch (\Throwable $e) {
@@ -587,9 +615,12 @@ class RetryEmailAttachments implements ShouldQueue
     }
 
     /**
-     * #6183: writes the kept entry for KEPT_TTL_SECONDS (#6282, see keptKey()), so each run of
-     * this push still checks for a later row once the pending entry is gone; a failed write is
-     * CACHE_STEP_FAILED kept_put. Never throws.
+     * #6183: writes the kept entry for KEPT_TTL_SECONDS (#6282, see keptKey()), so a run of
+     * this push checks for a later row after the pending entry is gone, while the entry is
+     * held; a failed write is CACHE_STEP_FAILED kept_put. Not held, so a run does not check:
+     * once a run of the push checked clear and removed it (forgetKept()), and (the expiry arm)
+     * past KEPT_TTL_SECONDS, when a row still queued (stopped workers, a backlog) runs
+     * unchecked: the earlier and the later row both run, and nothing is recorded. Never throws.
      */
     private function keepChecks(): void
     {
@@ -597,16 +628,22 @@ class RetryEmailAttachments implements ShouldQueue
     }
 
     /**
-     * #6282: removes the kept entry once a run of this push that went past its check (it found
-     * no later row) has finished handle(), returned or thrown; a run that skipped for a later
-     * row leaves it, so that row's run still checks. Once one run has gone past its check the
-     * entry can change the outcome only where the retry already runs twice: a later row that
-     * run's check did not count was written after it (while the push was in progress) or was
-     * held by a live worker, whose run runs too (see queueAfterCommit(), 'Both still run
-     * when'). A removal that throws is
-     * CACHE_STEP_FAILED kept_forget; a store's false (the key was absent) is not a failure.
-     * Not reached when the run is killed (a timeout): the entry then expires after
-     * KEPT_TTL_SECONDS. Never throws.
+     * #6282: removes the kept entry once a run of this push whose check read the rows and found
+     * no later row (laterRowOfThisPush() set $checkedClear) has finished handle(), returned or
+     * thrown. Not called (r2 of #6304) after a check whose rows read threw
+     * (DUPLICATE_CHECK_FAILED step run: the run goes ahead without knowing whether a later row
+     * is left, so the entry stays for that row's run), nor when no check read the rows (no
+     * entry was held), nor by a run that skipped for a later row (that row's run still
+     * checks). After a clear check the entry can change the outcome only where the retry
+     * already runs twice: a later row that check did not count was written after it (while
+     * the push was in progress) or was held by a live worker, whose run runs too (see
+     * queueAfterCommit(), 'Both still run when'). Also attempted by a run that checked clear
+     * while the pending entry was held and no kept entry was ever written for its push. A
+     * removal that throws, or whose store returns false while the key is still held (a file
+     * store's failed unlink also returns false; a false with the key absent is not a failure,
+     * and a has() read after the false that throws is), is CACHE_STEP_FAILED kept_forget, and
+     * the entry is then held until KEPT_TTL_SECONDS. Not reached when the run is killed (a
+     * timeout). Never throws.
      */
     private function forgetKept(): void
     {
@@ -614,9 +651,10 @@ class RetryEmailAttachments implements ShouldQueue
             return;
         }
         $this->cacheStep('kept_forget', function (): bool {
-            \Illuminate\Support\Facades\Cache::forget(self::keptKey($this->pushId));
-
-            return true;
+            // contract:2: false is also a failed unlink on the file store; told apart from an
+            // absent key as the cleanup step does.
+            return \Illuminate\Support\Facades\Cache::forget(self::keptKey($this->pushId))
+                || ! \Illuminate\Support\Facades\Cache::has(self::keptKey($this->pushId));
         });
     }
 
@@ -673,15 +711,24 @@ class RetryEmailAttachments implements ShouldQueue
      * #6183: the cache key dropDuplicateRows() writes when it left two or more rows of the push
      * of $pushId and no run had started, or could not run (no jobs floor) or complete (a read or
      * delete threw), or queueAfterCommit() writes when that push threw and its row was found in
-     * the queue table (r2 diff:1), so those rows' runs still check for a later row after the
-     * pending entry is gone. #6282: it lives KEPT_TTL_SECONDS (r2 diff:2: a left row can wait
+     * the queue table (r2 diff:1), so those rows' runs check for a later row after the pending
+     * entry is gone, while it is held. #6282: it lives KEPT_TTL_SECONDS (a left row can wait
      * in the queue far longer than the 10 minutes of the pending and started entries: a backlog,
-     * stopped workers), and is removed when a run of the push finishes past its check
-     * (forgetKept()). Unlike the pending and started entries, which are written and removed
-     * around the push, it outlives the push by design; one that is never removed (it was written
-     * after the run that ran had finished, inside the push; no run gets past its check, as every
-     * row is failed without running handle(); or the run is killed) stays until its TTL, and on
-     * the file store until it is next read after that.
+     * stopped workers), and is removed when a run of the push whose check read the rows and
+     * found no later row finishes (forgetKept()). The expiry arm: a row still queued past
+     * KEPT_TTL_SECONDS runs without checking, so the earlier and the later row both run, and
+     * nothing is recorded. Unlike the pending and started entries, which are written and
+     * removed around the push, it outlives the push by design. It is never removed when: it was
+     * written after the run that ran had finished, inside the push; no run checks clear, as
+     * every row is failed without running handle(), or the earlier rows skip for the latest
+     * and that row's worker dies holding it (its next reservation fails it as
+     * MaxAttemptsExceeded without running handle()), or every run that went ahead had a check
+     * whose rows read threw (DUPLICATE_CHECK_FAILED step run); the run that checked clear is
+     * killed (a timeout); or its removal threw, or the store's removal failed (a file store's
+     * failed unlink), recorded as CACHE_STEP_FAILED kept_forget. Such an entry is held until
+     * KEPT_TTL_SECONDS. On CACHE_STORE=file its file stays after that: the file store deletes
+     * an expired file only when that key is read again, and no run of a push whose rows have
+     * all gone reads it.
      */
     private static function keptKey(string $pushId): string
     {
@@ -935,10 +982,13 @@ class RetryEmailAttachments implements ShouldQueue
      * PDO, above this row's own id and on its queue. A read that throws is recorded
      * (DUPLICATE_CHECK_FAILED) and the run goes ahead. #6183: read only while the pending or
      * kept entry is held; a read of either that throws is recorded (CACHE_STEP_FAILED
-     * check_read) and the rows are read as if one were held.
+     * check_read) and the rows are read as if one were held. #6282: $checkedClear is set only
+     * when the rows were read and no later row is counted, never when no entry was held or the
+     * rows read threw; handle() removes the kept entry only then (forgetKept()).
      */
-    private function laterRowOfThisPush(): bool
+    private function laterRowOfThisPush(bool &$checkedClear = false): bool
     {
+        $checkedClear = false;
         if ($this->pushId === null || ! $this->job instanceof \Illuminate\Queue\Jobs\DatabaseJob) {
             return false;
         }
@@ -983,6 +1033,10 @@ class RetryEmailAttachments implements ShouldQueue
             return false;
         }
         if ($ids === []) {
+            // The rows were read and no later row is counted: the one exit that lets
+            // handle() remove the kept entry (forgetKept()).
+            $checkedClear = true;
+
             return false;
         }
         try {
@@ -1002,7 +1056,8 @@ class RetryEmailAttachments implements ShouldQueue
     {
         $key = $this->progressKey();
         unset(self::$pushing[$key]);
-        if ($this->laterRowOfThisPush()) {
+        $checkedClear = false;
+        if ($this->laterRowOfThisPush($checkedClear)) {
             return;
         }
         // #6026: what queueAfterCommit()'s read-back finds once a worker has run this dispatch
@@ -1060,9 +1115,12 @@ class RetryEmailAttachments implements ShouldQueue
             if (! $threw) {
                 unset(self::$progress[$key]);
             }
-            // #6282: this run went past its check and has finished, so the kept entry has done
-            // its work (see forgetKept()).
-            $this->forgetKept();
+            // #6282: this run's check read the rows and found no later row, and the run has
+            // finished (returned or thrown), so the kept entry has done its work. Not after a
+            // check that threw or did not run (see forgetKept()).
+            if ($checkedClear) {
+                $this->forgetKept();
+            }
         }
     }
 
