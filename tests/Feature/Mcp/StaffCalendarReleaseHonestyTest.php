@@ -4,6 +4,7 @@ namespace Tests\Feature\Mcp;
 
 use App\Enums\TechnicianRunState;
 use App\Models\Setting;
+use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
@@ -35,6 +36,8 @@ class StaffCalendarReleaseHonestyTest extends TestCase
     private const OWNER = 'owner6124@example.test';
 
     private const NOT_REOPENED = 'the run was not reopened; check its current state before acting on it again.';
+
+    private const UPDATE = ['user_upn' => self::OWNER, 'event_id' => 'EVT-6124', 'body' => 'New agenda', 'reason' => 'Asked.'];
 
     private User $approver;
 
@@ -100,8 +103,8 @@ class StaffCalendarReleaseHonestyTest extends TestCase
                 'The calendar toolset is now disabled in this deployment; the staged write was refused'],
             'owner no longer allowlisted' => [$cancel, 'calendar_stage_cancel_event',
                 fn () => Setting::setValue('calendar_allowed_owner_upns', json_encode(['someone-else@example.test'])),
-                'Calendar owner '.self::OWNER.' is no longer on the allowlist; the staged write was refused. Add it back (or deny and re-stage) if this is still intended.',
-                'Calendar owner '.self::OWNER.' is no longer on the allowlist; the staged write was refused'],
+                'The calendar owner of this write is no longer on the allowlist; the staged write was refused. Add it back (or deny and re-stage) if this is still intended.',
+                'The calendar owner of this write is no longer on the allowlist; the staged write was refused'],
             'ticket gone' => [$cancel, 'calendar_stage_cancel_event',
                 fn (TechnicianRun $run) => Ticket::findOrFail($run->ticket_id)->delete(),
                 'The ticket this write traced to no longer exists; deny this proposal and re-stage it.',
@@ -173,12 +176,14 @@ class StaffCalendarReleaseHonestyTest extends TestCase
 
     /**
      * #6124: the outer catch rethrows, so it returns no text; a lost CAS there is logged rather
-     * than passing silently as a reopen.
+     * than passing silently as a reopen. #6185: the throwable is raised before the write call
+     * is entered (by the update's getEvent() pre-read), the only place a release stays.
      */
     public function test_an_unexpected_failure_whose_release_loses_is_logged(): void
     {
-        $run = $this->staged(['user_upn' => self::OWNER, 'event_id' => 'EVT-6124', 'comment' => 'x', 'reason' => 'Resolved.']);
-        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->andThrow(new \RuntimeException('synthetic non-Graph failure')));
+        $run = $this->staged(self::UPDATE, 'calendar_stage_update_event');
+        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('getEvent')->andThrow(new \RuntimeException('synthetic non-Graph failure'))
+            ->shouldReceive('updateEvent')->never());
         $logged = [];
         Event::listen(MessageLogged::class, function (MessageLogged $m) use (&$logged): void {
             $logged[] = $m;
@@ -197,18 +202,106 @@ class StaffCalendarReleaseHonestyTest extends TestCase
         $this->assertSame(['run_id' => $run->id, 'exception' => \RuntimeException::class], $records[0]->context);
     }
 
-    /** Control: with the CAS won, the outer catch reopens the run and logs nothing about it. */
-    public function test_an_unexpected_failure_whose_release_wins_reopens_quietly(): void
+    /**
+     * #6185: before the write call is entered (the update's getEvent() pre-read throws a
+     * non-Graph throwable) nothing was sent, so the outer catch keeps its determinate arm: the
+     * claim is released, the throwable is rethrown, and nothing says unresolved.
+     */
+    public function test_an_unexpected_failure_before_the_write_call_reopens_quietly(): void
+    {
+        $run = $this->staged(self::UPDATE, 'calendar_stage_update_event');
+        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('getEvent')->andThrow(new \RuntimeException('synthetic non-Graph failure'))
+            ->shouldReceive('updateEvent')->never());
+        $logged = $this->captureLogs();
+
+        $thrown = rescue(fn () => app(StaffCalendarToolExecutor::class)->approveStagedRun($run->fresh(), $this->approver->id), fn ($e) => $e, false);
+
+        $this->assertInstanceOf(\RuntimeException::class, $thrown);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertSame([], array_values(array_filter($logged(), fn (MessageLogged $m) => str_contains($m->message, 'was not reopened') || str_contains($m->message, 'unresolved'))));
+        $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%UNRESOLVED%')->count());
+    }
+
+    /**
+     * #6185: once the write call is entered, a non-Graph throwable (here raised by the mocked
+     * write itself, standing in for one raised after Graph may have committed it) leaves the
+     * outcome unknown. The run is NOT released: it stays Executing under this claim. The
+     * approver is told the outcome is unknown, one error record and one audit row say so, and
+     * nothing is rethrown. Each write tool is a row; update carries a body, so its pre-read
+     * succeeds first.
+     *
+     * @return array<string, array{0: array<string, mixed>, 1: string, 2: string}>
+     */
+    public static function enteredWrites(): array
+    {
+        return [
+            'create' => [['user_upn' => self::OWNER, 'subject' => 'Onsite', 'start' => '2026-07-29T15:00:00', 'end' => '2026-07-29T16:00:00', 'reason' => 'Asked.'], 'calendar_stage_create_event', 'createEvent'],
+            'update with a body' => [self::UPDATE, 'calendar_stage_update_event', 'updateEvent'],
+            'cancel' => [['user_upn' => self::OWNER, 'event_id' => 'EVT-6124', 'comment' => 'x', 'reason' => 'Resolved.'], 'calendar_stage_cancel_event', 'cancelEvent'],
+            'respond' => [['user_upn' => self::OWNER, 'event_id' => 'EVT-6124', 'response' => 'accept', 'reason' => 'Asked.'], 'calendar_stage_respond_event', 'respondEvent'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('enteredWrites')]
+    public function test_an_unexpected_failure_after_the_write_call_was_entered_is_unresolved_not_reopened(array $arguments, string $stagedTool, string $writeMethod): void
+    {
+        $run = $this->staged($arguments, $stagedTool);
+        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('getEvent')->andReturn(['id' => 'EVT-6124', 'isOnlineMeeting' => false])
+            ->shouldReceive($writeMethod)->once()->andThrow(new \TypeError('synthetic non-Graph failure '.self::OWNER)));
+        $logged = $this->captureLogs();
+
+        $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run->fresh(), $this->approver->id);
+
+        $this->assertSame('gate_declined', $r->status);
+        $this->assertSame('The calendar write call was entered and an unexpected error was then raised, so whether the write reached the calendar is unknown. The run was not reopened for re-approval; check the calendar before any re-send.', $r->message);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'held, not reopened');
+        $this->assertEquals($run->fresh()->claimed_at, TechnicianRun::findOrFail($run->id)->claimed_at);
+        $records = array_values(array_filter($logged(), fn (MessageLogged $m) => str_contains($m->message, 'unresolved')));
+        $this->assertCount(1, $records);
+        $this->assertSame('error', $records[0]->level);
+        $this->assertSame(['run_id' => $run->id, 'action' => $stagedTool, 'exception' => \TypeError::class], $records[0]->context);
+        $this->assertSame([], array_values(array_filter($logged(), fn (MessageLogged $m) => str_contains($m->message, 'was not reopened') && ! str_contains($m->message, 'unresolved'))));
+        $this->assertSame(
+            ['Graph calendar write outcome UNRESOLVED: an unexpected failure was raised after the write call was entered: TypeError'],
+            TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->pluck('summary')->all(),
+        );
+        $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed')->count());
+    }
+
+    /**
+     * #6197: the write ran, then advanceTo(Done) lost the claim-owner fence (another approval
+     * claimed the run during the call). The run is not closed over that claim, nothing is
+     * reopened, and the approver is told the write executed and the run was not closed, on the
+     * error channel (executed_with_fault), not as a clean success and not as a retry.
+     */
+    public function test_an_executed_write_whose_close_loses_the_fence_says_so(): void
     {
         $run = $this->staged(['user_upn' => self::OWNER, 'event_id' => 'EVT-6124', 'comment' => 'x', 'reason' => 'Resolved.']);
-        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->andThrow(new \RuntimeException('synthetic non-Graph failure')));
-        $logged = [];
-        Event::listen(MessageLogged::class, function (MessageLogged $m) use (&$logged): void {
+        $taken = now()->addMinute()->startOfSecond();
+        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->once()->andReturnUsing(function () use ($run, $taken) {
+            DB::table('technician_runs')->where('id', $run->id)->update(['claimed_at' => $taken]);
+
+            return null;
+        }));
+        $logged = $this->captureLogs();
+
+        $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run->fresh(), $this->approver->id);
+
+        $this->assertSame('executed_with_fault', $r->status);
+        $this->assertSame('Calendar write executed, but the run was not closed because this approval no longer holds it. Do NOT re-approve it; check the calendar and the run.', $r->message);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is untouched');
+        $this->assertCount(1, array_filter($logged(), fn (MessageLogged $m) => $m->level === 'warning' && str_contains($m->message, 'was not closed')));
+        $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed')->count());
+    }
+
+    /** @return \Closure(): list<MessageLogged> */
+    private function captureLogs(): \Closure
+    {
+        $logged = new \ArrayObject;
+        Event::listen(MessageLogged::class, function (MessageLogged $m) use ($logged): void {
             $logged[] = $m;
         });
 
-        $this->assertNotNull(rescue(fn () => app(StaffCalendarToolExecutor::class)->approveStagedRun($run->fresh(), $this->approver->id), fn ($e) => $e, false));
-        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
-        $this->assertSame([], array_values(array_filter($logged, fn (MessageLogged $m) => str_contains($m->message, 'was not reopened'))));
+        return fn () => $logged->getArrayCopy();
     }
 }

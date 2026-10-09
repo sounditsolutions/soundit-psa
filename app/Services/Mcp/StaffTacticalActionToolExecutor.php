@@ -450,8 +450,12 @@ class StaffTacticalActionToolExecutor
                 ->first();
 
             if ($existing !== null) {
+                // #6197: supersede first, under the claim-owner fence; a stale holder neither
+                // supersedes the run nor counts onto the queued row.
+                if (! $run->advanceTo(TechnicianRunState::Superseded)) {
+                    return self::notQueuedOffline();
+                }
                 $existing->increment('coalesce_count');
-                $run->markSuperseded();
 
                 return new TechnicianApprovalResult('queued_offline');
             }
@@ -462,14 +466,24 @@ class StaffTacticalActionToolExecutor
             $expiresAt = $run->expires_at ?? now()->addDays(TacticalConfig::offlineQueueExpiryDays());
 
             // Approver folded into the CAS update — no second write to race a concurrent
-            // cancel/expire. A false result means the claim was lost (run no longer
-            // Executing); nothing to queue.
+            // cancel/expire. A false result means this request no longer holds the claim:
+            // the run left Executing, or (#6197) another claim now holds it. Nothing queued.
             if (! $run->queueForOffline($agentId, $dedupKey, $queuedAt, $expiresAt, ['queued_approver_id' => $approverId])) {
-                return new TechnicianApprovalResult('already_handled');
+                return self::notQueuedOffline();
             }
 
             return new TechnicianApprovalResult('queued_offline');
         });
+    }
+
+    /**
+     * #6197: the decline when the offline queue write lost its claim-owner CAS. Tactical
+     * reported the device offline, so the action did not run, and this request did not queue
+     * it. The queued_offline audit row written before the queue attempt is not rewritten.
+     */
+    private static function notQueuedOffline(): TechnicianApprovalResult
+    {
+        return new TechnicianApprovalResult('gate_declined', message: 'Tactical reported the device offline, and the action was not queued: this approval no longer holds the run. Check its current state before acting on it again.');
     }
 
     /** sha256 of (agent, direct tool, canonical params) — one queued row per identical action. */

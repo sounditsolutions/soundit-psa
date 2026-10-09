@@ -60,10 +60,66 @@ class TechnicianRun extends Model
         ];
     }
 
-    public function advanceTo(TechnicianRunState $state): void
+    /**
+     * Move the run to $state and save. Returns whether the move was written.
+     *
+     * #6197: when this instance holds a claim (its state is Executing) the move is a
+     * compare-and-set that refuses only one case: the row is Executing under a claim other than
+     * this instance's (claimed_at differs; see whereHoldsClaim()). That is a stale holder whose
+     * run was reopened and claimed again; it gets false, the row is not touched and the
+     * instance keeps its state. A row that left Executing is still moved, as before: callers
+     * advance after their side effect, and landing the run terminal is what stops it being
+     * approved again. This path writes with a query, so no model event fires for it (the
+     * observer acts only on a move into AwaitingApproval, which no claimed caller makes).
+     * Any other in-memory state saves as before.
+     */
+    public function advanceTo(TechnicianRunState $state): bool
     {
+        if ($this->state !== TechnicianRunState::Executing || ! $this->exists) {
+            $this->state = $state;
+            $this->save();
+
+            return true;
+        }
+
+        $moved = static::query()->whereKey($this->getKey())
+            ->where(fn (Builder $q) => $q->where('state', '!=', TechnicianRunState::Executing->value)
+                ->orWhere(fn (Builder $mine) => $this->whereHoldsClaim($mine)))
+            ->update(['state' => $state->value]) === 1;
+        // MariaDB counts changed rows, not matched ones: a row already in $state reports 0.
+        // That row is not under another claim, so it counts as moved.
+        if (! $moved && ($state === TechnicianRunState::Executing
+            || ! static::query()->whereKey($this->getKey())->where('state', $state->value)->exists())) {
+            return false;
+        }
+
         $this->state = $state;
-        $this->save();
+        $this->syncOriginalAttribute('state');
+        if ($this->isDirty()) {
+            $this->save();
+        }
+
+        return true;
+    }
+
+    /**
+     * #6125 / #6197: the claim-owner fence. Narrows $query to the run still Executing under the
+     * claim this instance holds: the claimed_at stamp its claimForExecution() /
+     * claimQueuedForExecution() wrote, or that it was loaded with (null for a legacy claim with
+     * no stamp). A run reopened and claimed again carries the new claim's stamp, so a stale
+     * holder's write matches no row. The stamp is stored to the second, so a re-claim within the
+     * same second is not told apart (#6191), and an instance that reloads the run after another
+     * claim carries that claim's stamp (#6190).
+     *
+     * @param  Builder<TechnicianRun>  $query
+     * @return Builder<TechnicianRun>
+     */
+    private function whereHoldsClaim(Builder $query): Builder
+    {
+        return $query->where('state', TechnicianRunState::Executing->value)
+            ->where(fn (Builder $q) => $this->claimed_at === null
+                ? $q->whereNull('claimed_at')
+                : $q->where('claimed_at', $this->claimed_at));
     }
 
     /**
@@ -131,18 +187,9 @@ class TechnicianRun extends Model
      */
     public function releaseClaimTo(TechnicianRunState $state): bool
     {
-        // #6125: claim-owner fence. The CAS also requires the claim this instance holds: the
-        // claimed_at stamp its claimForExecution() / claimQueuedForExecution() wrote (or that
-        // it was loaded with; null for a legacy claim with no stamp). A run that was reopened
-        // and claimed again by another approver carries that claim's stamp, so a stale
-        // release from the first claimant loses instead of reopening the live claim. The
-        // stamp is stored to the second, so a re-claim within the same second as the stale
-        // claim is not told apart.
-        $released = static::query()->whereKey($this->getKey())
-            ->where('state', TechnicianRunState::Executing->value)
-            ->where(fn (Builder $q) => $this->claimed_at === null
-                ? $q->whereNull('claimed_at')
-                : $q->where('claimed_at', $this->claimed_at))
+        // #6125: claim-owner fence (whereHoldsClaim()). A stale release from the first
+        // claimant loses instead of reopening a claim another approver now holds.
+        $released = $this->whereHoldsClaim(static::query()->whereKey($this->getKey()))
             ->update(['state' => $state->value]) === 1;
         // Only reflect the transition in memory when the CAS actually won — mirroring the DB so
         // the new bool contract isn't leaky (a lost CAS must not claim it moved the run).
@@ -210,6 +257,8 @@ class TechnicianRun extends Model
      * claim winner that is still Executing transitions. queued_at/expires_at are
      * passed in so a failed reconnect-run can re-queue preserving the ORIGINAL
      * window rather than resetting the expiry clock. Returns true for the winner.
+     * #6197: the CAS carries the claim-owner fence (whereHoldsClaim()), so a stale holder
+     * whose claim was replaced by another gets false and cannot park that claim's run.
      */
     public function queueForOffline(string $agentId, string $dedupKey, CarbonInterface $queuedAt, CarbonInterface $expiresAt, array $metaPatch = []): bool
     {
@@ -218,9 +267,7 @@ class TechnicianRun extends Model
         // whole model and could stomp a concurrent cancel/expire back to queued_offline.
         $meta = array_merge($this->proposed_meta ?? [], $metaPatch);
 
-        $queued = static::query()
-            ->whereKey($this->getKey())
-            ->where('state', TechnicianRunState::Executing->value)
+        $queued = $this->whereHoldsClaim(static::query()->whereKey($this->getKey()))
             ->update([
                 'state' => TechnicianRunState::QueuedOffline->value,
                 'queued_agent_id' => $agentId,

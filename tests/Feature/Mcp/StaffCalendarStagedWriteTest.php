@@ -165,7 +165,14 @@ class StaffCalendarStagedWriteTest extends TestCase
         $result = app(StaffCalendarToolExecutor::class)->approveStagedRun($run, $this->approver->id);
 
         $this->assertSame('gate_declined', $result->status);
-        $this->assertStringContainsString('staff@example.test', (string) $result->message);
+        // #6187 (C-56): the refusal says the owner is off the allowlist without naming the
+        // mailbox, in the decline and in the blocked audit row alike.
+        $this->assertStringStartsWith('The calendar owner of this write is no longer on the allowlist', (string) $result->message);
+        $blocked = \App\Models\TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'blocked')->pluck('summary')->all();
+        $this->assertSame(['Calendar owner no longer allowlisted at approval time.'], $blocked);
+        foreach ([(string) $result->message, ...$blocked] as $text) {
+            $this->assertStringNotContainsString('staff@example.test', $text);
+        }
         // The run was released, not left wedged Executing, and certainly not Done.
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
     }
