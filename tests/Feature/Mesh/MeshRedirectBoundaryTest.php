@@ -26,6 +26,8 @@ use Tests\TestCase;
  *    without a Location, name the status only (#6158). Every redirect
  *    status has a row (#6222), and an empty Location names no target
  *    (#6224).
+ *  - statusPhrase() words 300 to 399, and only those, as the configured
+ *    host (or something in front of it) answering (#6220).
  *  - each line is read with its level: the 3xx failure is an error
  *    (#6223, G-14 addendum: a demotion to info or debug fails).
  *  - 300 and 399 are failures by status in both clients; 299 is not a
@@ -161,6 +163,26 @@ class MeshRedirectBoundaryTest extends TestCase
         (new \ReflectionProperty($client, 'http'))->setValue($client, $guzzle);
         $this->assertSame(['results' => []], $client->get('api/customers/'));
         $this->assertSame([], $this->logged);
+    }
+
+    /** @return array<string, array{0: int, 1: string}> status, statusPhrase() */
+    public static function phrases(): array
+    {
+        $host = 'the Mesh host (or something in front of it) answered the create with HTTP ';
+
+        return [
+            '299' => [299, 'Mesh answered the create with HTTP 299'],
+            '300' => [300, $host.'300'],
+            '399' => [399, $host.'399'],
+            '400' => [400, 'Mesh answered the create with HTTP 400'],
+        ];
+    }
+
+    /** #6220: only a 3xx is worded as the host 'or something in front of it'. */
+    #[DataProvider('phrases')]
+    public function test_the_status_phrase_names_the_host_only_for_a_3xx(int $status, string $phrase): void
+    {
+        $this->assertSame($phrase, (new MeshClientException('x', $status))->statusPhrase('the create'));
     }
 
     /** @return array<string, array{0: MeshClientException, 1: bool}> */
