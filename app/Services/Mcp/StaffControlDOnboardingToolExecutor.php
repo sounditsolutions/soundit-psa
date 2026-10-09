@@ -367,7 +367,8 @@ class StaffControlDOnboardingToolExecutor
             // globalProfileState() throws before any request (setting missing or invalid,
             // Control D disabled or unconfigured) and after one (transport failure, a
             // malformed body, the org not listed exactly once). The text asserts neither.
-            // #6408: the log names which arm fired. Every ControlDClientException this read
+            // #6408: the log carries ids, the exception class and its message only; distinct
+            // arms can share one message. Every ControlDClientException this read
             // can throw carries a fixed message (no vendor body, setting value or key).
             \Illuminate\Support\Facades\Log::warning('[StaffControlDOnboardingToolExecutor] The Control D global-profile state could not be read at step derivation', [
                 'client_id' => $client->id, 'org_pk' => (string) $org, 'exception' => $e::class, 'message' => $e->getMessage(),

@@ -56,8 +56,9 @@ final class ControlDSubOrganizations
      * The row's Global Profile PK, or null when it is unset: the key ABSENT (the only
      * shape the vendor's OpenAPI documents, which does not mark the field nullable) or
      * PRESENT with JSON null (the shape a 2026-10-09 production read observed for an org
-     * with no Global Profile). Only null itself is unset; any other non-conforming shape
-     * throws, including '', 0, false and an object with an empty or non-string PK.
+     * with no Global Profile). Only null itself is unset. A scalar (including '', 0 and
+     * false), an array, or an object without a non-empty string PK throws. Nothing else
+     * in the object is checked (not `updated`, `name` or the PK's characters).
      */
     public static function parentProfile(stdClass $row): ?string
     {
