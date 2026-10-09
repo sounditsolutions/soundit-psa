@@ -85,7 +85,7 @@ class ControlDOnboardingStaged
     /**
      * Read-only: the sub-organization's parent_profile against the configured Global
      * Profile — PROFILE_ENFORCED (equal), PROFILE_ABSENT (the documented unset shape) or
-     * PROFILE_DIFFERENT (another PK is already enforced; never replaced by this code).
+     * PROFILE_DIFFERENT (another PK is already enforced; staging and approval refuse on it).
      * Throws ControlDClientException when the setting is missing, the parent inventory is
      * malformed, or the org is not listed exactly once: unknown is never "enforced".
      */
@@ -217,7 +217,7 @@ class ControlDOnboardingStaged
         } catch (UniqueConstraintViolationException) {
             throw new ControlDClientException('A Control D onboarding intent already owns this client; do not retry.');
         } catch (\Throwable) {
-            throw new ControlDClientException('Control D intent could not be durably staged; no vendor call was made.');
+            throw new ControlDClientException('Control D intent could not be durably staged; no vendor write was made.');
         }
 
         return $intent->id;
@@ -352,7 +352,12 @@ class ControlDOnboardingStaged
     }
 
     /**
-     * Fills an ABSENT parent_profile only. PUT organizations under X-Force-Org-Id (Modify
+     * Fills a parent_profile that is ABSENT at the pre-admission read; a DIFFERENT one seen
+     * there refuses with no write. This code sends an unconditional PUT, so a profile set
+     * after that read is not detected and the PUT may replace it; nothing here measures
+     * what Control D does then. A vendor envelope rejection ends the intent `rejected`; an
+     * unknown outcome or a read-back that does not show the configured profile ends it
+     * uncertain. PUT organizations under X-Force-Org-Id (Modify
      * Organization: the sub-org itself) with the PINNED profile PK under the PINNED org,
      * then the parent's GET sub_organizations read-back. Before admission: pin drift, an
      * unreadable inventory, or a DIFFERENT parent_profile already set are definite
@@ -407,7 +412,7 @@ class ControlDOnboardingStaged
         $this->bind($intent, $actor, $orgPk, null);
     }
 
-    public const DIFFERENT_PROFILE_REFUSAL = 'This Control D sub-organization already enforces a different global profile; this step only fills an absent one and never replaces it. Change it in Control D, or change the configured default, before onboarding continues. Nothing was written.';
+    public const DIFFERENT_PROFILE_REFUSAL = 'This Control D sub-organization already enforces a different global profile, so onboarding refused and nothing was written to Control D. Change it in Control D, or change the configured default, before onboarding continues. A different profile is detected only when onboarding reads it: the global-profile update this code sends is unconditional, so one set after the last read before that update would not be detected.';
 
     private function code(ControlDOnboardingIntent $intent, #[\SensitiveParameter] User $actor): void
     {

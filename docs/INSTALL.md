@@ -1398,9 +1398,13 @@ read-only GET confirms the org is listed once and still has no `parent_profile`
 `controld_release_intent` audit row), then one PUT `organizations` under
 `X-Force-Org-Id` with the pinned `parent_profile`, then the same read-back and the same
 locked bind re-checks as the other steps; a vendor envelope rejection is `rejected`,
-any other failure after admission is uncertain and terminal. An organization that
-already enforces a DIFFERENT global profile is never changed: staging and approval
-refuse, and an operator changes it in Control D (or changes the setting) first. The
+any other failure after admission is uncertain and terminal. If an organization
+already enforces a DIFFERENT global profile when staging, approval or the
+pre-admission read looks, onboarding refuses with no write, and an operator changes it
+in Control D (or changes the setting) first. This code sends an unconditional PUT, so a
+profile set after the pre-admission read is not detected and the PUT may replace it; a
+vendor rejection of the PUT ends the intent `rejected`, and an unknown outcome or a
+read-back that does not show the configured profile ends it uncertain. The
 code preflight accepts the profile when it is exactly one of the sub-organization's
 own profiles, or, when it is not listed there at all, the sub-organization's
 `parent_profile.PK` (read live from the parent inventory); listed more than once is

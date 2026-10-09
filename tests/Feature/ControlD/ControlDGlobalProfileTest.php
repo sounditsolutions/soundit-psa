@@ -817,4 +817,82 @@ class ControlDGlobalProfileTest extends TestCase
         $this->assertStringContainsString('ops@example.test', $log->summary, 'the non-secret text survives');
         $this->assertStringNotContainsString(self::SECRET_FIXTURE, (string) ControlDOnboardingIntent::findOrFail($id)->reason);
     }
+
+    // ── follow-up (Jeeves 2026-10-08 17:51 PT item 3; #6204 residuals) ──────────
+
+    /** #6231 (diff:6, m6b): client_id = A, active_client_id = B. Releasing as B must refuse on the client_id predicate alone. */
+    public function test_service_release_refuses_a_row_whose_lock_names_the_caller_but_whose_client_does_not(): void
+    {
+        $actor = $this->admin();
+        $owner = $this->mapped();
+        $caller = Client::factory()->create();
+        $id = $this->stagedIntent($owner, $actor);
+        // No writer produces this row today (every writer sets active_client_id to the
+        // row's own client_id or NULL); the schema does not forbid it, so it is built here.
+        ControlDOnboardingIntent::whereKey($id)->update(['active_client_id' => $caller->id]);
+        $e = $this->refused(fn () => $this->writer([])->release($this->admin(), $caller->id, $id, 'cross-client lock'));
+        $this->assertSame(ControlDOnboardingStaged::RELEASE_REFUSAL, $e->getMessage());
+        $intent = ControlDOnboardingIntent::findOrFail($id);
+        $this->assertSame(['staged', $caller->id], [$intent->state, (int) $intent->active_client_id], 'nothing changed');
+        $this->assertSame(0, TechnicianActionLog::where('action_type', 'controld_release_intent')->count());
+        // And as the owner: the lock is not the owner's, so the active_client_id predicate refuses too.
+        $this->refused(fn () => $this->writer([])->release($this->admin(), $owner->id, $id, 'not the lock holder'));
+        $this->assertSame('staged', ControlDOnboardingIntent::findOrFail($id)->state);
+        $this->assertCount(0, $this->history, 'no vendor call');
+    }
+
+    /** #6236 (context:2): a non-unique failure of the staging INSERT says no vendor WRITE was made (a read-only GET may precede it at approval). */
+    public function test_staging_insert_failure_says_no_vendor_write_was_made(): void
+    {
+        $actor = $this->admin();
+        $client = $this->mapped();
+        ControlDOnboardingIntent::creating(function (): void {
+            throw new \RuntimeException('synthetic insert failure');
+        });
+        try {
+            $e = $this->refused(fn () => $this->writer([])->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL));
+        } finally {
+            ControlDOnboardingIntent::flushEventListeners();
+        }
+        $this->assertSame('Control D intent could not be durably staged; no vendor write was made.', $e->getMessage());
+        $this->assertSame(0, ControlDOnboardingIntent::count());
+    }
+
+    /** #6228 (diff:2): the different-profile refusal states what happened, not a 'never replaces' guarantee. */
+    public function test_different_profile_refusal_text_is_exact(): void
+    {
+        $this->assertSame('This Control D sub-organization already enforces a different global profile, so onboarding refused and nothing was written to Control D. Change it in Control D, or change the configured default, before onboarding continues. A different profile is detected only when onboarding reads it: the global-profile update this code sends is unconditional, so one set after the last read before that update would not be detected.', ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL);
+        $this->assertStringNotContainsString('no conditional', ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL);
+        $this->assertStringNotContainsString('never replaces', ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL);
+    }
+
+    /** #6249 r2 context:1: INSTALL states the unconditional PUT and its three endings, and claims no replacement or vendor fact. */
+    public function test_install_race_text_claims_only_what_this_code_does(): void
+    {
+        $install = preg_replace('/\s+/', ' ', file_get_contents(base_path('docs/INSTALL.md')));
+        $this->assertStringContainsString('This code sends an unconditional PUT, so a profile set after the pre-admission read is not detected and the PUT may replace it; a vendor rejection of the PUT ends the intent `rejected`, and an unknown outcome or a read-back that does not show the configured profile ends it uncertain.', $install);
+        $this->assertStringNotContainsString('is not detected and is replaced', $install);
+        $this->assertStringNotContainsString('Control D has no conditional', $install);
+    }
+
+    /** #6229 (diff:4): the release flash claims only what release() did: the lock is free, no Control D call. Not 'can be staged again'. */
+    public function test_release_success_flash_claims_only_the_freed_lock(): void
+    {
+        $actor = $this->admin();
+        $client = $this->mapped();
+        // The onboarded arm: a client with a code can still have a leftover never-admitted intent; staging it again would refuse.
+        $client->forceFill(['controld_provisioning_code' => 'synthetic-code'])->save();
+        // #6249 r2 contract:3: bind the service the controller resolves, so $this->history is the
+        // transport release() would use. Any vendor request there is recorded (and answered 503).
+        $this->app->instance(ControlDOnboardingStaged::class, $this->writer([]));
+        $intent = new ControlDOnboardingIntent;
+        $intent->forceFill(['id' => (string) \Illuminate\Support\Str::uuid(), 'client_id' => $client->id, 'actor_id' => $actor->id,
+            'active_client_id' => $client->id, 'operation' => 'code', 'state' => 'staged', 'phase' => 'preflight', 'payload' => []])->save();
+        $this->onboardingActive();
+        $this->actingAs($actor)->post(route('clients.controld.intent.release', [$client, $intent->id]), ['reason' => 'leftover'])
+            ->assertRedirect(route('clients.show', $client))
+            ->assertSessionHas('success', "Control D onboarding intent {$intent->id} released; the onboarding lock it held is free and no Control D call was made.");
+        $this->assertSame(ControlDOnboardingStaged::RELEASED, $intent->fresh()->state);
+        $this->assertCount(0, $this->history, 'no vendor call');
+    }
 }

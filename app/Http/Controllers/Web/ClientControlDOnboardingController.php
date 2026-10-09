@@ -81,6 +81,6 @@ class ClientControlDOnboardingController extends Controller
             return redirect()->route('clients.show', $client)->withErrors(['controld_onboarding' => $e->getMessage()]);
         }
 
-        return redirect()->route('clients.show', $client)->with('success', "Control D onboarding intent {$row->id} released; this client can be staged again.");
+        return redirect()->route('clients.show', $client)->with('success', "Control D onboarding intent {$row->id} released; the onboarding lock it held is free and no Control D call was made.");
     }
 }
