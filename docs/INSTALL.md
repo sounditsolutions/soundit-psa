@@ -1398,19 +1398,24 @@ read-only GET confirms the org is listed once and still has no `parent_profile`
 `controld_release_intent` audit row), then one PUT `organizations` under
 `X-Force-Org-Id` with the pinned `parent_profile`, then the same read-back and the same
 locked bind re-checks as the other steps; a vendor envelope rejection is `rejected`,
-any other failure after admission is uncertain and terminal. If an organization
+any other failure after admission is uncertain and terminal (or stays `posted` when
+that outcome cannot be recorded). If an organization
 already enforces a DIFFERENT global profile when staging, approval or the
 pre-admission read looks, onboarding refuses with no write, and an operator changes it
 in Control D (or changes the setting) first. This code sends an unconditional PUT, so a
-profile set after the pre-admission read is not detected and the PUT may replace it; a
-vendor rejection of the PUT ends the intent `rejected`, and an unknown outcome or a
-read-back that does not show the configured profile ends it uncertain. The
+profile set after the pre-admission read is not detected and the PUT may replace it.
+Only a refusal in the vendor error envelope (an HTTP 4xx whose body has `success:false`
+and an integer `error.code`) ends the intent `rejected`; any other refusal (a 2xx
+without `success:true`, a 4xx without that envelope, a 5xx), an unknown outcome, or a
+read-back that does not show the configured profile ends it uncertain. If that outcome
+cannot be saved, or the process stops after admission, the intent stays `posted`.
+`posted` and `uncertain` intents keep the client's lock and are never retried. The
 code preflight accepts the profile when it is exactly one of the sub-organization's
 own profiles, or, when it is not listed there at all, the sub-organization's
 `parent_profile.PK` (read live from the parent inventory); listed more than once is
 refused as ambiguous. Whether POST `/provision` accepts a Global
-Profile PK as `profile_id` is NOT yet proven; a vendor refusal there is a definite
-rejection.
+Profile PK as `profile_id` is NOT yet proven; a refusal there in the vendor error
+envelope is a definite rejection, and any other refusal of that POST is uncertain.
 
 Capability is observed ONLY at the intended write. HTTP403 with vendor `success:false`
 and integer `error.code:40301` records terminal `rejected`, phase `post`, reason code

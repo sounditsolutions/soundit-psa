@@ -953,7 +953,13 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
         $this->assertSame(['GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
         $this->assertSame(0, ControlDOnboardingIntent::count());
-        $this->assertSame("The client's Control D state changed since this was staged (".ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL.'). Deny this proposal and stage again so the current step is read and approved on its own card. Nothing was created.', (string) session('error'));
+        // #6329: this arm does not say 'stage again'; staging again refuses the same way (pinned below).
+        $this->assertSame("The client's Control D state changed since this was staged (".ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL.'). This proposal cannot be approved, and staging again is refused the same way, while this organization enforces a global profile other than the configured one. Nothing was created.', (string) session('error'));
+        $this->assertStringNotContainsString('stage again so the current step', (string) session('error'));
+        // The claim it makes instead: a fresh stage on the same live state is refused with DIFFERENT_PROFILE_REFUSAL.
+        $this->vendor([$this->ok(['sub_organizations' => [$this->listed('testorg001', 'otherprofile9')]])]);
+        $restaged = $this->decoded($this->callTool($this->token(), 'controld_onboard_client', $this->stageArgs($fixture)));
+        $this->assertSame(ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL, $restaged['error'] ?? null, json_encode($restaged));
     }
 
     /** #6249 r3 context:2: a different profile first seen by execute()'s pre-admission read is refused with the whole text, flash and audit. */
@@ -1082,7 +1088,7 @@ class ControlDOnboardClientTest extends TestCase
     private const UNREADABLE_AT_APPROVAL = 'Control D onboarding approval could not re-check the client\'s current step ('.self::UNREADABLE_REASON.'). Nothing was created. Approving again helps only if the cause was temporary; otherwise fix it or deny this proposal.';
 
     /** #6249 r2 context:1/diff:5: the race disclosure, exact. It claims nothing about what Control D does with the update. */
-    private const RACE = 'The global-profile step sends an unconditional update, so a global profile set after the last read before that update is not detected and the update may replace it; a vendor rejection of the update ends the step rejected, and an unknown outcome or a read-back that does not show the configured profile ends it uncertain.';
+    private const RACE = 'The global-profile step sends an unconditional update, so a global profile set after the last read before that update is not detected and the update may replace it. Only a refusal in the Control D error envelope (an HTTP 4xx whose body reports success false with an integer error code) ends the step rejected; any other refusal, an unknown outcome, or a read-back that does not show the configured profile ends it uncertain. If that outcome cannot be recorded, or the process stops after the step is admitted for its update, the step stays posted instead. Posted and uncertain steps are never retried and keep this client locked until reconciled by hand.';
 
     /** Item 8 (contract-s1:6): a pre-admission refusal after a read says 'before any vendor write', never 'vendor call'. */
     public function test_pre_admission_refusal_after_a_read_says_vendor_write_and_names_admin_release(): void
@@ -1263,6 +1269,132 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertSame(['POST'], array_map(fn ($h) => $h['request']->getMethod(), $this->history), 'one refused POST');
     }
 
+    /** Stage a global-profile proposal and queue the approval exchange that binds it (GET, GET, PUT, GET). */
+    private function stagedGlobalProfileThatBinds(): TechnicianRun
+    {
+        $this->configure();
+        $this->aiActor();
+        $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
+        $this->vendor([$this->ok(['sub_organizations' => [$this->listed('testorg001', null)]])]);
+        $run = $this->stage($fixture);
+        $this->vendor([
+            $this->ok(['sub_organizations' => [$this->listed('testorg001', null)]]),
+            $this->ok(['sub_organizations' => [$this->listed('testorg001', null)]]),
+            $this->ok(['organization' => ['PK' => 'testorg001']]),
+            $this->ok(['sub_organizations' => [$this->listed('testorg001')]]),
+        ]);
+
+        return $run;
+    }
+
+    /** Fail the first technician_runs UPDATE that binds 'done' (advanceTo(Done)), running $then first. */
+    private function failFirstDone(callable $then, bool &$thrown, bool &$armed): void
+    {
+        \Illuminate\Support\Facades\DB::connection()->beforeExecuting(function (string $sql, array $bindings) use (&$thrown, &$armed, $then): void {
+            if ($armed && ! $thrown && str_starts_with(strtolower(ltrim($sql)), 'update') && str_contains($sql, 'technician_runs')
+                && in_array(TechnicianRunState::Done->value, $bindings, true)) {
+                $thrown = true;
+                $then();
+                throw new \RuntimeException('synthetic run store failure after the write');
+            }
+        });
+    }
+
+    /**
+     * #6249 r1 context:5 (a): the intent read in the outer catch itself throws. The run must not
+     * stay claimed (Executing) with the exception escaping: it is closed with a HARD FAULT that
+     * says a vendor write cannot be ruled out.
+     */
+    public function test_outer_catch_whose_intent_read_throws_closes_the_run_with_a_hard_fault(): void
+    {
+        $run = $this->stagedGlobalProfileThatBinds();
+        $thrown = false;
+        $armed = true;
+        $readFails = false;
+        $this->failFirstDone(function () use (&$readFails): void {
+            $readFails = true;
+        }, $thrown, $armed);
+        ControlDOnboardingIntent::retrieved(function () use (&$readFails): void {
+            if ($readFails) {
+                $readFails = false;
+                throw new \RuntimeException('synthetic intent read failure');
+            }
+        });
+        try {
+            $result = app(StaffControlDOnboardingToolExecutor::class)->approveStagedRun($run, User::factory()->admin()->create(['is_active' => true])->id);
+        } finally {
+            $armed = false;
+            ControlDOnboardingIntent::flushEventListeners();
+        }
+        $this->assertTrue($thrown, 'advanceTo(Done) failed, so the outer catch was reached');
+        $this->assertFalse($readFails, 'the outer-catch intent read was the one that threw');
+        $intent = ControlDOnboardingIntent::sole();
+        $this->assertSame('bound', $intent->state, 'the vendor write did happen');
+        $this->assertSame('executed_with_fault', $result->status);
+        $this->assertSame("HARD FAULT: this approval failed and Control D onboarding intent {$intent->id} could not be read afterwards, so a vendor write cannot be ruled out. Do NOT re-approve; reconcile by hand.", $result->message);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state, 'not left claimed, not reopened');
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%could not be read after this approval failed%')->count());
+        $this->assertSame(['GET', 'GET', 'PUT', 'GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
+    }
+
+    /**
+     * #6249 r1 context:5 (b): the admitted intent is gone when the outer catch reads it. A
+     * missing row is not 'staged': the run is not released for a second approval (which would
+     * repeat the PUT), and a possible vendor write is reported.
+     */
+    public function test_outer_catch_with_a_missing_admitted_intent_is_not_treated_as_never_written(): void
+    {
+        $run = $this->stagedGlobalProfileThatBinds();
+        $thrown = false;
+        $armed = true;
+        $this->failFirstDone(fn () => ControlDOnboardingIntent::query()->delete(), $thrown, $armed);
+        $caught = null;
+        $result = null;
+        try {
+            $result = app(StaffControlDOnboardingToolExecutor::class)->approveStagedRun($run, User::factory()->admin()->create(['is_active' => true])->id);
+        } catch (\RuntimeException $e) {
+            $caught = $e;
+        } finally {
+            $armed = false;
+        }
+        $this->assertTrue($thrown);
+        $this->assertNull($caught, 'not rethrown as a pre-admission failure');
+        $this->assertSame(0, ControlDOnboardingIntent::count());
+        $this->assertSame('executed_with_fault', $result?->status);
+        $this->assertStringContainsString('HARD FAULT', $result->message);
+        $this->assertStringContainsString('a vendor write cannot be ruled out', $result->message);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state, 'never re-armed for a second PUT');
+        $this->assertSame(['GET', 'GET', 'PUT', 'GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
+    }
+
+    /**
+     * #6249 r1 context:5, inner catch: a refusal arrives with an intent id whose row is gone.
+     * Admission cannot be ruled out, so it is not reported as 'refused before any vendor write'.
+     */
+    public function test_inner_catch_with_an_intent_id_but_no_row_is_not_called_pre_admission(): void
+    {
+        $this->configure();
+        $this->aiActor();
+        $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
+        $this->vendor([$this->ok(['sub_organizations' => [$this->listed('testorg001', null)]])]);
+        $run = $this->stage($fixture);
+        $this->vendor([
+            $this->ok(['sub_organizations' => [$this->listed('testorg001', null)]]),
+            function () {
+                ControlDOnboardingIntent::query()->delete();
+
+                return new Response(503);
+            },
+        ]);
+        $this->approve($run, User::factory()->admin()->create(['is_active' => true]));
+        $error = (string) session('error');
+        $this->assertStringNotContainsString('refused before any vendor write', $error);
+        $this->assertStringContainsString('HARD FAULT', $error);
+        $this->assertStringContainsString('ended unknown', $error);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertSame(['GET', 'GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
+    }
+
     /** #6244 (contract-s2:6): a staged intent whose lock is NULL is not said to hold this client's onboarding lock. */
     public function test_pre_admission_refusal_does_not_claim_a_lock_the_intent_does_not_hold(): void
     {
@@ -1291,7 +1423,9 @@ class ControlDOnboardClientTest extends TestCase
     public function test_tool_descriptions_state_the_race_and_the_stored_pins(): void
     {
         $descriptions = json_encode(StaffControlDOnboardingToolExecutor::definitions(), JSON_UNESCAPED_SLASHES);
-        $this->assertStringContainsString('set the configured global profile on it (refused if a different one is already set when approved; this code sends an unconditional update, so one set after that read is not detected and the update may replace it);', $descriptions);
+        $this->assertStringContainsString('set the configured global profile on it (refused if a different one is already set when staged, when approved, or at the read just before the update; this code sends an unconditional update, so one set after that last read is not detected and the update may replace it);', $descriptions);
+        // #6330: the undetected window starts after the pre-admission read, not the approval read.
+        $this->assertStringNotContainsString('one set after that read is not detected', $descriptions);
         $this->assertStringNotContainsString('no conditional', $descriptions);
         $this->assertStringContainsString('the held proposal stores ids and the step (and, for the global-profile step, the organization and profile PKs shown on the card, which approval requires to still match and then uses), and approval re-derives every other input from the client record and the panel.', $descriptions);
         $this->assertStringNotContainsString('never replacing', $descriptions);

@@ -379,11 +379,39 @@ class ControlDGlobalProfileTest extends TestCase
         $this->assertCount(2, $this->history);
     }
 
+    /** #6331: when finish() cannot save the rejection, the row stays `posted` with the lock, as the disclosure now says, and is never re-executed. */
+    public function test_enforce_step_rejection_that_cannot_be_recorded_stays_posted_and_is_never_retried(): void
+    {
+        $actor = $this->admin();
+        $client = $this->mapped();
+        $writer = $this->writer([$this->inventory($this->listed(self::ORG, null)), new Response(400, [], '{"success":false,"error":{"code":40000,"message":"vendor text"}}')]);
+        $id = $writer->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL);
+        ControlDOnboardingIntent::saving(function (ControlDOnboardingIntent $intent): void {
+            if ($intent->state === 'rejected') {
+                throw new \RuntimeException('synthetic intent store failure');
+            }
+        });
+        try {
+            $e = $this->refused(fn () => $writer->execute($actor, $id));
+        } finally {
+            ControlDOnboardingIntent::flushEventListeners();
+        }
+        $this->assertSame('Control D intent outcome could not be recorded; do not retry.', $e->getMessage());
+        $intent = ControlDOnboardingIntent::findOrFail($id);
+        $this->assertSame(['posted', 'post', $client->id], [$intent->state, $intent->phase, (int) $intent->active_client_id]);
+        $before = count($this->history);
+        $this->refused(fn () => $writer->execute($actor, $id));
+        $this->assertCount($before, $this->history, 'a posted intent is never re-executed');
+        $this->assertSame(['GET /organizations/sub_organizations', 'PUT /organizations'], $this->calls());
+    }
+
     public static function uncertainAfterAdmit(): array
     {
         return [
             'put-503' => ['put-503', 'post'],
             'put-unconfirmed' => ['put-unconfirmed', 'post'],
+            // #6327: a vendor 4xx WITHOUT the error envelope is a refusal that ends uncertain, not rejected.
+            'put-403-no-envelope' => ['put-403-no-envelope', 'post'],
             'readback-absent' => ['readback-absent', 'readback'],
             'readback-other' => ['readback-other', 'readback'],
             'readback-null' => ['readback-null', 'readback'],
@@ -400,6 +428,7 @@ class ControlDGlobalProfileTest extends TestCase
         $responses[] = match ($case) {
             'put-503' => new Response(503),
             'put-unconfirmed' => new Response(200, [], json_encode(['success' => false])),
+            'put-403-no-envelope' => new Response(403, [], 'Forbidden'),
             default => $this->putResponse(),
         };
         $responses[] = match ($case) {
@@ -836,8 +865,12 @@ class ControlDGlobalProfileTest extends TestCase
         $this->assertSame(['staged', $caller->id], [$intent->state, (int) $intent->active_client_id], 'nothing changed');
         $this->assertSame(0, TechnicianActionLog::where('action_type', 'controld_release_intent')->count());
         // And as the owner: the lock is not the owner's, so the active_client_id predicate refuses too.
-        $this->refused(fn () => $this->writer([])->release($this->admin(), $owner->id, $id, 'not the lock holder'));
-        $this->assertSame('staged', ControlDOnboardingIntent::findOrFail($id)->state);
+        $e = $this->refused(fn () => $this->writer([])->release($this->admin(), $owner->id, $id, 'not the lock holder'));
+        $this->assertSame(ControlDOnboardingStaged::RELEASE_REFUSAL, $e->getMessage());
+        // #6249 r1 diff:9: the owner leg re-asserts all three facts the first leg does.
+        $intent = ControlDOnboardingIntent::findOrFail($id);
+        $this->assertSame(['staged', $caller->id], [$intent->state, (int) $intent->active_client_id], 'owner leg: nothing changed');
+        $this->assertSame(0, TechnicianActionLog::where('action_type', 'controld_release_intent')->count(), 'owner leg: no audit row');
         $this->assertCount(0, $this->history, 'no vendor call');
     }
 
@@ -870,7 +903,11 @@ class ControlDGlobalProfileTest extends TestCase
     public function test_install_race_text_claims_only_what_this_code_does(): void
     {
         $install = preg_replace('/\s+/', ' ', file_get_contents(base_path('docs/INSTALL.md')));
-        $this->assertStringContainsString('This code sends an unconditional PUT, so a profile set after the pre-admission read is not detected and the PUT may replace it; a vendor rejection of the PUT ends the intent `rejected`, and an unknown outcome or a read-back that does not show the configured profile ends it uncertain.', $install);
+        $this->assertStringContainsString('This code sends an unconditional PUT, so a profile set after the pre-admission read is not detected and the PUT may replace it. Only a refusal in the vendor error envelope (an HTTP 4xx whose body has `success:false` and an integer `error.code`) ends the intent `rejected`; any other refusal (a 2xx without `success:true`, a 4xx without that envelope, a 5xx), an unknown outcome, or a read-back that does not show the configured profile ends it uncertain. If that outcome cannot be saved, or the process stops after admission, the intent stays `posted`. `posted` and `uncertain` intents keep the client\'s lock and are never retried.', $install);
+        // #6327: no unqualified 'a vendor rejection ends rejected' claim survives.
+        $this->assertStringNotContainsString('vendor rejection of the PUT ends the intent', $install);
+        $this->assertStringNotContainsString('a vendor refusal there is a definite rejection', $install);
+        $this->assertStringContainsString('any other failure after admission is uncertain and terminal (or stays `posted` when that outcome cannot be recorded)', $install);
         $this->assertStringNotContainsString('is not detected and is replaced', $install);
         $this->assertStringNotContainsString('Control D has no conditional', $install);
     }
