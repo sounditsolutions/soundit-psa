@@ -350,7 +350,7 @@ class StaffCalendarStagedWriteTest extends TestCase
         $run = TechnicianRun::find($staged['run_id']);
 
         $r = $exec->approveStagedRun($run, $this->approver->id);
-        $this->assertSame('gate_declined', $r->status);
+        $this->assertSame('outcome_unknown', $r->status);
         $this->assertNotSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, 'a maybe-committed non-idempotent write must not reopen for retry');
 
         // Re-approve is a no-op — not AwaitingApproval, so the cancel cannot fire a second time.

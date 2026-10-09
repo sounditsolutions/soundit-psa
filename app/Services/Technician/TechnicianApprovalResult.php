@@ -4,8 +4,11 @@ namespace App\Services\Technician;
 
 /**
  * The outcome of an approve or reconnect-run action. status ∈ {sent, closed,
- * resolved, published, merged, executed, executed_with_fault, queued_offline,
- * already_handled, gate_declined, recipient_invalid}. 'resolved' vs 'closed'
+ * resolved, published, merged, executed, executed_with_fault, outcome_unknown,
+ * queued_offline, already_handled, gate_declined, recipient_invalid}.
+ * 'outcome_unknown' (#6250) is a write call that was entered and may have reached
+ * the vendor, with its outcome not known: never a success, never "not sent", and
+ * $message carries what the approver must check. 'resolved' vs 'closed'
  * distinguishes which terminal target an approved close_ticket run applied
  * (psa-d9ayt). 'executed_with_fault' is an upstream write that LANDED but
  * violated its post-condition (the Huntress resolution_method hard fault), or
