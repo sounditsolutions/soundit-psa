@@ -1370,8 +1370,43 @@ means the POST may have happened, NOT that it succeeded. Own-POST PK checkpoints
 read-back;
 verified client binding and `bound` commit together. Rejected/bound intents release the
 lock. Uncertain and crash-left posted/staged records retain it indefinitely; no automatic
-retry, timeout release, cleanup, resume or reconciliation endpoint is installed. Manual
-reconciliation requires a separate bounded ruling, not direct row edits or a re-cut.
+retry, timeout release, cleanup, resume or reconciliation endpoint is installed for
+admitted intents. Manual reconciliation of those requires a separate bounded ruling, not
+direct row edits or a re-cut. The one exception is a NEVER-ADMITTED intent (state
+`staged`, phase `preflight`, no vendor PK): an active Admin may release it from the
+client page's Control D onboarding card with a reason (XULQ2iix). That card, and so the
+release form, is shown only while Control D and client onboarding are enabled and
+configured, and the release route itself answers 404 otherwise (the same gate as the
+stage route), so nothing is released while the integration is off. One conditional UPDATE, scoped to that client and its lock,
+moves it to the terminal state `released` and frees the lock, so a `posted`,
+`uncertain`, `bound` or `rejected` intent, or one admitted concurrently, is refused and
+left unchanged; the release writes a `controld_release_intent` audit row (the reason
+passes through the same redactor as other onboarding audit rows) and makes no vendor
+call.
+
+**Global Profile (XULQ2iix).** Both organization writers (B2 and the B3
+`organization` step) send `parent_profile` = the Enforced profile ID default
+(`controld_default_profile_id`) on POST `organizations/suborg`, refuse before any
+request when it is unset, and bind only when the parent's GET `sub_organizations`
+lists the new org once with `parent_profile.PK` equal to it; anything else after the
+POST is uncertain and never retried. An organization with NO `parent_profile` gets a
+separate `global-profile` intent that only fills the absent field. Its proposal pins the
+organization PK and profile PK shown on the approval card; approval and execution refuse
+before any write if either no longer matches the client's mapping or the setting. A
+read-only GET confirms the org is listed once and still has no `parent_profile`
+(already enforced is a no-op refusal that releases the intent with a
+`controld_release_intent` audit row), then one PUT `organizations` under
+`X-Force-Org-Id` with the pinned `parent_profile`, then the same read-back and the same
+locked bind re-checks as the other steps; a vendor envelope rejection is `rejected`,
+any other failure after admission is uncertain and terminal. An organization that
+already enforces a DIFFERENT global profile is never changed: staging and approval
+refuse, and an operator changes it in Control D (or changes the setting) first. The
+code preflight accepts the profile when it is exactly one of the sub-organization's
+own profiles, or, when it is not listed there at all, the sub-organization's
+`parent_profile.PK` (read live from the parent inventory); listed more than once is
+refused as ambiguous. Whether POST `/provision` accepts a Global
+Profile PK as `profile_id` is NOT yet proven; a vendor refusal there is a definite
+rejection.
 
 Capability is observed ONLY at the intended write. HTTP403 with vendor `success:false`
 and integer `error.code:40301` records terminal `rejected`, phase `post`, reason code
@@ -1404,7 +1439,10 @@ and a `reason`. Each proposal is ONE step, decided by the server from the client
 record: `organization` when the client has no `controld_org_id` (creates the
 sub-organization from the client's name and contact email, two-factor required, the
 panel's auto-detected analytics region; binds the returned id), then `code` once
-mapped (cuts one provisioning code with the six defaults, icon `desktop-windows`, no
+mapped and its sub-organization already enforces the configured Global Profile
+(`global-profile` comes first when it has none, so up to three steps; deciding which is a
+read-only GET of the parent organization list at staging and again at approval, and an
+unreadable list or a different global profile refuses) (cuts one provisioning code with the six defaults, icon `desktop-windows`, no
 deactivation PIN and no hostname prefix — both deferred to a later leg and never
 accepted from callers). Approval happens in the AI Technician cockpit under an active
 Admin, and the two-person rule is applied per lane (B4.1, #2043): a proposal staged from

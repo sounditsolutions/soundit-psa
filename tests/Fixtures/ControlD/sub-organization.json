@@ -1,0 +1,53 @@
+{
+  "body": {
+    "sub_organizations": [
+      {
+        "contact_name": "fixture",
+        "stats_endpoint": "fixture",
+        "max_legacy_resolvers": 1,
+        "max_profiles": 1,
+        "max_routers": 1,
+        "max_users": 1,
+        "parent_org": {
+          "name": "Synthetic Parent",
+          "PK": "syntheticParent"
+        },
+        "twofa_req": 1,
+        "contact_email": "fixture",
+        "status": 1,
+        "date": "fixture",
+        "name": "Synthetic Organization",
+        "parent_profile": {
+          "PK": "111111synthAA",
+          "updated": 1,
+          "name": "Synthetic Global Profile"
+        },
+        "website": "fixture",
+        "address": "fixture",
+        "PK": "syntheticOrg01",
+        "members": {
+          "count": 1
+        },
+        "profiles": {
+          "count": 1,
+          "max": 1
+        },
+        "users": {
+          "count": 1,
+          "max": 1,
+          "price": 1
+        },
+        "routers": {
+          "count": 1,
+          "max": 1,
+          "price": 1
+        },
+        "sub_organizations": {
+          "count": 1,
+          "max": 1
+        }
+      }
+    ]
+  },
+  "success": true
+}

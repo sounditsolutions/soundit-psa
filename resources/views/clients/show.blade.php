@@ -986,13 +986,17 @@
                      (ControlDConfig::isOnboardingActive()), and only while the client still has
                      a step to take: no organization yet, or an organization but no stored code.
                      It stages a cockpit proposal for a SECOND Admin to approve — it never creates
-                     anything itself. Secrets never appear on this page. --}}
+                     anything itself. The never-admitted intent release forms live in this card too,
+                     so they are offered under the same guard. Secrets never appear on this page. --}}
                 @if(auth()->user()?->isAdmin() && \App\Support\ControlDConfig::isEnabled() && \App\Support\ControlDConfig::isConfigured() && \App\Support\ControlDConfig::isOnboardingActive())
                     @php
                         $cdMapped = ! empty($client->controld_org_id);
                         $cdHasCode = $client->getRawOriginal('controld_provisioning_code') !== null || $client->getRawOriginal('controld_deactivation_pin') !== null;
                         $cdStep = ! $cdMapped ? 'organization' : (! $cdHasCode ? 'code' : null);
                         $cdTickets = $cdStep ? $client->tickets()->open()->orderByDesc('id')->limit(25)->get(['id', 'halo_id', 'subject']) : collect();
+                        // A never-admitted intent (staged, preflight, no vendor PK) holding this client's lock.
+                        $cdReleasable = \App\Models\ControlDOnboardingIntent::where('client_id', $client->id)->where('state', 'staged')
+                            ->where('phase', 'preflight')->whereNull('vendor_pk')->get(['id', 'operation', 'created_at']);
                     @endphp
                     <div class="row g-3 mb-3" id="controld-onboarding">
                         <div class="col-md-6">
@@ -1006,9 +1010,9 @@
                                         @if($cdStep === null)
                                             <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Onboarded</span>
                                         @elseif($cdStep === 'organization')
-                                            <span class="badge bg-secondary">Step 1 of 2</span>
+                                            <span class="badge bg-secondary">Step 1 of up to 3</span>
                                         @else
-                                            <span class="badge bg-secondary">Step 2 of 2</span>
+                                            <span class="badge bg-secondary">Step 2 or 3 of 3</span>
                                         @endif
                                     </div>
                                     @if($errors->has('controld_onboarding') || $errors->has('ticket_id') || $errors->has('reason'))
@@ -1016,14 +1020,23 @@
                                             {{ $errors->first('controld_onboarding') ?: ($errors->first('ticket_id') ?: $errors->first('reason')) }}
                                         </div>
                                     @endif
+                                    {{-- Release is offered whenever this card renders (Admin, client onboarding enabled), whatever step the client is at. --}}
+                                    @foreach($cdReleasable as $cdIntent)
+                                        <form method="POST" action="{{ route('clients.controld.intent.release', [$client, $cdIntent->id]) }}" class="d-flex flex-column gap-2 mb-2 border rounded p-2" data-testid="controld-intent-release">
+                                            @csrf
+                                            <div class="small"><i class="bi bi-lock me-1"></i>Intent <code>{{ $cdIntent->id }}</code> ({{ $cdIntent->operation }}) was staged but never admitted; no vendor write was made. It holds this client's onboarding lock.</div>
+                                            <input type="text" name="reason" class="form-control form-control-sm" maxlength="500" placeholder="Reason for releasing (audited)" required>
+                                            <button type="submit" class="btn btn-outline-primary btn-sm align-self-start"><i class="bi bi-unlock me-1"></i>Release this intent</button>
+                                        </form>
+                                    @endforeach
                                     @if($cdStep === null)
                                         <div class="text-muted small">Mapped to organization <code>{{ $client->controld_org_id }}</code> with a provisioning code stored encrypted. Re-cutting a code is a separate action.</div>
                                     @else
                                         <p class="text-muted small mb-2">
                                             @if($cdStep === 'organization')
-                                                Creates the client's Control D sub-organization (name and contact email from this record, two-factor required) and binds it here. Step 2 (the provisioning code) is staged separately afterwards.
+                                                Creates the client's Control D sub-organization (name and contact email from this record, two-factor required) and binds it here. The global profile (if needed) and the provisioning code are staged separately afterwards.
                                             @else
-                                                Mapped to organization <code>{{ $client->controld_org_id }}</code>. Cuts one provisioning code under it with the Control D panel defaults; the code is stored encrypted and never shown.
+                                                Mapped to organization <code>{{ $client->controld_org_id }}</code>. If it has no global profile set, the next proposal (step 2) sets the configured one; if the configured one is already enforced, the next proposal (step 3) cuts one provisioning code with the Control D panel defaults (stored encrypted, never shown). A different global profile already set is never replaced: staging refuses.
                                             @endif
                                             Staging holds a proposal in the cockpit for a <strong>second Admin</strong> to approve; nothing is created by this button.
                                         </p>
@@ -1040,7 +1053,7 @@
                                                 </select>
                                                 <input type="text" name="reason" class="form-control form-control-sm" maxlength="500" placeholder="Reason (shown to the approver)" required>
                                                 <button type="submit" class="btn btn-primary btn-sm align-self-start">
-                                                    <i class="bi bi-shield-plus me-1"></i>Stage onboarding step {{ $cdStep === 'organization' ? '1' : '2' }} for approval
+                                                    <i class="bi bi-shield-plus me-1"></i>Stage {{ $cdStep === 'organization' ? 'onboarding step 1' : 'the next onboarding step' }} for approval
                                                 </button>
                                             </form>
                                         @endif

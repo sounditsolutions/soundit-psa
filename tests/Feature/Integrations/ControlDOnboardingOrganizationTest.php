@@ -39,6 +39,14 @@ class ControlDOnboardingOrganizationTest extends TestCase
     {
         parent::setUp();
         Setting::setValue('controld_enabled', '1');
+        // Synthetic Global Profile PK (G-13): the org step enforces it as parent_profile.
+        Setting::setValue('controld_default_profile_id', '111111synthAA');
+    }
+
+    /** One parent-inventory row (GET sub_organizations producer schema) with the global profile set. */
+    private function listed(): array
+    {
+        return json_decode(file_get_contents(base_path('tests/Fixtures/ControlD/sub-organization.json')), true)['body']['sub_organizations'][0];
     }
 
     private function row(): array
@@ -63,7 +71,7 @@ class ControlDOnboardingOrganizationTest extends TestCase
     {
         return new ControlDOnboardingOrganization($this->transport($responses ?? [
             $this->response(['organization' => $this->row()]),
-            $this->response(['sub_organizations' => [$this->row()]]),
+            $this->response(['sub_organizations' => [$this->listed()]]),
         ]));
     }
 
@@ -101,7 +109,7 @@ class ControlDOnboardingOrganizationTest extends TestCase
             function () {
                 $this->assertSame(0, DB::transactionLevel());
 
-                return $this->response(['sub_organizations' => [$this->row()]]);
+                return $this->response(['sub_organizations' => [$this->listed()]]);
             },
         ]);
         $this->runCreate($writer, $actor, $client);
@@ -112,7 +120,7 @@ class ControlDOnboardingOrganizationTest extends TestCase
         $this->assertSame('/organizations/suborg', $request->getUri()->getPath());
         $this->assertFalse($request->hasHeader('X-Force-Org-Id'));
         parse_str((string) $request->getBody(), $body);
-        $this->assertSame(['name' => 'Synthetic Organization', 'contact_email' => 'synthetic@example.invalid', 'twofa_req' => '1', 'stats_endpoint' => 'synthetic-region'], $body);
+        $this->assertSame(['name' => 'Synthetic Organization', 'contact_email' => 'synthetic@example.invalid', 'twofa_req' => '1', 'stats_endpoint' => 'synthetic-region', 'parent_profile' => '111111synthAA'], $body);
         $this->assertFalse($this->history[0]['options']['http_errors']);
         $this->assertFalse($this->history[0]['options']['allow_redirects']);
         Log::shouldHaveReceived('info')->once()->with('[ControlDOnboardingOrganization] Organization mapped', ['actor_id' => $actor->id, 'client_id' => $client->id, 'org_pk' => 'syntheticOrg01']);
@@ -222,7 +230,7 @@ class ControlDOnboardingOrganizationTest extends TestCase
                     'delete-client' => $client->delete(),
                 };
 
-                return $this->response(['sub_organizations' => [$this->row()]]);
+                return $this->response(['sub_organizations' => [$this->listed()]]);
             },
         ]);
         $e = $this->refusal(fn () => $this->runCreate($writer, $actor, $client), ControlDOrganizationUncertainException::class);

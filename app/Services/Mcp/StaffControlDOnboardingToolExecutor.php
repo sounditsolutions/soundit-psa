@@ -53,12 +53,17 @@ use Illuminate\Support\Str;
  * documented withdrawal closes the lane. No token id, or an id that names no row, is
  * refused: unknown is never trusted.
  *
- * TWO STEPS, TWO APPROVALS, NEVER BOTH IN ONE. A client without `controld_org_id`
- * proposes the `organization` step (create the sub-organization, bind the mapping);
- * a mapped client with no stored code proposes the `code` step (cut the provisioning
- * code under that org). Each proposal names exactly one step at staging time and
- * re-derives it at approval; if the client's state moved in between, approval
- * refuses rather than doing the other step under a card nobody read.
+ * THREE STEPS, ONE APPROVAL EACH, NEVER TWO IN ONE. A client without `controld_org_id`
+ * proposes the `organization` step (create the sub-organization with the configured
+ * global profile, bind the mapping). A mapped client with no stored code proposes the
+ * `global-profile` step when its sub-organization's parent_profile is ABSENT (fill it;
+ * the org and profile PKs are pinned in the sealed payload), or the `code` step when
+ * the configured global profile is already enforced (cut the provisioning code under
+ * that org). A sub-organization that already enforces a DIFFERENT global profile, or
+ * whose parent inventory cannot be read, gets no proposal at all. Each proposal names
+ * exactly one step at staging time and re-derives it at approval; if the client's
+ * state moved in between, approval refuses rather than doing another step under a
+ * card nobody read.
  *
  * INPUTS ARE THE CLIENT RECORD AND THE PANEL ONLY. The verb takes client_id (scope),
  * ticket_id (the cockpit lane) and reason. Organization name = the client's name,
@@ -107,6 +112,9 @@ class StaffControlDOnboardingToolExecutor
     public const STEP_ORGANIZATION = 'organization';
 
     public const STEP_CODE = 'code';
+
+    /** Fill an ABSENT parent_profile on a mapped sub-organization with the configured Global Profile. */
+    public const STEP_GLOBAL_PROFILE = ControlDOnboardingStaged::GLOBAL_PROFILE;
 
     public function __construct(
         private readonly ActionRedactor $redactor,
@@ -277,10 +285,14 @@ class StaffControlDOnboardingToolExecutor
 
     // ── step derivation ─────────────────────────────────────────────────────────
 
+    /** Next-step refusal while an intent owns the client: names the release path truthfully. */
+    private const OWNED_REFUSAL = 'A Control D onboarding intent already owns this client (staged, posted or uncertain); nothing was staged. A never-admitted (staged) intent can be released by an Admin from the Control D onboarding card on the client page while client onboarding is enabled; a posted or uncertain one needs manual reconciliation before the next step is proposed.';
+
     /**
      * Which step this client needs next, or an error. Exactly one step per proposal.
+     * For the global-profile step, also the org PK and profile PK the proposal pins.
      *
-     * @return array{step?: string, error?: string}
+     * @return array{step?: string, error?: string, org_pk?: string, profile_pk?: string, unreadable?: bool}
      */
     private function nextStep(Client $client): array
     {
@@ -291,7 +303,7 @@ class StaffControlDOnboardingToolExecutor
         $org = $client->controld_org_id;
         if ($org === null || trim((string) $org) === '') {
             if (ControlDOnboardingIntent::where('client_id', $client->id)->whereIn('state', ['staged', 'posted', 'uncertain'])->exists()) {
-                return ['error' => 'A Control D onboarding intent already owns this client (staged, posted or uncertain); it must be reconciled before another organization step is proposed. Nothing was staged.'];
+                return ['error' => self::OWNED_REFUSAL];
             }
 
             return ['step' => self::STEP_ORGANIZATION];
@@ -300,7 +312,25 @@ class StaffControlDOnboardingToolExecutor
             return ['error' => 'This client is already onboarded: it is mapped to a Control D organization and carries a provisioning code. Re-cutting a code is a separate, explicit verb; nothing was staged.'];
         }
         if (ControlDOnboardingIntent::where('client_id', $client->id)->whereIn('state', ['staged', 'posted', 'uncertain'])->exists()) {
-            return ['error' => 'A Control D onboarding intent already owns this client (staged, posted or uncertain); it must be reconciled before the code step is proposed. Nothing was staged.'];
+            return ['error' => self::OWNED_REFUSAL];
+        }
+        // Ordering: organization, then global profile (only when the sub-organization's
+        // parent_profile is ABSENT), then code (only when it equals the configured Global
+        // Profile). Decided by a read-only GET of the parent's sub_organizations, here at
+        // staging AND again at approval. A failed or malformed read refuses (unknown is
+        // never "enforced"), and a DIFFERENT parent_profile refuses too: the code step's
+        // preflight would not accept the configured profile there, and this code never
+        // replaces a global profile someone chose.
+        try {
+            $state = $this->onboarding()->globalProfileState((string) $org);
+        } catch (ControlDClientException) {
+            return ['unreadable' => true, 'error' => 'Could not confirm whether the Control D global profile is enforced on this client\'s organization (the read-only check of the parent organization list failed or was malformed); nothing was staged.'];
+        }
+        if ($state === ControlDOnboardingStaged::PROFILE_DIFFERENT) {
+            return ['error' => ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL];
+        }
+        if ($state === ControlDOnboardingStaged::PROFILE_ABSENT) {
+            return ['step' => self::STEP_GLOBAL_PROFILE, 'org_pk' => (string) $org, 'profile_pk' => (string) ControlDConfig::defaultProfileId()];
         }
 
         return ['step' => self::STEP_CODE];
@@ -337,7 +367,8 @@ class StaffControlDOnboardingToolExecutor
     {
         $clientId = (int) $client->id;
         $derived = $this->nextStep($client);
-        $contentHash = $this->contentHash($tool, $clientId, $ticket->id, ['step' => $derived['step'] ?? 'none']);
+        $pins = array_intersect_key($derived, ['org_pk' => true, 'profile_pk' => true]);
+        $contentHash = $this->contentHash($tool, $clientId, $ticket->id, ['step' => $derived['step'] ?? 'none', ...$pins]);
         if (isset($derived['error'])) {
             $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, $derived['error'], $actorLabel);
 
@@ -376,7 +407,7 @@ class StaffControlDOnboardingToolExecutor
             return ['error' => self::TOOL.' cooldown active for this client; no proposal was staged.'];
         }
 
-        $proposedContent = $this->proposedContent($client, $step, $inputs)."\n".$this->fence->fence('AGENT SUPPLIED REASON', $reason);
+        $proposedContent = $this->proposedContent($client, $step, $inputs, $pins)."\n".$this->fence->fence('AGENT SUPPLIED REASON', $reason);
         $meta = [
             ...DraftedByToken::meta($actorLabel, $tokenLabel),
             'reasons' => [$reason],
@@ -385,12 +416,14 @@ class StaffControlDOnboardingToolExecutor
             'sensitive_inputs' => [],
             'staged_by_user_id' => $stagerUserId,
             'staged_by_token_id' => $stagerTokenId,
-            // Only ids and the step: approval re-derives every input from the client
-            // record and the panel, so nothing here is a value that could be replayed.
-            // The stager (user id OR token id) is read from THIS sealed copy at approval.
+            // Only ids, the step and (global-profile step) the org and profile PKs the
+            // card names: approval re-derives every input from the client record and the
+            // panel and REFUSES unless those pins still match, so nothing here is a value
+            // that could be replayed. The stager (user id OR token id) is read from THIS
+            // sealed copy at approval.
             'encrypted_payload' => Crypt::encryptString(json_encode([
                 'direct_tool' => self::TOOL, 'client_id' => $clientId, 'ticket_id' => $ticket->id, 'step' => $step,
-                'staged_by_user_id' => $stagerUserId, 'staged_by_token_id' => $stagerTokenId,
+                'staged_by_user_id' => $stagerUserId, 'staged_by_token_id' => $stagerTokenId, ...$pins,
             ], JSON_THROW_ON_ERROR)),
         ];
 
@@ -423,18 +456,26 @@ class StaffControlDOnboardingToolExecutor
         return ['success' => true, 'step' => $step, 'ticket_id' => $ticket->id, 'ticket_display_id' => $ticket->display_id, 'run_id' => $run->id, 'message' => 'Staged for cockpit approval.'];
     }
 
-    /** @param  array<string, string>  $inputs */
-    private function proposedContent(Client $client, string $step, array $inputs): string
+    /**
+     * @param  array<string, string>  $inputs
+     * @param  array<string, string>  $pins
+     */
+    private function proposedContent(Client $client, string $step, array $inputs, array $pins = []): string
     {
         $name = $this->fence->neutralizeUntrusted((string) $client->name);
+        if ($step === self::STEP_GLOBAL_PROFILE) {
+            return "Control D onboarding — step 2 of 3 (global profile) for client '{$name}' (#{$client->id}), organization ".$this->fence->neutralizeUntrusted((string) ($pins['org_pk'] ?? '')).".\n"
+                .'Sets the configured global profile '.($pins['profile_pk'] ?? '')." on that existing sub-organization, which has none set (one update, then a read-back from the parent organization list). It never replaces a different global profile: if one is set by the time this is approved, approval refuses and nothing is written.\n"
+                .'Approval refuses if the client\'s organization or the configured global profile no longer matches the values on this card. No provisioning code is cut by this step; once it is confirmed, stage the verb again for the final step (provisioning code).';
+        }
         if ($step === self::STEP_ORGANIZATION) {
-            return "Control D onboarding — step 1 of 2 (organization) for client '{$name}' (#{$client->id}).\n"
+            return "Control D onboarding — step 1 of up to 3 (organization) for client '{$name}' (#{$client->id}).\n"
                 ."Creates a Control D sub-organization named after the client, contact email from the client record ({$this->fence->neutralizeUntrusted($inputs['contact_email'])}), "
                 .'two-factor required, analytics region '.$inputs['stats_endpoint'].", then binds the returned organization id to the client.\n"
-                .'No provisioning code is cut by this step; once the mapping is bound, stage the verb again for step 2 (code).';
+                .'No provisioning code is cut by this step; once the mapping is bound, stage the verb again for the next step.';
         }
 
-        return "Control D onboarding — step 2 of 2 (provisioning code) for client '{$name}' (#{$client->id}), organization ".$this->fence->neutralizeUntrusted((string) $client->controld_org_id).".\n"
+        return "Control D onboarding — final step (provisioning code) for client '{$name}' (#{$client->id}), organization ".$this->fence->neutralizeUntrusted((string) $client->controld_org_id).".\n"
             .'Cuts one provisioning code under that organization with the panel defaults: enforced profile '.ControlDConfig::defaultProfileId()
             .', expiry '.ControlDConfig::codeExpiryDays().' days, device limit = asset count ('.$client->assets()->count().') + headroom '.ControlDConfig::codeDeviceLimitHeadroom()
             .', analytics level '.ControlDConfig::codeAnalyticsLevel().', intercept mode '.ControlDConfig::codeInterceptMode().', icon '.self::CODE_ICON.".\n"
@@ -448,7 +489,8 @@ class StaffControlDOnboardingToolExecutor
      * be an active Admin and, on the button lane, must not be the stager (a second
      * Admin, by ruling); on the token lane the stager must be a live ai_actor token. The
      * step is re-derived from the client's live state and must equal the staged step.
-     * Then exactly one intent: stageOrganization + execute, or stageCode + execute.
+     * Then exactly one intent: stageOrganization, stageGlobalProfile (with the card's
+     * pinned org and profile PKs) or stageCode, then execute.
      *
      * OUTCOMES. B3 records the truth on the intent row: `bound` = done; `rejected` =
      * the vendor refused (read-only key, envelope error) — definite, nothing created,
@@ -479,7 +521,7 @@ class StaffControlDOnboardingToolExecutor
             $ticket = Ticket::automationVisible()->find((int) ($payload['ticket_id'] ?? 0));
             $step = (string) ($payload['step'] ?? '');
             if (! $client || (int) $client->id !== (int) $run->client_id || ! $ticket || (int) $ticket->client_id !== (int) $client->id
-                || ! in_array($step, [self::STEP_ORGANIZATION, self::STEP_CODE], true)) {
+                || ! in_array($step, [self::STEP_ORGANIZATION, self::STEP_GLOBAL_PROFILE, self::STEP_CODE], true)) {
                 $run->releaseClaim();
 
                 return new TechnicianApprovalResult('gate_declined');
@@ -540,12 +582,21 @@ class StaffControlDOnboardingToolExecutor
                 return new TechnicianApprovalResult('gate_declined');
             }
 
-            // The step the client needs NOW must be the step the approver read.
+            // The step the client needs NOW must be the step the approver read, and for
+            // the global-profile step the org and profile PKs on the card must still be
+            // the live mapping and setting.
             $derived = $this->nextStep($client);
-            if (($derived['step'] ?? null) !== $step) {
-                $why = $derived['error'] ?? "the client now needs the '".($derived['step'] ?? 'none')."' step, not '{$step}'";
+            $pinDrift = $step === self::STEP_GLOBAL_PROFILE && ($derived['step'] ?? null) === $step
+                && (($payload['org_pk'] ?? null) !== ($derived['org_pk'] ?? null) || ($payload['profile_pk'] ?? null) !== ($derived['profile_pk'] ?? null));
+            if (($derived['step'] ?? null) !== $step || $pinDrift) {
+                $why = $derived['error'] ?? ($pinDrift
+                    ? "the client's Control D organization or the configured global profile no longer matches the values on this card"
+                    : "the client now needs the '".($derived['step'] ?? 'none')."' step, not '{$step}'");
                 $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $contentHash, "{$targetKey}: approval refused — {$why}", $approverLabel, $run->id, $approverId);
                 $run->releaseClaim();
+                if ($derived['unreadable'] ?? false) {
+                    return new TechnicianApprovalResult('gate_declined', message: "Control D onboarding approval could not re-check the client's current step ({$why}). Nothing was created; approve again once Control D answers, or deny this proposal.");
+                }
 
                 return new TechnicianApprovalResult('gate_declined', message: "The client's Control D state changed since this was staged ({$why}). Deny this proposal and stage again so the current step is read and approved on its own card. Nothing was created.");
             }
@@ -558,20 +609,26 @@ class StaffControlDOnboardingToolExecutor
                         throw new ControlDClientException($inputs['error']);
                     }
                     $intentId = $service->stageOrganization($approver, (int) $client->id, $inputs['name'], $inputs['contact_email'], self::REQUIRE_MFA, $inputs['stats_endpoint']);
+                } elseif ($step === self::STEP_GLOBAL_PROFILE) {
+                    $intentId = $service->stageGlobalProfile($approver, (int) $client->id, (string) ($payload['org_pk'] ?? ''), (string) ($payload['profile_pk'] ?? ''));
                 } else {
                     $intentId = $service->stageCode($approver, (int) $client->id, self::CODE_ICON, null, null);
                 }
                 $service->execute($approver, $intentId);
             } catch (ControlDClientException $e) {
                 $intent = $intentId !== null ? ControlDOnboardingIntent::find($intentId) : null;
-                if ($intent === null || $intent->state === 'staged') {
-                    // Definite local refusal before admission: no POST was issued. The
-                    // B3 intent (if any) still holds this client's lock while staged.
-                    $held = $intent !== null ? " Intent {$intent->id} remains staged and holds this client's onboarding lock; it must be reconciled before another proposal." : '';
-                    $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: refused before any vendor write — ".mb_substr($e->getMessage(), 0, 300).$held, $approverLabel, $run->id, $approverId);
+                if ($intent === null || in_array($intent->state, ['staged', ControlDOnboardingStaged::RELEASED], true)) {
+                    // Definite local refusal before admission: no vendor write was issued
+                    // (read-only GETs may have been). A staged B3 intent still holds this
+                    // client's lock; an Admin may release it from the client page while
+                    // onboarding is enabled (never-admitted intents only). A released one does not.
+                    $held = $intent?->state === 'staged' ? " Intent {$intent->id} remains staged and holds this client's onboarding lock; an Admin can release it from the Control D onboarding card on the client page (shown while client onboarding is enabled) before another proposal." : '';
+                    // safeAudit: a failed audit row here must not reach the outer catch, which
+                    // would report a possible vendor write for an intent that made none.
+                    $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: refused before any vendor write — ".mb_substr($e->getMessage(), 0, 300).$held, $approverLabel, $run->id, $approverId);
                     $run->releaseClaim();
 
-                    return new TechnicianApprovalResult('gate_declined', message: 'Control D onboarding was refused before any vendor call: '.mb_substr($e->getMessage(), 0, 300).$held);
+                    return new TechnicianApprovalResult('gate_declined', message: 'Control D onboarding was refused before any vendor write: '.mb_substr($e->getMessage(), 0, 300).$held);
                 }
                 // Anything else is post-admission and the intent row carries it; fall through.
             }
@@ -581,11 +638,17 @@ class StaffControlDOnboardingToolExecutor
 
             if ($state === 'bound') {
                 $run->advanceTo(TechnicianRunState::Done);
-                $this->safeAudit($run->action_type, 'executed', $client->id, $ticket, $contentHash, "{$targetKey}: operator-approved Control D onboarding step '{$step}' executed; intent {$intent->id} bound".($step === self::STEP_ORGANIZATION ? " to organization {$intent->org_pk}" : '; code stored encrypted on the client record').'.', $approverLabel, $run->id, $approverId);
+                $this->safeAudit($run->action_type, 'executed', $client->id, $ticket, $contentHash, "{$targetKey}: operator-approved Control D onboarding step '{$step}' executed; intent {$intent->id} bound".match ($step) {
+                    self::STEP_ORGANIZATION => " to organization {$intent->org_pk}",
+                    self::STEP_GLOBAL_PROFILE => "; global profile confirmed on organization {$intent->org_pk}",
+                    default => '; code stored encrypted on the client record',
+                }.'.', $approverLabel, $run->id, $approverId);
 
-                return new TechnicianApprovalResult('executed', message: $step === self::STEP_ORGANIZATION
-                    ? "Control D organization created and bound to the client (organization {$intent->org_pk}). Stage the verb again for step 2 (provisioning code)."
-                    : 'Control D provisioning code cut and stored encrypted on the client record. Nothing else remains for this client in this leg.');
+                return new TechnicianApprovalResult('executed', message: match ($step) {
+                    self::STEP_ORGANIZATION => "Control D organization created with the global profile and bound to the client (organization {$intent->org_pk}). Stage the verb again for the provisioning code.",
+                    self::STEP_GLOBAL_PROFILE => "Control D global profile enforced on organization {$intent->org_pk} and confirmed by read-back. Stage the verb again for the provisioning code.",
+                    default => 'Control D provisioning code cut and stored encrypted on the client record. Nothing else remains for this client in this leg.',
+                });
             }
 
             if ($state === 'rejected') {
@@ -593,21 +656,24 @@ class StaffControlDOnboardingToolExecutor
                 // proposal is spent; a fresh one may be staged once the cause is fixed.
                 $run->advanceTo(TechnicianRunState::Done);
                 $reason = (string) ($intent->reason ?? 'vendor rejected the write');
-                $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Control D rejected the '{$step}' write — {$reason} (code {$intent->reason_code}); intent {$intent->id} rejected, nothing created.", $approverLabel, $run->id, $approverId);
+                $nothing = $step === self::STEP_GLOBAL_PROFILE ? 'nothing changed' : 'nothing created';
+                $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Control D rejected the '{$step}' write — {$reason} (code {$intent->reason_code}); intent {$intent->id} rejected, {$nothing}.", $approverLabel, $run->id, $approverId);
 
-                return new TechnicianApprovalResult('executed_with_fault', message: "Control D rejected the {$step} write: {$reason}".($intent->reason_code === 40301 ? ' — the API key is a Read token; replace it with a Write token in Settings > Integrations, then stage again.' : '.').' Nothing was created.');
+                return new TechnicianApprovalResult('executed_with_fault', message: "Control D rejected the {$step} write: {$reason}".($intent->reason_code === 40301 ? ' — the API key is a Read token; replace it with a Write token in Settings > Integrations, then stage again.' : '.').' '.ucfirst($nothing).'.');
             }
 
             // uncertain, posted, or unknown: a vendor write MAY have happened. Terminal;
             // never re-armed. The intent holds the client's lock for manual reconciliation.
             $run->advanceTo(TechnicianRunState::Done);
-            $fault = "HARD FAULT: the Control D '{$step}' write for client #{$client->id} ended {$state}".($intent !== null ? " (intent {$intent->id}, phase {$intent->phase}".($intent->vendor_pk !== null ? ", vendor PK {$intent->vendor_pk}" : '').')' : '')
-                .'. The vendor POST may have committed. Do NOT re-approve or re-stage: reconcile upstream and local state by hand; the intent keeps this client\'s onboarding lock until then.';
+            $fault = "HARD FAULT: the Control D '{$step}' write for client #{$client->id} ended {$state}".($intent !== null ? " (intent {$intent->id}, phase {$intent->phase}".($intent->vendor_pk !== null ? ($step === self::STEP_GLOBAL_PROFILE ? ", org PK {$intent->vendor_pk}" : ", vendor PK {$intent->vendor_pk}") : '').')' : '')
+                .($step === self::STEP_GLOBAL_PROFILE ? '. The vendor PUT may have committed.' : '. The vendor POST may have committed.').' Do NOT re-approve or re-stage: reconcile upstream and local state by hand; the intent keeps this client\'s onboarding lock until then.';
             $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: {$fault}", $approverLabel, $run->id, $approverId);
 
             return new TechnicianApprovalResult('executed_with_fault', message: $fault);
         } catch (\Throwable $e) {
-            if ($intentId !== null && (ControlDOnboardingIntent::find($intentId)?->state ?? 'staged') !== 'staged') {
+            // Only an ADMITTED intent can carry a vendor write; staged and released
+            // (never admitted) are pre-admission whatever failed afterwards.
+            if ($intentId !== null && ! in_array(ControlDOnboardingIntent::find($intentId)?->state ?? 'staged', ['staged', ControlDOnboardingStaged::RELEASED], true)) {
                 // Post-admission: a write may have happened. Keep the run terminal.
                 $this->safeAudit($run->action_type, 'error', (int) $run->client_id, null, (string) $run->content_hash, "onboard: finalizing after a possible vendor write failed; intent {$intentId}; run NOT reopened.", $this->approverLabel($approverId), $run->id, $approverId);
                 $run->advanceTo(TechnicianRunState::Done);
@@ -829,7 +895,7 @@ class StaffControlDOnboardingToolExecutor
     {
         return [
             'name' => self::TOOL,
-            'description' => 'Onboard ONE PSA client to Control D: step 1 creates the client\'s Control D sub-organization (name and contact email from the client record, two-factor required, the panel\'s analytics region) and binds the returned organization id to the client; step 2, staged separately once the mapping is bound, cuts one provisioning code under that organization with the Settings > Integrations > Control D defaults (enforced profile, expiry, device limit = asset count + headroom, analytics level, intercept mode). HELD-ONLY: never executes immediately, whatever mode was granted — every call needs staged=true and a ticket_id and is approved in the cockpit by an active Admin. Only an MCP token marked ai_actor may stage it (the agent stages, one human approves); a person onboards from the Control D card on the client page, where a second Admin must approve. The server decides which step the client needs; one proposal is one step. No PIN, hostname prefix, icon, profile, limit or vendor PK is accepted from the caller; secrets are stored encrypted on the client record and never returned. Inert unless the Control D onboarding switch is on and all six defaults are configured. Requires an explicit token grant, reason, kill-switch, and TechnicianActionLog audit.',
+            'description' => 'Onboard ONE PSA client to Control D in up to three separately staged steps: (1) create the client\'s Control D sub-organization (name and contact email from the client record, two-factor required, the panel\'s analytics region, the configured global profile) and bind the returned organization id to the client; (2) only for a mapped sub-organization with no global profile set, set the configured global profile on it (never replacing a different one); (3) once the configured global profile is enforced, cut one provisioning code under that organization with the Settings > Integrations > Control D defaults (enforced profile, expiry, device limit = asset count + headroom, analytics level, intercept mode). HELD-ONLY: never executes immediately, whatever mode was granted — every call needs staged=true and a ticket_id and is approved in the cockpit by an active Admin. Only an MCP token marked ai_actor may stage it (the agent stages, one human approves); a person onboards from the Control D card on the client page, where a second Admin must approve. The server decides which step the client needs; one proposal is one step. No PIN, hostname prefix, icon, profile, limit or vendor PK is accepted from the caller; secrets are stored encrypted on the client record and never returned. Inert unless the Control D onboarding switch is on and all six defaults are configured. Requires an explicit token grant, reason, kill-switch, and TechnicianActionLog audit.',
             'input_schema' => ['type' => 'object', 'properties' => self::properties(), 'required' => ['reason']],
         ];
     }
@@ -839,7 +905,7 @@ class StaffControlDOnboardingToolExecutor
     {
         return [
             'name' => self::STAGED_TOOL,
-            'description' => 'Stage the next Control D onboarding step for one client (organization create, or provisioning code once mapped) for cockpit approval by an active Admin. Staging requires an ai_actor token (a person uses the client-page button, which needs a second Admin). The MCP call makes no Control D write; the held proposal stores only ids and the step, and approval re-derives every input from the client record and the panel. Held-only — there is no immediate execution path.',
+            'description' => 'Stage the next Control D onboarding step for one client (organization create; then, once mapped, the global profile if the sub-organization has none; then the provisioning code) for cockpit approval by an active Admin. Staging requires an ai_actor token (a person uses the client-page button, which needs a second Admin). The MCP call makes no Control D write; the held proposal stores only ids and the step, and approval re-derives every input from the client record and the panel. Held-only — there is no immediate execution path.',
             'input_schema' => ['type' => 'object', 'properties' => self::properties(true), 'required' => ['ticket_id', 'reason']],
         ];
     }
