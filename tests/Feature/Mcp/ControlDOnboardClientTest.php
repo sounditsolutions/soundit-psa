@@ -831,13 +831,79 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertSame('code', $next['step'] ?? null, json_encode($next));
     }
 
+    /**
+     * XULQ2iix ruling (a): the sub_organizations row carries the key PRESENT with JSON null
+     * (the shape a 2026-10-09 production read observed for an org with no Global Profile).
+     * Staging proposes the global-profile step, exactly as for an absent key, and never
+     * the unreadable refusal.
+     */
+    public function test_a_present_null_parent_profile_proposes_the_global_profile_step_like_an_absent_one(): void
+    {
+        $this->configure();
+        $this->aiActor();
+        $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
+        $row = array_merge($this->listed('testorg001'), ['parent_profile' => null]);
+        $this->assertArrayHasKey('parent_profile', $row);
+        $this->vendor([$this->ok(['sub_organizations' => [$row]])]);
+        $run = $this->stage($fixture);
+        $this->assertSame(StaffControlDOnboardingToolExecutor::STEP_GLOBAL_PROFILE, $run->proposed_meta['redacted_params']['step']);
+        $this->assertStringContainsString('step 2 of 3 (global profile)', $run->proposed_content);
+        $this->assertStringNotContainsString(self::UNREADABLE_REASON, $run->proposed_content);
+        $this->assertSame(['GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
+        $this->assertSame(0, ControlDOnboardingIntent::count());
+    }
+
+    /** Shapes that make the staging read throw, with the fixed message each arm carries. */
+    public static function unreadableLogArms(): array
+    {
+        return [
+            'malformed-parent-profile' => ['malformed', 'Control D global profile field is malformed.'],
+            'vendor-503' => ['503', 'Control D parent response is unconfirmed; outcome may be unknown.'],
+        ];
+    }
+
+    /**
+     * #6408 (C-56): the swallowed ControlDClientException at staging is logged once, at
+     * warning, with the client id, the org PK, the exception class and its fixed message,
+     * and nothing from the vendor body. The refusal text is unchanged.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('unreadableLogArms')]
+    public function test_unreadable_staging_read_is_logged_with_ids_class_and_message_only(string $arm, string $message): void
+    {
+        $this->configure();
+        $this->aiActor();
+        $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
+        $marker = 'synthetic-vendor-body-marker';
+        $answer = $arm === '503'
+            ? new Response(503, [], json_encode(['success' => false, 'error' => ['message' => $marker]]))
+            : $this->ok(['sub_organizations' => [array_merge($this->listed('testorg001'), ['name' => $marker, 'parent_profile' => ['updated' => 1, 'name' => $marker]])]]);
+        $this->vendor([$answer]);
+        Log::spy();
+        $result = $this->decoded($this->callTool($this->token(), 'controld_onboard_client', $this->stageArgs($fixture)));
+        $this->assertSame(self::UNREADABLE_REFUSAL, $result['error'] ?? null, json_encode($result));
+        $this->assertSame(0, TechnicianRun::count());
+        Log::shouldHaveReceived('warning')->once()->withArgs(function (string $logged, array $context) use ($fixture, $message, $marker): bool {
+            return $logged === '[StaffControlDOnboardingToolExecutor] The Control D global-profile state could not be read at step derivation'
+                && $context === ['client_id' => $fixture['client']->id, 'org_pk' => 'testorg001', 'exception' => \App\Services\ControlD\ControlDClientException::class, 'message' => $message]
+                && ! str_contains($logged.json_encode($context), $marker)
+                && ! str_contains(json_encode($context), 'synthetic-key')
+                && ! str_contains(json_encode($context), 'testprofile01');
+        });
+        // Nothing else carries it, at any other level or through a generic call.
+        foreach (['emergency', 'alert', 'critical', 'error', 'notice', 'info', 'debug', 'log', 'write'] as $method) {
+            Log::shouldNotHaveReceived($method);
+        }
+    }
+
     /** Fail closed: an unreadable/malformed parent inventory at staging proposes nothing (never the code step). */
     public function test_unreadable_parent_inventory_refuses_staging_for_a_mapped_client(): void
     {
         $this->configure();
         $this->aiActor();
         $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
-        foreach ([new Response(503), $this->ok(['sub_organizations' => [$this->listed('otherorg01')]]), $this->ok(['sub_organizations' => [array_merge($this->listed('testorg001'), ['parent_profile' => null])]])] as $answer) {
+        // A present-null parent_profile is unset, not unreadable (XULQ2iix ruling (a)); an
+        // object without a PK is still malformed and still refuses here.
+        foreach ([new Response(503), $this->ok(['sub_organizations' => [$this->listed('otherorg01')]]), $this->ok(['sub_organizations' => [array_merge($this->listed('testorg001'), ['parent_profile' => ['updated' => 1, 'name' => 'x']])]])] as $answer) {
             $this->vendor([$answer]);
             $result = $this->decoded($this->callTool($this->token(), 'controld_onboard_client', ['client_id' => $fixture['client']->id, 'ticket_id' => $fixture['ticket']->id, 'reason' => 'x', 'staged' => true]));
             $this->assertSame(self::UNREADABLE_REFUSAL, $result['error'] ?? null, json_encode($result));
