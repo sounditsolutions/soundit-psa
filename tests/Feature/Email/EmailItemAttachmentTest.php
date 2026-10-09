@@ -1418,9 +1418,11 @@ class EmailItemAttachmentTest extends TestCase
             'mailbox' => [fn (self $t) => 'm '.$mailbox($t).' m', 'mailbox'],
             // #6001: the encoded rows below use a real encoder on the whole text (a query string,
             // a URL inside a query string), not the transform forbiddenNeedles() builds with.
-            'mailbox local part' => [fn (self $t) => 'mailto:'.$mailbox($t), 'mailbox local part'],
+            // #6176: the local-part rows hold the local part WITHOUT the domain, so only the
+            // local-part needle can catch them (the 'mailbox' needles need the whole address).
+            'mailbox local part' => [fn (self $t) => 'mailto:'.strstr($mailbox($t), '@', true).'@', 'mailbox local part'],
             'mailbox urlencoded' => [fn (self $t) => http_build_query(['mailbox' => $mailbox($t), 'x' => 1]), 'mailbox urlencoded'],
-            'mailbox local part urlencoded' => [fn (self $t) => http_build_query(['to' => $mailbox($t)]), 'mailbox local part urlencoded'],
+            'mailbox local part urlencoded' => [fn (self $t) => http_build_query(['to' => strstr($mailbox($t), '@', true).'@']), 'mailbox local part urlencoded'],
             'mailbox double-urlencoded' => [fn (self $t) => 'next='.urlencode('/send?'.http_build_query(['to' => $mailbox($t)])), 'mailbox double-urlencoded'],
         ];
         // #5623: each alignment, embedded in a longer text, plain/unpadded/base64url.
@@ -1518,6 +1520,11 @@ class EmailItemAttachmentTest extends TestCase
 
         $hit = array_keys($this->leakHits($this->records()[0]));
         $this->assertContains($label, $hit, "needle '{$label}' missed a fixture-derived copy: ".json_encode($value));
+        if (str_starts_with($label, 'mailbox local part')) {
+            // #6176: the row is the local part alone; the whole-address needles do not catch it.
+            $this->assertNotContains('mailbox', $hit);
+            $this->assertNotContains('mailbox urlencoded', $hit);
+        }
         if (str_contains($label, 'base64')) {
             $this->assertDoesNotMatchRegularExpression('#[+/]#', self::forbiddenNeedles()[$label], 'a core with + or / would miss base64url');
         }
