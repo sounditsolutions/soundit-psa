@@ -248,18 +248,22 @@ class StaffCalendarTokenFailureWireTest extends TestCase
      * reopened (CAS won) and nothing says indeterminate; the immediate path says not sent.
      * A 500 on the pre-read is the same.
      *
-     * @return array<string, array{0: \Closure(): list<Response>}>
+     * #6186: the audit row's detail is the wrapped exception's class and status only. The
+     * malformed-event row (200 with no id) is a GraphShapeDriftException with no status.
+     *
+     * @return array<string, array{0: \Closure(): list<Response>, 1: string}>
      */
     public static function preReadFailures(): array
     {
         return [
-            '401, refresh fails' => [fn () => [self::tokenIssued(), new Response(401, [], '{}'), self::tokenRefused(), self::spare()]],
-            '500' => [fn () => [self::tokenIssued(), new Response(500, [], '{}'), self::spare()]],
+            '401, refresh fails' => [fn () => [self::tokenIssued(), new Response(401, [], '{}'), self::tokenRefused(), self::spare()], 'GraphTokenRefreshFailedException (HTTP status 401)'],
+            '500' => [fn () => [self::tokenIssued(), new Response(500, [], '{}'), self::spare()], 'GraphClientException (HTTP status 500)'],
+            'malformed event' => [fn () => [self::tokenIssued(), new Response(200, ['Content-Type' => 'application/json'], '{}'), self::spare()], 'GraphShapeDriftException (no HTTP status)'],
         ];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('preReadFailures')]
-    public function test_a_failed_update_pre_read_is_not_sent_and_reopens_the_run(\Closure $responses): void
+    public function test_a_failed_update_pre_read_is_not_sent_and_reopens_the_run(\Closure $responses, string $detail): void
     {
         $run = $this->staged('calendar_stage_update_event', self::writes()['update with a body'][2]);
         $this->graph(...$responses());
@@ -269,11 +273,11 @@ class StaffCalendarTokenFailureWireTest extends TestCase
         $this->assertSame(['GET'], array_map(fn (RequestInterface $q) => $q->getMethod(), $this->requestsTo('graph.microsoft.com')), 'positive control: only the pre-read was sent');
         $this->assertCount(1, $this->mock, 'the spare response is still queued: no PATCH');
         $this->assertSame('gate_declined', $r->status);
-        $this->assertStringStartsWith('The calendar update was not sent: reading the event before the update failed upstream (Microsoft Graph). Nothing was written to the calendar; the run is reopened, so re-approve to retry.', (string) $r->message);
+        $this->assertStringStartsWith('The calendar update was not sent: reading the event before the update failed. Nothing was written to the calendar; the run is reopened, so re-approve to retry.', (string) $r->message);
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, 'not held Executing');
         $summaries = TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->pluck('summary')->all();
         $this->assertCount(1, $summaries);
-        $this->assertStringStartsWith('Graph calendar write not sent (the event read before the update failed): Graph API error: GET ', $summaries[0]);
+        $this->assertSame('Graph calendar write not sent (the event read before the update failed): '.$detail, $summaries[0]);
         $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%indeterminate%')->count());
     }
 
@@ -289,13 +293,13 @@ class StaffCalendarTokenFailureWireTest extends TestCase
 
         $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run, $this->approver->id);
 
-        $this->assertSame('The calendar update was not sent: reading the event before the update failed upstream (Microsoft Graph). Nothing was written to the calendar; the run was not reopened; check its current state before acting on it again.', $r->message);
+        $this->assertSame('The calendar update was not sent: reading the event before the update failed. Nothing was written to the calendar; the run was not reopened; check its current state before acting on it again.', $r->message);
         $this->assertSame(TechnicianRunState::Flagged, $run->fresh()->state, 'positive control: the CAS lost');
         $this->assertSame(['GET'], array_map(fn (RequestInterface $q) => $q->getMethod(), $this->requestsTo('graph.microsoft.com')));
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('preReadFailures')]
-    public function test_a_failed_immediate_update_pre_read_is_not_sent(\Closure $responses): void
+    public function test_a_failed_immediate_update_pre_read_is_not_sent(\Closure $responses, string $detail): void
     {
         $ticket = Ticket::factory()->create();
         $this->graph(...$responses());
@@ -303,8 +307,34 @@ class StaffCalendarTokenFailureWireTest extends TestCase
         $result = app(StaffCalendarToolExecutor::class)->execute('calendar_update_event', self::writes()['update with a body'][2] + ['ticket_id' => $ticket->id], 0, 'mcp-staff:chet');
 
         $this->assertSame(['GET'], array_map(fn (RequestInterface $q) => $q->getMethod(), $this->requestsTo('graph.microsoft.com')));
-        $this->assertSame(['error' => 'The calendar update was not sent: reading the event before the update failed upstream (Microsoft Graph). Nothing was written to the calendar, so a retry cannot duplicate it.'], $result);
+        $this->assertSame(['error' => 'The calendar update was not sent: reading the event before the update failed. Nothing was written to the calendar, so a retry cannot duplicate it.'], $result);
         $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%indeterminate%')->count());
+        $this->assertSame(
+            ['Graph calendar write not sent (the event read before the update failed): '.$detail],
+            TechnicianActionLog::where('ticket_id', $ticket->id)->where('result_status', 'error')->pluck('summary')->all(),
+        );
+    }
+
+    /**
+     * #6186 (C-56): a pre-read failure whose message names the mailbox, the event id and the
+     * request path (as a GraphShapeDriftException's message may) writes none of them to the
+     * audit row, on either path. The executor's own read is the only Graph call here, mocked.
+     */
+    public function test_a_pre_read_failure_message_naming_the_mailbox_does_not_reach_the_audit_row(): void
+    {
+        $run = $this->staged('calendar_stage_update_event', self::writes()['update with a body'][2]);
+        $planted = sprintf('Microsoft Graph returned an error for mailbox %s at users/%s/events/%s', self::OWNER, self::OWNER, self::EVENT_ID);
+        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('getEvent')->twice()->andThrow(new \App\Services\Graph\GraphShapeDriftException($planted)));
+        $ticket = Ticket::factory()->create();
+        app(StaffCalendarToolExecutor::class)->execute('calendar_update_event', self::writes()['update with a body'][2] + ['ticket_id' => $ticket->id], 0, 'mcp-staff:chet');
+        $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run, $this->approver->id);
+
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, 'positive control: the staged pre-read arm ran');
+        $summaries = TechnicianActionLog::where('result_status', 'error')->pluck('summary')->all();
+        $this->assertSame(array_fill(0, 2, 'Graph calendar write not sent (the event read before the update failed): GraphShapeDriftException (no HTTP status)'), $summaries);
+        foreach ([self::OWNER, self::EVENT_ID, 'users/', 'mailbox'] as $needle) {
+            $this->assertStringNotContainsString($needle, implode(' | ', $summaries).' | '.$r->message);
+        }
     }
 
     /**

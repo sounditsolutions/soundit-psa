@@ -20,12 +20,16 @@ use Tests\Support\FlattensLogContext;
 use Tests\TestCase;
 
 /**
- * #6120 / #6130: the Graph bearer is never a string or array frame argument on any send path,
- * on any arm, with exception argument capture on (zend.exception_ignore_args=Off).
+ * #6120 / #6130: above the transport handler, the Graph bearer is never a string or array frame
+ * argument on any send path, on any arm, with exception argument capture on
+ * (zend.exception_ignore_args=Off).
  *
- * The scripted handler records a witness exception at the innermost point of every request (the
- * handler the whole Guzzle stack calls last), so its trace holds every frame of that send:
- * GraphClient's, Guzzle's Client::send/sendAsync/transfer, and each middleware's. Every
+ * The scripted handler records a witness exception where the transport handler would be called
+ * (the closure the whole Guzzle stack calls last), so its trace holds every frame above it:
+ * GraphClient's, Guzzle's Client::send/sendAsync/transfer, and each middleware's. #6188: the
+ * production transport handlers (CurlHandler/CurlFactory, StreamHandler) never run here, so
+ * nothing is claimed about their frames; test_the_curl_handler_frames_are_outside_the_claim
+ * measures that they can hold it. Every
  * rejection the stack produced and the exception GraphClient finally threw are scanned too.
  * frameArgumentsForScan() writes string and array arguments as they are and names an object
  * argument (the PSR-7 Request that now carries the header) by its class only. So the claim is
@@ -242,7 +246,7 @@ class GraphClientBearerFrameTest extends TestCase
      * @param  list<'seeded'|'fresh'>  $bearers
      */
     #[\PHPUnit\Framework\Attributes\DataProvider('arms')]
-    public function test_no_frame_argument_holds_the_bearer_and_each_request_still_authenticates(\Closure $queue, \Closure $call, array $bearers, ?string $throws, string $endpointNeedle): void
+    public function test_no_frame_argument_above_the_transport_handler_holds_the_bearer_and_each_request_still_authenticates(\Closure $queue, \Closure $call, array $bearers, ?string $throws, string $endpointNeedle): void
     {
         $graph = $this->graph($queue());
         $thrown = self::attempt(fn () => $call($graph));
@@ -269,5 +273,24 @@ class GraphClientBearerFrameTest extends TestCase
         };
         $e = $probe(['headers' => ['Authorization' => 'Bearer '.self::FRESH_ACCESS_FIXTURE]]);
         $this->assertStringContainsString(self::FRESH_ACCESS_FIXTURE, self::frameArgumentsForScan($e));
+    }
+
+    /**
+     * #6188: the boundary of the claim above, measured. The real CurlHandler, given a CA bundle
+     * path that does not exist, throws a plain InvalidArgumentException from
+     * CurlFactory::applyHandlerOptions() before any connection is made, and that frame's $conf
+     * array argument holds the request headers, the bearer among them. This is why GraphClient's
+     * docblock claims nothing below the middleware frames. No request leaves the process.
+     */
+    public function test_the_curl_handler_frames_are_outside_the_claim(): void
+    {
+        $client = new \GuzzleHttp\Client(['handler' => HandlerStack::create(new \GuzzleHttp\Handler\CurlHandler)]);
+        $request = (new \GuzzleHttp\Psr7\Request('GET', 'https://graph.invalid/v1.0/me'))->withHeader('Authorization', 'Bearer '.self::SEEDED_ACCESS_FIXTURE);
+
+        $thrown = self::attempt(fn () => $client->send($request, ['verify' => '/nonexistent/b4o-ca-bundle.pem']));
+
+        $this->assertInstanceOf(\InvalidArgumentException::class, $thrown);
+        $this->assertNotInstanceOf(\GuzzleHttp\Exception\GuzzleException::class, $thrown);
+        $this->assertMatchesRegularExpression('/#\d+ applyHandlerOptions arg \d+: \[.*'.preg_quote(self::SEEDED_ACCESS_FIXTURE, '/').'/', self::frameArgumentsForScan($thrown));
     }
 }

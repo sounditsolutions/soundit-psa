@@ -375,7 +375,11 @@ class StaffTacticalActionToolExecutor
             // reaper only logs it; the outcome_unknown audit row above records
             // what happened.
             if ($result->isOutcomeUnknown()) {
-                $run->advanceTo(TechnicianRunState::Done);
+                // #6197: advanceTo() refuses when another claim now holds the run. Then this
+                // request neither closed nor reopened it, and the text says only that.
+                if (! $run->advanceTo(TechnicianRunState::Done)) {
+                    return new TechnicianApprovalResult('gate_declined', message: 'Tactical did not answer before the timeout after the approved action was sent; it may have run. The run was not closed: this approval no longer holds it, and it was not reopened for re-approval. Check the device to find out whether it ran, and check the run before acting on it again.');
+                }
 
                 return new TechnicianApprovalResult('gate_declined', message: 'Tactical did not answer before the timeout after the approved action was sent; it may have run. The run is closed, not reopened for re-approval. Check the device to find out whether it ran.');
             }
@@ -400,7 +404,12 @@ class StaffTacticalActionToolExecutor
                 return new TechnicianApprovalResult('gate_declined');
             }
 
-            $run->advanceTo(TechnicianRunState::Done);
+            // #6197: the action executed, but a lost claim-owner fence means the run was not
+            // closed here. Not a retry either, so it goes out on the error channel
+            // (executed_with_fault), which carries no one-time secret.
+            if (! $run->advanceTo(TechnicianRunState::Done)) {
+                return new TechnicianApprovalResult('executed_with_fault', message: 'The approved Tactical action executed, but the run was not closed because this approval no longer holds it. Do NOT re-approve it; check the device and the run.');
+            }
 
             // psa-5s4r2 Increment 2 — remote-control is the one staged action that
             // returns a LIVE MeshCentral URL, minted fresh at THIS approval. It rides
@@ -450,8 +459,12 @@ class StaffTacticalActionToolExecutor
                 ->first();
 
             if ($existing !== null) {
+                // #6197: supersede first, under the claim-owner fence; a stale holder neither
+                // supersedes the run nor counts onto the queued row.
+                if (! $run->advanceTo(TechnicianRunState::Superseded)) {
+                    return self::notQueuedOffline();
+                }
                 $existing->increment('coalesce_count');
-                $run->markSuperseded();
 
                 return new TechnicianApprovalResult('queued_offline');
             }
@@ -462,14 +475,24 @@ class StaffTacticalActionToolExecutor
             $expiresAt = $run->expires_at ?? now()->addDays(TacticalConfig::offlineQueueExpiryDays());
 
             // Approver folded into the CAS update — no second write to race a concurrent
-            // cancel/expire. A false result means the claim was lost (run no longer
-            // Executing); nothing to queue.
+            // cancel/expire. A false result means this request no longer holds the claim:
+            // the run left Executing, or (#6197) another claim now holds it. Nothing queued.
             if (! $run->queueForOffline($agentId, $dedupKey, $queuedAt, $expiresAt, ['queued_approver_id' => $approverId])) {
-                return new TechnicianApprovalResult('already_handled');
+                return self::notQueuedOffline();
             }
 
             return new TechnicianApprovalResult('queued_offline');
         });
+    }
+
+    /**
+     * #6197: the decline when the offline queue write lost its claim-owner CAS. Tactical
+     * reported the device offline, so the action did not run, and this request did not queue
+     * it. The queued_offline audit row written before the queue attempt is not rewritten.
+     */
+    private static function notQueuedOffline(): TechnicianApprovalResult
+    {
+        return new TechnicianApprovalResult('gate_declined', message: 'Tactical reported the device offline, and the action was not queued: this approval no longer holds the run. Check its current state before acting on it again.');
     }
 
     /** sha256 of (agent, direct tool, canonical params) — one queued row per identical action. */

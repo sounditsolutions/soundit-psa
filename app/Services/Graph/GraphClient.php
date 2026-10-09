@@ -559,12 +559,17 @@ class GraphClient
         // the 401 retry with the refreshed token and every 429 retry) it is set on a PSR-7
         // Request built in place and handed to Client::send() with $options, which never holds
         // it. So no string or array argument of this frame, of Guzzle's send/sendAsync/transfer
-        // frames or of the handler stack below them holds the bearer, and a trace captured with
-        // zend.exception_ignore_args=Off (any throwable raised inside the send, Guzzle's or not)
-        // does not carry it. Below the send it is only inside the Request object, an object
-        // argument. The one call that takes it as a string is withHeader() itself, which throws
-        // only for a value tokenShapeFault() already refuses (#5738). Guzzle applies $options
-        // ('query', 'json') and the base URI to the Request exactly as request() did.
+        // frames or of the middleware frames holds the bearer; GraphClientBearerFrameTest
+        // measures exactly those frames, with a scripted handler. #6188: that is not a claim
+        // about the transport handler below them. Guzzle's CurlFactory copies the request
+        // headers into its $conf array, and a throwable raised while $conf is a frame argument
+        // (for example the InvalidArgumentException applyHandlerOptions() raises for a missing
+        // CA bundle) carries the bearer in that array when zend.exception_ignore_args is Off.
+        // StreamHandler likewise builds the header line into its stream-context array. Such a
+        // throwable is not a GuzzleException, so it leaves this method as is. withHeader() and the PSR-7
+        // header validation it calls also take it as a string (withHeader() throws only for a
+        // value tokenShapeFault() already refuses, #5738). Guzzle applies $options ('query',
+        // 'json') and the base URI to the Request exactly as request() did.
         $token = $this->getToken();
 
         $maxRetries = 3;

@@ -211,6 +211,60 @@ class TacticalCmdOutcomeUnknownRetryTest extends TestCase
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, 'offline: nothing ran, so it stays approvable');
     }
 
+    /**
+     * #6197: another approval claims the run while cmd() is in flight (the run was reopened
+     * and claimed again), so this request's advanceTo(Done) loses the claim-owner fence.
+     * $answer is cmd()'s outcome once the other claim is in place.
+     *
+     * @return array{0: TechnicianRun, 1: \App\Services\Technician\TechnicianApprovalResult}
+     */
+    private function stageAndApproveLosingTheClaim(array $f, string $token, \Closure $answer): array
+    {
+        $staged = $this->callTool($token, 'tactical_stage_command', $this->stageArgs($f));
+        $this->assertFalse((bool) $staged->json('result.isError'), $this->text($staged));
+        $run = TechnicianRun::findOrFail(json_decode($this->text($staged), true)['run_id']);
+
+        $tactical = Mockery::mock(TacticalClient::class);
+        $tactical->shouldReceive('cmd')->once()->andReturnUsing(function () use ($run, $answer) {
+            TechnicianRun::whereKey($run->id)->update(['claimed_at' => now()->addMinute()]);
+
+            return $answer();
+        });
+        $this->app->instance(TacticalClient::class, $tactical);
+
+        return [$run, app(TechnicianApprovalService::class)->approveStagedTacticalAction($run, $f['actor']->id)];
+    }
+
+    /** #6197: an outcome-unknown whose close loses the fence does not say the run is closed. */
+    public function test_an_outcome_unknown_whose_close_loses_the_claim_does_not_say_closed(): void
+    {
+        $f = $this->fixture();
+        $token = McpConfig::rotateStaffToken(allowedTools: ['tactical_stage_command'], label: 'opsbot');
+        $failure = $this->sentThenTimedOut();
+
+        [$run, $approval] = $this->stageAndApproveLosingTheClaim($f, $token, fn () => throw $failure);
+
+        $this->assertSame('gate_declined', $approval->status);
+        $this->assertSame('Tactical did not answer before the timeout after the approved action was sent; it may have run. The run was not closed: this approval no longer holds it, and it was not reopened for re-approval. Check the device to find out whether it ran, and check the run before acting on it again.', $approval->message);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is untouched');
+        $this->assertSame('outcome_unknown', TechnicianActionLog::where('run_id', $run->id)->latest('id')->value('result_status'), 'positive control: the outcome-unknown arm ran');
+    }
+
+    /** #6197: an executed command whose close loses the fence is reported executed_with_fault, not executed. */
+    public function test_an_executed_command_whose_close_loses_the_claim_is_executed_with_fault(): void
+    {
+        $f = $this->fixture();
+        $token = McpConfig::rotateStaffToken(allowedTools: ['tactical_stage_command'], label: 'opsbot');
+
+        [$run, $approval] = $this->stageAndApproveLosingTheClaim($f, $token, fn () => 'done');
+
+        $this->assertSame('executed_with_fault', $approval->status);
+        $this->assertSame('The approved Tactical action executed, but the run was not closed because this approval no longer holds it. Do NOT re-approve it; check the device and the run.', $approval->message);
+        $this->assertNull($approval->secret);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is untouched');
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed')->count(), 'positive control: the action executed');
+    }
+
     public function test_a_command_staged_under_the_old_600s_maximum_is_refused_at_approval_with_a_named_reason(): void
     {
         $f = $this->fixture();
