@@ -2344,7 +2344,7 @@ class RetryEmailAttachmentsJobTest extends TestCase
      * #6182: later rows of this push that will not run handle() when popped: reserved by a
      * worker (which may have died), or at the attempt limit (failed as MaxAttemptsExceeded).
      *
-     * @return array<string, array{0: array<string, int>, 1: bool}>
+     * @return array<string, array{0: array<string, int|string>, 1: bool}>
      */
     public static function laterRowsThatWillNotRun(): array
     {
@@ -2352,7 +2352,9 @@ class RetryEmailAttachmentsJobTest extends TestCase
         // started, so an unreserved row is deleted; a reserved one is never deleted under its worker).
         // r2 (diff:7): 'reserved' is a live worker's hold, as a pop leaves it (reserved_at now,
         // attempts 1); reserved_at 1 with attempts 0 was an expired reservation, which runs.
-        return ['reserved' => [['reserved_at' => time(), 'attempts' => 1], false], 'at its attempt limit' => [['attempts' => 1], true]];
+        // 'now' is resolved in the test: a provider runs when the suite is built, and a time()
+        // taken then is past retry_after by the time a long run reaches this test.
+        return ['reserved' => [['reserved_at' => 'now', 'attempts' => 1], false], 'at its attempt limit' => [['attempts' => 1], true]];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('laterRowsThatWillNotRun')]
@@ -2363,6 +2365,7 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $email = $this->email();
         $later = null;
         $this->duringPush(function () use ($changes, &$later) {
+            $changes = array_map(fn ($v) => $v === 'now' ? now()->getTimestamp() : $v, $changes);
             $later = $this->copyRow($this->retryRows()[0], $changes);
             $this->mock->append($this->read());
             $this->popRetry()->fire();
