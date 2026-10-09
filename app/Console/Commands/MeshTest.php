@@ -17,10 +17,12 @@ class MeshTest extends Command
     {
         if (! MeshConfig::isConfigured()) {
             // #6161: 'not configured' only for a key that is really absent;
-            // a stored value the PSA does not send says a value is set.
-            $this->error(MeshConfig::apiKeyMissing(MeshConfig::get('api_key'))
+            // a stored value the PSA does not send says why (#6288: a CR
+            // or LF; #6296: a row that does not decrypt).
+            $refusal = MeshConfig::storedKeyRefusal();
+            $this->error($refusal === null
                 ? 'Mesh is not configured. Add API key in Settings → Integrations.'
-                : 'The Mesh API key '.MeshClient::UNUSABLE_KEY.'; nothing was sent. Replace it in Settings → Integrations.');
+                : "The Mesh API key {$refusal}; nothing was sent. Replace it in Settings → Integrations.");
 
             return self::FAILURE;
         }

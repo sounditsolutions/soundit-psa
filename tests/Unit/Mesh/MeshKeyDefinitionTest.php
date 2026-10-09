@@ -152,12 +152,6 @@ class MeshKeyDefinitionTest extends TestCase
     }
 
     /**
-     * #6160: every public write method refuses a missing key in
-     * assertConfigured() first, so preflight()'s missing-key arm is driven
-     * here directly. Its own text is 'The Mesh API key is not configured',
-     * which assertConfigured()'s 'Mesh API key is not configured' is not.
-     */
-    /**
      * #6206: preflight()'s unusable arm, driven directly for every unusable
      * key: the 'is set' text, nothing sent, nothing at the handler.
      */
@@ -177,6 +171,13 @@ class MeshKeyDefinitionTest extends TestCase
         $this->assertSame(1, $mock->count(), 'no request reached the handler');
     }
 
+    /**
+     * #6160: every public write method refuses a missing key in
+     * assertConfigured() first, so preflight()'s missing-key arm is driven
+     * here directly. Its own text is 'The Mesh API key is not configured',
+     * which assertConfigured()'s 'Mesh API key is not configured' is not.
+     * (#6292: this comment sat above the unusable-key test.)
+     */
     public function test_the_write_preflight_refuses_a_missing_key_itself(): void
     {
         $mock = new MockHandler([new Response(200, [], '{}')]);

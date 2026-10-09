@@ -52,7 +52,7 @@ class MeshFlashFullStopTest extends TestCase
             ],
             'upstream, with a status' => [
                 new MeshClientException('Mesh API error: GET api/customers/ failed with HTTP 503', 503),
-                'Mesh sync failed: Mesh answered the license sync with HTTP 503.',
+                'Mesh sync failed: the Mesh host (or something in front of it) answered the license sync with HTTP 503.',
             ],
         ];
     }

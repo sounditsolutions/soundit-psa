@@ -55,8 +55,8 @@ class MeshWriteClient
 
     /**
      * `ab` semantics are NOT documented; they were read off live data
-     * (2026-09-01: the "Huntress SAT Phishing Server" allow entries carry
-     * true, the "Block corporatefilingsusa.com" entries carry false). Named
+     * (2026-09-01: allow entries carry true, block entries carry false;
+     * #6299: the entries' contents are not quoted here, G-9). Named
      * here so no call site ever writes a bare boolean whose meaning has to be
      * remembered (#1018 criterion 10).
      */

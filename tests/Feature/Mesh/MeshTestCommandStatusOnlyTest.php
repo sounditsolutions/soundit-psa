@@ -69,7 +69,7 @@ class MeshTestCommandStatusOnlyTest extends TestCase
     public static function failures(): array
     {
         return [
-            'HTTP 500 with a vendor body' => ['500', 'Connected, but Mesh answered the customer read with HTTP 500.'],
+            'HTTP 500 with a vendor body' => ['500', 'Connected, but the Mesh host (or something in front of it) answered the customer read with HTTP 500.'],
             'connect failure, no status' => ['connect', 'Connected, but the customer read failed without an HTTP status from Mesh.'],
         ];
     }
@@ -99,8 +99,8 @@ class MeshTestCommandStatusOnlyTest extends TestCase
     public static function healthFailures(): array
     {
         return [
-            'HTTP 401' => ['401', 'Mesh connection test failed: Mesh answered the health read with HTTP 401.'],
-            'HTTP 500 with a vendor body' => ['500', 'Mesh connection test failed: Mesh answered the health read with HTTP 500.'],
+            'HTTP 401' => ['401', 'Mesh connection test failed: the Mesh host (or something in front of it) answered the health read with HTTP 401.'],
+            'HTTP 500 with a vendor body' => ['500', 'Mesh connection test failed: the Mesh host (or something in front of it) answered the health read with HTTP 500.'],
             'connect failure, no status' => ['connect', 'Mesh connection test failed: the health read failed without an HTTP status from Mesh.'],
         ];
     }

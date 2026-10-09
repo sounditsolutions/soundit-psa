@@ -6,6 +6,7 @@ use App\Services\Mesh\MeshClient;
 use App\Services\Mesh\MeshLicenseSyncService;
 use App\Support\MeshConfig;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
 
 class MeshSyncLicenses extends Command
 {
@@ -17,7 +18,11 @@ class MeshSyncLicenses extends Command
     {
         if (! MeshConfig::isConfigured()) {
             // #6213: a stored '0' is set but unusable, not 'not configured'.
-            $this->error(MeshConfig::notConfiguredText('Mesh is not configured. Add API key in Settings → Integrations.'));
+            // #6297: the schedule runs this in the background, where console
+            // output is discarded, so the refusal is logged too.
+            $text = MeshConfig::notConfiguredText('Mesh is not configured. Add API key in Settings → Integrations.');
+            Log::warning('[MeshSyncLicenses] '.$text.' No Mesh licenses were synced; license counts are not being updated.');
+            $this->error($text);
 
             return self::FAILURE;
         }

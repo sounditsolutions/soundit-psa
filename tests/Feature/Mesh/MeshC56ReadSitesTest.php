@@ -1653,7 +1653,7 @@ class MeshC56ReadSitesTest extends TestCase
     {
         $reason = $mode === 'connect'
             ? 'the customer read failed without an HTTP status from Mesh'
-            : 'Mesh answered the customer read with HTTP 503';
+            : 'the Mesh host (or something in front of it) answered the customer read with HTTP 503';
 
         return 'error [MeshSync] Failed for client '.$client->id.': '.$reason.' ('.MeshClientException::class.') []';
     }

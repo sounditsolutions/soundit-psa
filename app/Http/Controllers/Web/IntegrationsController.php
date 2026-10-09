@@ -161,7 +161,9 @@ class IntegrationsController extends Controller
         // #6213: a stored key the PSA does not send ('0') is not 'Not configured'.
         $meshKeyUnusable = MeshConfig::isKeyStoredButUnusable();
         $meshBaseUrl = MeshConfig::get('base_url');
-        $meshConnected = (bool) $fmtTs(Setting::getValue('mesh_connected_at'));
+        // #6289: a past successful test does not make an unusable stored
+        // key 'Connected'; the badge reads only a key the PSA would send.
+        $meshConnected = $meshHasApiKey && (bool) $fmtTs(Setting::getValue('mesh_connected_at'));
 
         // Huntress
         $huntressWebhookSecretStored = filled(Setting::getValue('huntress_webhook_signing_secret'));
@@ -1457,7 +1459,7 @@ class IntegrationsController extends Controller
         // key (missing, #6103) and a stored value the PSA does not send
         // ('0': #6161, its own text) go on to the apiKeyRefusal() check
         // below, which words each one.
-        if (MeshConfig::get('api_key') === null) {
+        if (! MeshConfig::hasStoredKey()) {
             return response()->json(['success' => false, 'message' => 'API key not configured.']);
         }
 
@@ -1485,7 +1487,8 @@ class IntegrationsController extends Controller
         } catch (\InvalidArgumentException) {
             return $this->meshTestFailure('Mesh connection test did not run: the Mesh base URL could not be parsed; nothing was sent.');
         }
-        $keyRefusal = \App\Services\Mesh\MeshClient::apiKeyRefusal($apiKey);
+        // #6296: a stored row get() returns as null did not decrypt.
+        $keyRefusal = $apiKey === null ? MeshConfig::UNDECRYPTABLE_KEY : \App\Services\Mesh\MeshClient::apiKeyRefusal($apiKey);
         if ($keyRefusal !== null) {
             return $this->meshTestFailure("Mesh connection test did not run: the Mesh API key {$keyRefusal}; nothing was sent.");
         }
@@ -1523,13 +1526,14 @@ class IntegrationsController extends Controller
 
         if ($response->getStatusCode() !== 200) {
             // #6059: through the helper, so this failure is logged too.
-            return $this->meshTestFailure("Mesh answered the connection test with HTTP {$response->getStatusCode()}, not 200.");
+            // #6290: who answered is not measured, so the text does not say Mesh.
+            return $this->meshTestFailure("The Mesh host (or something in front of it) answered the connection test with HTTP {$response->getStatusCode()}, not 200.");
         }
 
         try {
             Setting::setValue('mesh_connected_at', now()->toDateTimeString());
         } catch (\Throwable $e) {
-            return $this->meshTestFailure('Mesh answered the connection test with HTTP 200, but the PSA could not record the connection time ('.$e::class.').');
+            return $this->meshTestFailure('The Mesh host (or something in front of it) answered the connection test with HTTP 200, but the PSA could not record the connection time ('.$e::class.').');
         }
 
         return response()->json(['success' => true, 'message' => 'Connected to Mesh Email Security!']);
