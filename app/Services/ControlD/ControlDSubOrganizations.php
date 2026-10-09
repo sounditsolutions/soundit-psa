@@ -16,9 +16,13 @@ use stdClass;
  * Observed, not documented: on 2026-10-09 a read-only production read of this endpoint
  * (card XULQ2iix) returned the key PRESENT with JSON null for a sub-organization that has
  * no Global Profile. A present null is therefore read as unset, exactly like an absent
- * key (XULQ2iix ruling (a)). Any other shape (a scalar, an array, false, an object
- * without a non-empty string PK) is not a documented shape and is refused as malformed
- * (C-56), never read as "no global profile".
+ * key (XULQ2iix ruling (a)). Also observed, not documented: on 2026-10-09, after a PUT of
+ * parent_profile, the same read returned the field as a BARE non-empty string holding the
+ * profile PK (the request body's shape, not the response schema's object). That string is
+ * read as the PK (XULQ2iix ruling of 2026-10-09 18:3xZ, run-732 diagnosis). Any other shape
+ * (an empty string, a number, an array, false, an object without a non-empty string PK)
+ * is not a documented or observed shape and is refused as malformed (C-56), never read as
+ * "no global profile".
  */
 final class ControlDSubOrganizations
 {
@@ -56,9 +60,11 @@ final class ControlDSubOrganizations
      * The row's Global Profile PK, or null when it is unset: the key ABSENT (the only
      * shape the vendor's OpenAPI documents, which does not mark the field nullable) or
      * PRESENT with JSON null (the shape a 2026-10-09 production read observed for an org
-     * with no Global Profile). Only null itself is unset. A scalar (including '', 0 and
-     * false), an array, or an object without a non-empty string PK throws. Nothing else
-     * in the object is checked (not `updated`, `name` or the PK's characters).
+     * with no Global Profile). Only null itself is unset. The PK is either a bare non-empty
+     * string (observed after a PUT on 2026-10-09) or the documented object's non-empty
+     * string PK. Any other scalar (including '', 0 and false), an array, or an object
+     * without a non-empty string PK throws. Nothing else is checked (not the object's
+     * `updated` or `name`, nor the PK's characters).
      */
     public static function parentProfile(stdClass $row): ?string
     {
@@ -66,6 +72,9 @@ final class ControlDSubOrganizations
             return null;
         }
         $profile = $row->parent_profile;
+        if (is_string($profile) && $profile !== '') {
+            return $profile;
+        }
         if (! $profile instanceof stdClass || ! is_string($profile->PK ?? null) || $profile->PK === '') {
             throw new ControlDClientException('Control D global profile field is malformed.');
         }

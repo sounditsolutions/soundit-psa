@@ -159,14 +159,22 @@ class ControlDGlobalProfileTest extends TestCase
         $this->assertSame(self::ORG, $client->fresh()->controld_org_id);
     }
 
-    /** Shapes the producer schema does not document as 'equal to the setting'. Absent = unset; the rest are malformed. */
+    /**
+     * Read-back shapes that do not show the configured global profile, so B2 and B3 end
+     * uncertain ('readback'). #6426: absent and a present JSON null are both UNSET (XULQ2iix
+     * ruling (a), ControlDSubOrganizations::parentProfile()), and unset is not the setting;
+     * other-pk and bare-other-pk (a bare string is the PK, ruling of 2026-10-09 18:3xZ) are a
+     * different profile; empty-string, object-without-pk and integer-pk are malformed
+     * (parentProfile() throws). Null is here as unset, never as malformed.
+     */
     public static function badParentProfiles(): array
     {
         return [
             'absent' => ['absent'],
             'other-pk' => [['PK' => '333333synthCC', 'updated' => 1, 'name' => 'Other']],
             'null' => [null],
-            'scalar' => [self::GLOBAL],
+            'bare-other-pk' => ['333333synthCC'],
+            'empty-string' => [''],
             'object-without-pk' => [['updated' => 1, 'name' => 'x']],
             'integer-pk' => [['PK' => 111111, 'updated' => 1, 'name' => 'x']],
         ];
@@ -299,6 +307,15 @@ class ControlDGlobalProfileTest extends TestCase
             'parent-profile-empty-string' => [['shape:empty-string'], $unconfirmed],
             'parent-profile-zero' => [['shape:zero'], $unconfirmed],
             'parent-profile-false' => [['shape:false'], $unconfirmed],
+            // #6430: the rest of malformedShapes(). A list holding the configured PK itself
+            // must not satisfy arm (i). A bare string IS the PK (ruling of 2026-10-09 18:3xZ):
+            // one equal to the setting is accepted (test_preflight_accepts_a_bare_string_global_profile);
+            // another one is a different profile.
+            'parent-profile-integer-pk' => [['shape:integer-pk'], $unconfirmed],
+            'parent-profile-bare-other-string' => [['bare:333333synthCC'], $neither],
+            'parent-profile-number' => [['shape:number'], $unconfirmed],
+            'parent-profile-empty-array' => [['shape:empty-array'], $unconfirmed],
+            'parent-profile-list-holding-the-setting' => [['shape:list'], $unconfirmed],
             'inventory-malformed' => [['malformed'], $unconfirmed],
             'inventory-503' => [['503'], $unconfirmed],
         ];
@@ -312,9 +329,11 @@ class ControlDGlobalProfileTest extends TestCase
             'unlisted' => $this->inventory($this->listed('sibling01')),
             'twice' => $this->inventory($this->listed(), $this->listed()),
             'null' => $this->inventory(array_merge($this->listed(), ['parent_profile' => null])),
-            'shape:object-without-pk', 'shape:empty-pk', 'shape:empty-string', 'shape:zero', 'shape:false' => $this->inventory(array_merge($this->listed(), ['parent_profile' => self::malformedShapes()[substr($case[0], 6)][0]])),
+            'bare:333333synthCC' => $this->inventory(array_merge($this->listed(), ['parent_profile' => '333333synthCC'])),
             'malformed' => $this->ok(['sub_organizations' => (object) []]),
-            default => $this->inventory($this->listed(self::ORG, $case[0])),
+            default => is_string($case[0]) && str_starts_with($case[0], 'shape:')
+                ? $this->inventory(array_merge($this->listed(), ['parent_profile' => self::malformedShapes()[substr($case[0], 6)][0]]))
+                : $this->inventory($this->listed(self::ORG, $case[0])),
         };
         $service = new ControlDProvisioning($this->transport([$this->types(), $this->ok(['profiles' => [['PK' => '444444synthDD']]]), $inventory]));
         $e = $this->refused(fn () => $service->create(self::ORG, $this->fields(self::GLOBAL)));
@@ -423,6 +442,8 @@ class ControlDGlobalProfileTest extends TestCase
             'put-403-no-envelope' => ['put-403-no-envelope', 'post'],
             'readback-absent' => ['readback-absent', 'readback'],
             'readback-other' => ['readback-other', 'readback'],
+            // #6426: a present JSON null is UNSET (ruling (a)), not malformed. It ends uncertain
+            // because unset is not the configured profile, so the PUT is not confirmed.
             'readback-null' => ['readback-null', 'readback'],
             'readback-503' => ['readback-503', 'readback'],
         ];
@@ -697,6 +718,66 @@ class ControlDGlobalProfileTest extends TestCase
         $this->assertSame(['GET /organizations/sub_organizations'], $this->calls());
     }
 
+    /**
+     * XULQ2iix ruling 2026-10-09 18:3xZ (a): after a PUT, Control D returned parent_profile as
+     * a BARE string holding the PK (run-732 diagnosis; the PK here is synthetic, G-13). It is
+     * read as the PK: equal to the setting is enforced, another string is a different profile.
+     */
+    public function test_global_profile_state_reads_a_bare_string_parent_profile_as_the_pk(): void
+    {
+        $this->assertSame(ControlDOnboardingStaged::PROFILE_ENFORCED, $this->writer([$this->inventory(array_merge($this->listed(), ['parent_profile' => self::GLOBAL]))])->globalProfileState(self::ORG));
+        $this->assertSame(ControlDOnboardingStaged::PROFILE_DIFFERENT, $this->writer([$this->inventory(array_merge($this->listed(), ['parent_profile' => '333333synthCC']))])->globalProfileState(self::ORG));
+        $this->assertSame(self::GLOBAL, \App\Services\ControlD\ControlDSubOrganizations::parentProfile(json_decode(json_encode(['PK' => self::ORG, 'name' => 'x', 'parent_profile' => self::GLOBAL]))));
+    }
+
+    /** Ruling (a) at the post-PUT read-back: the bare-string shape equal to the pinned profile confirms the PUT (bound, lock released). */
+    public function test_enforce_step_read_back_of_a_bare_string_parent_profile_binds(): void
+    {
+        $actor = $this->admin();
+        $client = $this->mapped();
+        $writer = $this->writer([$this->inventory($this->listed(self::ORG, null)), $this->putResponse(), $this->inventory(array_merge($this->listed(), ['parent_profile' => self::GLOBAL]))]);
+        $id = $writer->stageGlobalProfile($actor, $client->id, self::ORG, self::GLOBAL);
+        $writer->execute($actor, $id);
+        $intent = ControlDOnboardingIntent::findOrFail($id);
+        $this->assertSame(['bound', null], [$intent->state, $intent->active_client_id]);
+        $this->assertSame(['GET /organizations/sub_organizations', 'PUT /organizations', 'GET /organizations/sub_organizations'], $this->calls());
+    }
+
+    /** Ruling (a) at the B3 (and, below, B2) organization read-back: a bare string equal to the setting confirms the create. */
+    public function test_b3_organization_read_back_accepts_a_bare_string_parent_profile(): void
+    {
+        $actor = $this->admin();
+        $client = Client::factory()->create();
+        $row = array_merge($this->listed(), ['parent_profile' => self::GLOBAL]);
+        $writer = $this->writer([$this->created(), $this->inventory($row)]);
+        $id = $writer->stageOrganization($actor, $client->id, 'Synthetic Organization', 'synthetic@example.invalid', 1, 'synthetic-region');
+        $writer->execute($actor, $id);
+        $this->assertSame('bound', ControlDOnboardingIntent::findOrFail($id)->state);
+        $this->assertSame(self::ORG, $client->fresh()->controld_org_id);
+    }
+
+    public function test_b2_organization_read_back_accepts_a_bare_string_parent_profile(): void
+    {
+        $actor = $this->admin();
+        $client = Client::factory()->create();
+        $b2 = new ControlDOnboardingOrganization($this->transport([$this->created(), $this->inventory(array_merge($this->listed(), ['parent_profile' => self::GLOBAL]))]));
+        $b2->create($actor, $client->id, 'Synthetic Organization', 'synthetic@example.invalid', 1, 'synthetic-region');
+        $this->assertSame(self::ORG, $client->fresh()->controld_org_id);
+    }
+
+    /** Ruling (a) at the code-step preflight arm (i): the bare-string global profile equal to the enforced profile is accepted. */
+    public function test_preflight_accepts_a_bare_string_global_profile(): void
+    {
+        $row = $this->provisionRow(self::GLOBAL);
+        $service = new ControlDProvisioning($this->transport([
+            $this->types(), $this->ok(['profiles' => [['PK' => '444444synthDD']]]),
+            $this->inventory(array_merge($this->listed(), ['parent_profile' => self::GLOBAL])),
+            $this->ok(['provision' => $row]), $this->ok(['provisions' => [$row]]),
+        ]));
+        $this->assertSame('fixture001', $service->create(self::ORG, $this->fields(self::GLOBAL))['PK']);
+        $this->assertSame(['GET /devices/types', 'GET /profiles', 'GET /organizations/sub_organizations', 'POST /provision', 'GET /provision'], $this->calls());
+    }
+
     /** Non-conforming parent_profile shapes other than null: each still refuses as malformed. */
     public static function malformedShapes(): array
     {
@@ -705,7 +786,6 @@ class ControlDGlobalProfileTest extends TestCase
             'empty-pk' => [['PK' => '', 'updated' => 1, 'name' => 'x']],
             'integer-pk' => [['PK' => 111111, 'updated' => 1, 'name' => 'x']],
             'empty-string' => [''],
-            'string' => [self::GLOBAL],
             'zero' => [0],
             'number' => [111111],
             'false' => [false],

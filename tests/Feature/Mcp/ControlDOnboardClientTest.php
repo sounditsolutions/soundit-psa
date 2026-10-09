@@ -168,13 +168,13 @@ class ControlDOnboardClientTest extends TestCase
     }
 
     /** Bind a ControlDOnboardingStaged whose vendor answers from $responses, recording history. */
-    private function vendor(array $responses): void
+    private function vendor(array $responses, string $credential = 'synthetic-key'): void
     {
         $this->history = [];
         $handler = new MockHandler([...$responses, ...array_fill(0, 8, new Response(503))]);
         $stack = HandlerStack::create($handler);
         $stack->push(Middleware::history($this->history));
-        $transport = new ControlDClient(['api_key' => 'synthetic-key', 'handler' => $stack]);
+        $transport = new ControlDClient(['api_key' => $credential, 'handler' => $stack]);
         $this->app->instance(ControlDOnboardingStaged::class, new ControlDOnboardingStaged($transport, new ControlDProvisioning($transport)));
     }
 
@@ -853,46 +853,172 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertSame(0, ControlDOnboardingIntent::count());
     }
 
-    /** Shapes that make the staging read throw, with the fixed message each arm carries. */
-    public static function unreadableLogArms(): array
-    {
-        return [
-            'malformed-parent-profile' => ['malformed', 'Control D global profile field is malformed.'],
-            'vendor-503' => ['503', 'Control D parent response is unconfirmed; outcome may be unknown.'],
-        ];
-    }
-
     /**
-     * #6408 (C-56): the swallowed ControlDClientException at staging is logged once, at
-     * warning, with the client id, the org PK, the exception class and its fixed message,
-     * and nothing from the vendor body. The refusal text is unchanged.
+     * XULQ2iix ruling 2026-10-09 18:3xZ (a), the run-732 shape: after the global-profile PUT,
+     * Control D lists the org with parent_profile as a BARE string holding the configured PK
+     * (synthetic here, G-13). Staging reads it as enforced and proposes the code step, never
+     * the unreadable refusal.
      */
-    #[\PHPUnit\Framework\Attributes\DataProvider('unreadableLogArms')]
-    public function test_unreadable_staging_read_is_logged_with_ids_class_and_message_only(string $arm, string $message): void
+    public function test_a_bare_string_parent_profile_equal_to_the_setting_proposes_the_code_step(): void
     {
         $this->configure();
         $this->aiActor();
         $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
-        $marker = 'synthetic-vendor-body-marker';
-        $answer = $arm === '503'
-            ? new Response(503, [], json_encode(['success' => false, 'error' => ['message' => $marker]]))
-            : $this->ok(['sub_organizations' => [array_merge($this->listed('testorg001'), ['name' => $marker, 'parent_profile' => ['updated' => 1, 'name' => $marker]])]]);
-        $this->vendor([$answer]);
-        Log::spy();
-        $result = $this->decoded($this->callTool($this->token(), 'controld_onboard_client', $this->stageArgs($fixture)));
+        $this->vendor([$this->ok(['sub_organizations' => [array_merge($this->listed('testorg001'), ['parent_profile' => 'testprofile01'])]])]);
+        $run = $this->stage($fixture);
+        $this->assertSame(StaffControlDOnboardingToolExecutor::STEP_CODE, $run->proposed_meta['redacted_params']['step']);
+        $this->assertSame(['GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
+    }
+
+    private const DERIVATION_LABEL = '[StaffControlDOnboardingToolExecutor] The Control D global-profile state was not established at step derivation';
+
+    private const MARKER = 'synthetic-vendor-body-marker';
+
+    /**
+     * #6424: every throw arm of the step-derivation read (globalProfileState()), with the fixed
+     * text the #6408 warning logs for it (#6429: the read-only GET arms say so, never 'outcome
+     * may be unknown') and how many requests the arm sends. A missing setting is not here: it
+     * turns onboarding off (isOnboardingActive()), so the verb refuses before nextStep(); an
+     * invalid one reaches it.
+     *
+     * @return array<string, array{string, string, int}>
+     */
+    public static function derivationFaultArms(): array
+    {
+        return [
+            'setting-invalid' => ['setting-invalid', 'controld_default_profile_id is required to onboard.', 0],
+            'vendor-unconfigured' => ['unconfigured', 'Control D is disabled or unconfigured.', 0],
+            'transport-failure' => ['transport', 'Control D parent request failed (read-only GET).', 1],
+            'vendor-503' => ['503', 'Control D parent response is unconfirmed (read-only GET).', 1],
+            'org-not-listed' => ['unlisted', 'Control D organization is not uniquely listed in the parent inventory.', 1],
+            'org-listed-twice' => ['twice', 'Control D organization is not uniquely listed in the parent inventory.', 1],
+            'inventory-malformed' => ['malformed-inventory', 'Control D parent inventory is malformed.', 1],
+            'inventory-row-malformed' => ['malformed-row', 'Control D parent inventory is malformed.', 1],
+            'parent-profile-malformed' => ['malformed', 'Control D global profile field is malformed.', 1],
+        ];
+    }
+
+    /** Arrange $arm for the next derivation read of $org; every vendor answer and the transport error carry MARKER. */
+    private function applyDerivationFault(string $arm, string $org): void
+    {
+        $named = fn (array $row) => array_merge($row, ['name' => self::MARKER]);
+        match ($arm) {
+            'setting-invalid' => [Setting::setValue('controld_default_profile_id', 'not a valid pk!'), $this->vendor([])],
+            'unconfigured' => $this->vendor([], ''),
+            'transport' => $this->vendor([new \GuzzleHttp\Exception\ConnectException(self::MARKER.' connect failure', new \GuzzleHttp\Psr7\Request('GET', 'https://synthetic.invalid/x'))]),
+            '503' => $this->vendor([new Response(503, [], json_encode(['success' => false, 'error' => ['message' => self::MARKER]]))]),
+            'unlisted' => $this->vendor([$this->ok(['sub_organizations' => [$named($this->listed('otherorg01'))]])]),
+            'twice' => $this->vendor([$this->ok(['sub_organizations' => [$named($this->listed($org)), $named($this->listed($org))]])]),
+            'malformed-inventory' => $this->vendor([$this->ok(['sub_organizations' => ['note' => self::MARKER]])]),
+            'malformed-row' => $this->vendor([$this->ok(['sub_organizations' => [['PK' => $org, 'note' => self::MARKER]]])]),
+            'malformed' => $this->vendor([$this->ok(['sub_organizations' => [$named(array_merge($this->listed($org), ['parent_profile' => ['updated' => 1, 'name' => self::MARKER]]))]])]),
+        };
+    }
+
+    /**
+     * Replace the Log facade with a recorder of EVERY call: any level, the generic log()/write(),
+     * and chains through channel()/stack() (each returns the recorder, so the chained call is
+     * recorded too). A control that counts only matching calls cannot see an extra record.
+     */
+    private function recordLogs(): object
+    {
+        $recorder = new class
+        {
+            /** @var array<int, array{string, array<int, mixed>}> */
+            public array $calls = [];
+
+            public function __call(string $method, array $args): static
+            {
+                $this->calls[] = [$method, $args];
+
+                return $this;
+            }
+        };
+        Log::swap($recorder);
+
+        return $recorder;
+    }
+
+    /** Exactly one log call in total: the #6408 warning, with this exact message and context, and no marker, key, profile PK or setting value anywhere. */
+    private function assertOnlyTheDerivationWarning(object $logs, int $clientId, string $org, string $message): void
+    {
+        $this->assertCount(1, $logs->calls, json_encode($logs->calls));
+        $this->assertSame(['warning', [self::DERIVATION_LABEL, ['client_id' => $clientId, 'org_pk' => $org, 'exception' => \App\Services\ControlD\ControlDClientException::class, 'message' => $message]]], $logs->calls[0]);
+        $flat = json_encode($logs->calls);
+        foreach ([self::MARKER, 'synthetic-key', 'testprofile01', 'not a valid pk!', 'outcome may be unknown', 'could not be read'] as $needle) {
+            $this->assertStringNotContainsString($needle, $flat);
+        }
+    }
+
+    /**
+     * #6408, #6424, #6425, #6427, #6429 (C-56, G-14): each throw arm of the staging read is
+     * logged exactly once, at warning, with ids, the class and the executor's fixed text;
+     * no other log call of any kind. The refusal text is unchanged.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('derivationFaultArms')]
+    public function test_unreadable_staging_read_is_logged_with_ids_class_and_message_only(string $arm, string $message, int $requests): void
+    {
+        $this->configure();
+        $this->aiActor();
+        $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
+        $token = $this->token();
+        $this->applyDerivationFault($arm, 'testorg001');
+        $logs = $this->recordLogs();
+        $result = $this->decoded($this->callTool($token, 'controld_onboard_client', $this->stageArgs($fixture)));
         $this->assertSame(self::UNREADABLE_REFUSAL, $result['error'] ?? null, json_encode($result));
         $this->assertSame(0, TechnicianRun::count());
-        Log::shouldHaveReceived('warning')->once()->withArgs(function (string $logged, array $context) use ($fixture, $message, $marker): bool {
-            return $logged === '[StaffControlDOnboardingToolExecutor] The Control D global-profile state could not be read at step derivation'
-                && $context === ['client_id' => $fixture['client']->id, 'org_pk' => 'testorg001', 'exception' => \App\Services\ControlD\ControlDClientException::class, 'message' => $message]
-                && ! str_contains($logged.json_encode($context), $marker)
-                && ! str_contains(json_encode($context), 'synthetic-key')
-                && ! str_contains(json_encode($context), 'testprofile01');
-        });
-        // Nothing else carries it, at any other level or through a generic call.
-        foreach (['emergency', 'alert', 'critical', 'error', 'notice', 'info', 'debug', 'log', 'write'] as $method) {
-            Log::shouldNotHaveReceived($method);
-        }
+        $this->assertCount($requests, $this->history);
+        $this->assertOnlyTheDerivationWarning($logs, $fixture['client']->id, 'testorg001', $message);
+    }
+
+    /**
+     * #6424 / #6425: the same read re-run at approval. Each arm refuses with the approval text,
+     * leaves the run awaiting approval with no intent and no write, and logs exactly one
+     * sanitised warning.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('derivationFaultArms')]
+    public function test_unreadable_approval_read_refuses_and_logs_one_sanitised_warning(string $arm, string $message, int $requests): void
+    {
+        $this->configure();
+        $this->aiActor();
+        $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
+        $this->vendor([$this->ok(['sub_organizations' => [$this->listed('testorg001')]])]);
+        $run = $this->stage($fixture);
+        $this->assertSame('code', $run->proposed_meta['redacted_params']['step']);
+        $approver = User::factory()->admin()->create(['is_active' => true]);
+        $this->applyDerivationFault($arm, 'testorg001');
+        $logs = $this->recordLogs();
+        $result = app(StaffControlDOnboardingToolExecutor::class)->approveStagedRun($run, $approver->id);
+        $this->assertSame(['gate_declined', self::UNREADABLE_AT_APPROVAL], [$result->status, $result->message]);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertSame(0, ControlDOnboardingIntent::count());
+        $this->assertSame(array_fill(0, $requests, 'GET'), array_map(fn ($h) => $h['request']->getMethod(), $this->history), 'read-only, no POST');
+        $this->assertOnlyTheDerivationWarning($logs, $fixture['client']->id, 'testorg001', $message);
+    }
+
+    /**
+     * #6428: a 'code' proposal (staged while the org enforced the configured profile) whose
+     * approval read sees parent_profile PRESENT with JSON null. Null is unset (ruling (a)),
+     * so the client now needs the global-profile step: approval refuses as a state change,
+     * creates no intent and sends no POST.
+     */
+    public function test_a_present_null_parent_profile_at_approval_refuses_a_code_proposal_as_a_state_change(): void
+    {
+        $this->configure();
+        $this->aiActor();
+        $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
+        $this->vendor([$this->ok(['sub_organizations' => [$this->listed('testorg001')]])]);
+        $run = $this->stage($fixture);
+        $this->assertSame('code', $run->proposed_meta['redacted_params']['step']);
+        $row = array_merge($this->listed('testorg001'), ['parent_profile' => null]);
+        $this->assertArrayHasKey('parent_profile', $row);
+        $this->vendor([$this->ok(['sub_organizations' => [$row]])]);
+        $result = app(StaffControlDOnboardingToolExecutor::class)->approveStagedRun($run, User::factory()->admin()->create(['is_active' => true])->id);
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame("The client's Control D state changed since this was staged (the client now needs the 'global-profile' step, not 'code'). Deny this proposal and stage again so the current step is read and approved on its own card. Nothing was created.", $result->message);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertSame(0, ControlDOnboardingIntent::count());
+        $this->assertSame(['GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history), 'no POST /provision');
     }
 
     /** Fail closed: an unreadable/malformed parent inventory at staging proposes nothing (never the code step). */
@@ -1053,6 +1179,11 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertSame(0, ControlDOnboardingIntent::count());
         $this->assertSame(self::DIFFERENT_AT_APPROVAL, (string) session('error'));
         $this->assertStringNotContainsString('state changed since this was staged', (string) session('error'));
+        // #6391: the text's claim on this arm too: staging again on the same live state is refused the same way.
+        $this->vendor([$this->ok(['sub_organizations' => [$this->listed('testorg001')]])]);
+        $restaged = $this->decoded($this->callTool($this->token(), 'controld_onboard_client', $this->stageArgs($fixture)));
+        $this->assertSame(ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL, $restaged['error'] ?? null, json_encode($restaged));
+        $this->assertSame(1, TechnicianRun::count(), 'no second proposal');
     }
 
     /** #6249 r3 context:2: a different profile first seen by execute()'s pre-admission read is refused with the whole text, flash and audit. */
@@ -1092,7 +1223,9 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
         $this->assertSame(0, ControlDOnboardingIntent::count());
         $this->assertSame(['GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history), 'no write');
-        $this->assertStringContainsString('no longer matches the values on this card', (string) session('error'));
+        // #6393: only the configured setting moved; the text does not say Control D changed.
+        $this->assertSame("The values pinned on this card are out of date (the client's Control D organization or the configured global profile no longer matches the values on this card). Deny this proposal and stage again so the current values are read and approved on a new card. Nothing was created.", (string) session('error'));
+        $this->assertStringNotContainsString('state changed since this was staged', (string) session('error'));
     }
 
     /** Item 2: a tampered payload pin (org not the client's) refuses at approval with no write. */
@@ -1108,7 +1241,9 @@ class ControlDOnboardClientTest extends TestCase
         $this->approve($run, User::factory()->admin()->create(['is_active' => true]));
         $this->assertSame(0, ControlDOnboardingIntent::count());
         $this->assertSame(['GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
-        $this->assertStringContainsString('no longer matches the values on this card', (string) session('error'));
+        // #6393: the same exact text on the tampered-pin arm.
+        $this->assertSame("The values pinned on this card are out of date (the client's Control D organization or the configured global profile no longer matches the values on this card). Deny this proposal and stage again so the current values are read and approved on a new card. Nothing was created.", (string) session('error'));
+        $this->assertStringNotContainsString('state changed since this was staged', (string) session('error'));
     }
 
     /** Item 9 (diff:7, contract-s1:5): an unreadable inventory at approval refuses fail-closed and is not called a state change. */
@@ -1451,7 +1586,7 @@ class ControlDOnboardClientTest extends TestCase
                 throw new \RuntimeException('synthetic intent read failure');
             }
         });
-        Log::spy();
+        $logs = $this->recordLogs();
         try {
             $result = app(StaffControlDOnboardingToolExecutor::class)->approveStagedRun($run, User::factory()->admin()->create(['is_active' => true])->id);
         } finally {
@@ -1462,13 +1597,64 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertFalse($readFails, 'the outer-catch intent read was the one that threw');
         $this->assertSame('executed_with_fault', $result->status);
         $intent = ControlDOnboardingIntent::sole();
-        Log::shouldHaveReceived('error')->once()->with(
+        // #6392 / #6395: the recorder sees EVERY Log facade call (any level, log()/write(), and
+        // calls chained through channel()/stack()), so this is the only record, exactly.
+        $this->assertSame([['error', [
             '[StaffControlDOnboardingToolExecutor] The onboarding intent could not be read after this approval failed',
             ['intent_id' => $intent->id, 'run_id' => $run->id, 'exception' => \RuntimeException::class],
-        );
-        // Nothing else carries the read failure, at any level or through a generic call.
-        foreach (['emergency', 'alert', 'critical', 'warning', 'notice', 'info', 'debug', 'log', 'write'] as $method) {
-            Log::shouldNotHaveReceived($method);
+        ]]], $logs->calls);
+    }
+
+    /**
+     * #6394 (C-56): on the outer catch's 'unknown' arm the audit INSERT fails too, with a real
+     * QueryException whose message carries the SQL and its bindings (here the approver label, a
+     * synthetic marker address). safeAudit() logs it status-only: run id, result status and the
+     * class. The binding reaches no log record at any level or through any generic call.
+     */
+    public function test_a_failed_audit_insert_on_the_unknown_arm_is_logged_status_only(): void
+    {
+        $run = $this->stagedGlobalProfileThatBinds();
+        $marker = 'synthetic-binding-marker@example.invalid';
+        $approver = User::factory()->admin()->create(['is_active' => true, 'email' => $marker]);
+        $thrown = false;
+        $armed = true;
+        $readFails = false;
+        $auditFailures = 0;
+        $this->failFirstDone(function () use (&$readFails): void {
+            $readFails = true;
+        }, $thrown, $armed);
+        ControlDOnboardingIntent::retrieved(function () use (&$readFails): void {
+            if ($readFails) {
+                $readFails = false;
+                throw new \RuntimeException('synthetic intent read failure');
+            }
+        });
+        $logs = (new TechnicianActionLog)->getTable();
+        \Illuminate\Support\Facades\DB::connection()->beforeExecuting(function (string $sql, array $bindings) use (&$thrown, &$armed, &$auditFailures, $logs): void {
+            if ($armed && $thrown && str_starts_with(strtolower(ltrim($sql)), 'insert') && str_contains($sql, $logs)) {
+                $auditFailures++;
+                throw new \Illuminate\Database\QueryException('sqlite', $sql, $bindings, new \PDOException('synthetic audit insert failure'));
+            }
+        });
+        $recorder = $this->recordLogs();
+        try {
+            $result = app(StaffControlDOnboardingToolExecutor::class)->approveStagedRun($run, $approver->id);
+        } finally {
+            $armed = false;
+            ControlDOnboardingIntent::flushEventListeners();
+        }
+        $this->assertTrue($thrown);
+        $this->assertFalse($readFails, 'the outer-catch intent read was the one that threw');
+        $this->assertSame(1, $auditFailures, 'the unknown arm\'s audit INSERT failed with the QueryException');
+        $this->assertSame('executed_with_fault', $result->status);
+        $this->assertStringStartsWith('HARD FAULT: this approval failed', $result->message);
+        $this->assertContains(['error', ['[StaffControlDOnboardingToolExecutor] Post-write audit row failed', ['run_id' => $run->id, 'result_status' => 'error', 'exception' => \Illuminate\Database\QueryException::class]]], $recorder->calls);
+        $flat = json_encode($recorder->calls);
+        foreach ([$marker, 'synthetic audit insert failure', 'insert into', 'could not be read after this approval failed;', (string) $run->content_hash] as $needle) {
+            $this->assertStringNotContainsString($needle, $flat);
+        }
+        foreach ($recorder->calls as [$method, $args]) {
+            $this->assertArrayNotHasKey('error', $args[1] ?? [], "{$method}: no raw exception message under 'error'");
         }
     }
 
@@ -1489,7 +1675,11 @@ class ControlDOnboardClientTest extends TestCase
         $run = $this->stagedGlobalProfileThatBinds();
         $thrown = false;
         $armed = true;
-        $this->failFirstDone(fn () => ControlDOnboardingIntent::query()->delete(), $thrown, $armed);
+        $intentId = null;
+        $this->failFirstDone(function () use (&$intentId): void {
+            $intentId = ControlDOnboardingIntent::sole()->id;
+            ControlDOnboardingIntent::query()->delete();
+        }, $thrown, $armed);
         $caught = null;
         $result = null;
         try {
@@ -1501,10 +1691,13 @@ class ControlDOnboardClientTest extends TestCase
         }
         $this->assertTrue($thrown);
         $this->assertNull($caught, 'not rethrown as a pre-admission failure');
-        $this->assertSame(0, ControlDOnboardingIntent::count());
+        $this->assertSame(0, ControlDOnboardingIntent::count(), 'no intent row, so nothing holds the per-client lock');
         $this->assertSame('executed_with_fault', $result?->status);
-        $this->assertStringContainsString('HARD FAULT', $result->message);
-        $this->assertStringContainsString('a vendor write cannot be ruled out', $result->message);
+        // #6407: the exact text, one audit row for the arm, and the run terminal.
+        $this->assertNotNull($intentId);
+        $this->assertSame("HARD FAULT: this approval failed and Control D onboarding intent {$intentId} could not be read afterwards, so a vendor write cannot be ruled out. Do NOT re-approve; reconcile by hand.", $result->message);
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')
+            ->where('summary', "onboard: intent {$intentId} could not be read after this approval failed; a vendor write cannot be ruled out; run NOT reopened.")->count());
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state, 'never re-armed for a second PUT');
         $this->assertSame(['GET', 'GET', 'PUT', 'GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
     }
@@ -1520,9 +1713,11 @@ class ControlDOnboardClientTest extends TestCase
         $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
         $this->vendor([$this->ok(['sub_organizations' => [$this->listed('testorg001', null)]])]);
         $run = $this->stage($fixture);
+        $intentId = null;
         $this->vendor([
             $this->ok(['sub_organizations' => [$this->listed('testorg001', null)]]),
-            function () {
+            function () use (&$intentId) {
+                $intentId = ControlDOnboardingIntent::sole()->id;
                 ControlDOnboardingIntent::query()->delete();
 
                 return new Response(503);
@@ -1535,8 +1730,12 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertStringContainsString('ended unknown', $error);
         // #6249 r2 context:1: the row (and so its active_client_id lock) is gone; the text must not claim the lock.
         $this->assertStringNotContainsString('keeps this client\'s onboarding lock', $error);
-        $this->assertMatchesRegularExpression('/; intent [0-9a-f-]{36} could not be found afterwards, so it holds no onboarding lock and does not block a new proposal for this client; do not stage one until then\.$/', $error);
+        // #6405: the exact text, one audit row carrying it, and no row holding this client's lock.
+        $this->assertNotNull($intentId, 'the intent existed before the pre-admission read');
+        $this->assertSame("HARD FAULT: the Control D 'global-profile' write for client #{$fixture['client']->id} ended unknown. The vendor PUT may have committed. Do NOT re-approve or re-stage: reconcile upstream and local state by hand; intent {$intentId} could not be found afterwards, so it holds no onboarding lock and does not block a new proposal for this client; do not stage one until then.", $error);
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->count(), 'exactly one audit row on this arm');
         $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%holds no onboarding lock and does not block a new proposal%')->count(), 'the audit row carries the same text');
+        $this->assertSame(0, ControlDOnboardingIntent::where('active_client_id', $fixture['client']->id)->count(), 'nothing holds the per-client lock');
         $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%keeps this client%')->count());
         $this->assertSame(0, ControlDOnboardingIntent::count(), 'no intent row, so no lock row');
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
@@ -1594,6 +1793,147 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertSame("approver:{$approver->id}", $log->actor_label);
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'left claimed, never released for re-approval');
         $this->assertSame(['GET', 'GET', 'PUT', 'GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
+    }
+
+    /**
+     * #6406: on the technician_runs UPDATE that binds 'done' (advanceTo(Done)), the first
+     * $throws such UPDATEs throw (to reach the outer catch); the next one finds the run claimed
+     * by another request first (its claimed_at moved), so the fenced UPDATE matches no row and
+     * advanceTo() returns false. Records whether the steal happened.
+     */
+    private function loseFenceOnDone(int $throws, bool &$stolen, bool &$armed, ?callable $onThrow = null, bool $closeElsewhere = false): void
+    {
+        $doneUpdates = 0;
+        \Illuminate\Support\Facades\DB::connection()->beforeExecuting(function (string $sql, array $bindings) use ($throws, &$stolen, &$armed, &$doneUpdates, $onThrow, $closeElsewhere): void {
+            if (! $armed || $stolen || ! str_starts_with(strtolower(ltrim($sql)), 'update') || ! str_contains($sql, 'technician_runs')
+                || ! in_array(TechnicianRunState::Done->value, $bindings, true)) {
+                return;
+            }
+            if ($doneUpdates++ < $throws) {
+                if ($onThrow !== null) {
+                    $onThrow();
+                }
+                throw new \RuntimeException('synthetic run store failure');
+            }
+            $stolen = true;
+            \Illuminate\Support\Facades\DB::table('technician_runs')->update($closeElsewhere
+                ? ['state' => TechnicianRunState::Done->value]
+                : ['claimed_at' => now()->addHour()]);
+        });
+    }
+
+    /**
+     * #6406: every arm of approveStagedRun() that closes the run, driven to a lost claim-owner
+     * fence. The outer-* arms first fail the inner close (a throw) to reach the outer catch.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function lostFenceArms(): array
+    {
+        return [
+            'bound' => ['bound'],
+            'rejected' => ['rejected'],
+            'fall-through-uncertain' => ['uncertain'],
+            'outer-unknown' => ['outer-unknown'],
+            'outer-rejected' => ['outer-rejected'],
+            'outer-post-admission' => ['outer-post-admission'],
+        ];
+    }
+
+    /**
+     * #6406: when advanceTo(Done) returns false the arm writes a lost-fence record (one ids-only
+     * warning line and one audit row), never reports 'executed', and its text says this request
+     * did not close the run instead of that it was closed. The run is left where the other request put it.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('lostFenceArms')]
+    public function test_a_lost_fence_on_every_closing_arm_is_recorded_and_never_reported_closed(string $arm): void
+    {
+        $approver = User::factory()->admin()->create(['is_active' => true]);
+        if (in_array($arm, ['bound', 'outer-unknown', 'outer-post-admission'], true)) {
+            $run = $this->stagedGlobalProfileThatBinds();
+        } else {
+            $this->configure();
+            $this->aiActor();
+            $fixture = $this->fixture();
+            $run = $this->stage($fixture);
+            $this->vendor([$arm === 'uncertain' ? new Response(503, [], 'upstream') : new Response(403, [], file_get_contents(base_path('tests/Fixtures/ControlD/read-only-rejection.json')))]);
+        }
+        $stolen = false;
+        $armed = true;
+        $outer = false;
+        $readFailed = false;
+        $this->loseFenceOnDone(str_starts_with($arm, 'outer-') ? 1 : 0, $stolen, $armed, function () use (&$outer): void {
+            $outer = true;
+        });
+        if ($arm === 'outer-unknown') {
+            // The outer catch's intent read throws once, after the first close failed.
+            ControlDOnboardingIntent::retrieved(function () use (&$outer, &$readFailed): void {
+                if ($outer && ! $readFailed) {
+                    $readFailed = true;
+                    throw new \RuntimeException('synthetic intent read failure');
+                }
+            });
+        }
+        $logs = $this->recordLogs();
+        try {
+            $result = app(StaffControlDOnboardingToolExecutor::class)->approveStagedRun($run, $approver->id);
+        } finally {
+            $armed = false;
+            ControlDOnboardingIntent::flushEventListeners();
+        }
+        $this->assertSame(str_starts_with($arm, 'outer-'), $outer, 'the outer catch was reached exactly on the outer arms');
+        $this->assertSame($arm === 'outer-unknown', $readFailed);
+        $this->assertTrue($stolen, 'the close met a lost fence');
+        $intent = ControlDOnboardingIntent::sole();
+        $this->assertSame('executed_with_fault', $result->status, 'never executed, never a success');
+        $notClosed = 'This request did not close the run, because it no longer holds it (another request may have claimed or closed it); check the run before acting on it.';
+        $this->assertSame($notClosed, StaffControlDOnboardingToolExecutor::NOT_CLOSED);
+        $expected = match ($arm) {
+            'bound' => "The Control D 'global-profile' step executed, but this request did not close the run, because it no longer holds it (another request may have claimed or closed it). Do NOT re-approve it; check Control D and the run. Intent {$intent->id} is bound.",
+            'rejected' => 'Control D rejected the organization write: '.$intent->reason.' — the API key is a Read token; replace it with a Write token in Settings > Integrations, then stage again. Nothing created. '.$notClosed,
+            'uncertain' => "HARD FAULT: the Control D 'organization' write for client #{$run->client_id} ended uncertain (intent {$intent->id}, phase {$intent->phase}). The vendor POST may have committed. Do NOT re-approve or re-stage: reconcile upstream and local state by hand; the intent keeps this client's onboarding lock until then. ".$notClosed,
+            'outer-unknown' => "HARD FAULT: this approval failed and Control D onboarding intent {$intent->id} could not be read afterwards, so a vendor write cannot be ruled out. Do NOT re-approve; reconcile by hand. ".$notClosed,
+            'outer-rejected' => "Control D rejected the onboarding write (intent {$intent->id}); finishing this approval failed afterwards. ".$notClosed.' Stage a fresh proposal once the cause is fixed.',
+            'outer-post-admission' => "HARD FAULT: recording the Control D onboarding outcome failed after a possible vendor write (intent {$intent->id}). Do NOT re-approve; reconcile by hand. ".$notClosed,
+        };
+        $this->assertSame($expected, $result->message);
+        $this->assertStringNotContainsString('The proposal is closed', $result->message);
+        // The run is not Done: this request did not close it, and did not reopen it either.
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state);
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')
+            ->where('summary', 'like', '%this request did not close the run, because it no longer holds it (another request may have claimed or closed it); this request did not reopen it.')->count(), 'one lost-fence audit row');
+        $warnings = array_values(array_filter($logs->calls, fn ($c) => $c[0] === 'warning'));
+        $this->assertSame([['warning', ['[StaffControlDOnboardingToolExecutor] This request did not close the run: it no longer holds it', ['run_id' => $run->id, 'action' => $run->action_type]]]], $warnings);
+    }
+
+    /**
+     * #6406 (r1 diff:1): the other false arm of advanceTo(): the run already LEFT Executing
+     * (another request closed it) before this request's fenced UPDATE. The text says only
+     * that this request did not close the run, which is true here too; the run stays Done.
+     */
+    public function test_a_run_closed_by_another_request_is_not_reported_as_not_closed(): void
+    {
+        $approver = User::factory()->admin()->create(['is_active' => true]);
+        $run = $this->stagedGlobalProfileThatBinds();
+        $stolen = false;
+        $armed = true;
+        $this->loseFenceOnDone(0, $stolen, $armed, null, true);
+        $logs = $this->recordLogs();
+        try {
+            $result = app(StaffControlDOnboardingToolExecutor::class)->approveStagedRun($run, $approver->id);
+        } finally {
+            $armed = false;
+        }
+        $this->assertTrue($stolen, 'the run left Executing before the fenced close');
+        $intent = ControlDOnboardingIntent::sole();
+        $this->assertSame('executed_with_fault', $result->status);
+        $this->assertSame("The Control D 'global-profile' step executed, but this request did not close the run, because it no longer holds it (another request may have claimed or closed it). Do NOT re-approve it; check Control D and the run. Intent {$intent->id} is bound.", $result->message);
+        $this->assertStringNotContainsString('was not closed', $result->message);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state, 'the other request closed it');
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')
+            ->where('summary', 'like', '%this request did not close the run, because it no longer holds it (another request may have claimed or closed it); this request did not reopen it.')->count());
+        $warnings = array_values(array_filter($logs->calls, fn ($c) => $c[0] === 'warning'));
+        $this->assertSame([['warning', ['[StaffControlDOnboardingToolExecutor] This request did not close the run: it no longer holds it', ['run_id' => $run->id, 'action' => $run->action_type]]]], $warnings);
     }
 
     /** #6244 (contract-s2:6): a staged intent whose lock is NULL is not said to hold this client's onboarding lock. */
