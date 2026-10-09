@@ -7,10 +7,12 @@ use App\Enums\TicketStatus;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Services\Technician\Notify\OperatorNotifier;
+use App\Services\Technician\RunClaimLostException;
 use App\Services\Technician\TechnicianActionGate;
 use App\Services\TicketService;
 use App\Support\AgentConfig;
 use App\Support\TechnicianConfig;
+use Illuminate\Support\Facades\Log;
 
 /**
  * The AI Technician's single gated ACT tool.
@@ -201,7 +203,7 @@ class ProposeCloseTool
             // already-gone: advance the run to Done without touching anything.
             $fresh = $ticket?->fresh();
             if ($fresh === null || $fresh->trashed()) {
-                $run->advanceTo(TechnicianRunState::Done);
+                self::landDoneOrRollBack($run);
 
                 return;
             }
@@ -210,7 +212,7 @@ class ProposeCloseTool
             // A Resolved ticket IS auto-eligible and Resolved → Closed is an
             // allowed transition — it must actually close, not early-return.
             if ($fresh->status === TicketStatus::Closed) {
-                $run->advanceTo(TechnicianRunState::Done);
+                self::landDoneOrRollBack($run);
 
                 return;
             }
@@ -219,8 +221,9 @@ class ProposeCloseTool
             // withdrawHeldClosesForClosedTicket(), which withdraws every propose_close still
             // AwaitingApproval on the ticket, this run included; advanceTo() no longer
             // overwrites a state another path wrote. Both writes are in the gate's one
-            // transaction, so a failed close still rolls the advance back.
-            $run->advanceTo(TechnicianRunState::Done);
+            // transaction, so a failed close still rolls the advance back. A run another path
+            // moved first is not closed over: landDoneOrRollBack() throws and nothing is applied.
+            self::landDoneOrRollBack($run);
 
             // Close to Closed (silent): Resolved dispatches a client portal email
             // (status_resolved); Closed does not. The deliberate close path is Closed.
@@ -233,16 +236,26 @@ class ProposeCloseTool
             );
         };
 
-        $result = $this->gate->dispatch(
-            actionType: 'propose_close',
-            ticketId: $ticket->id,
-            clientId: $ticket->client_id,
-            contentHash: $hash,
-            summary: $summary,
-            runId: $run->id,
-            executor: $executor,
-            confidence: $forceHeld ? null : $confidence,
-        );
+        try {
+            $result = $this->gate->dispatch(
+                actionType: 'propose_close',
+                ticketId: $ticket->id,
+                clientId: $ticket->client_id,
+                contentHash: $hash,
+                summary: $summary,
+                runId: $run->id,
+                executor: $executor,
+                confidence: $forceHeld ? null : $confidence,
+            );
+        } catch (RunClaimLostException) {
+            // #6317: the gate transaction rolled back (no close, no executed row), so the operator
+            // is not notified and the agent is not told the ticket was closed. Ids only.
+            Log::warning('[ProposeCloseTool] auto-close rolled back: the run was not moved to Done', [
+                'run_id' => $run->id, 'action' => 'propose_close',
+            ]);
+
+            return "Did not close #{$ticket->id}: the close proposal could not be marked done (it may have been denied, withdrawn or claimed by another request), so this call did not close the ticket. Check the run before proposing again.";
+        }
 
         // CO-21: notify the operator AFTER dispatch returns 'executed'.
         // NEVER notify inside the executor — the executor runs inside a DB transaction;
@@ -258,5 +271,17 @@ class ProposeCloseTool
         }
 
         return "Recorded a close proposal for #{$ticket->id}; held for approval.";
+    }
+
+    /**
+     * #6317: move the auto-closed run to Done inside the gate transaction, or roll that
+     * transaction back. advanceTo() returns false when the run's stored state is no longer the
+     * one this request read, and then the ticket is not closed and no 'executed' row is written.
+     */
+    private static function landDoneOrRollBack(TechnicianRun $run): void
+    {
+        if (! $run->advanceTo(TechnicianRunState::Done)) {
+            throw new RunClaimLostException((int) $run->id);
+        }
     }
 }
