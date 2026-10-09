@@ -287,8 +287,9 @@ class StaffControlDOnboardingToolExecutor
 
     /**
      * Why the global-profile state could not be established (any arm of
-     * globalProfileState()). No staging clause: approval embeds it while its proposal is
-     * still staged, so only the staging-time UNREADABLE_REFUSAL says nothing was staged.
+     * globalProfileState()). No staging clause, like every nextStep() 'reason': approval
+     * embeds it while its proposal is still staged; only the staging-time refusal
+     * (UNREADABLE_REFUSAL here) says nothing was staged.
      */
     public const UNREADABLE_REASON = 'Could not confirm whether the Control D global profile is enforced on this client\'s organization (the configured global profile setting is missing or invalid, Control D is disabled or unconfigured, or the parent organization list could not be read or did not list this organization exactly once with a well-formed global profile)';
 
@@ -304,8 +305,19 @@ class StaffControlDOnboardingToolExecutor
     /** nextStep() refusal at staging when the global-profile state could not be established. */
     public const UNREADABLE_REFUSAL = self::UNREADABLE_REASON.'; nothing was staged.';
 
+    // The two halves of OWNED_REFUSAL (staging) and OWNED_REASON (approval).
+    private const OWNED_HEAD = 'A Control D onboarding intent already owns this client (staged, posted or uncertain)';
+
+    private const OWNED_RELEASE = 'A never-admitted (staged) intent can be released by an Admin from the Control D onboarding card on the client page while client onboarding is enabled; a posted or uncertain one needs manual reconciliation before the next step is proposed';
+
     /** Next-step refusal while an intent owns the client: names the release path truthfully. */
-    private const OWNED_REFUSAL = 'A Control D onboarding intent already owns this client (staged, posted or uncertain); nothing was staged. A never-admitted (staged) intent can be released by an Admin from the Control D onboarding card on the client page while client onboarding is enabled; a posted or uncertain one needs manual reconciliation before the next step is proposed.';
+    private const OWNED_REFUSAL = self::OWNED_HEAD.'; nothing was staged. '.self::OWNED_RELEASE.'.';
+
+    /** OWNED_REFUSAL without its staging clause: approval embeds it while its proposal is still staged. */
+    private const OWNED_REASON = self::OWNED_HEAD.'. '.self::OWNED_RELEASE;
+
+    /** Why an onboarded client gets no next step; staging appends 'nothing was staged', approval does not. */
+    private const ONBOARDED_REASON = 'This client is already onboarded: it is mapped to a Control D organization and carries a provisioning code. Re-cutting a code is a separate, explicit verb';
 
     /**
      * Which step this client needs next, or an error. Exactly one step per proposal.
@@ -322,16 +334,16 @@ class StaffControlDOnboardingToolExecutor
         $org = $client->controld_org_id;
         if ($org === null || trim((string) $org) === '') {
             if (ControlDOnboardingIntent::where('client_id', $client->id)->whereIn('state', ['staged', 'posted', 'uncertain'])->exists()) {
-                return ['error' => self::OWNED_REFUSAL];
+                return ['error' => self::OWNED_REFUSAL, 'reason' => self::OWNED_REASON];
             }
 
             return ['step' => self::STEP_ORGANIZATION];
         }
         if ($client->getRawOriginal('controld_provisioning_code') !== null || $client->getRawOriginal('controld_deactivation_pin') !== null) {
-            return ['error' => 'This client is already onboarded: it is mapped to a Control D organization and carries a provisioning code. Re-cutting a code is a separate, explicit verb; nothing was staged.'];
+            return ['error' => self::ONBOARDED_REASON.'; nothing was staged.', 'reason' => self::ONBOARDED_REASON];
         }
         if (ControlDOnboardingIntent::where('client_id', $client->id)->whereIn('state', ['staged', 'posted', 'uncertain'])->exists()) {
-            return ['error' => self::OWNED_REFUSAL];
+            return ['error' => self::OWNED_REFUSAL, 'reason' => self::OWNED_REASON];
         }
         // Ordering: organization, then global profile (only when the sub-organization's
         // parent_profile is ABSENT), then code (only when it equals the configured Global
@@ -615,11 +627,12 @@ class StaffControlDOnboardingToolExecutor
             $pinDrift = $step === self::STEP_GLOBAL_PROFILE && ($derived['step'] ?? null) === $step
                 && (($payload['org_pk'] ?? null) !== ($derived['org_pk'] ?? null) || ($payload['profile_pk'] ?? null) !== ($derived['profile_pk'] ?? null));
             if (($derived['step'] ?? null) !== $step || $pinDrift) {
-                // An unreadable state carries its reason without the staging-time
-                // 'nothing was staged' clause: this proposal is still staged.
-                $why = ($derived['unreadable'] ?? false) ? $derived['reason'] : ($derived['error'] ?? ($pinDrift
+                // A refusal that says 'nothing was staged' at staging (unreadable, owned,
+                // already onboarded) carries a reason without that clause: this proposal is
+                // still staged.
+                $why = $derived['reason'] ?? $derived['error'] ?? ($pinDrift
                     ? "the client's Control D organization or the configured global profile no longer matches the values on this card"
-                    : "the client now needs the '".($derived['step'] ?? 'none')."' step, not '{$step}'"));
+                    : "the client now needs the '".($derived['step'] ?? 'none')."' step, not '{$step}'");
                 $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $contentHash, "{$targetKey}: approval refused — {$why}", $approverLabel, $run->id, $approverId);
                 $run->releaseClaim();
                 if ($derived['unreadable'] ?? false) {
@@ -654,10 +667,11 @@ class StaffControlDOnboardingToolExecutor
                     $held = $intent?->state === 'staged' && (int) $intent->active_client_id === (int) $client->id ? " Intent {$intent->id} remains staged and holds this client's onboarding lock; an Admin can release it from the Control D onboarding card on the client page (shown while client onboarding is enabled) before another proposal." : '';
                     // safeAudit: a failed audit row here must not reach the outer catch, which
                     // would report a possible vendor write for an intent that made none.
-                    $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: refused before any vendor write — ".mb_substr($e->getMessage(), 0, 300).$held, $approverLabel, $run->id, $approverId);
+                    // 600 keeps DIFFERENT_PROFILE_REFUSAL whole.
+                    $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: refused before any vendor write — ".mb_substr($e->getMessage(), 0, 600).$held, $approverLabel, $run->id, $approverId);
                     $run->releaseClaim();
 
-                    return new TechnicianApprovalResult('gate_declined', message: 'Control D onboarding was refused before any vendor write: '.mb_substr($e->getMessage(), 0, 300).$held);
+                    return new TechnicianApprovalResult('gate_declined', message: 'Control D onboarding was refused before any vendor write: '.mb_substr($e->getMessage(), 0, 600).$held);
                 }
                 // Anything else is post-admission and the intent row carries it; fall through.
             }
@@ -683,10 +697,12 @@ class StaffControlDOnboardingToolExecutor
             if ($state === 'rejected') {
                 // Definite vendor refusal: nothing was created, lock released by B3. The
                 // proposal is spent; a fresh one may be staged once the cause is fixed.
-                $run->advanceTo(TechnicianRunState::Done);
+                // Audited before the run is closed, so a failure closing it (the outer
+                // catch keeps a rejected run terminal) never loses the refusal.
                 $reason = (string) ($intent->reason ?? 'vendor rejected the write');
                 $nothing = $step === self::STEP_GLOBAL_PROFILE ? 'nothing changed' : 'nothing created';
                 $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Control D rejected the '{$step}' write — {$reason} (code {$intent->reason_code}); intent {$intent->id} rejected, {$nothing}.", $approverLabel, $run->id, $approverId);
+                $run->advanceTo(TechnicianRunState::Done);
 
                 return new TechnicianApprovalResult('executed_with_fault', message: "Control D rejected the {$step} write: {$reason}".($intent->reason_code === 40301 ? ' — the API key is a Read token; replace it with a Write token in Settings > Integrations, then stage again.' : '.').' '.ucfirst($nothing).'.');
             }
@@ -703,8 +719,17 @@ class StaffControlDOnboardingToolExecutor
             // Only an ADMITTED intent can carry a vendor write; staged and released
             // (never admitted) are pre-admission whatever failed afterwards. `rejected` is
             // admitted but written only by B3's finish() on a ControlDWriteRejectedException
-            // from the one POST/PUT itself (a vendor envelope refusal), so nothing was written.
-            if ($intentId !== null && ! in_array(ControlDOnboardingIntent::find($intentId)?->state ?? 'staged', ['staged', ControlDOnboardingStaged::RELEASED, 'rejected'], true)) {
+            // from the one POST/PUT itself (a vendor envelope refusal), so nothing was written;
+            // its proposal is spent all the same, so the run stays terminal and is never
+            // released for a second approval.
+            $caughtState = $intentId !== null ? (ControlDOnboardingIntent::find($intentId)?->state ?? 'staged') : 'staged';
+            if ($caughtState === 'rejected') {
+                $this->safeAudit($run->action_type, 'error', (int) $run->client_id, null, (string) $run->content_hash, "onboard: finishing after Control D rejected the write failed; intent {$intentId} rejected; run NOT reopened.", $this->approverLabel($approverId), $run->id, $approverId);
+                $run->advanceTo(TechnicianRunState::Done);
+
+                return new TechnicianApprovalResult('executed_with_fault', message: "Control D rejected the onboarding write (intent {$intentId}); finishing this approval failed afterwards. The proposal is closed and was not reopened: stage a fresh one once the cause is fixed.");
+            }
+            if ($intentId !== null && ! in_array($caughtState, ['staged', ControlDOnboardingStaged::RELEASED], true)) {
                 // Post-admission: a write may have happened. Keep the run terminal.
                 $this->safeAudit($run->action_type, 'error', (int) $run->client_id, null, (string) $run->content_hash, "onboard: finalizing after a possible vendor write failed; intent {$intentId}; run NOT reopened.", $this->approverLabel($approverId), $run->id, $approverId);
                 $run->advanceTo(TechnicianRunState::Done);

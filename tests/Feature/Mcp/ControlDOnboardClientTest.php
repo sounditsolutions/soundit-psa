@@ -956,6 +956,28 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertSame("The client's Control D state changed since this was staged (".ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL.'). Deny this proposal and stage again so the current step is read and approved on its own card. Nothing was created.', (string) session('error'));
     }
 
+    /** #6249 r3 context:2: a different profile first seen by execute()'s pre-admission read is refused with the whole text, flash and audit. */
+    public function test_a_different_global_profile_seen_at_execution_refuses_with_the_whole_text(): void
+    {
+        $this->configure();
+        $this->aiActor();
+        $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
+        $this->vendor([$this->ok(['sub_organizations' => [$this->listed('testorg001', null)]])]);
+        $run = $this->stage($fixture);
+        // Approval GET: absent. Pre-admit GET in execute(): a different profile.
+        $this->vendor([
+            $this->ok(['sub_organizations' => [$this->listed('testorg001', null)]]),
+            $this->ok(['sub_organizations' => [$this->listed('testorg001', 'otherprofile9')]]),
+        ]);
+        $this->approve($run, User::factory()->admin()->create(['is_active' => true]));
+        $intent = ControlDOnboardingIntent::sole();
+        $this->assertSame(['staged', $fixture['client']->id], [$intent->state, (int) $intent->active_client_id]);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertSame('Control D onboarding was refused before any vendor write: '.ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL." Intent {$intent->id} remains staged and holds this client's onboarding lock; an Admin can release it from the Control D onboarding card on the client page (shown while client onboarding is enabled) before another proposal.", (string) session('error'));
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%would not be detected. Intent %')->count(), 'the audit row carries the whole refusal');
+        $this->assertSame(['GET', 'GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history), 'no write');
+    }
+
     /** Item 2: the global-profile proposal pins org and profile; approval refuses when the setting moved since staging. */
     public function test_global_profile_proposal_pins_org_and_profile_and_approval_refuses_drift(): void
     {
@@ -1013,6 +1035,43 @@ class ControlDOnboardClientTest extends TestCase
             $this->assertStringNotContainsString('once Control D answers', $error, $case);
         }
     }
+
+    /** #6249 r3 context:3: the owned and already-onboarded refusals at approval omit 'nothing was staged' (the proposal stays staged). */
+    public function test_owned_and_onboarded_refusals_at_approval_do_not_say_nothing_was_staged(): void
+    {
+        $this->configure();
+        $this->aiActor();
+        $changes = [
+            'owned' => [self::OWNED_REASON, function (Client $client): void {
+                $intent = new ControlDOnboardingIntent;
+                $intent->forceFill(['id' => (string) \Illuminate\Support\Str::uuid(), 'client_id' => $client->id, 'actor_id' => User::factory()->admin()->create(['is_active' => true])->id,
+                    'active_client_id' => $client->id, 'operation' => 'code', 'state' => 'staged', 'phase' => 'preflight', 'payload' => []])->save();
+            }],
+            'onboarded' => [self::ONBOARDED_REASON, function (Client $client): void {
+                $client->forceFill(['controld_provisioning_code' => 'synthetic-code'])->save();
+            }],
+        ];
+        foreach ($changes as $case => [$reason, $change]) {
+            $fixture = $this->fixture(['controld_org_id' => 'testorg'.substr(md5($case), 0, 4)]);
+            $org = $fixture['client']->controld_org_id;
+            $this->vendor([$this->ok(['sub_organizations' => [$this->listed($org)]])]);
+            $run = $this->stage($fixture);
+            $this->assertSame('code', $run->proposed_meta['redacted_params']['step'], $case);
+            $change($fixture['client']);
+            $this->vendor([]);
+            $this->approve($run, User::factory()->admin()->create(['is_active' => true]));
+            $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, $case);
+            $error = (string) session('error');
+            $this->assertSame("The client's Control D state changed since this was staged ({$reason}). Deny this proposal and stage again so the current step is read and approved on its own card. Nothing was created.", $error, $case);
+            $this->assertStringNotContainsString('nothing was staged', $error, $case);
+            $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%nothing was staged%')->count(), $case);
+            $this->assertCount(0, $this->history, "{$case}: no vendor request");
+        }
+    }
+
+    private const OWNED_REASON = 'A Control D onboarding intent already owns this client (staged, posted or uncertain). A never-admitted (staged) intent can be released by an Admin from the Control D onboarding card on the client page while client onboarding is enabled; a posted or uncertain one needs manual reconciliation before the next step is proposed';
+
+    private const ONBOARDED_REASON = 'This client is already onboarded: it is mapped to a Control D organization and carries a provisioning code. Re-cutting a code is a separate, explicit verb';
 
     /** #6232 (diff:7): exact text, true whether globalProfileState() threw before or after its GET. */
     private const UNREADABLE_REFUSAL = 'Could not confirm whether the Control D global profile is enforced on this client\'s organization (the configured global profile setting is missing or invalid, Control D is disabled or unconfigured, or the parent organization list could not be read or did not list this organization exactly once with a well-formed global profile); nothing was staged.';
@@ -1164,7 +1223,7 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertSame(['GET', 'GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history), 'no write');
     }
 
-    /** #6249 r2 contract:6: a vendor-REJECTED intent reaching the outer catch (advanceTo(Done) fails) is never reported as a possible vendor write. */
+    /** #6249 r2 contract:6, r3 context:1: a vendor-REJECTED intent reaching the outer catch (advanceTo(Done) fails) is audited, never reported as a possible vendor write, and its spent proposal stays closed. */
     public function test_rejected_intent_reaching_the_outer_catch_is_never_reported_as_a_possible_vendor_write(): void
     {
         $this->configure();
@@ -1183,20 +1242,24 @@ class ControlDOnboardClientTest extends TestCase
                 throw new \RuntimeException('synthetic run store failure after rejection');
             }
         });
-        $caught = null;
+        $result = null;
         try {
-            app(StaffControlDOnboardingToolExecutor::class)->approveStagedRun($run, User::factory()->admin()->create(['is_active' => true])->id);
-        } catch (\RuntimeException $e) {
-            $caught = $e;
+            $result = app(StaffControlDOnboardingToolExecutor::class)->approveStagedRun($run, User::factory()->admin()->create(['is_active' => true])->id);
         } finally {
             $armed = false;
         }
         $this->assertTrue($thrown, 'advanceTo(Done) failed, so the outer catch was reached');
-        $this->assertSame('synthetic run store failure after rejection', $caught?->getMessage(), 'rethrown, not turned into a HARD FAULT');
         $intent = ControlDOnboardingIntent::sole();
         $this->assertSame(['rejected', null], [$intent->state, $intent->active_client_id]);
-        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, 'claim released, run not terminal');
+        $this->assertSame('executed_with_fault', $result?->status);
+        $this->assertSame("Control D rejected the onboarding write (intent {$intent->id}); finishing this approval failed afterwards. The proposal is closed and was not reopened: stage a fresh one once the cause is fixed.", $result->message);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state, 'the spent proposal stays terminal');
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', "%Control D rejected the 'organization' write%")->count(), 'the vendor refusal is audited before the run is closed');
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%finishing after Control D rejected the write failed%')->count());
         $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%possible vendor write%')->count());
+        // Approving the same card again is refused before any vendor call: no second POST.
+        $this->assertSame('already_handled', app(StaffControlDOnboardingToolExecutor::class)->approveStagedRun($run->fresh(), User::factory()->admin()->create(['is_active' => true])->id)->status);
+        $this->assertSame(1, ControlDOnboardingIntent::count());
         $this->assertSame(['POST'], array_map(fn ($h) => $h['request']->getMethod(), $this->history), 'one refused POST');
     }
 
