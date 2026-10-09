@@ -2121,7 +2121,9 @@ class RetryEmailAttachmentsJobTest extends TestCase
     public function test_a_pending_read_that_throws_still_writes_the_started_entry_and_is_recorded(): void
     {
         // #6144/#6153: a run inside the push whose pending read throws writes its started entry
-        // anyway (toward found), and the failed read is recorded as pending_read.
+        // anyway (toward found), and the failed read is recorded as pending_read. r2 diff:7: the
+        // run's de-dupe reads the pending entry first (laterRowOfThisPush()); that read throws
+        // too, is recorded as check_read and treated as held, and the run goes on to markStarted().
         $this->databaseQueue();
         $this->graph([$this->failedRead()]);
         $email = $this->email();
@@ -2138,8 +2140,10 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertSame(['started'], array_map(fn ($r) => $r->context['found_in'], $this->withMessage(RetryEmailAttachments::PUSH_THREW_ROW_FOUND)));
         $this->assertSame([], $this->withMessage(RetryEmailAttachments::NOT_QUEUED));
         $failed = $this->withMessage(RetryEmailAttachments::CACHE_STEP_FAILED);
-        $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'step' => 'pending_read', 'exception' => \RuntimeException::class]],
-            array_map(fn ($r) => $r->context, $failed), '#6153: the failed pending read is recorded');
+        $this->assertSame([
+            ['email_id' => $email->id, 'ticket_id' => $ticket->id, 'step' => 'check_read', 'exception' => \RuntimeException::class],
+            ['email_id' => $email->id, 'ticket_id' => $ticket->id, 'step' => 'pending_read', 'exception' => \RuntimeException::class],
+        ], array_map(fn ($r) => $r->context, $failed), '#6153: the failed pending read is recorded; r2 diff:7: so is the de-dupe read before it');
         $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy(), 'the commit work ran once');
     }
 
