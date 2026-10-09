@@ -59,9 +59,12 @@ class ClientControlDOnboardingController extends Controller
      * uncertain, bound, rejected and released intents and changes nothing for them.
      * Makes no vendor call. The ownership check here is repeated in release()'s own
      * UPDATE predicate (client_id = this client), so the service is scoped on its own.
+     * Inert (404) unless ControlDConfig::isOnboardingActive(), the same gate as stage().
      */
     public function release(Request $request, Client $client, string $intent)
     {
+        abort_unless(ControlDConfig::isEnabled() && ControlDConfig::isConfigured() && ControlDConfig::isOnboardingActive(), 404);
+
         $validated = $request->validate(['reason' => ['required', 'string', 'max:500']]);
         $row = ControlDOnboardingIntent::find($intent);
         if ($row === null || (int) $row->client_id !== (int) $client->id) {

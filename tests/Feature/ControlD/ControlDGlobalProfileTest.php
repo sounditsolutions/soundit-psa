@@ -567,6 +567,7 @@ class ControlDGlobalProfileTest extends TestCase
         $actor = $this->admin();
         $client = $this->mapped();
         $id = $this->stagedIntent($client, $actor);
+        $this->onboardingActive();
         $other = Client::factory()->create();
         $tech = User::factory()->tech()->create(['is_active' => true]);
         $this->actingAs($tech)->post(route('clients.controld.intent.release', [$client, $id]), ['reason' => 'x'])->assertStatus(403);
@@ -579,6 +580,47 @@ class ControlDGlobalProfileTest extends TestCase
         $this->assertSame(1, TechnicianActionLog::where('action_type', 'controld_release_intent')->count());
         $this->actingAs($actor)->post(route('clients.controld.intent.release', [$client, $id]), ['reason' => 'again'])
             ->assertRedirect(route('clients.show', $client))->assertSessionHasErrors('controld_onboarding');
+    }
+
+    /** The release route's availability gate (C-47): master switch, API key, the six defaults and the onboarding toggle (synthetic values). */
+    private function onboardingActive(): void
+    {
+        foreach (['controld_tactical_client_field_id' => '18', 'controld_code_expiry_days' => '7', 'controld_code_device_limit_headroom' => '2',
+            'controld_code_analytics_level' => '0', 'controld_code_intercept_mode' => 'standard'] as $key => $value) {
+            Setting::setValue($key, $value);
+        }
+        Setting::setValue(\App\Support\ControlDConfig::ONBOARDING_ENABLED_SETTING, '1');
+    }
+
+    public static function releaseGateOff(): array
+    {
+        return [
+            'onboarding-toggle-off' => ['toggle'],
+            'integration-disabled' => ['disabled'],
+            'api-key-missing' => ['key'],
+            'defaults-incomplete' => ['defaults'],
+        ];
+    }
+
+    /** diff:3 (OFF=OFF): with any one gate off, the release route is a 404 and changes nothing; the route test above is the positive control. */
+    #[DataProvider('releaseGateOff')]
+    public function test_release_route_is_inert_404_unless_onboarding_is_active(string $case): void
+    {
+        $actor = $this->admin();
+        $client = $this->mapped();
+        $id = $this->stagedIntent($client, $actor);
+        $this->onboardingActive();
+        match ($case) {
+            'toggle' => Setting::setValue(\App\Support\ControlDConfig::ONBOARDING_ENABLED_SETTING, '0'),
+            'disabled' => Setting::setValue('controld_enabled', '0'),
+            'key' => Setting::where('key', 'controld_api_key')->delete(),
+            'defaults' => Setting::setValue('controld_code_expiry_days', ''),
+        };
+        $this->actingAs($actor)->post(route('clients.controld.intent.release', [$client, $id]), ['reason' => 'lock clear'])->assertNotFound();
+        $intent = ControlDOnboardingIntent::findOrFail($id);
+        $this->assertSame(['staged', 'preflight', $client->id], [$intent->state, $intent->phase, (int) $intent->active_client_id]);
+        $this->assertSame(0, TechnicianActionLog::where('action_type', 'controld_release_intent')->count());
+        $this->assertCount(0, $this->history, 'no vendor call');
     }
 
     // ── r2 (Jeeves 22:4xZ must-carry) ───────────────────────────────────────────

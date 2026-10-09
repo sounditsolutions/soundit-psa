@@ -1376,7 +1376,8 @@ direct row edits or a re-cut. The one exception is a NEVER-ADMITTED intent (stat
 `staged`, phase `preflight`, no vendor PK): an active Admin may release it from the
 client page's Control D onboarding card with a reason (XULQ2iix). That card, and so the
 release form, is shown only while Control D and client onboarding are enabled and
-configured. One conditional UPDATE, scoped to that client and its lock,
+configured, and the release route itself answers 404 otherwise (the same gate as the
+stage route), so nothing is released while the integration is off. One conditional UPDATE, scoped to that client and its lock,
 moves it to the terminal state `released` and frees the lock, so a `posted`,
 `uncertain`, `bound` or `rejected` intent, or one admitted concurrently, is refused and
 left unchanged; the release writes a `controld_release_intent` audit row (the reason

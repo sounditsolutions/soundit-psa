@@ -173,6 +173,7 @@ Route::middleware('auth')->group(function () {
     // the controld_onboard_client verb. 404 unless the onboarding switch + six defaults.
     Route::post('/clients/{client}/controld/onboard', [\App\Http\Controllers\Web\ClientControlDOnboardingController::class, 'stage'])->middleware(['admin', 'throttle:10,1'])->name('clients.controld.onboard');
     // Admin-only, audited release of a never-admitted (staged/preflight) onboarding intent.
+    // 404 unless the onboarding switch + six defaults, like the stage route.
     Route::post('/clients/{client}/controld/intents/{intent}/release', [\App\Http\Controllers\Web\ClientControlDOnboardingController::class, 'release'])->middleware(['admin', 'throttle:10,1'])->name('clients.controld.intent.release');
     Route::post('/clients/{client}/comet/provision-user', [ClientIntegrationController::class, 'provisionCometUser'])->name('clients.comet.provision-user');
     Route::post('/clients/{client}/litsrmm/sync', [ClientIntegrationController::class, 'syncLitsrmm'])->middleware(['admin', 'throttle:10,1'])->name('clients.litsrmm.sync');
