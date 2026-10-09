@@ -3800,7 +3800,11 @@ class StaffTacticalAdminToolExecutor
                 return new TechnicianApprovalResult('gate_declined');
             }
 
-            $run->advanceTo(TechnicianRunState::Done);
+            // #6256: on a lost claim-owner fence this request did not close the run. The
+            // action executed, so this is never a success and never a retry.
+            if (! $run->advanceTo(TechnicianRunState::Done)) {
+                return TechnicianApprovalResult::executedNotClosed('The approved Tactical admin action', 'Tactical', isset($result['fault']) && is_string($result['message'] ?? null) ? $result['message'] : '');
+            }
 
             // The upstream write landed but its post-condition could not be
             // measured. The proposal is spent either way — nothing here is

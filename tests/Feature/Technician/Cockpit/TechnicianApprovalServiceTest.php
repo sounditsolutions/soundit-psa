@@ -489,4 +489,56 @@ class TechnicianApprovalServiceTest extends TestCase
         $this->assertStringNotContainsString('client@thread.test', (string) $log->summary);
         $this->assertStringNotContainsString('vendor@thread.test', (string) $log->summary);
     }
+
+    /**
+     * #6256: the claim is replaced while the gate transaction runs (here, as the note is
+     * written). advanceTo() loses the fence, so the transaction rolls back: no note, no
+     * executed audit row, no email, and the other claim stays in place. send_reply is
+     * RECOVERY_SAFE, so a run still Executing must never have sent.
+     */
+    private function loseTheClaimWhenANoteIsWritten(TechnicianRun $run): void
+    {
+        TicketNote::creating(function () use ($run): void {
+            TechnicianRun::whereKey($run->id)->update(['claimed_at' => now()->addMinute()]);
+        });
+    }
+
+    public function test_a_send_reply_whose_claim_is_lost_mid_gate_sends_nothing_and_says_so(): void
+    {
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $run = $this->heldReplyRun($actor);
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldNotReceive('sendTicketReplyNote'));
+        $this->loseTheClaimWhenANoteIsWritten($run);
+
+        $result = app(TechnicianApprovalService::class)->approveAndSend($run, 'Edited reply body.', $actor->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertStringStartsWith('Nothing was applied: this request no longer holds the run', (string) $result->message);
+        $this->assertSame(0, TicketNote::where('ticket_id', $run->ticket_id)->where('ai_authored', true)->count(), 'the note was rolled back');
+        $this->assertDatabaseMissing('technician_action_logs', ['run_id' => $run->id, 'result_status' => 'executed']);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
+    }
+
+    /** #6256: the close family takes the same rollback: the ticket is not closed. */
+    public function test_a_close_whose_claim_is_lost_mid_gate_leaves_the_ticket_open(): void
+    {
+        $actor = User::factory()->create(['name' => 'Chet']);
+        Setting::setValue('triage_system_user_id', (string) $actor->id);
+        Setting::setValue('technician_action_tiers', json_encode([]));
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $client->id, 'status' => TicketStatus::InProgress, 'closed_at' => null]);
+        $run = TechnicianRun::create([
+            'ticket_id' => $ticket->id, 'client_id' => $client->id, 'action_type' => 'propose_close',
+            'content_hash' => str_repeat('c', 64), 'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'Resolved.',
+        ]);
+        $this->loseTheClaimWhenANoteIsWritten($run);
+
+        $result = app(TechnicianApprovalService::class)->approveClose($run, $actor->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status, 'the close was rolled back');
+        $this->assertDatabaseMissing('technician_action_logs', ['run_id' => $run->id, 'result_status' => 'executed']);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state);
+    }
 }

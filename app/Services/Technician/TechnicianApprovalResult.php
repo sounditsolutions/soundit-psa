@@ -30,4 +30,15 @@ final class TechnicianApprovalResult
         public readonly ?string $message = null,
         public readonly ?string $secret = null,
     ) {}
+
+    /**
+     * #6256: the upstream write executed, but advanceTo() lost the claim-owner fence, so this
+     * request did not close the run. Never a success and never a retry: it goes out on the
+     * error channel (executed_with_fault) and carries no one-time secret. $action names what
+     * executed; $check names where the operator verifies it.
+     */
+    public static function executedNotClosed(string $action, string $check, string $extra = ''): self
+    {
+        return new self('executed_with_fault', message: "{$action} executed, but the run was not closed because this request no longer holds it. Do NOT re-approve it; check {$check} and the run.".($extra !== '' ? ' '.$extra : ''));
+    }
 }

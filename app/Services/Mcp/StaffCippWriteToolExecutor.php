@@ -975,7 +975,9 @@ class StaffCippWriteToolExecutor
                 $wipeAction = (string) ($mailbox['wipe_action'] ?? '');
                 if ($stagedDeviceId !== '' && $wipeAction !== '' && $this->deviceWipeAlreadyExecuted($client->id, $stagedDeviceId, $wipeAction)) {
                     $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $person, $license, $run->content_hash, "Duplicate device action suppressed: device {$stagedDeviceId} ({$wipeAction}) already executed within ".self::DIRECT_DEDUP_HOURS.'h; the approval was treated as a logged no-op.', $this->approverLabel($approverId), $run->id, $approverId);
-                    $run->advanceTo(TechnicianRunState::Done);
+                    if (! $run->advanceTo(TechnicianRunState::Done)) {
+                        return self::sentNothingNotClosed();
+                    }
 
                     return new TechnicianApprovalResult('already_handled');
                 }
@@ -1015,13 +1017,17 @@ class StaffCippWriteToolExecutor
 
             if ($this->isLicenseNoChange($directTool, $upstream)) {
                 $this->auditAttempt($run->action_type, self::RESULT_NO_OP, $client->id, $ticket, $person, $license, $run->content_hash, "Operator-approved {$run->action_type}: ".self::LICENSE_NO_CHANGE_MESSAGE, $this->approverLabel($approverId), $run->id, $approverId);
-                $run->advanceTo(TechnicianRunState::Done);
+                if (! $run->advanceTo(TechnicianRunState::Done)) {
+                    return TechnicianApprovalResult::executedNotClosed('The approved CIPP action', 'CIPP');
+                }
 
                 return new TechnicianApprovalResult('executed', message: self::LICENSE_NO_CHANGE_MESSAGE);
             }
 
             $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $person, $license, $run->content_hash, "Operator-approved {$run->action_type} executed.".$this->executedAuditSuffix($directTool, $mailbox), $this->approverLabel($approverId), $run->id, $approverId);
-            $run->advanceTo(TechnicianRunState::Done);
+            if (! $run->advanceTo(TechnicianRunState::Done)) {
+                return TechnicianApprovalResult::executedNotClosed('The approved CIPP action', 'CIPP');
+            }
 
             return new TechnicianApprovalResult('executed');
         } catch (CippWriteScopeException $e) {
@@ -1318,7 +1324,9 @@ class StaffCippWriteToolExecutor
             // is NEVER written here (mirrors executeResetPassword).
             $mustChangeLabel = $mustChange ? 'true' : 'false';
             $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $person, null, $contentHash, "Operator-approved {$run->action_type} executed (must_change={$mustChangeLabel}) for {$person->userPrincipalName}. Temp password delivered once to the approver; never stored.", $this->approverLabel($approverId), $run->id, $approverId);
-            $run->advanceTo(TechnicianRunState::Done);
+            if (! $run->advanceTo(TechnicianRunState::Done)) {
+                return TechnicianApprovalResult::executedNotClosed('The CIPP password reset', 'CIPP', 'The temporary password is not shown on this channel.');
+            }
 
             $message = 'Reset the Microsoft 365 password for '.$person->userPrincipalName.'.';
             $message .= $password !== null
@@ -2024,7 +2032,9 @@ class StaffCippWriteToolExecutor
 
                 if ($this->quarantineRowReleased($row)) {
                     $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Message already released upstream — approved release satisfied; no release was sent.", $this->approverLabel($approverId), $run->id, $approverId);
-                    $run->advanceTo(TechnicianRunState::Done);
+                    if (! $run->advanceTo(TechnicianRunState::Done)) {
+                        return self::sentNothingNotClosed();
+                    }
 
                     return new TechnicianApprovalResult('executed');
                 }
@@ -2047,7 +2057,9 @@ class StaffCippWriteToolExecutor
             }
 
             $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed for ".$this->emailSecurityAuditTarget($directTool, $params).'.', $this->approverLabel($approverId), $run->id, $approverId);
-            $run->advanceTo(TechnicianRunState::Done);
+            if (! $run->advanceTo(TechnicianRunState::Done)) {
+                return TechnicianApprovalResult::executedNotClosed('The approved CIPP action', 'CIPP');
+            }
 
             return new TechnicianApprovalResult('executed');
         } catch (CippWriteScopeException) {
@@ -2797,7 +2809,9 @@ class StaffCippWriteToolExecutor
             // already executed leaves the queue terminally as a logged no-op.
             if ($this->createUserAlreadyExecuted($client->id, $targetKey)) {
                 $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Duplicate user creation suppressed: {$params['staged_upn']} already created within ".self::DIRECT_DEDUP_HOURS.'h; the approval was treated as a logged no-op.', $this->approverLabel($approverId), $run->id, $approverId);
-                $run->advanceTo(TechnicianRunState::Done);
+                if (! $run->advanceTo(TechnicianRunState::Done)) {
+                    return self::sentNothingNotClosed();
+                }
 
                 return new TechnicianApprovalResult('already_handled');
             }
@@ -2833,7 +2847,9 @@ class StaffCippWriteToolExecutor
             $createdUpn = $parsed['upn'] ?? (string) $params['staged_upn'];
 
             $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — created M365 user {$createdUpn}".($license !== null ? ' with license_type #'.$license->licenseType->id : '').'. Temp password delivered once to the approver; never stored.', $this->approverLabel($approverId), $run->id, $approverId);
-            $run->advanceTo(TechnicianRunState::Done);
+            if (! $run->advanceTo(TechnicianRunState::Done)) {
+                return TechnicianApprovalResult::executedNotClosed('The CIPP user creation', 'CIPP', 'The temporary password is not shown on this channel.');
+            }
 
             $message = 'Created Microsoft 365 user '.$createdUpn.'.';
             if ($parsed['warnings'] !== []) {
@@ -3398,7 +3414,9 @@ class StaffCippWriteToolExecutor
             // queue terminally as a logged no-op.
             if ($this->groupMembershipAlreadyExecuted($client->id, $targetKey)) {
                 $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: Duplicate group membership change suppressed: identical user/group/operation already executed within ".self::DIRECT_DEDUP_HOURS.'h; the approval was treated as a logged no-op.', $this->approverLabel($approverId), $run->id, $approverId);
-                $run->advanceTo(TechnicianRunState::Done);
+                if (! $run->advanceTo(TechnicianRunState::Done)) {
+                    return self::sentNothingNotClosed();
+                }
 
                 return new TechnicianApprovalResult('already_handled');
             }
@@ -3438,7 +3456,9 @@ class StaffCippWriteToolExecutor
             }
 
             $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — ".$this->groupMembershipAuditDetail((string) $params['operation'], $group['name'], (string) $params['group_id']).'.', $this->approverLabel($approverId), $run->id, $approverId);
-            $run->advanceTo(TechnicianRunState::Done);
+            if (! $run->advanceTo(TechnicianRunState::Done)) {
+                return TechnicianApprovalResult::executedNotClosed('The approved CIPP action', 'CIPP');
+            }
 
             return new TechnicianApprovalResult('executed');
         } catch (CippWriteScopeException $e) {
@@ -4346,7 +4366,9 @@ class StaffCippWriteToolExecutor
             }
 
             $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — ".$this->licenseTargetAuditDetail($user, $license).'.', $this->approverLabel($approverId), $run->id, $approverId);
-            $run->advanceTo(TechnicianRunState::Done);
+            if (! $run->advanceTo(TechnicianRunState::Done)) {
+                return TechnicianApprovalResult::executedNotClosed('The approved CIPP action', 'CIPP');
+            }
 
             return new TechnicianApprovalResult('executed');
         } catch (CippWriteScopeException $e) {
@@ -7172,6 +7194,15 @@ class StaffCippWriteToolExecutor
     private function declined(string $reason): TechnicianApprovalResult
     {
         return new TechnicianApprovalResult('gate_declined', message: mb_substr($this->redactor->redactString($reason), 0, self::DECLINE_MESSAGE_MAX));
+    }
+
+    /**
+     * #6256: a duplicate or already-satisfied arm sent nothing upstream, but advanceTo() lost
+     * the claim-owner fence, so this request did not close the run either.
+     */
+    private static function sentNothingNotClosed(): TechnicianApprovalResult
+    {
+        return new TechnicianApprovalResult('gate_declined', message: 'Nothing was sent to CIPP, and the run was not closed because this request no longer holds it. Check the run\'s current state before acting on it again.');
     }
 
     private function approverLabel(int $approverId): string
