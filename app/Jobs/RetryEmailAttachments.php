@@ -192,22 +192,52 @@ class RetryEmailAttachments implements ShouldQueue
      * threw), these are the rows deleted before the throw. #6276: a DELETE that committed and
      * whose reply was lost, re-run by the connection (as the INSERT is, see
      * queueAfterCommit()), matches nothing on the re-run, so a row it did delete can be
-     * missing from the list. Both kinds of row are listed by DUPLICATE_ROWS_NOT_DELETED (b11).
+     * missing from the list. Both kinds of row are listed by DUPLICATE_ROWS_DELETE_UNMATCHED (b11).
      */
     public const DUPLICATE_ROWS_DROPPED = '[RetryEmailAttachments] Duplicate queue rows of one push dropped';
 
     /**
-     * b11 (#6273/#6276): the pass after the push (see dropDuplicateRows()) issued a DELETE for a
-     * row it read as unreserved, and the DELETE matched nothing. Context run_started: as on
-     * DUPLICATE_ROWS_DROPPED; unmatched_job_ids: those rows. Each one is either reserved by a
-     * worker after the pass read it, so its run goes ahead (with run_started true, the retry then
-     * runs a second time, #6273: that row is the latest, so its check finds nothing later), or
-     * already gone: a DELETE that committed and whose reply was lost, re-run by the connection
-     * (#6276), or a row a worker reserved and finished in between. The record cannot tell these
-     * apart. Not written for a row the pass read as reserved (no DELETE is issued for it), nor
-     * for a DELETE that threw (DUPLICATE_CHECK_FAILED step push).
+     * b11 (#6273/#6276), b12 (#6409/#6410): the pass after the push (see dropDuplicateRows())
+     * issued a DELETE for a row it read as unreserved, and that DELETE reported no matched row
+     * (0 affected rows; on #6276 below that is the connection's re-run, not the DELETE that
+     * committed). It says
+     * nothing about whether the row is still queued. Context run_started: as on
+     * DUPLICATE_ROWS_DROPPED; unmatched_job_ids: those rows. The record cannot tell these arms
+     * apart:
+     * - Reserved by a worker after the pass read it: the row is still queued. Unless that
+     *   worker dies holding it (its next reservation then fails it as MaxAttemptsExceeded
+     *   without running handle(), tries = 1), its run goes through its check (handle()),
+     *   which does not count a reserved later row (#6182).
+     *   With run_started false the pass DELETEs all but the latest row, so this row is an
+     *   earlier one; two or more rows are then left, so the pass writes the kept entry, and
+     *   the row's run checks and skips for a later row that is unreserved with attempts left
+     *   (DUPLICATE_ROW_SKIPPED); it runs when there is none, or when its check reads neither
+     *   entry as held (the kept entry write failed, CACHE_STEP_FAILED kept_put). With
+     *   run_started true a run of the push had started or failed (the pass read its started
+     *   entry; that run may still be in progress, or may have thrown before reaching
+     *   EmailService). The record cannot tell which run wrote that entry:
+     *   - This row's own run (whether or not another row's run did too): the worker reserved
+     *     the row after the pass read the rows, and its run had already been through its
+     *     check and written the started entry when the pass read that entry. Its check ran
+     *     before that read, not after it, and this record does not by itself mean a second
+     *     run of the retry. No lost INSERT is needed (a lone-row push reaches this arm), so a
+     *     listed row need not be a duplicate of another row.
+     *   - Only another row's run: a pass that completes writes no kept entry (one whose later
+     *     DELETE threw does), so the row's run does not skip (#6273, the #6182 trade-off)
+     *     unless its check counts a later unreserved row: on the two-row push a lost INSERT
+     *     reply leaves it is the latest row, and after a completed pass, once the push has
+     *     returned, it does not check at all. Its handle() then reaches EmailService (whose
+     *     own locked re-check may refuse it), so the retry runs twice when the run that
+     *     started reached EmailService too.
+     * - Already gone: this pass's own DELETE committed, its reply was lost, and the
+     *   connection's re-run matched nothing (#6276); or a worker reserved the row and finished
+     *   with it (ran it, or failed it) in between.
+     * Not written for a row the pass read as reserved (no DELETE is issued for it). After a
+     * DELETE that threw (DUPLICATE_CHECK_FAILED step push, #6412) it is still written for the
+     * rows whose DELETE reported no matched row before the throw; the row whose DELETE threw, and the
+     * rows after it, are not listed.
      */
-    public const DUPLICATE_ROWS_NOT_DELETED = '[RetryEmailAttachments] Duplicate queue rows of one push not deleted';
+    public const DUPLICATE_ROWS_DELETE_UNMATCHED = '[RetryEmailAttachments] Queue rows of one push whose DELETE reported no matched row';
 
     /**
      * #6101: the not_queued marker when the read-back could not tell (queued_row null). #6135:
@@ -344,8 +374,10 @@ class RetryEmailAttachments implements ShouldQueue
      * before the earlier row's check reads; when a run of the push started first (its started
      * entry was read by the pass) and the later row was reserved before the pass read it, or
      * between that read and its DELETE (which then matches nothing; b11: that row is recorded,
-     * DUPLICATE_ROWS_NOT_DELETED with run_started true), so the pass leaves it,
-     * and its own check finds nothing later; and when a run of the push started before the
+     * DUPLICATE_ROWS_DELETE_UNMATCHED with run_started true), so the pass leaves it and writes
+     * no kept entry, and its run does not skip: it is the latest row, so a check made while the
+     * pending entry is held finds nothing later, and once the push has returned it does not
+     * check (b12, #6413); and when a run of the push started before the
      * re-run INSERT wrote the later row and the pass did not complete (no jobs floor, a read
      * or a DELETE that threw), so the later row is left and the kept entry cannot stop it: it
      * is the latest row, and its check finds nothing above it. #6282 (the expiry arm), also with
@@ -355,7 +387,10 @@ class RetryEmailAttachments implements ShouldQueue
      * is among them (#6355) the earlier and the later row both run; and when a run of the push
      * read the kept entry as held, checked clear and removed it (forgetKept()) while a later
      * row was held by a live worker. #6352: a run whose check did not read the kept entry as
-     * held (it was written after that check) does not remove it. The arms that need two workers
+     * held (it was written after that check) does not remove it. #6420, also with nothing
+     * recorded: when an INSERT of the push whose reply was lost commits on the server only
+     * after a run of the push read the kept entry as held, checked clear and removed it, the
+     * row it wrote runs unchecked (see forgetKept()). The arms that need two workers
      * reserving at once do not arise under one queue:work process. #6151:
      * when the reconnect fails, the push throws with the first row committed and this
      * read-back's reconnect fails too (queued_row null, so the commit work may run here as well
@@ -538,16 +573,22 @@ class RetryEmailAttachments implements ShouldQueue
      * has reserved is never deleted under it. When no row read is unreserved, the pass ends
      * there: nothing is deleted and (#6275) no kept entry is written, as every row is held and
      * a run's check does not count a reserved row anyway. #6183: when no run has started, at
-     * least one row read is unreserved and two or more rows are left (one is reserved, or a
-     * worker reserved one before its DELETE), the kept
+     * least one row read is unreserved and two or more rows read were not deleted by this pass
+     * (one is reserved, or a DELETE reported no matched row: #6417, that row is counted as left even
+     * when it is already gone, as the pass cannot tell, so the entry can be written with one
+     * row left; that row's run removes it only when its check read the entry as held and
+     * checked clear (forgetKept()): a run that checked before the entry was written does not,
+     * and the entry then stays until KEPT_TTL_SECONDS), the kept
      * entry is written (a failed write is CACHE_STEP_FAILED kept_put), so a left row's run
      * checks for a later row after the pending entry is gone while the kept entry is held (see
      * keptKey(): not once a run checked clear and removed it, nor past KEPT_TTL_SECONDS).
      * Recorded as
-     * DUPLICATE_ROWS_DROPPED; a DELETE that matched nothing as DUPLICATE_ROWS_NOT_DELETED (b11,
-     * #6273/#6276: reserved after the read, or already gone). A read or delete that throws is DUPLICATE_CHECK_FAILED (step
+     * DUPLICATE_ROWS_DROPPED; a DELETE that reported no matched row as DUPLICATE_ROWS_DELETE_UNMATCHED
+     * (b11, #6273/#6276: reserved after the read, or already gone; written after a DELETE that
+     * threw as well, #6412). A read or delete that throws is DUPLICATE_CHECK_FAILED (step
      * push): the rows not yet deleted are left, the kept entry is written, and the rows already
-     * deleted before the throw are still recorded as DUPLICATE_ROWS_DROPPED. A database queue
+     * deleted before the throw are still recorded as DUPLICATE_ROWS_DROPPED (and those whose
+     * DELETE reported no matched row before it as DUPLICATE_ROWS_DELETE_UNMATCHED). A database queue
      * whose jobs floor could not be read (FLOOR_READ_FAILED step jobs) reads nothing and writes
      * the kept entry. Never throws. Not a database queue or no pushId: nothing is read or
      * written.
@@ -605,15 +646,18 @@ class RetryEmailAttachments implements ShouldQueue
                 if ($table()->where('id', $id)->whereNull('reserved_at')->delete() === 1) {
                     $dropped[] = $id;
                 } else {
-                    // #6273/#6276: reserved by a worker after the read, or deleted by this
-                    // DELETE whose reply was lost and whose re-run matched nothing.
+                    // #6273/#6276/#6410: the DELETE reported no matched row. Reserved by a worker after
+                    // the read (still queued), or already gone: deleted by this DELETE whose
+                    // reply was lost and whose re-run matched nothing, or reserved and finished
+                    // with by a worker in between. Which one is not known here.
                     $unmatched[] = $id;
                 }
             }
             if (! $started && $rows->count() - count($dropped) >= 2) {
-                // #6183: two or more rows are left and no run has started (a row is reserved,
-                // or a worker reserved one before its DELETE): their runs check while the kept
-                // entry is held (see keptKey()).
+                // #6183: two or more rows read were not deleted by this pass and no run has
+                // started (a row is reserved, or a DELETE reported no matched row: #6417, a row already
+                // gone is counted here too, as it cannot be told apart): their runs check while
+                // the kept entry is held (see keptKey()).
                 $this->keepChecks();
             }
         } catch (\Throwable $e) {
@@ -627,7 +671,7 @@ class RetryEmailAttachments implements ShouldQueue
         }
         if ($unmatched !== []) {
             try {
-                Log::warning(self::DUPLICATE_ROWS_NOT_DELETED, [
+                Log::warning(self::DUPLICATE_ROWS_DELETE_UNMATCHED, [
                     'email_id' => $this->emailId,
                     'ticket_id' => $this->ticketId,
                     'run_started' => $started,
@@ -670,19 +714,30 @@ class RetryEmailAttachments implements ShouldQueue
      * has finished handle(), returned or thrown. #6352: only an entry the check read as held.
      * A push writes the entry at most once, and only once its INSERTs are done (the pass after
      * a push that returned, or the found_in jobs arm after one that threw), so the entry this
-     * run saw is the one it removes, every row of the push was already written when it
-     * checked, and (#6354) no write of the entry can land between its forget() and has(). A run that checked while only the
-     * pending entry was held does not remove it: an entry written after that check is left
-     * for the later rows' runs (before #6352 that removal let a later row run unchecked).
+     * run saw is the one it removes and (#6354) no write of the entry can land between its
+     * forget() and has(). #6420: that every row of the push was already written when this
+     * run checked holds only when every INSERT the push issued had committed by the time the
+     * push returned or threw. An INSERT whose reply was lost may still be running on the
+     * server (on MariaDB a thread whose client gave up can still commit, say after a lock
+     * wait); a row it commits after this run removed the entry runs without checking, and
+     * nothing is recorded. Not covered. A run that checked while only the pending entry was
+     * held does not remove it: an entry written after that check is left for the later rows'
+     * runs. #6415: before #6352 that removal let a later row run unchecked, which changes
+     * which rows run only when a row of the push lies between this run's row and the latest
+     * one, as in the three-row test of #6352, built by hand: the connection re-runs a lost
+     * INSERT once, so one push leaves at most two rows, and on two rows the later row is the
+     * latest, whose check finds nothing whether or not the entry is held.
      * Not called (r2 of #6304) after a check whose rows read threw (DUPLICATE_CHECK_FAILED
      * step run: the run goes ahead without knowing whether a later row is left, so the entry
      * stays for that row's run), nor after a read of the entries that threw (CACHE_STEP_FAILED
      * check_read: whether the kept entry was held is not known), nor when no check read the
      * rows (no entry was held), nor by a run that skipped for a later row (that row's run
-     * still checks). After a clear check the entry can change the outcome only where the
-     * retry already runs twice: a later row that check did not count is reserved, by a live
-     * worker whose run runs too (see queueAfterCommit(), 'Both still run when') or by a dead
-     * one (failed without running), or has spent its attempts. A removal that throws, or whose
+     * still checks). #6419: after a clear check any later row of the push that was written
+     * by then is one that check did not count, and removing the entry does not change what
+     * that row does: one reserved by a live worker runs whether or not the entry is held (the
+     * retry runs twice, see queueAfterCommit(), 'Both still run when'); one reserved by a dead
+     * worker, or that has spent its attempts, is failed without running handle() whether or
+     * not it is held (the retry runs once). A removal that throws, or whose
      * store returns false while the key is still held (a file store's failed unlink also
      * returns false), is CACHE_STEP_FAILED kept_forget, and the entry is then held until
      * KEPT_TTL_SECONDS. A false with the key absent (another run removed it, or it expired)
@@ -765,7 +820,11 @@ class RetryEmailAttachments implements ShouldQueue
      * of the push is popped then, the earlier and the later row both run, and nothing is
      * recorded. Unlike the pending and started entries, which are written and
      * removed around the push, it outlives the push by design. It is never removed when: it was
-     * written after the check of the run that ran, inside the push (#6352); no run checks clear, as
+     * written after the check of the run that ran, inside the push (#6352; #6416: reachable,
+     * e.g. the lone row of a push whose jobs floor read threw (FLOOR_READ_FAILED step jobs),
+     * popped and checked before the push returned: the pass then writes the entry, no later
+     * row of the push exists to read or remove it, and nothing records that it was left); no
+     * run checks clear, as
      * every row is failed without running handle(), or the earlier rows skip for the latest
      * and that row's worker dies holding it (its next reservation fails it as
      * MaxAttemptsExceeded without running handle()), or every run that went ahead had a check
@@ -1044,6 +1103,9 @@ class RetryEmailAttachments implements ShouldQueue
         // #6352: whether the kept entry was read as held at this check. Only then may this run
         // remove it: an entry written after the check (the pass after the push, or the
         // found_in jobs arm) is one this run never saw, and is left for the later rows' runs.
+        // #6358/#6418: it is assigned only from a kept read that returned, after the pending
+        // read returned, so a throw from either read leaves it false: this initial value and
+        // that order are the guard.
         $keptHeld = false;
         try {
             // #6183: only while this push is in flight (its pending entry is held), or while the
@@ -1057,8 +1119,8 @@ class RetryEmailAttachments implements ShouldQueue
                 return false;
             }
         } catch (\Throwable $e) {
-            // Whether the kept entry is held is not known: this run will not remove it.
-            $keptHeld = false;
+            // Whether the kept entry is held is not known: $keptHeld is still false (see
+            // above), so this run will not remove it.
             try {
                 Log::warning(self::CACHE_STEP_FAILED, [
                     'email_id' => $this->emailId,

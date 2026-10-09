@@ -51,6 +51,13 @@ class RetryEmailAttachmentsJobTest extends TestCase
 
     private const CID_HTML = '<p>See the screenshot</p><p><img src="cid:img1@synthetic.example.test" alt="shot"></p>';
 
+    /**
+     * b12 (#6409): the text of RetryEmailAttachments::DUPLICATE_ROWS_DELETE_UNMATCHED, pinned as a
+     * literal so a base without the constant fails on an assertion, not on an undefined
+     * constant (#6411).
+     */
+    private const DELETE_UNMATCHED = '[RetryEmailAttachments] Queue rows of one push whose DELETE reported no matched row';
+
     /** @var array<int, array{request: \Psr\Http\Message\RequestInterface}> */
     private array $history = [];
 
@@ -163,6 +170,23 @@ class RetryEmailAttachmentsJobTest extends TestCase
     private function withMessage(string $message): array
     {
         return array_values(array_filter($this->logs->getRecords(), fn (LogRecord $r) => $r->message === $message));
+    }
+
+    /**
+     * b12 (#6411): the records that carry unmatched_job_ids, whatever their message, so an
+     * assertion on them is about the record, not its text. #6409: each one must carry the
+     * DELETE_UNMATCHED text (a record under any other message fails here).
+     *
+     * @return list<LogRecord>
+     */
+    private function unmatchedRecords(): array
+    {
+        $records = array_values(array_filter($this->logs->getRecords(), fn (LogRecord $r) => array_key_exists('unmatched_job_ids', $r->context)));
+        foreach ($records as $r) {
+            $this->assertSame(self::DELETE_UNMATCHED, $r->message, '#6409: the record says the DELETE reported no matched row, not that the row was not deleted');
+        }
+
+        return $records;
     }
 
     /** The private System notes on $ticketId (the #5558 marker note). */
@@ -2212,7 +2236,7 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertSame([], $this->seen->getArrayCopy(), 'the earlier row did not run');
         $this->assertSame([$ids[1]], array_map(fn ($r) => (int) $r->id, $this->retryRows()), 'the later row is left to run');
         $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_DROPPED), 'one row, nothing to drop');
-        $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_NOT_DELETED), 'no DELETE was issued');
+        $this->assertSame([], $this->unmatchedRecords(), 'no DELETE was issued');
 
         $this->mock->append($this->read());
         $this->popRetry()->fire();
@@ -2488,9 +2512,13 @@ class RetryEmailAttachmentsJobTest extends TestCase
     {
         // #6273: a run of the first row started inside the push, before the re-run INSERT wrote
         // the second. The pass reads the second as unreserved, and a worker reserves it before
-        // the pass's DELETE, which matches nothing. That row's run then runs the retry a second
-        // time (it is the latest row, so its check finds nothing later): the documented #6182
-        // arm. b11: the row is recorded, DUPLICATE_ROWS_NOT_DELETED with run_started true.
+        // the pass's DELETE, which matches no row. b11: the row is recorded,
+        // DUPLICATE_ROWS_DELETE_UNMATCHED with run_started true. b12 (#6413/#6421): that
+        // worker's run is fired here. The pass wrote no kept entry (a run had started) and the
+        // push has returned, so neither entry is held: the run does not check (no payload
+        // scan), does not skip, and runs the retry a second time (it reaches EmailService,
+        // whose locked re-check refuses it after the first run's link): the documented #6182
+        // arm. Its check did not read the kept entry as held, so it attempts no removal of it.
         $this->databaseQueue();
         $this->graph([$this->failedRead()]);
         $email = $this->email();
@@ -2516,18 +2544,46 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy(), 'positive control: the first row ran');
         $this->assertSame([$later], array_map(fn ($r) => (int) $r->id, $this->retryRows()), 'the DELETE matched nothing: the row is left');
         $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_DROPPED));
-        $notDeleted = $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_NOT_DELETED);
+        $notDeleted = $this->unmatchedRecords();
         $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'run_started' => true, 'unmatched_job_ids' => [$later]]],
-            array_map(fn ($r) => $r->context, $notDeleted), 'the row the pass could not delete is recorded');
+            array_map(fn ($r) => $r->context, $notDeleted), 'the row whose DELETE reported no matched row is recorded');
         $this->assertSame(Level::Warning, $notDeleted[0]->level);
+
+        // #6413: the reserved row's run, the second run of the retry.
+        $this->assertSame([], $this->readBackCacheKeys(), 'positive control: no pending, started or kept entry is held');
+        $scans = 0;
+        DB::listen(function ($q) use (&$scans) {
+            if (str_contains(strtolower($q->sql), 'like')) {
+                $scans++;
+            }
+        });
+        $keptForgets = 0;
+        \Illuminate\Support\Facades\Event::listen(\Illuminate\Cache\Events\ForgettingKey::class, function ($e) use (&$keptForgets) {
+            if (str_contains($e->key, ':kept:')) {
+                $keptForgets++;
+            }
+        });
+        $reserved->fire();
+
+        $this->assertSame(0, $scans, 'the run did not check: neither entry is held');
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROW_SKIPPED), 'the run did not skip');
+        $this->assertSame(['ticket_changed'], array_map(fn ($r) => $r->context['reason'], $this->withMessage('[EmailService] Attachment retry after ticket creation skipped')),
+            '#6273: the retry ran a second time: it reached EmailService, whose locked re-check refused it after the first run\'s link');
+        $this->assertSame(0, $keptForgets, '#6421: no removal of the kept entry was attempted');
+        \Illuminate\Support\Facades\Cache::forget('retry-email-attachments:kept:B12-CONTROL');
+        $this->assertSame(1, $keptForgets, 'positive control: the listener sees a removal of a kept key');
+        $this->assertNotContains($later, array_map(fn ($r) => (int) $r->id, $this->retryRows()), 'the reserved row is done');
     }
 
-    public function test_a_delete_that_matches_a_row_already_gone_is_recorded_as_not_deleted(): void
+    public function test_a_delete_that_matches_a_row_already_gone_is_recorded_as_unmatched(): void
     {
         // #6276: a DELETE that committed and whose reply was lost is re-run by the connection,
         // and the re-run matches nothing. Modelled here by removing the row just before the
         // pass's DELETE runs: the row is gone but not in DUPLICATE_ROWS_DROPPED. b11: it is in
-        // DUPLICATE_ROWS_NOT_DELETED, which says it was reserved or already gone.
+        // DUPLICATE_ROWS_DELETE_UNMATCHED, whose text (#6409) says only that the DELETE reported
+        // no matched row, which is true here although the row is gone. #6417: the pass counts that
+        // row as left (it cannot tell it from a reserved one), so with one row left it still
+        // writes the kept entry; the later row's run checks, finds nothing, runs and removes it.
         $this->databaseQueue();
         $this->graph([$this->failedRead()]);
         $email = $this->email();
@@ -2550,10 +2606,12 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertSame([$ids[1]], array_map(fn ($r) => (int) $r->id, $this->retryRows()), 'the earlier row is gone, the later left');
         $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_DROPPED), 'its DELETE matched nothing');
         $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'run_started' => false, 'unmatched_job_ids' => [$ids[0]]]],
-            array_map(fn ($r) => $r->context, $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_NOT_DELETED)), 'the row is not missing from every record');
+            array_map(fn ($r) => $r->context, $this->unmatchedRecords()), 'the row is not missing from every record');
+        $this->assertCount(1, $this->keptKeys(), '#6417: the gone row is counted as left, so the kept entry is written');
         $this->mock->append($this->read());
         $this->popRetry()->fire();
         $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy(), 'which rows run is unchanged: the later row runs once');
+        $this->assertSame([], $this->keptKeys(), '#6417: the later row\'s run read the entry as held, checked clear and removed it');
     }
 
     public function test_two_unrun_rows_of_one_push_leave_only_the_later_one(): void
@@ -2625,7 +2683,7 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertSame($ids, array_map(fn ($r) => (int) $r->id, $this->retryRows()), 'the pass left both rows');
         $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_DROPPED));
         $this->assertSame($when === 'before_delete' ? [[false, [$ids[0]]]] : [],
-            array_map(fn ($r) => [$r->context['run_started'], $r->context['unmatched_job_ids']], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_NOT_DELETED)),
+            array_map(fn ($r) => [$r->context['run_started'], $r->context['unmatched_job_ids']], $this->unmatchedRecords()),
             'b11: a DELETE that matched nothing is recorded; no DELETE is issued for a row read as reserved');
         $this->assertNotContains('retry-email-attachments:pending:'.$pushId, $this->readBackCacheKeys(), 'positive control: the push has returned');
 
@@ -2859,6 +2917,52 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'run_started' => false, 'dropped_job_ids' => [$ids[0]]]],
             array_map(fn ($r) => $r->context, $dropped), 'the drop made before the throw is recorded');
         $this->assertSame(Level::Warning, $dropped[0]->level);
+
+        $this->assertTheEarlierRowSkipsAndTheLaterRunsOnce($email, $ticket, [$ids[1], $ids[2]]);
+    }
+
+    public function test_a_delete_that_matched_no_row_before_a_delete_that_threw_is_still_recorded(): void
+    {
+        // b12 (#6412): three rows of one push and no run started, so the pass DELETEs the two
+        // earlier ones. The first row is already gone when its DELETE runs (matches no row),
+        // and the second DELETE throws. DUPLICATE_CHECK_FAILED step push is written, and so is
+        // DUPLICATE_ROWS_DELETE_UNMATCHED for the first row; the row whose DELETE threw is not
+        // listed. The two rows left keep their check (the kept entry): the retry runs once.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $ids = null;
+        $deletes = 0;
+        $this->duringPush(function () use (&$ids, &$deletes) {
+            $row = $this->retryRows()[0];
+            $ids = [(int) $row->id, $this->copyRow($row), $this->copyRow($row)];
+            $inner = false;
+            DB::beforeExecuting(function (string $sql) use (&$ids, &$deletes, &$inner) {
+                if ($inner || ! str_starts_with(strtolower($sql), 'delete from "jobs"') || $deletes >= 2) {
+                    return;
+                }
+                if (++$deletes === 1) {
+                    $inner = true;
+                    DB::table('jobs')->where('id', $ids[0])->delete();
+                    $inner = false;
+
+                    return;
+                }
+                throw new \RuntimeException('B12-SYNTHETIC-DELETE-DOWN');
+            });
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertSame(2, $deletes, 'positive control: the second DELETE ran and threw');
+        $this->assertSame([$ids[1], $ids[2]], array_map(fn ($r) => (int) $r->id, $this->retryRows()), 'the first row is gone, the other two are left');
+        $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'step' => 'push', 'exception' => \RuntimeException::class]],
+            array_map(fn ($r) => $r->context, $this->withMessage(RetryEmailAttachments::DUPLICATE_CHECK_FAILED)));
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_DROPPED), 'no DELETE matched a row');
+        $unmatched = $this->unmatchedRecords();
+        $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'run_started' => false, 'unmatched_job_ids' => [$ids[0]]]],
+            array_map(fn ($r) => $r->context, $unmatched), 'the DELETE that reported no matched row before the throw is recorded; the one that threw is not');
+        $this->assertSame(Level::Warning, $unmatched[0]->level);
 
         $this->assertTheEarlierRowSkipsAndTheLaterRunsOnce($email, $ticket, [$ids[1], $ids[2]]);
     }
@@ -3187,9 +3291,17 @@ class RetryEmailAttachmentsJobTest extends TestCase
         // #6360: the run read the kept entry as held and checked clear, and the entry is gone
         // by the time it removes it (another run removed it, or it expired): the store's
         // forget() returns false, has() returns false, and that is not a failed removal.
+        // b12 (#6421): the removal is shown to have been attempted (the store's forget events
+        // for the key: the test's own forget, then the run's, which found nothing to remove).
         $ticket = null;
         $pushId = $this->ticketWithKeptEntry($ticket);
         $kept = 'retry-email-attachments:kept:'.$pushId;
+        $forgets = [];
+        \Illuminate\Support\Facades\Event::listen([\Illuminate\Cache\Events\KeyForgotten::class, \Illuminate\Cache\Events\KeyForgetFailed::class], function ($e) use ($kept, &$forgets) {
+            if ($e->key === $kept) {
+                $forgets[] = class_basename($e);
+            }
+        });
         $gone = false;
         $this->mock->append(function () use ($kept, &$gone) {
             \Illuminate\Support\Facades\Cache::forget($kept);
@@ -3208,6 +3320,7 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertTrue($gone, 'positive control: the entry was removed during the run');
         $this->assertSame(1, $scans, 'positive control: the run read the entry as held and checked');
         $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy(), 'the run ran');
+        $this->assertSame(['KeyForgotten', 'KeyForgetFailed'], $forgets, '#6421: the run attempted the removal, and its forget() returned false');
         $this->assertSame([], $this->keptKeys());
         $this->assertSame([], $this->withMessage(RetryEmailAttachments::CACHE_STEP_FAILED), 'a false for an absent key records nothing');
     }
@@ -3262,7 +3375,12 @@ class RetryEmailAttachmentsJobTest extends TestCase
         // write B and C, the push returns, and its pass cannot run (the jobs floor read threw),
         // so it writes the kept entry. A never saw that entry at its check, so its finally leaves
         // it: B's run checks, finds C and skips, and C runs. At 7f2a1f95 A removed it, so B ran
-        // unchecked and C ran as well (three runs).
+        // unchecked and C ran as well (three runs). b12 (#6415): this three-row push is built by
+        // hand and no push produces it: the connection re-runs a lost INSERT once, so a push
+        // leaves at most two rows, and on two rows the gate does not change which rows run (the
+        // later row is the latest; its check finds nothing either way). The state a push can
+        // reach is pinned by
+        // test_a_lone_row_run_inside_a_floor_failed_push_leaves_the_kept_entry_written_after_it.
         $ticket = null;
         $pushId = $this->ticketWithKeptEntry($ticket);
         $kept = 'retry-email-attachments:kept:'.$pushId;
@@ -3304,6 +3422,46 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->mock->reset();
     }
 
+    public function test_a_lone_row_run_inside_a_floor_failed_push_leaves_the_kept_entry_written_after_it(): void
+    {
+        // b12 (#6415/#6416): a state a push can reach. The jobs floor read throws
+        // (FLOOR_READ_FAILED step jobs) and the push writes one row, which a worker pops and runs
+        // while the push is in progress: its check sees only the pending entry, finds nothing
+        // later, and the run goes ahead. The pass then writes the kept entry. #6352: the run
+        // never read that entry as held, so it does not remove it; no later row of the push
+        // exists to read or remove it, so it is left until KEPT_TTL_SECONDS and nothing records
+        // that. The retry runs once either way: which rows run does not change.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $armed = true;
+        DB::beforeExecuting(function (string $sql) use (&$armed) {
+            $sql = strtolower($sql);
+            if ($armed && str_contains($sql, 'max("id")') && str_contains($sql, 'from "jobs"')) {
+                throw new \RuntimeException('B12-SYNTHETIC-FLOOR-DOWN');
+            }
+        });
+        $pushId = null;
+        $keptAtRun = null;
+        $this->duringPush(function (RetryEmailAttachments $job) use (&$pushId, &$keptAtRun) {
+            $pushId = $job->pushId;
+            $keptAtRun = $this->keptKeys();
+            $this->mock->append($this->read());
+            $this->popRetry()->fire();
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+        $armed = false;
+
+        $this->assertCount(1, $this->withMessage(RetryEmailAttachments::FLOOR_READ_FAILED), 'positive control: the jobs floor read threw');
+        $this->assertSame([], $keptAtRun, 'positive control: no kept entry when the row ran');
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy(), 'the lone row ran, once');
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROW_SKIPPED));
+        $this->assertSame([], $this->retryRows(), 'no row of the push is left');
+        $this->assertSame(['retry-email-attachments:kept:'.$pushId], $this->keptKeys(), '#6416: the kept entry written after the run is left');
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::CACHE_STEP_FAILED), '#6416: and nothing records it');
+    }
+
     public function test_a_check_read_that_throws_is_recorded_and_the_run_still_checks(): void
     {
         // r2 diff:7 (ruling 1): after the push returned, the run's read of the kept entry throws.
@@ -3332,6 +3490,37 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertSame(1, $scans, 'treated as held: the run scanned for a later row');
         $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROW_SKIPPED));
         $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy());
+    }
+
+    public function test_a_kept_read_that_throws_while_the_pending_entry_is_held_is_recorded_and_removes_nothing(): void
+    {
+        // b12 (#6414): the pending entry is held and its read returns, and the read of the kept
+        // entry throws (since #6352 both are read). Recorded as CACHE_STEP_FAILED check_read (ids
+        // and class only); the run reads the rows (no later row), runs, and does not remove the
+        // kept entry, as whether it was held is not known. Both entries are put by hand after
+        // the failing store is in place (its put works), so a removal would show.
+        $ticket = null;
+        $pushId = $this->ticketWithKeptEntry($ticket);
+        $this->cacheFailing(':kept:', ['get']);
+        \Illuminate\Support\Facades\Cache::put('retry-email-attachments:pending:'.$pushId, true, 600);
+        \Illuminate\Support\Facades\Cache::put('retry-email-attachments:kept:'.$pushId, true, RetryEmailAttachments::KEPT_TTL_SECONDS);
+        $this->mock->append($this->read());
+        $scans = 0;
+        DB::listen(function ($q) use (&$scans) {
+            if (str_contains(strtolower($q->sql), 'like')) {
+                $scans++;
+            }
+        });
+        $this->popRetry()->fire();
+
+        $emailId = (int) Email::where('graph_id', 'MSG-1')->value('id');
+        $failed = $this->withMessage(RetryEmailAttachments::CACHE_STEP_FAILED);
+        $this->assertSame([['email_id' => $emailId, 'ticket_id' => $ticket->id, 'step' => 'check_read', 'exception' => \RuntimeException::class]],
+            array_map(fn ($r) => $r->context, $failed), 'the degraded read is recorded (C-56), and nothing else');
+        $this->assertSame(Level::Warning, $failed[0]->level);
+        $this->assertSame(1, $scans, 'the run read the rows');
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy(), 'the run ran');
+        $this->assertSame(['retry-email-attachments:kept:'.$pushId], $this->keptKeys(), 'the kept entry is not removed');
     }
 
     public function test_an_earlier_terminating_callback_that_throws_does_not_drop_the_not_queued_work(): void
