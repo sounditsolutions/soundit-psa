@@ -116,7 +116,7 @@ class MeshRedirectRefusalTest extends TestCase
         } catch (MeshClientException $e) {
             $this->assertSame($status, $e->getCode(), 'the answered status is the code');
             $this->assertSame("Mesh API error: GET api/customers/ failed with HTTP {$status} (redirect not followed)", $e->getMessage());
-            $this->assertSame("Mesh answered the read with HTTP {$status}", $e->statusPhrase('the read'));
+            $this->assertSame("the Mesh host (or something in front of it) answered the read with HTTP {$status}", $e->statusPhrase('the read'));
             $this->assertFalse($e->nothingWasSent());
             $this->assertNoLocation($e);
         }

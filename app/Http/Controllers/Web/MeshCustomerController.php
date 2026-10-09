@@ -17,7 +17,7 @@ class MeshCustomerController extends Controller
     {
         if (! MeshConfig::isConfigured()) {
             return redirect()->route('settings.integrations')
-                ->with('error', 'Mesh is not configured. Add API key first.');
+                ->with('error', MeshConfig::notConfiguredText('Mesh is not configured. Add API key first.'));
         }
 
         try {

@@ -51,7 +51,8 @@ class MeshAllowRuleReaperNotConfiguredTest extends TestCase
         $this->assertSame(['examined' => 0, 'reaped' => 0, 'unresolved' => 0, 'failed' => 0], $counts);
 
         $this->assertCount(1, $captured, 'exactly one warning on the guarded arm');
-        $this->assertStringStartsWith('[MeshAllowRuleReaper] Mesh is not configured;', $captured[0]);
+        // #6213: 'no usable API key' holds for a missing and for an unusable key.
+        $this->assertStringStartsWith('[MeshAllowRuleReaper] Mesh has no usable API key;', $captured[0]);
 
         // Hedge clause only — deliberately not the whole literal (see class docblock).
         $this->assertStringContainsString('are not being removed and may still be live upstream', $captured[0]);

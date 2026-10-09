@@ -373,7 +373,10 @@ class StaffMeshAdminToolExecutor
     public function execute(string $name, array $arguments, ?int $clientId, string $actorLabel, ?string $tokenLabel = null): array
     {
         if (! MeshConfig::isEnabled() || ! MeshConfig::isConfigured()) {
-            return ['error' => 'Mesh Email Security is not configured'];
+            // #6213: a stored '0' is set but unusable, not 'not configured'.
+            return ['error' => MeshConfig::isEnabled() && MeshConfig::isKeyStoredButUnusable()
+                ? 'Mesh Email Security has a stored API key the PSA does not send (zero or true)'
+                : 'Mesh Email Security is not configured'];
         }
 
         $result = match ($name) {
@@ -1384,6 +1387,13 @@ class StaffMeshAdminToolExecutor
         return $status === 0 || ($status >= 300 && $status < 400) || $status >= 500;
     }
 
+    /**
+     * #6213: the audit row's text for a stored key the PSA does not send.
+     * Worded so the audit redactor keeps it: 'API key is set, …' reads to
+     * it as a key and value and is redacted.
+     */
+    private const STORED_KEY_UNUSABLE = 'Mesh has a stored API key the PSA does not send (zero or true)';
+
     public function approveStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
     {
         if (! self::isStagedActionType($run->action_type) || ! $run->claimForExecution()) {
@@ -1408,7 +1418,7 @@ class StaffMeshAdminToolExecutor
             }
 
             if (! MeshConfig::isEnabled() || ! MeshConfig::isConfigured()) {
-                $this->auditAttempt($run->action_type, 'blocked', (int) $run->client_id, $ticket, $run->content_hash, 'Mesh is not configured; staged allow rule refused.', $this->approverLabel($approverId), $run->id, $approverId);
+                $this->auditAttempt($run->action_type, 'blocked', (int) $run->client_id, $ticket, $run->content_hash, (MeshConfig::isEnabled() && MeshConfig::isKeyStoredButUnusable() ? self::STORED_KEY_UNUSABLE : 'Mesh is not configured').'; staged allow rule refused.', $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
                 return new TechnicianApprovalResult('gate_declined');

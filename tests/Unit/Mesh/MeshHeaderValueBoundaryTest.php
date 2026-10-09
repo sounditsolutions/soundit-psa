@@ -73,10 +73,11 @@ class MeshHeaderValueBoundaryTest extends TestCase
 
     /**
      * #6103: keys the PSA refuses before send as 'is not configured',
-     * although PSR-7 would carry them (as ''). The same set
-     * MeshWriteClient::isConfigured() refuses. #6161: only keys that are
-     * really absent; '0', 0 and true are stored values with their own
-     * text (MeshKeyDefinitionTest).
+     * although PSR-7 would carry them (as ''). MeshWriteClient::isConfigured()
+     * refuses each of them, and more (#6210): it also refuses '0', 0, 0.0
+     * and true, which are not in this set. #6161: only keys that are
+     * really absent are here; '0', 0 and true are stored values with their
+     * own text (MeshKeyDefinitionTest).
      *
      * @return array<string, array{0: mixed}>
      */

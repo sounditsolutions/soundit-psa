@@ -1685,6 +1685,9 @@
                     <span class="badge bg-success">Connected</span>
                 @elseif($meshHasApiKey ?? false)
                     <span class="badge bg-warning text-dark">Not tested</span>
+                @elseif($meshKeyUnusable ?? false)
+                    {{-- #6213: a stored key the PSA does not send ('0') is set, not missing. --}}
+                    <span class="badge bg-warning text-dark">Key unusable</span>
                 @else
                     <span class="badge bg-secondary">Not configured</span>
                 @endif
@@ -1706,7 +1709,7 @@
                                    id="mesh_api_key"
                                    name="api_key"
                                    value=""
-                                   placeholder="{{ ($meshHasApiKey ?? false) ? '••••••••' : 'Enter API key' }}">
+                                   placeholder="{{ ($meshHasApiKey ?? false) ? '••••••••' : (($meshKeyUnusable ?? false) ? 'Stored key is unusable; enter a new one' : 'Enter API key') }}">
                         </div>
                         <div class="col-md-6 mb-3">
                             <label for="mesh_base_url" class="form-label">Base URL</label>

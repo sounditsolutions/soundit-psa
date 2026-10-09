@@ -253,7 +253,7 @@ class MeshRequestPreflightTest extends TestCase
         $this->assertSame(302, $e->getCode());
         $this->assertStringEndsWith('failed with HTTP 302 (redirect not followed)', $e->getMessage());
         $this->assertFalse($e->nothingWasSent(), 'sent and answered: nothingSent must stay unset (fail closed)');
-        $this->assertSame('Mesh answered the read with HTTP 302', $e->statusPhrase('the read'));
+        $this->assertSame('the Mesh host (or something in front of it) answered the read with HTTP 302', $e->statusPhrase('the read'));
         $this->assertNothingCarries($e, [self::USER, self::PASS, self::HOST, 'Unable to parse URI']);
     }
 
@@ -279,7 +279,7 @@ class MeshRequestPreflightTest extends TestCase
      * #6048: with a base URL PSR-7 refused, the write client's base-URL arm
      * logs logPath() of the endpoint; an endpoint carrying user-info (one
      * PSR-7 parses, so the endpoint arm does not take it) is logged as the
-     * fixed '[endpoint outside the rule route]' (#6157: it parsed, so not
+     * fixed '[endpoint not written as the rule route]' (#6157: it parsed, so not
      * '[unparseable endpoint]'), never with its user-info or host.
      */
     public function test_the_write_clients_base_url_arm_never_logs_an_endpoints_user_info(): void

@@ -16,9 +16,9 @@ use Illuminate\Support\Facades\Log;
  * SCOPED allow rule (#1018).
  *
  * Every fact encoded here was MEASURED against the production Partner Hub on
- * 2026-09-01 under Charlie's single-create authorisation (rule
- * dafddde3-…, created 21:46:22Z, deleted 21:59:09Z, tenant returned to its
- * pre-test baseline). The vendor's published OpenAPI document does NOT
+ * 2026-09-01 under Charlie's single-create authorisation (one rule, created
+ * and then deleted, tenant returned to its pre-test baseline; #6219: its
+ * vendor id and times are not recorded in source, G-9). The vendor's published OpenAPI document does NOT
  * describe this route at all — it is permission-filtered and, for the key we
  * hold, omits `/api/rule-allows-blocks/` entirely — so the schema is not an
  * available source of truth and the measurements are. Where the two differ,
@@ -122,13 +122,17 @@ class MeshWriteClient
      * #5991: a base_url PSR-7 cannot parse makes new Client() throw a
      * MalformedUriException whose message is the raw URL (user-info
      * included). It is not thrown here: every call then fails in request()
-     * with a status-only, client-detected MeshClientException.
+     * with a status-only, client-detected MeshClientException. #6214,
+     * #6221: $config holds the API key, so it is #[\SensitiveParameter]: a
+     * throw from inside this constructor (a base_url that is not a string
+     * makes rtrim() throw a TypeError, not caught here) shows a
+     * SensitiveParameterValue in this frame (MeshTraceFrameHardeningTest).
      *
      * @param  array{api_key?: string|null, base_url?: string|null}  $config
      * @param  Client|null  $http  Injectable transport (test seam).
      */
     public function __construct(
-        private readonly array $config,
+        #[\SensitiveParameter] private readonly array $config,
         ?Client $http = null,
     ) {
         try {
@@ -146,9 +150,10 @@ class MeshWriteClient
 
     /**
      * #6161, #6162: MeshConfig::isSendableKey(), the predicate
-     * MeshConfig::isConfigured() uses: not missing (null, false, '' or only
-     * spaces and tabs) and not a stored value the PSA does not send ('0',
-     * 0, 0.0, true). assertConfigured() words a refusal with
+     * MeshConfig::isConfigured() uses: a scalar (#6208: an array, even [],
+     * is not configured), not missing (null, false, '' or only spaces and
+     * tabs) and not a stored value the PSA does not send ('0', 0, 0.0,
+     * true). The header rule is preflight()'s. assertConfigured() words a refusal with
      * MeshClient::apiKeyRefusal(), which tells the two apart.
      */
     public function isConfigured(): bool
@@ -612,11 +617,14 @@ class MeshWriteClient
      * The public methods' first refusal. #6161: worded by
      * MeshClient::apiKeyRefusal(), so only a key that is really absent is
      * called 'not configured'; a stored '0', 0 or true says a value is
-     * set. #6160: so preflight()'s missing and unusable key arms are not
-     * reached through any public method (ruleAbsent() returns null
-     * first); they stay as the guard for a method that skips this call,
-     * and MeshKeyDefinitionTest drives preflight() directly. preflight()'s
-     * header rule is reached through the public methods.
+     * set. #6160: so preflight()'s key arm (MeshClient::apiKeyRefusal(),
+     * one arm for missing, unusable and the header rule) is reached
+     * through the public methods only for a key this check passes, that
+     * is for the header rule (ruleAbsent() returns null first). It stays
+     * as the guard for a method that skips this call. #6206:
+     * MeshKeyDefinitionTest drives preflight() directly with a missing key
+     * and with each unusable key ('0', ' 0', 0, 0.0, true), and asserts
+     * each refusal's text and that nothing reached the handler.
      */
     private function assertConfigured(): void
     {
@@ -646,6 +654,13 @@ class MeshWriteClient
      * status-less failure off the never-sent arm names the cURL errno when
      * the handler recorded one (#6050: the number only), so a timeout (28),
      * an empty reply (52) and a receive failure (56) read differently.
+     * #6214: any other throwable from the HTTP client (a RuntimeException,
+     * TypeError or Error from a handler or middleware) is not caught and
+     * leaves this method as thrown; this frame shows $options as a
+     * SensitiveParameterValue (MeshTraceFrameHardeningTest), but Guzzle's
+     * own frames below it are not marked and, read in the vendored Guzzle,
+     * not driven, take the options array with the API-KEY header and the
+     * json body.
      *
      * @param  array<string, mixed>  $options
      * @return array<string, mixed>
@@ -764,7 +779,7 @@ class MeshWriteClient
             // ruleAbsent() reads it as unmeasured, never as absent. The
             // Location is neither followed, logged nor quoted. #6158:
             // '(redirect not followed)' only for a redirect status that
-            // carries a Location (MeshClient::redirectNote()).
+            // carries a non-empty Location (MeshClient::redirectNote()).
             $failure = "{$method} ".self::logPath($endpoint)." failed with HTTP {$status}".MeshClient::redirectNote($response);
             Log::error("[MeshWriteClient] {$failure}");
             throw new MeshClientException("Mesh API error: {$failure}", $status);
@@ -809,13 +824,21 @@ class MeshWriteClient
     }
 
     /**
-     * #6157: what logPath() logs for an endpoint outside the rule route. It
-     * is not MeshClient::UNPARSEABLE_ENDPOINT: logPath() is only reached
-     * after preflight() parsed the endpoint (an unparseable one is refused
-     * there and logged as '[unparseable endpoint]'), and on the failure
-     * arms after the request was sent.
+     * #6157, #6218: what logPath() logs for an endpoint that is not written
+     * as the rule route (RULE_ENDPOINT, relative, as every public method
+     * builds it). It says how the endpoint is written, not where it
+     * resolves: '/api/rule-allows-blocks/x/' or an absolute URL may resolve
+     * onto the rule route and still get this label. It is not
+     * MeshClient::UNPARSEABLE_ENDPOINT (#6217): every call site of
+     * logPath() is in preflight() after its endpoint parse (the base-URL
+     * and key refusals, where nothing was sent) or in request() after
+     * preflight() (the never-sent errno arm and the arms after a send), and
+     * an unparseable endpoint is refused by that parse and logged as
+     * '[unparseable endpoint]'. logPath() itself also returns
+     * '[unparseable endpoint]' for an endpoint PSR-7 cannot parse, so that
+     * label does not depend on the call order (#6217).
      */
-    public const OTHER_ENDPOINT = '[endpoint outside the rule route]';
+    public const OTHER_ENDPOINT = '[endpoint not written as the rule route]';
 
     /**
      * The endpoint as a log may carry it (#6048, #6107, #6118). The query
@@ -826,10 +849,17 @@ class MeshWriteClient
      * customer id as <customer>; anything else (a host, a scheme, user-info,
      * another route) is the fixed OTHER_ENDPOINT (#6157). So a vendor rule
      * id never reaches a log line, and neither does a host, whatever bytes
-     * encode it.
+     * encode it. #6217: an endpoint PSR-7 cannot parse is the fixed
+     * MeshClient::UNPARSEABLE_ENDPOINT here too, whoever calls this.
      */
     private static function logPath(string $endpoint): string
     {
+        try {
+            new Uri($endpoint);
+        } catch (\InvalidArgumentException) {
+            return MeshClient::UNPARSEABLE_ENDPOINT;
+        }
+
         $path = substr($endpoint, 0, strcspn($endpoint, '?#'));
 
         if ($path === self::RULE_ENDPOINT) {

@@ -28,8 +28,11 @@ use Tests\TestCase;
  *    configured' (#6161).
  *  - MeshConfig::isConfigured(), MeshWriteClient::isConfigured() and
  *    MeshClient::apiKeyRefusal() agree on every row (#6162).
- *  - preflight()'s missing-key arm, unreachable through the write
- *    client's public methods, is driven directly (#6160).
+ *  - preflight()'s key arm, unreachable through the write client's
+ *    public methods for a missing or unusable key, is driven directly
+ *    with each (#6160, #6206).
+ *  - an array key, even [], is not configured: the old empty() test
+ *    refused [] (#6208); the header rule still refuses it before send.
  *
  * G-5: MockHandler only, stray Http requests prevented. Synthetic data
  * (G-13): SECRET_FIXTURE keys, example.test hosts.
@@ -69,6 +72,9 @@ class MeshKeyDefinitionTest extends TestCase
             "'00'" => ['00', null, true],
             'int 1' => [1, null, true],
             'plain key' => ['SECRET_FIXTURE-6161', null, true],
+            // #6208: never sendable; refused before send by the header rule.
+            'empty array' => [[], 'is a list of values, and the PSA sends one key as one header value', false],
+            'array holding a key' => [['SECRET_FIXTURE-6208'], 'is a list of values, and the PSA sends one key as one header value', false],
         ];
     }
 
@@ -113,7 +119,7 @@ class MeshKeyDefinitionTest extends TestCase
     /** @return array<string, array{0: mixed}> */
     public static function unusableKeys(): array
     {
-        return ["'0'" => ['0'], "' 0'" => [' 0'], "'0' then a tab" => ["0\t"], 'int 0' => [0], 'true' => [true]];
+        return ["'0'" => ['0'], "' 0'" => [' 0'], "'0' then a tab" => ["0\t"], 'int 0' => [0], 'float 0.0' => [0.0], 'true' => [true]];
     }
 
     /**
@@ -151,6 +157,26 @@ class MeshKeyDefinitionTest extends TestCase
      * here directly. Its own text is 'The Mesh API key is not configured',
      * which assertConfigured()'s 'Mesh API key is not configured' is not.
      */
+    /**
+     * #6206: preflight()'s unusable arm, driven directly for every unusable
+     * key: the 'is set' text, nothing sent, nothing at the handler.
+     */
+    #[DataProvider('unusableKeys')]
+    public function test_the_write_preflight_refuses_an_unusable_key_itself(mixed $key): void
+    {
+        $mock = new MockHandler([new Response(200, [], '{}')]);
+        $client = new MeshWriteClient(['api_key' => $key], new GuzzleClient(['handler' => HandlerStack::create($mock)]));
+
+        try {
+            (new \ReflectionMethod($client, 'preflight'))->invoke($client, 'GET', MeshWriteClient::RULE_ENDPOINT);
+            $this->fail('preflight must refuse an unusable key');
+        } catch (MeshClientException $e) {
+            $this->assertSame('The Mesh API key '.MeshClient::UNUSABLE_KEY.'; nothing was sent.', $e->getMessage());
+            $this->assertTrue($e->nothingWasSent());
+        }
+        $this->assertSame(1, $mock->count(), 'no request reached the handler');
+    }
+
     public function test_the_write_preflight_refuses_a_missing_key_itself(): void
     {
         $mock = new MockHandler([new Response(200, [], '{}')]);
