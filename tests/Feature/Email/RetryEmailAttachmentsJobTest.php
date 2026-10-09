@@ -2705,6 +2705,101 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertTheEarlierRowSkipsAndTheLaterRunsOnce($email, $ticket, [$ids[1], $ids[2]]);
     }
 
+    public function test_a_push_that_throws_after_a_re_run_insert_keeps_the_runs_check_on(): void
+    {
+        // r2 diff:1: a lost reply to the INSERT, re-run by the connection, leaves two rows of the
+        // push, and then a JobQueued listener throws. The read-back finds the row (found_in jobs)
+        // and no pass runs, so the kept entry is written: the earlier row's run, after the push
+        // returned, still finds the later row, and the retry runs once.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $ids = null;
+        $pushId = null;
+        $this->pushThrowsAfter(\Illuminate\Queue\Events\JobQueued::class, function (RetryEmailAttachments $job) use (&$ids, &$pushId) {
+            $pushId = $job->pushId;
+            $row = $this->retryRows()[0];
+            $ids = [(int) $row->id, $this->copyRow($row)];
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertSame(['jobs'], array_map(fn ($r) => $r->context['found_in'], $this->withMessage(RetryEmailAttachments::PUSH_THREW_ROW_FOUND)),
+            'positive control: the push threw and its row was found');
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::NOT_QUEUED));
+        $this->assertSame($ids, array_map(fn ($r) => (int) $r->id, $this->retryRows()), 'no pass: both rows are left');
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_DROPPED));
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::CACHE_STEP_FAILED));
+        $this->assertNotContains('retry-email-attachments:pending:'.$pushId, $this->readBackCacheKeys(), 'positive control: the push has returned');
+        $this->assertContains('retry-email-attachments:kept:'.$pushId, $this->readBackCacheKeys(), 'the kept entry');
+
+        $this->assertTheEarlierRowSkipsAndTheLaterRunsOnce($email, $ticket, $ids);
+    }
+
+    public function test_the_kept_entry_outlasts_a_long_wait_in_the_queue(): void
+    {
+        // r2 diff:2: the pass's DELETE throws (DUPLICATE_CHECK_FAILED step push), so both rows of
+        // the push are left and the kept entry is written. The rows then wait 30 minutes in the
+        // queue (a backlog, stopped workers), past the 10 minutes the entry used to live: the
+        // entry is still held, the earlier row's run finds the later row, and the retry runs once.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $ids = null;
+        $pushId = null;
+        $armed = true;
+        $this->duringPush(function (RetryEmailAttachments $job) use (&$ids, &$pushId, &$armed) {
+            $pushId = $job->pushId;
+            $row = $this->retryRows()[0];
+            $ids = [(int) $row->id, $this->copyRow($row)];
+            DB::beforeExecuting(function (string $sql) use (&$armed) {
+                if ($armed && str_starts_with(strtolower($sql), 'delete from "jobs"')) {
+                    throw new \RuntimeException('B9-SYNTHETIC-DELETE-DOWN');
+                }
+            });
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+        $armed = false;
+
+        $this->assertSame($ids, array_map(fn ($r) => (int) $r->id, $this->retryRows()), 'positive control: the DELETE threw, both rows are left');
+        $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'step' => 'push', 'exception' => \RuntimeException::class]],
+            array_map(fn ($r) => $r->context, $this->withMessage(RetryEmailAttachments::DUPLICATE_CHECK_FAILED)));
+        $this->assertNotContains('retry-email-attachments:pending:'.$pushId, $this->readBackCacheKeys(), 'positive control: the push has returned');
+        $this->assertContains('retry-email-attachments:kept:'.$pushId, $this->readBackCacheKeys(), 'the kept entry');
+
+        $this->travel(30)->minutes();
+        $this->assertTrue(\Illuminate\Support\Facades\Cache::has('retry-email-attachments:kept:'.$pushId), 'the kept entry is still held after the wait');
+
+        $this->assertTheEarlierRowSkipsAndTheLaterRunsOnce($email, $ticket, $ids);
+    }
+
+    public function test_a_check_read_that_throws_is_recorded_and_the_run_still_checks(): void
+    {
+        // r2 diff:7 (ruling 1): after the push returned, the run's read of the kept entry throws.
+        // It is recorded (CACHE_STEP_FAILED step check_read, ids and class only), and the run
+        // reads the rows as if the entry were held: one payload scan, no later row, so it runs.
+        $this->graph([$this->failedRead()]);
+        $ticket = $this->ticketWithQueuedRetry();
+        $this->cacheFailing(':kept:', ['get']);
+        $this->mock->append($this->read());
+        $scans = 0;
+        DB::listen(function ($q) use (&$scans) {
+            if (str_contains(strtolower($q->sql), 'like')) {
+                $scans++;
+            }
+        });
+        $this->popRetry()->fire();
+
+        $failed = $this->withMessage(RetryEmailAttachments::CACHE_STEP_FAILED);
+        $this->assertSame([['email_id' => (int) Email::where('graph_id', 'MSG-1')->value('id'), 'ticket_id' => $ticket->id, 'step' => 'check_read', 'exception' => \RuntimeException::class]],
+            array_map(fn ($r) => $r->context, $failed), 'the degraded read is recorded (C-56)');
+        $this->assertSame(Level::Warning, $failed[0]->level);
+        $this->assertSame(1, $scans, 'treated as held: the run scanned for a later row');
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROW_SKIPPED));
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy());
+    }
+
     public function test_an_earlier_terminating_callback_that_throws_does_not_drop_the_not_queued_work(): void
     {
         // #6170: Application::terminate runs its list in a plain loop. A callback registered
