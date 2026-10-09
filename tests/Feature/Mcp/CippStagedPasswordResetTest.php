@@ -784,7 +784,7 @@ class CippStagedPasswordResetTest extends TestCase
         $approving->shouldReceive('resetUserPassword')->once()->andReturnUsing(function () use ($run) {
             TechnicianRun::whereKey($run->id)->update(['claimed_at' => now()->addMinute()]);
 
-            return ['success' => true, 'status' => 200, 'body' => ['Results' => ['copyField' => 'Temp-Pass-6256!', 'state' => 'success']]];
+            return ['success' => true, 'status' => 200, 'body' => ['Results' => ['copyField' => 'synthetic-minted-6256', 'state' => 'success']]];
         });
         $this->app->instance(CippRestWriteClient::class, $approving);
 
@@ -803,7 +803,7 @@ class CippStagedPasswordResetTest extends TestCase
         $this->assertStringContainsString('withheld from the approver and not stored', (string) $fault->summary);
         foreach ($rows as $row) {
             $this->assertStringNotContainsString('delivered once', (string) $row->summary);
-            $this->assertStringNotContainsString('Temp-Pass-6256!', (string) $row->summary);
+            $this->assertStringNotContainsString('synthetic-minted-6256', (string) $row->summary);
         }
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
     }

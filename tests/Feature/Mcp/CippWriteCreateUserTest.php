@@ -636,7 +636,7 @@ class CippWriteCreateUserTest extends TestCase
         $this->configureCipp();
         $actor = $this->configureAiActor();
         $fixture = $this->cippFixture();
-        $minted = 'Lost-Fence-6303!';
+        $minted = 'synthetic-minted-6303';
 
         $this->blockedClient();
         $staged = $this->callTool($this->token([self::STAGED_TOOL]), self::STAGED_TOOL, $this->validArguments($fixture, [
