@@ -24,8 +24,9 @@ use Tests\TestCase;
  *      in which case no date_expiry is sent.
  *   2. A scoped read pages the partner-wide list and returns ONLY the target
  *      tenant's rows — the raw list cannot escape (#1018 criterion 7).
- *   3. A 400 becomes MeshWriteRejectedException carrying the vendor's own text
- *      (criterion 9); everything else is a MeshClientException.
+ *   3. A 400 becomes MeshWriteRejectedException with a status-only message
+ *      that carries no vendor text (#6106, C-56; at most the names of fields
+ *      this client sends); everything else is a MeshClientException.
  *   4. ruleAbsent() answers true only on a measured 404; anything unmeasurable
  *      is null, never a pass.
  */

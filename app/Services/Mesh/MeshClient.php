@@ -2,6 +2,7 @@
 
 namespace App\Services\Mesh;
 
+use App\Support\MeshConfig;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\GuzzleException;
@@ -50,7 +51,7 @@ class MeshClient
     /**
      * Make an authenticated GET request to the Mesh API.
      */
-    public function get(#[\SensitiveParameter] string $endpoint, array $params = []): array
+    public function get(#[\SensitiveParameter] string $endpoint, #[\SensitiveParameter] array $params = []): array
     {
         return $this->request('GET', $endpoint, ['query' => $params]);
     }
@@ -145,8 +146,12 @@ class MeshClient
      * queue worker stores in failed_jobs) both print every previous
      * exception's message ((string) $e also prints the stack trace, whose
      * frames show arguments when zend.exception_ignore_args is Off, #6051;
-     * #6108: $endpoint and the id parameters are #[\SensitiveParameter],
-     * so these methods' frames do not show them). Before Guzzle is called, preflight() refuses an endpoint
+     * #6108, #6154: $endpoint, the id and filter parameters, get()'s
+     * $params and this method's $options (which holds the API-KEY header
+     * and the query once set) are #[\SensitiveParameter], so with
+     * ignore_args Off these methods' own frames show a
+     * SensitiveParameterValue for each of them (MeshTraceArgumentRedactionTest
+     * measures each one); callers' frames are not covered). Before Guzzle is called, preflight() refuses an endpoint
      * PSR-7 cannot parse (#5878, #6049, #6060: code 0, nothingSent, #5990,
      * and no endpoint text at all), a base URL it could not parse (#5991)
      * and an API key an HTTP header cannot carry (#5979). A status-less
@@ -160,7 +165,7 @@ class MeshClient
      * by its status: logged and thrown like any other status, its Location
      * never read or quoted.
      */
-    private function request(string $method, #[\SensitiveParameter] string $endpoint, array $options = []): array
+    private function request(string $method, #[\SensitiveParameter] string $endpoint, #[\SensitiveParameter] array $options = []): array
     {
         $this->preflight($method, $endpoint);
 
@@ -206,11 +211,13 @@ class MeshClient
 
         $status = $response->getStatusCode();
         if ($status >= 300 && $status < 400) {
-            // #6105: Mesh (or something in front of it) answered with a
-            // redirect, which is not followed. A failure by status, like
-            // any other: the Location is neither followed, logged nor
-            // quoted, and the answered status is the exception's code.
-            $failure = "{$method} ".self::logPath($endpoint)." failed with HTTP {$status} (redirect not followed)";
+            // #6105: the configured host (Mesh or something in front of
+            // it) answered with a 3xx, which is not followed. A failure by
+            // status, like any other: the Location is neither followed,
+            // logged nor quoted, and the answered status is the code.
+            // #6158: '(redirect not followed)' only for a redirect status
+            // that carries a Location (redirectNote()).
+            $failure = "{$method} ".self::logPath($endpoint)." failed with HTTP {$status}".self::redirectNote($response);
             Log::error("[MeshClient] {$failure}");
             throw new MeshClientException("Mesh API error: {$failure}", $status);
         }
@@ -253,6 +260,27 @@ class MeshClient
     }
 
     /**
+     * #6158: the 3xx statuses whose Location is a redirect target (RFC 9110
+     * 15.4): 300's preferred choice, and 301, 302, 303, 307 and 308. Not
+     * 304 (Not Modified), 305 (Use Proxy, deprecated) or 306 (unused).
+     */
+    private const REDIRECT_STATUSES = [300, 301, 302, 303, 307, 308];
+
+    /**
+     * #6158: ' (redirect not followed)' for a 3xx that offered a redirect:
+     * one of REDIRECT_STATUSES with a Location header. Any other 3xx (304,
+     * 305, 306, or any status with no Location) offered nothing to follow,
+     * so its line names the status only: ''. The Location's value is
+     * never read.
+     */
+    public static function redirectNote(\Psr\Http\Message\ResponseInterface $response): string
+    {
+        return in_array($response->getStatusCode(), self::REDIRECT_STATUSES, true) && $response->hasHeader('Location')
+            ? ' (redirect not followed)'
+            : '';
+    }
+
+    /**
      * '(cURL errno N, ' for a status-less failure whose handler recorded an
      * errno (#6050), else ''. The number only: never the handler's message,
      * which quotes the URI.
@@ -267,22 +295,33 @@ class MeshClient
         return is_int($errno) && $errno > 0 ? "cURL errno {$errno}, " : '';
     }
 
+    /** #6161: apiKeyRefusal()'s text for a stored value the PSA does not send as a key. */
+    public const UNUSABLE_KEY = 'is set, but to zero or true, which the PSA does not send as a key';
+
     /**
      * Why the PSA will not send $key as the API-KEY header, or null when it
-     * will. #6103: a missing key (null, false, '' or blanks, which PSR-7
-     * trims to '') and true (sent as '1') are refused as 'is not
-     * configured', the same set MeshWriteClient::isConfigured() refuses
-     * (empty(), so '0' and 0 too), plus true. Then the header rule.
+     * will, as the end of 'the Mesh API key …'. One definition, shared with
+     * MeshConfig::isConfigured() and MeshWriteClient::isConfigured()
+     * (#6161, #6162, #6163): 'is not configured' only for a key that is
+     * really absent (MeshConfig::apiKeyMissing(): null, false, '' or only
+     * spaces and tabs, which PSR-7 trims to ''). A stored '0', 0, 0.0 or
+     * true (which would be sent as '1') is MeshConfig::apiKeyUnusable()
+     * and gets UNUSABLE_KEY, which says a value is set. Then the header
+     * rule (headerValueRefusal()).
      */
     public static function apiKeyRefusal(mixed $key): ?string
     {
-        return self::apiKeyMissing($key) ? 'is not configured' : self::headerValueRefusal($key);
+        if (MeshConfig::apiKeyMissing($key)) {
+            return 'is not configured';
+        }
+
+        return MeshConfig::apiKeyUnusable($key) ? self::UNUSABLE_KEY : self::headerValueRefusal($key);
     }
 
-    /** #6103: the 'is not configured' set of apiKeyRefusal(). */
+    /** #6161: MeshConfig::apiKeyMissing(), the only 'is not configured' set of apiKeyRefusal(). */
     public static function apiKeyMissing(mixed $key): bool
     {
-        return empty($key) || $key === true || (is_string($key) && trim($key, " \t") === '');
+        return MeshConfig::apiKeyMissing($key);
     }
 
     /**

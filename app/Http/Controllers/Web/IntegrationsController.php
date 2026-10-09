@@ -1451,7 +1451,11 @@ class IntegrationsController extends Controller
 
     public function testMesh()
     {
-        if (! MeshConfig::isConfigured()) {
+        // #6161, #6162: only no stored key at all answers here. A blank
+        // key (missing, #6103) and a stored value the PSA does not send
+        // ('0': #6161, its own text) go on to the apiKeyRefusal() check
+        // below, which words each one.
+        if (MeshConfig::get('api_key') === null) {
             return response()->json(['success' => false, 'message' => 'API key not configured.']);
         }
 
@@ -1461,9 +1465,10 @@ class IntegrationsController extends Controller
         // request URI is parsed here as PSR-7 parses it inside get(), and
         // the key is checked with MeshClient::apiKeyRefusal(), the rule
         // both Mesh clients apply before send: PSR-7's header rule, plus
-        // two PSA refusals PSR-7 does not make (#6111): a missing key
-        // (blank or true, #6103) and an array. A refusal is a 'did not
-        // run'.
+        // PSA refusals PSR-7 does not make: a missing key (#6103; blank
+        // here, the guard above took null), a stored value the PSA does
+        // not send ('0': #6161, its own text) and an array (#6111). A
+        // refusal is a 'did not run'.
         try {
             // Resolved through the container so a test can hand it a
             // MockHandler (G-5); in production this is a plain new client.

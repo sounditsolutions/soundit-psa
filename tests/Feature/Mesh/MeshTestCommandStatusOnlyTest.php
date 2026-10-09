@@ -165,6 +165,35 @@ class MeshTestCommandStatusOnlyTest extends TestCase
         $this->assertStringNotContainsString('SECRET_FIXTURE-6053', $output);
     }
 
+    /**
+     * #6161, #6162: the command's own guard reads the shared definition. A
+     * blank key is 'not configured'; a stored '0' is a value, and the line
+     * says so. Neither reaches the client.
+     *
+     * @return array<string, array{0: string, 1: string}>
+     */
+    public static function unsendableKeys(): array
+    {
+        return [
+            'blank' => ['   ', 'Mesh is not configured. Add API key in Settings → Integrations.'],
+            "'0'" => ['0', 'The Mesh API key is set, but to zero or true, which the PSA does not send as a key; nothing was sent. Replace it in Settings → Integrations.'],
+        ];
+    }
+
+    #[DataProvider('unsendableKeys')]
+    public function test_an_unsendable_stored_key_is_refused_with_its_own_text(string $stored, string $line): void
+    {
+        Setting::setEncrypted('mesh_api_key', $stored);
+        $this->bindClient([new Response(200, [], '{"results":[]}')]);
+
+        $exit = Artisan::call('mesh:test');
+        $output = Artisan::output();
+
+        $this->assertSame(Command::FAILURE, $exit);
+        $this->assertStringContainsString($line, $output);
+        $this->assertSame(1, $this->mock->count(), 'the client was never asked');
+    }
+
     public function test_a_successful_customer_read_still_succeeds(): void
     {
         $this->bindClient([new Response(200, [], '{"results":[]}'), new Response(200, [], '{"results":[]}')]);
