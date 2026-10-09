@@ -72,18 +72,21 @@ use Illuminate\Support\Facades\Http;
  *   enforced, automated second-factor sign-in is blocked outright and no code
  *   this client generates can pass; that is a design question for the portal
  *   owner, not a defect to work around here. Said precisely, because the loose
- *   version of this sentence was wrong: {@see findChallengeForm} forwards every
- *   hidden field at the value the portal SERVED, so the captcha field IS posted
- *   back — empty, exactly as served — and so is `totpskip`. What this class does
- *   not do is INVENT a value for either. Do not "fix" the empty captcha by
- *   supplying a token.
+ *   version of this sentence was wrong: {@see findChallengeForm} forwards an
+ *   input only when it is served as `type="hidden"`, at the value the portal
+ *   SERVED. This field's element type is not recorded, so it is posted back
+ *   (empty, as served) only if the portal serves it as a hidden input. This
+ *   class gives neither the captcha field nor `totpskip` a value of its own
+ *   making. Besides the configured email and password, the only values it
+ *   supplies itself are the guard `g`, the submit field and the generated code.
+ *   Do not "fix" the empty captcha by supplying a token.
  *
- *   🔴 `totpskip` is forwarded at its served value, like every other
- *   hidden field: served `0`, this client posts `0`. Forwarding is not a
- *   neutral act, so the behaviour of this leg is tracked as a ticket-class
- *   residual rather than reasoned about here — the alternative (dropping a
- *   field the portal served) is its own unmeasured guess. Do not change the
- *   forwarding behaviour to "fix" this note, and do not invent a value.
+ *   🔴 `totpskip`: {@see findChallengeForm} forwards an input only when it is
+ *   served as `type="hidden"`, at its served value. This field's element type
+ *   has not been measured, so whether it is posted back at all is unknown.
+ *   Neither forwarding it nor dropping it has been measured against the
+ *   portal; which is right is an open ticket-class residual, recorded on card
+ *   RZ21qFdR rather than here. Do not invent a value for it.
  *
  * 🔴 TWO HONEST LIMITS, because a reviewer should not have to find them:
  *
