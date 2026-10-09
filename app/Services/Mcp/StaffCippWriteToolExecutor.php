@@ -1323,9 +1323,16 @@ class StaffCippWriteToolExecutor
             // must_change is a boolean, not a credential — safe to audit. The password
             // is NEVER written here (mirrors executeResetPassword).
             $mustChangeLabel = $mustChange ? 'true' : 'false';
-            $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $person, null, $contentHash, "Operator-approved {$run->action_type} executed (must_change={$mustChangeLabel}) for {$person->userPrincipalName}. Temp password delivered once to the approver; never stored.", $this->approverLabel($approverId), $run->id, $approverId);
+            $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $person, null, $contentHash, "Operator-approved {$run->action_type} executed (must_change={$mustChangeLabel}) for {$person->userPrincipalName}. Temp password never stored.", $this->approverLabel($approverId), $run->id, $approverId);
             if (! $run->advanceTo(TechnicianRunState::Done)) {
-                return TechnicianApprovalResult::executedNotClosed('The CIPP password reset', 'CIPP', 'The temporary password is not shown on this channel.');
+                // #6303: the fault channel carries no secret, so the value CIPP returned is withheld
+                // here and, never stored, is gone. Audit that, not a delivery.
+                $withheld = $password !== null
+                    ? 'The temporary password CIPP returned was withheld from the approver and not stored, so this approval cannot show it; the user needs a fresh password reset.'
+                    : 'CIPP returned no password value; if PwPush is configured the credential may be delivered as a link — verify in CIPP.';
+                $this->auditAttempt($run->action_type, 'executed_with_fault', $client->id, $ticket, $person, null, $contentHash, "Operator-approved {$run->action_type} executed, but this request no longer holds the run. {$withheld}", $this->approverLabel($approverId), $run->id, $approverId);
+
+                return TechnicianApprovalResult::executedNotClosed('The CIPP password reset', 'CIPP', $withheld);
             }
 
             $message = 'Reset the Microsoft 365 password for '.$person->userPrincipalName.'.';
@@ -2846,9 +2853,15 @@ class StaffCippWriteToolExecutor
             $parsed = $this->parseCreateUserResponse($upstream);
             $createdUpn = $parsed['upn'] ?? (string) $params['staged_upn'];
 
-            $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — created M365 user {$createdUpn}".($license !== null ? ' with license_type #'.$license->licenseType->id : '').'. Temp password delivered once to the approver; never stored.', $this->approverLabel($approverId), $run->id, $approverId);
+            $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — created M365 user {$createdUpn}".($license !== null ? ' with license_type #'.$license->licenseType->id : '').'. Temp password never stored.', $this->approverLabel($approverId), $run->id, $approverId);
             if (! $run->advanceTo(TechnicianRunState::Done)) {
-                return TechnicianApprovalResult::executedNotClosed('The CIPP user creation', 'CIPP', 'The temporary password is not shown on this channel.');
+                // #6303: as the reset arm: withheld, never stored, audited as such.
+                $withheld = $parsed['password'] !== null
+                    ? 'The temporary password CIPP returned was withheld from the approver and not stored, so this approval cannot show it; use the password reset tool for this user.'
+                    : 'CIPP returned no password value; if PwPush is configured the credential may be delivered as a link — verify in CIPP, or use the password reset tool.';
+                $this->auditAttempt($run->action_type, 'executed_with_fault', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed, but this request no longer holds the run. {$withheld}", $this->approverLabel($approverId), $run->id, $approverId);
+
+                return TechnicianApprovalResult::executedNotClosed('The CIPP user creation', 'CIPP', $withheld);
             }
 
             $message = 'Created Microsoft 365 user '.$createdUpn.'.';

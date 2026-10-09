@@ -62,7 +62,8 @@ class TechnicianApprovalService
      * #6256: close the run inside the gate transaction, or roll the transaction back. A false
      * advanceTo() means this request no longer holds the claim; throwing undoes the note,
      * status change or merge and the executed audit row, and no email is sent after it. This
-     * keeps send_reply's RECOVERY_SAFE premise: a run still Executing never sent.
+     * keeps send_reply's RECOVERY_SAFE premise: a run still Executing never sent. approveClose
+     * calls it BEFORE changeStatus, whose notification a rollback cannot recall (#6303).
      */
     private static function closeOrRollBack(TechnicianRun $run): void
     {
@@ -277,6 +278,10 @@ class TechnicianApprovalService
 
                         return;
                     }
+                    // #6303: fence first. changeStatus notifies the client inside this transaction
+                    // and a rollback cannot recall that, so a lost claim must throw before it runs.
+                    // The fenced UPDATE locks the run row until commit, so no one re-claims meanwhile.
+                    self::closeOrRollBack($run);
                     // Using $fresh ensures the status-change note's "from" state is accurate.
                     app(TicketService::class)->changeStatus(
                         $fresh,
@@ -292,7 +297,6 @@ class TechnicianApprovalService
                         ->where('body', $closeNote)
                         ->latest('id')
                         ->value('id');
-                    self::closeOrRollBack($run);
                 },
                 approvalToken: $token,
                 approverUserId: $approverId,

@@ -638,7 +638,7 @@ class StaffHuntressActionToolExecutor
             if ($this->escalationResolved($escalation)) {
                 $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $contentHash, "{$targetKey}: Escalation already resolved upstream — approved resolve satisfied without an upstream call.", $approverLabel, $run->id, $approverId);
                 if (! $run->advanceTo(TechnicianRunState::Done)) {
-                    return self::resolvedUpstreamNotClosed($escalationId);
+                    return self::resolvedUpstreamNotClosed($escalationId, false);
                 }
 
                 return new TechnicianApprovalResult('executed', message: "Escalation {$escalationId} was already resolved upstream — nothing needed sending.");
@@ -649,7 +649,7 @@ class StaffHuntressActionToolExecutor
             } catch (HuntressEscalationAlreadyResolvedException) {
                 $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $contentHash, "{$targetKey}: Upstream answered 409 already-resolved — approved resolve satisfied.", $approverLabel, $run->id, $approverId);
                 if (! $run->advanceTo(TechnicianRunState::Done)) {
-                    return self::resolvedUpstreamNotClosed($escalationId);
+                    return self::resolvedUpstreamNotClosed($escalationId, true);
                 }
 
                 return new TechnicianApprovalResult('executed', message: "Escalation {$escalationId} was already resolved upstream — nothing needed sending.");
@@ -881,12 +881,18 @@ class StaffHuntressActionToolExecutor
 
     /** @param array<string, mixed> $escalation */
     /**
-     * #6256: the escalation reads resolved upstream (no call was sent by this request), but the
-     * run was not closed because this request lost the claim-owner fence. Not a success.
+     * #6256: the escalation is already resolved upstream, but the run was not closed because this
+     * request lost the claim-owner fence. Not a success, and this request resolved nothing, so it
+     * is gate_declined like the CIPP sentNothingNotClosed(). $sent says whether the resolve call
+     * went out: false when the read showed it resolved, true when the call got a 409 answer.
      */
-    private static function resolvedUpstreamNotClosed(int $escalationId): TechnicianApprovalResult
+    private static function resolvedUpstreamNotClosed(int $escalationId, bool $sent): TechnicianApprovalResult
     {
-        return new TechnicianApprovalResult('executed_with_fault', message: "Escalation {$escalationId} reads resolved upstream and nothing was sent, but ".lcfirst(self::NOT_CLOSED));
+        $what = $sent
+            ? "The resolve call for escalation {$escalationId} was sent and Huntress answered that it was already resolved"
+            : "Escalation {$escalationId} reads resolved upstream, so nothing was sent";
+
+        return new TechnicianApprovalResult('gate_declined', message: $what.'; '.lcfirst(self::NOT_CLOSED));
     }
 
     private function escalationResolved(array $escalation): bool

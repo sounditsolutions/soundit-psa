@@ -630,6 +630,46 @@ class CippWriteCreateUserTest extends TestCase
         $this->assertSame(TechnicianRunState::Done, $secondRun->fresh()->state);
     }
 
+    /** #6303: a create whose claim was lost withholds the password, and the audit rows say so. */
+    public function test_an_executed_create_whose_claim_was_lost_withholds_the_password_and_audits_it(): void
+    {
+        $this->configureCipp();
+        $actor = $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $secret = 'Lost-Fence-6303!';
+
+        $this->blockedClient();
+        $staged = $this->callTool($this->token([self::STAGED_TOOL]), self::STAGED_TOOL, $this->validArguments($fixture, [
+            'ticket_id' => $fixture['ticket']->id,
+        ]));
+        $run = TechnicianRun::findOrFail($this->decodedResult($staged)['run_id']);
+
+        $approveClient = Mockery::mock(CippRestWriteClient::class);
+        $approveClient->shouldReceive('createUser')->once()->andReturnUsing(function () use ($run, $secret) {
+            TechnicianRun::whereKey($run->id)->update(['claimed_at' => now()->addMinute()]);
+
+            return ['success' => true, 'status' => 200, 'body' => $this->addUserBody('newhire@acme.onmicrosoft.com', $secret)];
+        });
+        $this->app->instance(CippRestWriteClient::class, $approveClient);
+
+        $result = app(\App\Services\Technician\TechnicianApprovalService::class)->approveStagedCippWriteAction($run, $actor->id);
+
+        $this->assertSame('executed_with_fault', $result->status);
+        $this->assertNull($result->secret, 'no one-time secret on the fault channel');
+        $this->assertStringStartsWith('The CIPP user creation executed, but the run was not closed', (string) $result->message);
+        $this->assertStringContainsString('withheld from the approver and not stored', (string) $result->message);
+        $rows = TechnicianActionLog::where('run_id', $run->id)->get();
+        $this->assertTrue($rows->contains('result_status', 'executed'), 'the double-create rail still reads an executed row');
+        $fault = $rows->firstWhere('result_status', 'executed_with_fault');
+        $this->assertNotNull($fault, 'the withheld password is audited');
+        $this->assertStringContainsString('withheld from the approver and not stored', (string) $fault->summary);
+        foreach ($rows as $row) {
+            $this->assertStringNotContainsString('delivered once', (string) $row->summary);
+        }
+        $this->assertStringNotContainsString($secret, json_encode(TechnicianActionLog::all()->toArray()));
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
+    }
+
     public function test_upstream_failure_is_audited_without_response_echo(): void
     {
         $this->configureCipp();

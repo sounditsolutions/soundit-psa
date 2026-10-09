@@ -793,6 +793,18 @@ class CippStagedPasswordResetTest extends TestCase
         $this->assertSame('executed_with_fault', $result->status);
         $this->assertNull($result->secret, 'no one-time secret on the fault channel');
         $this->assertStringStartsWith('The CIPP password reset executed, but the run was not closed', (string) $result->message);
+        $this->assertStringContainsString('withheld from the approver and not stored', (string) $result->message);
+        $this->assertStringNotContainsString('this channel', (string) $result->message);
+        // #6303: the executed row the cooldown rail reads stays, but no row claims a delivery.
+        $rows = \App\Models\TechnicianActionLog::where('run_id', $run->id)->get();
+        $this->assertTrue($rows->contains('result_status', 'executed'), 'the reset cooldown still reads an executed row');
+        $fault = $rows->firstWhere('result_status', 'executed_with_fault');
+        $this->assertNotNull($fault, 'the withheld password is audited');
+        $this->assertStringContainsString('withheld from the approver and not stored', (string) $fault->summary);
+        foreach ($rows as $row) {
+            $this->assertStringNotContainsString('delivered once', (string) $row->summary);
+            $this->assertStringNotContainsString('Temp-Pass-6256!', (string) $row->summary);
+        }
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
     }
 }

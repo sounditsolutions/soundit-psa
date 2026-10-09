@@ -16,10 +16,12 @@ use App\Models\TicketNote;
 use App\Models\User;
 use App\Services\Email\EmailRecipientResolver;
 use App\Services\EmailService;
+use App\Services\NotificationService;
 use App\Services\Technician\TechnicianActionGate;
 use App\Services\Technician\TechnicianApprovalService;
 use App\Services\Technician\TechnicianDisclosure;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Mockery\MockInterface;
 use Tests\TestCase;
 
@@ -519,7 +521,26 @@ class TechnicianApprovalServiceTest extends TestCase
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
     }
 
-    /** #6256: the close family takes the same rollback: the ticket is not closed. */
+    /**
+     * #6303: the claim is replaced just before the close's fenced UPDATE (the only technician_runs
+     * update that binds Done), so the fence is lost before changeStatus could run.
+     */
+    private function loseTheClaimBeforeTheFencedClose(TechnicianRun $run): void
+    {
+        $lost = false;
+        DB::beforeExecuting(function (string $sql, array $bindings) use ($run, &$lost): void {
+            if (! $lost && str_starts_with($sql, 'update') && str_contains($sql, 'technician_runs')
+                && in_array(TechnicianRunState::Done->value, $bindings, true)) {
+                $lost = true;
+                TechnicianRun::whereKey($run->id)->update(['claimed_at' => now()->addMinute()]);
+            }
+        });
+    }
+
+    /**
+     * #6256: the close family takes the same rollback: the ticket is not closed. #6303: and no
+     * status-change notification left for the rolled-back change.
+     */
     public function test_a_close_whose_claim_is_lost_mid_gate_leaves_the_ticket_open(): void
     {
         $actor = User::factory()->create(['name' => 'Chet']);
@@ -532,12 +553,15 @@ class TechnicianApprovalServiceTest extends TestCase
             'content_hash' => str_repeat('c', 64), 'state' => TechnicianRunState::AwaitingApproval,
             'proposed_content' => 'Resolved.',
         ]);
-        $this->loseTheClaimWhenANoteIsWritten($run);
+        $this->mock(NotificationService::class, fn (MockInterface $m) => $m->shouldNotReceive('notifyStatusChanged'));
+        $this->loseTheClaimBeforeTheFencedClose($run);
 
         $result = app(TechnicianApprovalService::class)->approveClose($run, $actor->id);
 
         $this->assertSame('gate_declined', $result->status);
         $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status, 'the close was rolled back');
+        $this->assertStringStartsWith('Nothing was applied', (string) $result->message);
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->where('note_type', NoteType::StatusChange->value)->count(), 'changeStatus never ran');
         $this->assertDatabaseMissing('technician_action_logs', ['run_id' => $run->id, 'result_status' => 'executed']);
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state);
     }
