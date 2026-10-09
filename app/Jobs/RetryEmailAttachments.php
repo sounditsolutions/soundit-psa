@@ -202,19 +202,23 @@ class RetryEmailAttachments implements ShouldQueue
      * nothing about whether the row is still queued. Context run_started: as on
      * DUPLICATE_ROWS_DROPPED; unmatched_job_ids: those rows. The record cannot tell these arms
      * apart:
-     * - Reserved by a worker after the pass read it: the row is still queued and its run goes
-     *   ahead to its own check (handle()), which does not count a reserved later row (#6182).
+     * - Reserved by a worker after the pass read it: the row is still queued. Unless that
+     *   worker dies holding it (its next reservation then fails it as MaxAttemptsExceeded
+     *   without running handle(), tries = 1), its run goes ahead to its own check (handle()),
+     *   which does not count a reserved later row (#6182).
      *   With run_started false the pass DELETEs all but the latest row, so this row is an
      *   earlier one; two or more rows are then left, so the pass writes the kept entry, and
      *   the row's run checks and skips for a later row that is unreserved with attempts left
      *   (DUPLICATE_ROW_SKIPPED); it runs when there is none, or when its check reads neither
      *   entry as held (the kept entry write failed, CACHE_STEP_FAILED kept_put). With
-     *   run_started true a run of the push already ran and a pass that completes writes no
-     *   kept entry (one whose later DELETE threw does), so the row runs the retry again
-     *   (#6273, the #6182 trade-off) unless its check counts a later unreserved row: on the
-     *   two-row push a lost INSERT reply leaves it is the latest row, and after a completed
-     *   pass, once the push has returned, it does not check at all. Each such row is one more run of the retry (handle() reaches
-     *   EmailService, whose own locked re-check may then refuse it).
+     *   run_started true a run of the push had started or failed (the pass read its started
+     *   entry; that run may still be in progress, or may have thrown before reaching
+     *   EmailService), and a pass that completes writes no kept entry (one whose later DELETE
+     *   threw does), so the row's run does not skip (#6273, the #6182 trade-off) unless its
+     *   check counts a later unreserved row: on the two-row push a lost INSERT reply leaves it
+     *   is the latest row, and after a completed pass, once the push has returned, it does not
+     *   check at all. Its handle() then reaches EmailService (whose own locked re-check may
+     *   refuse it), so the retry runs twice when the run that started reached EmailService too.
      * - Already gone: this pass's own DELETE committed, its reply was lost, and the
      *   connection's re-run matched nothing (#6276); or a worker reserved the row and finished
      *   with it (ran it, or failed it) in between.
@@ -710,8 +714,7 @@ class RetryEmailAttachments implements ShouldQueue
      * which rows run only when a row of the push lies between this run's row and the latest
      * one, as in the three-row test of #6352, built by hand: the connection re-runs a lost
      * INSERT once, so one push leaves at most two rows, and on two rows the later row is the
-     * latest, whose check finds nothing whether or not the entry is held. On that two-row
-     * push the entry left is then not removed by any run of the push (see keptKey()).
+     * latest, whose check finds nothing whether or not the entry is held.
      * Not called (r2 of #6304) after a check whose rows read threw (DUPLICATE_CHECK_FAILED
      * step run: the run goes ahead without knowing whether a later row is left, so the entry
      * stays for that row's run), nor after a read of the entries that threw (CACHE_STEP_FAILED
