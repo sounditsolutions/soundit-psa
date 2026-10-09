@@ -63,15 +63,18 @@ class TechnicianRun extends Model
     /**
      * Move the run to $state and save. Returns whether the move was written.
      *
-     * #6197: when this instance holds a claim (its state is Executing) the move is a
-     * compare-and-set that refuses only one case: the row is Executing under a claim other than
-     * this instance's (claimed_at differs; see whereHoldsClaim()). That is a stale holder whose
-     * run was reopened and claimed again; it gets false, the row is not touched and the
-     * instance keeps its state. A row that left Executing is still moved, as before: callers
-     * advance after their side effect, and landing the run terminal is what stops it being
-     * approved again. This path writes with a query, so no model event fires for it (the
-     * observer acts only on a move into AwaitingApproval, which no claimed caller makes).
-     * Any other in-memory state saves as before.
+     * #6197 / #6263: when this instance holds a claim (its state is Executing) the move is one
+     * compare-and-set UPDATE under the claim-owner fence (whereHoldsClaim()): it lands only while
+     * the row is still Executing under this instance's claimed_at. Every other row gets false
+     * and is not touched: a run claimed again by another request, and a run that left Executing
+     * (queued, closed, reopened, flagged or cancelled by another path). The instance keeps its
+     * state and its unsaved changes. A claim-holding caller therefore reads false as "this
+     * request did not close the run", never as success.
+     *
+     * #6267 / #6270: the instance's other unsaved changes ride in the same fenced UPDATE, so no
+     * second, unfenced write follows and no model event fires on this path. The observer acts
+     * only on a move into AwaitingApproval, which no claimed caller makes. Any other in-memory
+     * state saves as before.
      */
     public function advanceTo(TechnicianRunState $state): bool
     {
@@ -82,22 +85,18 @@ class TechnicianRun extends Model
             return true;
         }
 
-        $moved = static::query()->whereKey($this->getKey())
-            ->where(fn (Builder $q) => $q->where('state', '!=', TechnicianRunState::Executing->value)
-                ->orWhere(fn (Builder $mine) => $this->whereHoldsClaim($mine)))
-            ->update(['state' => $state->value]) === 1;
-        // MariaDB counts changed rows, not matched ones: a row already in $state reports 0.
-        // That row is not under another claim, so it counts as moved.
-        if (! $moved && ($state === TechnicianRunState::Executing
-            || ! static::query()->whereKey($this->getKey())->where('state', $state->value)->exists())) {
+        $now = $this->freshTimestamp();
+        $values = array_merge($this->getDirty(), [
+            'state' => $state->value,
+            $this->getUpdatedAtColumn() => $this->fromDateTime($now),
+        ]);
+        if ($this->whereHoldsClaim(static::query()->whereKey($this->getKey()))->update($values) !== 1) {
             return false;
         }
 
         $this->state = $state;
-        $this->syncOriginalAttribute('state');
-        if ($this->isDirty()) {
-            $this->save();
-        }
+        $this->setUpdatedAt($now);
+        $this->syncOriginal();
 
         return true;
     }
@@ -478,9 +477,10 @@ class TechnicianRun extends Model
         return $withdrawn;
     }
 
-    public function markSuperseded(): void
+    /** Whether the move was written; see advanceTo(). */
+    public function markSuperseded(): bool
     {
-        $this->advanceTo(TechnicianRunState::Superseded);
+        return $this->advanceTo(TechnicianRunState::Superseded);
     }
 
     /**

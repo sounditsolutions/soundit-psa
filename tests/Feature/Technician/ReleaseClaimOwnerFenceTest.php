@@ -169,17 +169,93 @@ class ReleaseClaimOwnerFenceTest extends TestCase
     }
 
     /**
-     * #6197: a claimed instance whose run has already left Executing (no other claim holds it)
-     * still advances, as before: callers land the run terminal after their side effect.
+     * #6263: a claimed instance whose run has already left Executing no longer moves it. The
+     * state another path set (here Flagged) stays, and the holder gets false.
      */
-    public function test_advance_from_a_claim_whose_run_left_executing_still_moves_it(): void
+    public function test_advance_from_a_claim_whose_run_left_executing_does_not_move_it(): void
     {
         $run = $this->awaitingRun();
         $this->assertTrue($run->claimForExecution());
         TechnicianRun::whereKey($run->id)->update(['state' => TechnicianRunState::Flagged->value]);
 
-        $this->assertTrue($run->advanceTo(TechnicianRunState::Done));
+        $this->assertFalse($run->advanceTo(TechnicianRunState::Done));
+        $this->assertSame(TechnicianRunState::Flagged, $run->fresh()->state);
+        $this->assertSame(TechnicianRunState::Executing, $run->state, 'the holder is not told it moved the run');
+    }
+
+    /**
+     * #6263: A is stale; B re-claims and parks the run in the offline queue. A's late
+     * advance must not land B's queued run Done (which would silently drop the queued action).
+     */
+    public function test_a_stale_holder_cannot_overwrite_a_state_the_other_claim_moved_to(): void
+    {
+        [$a, $b] = $this->staleAndLiveHolders();
+        $this->assertTrue($this->queue($b), 'B parks the run');
+
+        $this->assertFalse($a->advanceTo(TechnicianRunState::Done), "A's stale advance loses");
+        $this->assertSame(TechnicianRunState::QueuedOffline, TechnicianRun::findOrFail($a->id)->state, "B's queued run stays queued");
+        $this->assertFalse($a->markSuperseded(), "A's stale supersede loses too");
+        $this->assertSame(TechnicianRunState::QueuedOffline, TechnicianRun::findOrFail($a->id)->state);
+    }
+
+    /** #6263: B closed the run (Done); A's late supersede must not rewrite B's Done. */
+    public function test_a_stale_holder_cannot_supersede_a_run_the_other_claim_closed(): void
+    {
+        [$a, $b] = $this->staleAndLiveHolders();
+        $this->assertTrue($b->advanceTo(TechnicianRunState::Done), 'positive control: B closes the run');
+
+        $this->assertFalse($a->advanceTo(TechnicianRunState::Superseded));
+        $this->assertSame(TechnicianRunState::Done, TechnicianRun::findOrFail($a->id)->state);
+    }
+
+    /**
+     * #6270: the row is already in the target state, moved there by another path. This holder
+     * did not close it, so it gets false rather than a success it did not earn.
+     */
+    public function test_an_advance_to_the_state_the_row_already_holds_is_not_reported_as_this_holders_move(): void
+    {
+        $run = $this->awaitingRun();
+        $this->assertTrue($run->claimForExecution());
+        TechnicianRun::whereKey($run->id)->update(['state' => TechnicianRunState::Done->value]);
+
+        $this->assertFalse($run->advanceTo(TechnicianRunState::Done));
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+    }
+
+    /**
+     * #6267 / #6270: a stale holder's unsaved changes are not written either: no unfenced
+     * follow-up save lands them on the row the other claim now owns.
+     */
+    public function test_a_stale_holders_other_changes_are_not_written(): void
+    {
+        [$a, $b] = $this->staleAndLiveHolders();
+        $bStamp = TechnicianRun::findOrFail($b->id)->claimed_at;
+        $this->assertTrue($b->advanceTo(TechnicianRunState::Done));
+        $a->tokens_used = 6270;
+
+        $this->assertFalse($a->advanceTo(TechnicianRunState::Done));
+        $row = TechnicianRun::findOrFail($a->id);
+        $this->assertSame(0, (int) $row->tokens_used, "A's change is not written");
+        $this->assertTrue($row->claimed_at->equalTo($bStamp), "B's claim stamp is not overwritten by A's");
+    }
+
+    /** #6267: the fenced move fires no model event. */
+    public function test_the_fenced_move_fires_no_model_event(): void
+    {
+        $run = $this->awaitingRun();
+        $this->assertTrue($run->claimForExecution());
+        $run->tokens_used = 6267;
+        $fired = [];
+        foreach (['saving', 'saved', 'updating', 'updated'] as $event) {
+            TechnicianRun::{$event}(function () use (&$fired, $event): void {
+                $fired[] = $event;
+            });
+        }
+
+        $this->assertTrue($run->advanceTo(TechnicianRunState::Done));
+        $this->assertSame([], $fired);
+        $this->assertSame(6267, $run->fresh()->tokens_used, 'the change rode in the fenced UPDATE');
+        $this->assertFalse($run->isDirty(), 'the instance mirrors the row');
     }
 
     /** #6197: an instance that holds no claim (not Executing in memory) saves as before. */
