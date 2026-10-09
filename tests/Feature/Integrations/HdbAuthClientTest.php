@@ -776,11 +776,12 @@ class HdbAuthClientTest extends TestCase
     {
         // The other half of point 3, plus the FLAG the ruling asked to measure
         // and NOT to solve. The page carries `g-recaptcha-response` and
-        // `totpskip` as hidden fields, so findChallengeForm forwards them at
-        // their SERVED values — empty and `0`. That is the correct conservative
-        // behaviour and it is pinned here precisely so nobody later "fixes" the
-        // empty captcha by inventing a token or flips `totpskip` to skip the
-        // second factor. Whether the portal ENFORCES the captcha on submit is
+        // `totpskip` as hidden fields in THIS FIXTURE (their real element type is
+        // not recorded), so findChallengeForm forwards them at their served
+        // values — empty and `0`. This test pins the CURRENT behaviour so it
+        // cannot change silently; it does not claim that behaviour is right.
+        // Which behaviour is right for `totpskip` is an open residual on card
+        // RZ21qFdR. Whether the portal ENFORCES the captcha on submit is
         // unmeasured and is a design question, not something this client guesses.
         Setting::setEncrypted('hdb_totp_secret', self::SEED);
 

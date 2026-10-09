@@ -72,10 +72,14 @@ use Illuminate\Support\Facades\Http;
  *   enforced, automated second-factor sign-in is blocked outright and no code
  *   this client generates can pass; that is a design question for the portal
  *   owner, not a defect to work around here. Said precisely, because the loose
- *   version of this sentence was wrong: {@see findChallengeForm} forwards every
- *   hidden field at the value the portal SERVED, so the captcha field IS posted
- *   back — empty, exactly as served. What this class does not do is INVENT a
- *   value for any field. Do not "fix" the empty captcha by supplying a token.
+ *   version of this sentence was wrong: {@see findChallengeForm} forwards an
+ *   input only when it is served as `type="hidden"`, at the value the portal
+ *   SERVED. This field's element type is not recorded, so it is posted back
+ *   (empty, as served) only if the portal serves it as a hidden input. This
+ *   class gives neither the captcha field nor `totpskip` a value of its own
+ *   making. Besides the configured email and password, the only values it
+ *   supplies itself are the guard `g`, the submit field and the generated code.
+ *   Do not "fix" the empty captcha by supplying a token.
  *
  *   🔴 `totpskip`: {@see findChallengeForm} forwards an input only when it is
  *   served as `type="hidden"`, at its served value. This field's element type
