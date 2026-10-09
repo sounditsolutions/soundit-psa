@@ -802,7 +802,9 @@ class ControlDOnboardClientTest extends TestCase
         $run = $this->stage($fixture);
         $this->assertSame('global-profile', $run->proposed_meta['redacted_params']['step']);
         $this->assertStringContainsString('step 2 of 3 (global profile)', $run->proposed_content);
-        $this->assertStringContainsString('If a different global profile is already set when this is approved, approval refuses and nothing is written. Control D has no conditional update, so a profile set between approval\'s last read and the update is not detected and would be replaced.', $run->proposed_content);
+        $this->assertStringContainsString('If a different global profile is already set when this is approved, approval refuses and nothing is written. '.self::RACE."\n", $run->proposed_content);
+        $this->assertStringNotContainsString('would be replaced', $run->proposed_content);
+        $this->assertStringNotContainsString('no conditional', $run->proposed_content);
         $this->assertStringNotContainsString('never replaces', $run->proposed_content);
         $this->assertStringContainsString('testprofile01', $run->proposed_content);
         $this->assertSame(0, ControlDOnboardingIntent::count());
@@ -951,7 +953,7 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
         $this->assertSame(['GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
         $this->assertSame(0, ControlDOnboardingIntent::count());
-        $this->assertStringContainsString('already enforces a different global profile', (string) session('error'));
+        $this->assertSame("The client's Control D state changed since this was staged (".ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL.'). Deny this proposal and stage again so the current step is read and approved on its own card. Nothing was created.', (string) session('error'));
     }
 
     /** Item 2: the global-profile proposal pins org and profile; approval refuses when the setting moved since staging. */
@@ -1006,6 +1008,7 @@ class ControlDOnboardClientTest extends TestCase
             $this->assertCount(1, $this->history, "{$case}: only the read-only GET");
             $error = (string) session('error');
             $this->assertSame(self::UNREADABLE_AT_APPROVAL, $error, $case);
+            $this->assertStringNotContainsString('nothing was staged', $error, $case);
             $this->assertStringNotContainsString('state changed', $error, $case);
             $this->assertStringNotContainsString('once Control D answers', $error, $case);
         }
@@ -1014,7 +1017,13 @@ class ControlDOnboardClientTest extends TestCase
     /** #6232 (diff:7): exact text, true whether globalProfileState() threw before or after its GET. */
     private const UNREADABLE_REFUSAL = 'Could not confirm whether the Control D global profile is enforced on this client\'s organization (the configured global profile setting is missing or invalid, Control D is disabled or unconfigured, or the parent organization list could not be read or did not list this organization exactly once with a well-formed global profile); nothing was staged.';
 
-    private const UNREADABLE_AT_APPROVAL = 'Control D onboarding approval could not re-check the client\'s current step ('.self::UNREADABLE_REFUSAL.'). Nothing was created. Approving again helps only if the cause was temporary; otherwise fix it or deny this proposal.';
+    /** #6249 r2 diff:2/contract:2: the approval arm embeds the reason WITHOUT 'nothing was staged' (the proposal is still staged). */
+    private const UNREADABLE_REASON = 'Could not confirm whether the Control D global profile is enforced on this client\'s organization (the configured global profile setting is missing or invalid, Control D is disabled or unconfigured, or the parent organization list could not be read or did not list this organization exactly once with a well-formed global profile)';
+
+    private const UNREADABLE_AT_APPROVAL = 'Control D onboarding approval could not re-check the client\'s current step ('.self::UNREADABLE_REASON.'). Nothing was created. Approving again helps only if the cause was temporary; otherwise fix it or deny this proposal.';
+
+    /** #6249 r2 context:1/diff:5: the race disclosure, exact. It claims nothing about what Control D does with the update. */
+    private const RACE = 'The global-profile step sends an unconditional update, so a global profile set after the last read before that update is not detected and the update may replace it; a vendor rejection of the update ends the step rejected, and an unknown outcome or a read-back that does not show the configured profile ends it uncertain.';
 
     /** Item 8 (contract-s1:6): a pre-admission refusal after a read says 'before any vendor write', never 'vendor call'. */
     public function test_pre_admission_refusal_after_a_read_says_vendor_write_and_names_admin_release(): void
@@ -1155,6 +1164,38 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertSame(['GET', 'GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history), 'no write');
     }
 
+    /** #6249 r2 contract:6: a vendor-REJECTED intent reaching the outer catch (advanceTo(Done) fails) is never reported as a possible vendor write. */
+    public function test_rejected_intent_reaching_the_outer_catch_is_never_reported_as_a_possible_vendor_write(): void
+    {
+        $this->configure();
+        $this->aiActor();
+        $fixture = $this->fixture();
+        $run = $this->stage($fixture);
+        $this->vendor([new Response(403, [], file_get_contents(base_path('tests/Fixtures/ControlD/read-only-rejection.json')))]);
+        $thrown = false;
+        TechnicianRun::saving(function (TechnicianRun $saving) use (&$thrown): void {
+            if ($saving->state === TechnicianRunState::Done && ! $thrown) {
+                $thrown = true;
+                throw new \RuntimeException('synthetic run store failure after rejection');
+            }
+        });
+        $caught = null;
+        try {
+            app(StaffControlDOnboardingToolExecutor::class)->approveStagedRun($run, User::factory()->admin()->create(['is_active' => true])->id);
+        } catch (\RuntimeException $e) {
+            $caught = $e;
+        } finally {
+            TechnicianRun::flushEventListeners();
+        }
+        $this->assertTrue($thrown, 'advanceTo(Done) failed, so the outer catch was reached');
+        $this->assertSame('synthetic run store failure after rejection', $caught?->getMessage(), 'rethrown, not turned into a HARD FAULT');
+        $intent = ControlDOnboardingIntent::sole();
+        $this->assertSame(['rejected', null], [$intent->state, $intent->active_client_id]);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, 'claim released, run not terminal');
+        $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%possible vendor write%')->count());
+        $this->assertSame(['POST'], array_map(fn ($h) => $h['request']->getMethod(), $this->history), 'one refused POST');
+    }
+
     /** #6244 (contract-s2:6): a staged intent whose lock is NULL is not said to hold this client's onboarding lock. */
     public function test_pre_admission_refusal_does_not_claim_a_lock_the_intent_does_not_hold(): void
     {
@@ -1183,7 +1224,8 @@ class ControlDOnboardClientTest extends TestCase
     public function test_tool_descriptions_state_the_race_and_the_stored_pins(): void
     {
         $descriptions = json_encode(StaffControlDOnboardingToolExecutor::definitions(), JSON_UNESCAPED_SLASHES);
-        $this->assertStringContainsString('set the configured global profile on it (refused if a different one is already set when approved; Control D has no conditional update, so one set between that read and the update is not detected)', $descriptions);
+        $this->assertStringContainsString('set the configured global profile on it (refused if a different one is already set when approved; this code sends an unconditional update, so one set after that read is not detected and the update may replace it);', $descriptions);
+        $this->assertStringNotContainsString('no conditional', $descriptions);
         $this->assertStringContainsString('the held proposal stores ids and the step (and, for the global-profile step, the organization and profile PKs shown on the card, which approval requires to still match and then uses), and approval re-derives every other input from the client record and the panel.', $descriptions);
         $this->assertStringNotContainsString('never replacing', $descriptions);
         $this->assertStringNotContainsString('stores only ids and the step', $descriptions);
@@ -1195,7 +1237,8 @@ class ControlDOnboardClientTest extends TestCase
         $this->configure();
         $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
         $html = $this->actingAs(User::factory()->admin()->create(['is_active' => true]))->get(route('clients.show', $fixture['client']))->assertOk()->getContent();
-        $this->assertStringContainsString('If it has no global profile set, the next proposal sets the configured one; if the configured one is already enforced, the next proposal cuts one provisioning code with the Control D panel defaults (stored encrypted, never shown). If a different global profile is already set when staging or approval reads it, the proposal is refused and nothing is written to Control D.', $html);
+        $this->assertStringContainsString('If it has no global profile set, the next proposal sets the configured one; if the configured one is already enforced, the next proposal cuts one provisioning code with the Control D panel defaults (stored encrypted, never shown). If a different global profile is already set when staging reads it, staging refuses and no proposal is created; if one is set by the time approval reads it, approval refuses; either way nothing is written to Control D. '.self::RACE, $html);
+        $this->assertStringNotContainsString('the proposal is refused', $html);
         $this->assertStringNotContainsString('(step 3)', $html);
         $this->assertStringNotContainsString('(step 2)', $html);
         $this->assertStringNotContainsString('is never replaced', $html);

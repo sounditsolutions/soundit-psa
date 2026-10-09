@@ -1401,9 +1401,10 @@ locked bind re-checks as the other steps; a vendor envelope rejection is `reject
 any other failure after admission is uncertain and terminal. If an organization
 already enforces a DIFFERENT global profile when staging, approval or the
 pre-admission read looks, onboarding refuses with no write, and an operator changes it
-in Control D (or changes the setting) first. Control D has no conditional PUT, so a
-profile set between the pre-admission read and the PUT is not detected and is
-replaced. The
+in Control D (or changes the setting) first. This code sends an unconditional PUT, so a
+profile set after the pre-admission read is not detected and the PUT may replace it; a
+vendor rejection of the PUT ends the intent `rejected`, and an unknown outcome or a
+read-back that does not show the configured profile ends it uncertain. The
 code preflight accepts the profile when it is exactly one of the sub-organization's
 own profiles, or, when it is not listed there at all, the sub-organization's
 `parent_profile.PK` (read live from the parent inventory); listed more than once is

@@ -353,9 +353,11 @@ class ControlDOnboardingStaged
 
     /**
      * Fills a parent_profile that is ABSENT at the pre-admission read; a DIFFERENT one seen
-     * there refuses with no write. Control D has no conditional PUT, so a profile set
-     * between that read and the PUT is not detected and is replaced (the read-back then
-     * shows the configured profile). PUT organizations under X-Force-Org-Id (Modify
+     * there refuses with no write. This code sends an unconditional PUT, so a profile set
+     * after that read is not detected and the PUT may replace it; nothing here measures
+     * what Control D does then. A vendor envelope rejection ends the intent `rejected`; an
+     * unknown outcome or a read-back that does not show the configured profile ends it
+     * uncertain. PUT organizations under X-Force-Org-Id (Modify
      * Organization: the sub-org itself) with the PINNED profile PK under the PINNED org,
      * then the parent's GET sub_organizations read-back. Before admission: pin drift, an
      * unreadable inventory, or a DIFFERENT parent_profile already set are definite
@@ -410,7 +412,7 @@ class ControlDOnboardingStaged
         $this->bind($intent, $actor, $orgPk, null);
     }
 
-    public const DIFFERENT_PROFILE_REFUSAL = 'This Control D sub-organization already enforces a different global profile, so onboarding refused and nothing was written to Control D. Change it in Control D, or change the configured default, before onboarding continues.';
+    public const DIFFERENT_PROFILE_REFUSAL = 'This Control D sub-organization already enforces a different global profile, so onboarding refused and nothing was written to Control D. Change it in Control D, or change the configured default, before onboarding continues. A different profile is detected only when onboarding reads it: the global-profile update this code sends is unconditional, so one set after the last read before that update would not be detected.';
 
     private function code(ControlDOnboardingIntent $intent, #[\SensitiveParameter] User $actor): void
     {

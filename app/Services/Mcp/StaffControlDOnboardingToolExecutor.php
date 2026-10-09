@@ -285,8 +285,24 @@ class StaffControlDOnboardingToolExecutor
 
     // ── step derivation ─────────────────────────────────────────────────────────
 
-    /** nextStep() refusal when the global-profile state could not be established (any arm of globalProfileState()). */
-    public const UNREADABLE_REFUSAL = 'Could not confirm whether the Control D global profile is enforced on this client\'s organization (the configured global profile setting is missing or invalid, Control D is disabled or unconfigured, or the parent organization list could not be read or did not list this organization exactly once with a well-formed global profile); nothing was staged.';
+    /**
+     * Why the global-profile state could not be established (any arm of
+     * globalProfileState()). No staging clause: approval embeds it while its proposal is
+     * still staged, so only the staging-time UNREADABLE_REFUSAL says nothing was staged.
+     */
+    public const UNREADABLE_REASON = 'Could not confirm whether the Control D global profile is enforced on this client\'s organization (the configured global profile setting is missing or invalid, Control D is disabled or unconfigured, or the parent organization list could not be read or did not list this organization exactly once with a well-formed global profile)';
+
+    /**
+     * The global-profile race, on the approval card and the client page. True of this
+     * code on every arm: the PUT carries no condition, a vendor envelope rejection ends
+     * the intent `rejected`, and any other post-admission failure or a read-back that does
+     * not show the configured profile ends it uncertain. It claims nothing about what
+     * Control D does with the PUT. No apostrophes: the client page renders it escaped.
+     */
+    public const RACE_DISCLOSURE = 'The global-profile step sends an unconditional update, so a global profile set after the last read before that update is not detected and the update may replace it; a vendor rejection of the update ends the step rejected, and an unknown outcome or a read-back that does not show the configured profile ends it uncertain.';
+
+    /** nextStep() refusal at staging when the global-profile state could not be established. */
+    public const UNREADABLE_REFUSAL = self::UNREADABLE_REASON.'; nothing was staged.';
 
     /** Next-step refusal while an intent owns the client: names the release path truthfully. */
     private const OWNED_REFUSAL = 'A Control D onboarding intent already owns this client (staged, posted or uncertain); nothing was staged. A never-admitted (staged) intent can be released by an Admin from the Control D onboarding card on the client page while client onboarding is enabled; a posted or uncertain one needs manual reconciliation before the next step is proposed.';
@@ -295,7 +311,7 @@ class StaffControlDOnboardingToolExecutor
      * Which step this client needs next, or an error. Exactly one step per proposal.
      * For the global-profile step, also the org PK and profile PK the proposal pins.
      *
-     * @return array{step?: string, error?: string, org_pk?: string, profile_pk?: string, unreadable?: bool}
+     * @return array{step?: string, error?: string, org_pk?: string, profile_pk?: string, unreadable?: bool, reason?: string}
      */
     private function nextStep(Client $client): array
     {
@@ -323,15 +339,16 @@ class StaffControlDOnboardingToolExecutor
         // staging AND again at approval. A failed or malformed read refuses (unknown is
         // never "enforced"), and a DIFFERENT parent_profile refuses too: the code step's
         // preflight would not accept the configured profile there, and this code does not
-        // knowingly replace a global profile someone chose (Control D has no conditional
-        // PUT, so one set after the pre-admission read is not detected).
+        // knowingly replace a global profile someone chose (this code sends an
+        // unconditional PUT, so one set after the pre-admission read is not detected and
+        // the PUT may replace it).
         try {
             $state = $this->onboarding()->globalProfileState((string) $org);
         } catch (ControlDClientException) {
             // globalProfileState() throws before any request (setting missing or invalid,
             // Control D disabled or unconfigured) and after one (transport failure, a
             // malformed body, the org not listed exactly once). The text asserts neither.
-            return ['unreadable' => true, 'error' => self::UNREADABLE_REFUSAL];
+            return ['unreadable' => true, 'error' => self::UNREADABLE_REFUSAL, 'reason' => self::UNREADABLE_REASON];
         }
         if ($state === ControlDOnboardingStaged::PROFILE_DIFFERENT) {
             return ['error' => ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL];
@@ -472,7 +489,7 @@ class StaffControlDOnboardingToolExecutor
         $name = $this->fence->neutralizeUntrusted((string) $client->name);
         if ($step === self::STEP_GLOBAL_PROFILE) {
             return "Control D onboarding — step 2 of 3 (global profile) for client '{$name}' (#{$client->id}), organization ".$this->fence->neutralizeUntrusted((string) ($pins['org_pk'] ?? '')).".\n"
-                .'Sets the configured global profile '.($pins['profile_pk'] ?? '')." on that existing sub-organization, which has none set (one update, then a read-back from the parent organization list). If a different global profile is already set when this is approved, approval refuses and nothing is written. Control D has no conditional update, so a profile set between approval's last read and the update is not detected and would be replaced.\n"
+                .'Sets the configured global profile '.($pins['profile_pk'] ?? '').' on that existing sub-organization, which has none set (one update, then a read-back from the parent organization list). If a different global profile is already set when this is approved, approval refuses and nothing is written. '.self::RACE_DISCLOSURE."\n"
                 .'Approval refuses if the client\'s organization or the configured global profile no longer matches the values on this card. No provisioning code is cut by this step; once it is confirmed, stage the verb again for the final step (provisioning code).';
         }
         if ($step === self::STEP_ORGANIZATION) {
@@ -598,9 +615,11 @@ class StaffControlDOnboardingToolExecutor
             $pinDrift = $step === self::STEP_GLOBAL_PROFILE && ($derived['step'] ?? null) === $step
                 && (($payload['org_pk'] ?? null) !== ($derived['org_pk'] ?? null) || ($payload['profile_pk'] ?? null) !== ($derived['profile_pk'] ?? null));
             if (($derived['step'] ?? null) !== $step || $pinDrift) {
-                $why = $derived['error'] ?? ($pinDrift
+                // An unreadable state carries its reason without the staging-time
+                // 'nothing was staged' clause: this proposal is still staged.
+                $why = ($derived['unreadable'] ?? false) ? $derived['reason'] : ($derived['error'] ?? ($pinDrift
                     ? "the client's Control D organization or the configured global profile no longer matches the values on this card"
-                    : "the client now needs the '".($derived['step'] ?? 'none')."' step, not '{$step}'");
+                    : "the client now needs the '".($derived['step'] ?? 'none')."' step, not '{$step}'"));
                 $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $contentHash, "{$targetKey}: approval refused — {$why}", $approverLabel, $run->id, $approverId);
                 $run->releaseClaim();
                 if ($derived['unreadable'] ?? false) {
@@ -682,8 +701,10 @@ class StaffControlDOnboardingToolExecutor
             return new TechnicianApprovalResult('executed_with_fault', message: $fault);
         } catch (\Throwable $e) {
             // Only an ADMITTED intent can carry a vendor write; staged and released
-            // (never admitted) are pre-admission whatever failed afterwards.
-            if ($intentId !== null && ! in_array(ControlDOnboardingIntent::find($intentId)?->state ?? 'staged', ['staged', ControlDOnboardingStaged::RELEASED], true)) {
+            // (never admitted) are pre-admission whatever failed afterwards. `rejected` is
+            // admitted but written only by B3's finish() on a ControlDWriteRejectedException
+            // from the one POST/PUT itself (a vendor envelope refusal), so nothing was written.
+            if ($intentId !== null && ! in_array(ControlDOnboardingIntent::find($intentId)?->state ?? 'staged', ['staged', ControlDOnboardingStaged::RELEASED, 'rejected'], true)) {
                 // Post-admission: a write may have happened. Keep the run terminal.
                 $this->safeAudit($run->action_type, 'error', (int) $run->client_id, null, (string) $run->content_hash, "onboard: finalizing after a possible vendor write failed; intent {$intentId}; run NOT reopened.", $this->approverLabel($approverId), $run->id, $approverId);
                 $run->advanceTo(TechnicianRunState::Done);
@@ -905,7 +926,7 @@ class StaffControlDOnboardingToolExecutor
     {
         return [
             'name' => self::TOOL,
-            'description' => 'Onboard ONE PSA client to Control D in up to three separately staged steps: (1) create the client\'s Control D sub-organization (name and contact email from the client record, two-factor required, the panel\'s analytics region, the configured global profile) and bind the returned organization id to the client; (2) only for a mapped sub-organization with no global profile set, set the configured global profile on it (refused if a different one is already set when approved; Control D has no conditional update, so one set between that read and the update is not detected); (3) once the configured global profile is enforced, cut one provisioning code under that organization with the Settings > Integrations > Control D defaults (enforced profile, expiry, device limit = asset count + headroom, analytics level, intercept mode). HELD-ONLY: never executes immediately, whatever mode was granted — every call needs staged=true and a ticket_id and is approved in the cockpit by an active Admin. Only an MCP token marked ai_actor may stage it (the agent stages, one human approves); a person onboards from the Control D card on the client page, where a second Admin must approve. The server decides which step the client needs; one proposal is one step. No PIN, hostname prefix, icon, profile, limit or vendor PK is accepted from the caller; secrets are stored encrypted on the client record and never returned. Inert unless the Control D onboarding switch is on and all six defaults are configured. Requires an explicit token grant, reason, kill-switch, and TechnicianActionLog audit.',
+            'description' => 'Onboard ONE PSA client to Control D in up to three separately staged steps: (1) create the client\'s Control D sub-organization (name and contact email from the client record, two-factor required, the panel\'s analytics region, the configured global profile) and bind the returned organization id to the client; (2) only for a mapped sub-organization with no global profile set, set the configured global profile on it (refused if a different one is already set when approved; this code sends an unconditional update, so one set after that read is not detected and the update may replace it); (3) once the configured global profile is enforced, cut one provisioning code under that organization with the Settings > Integrations > Control D defaults (enforced profile, expiry, device limit = asset count + headroom, analytics level, intercept mode). HELD-ONLY: never executes immediately, whatever mode was granted — every call needs staged=true and a ticket_id and is approved in the cockpit by an active Admin. Only an MCP token marked ai_actor may stage it (the agent stages, one human approves); a person onboards from the Control D card on the client page, where a second Admin must approve. The server decides which step the client needs; one proposal is one step. No PIN, hostname prefix, icon, profile, limit or vendor PK is accepted from the caller; secrets are stored encrypted on the client record and never returned. Inert unless the Control D onboarding switch is on and all six defaults are configured. Requires an explicit token grant, reason, kill-switch, and TechnicianActionLog audit.',
             'input_schema' => ['type' => 'object', 'properties' => self::properties(), 'required' => ['reason']],
         ];
     }

@@ -861,8 +861,18 @@ class ControlDGlobalProfileTest extends TestCase
     /** #6228 (diff:2): the different-profile refusal states what happened, not a 'never replaces' guarantee. */
     public function test_different_profile_refusal_text_is_exact(): void
     {
-        $this->assertSame('This Control D sub-organization already enforces a different global profile, so onboarding refused and nothing was written to Control D. Change it in Control D, or change the configured default, before onboarding continues.', ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL);
+        $this->assertSame('This Control D sub-organization already enforces a different global profile, so onboarding refused and nothing was written to Control D. Change it in Control D, or change the configured default, before onboarding continues. A different profile is detected only when onboarding reads it: the global-profile update this code sends is unconditional, so one set after the last read before that update would not be detected.', ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL);
+        $this->assertStringNotContainsString('no conditional', ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL);
         $this->assertStringNotContainsString('never replaces', ControlDOnboardingStaged::DIFFERENT_PROFILE_REFUSAL);
+    }
+
+    /** #6249 r2 context:1: INSTALL states the unconditional PUT and its three endings, and claims no replacement or vendor fact. */
+    public function test_install_race_text_claims_only_what_this_code_does(): void
+    {
+        $install = preg_replace('/\s+/', ' ', file_get_contents(base_path('docs/INSTALL.md')));
+        $this->assertStringContainsString('This code sends an unconditional PUT, so a profile set after the pre-admission read is not detected and the PUT may replace it; a vendor rejection of the PUT ends the intent `rejected`, and an unknown outcome or a read-back that does not show the configured profile ends it uncertain.', $install);
+        $this->assertStringNotContainsString('is not detected and is replaced', $install);
+        $this->assertStringNotContainsString('Control D has no conditional', $install);
     }
 
     /** #6229 (diff:4): the release flash claims only what release() did: the lock is free, no Control D call. Not 'can be staged again'. */
@@ -872,6 +882,9 @@ class ControlDGlobalProfileTest extends TestCase
         $client = $this->mapped();
         // The onboarded arm: a client with a code can still have a leftover never-admitted intent; staging it again would refuse.
         $client->forceFill(['controld_provisioning_code' => 'synthetic-code'])->save();
+        // #6249 r2 contract:3: bind the service the controller resolves, so $this->history is the
+        // transport release() would use. Any vendor request there is recorded (and answered 503).
+        $this->app->instance(ControlDOnboardingStaged::class, $this->writer([]));
         $intent = new ControlDOnboardingIntent;
         $intent->forceFill(['id' => (string) \Illuminate\Support\Str::uuid(), 'client_id' => $client->id, 'actor_id' => $actor->id,
             'active_client_id' => $client->id, 'operation' => 'code', 'state' => 'staged', 'phase' => 'preflight', 'payload' => []])->save();
