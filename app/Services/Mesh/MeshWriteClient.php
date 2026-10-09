@@ -152,11 +152,15 @@ class MeshWriteClient
      * #6161, #6162: MeshConfig::isSendableKey(): a scalar (#6208: an
      * array, even [], is not configured), not missing (null, false, '' or
      * only spaces and tabs) and not a stored value the PSA does not send
-     * ('0', 0, 0.0, true). #6343: narrower than MeshConfig::isConfigured(),
-     * which also applies the header rule to the stored key (#6288) and
-     * refuses a row that does not decrypt (#6296); so a key holding a CR
-     * or LF is configured here and not there. Here the header rule is
-     * preflight()'s, before send. assertConfigured() words a refusal with
+     * ('0', 0, 0.0, true). #6343: broader than MeshConfig::isConfigured(),
+     * which also applies the header rule (MeshClient::headerValueRefusal():
+     * every byte outside [\x20\x09\x21-\x7E\x80-\xFF] is refused, so NUL,
+     * CR, LF, every other C0 control but tab, and DEL) to the stored key
+     * (#6288); so a key holding any of those bytes is configured here and
+     * not there. A row that does not decrypt (#6296) is not a difference:
+     * AppServiceProvider builds this client with MeshConfig::get('api_key'),
+     * null for that row, so this check refuses it too. Here the header
+     * rule is preflight()'s, before send. assertConfigured() words a refusal with
      * MeshClient::apiKeyRefusal(), which tells the two apart.
      */
     public function isConfigured(): bool

@@ -37,11 +37,13 @@ use Tests\TestCase;
  *  - #6349: mesh:test and the settings connection test word the
  *    undecryptable and CR/LF stored keys.
  *
- * G-5: Http::preventStrayRequests(); the container's Mesh clients are
- * Mockery doubles that fail on any call (the mesh:test rows bind none: the
- * command refuses before it resolves one); the connection-test rows bind
- * a GuzzleClient factory that records every build and fails the test if
- * one is made. Base URL: a reserved example.test host. Synthetic data
+ * G-5: Http::preventStrayRequests(); setUp() binds Mockery doubles of
+ * MeshClient and MeshWriteClient for every test, the mesh:test rows
+ * included, and a double fails on any call. The connection-test rows also
+ * bind a GuzzleClient factory whose client has a handler that counts each
+ * send and throws; the test asserts that count is 0. Building a client is
+ * allowed and not counted (testMesh() always builds one before its key
+ * check). Base URL: a reserved example.test host. Synthetic data
  * (G-13): SECRET_FIXTURE keys, example.test hosts.
  */
 class MeshKeyStateB6lTest extends TestCase
@@ -222,8 +224,11 @@ class MeshKeyStateB6lTest extends TestCase
 
     /**
      * #6294 controls: a usable key is listed with no notice; no key, a
-     * blank key, or Mesh switched off (even with an unusable key) leaves
-     * the card out, as before.
+     * blank key, or Mesh switched off with an unusable key leaves the card
+     * out, as before. Not a row here: switched off with a usable key, the
+     * card is still listed and Link is offered (configCheck is
+     * isConfigured(), which does not read the switch); that is
+     * pre-existing behaviour, outside this change.
      *
      * @return array<string, array{0: string|false, 1: string, 2: bool}> stored key, mesh_enabled, listed
      */
@@ -370,7 +375,8 @@ class MeshKeyStateB6lTest extends TestCase
     /**
      * #6349, #6346: the settings connection test words an undecryptable
      * row and a CR/LF key, logs that text once, and builds a client but
-     * sends nothing (the factory's client has no handler to send with).
+     * sends nothing (the factory's client has a handler that counts each
+     * send and throws; the count must stay 0; the build is not counted).
      *
      * @return array<string, array{0: string|null, 1: string}>
      */
