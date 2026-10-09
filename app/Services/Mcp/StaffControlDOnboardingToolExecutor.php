@@ -56,7 +56,7 @@ use Illuminate\Support\Str;
  * THREE STEPS, ONE APPROVAL EACH, NEVER TWO IN ONE. A client without `controld_org_id`
  * proposes the `organization` step (create the sub-organization with the configured
  * global profile, bind the mapping). A mapped client with no stored code proposes the
- * `global-profile` step when its sub-organization's parent_profile is ABSENT (fill it;
+ * `global-profile` step when its sub-organization's parent_profile is ABSENT or null (fill it;
  * the org and profile PKs are pinned in the sealed payload), or the `code` step when
  * the configured global profile is already enforced (cut the provisioning code under
  * that org). A sub-organization that already enforces a DIFFERENT global profile, or
@@ -113,7 +113,7 @@ class StaffControlDOnboardingToolExecutor
 
     public const STEP_CODE = 'code';
 
-    /** Fill an ABSENT parent_profile on a mapped sub-organization with the configured Global Profile. */
+    /** Fill an ABSENT or null parent_profile on a mapped sub-organization with the configured Global Profile. */
     public const STEP_GLOBAL_PROFILE = ControlDOnboardingStaged::GLOBAL_PROFILE;
 
     public function __construct(
@@ -353,7 +353,7 @@ class StaffControlDOnboardingToolExecutor
             return ['error' => self::OWNED_REFUSAL, 'reason' => self::OWNED_REASON];
         }
         // Ordering: organization, then global profile (only when the sub-organization's
-        // parent_profile is ABSENT), then code (only when it equals the configured Global
+        // parent_profile is ABSENT or null), then code (only when it equals the configured Global
         // Profile). Decided by a read-only GET of the parent's sub_organizations, here at
         // staging AND again at approval. A failed or malformed read refuses (unknown is
         // never "enforced"), and a DIFFERENT parent_profile refuses too: the code step's
@@ -363,10 +363,16 @@ class StaffControlDOnboardingToolExecutor
         // the PUT may replace it).
         try {
             $state = $this->onboarding()->globalProfileState((string) $org);
-        } catch (ControlDClientException) {
+        } catch (ControlDClientException $e) {
             // globalProfileState() throws before any request (setting missing or invalid,
             // Control D disabled or unconfigured) and after one (transport failure, a
             // malformed body, the org not listed exactly once). The text asserts neither.
+            // #6408: the log names which arm fired. Every ControlDClientException this read
+            // can throw carries a fixed message (no vendor body, setting value or key).
+            \Illuminate\Support\Facades\Log::warning('[StaffControlDOnboardingToolExecutor] The Control D global-profile state could not be read at step derivation', [
+                'client_id' => $client->id, 'org_pk' => (string) $org, 'exception' => $e::class, 'message' => $e->getMessage(),
+            ]);
+
             return ['unreadable' => true, 'error' => self::UNREADABLE_REFUSAL, 'reason' => self::UNREADABLE_REASON];
         }
         if ($state === ControlDOnboardingStaged::PROFILE_DIFFERENT) {

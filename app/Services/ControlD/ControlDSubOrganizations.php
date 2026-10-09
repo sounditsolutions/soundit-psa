@@ -11,9 +11,13 @@ use stdClass;
  * Producer: vendor OpenAPI 3.0.1, GET /organizations/sub_organizations
  * (tests/Fixtures/ControlD/organization-schema.json). Each row's `parent_profile` is an
  * OPTIONAL property (absent from the row's `required` list) whose type is an object
- * with required `PK` (string), `updated` (integer) and `name` (string). So the only
- * documented "unset" shape is an ABSENT key. Any other shape — null, a scalar, an
- * object without a string PK — is not a documented shape and is refused as malformed
+ * with required `PK` (string), `updated` (integer) and `name` (string). The schema does
+ * NOT mark the field `nullable`, so its only documented "unset" shape is an ABSENT key.
+ * Observed, not documented: on 2026-10-09 a read-only production read of this endpoint
+ * (card XULQ2iix) returned the key PRESENT with JSON null for a sub-organization that has
+ * no Global Profile. A present null is therefore read as unset, exactly like an absent
+ * key (XULQ2iix ruling (a)). Any other shape (a scalar, an array, false, an object
+ * without a non-empty string PK) is not a documented shape and is refused as malformed
  * (C-56), never read as "no global profile".
  */
 final class ControlDSubOrganizations
@@ -48,10 +52,16 @@ final class ControlDSubOrganizations
         return $matches[0];
     }
 
-    /** The row's Global Profile PK, or null when the key is absent. Any other shape throws. */
+    /**
+     * The row's Global Profile PK, or null when it is unset: the key ABSENT (the only
+     * shape the vendor's OpenAPI documents, which does not mark the field nullable) or
+     * PRESENT with JSON null (the shape a 2026-10-09 production read observed for an org
+     * with no Global Profile). Only null itself is unset; any other non-conforming shape
+     * throws, including '', 0, false and an object with an empty or non-string PK.
+     */
     public static function parentProfile(stdClass $row): ?string
     {
-        if (! property_exists($row, 'parent_profile')) {
+        if (! property_exists($row, 'parent_profile') || $row->parent_profile === null) {
             return null;
         }
         $profile = $row->parent_profile;

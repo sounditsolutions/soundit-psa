@@ -20,8 +20,12 @@ remain failures, not automatic defaults. One optional field is emitted (XULQ2iix
 `sub-organization.json` is mechanically instantiated from the GET
 `sub_organizations` item schema with synthetic values (G-13). In that schema
 `parent_profile` is an OPTIONAL property (absent from `required`) of type object with
-required `PK`/`updated`/`name`. So ABSENT is the only documented unset shape; null, a
-scalar or an object without a string PK is treated as malformed. A read-back that lists
+required `PK`/`updated`/`name`, and it is not marked `nullable`. So ABSENT is the only
+documented unset shape. Observed, not documented: on 2026-10-09 a read-only production
+read returned the key PRESENT with JSON null for a sub-organization with no Global
+Profile, so a present null is read as unset too (XULQ2iix ruling (a)); the pinned
+`organization-schema.json` is the vendor's contract and is left unchanged. A scalar, an
+array, false or an object without a non-empty string PK is treated as malformed. A read-back that lists
 the org without `parent_profile.PK` equal to the setting is uncertain, not success.
 
 PUT `/organizations` ("Modify Organization") is NOT preserved in

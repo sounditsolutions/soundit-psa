@@ -49,7 +49,7 @@ class ControlDOnboardingStaged
 
     /**
      * Enforce the configured Global Profile on an already-mapped sub-organization whose
-     * parent_profile is ABSENT. The org PK and profile PK the approver saw are pinned in
+     * parent_profile is ABSENT or null. The org PK and profile PK the approver saw are pinned in
      * the payload; staging refuses unless both still equal the client's live mapping and
      * the live setting, and execute() refuses before admission if either has drifted.
      */
@@ -84,7 +84,9 @@ class ControlDOnboardingStaged
 
     /**
      * Read-only: the sub-organization's parent_profile against the configured Global
-     * Profile — PROFILE_ENFORCED (equal), PROFILE_ABSENT (the documented unset shape) or
+     * Profile — PROFILE_ENFORCED (equal), PROFILE_ABSENT (unset: the key ABSENT, the only
+     * documented shape, or PRESENT with JSON null, the shape observed live on 2026-10-09;
+     * ControlDSubOrganizations::parentProfile()) or
      * PROFILE_DIFFERENT (another PK is already enforced; staging and approval refuse on it).
      * Throws ControlDClientException, so unknown is never "enforced", on every arm:
      * before any request, when the configured global profile setting is missing or not a
@@ -357,7 +359,7 @@ class ControlDOnboardingStaged
     }
 
     /**
-     * Fills a parent_profile that is ABSENT at the pre-admission read; a DIFFERENT one seen
+     * Fills a parent_profile that is ABSENT or null at the pre-admission read; a DIFFERENT one seen
      * there refuses with no write. This code sends an unconditional PUT, so a profile set
      * after that read is not detected and the PUT may replace it; nothing here measures
      * what Control D does then. Only ControlDClient's ControlDWriteRejectedException (an
@@ -385,7 +387,7 @@ class ControlDOnboardingStaged
         $intent->org_pk = $orgPk;
         $intent->saveOrFail();
         $inventory = new ControlDSubOrganizations($this->vendor);
-        // Read-only pre-admission check: listed exactly once, and parent_profile absent.
+        // Read-only pre-admission check: listed exactly once, and parent_profile absent or null.
         $current = $inventory->parentProfileOf($orgPk);
         if ($current === $global) {
             // Definite no-op: no write is needed or made. The never-admitted intent ends

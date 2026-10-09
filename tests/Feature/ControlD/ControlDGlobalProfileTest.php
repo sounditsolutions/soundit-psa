@@ -290,7 +290,15 @@ class ControlDGlobalProfileTest extends TestCase
             'global-absent' => [[null], $neither],
             'org-not-listed' => [['unlisted'], $unconfirmed],
             'org-listed-twice' => [['twice'], $unconfirmed],
-            'parent-profile-null' => [['null'], $unconfirmed],
+            // XULQ2iix ruling (a): a PRESENT JSON null (observed live 2026-10-09) is unset,
+            // so it gets exactly the absent-key outcome above, not the malformed one.
+            'parent-profile-null-reads-as-absent' => [['null'], $neither],
+            // Every other non-conforming shape still refuses as malformed.
+            'parent-profile-object-without-pk' => [['shape:object-without-pk'], $unconfirmed],
+            'parent-profile-empty-pk' => [['shape:empty-pk'], $unconfirmed],
+            'parent-profile-empty-string' => [['shape:empty-string'], $unconfirmed],
+            'parent-profile-zero' => [['shape:zero'], $unconfirmed],
+            'parent-profile-false' => [['shape:false'], $unconfirmed],
             'inventory-malformed' => [['malformed'], $unconfirmed],
             'inventory-503' => [['503'], $unconfirmed],
         ];
@@ -304,6 +312,7 @@ class ControlDGlobalProfileTest extends TestCase
             'unlisted' => $this->inventory($this->listed('sibling01')),
             'twice' => $this->inventory($this->listed(), $this->listed()),
             'null' => $this->inventory(array_merge($this->listed(), ['parent_profile' => null])),
+            'shape:object-without-pk', 'shape:empty-pk', 'shape:empty-string', 'shape:zero', 'shape:false' => $this->inventory(array_merge($this->listed(), ['parent_profile' => self::malformedShapes()[substr($case[0], 6)][0]])),
             'malformed' => $this->ok(['sub_organizations' => (object) []]),
             default => $this->inventory($this->listed(self::ORG, $case[0])),
         };
@@ -677,6 +686,40 @@ class ControlDGlobalProfileTest extends TestCase
         $this->assertSame(ControlDOnboardingStaged::PROFILE_ABSENT, $this->writer([$this->inventory($this->listed(self::ORG, null))])->globalProfileState(self::ORG));
         $this->assertSame(ControlDOnboardingStaged::PROFILE_ENFORCED, $this->writer([$this->inventory($this->listed())])->globalProfileState(self::ORG));
         $this->assertSame(ControlDOnboardingStaged::PROFILE_DIFFERENT, $this->writer([$this->inventory($this->listed(self::ORG, '333333synthCC'))])->globalProfileState(self::ORG));
+    }
+
+    /** XULQ2iix ruling (a): the key PRESENT with JSON null (observed live 2026-10-09) is unset, exactly like an absent key. */
+    public function test_global_profile_state_reads_a_present_null_parent_profile_as_absent(): void
+    {
+        $row = array_merge($this->listed(), ['parent_profile' => null]);
+        $this->assertArrayHasKey('parent_profile', $row, 'the key is present, holding null');
+        $this->assertSame(ControlDOnboardingStaged::PROFILE_ABSENT, $this->writer([$this->inventory($row)])->globalProfileState(self::ORG));
+        $this->assertSame(['GET /organizations/sub_organizations'], $this->calls());
+    }
+
+    /** Non-conforming parent_profile shapes other than null: each still refuses as malformed. */
+    public static function malformedShapes(): array
+    {
+        return [
+            'object-without-pk' => [['updated' => 1, 'name' => 'x']],
+            'empty-pk' => [['PK' => '', 'updated' => 1, 'name' => 'x']],
+            'integer-pk' => [['PK' => 111111, 'updated' => 1, 'name' => 'x']],
+            'empty-string' => [''],
+            'string' => [self::GLOBAL],
+            'zero' => [0],
+            'number' => [111111],
+            'false' => [false],
+            'empty-array' => [[]],
+            'list' => [[self::GLOBAL]],
+        ];
+    }
+
+    #[DataProvider('malformedShapes')]
+    public function test_global_profile_state_refuses_every_other_non_conforming_shape_as_malformed(mixed $shape): void
+    {
+        $writer = $this->writer([$this->inventory(array_merge($this->listed(), ['parent_profile' => $shape]))]);
+        $e = $this->refused(fn () => $writer->globalProfileState(self::ORG));
+        $this->assertSame('Control D global profile field is malformed.', $e->getMessage());
     }
 
     public static function pinDrift(): array
