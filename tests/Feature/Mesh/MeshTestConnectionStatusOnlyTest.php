@@ -194,7 +194,7 @@ class MeshTestConnectionStatusOnlyTest extends TestCase
         $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
         $response = $this->postJson(route('settings.integrations.mesh.test'));
 
-        $expected = 'Mesh answered the connection test with HTTP 302, not 200.';
+        $expected = 'The Mesh host (or something in front of it) answered the connection test with HTTP 302, not 200.';
         $response->assertOk()->assertExactJson(['success' => false, 'message' => $expected]);
         $this->assertCount(1, $history, 'one request: the redirect was not followed');
         $this->assertSame(self::HOST, $history[0]['request']->getUri()->getHost());
@@ -271,7 +271,7 @@ class MeshTestConnectionStatusOnlyTest extends TestCase
         $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
         $response = $this->postJson(route('settings.integrations.mesh.test'));
 
-        $expected = 'Mesh answered the connection test with HTTP 204, not 200.';
+        $expected = 'The Mesh host (or something in front of it) answered the connection test with HTTP 204, not 200.';
         $response->assertOk()->assertExactJson(['success' => false, 'message' => $expected]);
         $this->assertSame(0, $this->mock->count(), 'Mesh was asked, and answered');
         $this->assertWarnedAndTimed($expected);
@@ -309,7 +309,7 @@ class MeshTestConnectionStatusOnlyTest extends TestCase
         $this->actingAs(User::factory()->create(['role' => UserRole::Admin]));
         $response = $this->postJson(route('settings.integrations.mesh.test'));
 
-        $expected = 'Mesh answered the connection test with HTTP 200, but the PSA could not record the connection time (RuntimeException).';
+        $expected = 'The Mesh host (or something in front of it) answered the connection test with HTTP 200, but the PSA could not record the connection time (RuntimeException).';
         $response->assertOk()->assertExactJson(['success' => false, 'message' => $expected]);
         $this->assertSame(0, $this->mock->count(), 'Mesh was asked, and answered');
         $this->assertWarnedAndTimed($expected);

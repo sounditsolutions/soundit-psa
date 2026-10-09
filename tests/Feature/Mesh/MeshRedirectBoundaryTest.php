@@ -25,9 +25,9 @@ use Tests\TestCase;
  *    303, 307, 308) that carries a Location; 304, 305, 306, and any 3xx
  *    without a Location, name the status only (#6158). Every redirect
  *    status has a row (#6222), and an empty Location names no target
- *    (#6224).
- *  - statusPhrase() words 300 to 399, and only those, as the configured
- *    host (or something in front of it) answering (#6220).
+ *    (#6224), nor do several empty ones (#6284).
+ *  - statusPhrase() words every status as the configured host (or
+ *    something in front of it) answering (#6220, #6290).
  *  - each line is read with its level: the 3xx failure is an error
  *    (#6223, G-14 addendum: a demotion to info or debug fails).
  *  - 300 and 399 are failures by status in both clients; 299 is not a
@@ -96,22 +96,53 @@ class MeshRedirectBoundaryTest extends TestCase
         return new Response($status, $location ? ['Location' => 'https://elsewhere-6158.example.test/x'] : [], '{"results":[{"id":"from-3xx"}]}');
     }
 
-    /** @return array<string, array{0: string}> an empty Location value */
+    /**
+     * Empty Location values as a Guzzle Response holds them. #6285: no
+     * 'spaces only' row: PSR-7 trims spaces and tabs when the Response is
+     * built, so '   ' is stored as '' and would only repeat 'empty'; the
+     * trim is driven below through a response that does not trim.
+     * #6284: several empty values, which getHeaderLine() joins as ', '.
+     *
+     * @return array<string, array{0: list<string>}>
+     */
     public static function emptyLocations(): array
     {
-        return ['empty' => [''], 'spaces only' => ['   ']];
+        return ['empty' => [['']], 'two empty values' => [['', '']], 'three empty values' => [['', '', '']]];
     }
 
-    /** #6224: a Location with no value offered no target to follow. */
+    /** #6224, #6284: a Location with no value, or several, offered no target to follow. */
     #[DataProvider('emptyLocations')]
-    public function test_an_empty_location_is_not_named_a_redirect(string $value): void
+    public function test_an_empty_location_is_not_named_a_redirect(array $values): void
     {
         foreach ([302, 307] as $status) {
-            $response = new Response($status, ['Location' => $value]);
-            $this->assertTrue($response->hasHeader('Location'), 'premise: the header is present');
+            $response = new Response($status, ['Location' => $values]);
+            $this->assertSame($values, $response->getHeader('Location'), 'premise: the values as built');
             $this->assertSame('', MeshClient::redirectNote($response), "HTTP {$status}");
         }
         $this->assertSame(' (redirect not followed)', MeshClient::redirectNote(new Response(302, ['Location' => '/x'])), 'positive control');
+        $this->assertSame(' (redirect not followed)', MeshClient::redirectNote(new Response(302, ['Location' => ['', '/x']])), 'positive control: one non-empty value among empty ones');
+    }
+
+    /**
+     * #6285: redirectNote() trims each value of spaces and tabs itself,
+     * for a ResponseInterface that does not trim (a Guzzle Response
+     * would). Driven with a double holding untrimmed blanks; a non-blank
+     * value is still named a redirect.
+     */
+    public function test_a_blank_location_from_a_response_that_does_not_trim_is_not_named_a_redirect(): void
+    {
+        $untrimmed = function (array $values): \Psr\Http\Message\ResponseInterface {
+            $response = \Mockery::mock(\Psr\Http\Message\ResponseInterface::class);
+            $response->allows('getStatusCode')->andReturn(302);
+            $response->allows('getHeader')->with('Location')->andReturn($values);
+            $response->allows('getHeaderLine')->with('Location')->andReturn(implode(', ', $values));
+
+            return $response;
+        };
+
+        $this->assertSame('', MeshClient::redirectNote($untrimmed(['   '])), 'spaces only');
+        $this->assertSame('', MeshClient::redirectNote($untrimmed(["\t", ' '])), 'a tab and a space');
+        $this->assertSame(' (redirect not followed)', MeshClient::redirectNote($untrimmed([' /x '])), 'positive control');
     }
 
     #[DataProvider('threeHundreds')]
@@ -171,16 +202,20 @@ class MeshRedirectBoundaryTest extends TestCase
         $host = 'the Mesh host (or something in front of it) answered the create with HTTP ';
 
         return [
-            '299' => [299, 'Mesh answered the create with HTTP 299'],
+            '299' => [299, $host.'299'],
             '300' => [300, $host.'300'],
             '399' => [399, $host.'399'],
-            '400' => [400, 'Mesh answered the create with HTTP 400'],
+            '400' => [400, $host.'400'],
+            '502' => [502, $host.'502'],
         ];
     }
 
-    /** #6220: only a 3xx is worded as the host 'or something in front of it'. */
+    /**
+     * #6220, #6290: every status is worded as the host 'or something in
+     * front of it' (who answered is not measured for any status).
+     */
     #[DataProvider('phrases')]
-    public function test_the_status_phrase_names_the_host_only_for_a_3xx(int $status, string $phrase): void
+    public function test_the_status_phrase_names_the_host_for_every_status(int $status, string $phrase): void
     {
         $this->assertSame($phrase, (new MeshClientException('x', $status))->statusPhrase('the create'));
     }

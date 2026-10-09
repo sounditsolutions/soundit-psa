@@ -380,7 +380,7 @@ class MeshAllowRuleReaperUnexpiredSettleTest extends TestCase
         $this->assertStringContainsString("Could not read the tenant's rule list", (string) $bare->last_error);
         // #5248 / C-56: the note is status-only; the vendor body and the
         // request URL never reach last_error.
-        $this->assertStringContainsString('Mesh answered the rule list read with HTTP 503', (string) $bare->last_error);
+        $this->assertStringContainsString('the Mesh host (or something in front of it) answered the rule list read with HTTP 503', (string) $bare->last_error);
         $this->assertStringNotContainsString('synthetic failure', (string) $bare->last_error);
         $this->assertStringNotContainsString('mesh.invalid', (string) $bare->last_error);
 

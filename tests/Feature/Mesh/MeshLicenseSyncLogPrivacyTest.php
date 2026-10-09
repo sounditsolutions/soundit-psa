@@ -128,7 +128,7 @@ class MeshLicenseSyncLogPrivacyTest extends TestCase
         return [
             'catch: MeshClientException, HTTP error' => ['http503', ['errors' => 1, 'created' => 0], [
                 ['error', '[MeshClient] GET api/customers/<customer> failed with HTTP 503 ('.ServerException::class.')'],
-                ['error', $catch.'Mesh answered the customer read with HTTP 503 ('.MeshClientException::class.')'],
+                ['error', $catch.'the Mesh host (or something in front of it) answered the customer read with HTTP 503 ('.MeshClientException::class.')'],
             ]],
             'catch: MeshClientException, connect error' => ['connect', ['errors' => 1, 'created' => 0], [
                 ['error', '[MeshClient] GET api/customers/<customer> failed with no HTTP status (cURL errno 7, '.ConnectException::class.')'],

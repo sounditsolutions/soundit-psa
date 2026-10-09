@@ -3,7 +3,6 @@
 namespace Tests\Feature\Mesh;
 
 use App\Models\Setting;
-use App\Services\Mesh\MeshClient;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Log\Events\MessageLogged;
@@ -23,8 +22,11 @@ use Tests\TestCase;
  * Both halves are driven: the schedule event's own filter (filtersPass())
  * and the command it runs, whose warning is read with its level.
  *
- * G-5: stray Http requests prevented; the command never reaches Mesh on
- * these rows. Synthetic data (G-13): SECRET_FIXTURE keys.
+ * G-5, #6295: on these rows the command refuses before the reaper is
+ * called, so no Mesh client is used. Http::preventStrayRequests() guards
+ * Laravel's Http facade only, not the reaper's Guzzle-backed
+ * MeshWriteClient, and is not what keeps these rows off the network.
+ * Synthetic data (G-13): SECRET_FIXTURE keys.
  */
 class MeshReaperScheduleGateTest extends TestCase
 {
@@ -82,7 +84,7 @@ class MeshReaperScheduleGateTest extends TestCase
     {
         return [
             'blank key' => ['   ', 'Mesh is not configured. Add the API key in Settings → Integrations.'],
-            "'0' key" => ['0', 'The Mesh API key '.MeshClient::UNUSABLE_KEY.'. Replace it in Settings → Integrations.'],
+            "'0' key" => ['0', 'Mesh has a stored API key the PSA does not send (zero or true). Replace it in Settings → Integrations.'],
         ];
     }
 

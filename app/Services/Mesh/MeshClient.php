@@ -13,7 +13,9 @@ use Illuminate\Support\Facades\Log;
 class MeshClient
 {
     /**
-     * What preflight() logs for an endpoint PSR-7 cannot parse (#6049).
+     * The fixed label for an endpoint PSR-7 cannot parse (#6049): what
+     * preflight() logs, and what both logPath()s return for such an
+     * endpoint whoever calls them (#6217 on the write side, #6286 here).
      */
     public const UNPARSEABLE_ENDPOINT = '[unparseable endpoint]';
 
@@ -107,7 +109,8 @@ class MeshClient
     /**
      * Internal request method with auth header.
      * API-KEY header is added here — never logged. A failure is logged by
-     * method, endpoint path (see logPath(): never any user-info, neither
+     * method, endpoint path (see logPath(): UNPARSEABLE_ENDPOINT for an
+     * endpoint PSR-7 cannot parse (#6286); never any user-info, neither
      * user nor password (#5761); no query or fragment; a scheme and '//'
      * at the very START of the endpoint are stripped with the authority
      * that follows the '//' (a '//' later in the path strips nothing);
@@ -180,8 +183,9 @@ class MeshClient
      * Cookie on a cross-origin hop, so a followed redirect would carry the
      * API-KEY header to whatever host Location names. A 3xx is a failure
      * by its status: logged and thrown like any other status, the
-     * Location's value never read or quoted (#6209: redirectNote() reads
-     * only whether a non-empty Location is present).
+     * Location's value never logged or quoted (#6209, #6298:
+     * redirectNote() reads the Location's values only to test whether
+     * any of them is non-empty).
      */
     private function request(string $method, #[\SensitiveParameter] string $endpoint, #[\SensitiveParameter] array $options = []): array
     {
@@ -233,8 +237,8 @@ class MeshClient
             // it) answered with a 3xx, which is not followed. A failure by
             // status, like any other: the Location is neither followed,
             // logged nor quoted, and the answered status is the code.
-            // #6158: '(redirect not followed)' only for a redirect status
-            // that carries a Location (redirectNote()).
+            // #6158, #6224: '(redirect not followed)' only for a redirect
+            // status that carries a non-empty Location (redirectNote()).
             $failure = "{$method} ".self::logPath($endpoint)." failed with HTTP {$status}".self::redirectNote($response);
             Log::error("[MeshClient] {$failure}");
             throw new MeshClientException("Mesh API error: {$failure}", $status);
@@ -287,17 +291,25 @@ class MeshClient
     /**
      * #6158: ' (redirect not followed)' for a 3xx that offered a redirect:
      * one of REDIRECT_STATUSES with a non-empty Location header (#6224: a
-     * 'Location:' with no value names no target). Any other 3xx (304,
-     * 305, 306, or any status with no or an empty Location) offered
-     * nothing to follow, so its line names the status only: ''. The
-     * Location is read only to test that it is not empty; its value is
-     * never logged or quoted.
+     * 'Location:' with no value names no target; #6284: nor do several
+     * of them, which getHeaderLine() would join as ', '). Any other 3xx
+     * (304, 305, 306, or any status with no or only empty Location
+     * values) offered nothing to follow, so its line names the status
+     * only: ''. Each Location value is read only to test whether it is
+     * empty once trimmed of spaces and tabs; no value is logged or quoted.
      */
     public static function redirectNote(\Psr\Http\Message\ResponseInterface $response): string
     {
-        return in_array($response->getStatusCode(), self::REDIRECT_STATUSES, true) && trim($response->getHeaderLine('Location')) !== ''
-            ? ' (redirect not followed)'
-            : '';
+        if (! in_array($response->getStatusCode(), self::REDIRECT_STATUSES, true)) {
+            return '';
+        }
+        foreach ($response->getHeader('Location') as $value) {
+            if (trim($value, " \t") !== '') {
+                return ' (redirect not followed)';
+            }
+        }
+
+        return '';
     }
 
     /**
@@ -380,7 +392,10 @@ class MeshClient
     }
 
     /**
-     * The endpoint as logged. First the user-info is dropped, user and
+     * The endpoint as logged. #6286: an endpoint PSR-7 cannot parse is
+     * the fixed UNPARSEABLE_ENDPOINT, whoever calls this, so the label
+     * does not depend on preflight() running first (as on the write side,
+     * #6217). Otherwise first the user-info is dropped, user and
      * password alike (#5761). The authority starts after the endpoint's
      * first '//' if no '/', '?', '#' or '@' comes before that '//'
      * (whatever the bytes before it are, so ' https://' and '1https://',
@@ -436,6 +451,12 @@ class MeshClient
      */
     private static function logPath(string $endpoint): string
     {
+        try {
+            new Uri($endpoint);
+        } catch (\InvalidArgumentException) {
+            return self::UNPARSEABLE_ENDPOINT;
+        }
+
         // The leading authority: after the first '//' when no '/', '?',
         // '#' or '@' comes before it (whatever the other bytes before it
         // are, so ' https://', '1https://' and ' //' count), else the

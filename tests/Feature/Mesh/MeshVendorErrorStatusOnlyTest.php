@@ -764,7 +764,7 @@ class MeshVendorErrorStatusOnlyTest extends TestCase
     public function test_status_phrase_reduces_only_upstream_failures_to_their_status(): void
     {
         $status = new MeshClientException('Mesh API error: '.self::MARKER, 503);
-        $this->assertSame('Mesh answered the DELETE with HTTP 503', $status->statusPhrase('the DELETE'));
+        $this->assertSame('the Mesh host (or something in front of it) answered the DELETE with HTTP 503', $status->statusPhrase('the DELETE'));
 
         $wrapped = new MeshClientException('Mesh API error: cURL error 7 '.self::MARKER, 0);
         $this->assertSame('the DELETE failed without an HTTP status from Mesh', $wrapped->statusPhrase('the DELETE'));

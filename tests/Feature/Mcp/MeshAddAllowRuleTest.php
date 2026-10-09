@@ -932,7 +932,7 @@ class MeshAddAllowRuleTest extends TestCase
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, 'a refused create leaves the proposal approvable after correction');
         $this->assertSame(0, MeshAllowRule::count());
         $log = TechnicianActionLog::where('action_type', 'mesh_add_allow_rule')->where('result_status', 'rejected')->sole();
-        $this->assertStringContainsString('Mesh refused the allow rule: Mesh answered the create with HTTP 400', $log->summary);
+        $this->assertStringContainsString('Mesh refused the allow rule: the Mesh host (or something in front of it) answered the create with HTTP 400', $log->summary);
         $this->assertStringNotContainsString('reserved domain', $log->summary);
     }
 

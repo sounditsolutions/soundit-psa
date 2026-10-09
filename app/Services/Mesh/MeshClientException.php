@@ -5,8 +5,9 @@ namespace App\Services\Mesh;
 use Illuminate\Support\Facades\Log;
 
 /**
- * A Mesh call that did not succeed. The code is the HTTP status Mesh answered
- * with, or 0 when there is none (see MeshWriteClient::request()).
+ * A Mesh call that did not succeed. The code is the HTTP status the Mesh
+ * host (or something in front of it, #6290) answered with, or 0 when there
+ * is none (see MeshWriteClient::request()).
  *
  * Two kinds share this class, told apart by HOW the exception was built, never
  * by what its message says (#5271):
@@ -63,10 +64,9 @@ class MeshClientException extends \RuntimeException
     }
 
     /**
-     * The failure as a phrase safe to report. With an HTTP status: "Mesh
-     * answered the rule list read with HTTP 503"; with a 3xx (#6220): "the
-     * Mesh host (or something in front of it) answered the rule list read
-     * with HTTP 302". An upstream failure without
+     * The failure as a phrase safe to report. With an HTTP status (#6220,
+     * #6290: whichever status): "the Mesh host (or something in front of
+     * it) answered the rule list read with HTTP 503". An upstream failure without
      * one: "the rule list read failed without an HTTP status from Mesh",
      * followed by "; nothing was sent" when the request never left the PSA —
      * nothing from its message. An HTTP-client failure with no status
@@ -80,15 +80,12 @@ class MeshClientException extends \RuntimeException
     {
         $status = (int) $this->getCode();
 
-        if ($status >= 300 && $status < 400) {
-            // #6220: a 3xx is not followed, and the configured host may be
-            // Mesh or something in front of it (a proxy, a WAF); which one
-            // answered is not measured, so the phrase does not say Mesh.
-            return "the Mesh host (or something in front of it) answered {$what} with HTTP {$status}";
-        }
-
         if ($status > 0) {
-            return "Mesh answered {$what} with HTTP {$status}";
+            // #6220, #6290: the configured host may be Mesh or something
+            // in front of it (a proxy, a WAF, an edge answering 502);
+            // which one answered is not measured for any status, so the
+            // phrase does not say Mesh.
+            return "the Mesh host (or something in front of it) answered {$what} with HTTP {$status}";
         }
 
         if ($this->clientDetected && trim($this->getMessage()) !== '') {

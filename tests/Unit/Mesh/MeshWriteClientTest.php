@@ -239,7 +239,7 @@ class MeshWriteClientTest extends TestCase
         } catch (MeshWriteRejectedException $e) {
             $this->assertSame('Mesh refused the request (HTTP 400).', $e->getMessage());
             $this->assertSame(400, $e->getCode());
-            $this->assertSame('Mesh answered the create with HTTP 400', $e->statusPhrase('the create'));
+            $this->assertSame('the Mesh host (or something in front of it) answered the create with HTTP 400', $e->statusPhrase('the create'));
             foreach (['billing@vendor.example.test', 'No Allow/Block', 'Invalid sender'] as $vendor) {
                 $this->assertStringNotContainsString($vendor, (string) $e);
             }

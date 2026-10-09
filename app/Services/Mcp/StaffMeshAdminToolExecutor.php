@@ -374,9 +374,11 @@ class StaffMeshAdminToolExecutor
     {
         if (! MeshConfig::isEnabled() || ! MeshConfig::isConfigured()) {
             // #6213: a stored '0' is set but unusable, not 'not configured'.
-            return ['error' => MeshConfig::isEnabled() && MeshConfig::isKeyStoredButUnusable()
-                ? 'Mesh Email Security has a stored API key the PSA does not send (zero or true)'
-                : 'Mesh Email Security is not configured'];
+            // #6291: switched off is not 'not configured' either. #6300:
+            // defence in depth: through MCP, toolAllowed() refuses a tool
+            // that is not live before this runs, so these texts reach a
+            // direct caller of execute() only.
+            return ['error' => self::refusalReason('Mesh Email Security')];
         }
 
         $result = match ($name) {
@@ -1388,11 +1390,22 @@ class StaffMeshAdminToolExecutor
     }
 
     /**
-     * #6213: the audit row's text for a stored key the PSA does not send.
-     * Worded so the audit redactor keeps it: 'API key is set, …' reads to
-     * it as a key and value and is redacted.
+     * Why Mesh is refused: switched off (#6291), a stored key the PSA does
+     * not send (#6213, with MeshConfig::storedKeyNote()'s reason), else
+     * not configured. Worded so the audit redactor keeps it: 'API key is
+     * set, …' reads to it as a key and value and is redacted.
      */
-    private const STORED_KEY_UNUSABLE = 'Mesh has a stored API key the PSA does not send (zero or true)';
+    private static function refusalReason(string $name): string
+    {
+        if (! MeshConfig::isEnabled()) {
+            return "{$name} is switched off";
+        }
+        $note = MeshConfig::storedKeyNote();
+
+        return $note !== null
+            ? "{$name} has a stored API key the PSA does not send ({$note})"
+            : "{$name} is not configured";
+    }
 
     public function approveStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
     {
@@ -1418,7 +1431,7 @@ class StaffMeshAdminToolExecutor
             }
 
             if (! MeshConfig::isEnabled() || ! MeshConfig::isConfigured()) {
-                $this->auditAttempt($run->action_type, 'blocked', (int) $run->client_id, $ticket, $run->content_hash, (MeshConfig::isEnabled() && MeshConfig::isKeyStoredButUnusable() ? self::STORED_KEY_UNUSABLE : 'Mesh is not configured').'; staged allow rule refused.', $this->approverLabel($approverId), $run->id, $approverId);
+                $this->auditAttempt($run->action_type, 'blocked', (int) $run->client_id, $ticket, $run->content_hash, self::refusalReason('Mesh').'; staged allow rule refused.', $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
                 return new TechnicianApprovalResult('gate_declined');
@@ -3830,7 +3843,8 @@ class StaffMeshAdminToolExecutor
             // vendor's own text. The status code is the whole report.
             $status = (int) $e->getCode();
             $what = $status > 0
-                ? "Mesh answered the rule list read with HTTP {$status}"
+                // #6290: who answered is not measured (statusPhrase()).
+                ? "the Mesh host (or something in front of it) answered the rule list read with HTTP {$status}"
                 : 'the rule list read failed without an HTTP status from Mesh';
 
             return ['error' => "{$client->name}'s Mesh allow rules could not be read: {$what}. This is not an empty list; retry, and report it if it persists."];
