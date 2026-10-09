@@ -853,6 +853,23 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertSame(0, ControlDOnboardingIntent::count());
     }
 
+    /**
+     * XULQ2iix ruling 2026-10-09 18:3xZ (a), the run-732 shape: after the global-profile PUT,
+     * Control D lists the org with parent_profile as a BARE string holding the configured PK
+     * (synthetic here, G-13). Staging reads it as enforced and proposes the code step, never
+     * the unreadable refusal.
+     */
+    public function test_a_bare_string_parent_profile_equal_to_the_setting_proposes_the_code_step(): void
+    {
+        $this->configure();
+        $this->aiActor();
+        $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
+        $this->vendor([$this->ok(['sub_organizations' => [array_merge($this->listed('testorg001'), ['parent_profile' => 'testprofile01'])]])]);
+        $run = $this->stage($fixture);
+        $this->assertSame(StaffControlDOnboardingToolExecutor::STEP_CODE, $run->proposed_meta['redacted_params']['step']);
+        $this->assertSame(['GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
+    }
+
     /** Shapes that make the staging read throw, with the fixed message each arm carries. */
     public static function unreadableLogArms(): array
     {
