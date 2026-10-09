@@ -78,13 +78,12 @@ use Illuminate\Support\Facades\Http;
  *   not do is INVENT a value for either. Do not "fix" the empty captcha by
  *   supplying a token.
  *
- *   🔴 `totpskip` is forwarded, and forwarding is not a neutral act: its NAME
- *   says it controls whether the second factor is skipped. Served `0`, this
- *   client posts `0`. If the portal ever serves it enabled, this client would
- *   forward that too and a bypassed second factor would classify as a clean
- *   sign-in — tracked as a ticket-class residual on this leg rather than
- *   guessed at here, because the alternative (dropping a field the portal
- *   served) is its own guess and neither has been measured.
+ *   🔴 `totpskip` is forwarded at its served value, like every other
+ *   hidden field: served `0`, this client posts `0`. Forwarding is not a
+ *   neutral act, so the behaviour of this leg is tracked as a ticket-class
+ *   residual rather than reasoned about here — the alternative (dropping a
+ *   field the portal served) is its own unmeasured guess. Do not change the
+ *   forwarding behaviour to "fix" this note, and do not invent a value.
  *
  * 🔴 TWO HONEST LIMITS, because a reviewer should not have to find them:
  *
