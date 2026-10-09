@@ -2350,7 +2350,9 @@ class RetryEmailAttachmentsJobTest extends TestCase
     {
         // The second value: whether the pass after the push then deletes it (#6179: a run has
         // started, so an unreserved row is deleted; a reserved one is never deleted under its worker).
-        return ['reserved' => [['reserved_at' => 1, 'attempts' => 0], false], 'at its attempt limit' => [['attempts' => 1], true]];
+        // r2 (diff:7): 'reserved' is a live worker's hold, as a pop leaves it (reserved_at now,
+        // attempts 1); reserved_at 1 with attempts 0 was an expired reservation, which runs.
+        return ['reserved' => [['reserved_at' => time(), 'attempts' => 1], false], 'at its attempt limit' => [['attempts' => 1], true]];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('laterRowsThatWillNotRun')]
@@ -2371,6 +2373,9 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROW_SKIPPED), 'the later row is not counted');
         $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy(), 'the earlier row ran the retry');
         $this->assertSame($dropped ? [] : [$later], array_map(fn ($r) => (int) $r->id, $this->retryRows()));
+        if (! $dropped) {
+            $this->assertNull($this->popRetry(), 'diff:7: a live hold, so no worker can pop it now');
+        }
         $this->assertSame($dropped ? [[true, [$later]]] : [], array_map(fn ($r) => [$r->context['run_started'], $r->context['dropped_job_ids']],
             $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_DROPPED)));
     }
@@ -2537,26 +2542,164 @@ class RetryEmailAttachmentsJobTest extends TestCase
     public function test_a_pass_after_the_push_that_throws_leaves_every_row_and_is_recorded(): void
     {
         // #6179: the pass's read throws: DUPLICATE_CHECK_FAILED step push, and no row is deleted.
+        // r2 (diff:3): the pass did not complete, so the kept entry is written and the earlier
+        // row's run, after the push returned, still finds the later row: the retry runs once.
         $this->databaseQueue();
         $this->graph([$this->failedRead()]);
         $email = $this->email();
-        $this->duringPush(function () {
-            $this->copyRow($this->retryRows()[0]);
-            DB::beforeExecuting(function (string $sql) {
+        $ids = null;
+        $pushId = null;
+        $armed = true;
+        $this->duringPush(function (RetryEmailAttachments $job) use (&$ids, &$pushId, &$armed) {
+            $pushId = $job->pushId;
+            $row = $this->retryRows()[0];
+            $ids = [(int) $row->id, $this->copyRow($row)];
+            DB::beforeExecuting(function (string $sql) use (&$armed) {
                 $sql = strtolower($sql);
-                if (str_contains($sql, 'from "jobs"') && str_contains($sql, 'like') && str_contains($sql, 'order by')) {
+                if ($armed && str_contains($sql, 'from "jobs"') && str_contains($sql, 'like') && str_contains($sql, 'order by')) {
                     throw new \RuntimeException('B9-SYNTHETIC-PASS-DOWN');
                 }
             });
         });
 
         $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+        $armed = false;
 
-        $this->assertCount(2, $this->retryRows());
+        $this->assertSame($ids, array_map(fn ($r) => (int) $r->id, $this->retryRows()));
         $failed = $this->withMessage(RetryEmailAttachments::DUPLICATE_CHECK_FAILED);
         $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'step' => 'push', 'exception' => \RuntimeException::class]],
             array_map(fn ($r) => $r->context, $failed));
         $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_DROPPED));
+        $this->assertNotContains('retry-email-attachments:pending:'.$pushId, $this->readBackCacheKeys(), 'positive control: the push has returned');
+        $this->assertContains('retry-email-attachments:kept:'.$pushId, $this->readBackCacheKeys(), 'the kept entry');
+
+        $this->assertTheEarlierRowSkipsAndTheLaterRunsOnce($email, $ticket, $ids);
+    }
+
+    /**
+     * Pops the rows $ids of one push left after it returned: the earlier row's run finds the
+     * later row and exits (DUPLICATE_ROW_SKIPPED), and the later row runs the retry once.
+     *
+     * @param  array{0: int, 1: int}  $ids
+     */
+    private function assertTheEarlierRowSkipsAndTheLaterRunsOnce(Email $email, Ticket $ticket, array $ids): void
+    {
+        $this->mock->append($this->read());
+        $first = $this->popRetry();
+        $this->assertSame($ids[0], (int) $first->getJobId());
+        $first->fire();
+        $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'job_id' => $ids[0], 'later_job_ids' => [$ids[1]]]],
+            array_map(fn ($r) => $r->context, $this->withMessage(RetryEmailAttachments::DUPLICATE_ROW_SKIPPED)), 'the earlier row found the later one');
+        $this->assertSame([], $this->seen->getArrayCopy(), 'the earlier row did not run');
+        $this->popRetry()->fire();
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy(), 'the later row ran, once');
+        $this->assertSame([], $this->retryRows());
+        $this->assertSame(2, $this->messageReads(), "the import's failed read and one retry read, not two");
+    }
+
+    public function test_a_jobs_floor_that_cannot_be_read_keeps_the_runs_check_on_after_the_push(): void
+    {
+        // r2 (contract:2): the jobs floor read throws (FLOOR_READ_FAILED step jobs), so the pass
+        // after the push cannot read the rows. It writes the kept entry instead: the earlier of
+        // two rows of the push, run after the push returned, still finds the later row.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $hit = 0;
+        DB::beforeExecuting(function (string $sql) use (&$hit) {
+            $sql = strtolower($sql);
+            if (str_contains($sql, 'max("id")') && str_contains($sql, 'from "jobs"')) {
+                $hit++;
+
+                throw new \RuntimeException('B9-SYNTHETIC-FLOOR-DOWN');
+            }
+        });
+        $ids = null;
+        $pushId = null;
+        $this->duringPush(function (RetryEmailAttachments $job) use (&$ids, &$pushId) {
+            $pushId = $job->pushId;
+            $row = $this->retryRows()[0];
+            $ids = [(int) $row->id, $this->copyRow($row)];
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertSame(1, $hit, 'positive control: the jobs floor read threw');
+        $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'step' => 'jobs', 'exception' => \RuntimeException::class]],
+            array_map(fn ($r) => $r->context, $this->withMessage(RetryEmailAttachments::FLOOR_READ_FAILED)), 'the degraded read is recorded (C-56)');
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::NOT_QUEUED), 'positive control: the push returned');
+        $this->assertSame($ids, array_map(fn ($r) => (int) $r->id, $this->retryRows()), 'no pass: both rows are left');
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_DROPPED));
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::CACHE_STEP_FAILED));
+        $this->assertNotContains('retry-email-attachments:pending:'.$pushId, $this->readBackCacheKeys(), 'positive control: the push has returned');
+        $this->assertContains('retry-email-attachments:kept:'.$pushId, $this->readBackCacheKeys(), 'the kept entry');
+
+        $this->assertTheEarlierRowSkipsAndTheLaterRunsOnce($email, $ticket, $ids);
+    }
+
+    public function test_a_kept_entry_that_cannot_be_written_is_recorded_as_kept_put(): void
+    {
+        // r2 (c1:v1:1): no jobs floor, so the pass writes the kept entry instead, and that write
+        // throws: CACHE_STEP_FAILED step kept_put, and (as queueAfterCommit() documents) no run
+        // after the push checks, so both rows run.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $this->cacheFailing(':kept:');
+        DB::beforeExecuting(function (string $sql) {
+            $sql = strtolower($sql);
+            if (str_contains($sql, 'max("id")') && str_contains($sql, 'from "jobs"')) {
+                throw new \RuntimeException('B9-SYNTHETIC-FLOOR-DOWN');
+            }
+        });
+        $this->duringPush(fn () => $this->copyRow($this->retryRows()[0]));
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'step' => 'kept_put', 'exception' => \RuntimeException::class]],
+            array_map(fn ($r) => $r->context, $this->withMessage(RetryEmailAttachments::CACHE_STEP_FAILED)));
+        $this->assertSame([], array_values(array_filter($this->readBackCacheKeys(), fn ($k) => str_contains($k, ':kept:'))));
+        $this->assertCount(2, $this->retryRows());
+        $this->mock->append($this->read());
+        $this->popRetry()->fire();
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROW_SKIPPED), 'the documented arm: the earlier row does not check');
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy(), 'and runs the retry, with the later row still queued');
+        $this->assertCount(1, $this->retryRows());
+    }
+
+    public function test_a_pass_delete_that_throws_still_records_the_rows_it_already_dropped(): void
+    {
+        // r2 (diff:1/context:3): three rows of one push and no run started, so the pass deletes
+        // the two earlier ones. The first DELETE succeeds and the second throws: the drop made is
+        // recorded (DUPLICATE_ROWS_DROPPED with that row), next to DUPLICATE_CHECK_FAILED step
+        // push, and the two rows left keep their check (the kept entry): the retry runs once.
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $ids = null;
+        $deletes = 0;
+        $this->duringPush(function () use (&$ids, &$deletes) {
+            $row = $this->retryRows()[0];
+            $ids = [(int) $row->id, $this->copyRow($row), $this->copyRow($row)];
+            DB::beforeExecuting(function (string $sql) use (&$deletes) {
+                if (str_starts_with(strtolower($sql), 'delete from "jobs"') && ++$deletes === 2) {
+                    throw new \RuntimeException('B9-SYNTHETIC-DELETE-DOWN');
+                }
+            });
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertSame(2, $deletes, 'positive control: the second DELETE ran and threw');
+        $this->assertSame([$ids[1], $ids[2]], array_map(fn ($r) => (int) $r->id, $this->retryRows()), 'the first DELETE took effect');
+        $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'step' => 'push', 'exception' => \RuntimeException::class]],
+            array_map(fn ($r) => $r->context, $this->withMessage(RetryEmailAttachments::DUPLICATE_CHECK_FAILED)));
+        $dropped = $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_DROPPED);
+        $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'run_started' => false, 'dropped_job_ids' => [$ids[0]]]],
+            array_map(fn ($r) => $r->context, $dropped), 'the drop made before the throw is recorded');
+        $this->assertSame(Level::Warning, $dropped[0]->level);
+
+        $this->assertTheEarlierRowSkipsAndTheLaterRunsOnce($email, $ticket, [$ids[1], $ids[2]]);
     }
 
     public function test_an_earlier_terminating_callback_that_throws_does_not_drop_the_not_queued_work(): void

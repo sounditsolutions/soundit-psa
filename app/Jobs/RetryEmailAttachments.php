@@ -121,9 +121,11 @@ class RetryEmailAttachments implements ShouldQueue
 
     /**
      * #6092/#6094: a step on the pending or started cache entry the push read-back uses failed
-     * (threw, or the store returned false). Context step: pending_put, started_put, cleanup, or
+     * (threw, or the store returned false). Context step: pending_put, started_put, cleanup,
      * (#6153) pending_read, a run's read of the pending entry, after which it writes its started
-     * entry anyway; exception: the class that threw, or null. A failed pending_put makes a later not-found
+     * entry anyway, or (#6183) kept_put, the kept entry written after the push (see
+     * dropDuplicateRows()), after which a run of the push no longer checks for a later row;
+     * exception: the class that threw, or null. A failed pending_put makes a later not-found
      * read-back report queued_row null, never false.
      */
     public const CACHE_STEP_FAILED = '[RetryEmailAttachments] Push read-back cache step failed';
@@ -139,10 +141,12 @@ class RetryEmailAttachments implements ShouldQueue
     public const DUPLICATE_ROW_SKIPPED = '[RetryEmailAttachments] Duplicate queue row of one push skipped';
 
     /**
-     * #6100: a de-duplication read or delete threw, and nothing was skipped or deleted because
-     * of it (a second row of the push, if any, may run too). Context step: run (a run's check,
-     * handle(), which then goes ahead) or (#6179) push (queueAfterCommit()'s pass after the
-     * push); exception: the class that threw.
+     * #6100: a de-duplication read or delete threw. Context step: run (a run's check, handle(),
+     * which then goes ahead, and nothing is skipped because of it, so a second row of the push,
+     * if any, may run too) or (#6179) push (queueAfterCommit()'s pass after the push: the rows
+     * not yet deleted are left, the kept entry is written so their runs still check for a later
+     * row, and the rows it had already deleted before the throw, if any, follow as
+     * DUPLICATE_ROWS_DROPPED); exception: the class that threw.
      */
     public const DUPLICATE_CHECK_FAILED = '[RetryEmailAttachments] Duplicate queue row check failed';
 
@@ -150,7 +154,8 @@ class RetryEmailAttachments implements ShouldQueue
      * #6179: after a push that returned, queueAfterCommit() deleted unreserved queue rows of
      * that push (see dropDuplicateRows()). Context run_started: whether a run of the push had
      * started (then every unreserved row was deleted; otherwise all but the latest);
-     * dropped_job_ids: the rows deleted.
+     * dropped_job_ids: the rows deleted. After a DUPLICATE_CHECK_FAILED step push (a later
+     * DELETE threw), these are the rows deleted before the throw.
      */
     public const DUPLICATE_ROWS_DROPPED = '[RetryEmailAttachments] Duplicate queue rows of one push dropped';
 
@@ -172,6 +177,9 @@ class RetryEmailAttachments implements ShouldQueue
      * #6150: the highest id of the queue table or of failed_jobs could not be read before the
      * push, so a read-back after a throw cannot read that table. Context step: jobs or
      * failed_jobs; exception: the class that threw. Recorded whether or not the push throws.
+     * #6179/#6183: step jobs also means a push that returned had no pass after it
+     * (dropDuplicateRows() cannot read above a floor), so it wrote the kept entry instead and
+     * each run of the push still checks for a later row.
      */
     public const FLOOR_READ_FAILED = '[RetryEmailAttachments] Push read-back floor read failed';
 
@@ -265,12 +273,16 @@ class RetryEmailAttachments implements ShouldQueue
      * the latest. Both still run when a worker reserves the later row while the push is in
      * progress and no run of the push has started; when a run that started inside the push
      * could not write its started entry (CACHE_STEP_FAILED started_put) and its row is gone;
-     * when the pending entry was not recorded (CACHE_STEP_FAILED pending_put); or when a
-     * de-duplication read throws (DUPLICATE_CHECK_FAILED). #6151: when the reconnect fails, the push throws with the first
-     * row committed and this read-back's reconnect fails too (queued_row null, so the commit
-     * work may run here as well as in that row's run); when the reconnect succeeds and only the
-     * re-run INSERT fails, the read-back runs on a live connection and finds the first row
-     * (found_in jobs).
+     * when the pending entry was not recorded (CACHE_STEP_FAILED pending_put); when the pass
+     * left two or more rows, or could not run or complete, and its kept entry was not recorded
+     * (CACHE_STEP_FAILED kept_put), as no run after the push then checks; when a worker's run
+     * of the earlier row checked before the later row was written and had not yet written its
+     * started entry when the pass read the rows (the pass then keeps both, as before #6179);
+     * or when a run's de-duplication read throws (DUPLICATE_CHECK_FAILED step run). #6151:
+     * when the reconnect fails, the push throws with the first row committed and this
+     * read-back's reconnect fails too (queued_row null, so the commit work may run here as well
+     * as in that row's run); when the reconnect succeeds and only the re-run INSERT fails, the
+     * read-back runs on a live connection and finds the first row (found_in jobs).
      *
      * So this dispatch is read back by $pushId first (queuedRowFound()): its row in the queue
      * table, its row in failed_jobs (#6026: failed() already ran), or the started entry its
@@ -438,17 +450,32 @@ class RetryEmailAttachments implements ShouldQueue
      * rows are left (one is reserved, or a worker reserved one before its DELETE), the kept
      * entry is written (a failed write is CACHE_STEP_FAILED kept_put), so each left row's run
      * still checks for a later row once the pending entry is gone. Recorded as
-     * DUPLICATE_ROWS_DROPPED; a read or
-     * delete that throws is DUPLICATE_CHECK_FAILED (step push) and every row is left to run.
-     * Never throws. Not a database queue, no pushId or no jobs floor: nothing is read.
+     * DUPLICATE_ROWS_DROPPED. A read or delete that throws is DUPLICATE_CHECK_FAILED (step
+     * push): the rows not yet deleted are left, the kept entry is written, and the rows already
+     * deleted before the throw are still recorded as DUPLICATE_ROWS_DROPPED. A database queue
+     * whose jobs floor could not be read (FLOOR_READ_FAILED step jobs) reads nothing and writes
+     * the kept entry. Never throws. Not a database queue or no pushId: nothing is read or
+     * written.
      *
      * @param  array<string, int|null>  $floors
      */
     private function dropDuplicateRows(array $floors): void
     {
-        if ($this->pushId === null || ($floors['jobs'] ?? null) === null) {
+        if ($this->pushId === null) {
             return;
         }
+        if (($floors['jobs'] ?? null) === null) {
+            if (array_key_exists('jobs', $floors)) {
+                // A database queue whose jobs floor could not be read (FLOOR_READ_FAILED step
+                // jobs, already recorded): the pass cannot run, so the runs keep their check.
+                $this->keepChecks();
+            }
+
+            return;
+        }
+        $started = false;
+        $dropped = [];
+        $failure = null;
         try {
             [$queueTable] = $this->readBackTables();
             if ($queueTable === null) {
@@ -463,8 +490,8 @@ class RetryEmailAttachments implements ShouldQueue
             if ($unreserved === []) {
                 return;
             }
-            $started = \Illuminate\Support\Facades\Cache::has(self::startedKey($this->pushId));
-            if ($started) {
+            if (\Illuminate\Support\Facades\Cache::has(self::startedKey($this->pushId))) {
+                $started = true;
                 $drop = $unreserved;
             } elseif ($rows->count() >= 2 && count($unreserved) === $rows->count()) {
                 $drop = array_slice($unreserved, 0, -1);
@@ -476,7 +503,6 @@ class RetryEmailAttachments implements ShouldQueue
                 // written its started entry, runs as well, as before #6179.
                 $drop = [];
             }
-            $dropped = [];
             foreach ($drop as $id) {
                 if ($table()->where('id', $id)->whereNull('reserved_at')->delete() === 1) {
                     $dropped[] = $id;
@@ -485,12 +511,16 @@ class RetryEmailAttachments implements ShouldQueue
             if (! $started && $rows->count() - count($dropped) >= 2) {
                 // #6183: two or more rows are left and no run has started (a row is reserved,
                 // or a worker reserved one before its DELETE): their runs' checks stay on.
-                $this->cacheStep('kept_put', fn () => \Illuminate\Support\Facades\Cache::put(self::keptKey($this->pushId), true, now()->addMinutes(10)));
+                $this->keepChecks();
             }
         } catch (\Throwable $e) {
-            $this->warnDuplicateCheck('push', $e);
-
-            return;
+            $failure = $e;
+        }
+        if ($failure !== null) {
+            // The pass did not complete: which rows are left is not known, so the runs keep
+            // their check; drops made before the throw are still recorded below.
+            $this->warnDuplicateCheck('push', $failure);
+            $this->keepChecks();
         }
         if ($dropped === []) {
             return;
@@ -504,6 +534,15 @@ class RetryEmailAttachments implements ShouldQueue
             ]);
         } catch (\Throwable) {
         }
+    }
+
+    /**
+     * #6183: writes the kept entry, so each run of this push still checks for a later row once
+     * the pending entry is gone; a failed write is CACHE_STEP_FAILED kept_put. Never throws.
+     */
+    private function keepChecks(): void
+    {
+        $this->cacheStep('kept_put', fn () => \Illuminate\Support\Facades\Cache::put(self::keptKey($this->pushId), true, now()->addMinutes(10)));
     }
 
     /** #6100/#6172: DUPLICATE_CHECK_FAILED, step run (handle()) or push (dropDuplicateRows()). */
@@ -557,8 +596,9 @@ class RetryEmailAttachments implements ShouldQueue
 
     /**
      * #6183: the cache key dropDuplicateRows() writes when it left two or more rows of the push
-     * of $pushId and no run had started, so those rows' runs still check for a later row after
-     * the pending entry is gone. Not removed; left to expire.
+     * of $pushId and no run had started, or could not run (no jobs floor) or complete (a read or
+     * delete threw), so those rows' runs still check for a later row after the pending entry is
+     * gone. Not removed; left to expire.
      */
     private static function keptKey(string $pushId): string
     {
@@ -820,7 +860,8 @@ class RetryEmailAttachments implements ShouldQueue
         try {
             // #6183: only while this push is in flight (its pending entry is held), or while the
             // kept entry is held, which dropDuplicateRows() writes when it left two or more rows
-            // of this push and no run had started. A read that throws is treated as in flight;
+            // of this push and no run had started, or did not complete (no jobs floor, or a
+            // read or delete threw). A read that throws is treated as in flight;
             // markStarted() records a failed pending read.
             if (! \Illuminate\Support\Facades\Cache::has(self::pendingKey($this->pushId))
                 && ! \Illuminate\Support\Facades\Cache::has(self::keptKey($this->pushId))) {
