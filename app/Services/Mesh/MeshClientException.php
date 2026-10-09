@@ -64,7 +64,9 @@ class MeshClientException extends \RuntimeException
 
     /**
      * The failure as a phrase safe to report. With an HTTP status: "Mesh
-     * answered the rule list read with HTTP 503". An upstream failure without
+     * answered the rule list read with HTTP 503"; with a 3xx (#6220): "the
+     * Mesh host (or something in front of it) answered the rule list read
+     * with HTTP 302". An upstream failure without
      * one: "the rule list read failed without an HTTP status from Mesh",
      * followed by "; nothing was sent" when the request never left the PSA —
      * nothing from its message. An HTTP-client failure with no status
@@ -77,6 +79,13 @@ class MeshClientException extends \RuntimeException
     public function statusPhrase(string $what): string
     {
         $status = (int) $this->getCode();
+
+        if ($status >= 300 && $status < 400) {
+            // #6220: a 3xx is not followed, and the configured host may be
+            // Mesh or something in front of it (a proxy, a WAF); which one
+            // answered is not measured, so the phrase does not say Mesh.
+            return "the Mesh host (or something in front of it) answered {$what} with HTTP {$status}";
+        }
 
         if ($status > 0) {
             return "Mesh answered {$what} with HTTP {$status}";
@@ -115,11 +124,26 @@ class MeshClientException extends \RuntimeException
      * methods' $options (API-KEY header, json body, query) are
      * #[\SensitiveParameter], so with ignore_args Off the clients' own
      * frames in getTrace() show a SensitiveParameterValue object for
-     * each. Measured per parameter, through each public method that can
-     * throw, in MeshTraceArgumentRedactionTest; MeshUncaughtRenderTest
-     * measures (string) $e for MeshClient::get() and getCustomer() at a
-     * 1000-byte zend.exception_string_param_max_len. Frames of callers
-     * outside the Mesh clients are not covered by that.
+     * each. Measured per parameter in MeshTraceArgumentRedactionTest,
+     * through the public methods that throw a MeshClientException
+     * (ruleAbsent() catches it, so its $ruleId is measured in
+     * MeshTraceFrameHardeningTest with a handler-thrown RuntimeException,
+     * as are both constructors' $config, #6221). The static key helpers
+     * (MeshClient::apiKeyRefusal(), headerValueRefusal(), the MeshConfig
+     * key predicates) are not marked: they take the key as mixed and
+     * contain no throw a test could drive, so a mark there would be
+     * unmeasured. MeshUncaughtRenderTest measures (string) $e
+     * for MeshClient::get() and getCustomer() at a 1000-byte
+     * zend.exception_string_param_max_len. #6214: only the clients' own
+     * frames are measured, and only they are covered. Guzzle's frames
+     * below request() are not marked; read in the vendored Guzzle, not
+     * driven, they take request()'s options array (the API-KEY header and
+     * a write's json body). They are not in this exception's trace, which
+     * request() builds after Guzzle returned or threw, but a throwable
+     * from the HTTP client that request() does not catch (anything but a
+     * GuzzleException or an InvalidArgumentException) leaves with them.
+     * Frames of callers outside the Mesh clients are not covered either
+     * (#6211).
      */
     public function report(): bool
     {

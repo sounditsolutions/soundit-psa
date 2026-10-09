@@ -13,11 +13,18 @@ use Illuminate\Support\Facades\Log;
 class MeshClient
 {
     /**
-     * What logPath() logs for an endpoint whose user-info it cannot cut off
-     * safely (#5761), and what preflight() logs for an endpoint PSR-7
-     * cannot parse (#6049).
+     * What preflight() logs for an endpoint PSR-7 cannot parse (#6049).
      */
     public const UNPARSEABLE_ENDPOINT = '[unparseable endpoint]';
+
+    /**
+     * #6225: what logPath() logs for an endpoint whose user-info it cannot
+     * cut off safely (#5761). Not UNPARSEABLE_ENDPOINT: many of these
+     * endpoints parse ('licenses?filter=a@b' does), and the line is
+     * withheld because of an '@' logPath() could not place, not because
+     * the endpoint did not parse.
+     */
+    public const WITHHELD_ENDPOINT = '[endpoint withheld: possible credentials]';
 
     /** A host (bracketed IPv6 literal, or no ':', '[' or ']') with an optional ':' and one or more digits. */
     private const HOST_PORT = '#^(?:\[[^\]]*\]|[^:\[\]]*)(?::[0-9]+)?$#';
@@ -30,10 +37,14 @@ class MeshClient
      * MalformedUriException whose message is the raw URL (user-info
      * included). It is not thrown here: every call then fails in request()
      * with a status-only, client-detected MeshClientException, inside the
-     * callers' existing catch.
+     * callers' existing catch. #6214, #6221: $config holds the API key,
+     * so it is #[\SensitiveParameter]: a throw from inside this constructor
+     * (a base_url that is not a string makes rtrim() throw a TypeError,
+     * which is not caught here) shows a SensitiveParameterValue in this
+     * frame (MeshTraceFrameHardeningTest).
      */
     public function __construct(
-        private readonly array $config,
+        #[\SensitiveParameter] private readonly array $config,
     ) {
         try {
             $this->http = new Client([
@@ -107,7 +118,7 @@ class MeshClient
      * so does a scheme the strip does not take (' https://', '1https://':
      * the user-info after its '//' is cut, the scheme and host are kept);
      * an endpoint whose user-info cannot be cut safely is logged as
-     * '[unparseable endpoint]'), HTTP
+     * WITHHELD_ENDPOINT, #6225), HTTP
      * status and exception class only: Guzzle's message quotes the request
      * URI and a summary of the vendor's response body (C-56), and the path
      * after customers/ carries a client's Mesh customer id (#5298/#5305,
@@ -158,12 +169,19 @@ class MeshClient
      * failure names the cURL errno when the handler recorded one (#6050:
      * the number only). Any other InvalidArgumentException from the HTTP
      * client is reported by class only, not as a Mesh status, and makes
-     * no claim about what was sent (#6061). #6105: redirects are never
+     * no claim about what was sent (#6061). #6214: any other throwable
+     * from the HTTP client (a RuntimeException, TypeError or Error from a
+     * handler or middleware) is not caught and leaves this method as
+     * thrown; this frame shows $options as a SensitiveParameterValue
+     * (MeshTraceFrameHardeningTest), but Guzzle's own frames below it are
+     * not marked, and read in the vendored Guzzle, not driven, they take
+     * the options array with the API-KEY header. #6105: redirects are never
      * followed. Guzzle's RedirectMiddleware strips only Authorization and
      * Cookie on a cross-origin hop, so a followed redirect would carry the
      * API-KEY header to whatever host Location names. A 3xx is a failure
-     * by its status: logged and thrown like any other status, its Location
-     * never read or quoted.
+     * by its status: logged and thrown like any other status, the
+     * Location's value never read or quoted (#6209: redirectNote() reads
+     * only whether a non-empty Location is present).
      */
     private function request(string $method, #[\SensitiveParameter] string $endpoint, #[\SensitiveParameter] array $options = []): array
     {
@@ -268,14 +286,16 @@ class MeshClient
 
     /**
      * #6158: ' (redirect not followed)' for a 3xx that offered a redirect:
-     * one of REDIRECT_STATUSES with a Location header. Any other 3xx (304,
-     * 305, 306, or any status with no Location) offered nothing to follow,
-     * so its line names the status only: ''. The Location's value is
-     * never read.
+     * one of REDIRECT_STATUSES with a non-empty Location header (#6224: a
+     * 'Location:' with no value names no target). Any other 3xx (304,
+     * 305, 306, or any status with no or an empty Location) offered
+     * nothing to follow, so its line names the status only: ''. The
+     * Location is read only to test that it is not empty; its value is
+     * never logged or quoted.
      */
     public static function redirectNote(\Psr\Http\Message\ResponseInterface $response): string
     {
-        return in_array($response->getStatusCode(), self::REDIRECT_STATUSES, true) && $response->hasHeader('Location')
+        return in_array($response->getStatusCode(), self::REDIRECT_STATUSES, true) && trim($response->getHeaderLine('Location')) !== ''
             ? ' (redirect not followed)'
             : '';
     }
@@ -380,7 +400,7 @@ class MeshClient
      * ':' and one or more digits (so a first segment 'https:' is not
      * one) and the endpoint holds an '@' anywhere, or if it ends at a
      * '?' or '#' and an '@' follows, the whole line path is the fixed
-     * '[unparseable endpoint]' instead (a user or password holding '?'
+     * WITHHELD_ENDPOINT instead (#6225: it may well parse) (a user or password holding '?'
      * or '#', or with no '@' before the '?' or '#', a ':' with no port
      * digits, would otherwise be logged; for '?' and '#' this holds even
      * when the bytes before it read as a host and port, so an endpoint
@@ -396,7 +416,7 @@ class MeshClient
      * or not), they, the '//' and the host[:port] go; otherwise (' //')
      * they stay with the host[:port] and only the user-info went. When
      * those kept bytes are not blank and the endpoint holds an '@'
-     * anywhere, the whole line path is '[unparseable endpoint]' instead:
+     * anywhere, the whole line path is WITHHELD_ENDPOINT instead:
      * they may be user-info holding '//' ('user:pass//@host/...', which
      * no '@' search reaches), so they are never logged with an '@'. The
      * strip needs '//', so a scheme-less 'host:port/...' endpoint keeps
@@ -450,7 +470,7 @@ class MeshClient
         $strip = $start > 0 && ($head === '' || str_ends_with($head, ':'));
         $keptHead = $start > 0 && ! $strip && trim($head) !== '';
         if ($atAfterQuery || ($keptHead && str_contains($endpoint, '@')) || (preg_match(self::HOST_PORT, $hostPort) !== 1 && str_contains($endpoint, '@'))) {
-            return self::UNPARSEABLE_ENDPOINT;
+            return self::WITHHELD_ENDPOINT;
         }
         $endpoint = ($strip ? '' : substr($endpoint, 0, $start).$hostPort).substr($endpoint, $end);
 

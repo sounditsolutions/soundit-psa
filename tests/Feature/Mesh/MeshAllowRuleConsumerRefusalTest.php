@@ -235,7 +235,7 @@ class MeshAllowRuleConsumerRefusalTest extends TestCase
         $this->assertSame(['executed_with_fault'], $this->auditStatuses());
         $this->assertSame(MeshAllowRule::STATE_UNRESOLVED, MeshAllowRule::sole()->state);
         $summary = (string) TechnicianActionLog::where('result_status', 'executed_with_fault')->value('summary');
-        $this->assertStringStartsWith('Mesh did not acknowledge the create (Mesh answered the create with HTTP 307)', $summary);
+        $this->assertStringStartsWith('Mesh did not acknowledge the create (the Mesh host (or something in front of it) answered the create with HTTP 307)', $summary);
         $this->assertStringNotContainsString('elsewhere-6105', $summary);
 
         // #6156: the whole text, not only its prefix: it says whether the
@@ -244,7 +244,7 @@ class MeshAllowRuleConsumerRefusalTest extends TestCase
         // refused. The same text is the staff flash, on the error channel.
         $comment = (string) MeshAllowRule::sole()->comment;
         $this->assertSame(
-            "Mesh did not acknowledge the create (Mesh answered the create with HTTP 307), and a re-read of this client's tenant did not find the rule. "
+            "Mesh did not acknowledge the create (the Mesh host (or something in front of it) answered the create with HTTP 307), and a re-read of this client's tenant did not find the rule. "
             .'Whether the rule was created is UNMEASURED, so it is recorded unresolved (PSA record #'.MeshAllowRule::sole()->id.') and it is PERMANENT — '
             .'the expiry job keeps trying to identify it, but it never removes it. Look for a rule with the comment '.$comment
             ." on this client's Mesh tenant and remove it by hand. Check the Mesh portal before allowing this sender again.",

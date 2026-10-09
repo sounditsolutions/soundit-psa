@@ -158,6 +158,8 @@ class IntegrationsController extends Controller
 
         // Mesh
         $meshHasApiKey = MeshConfig::isConfigured();
+        // #6213: a stored key the PSA does not send ('0') is not 'Not configured'.
+        $meshKeyUnusable = MeshConfig::isKeyStoredButUnusable();
         $meshBaseUrl = MeshConfig::get('base_url');
         $meshConnected = (bool) $fmtTs(Setting::getValue('mesh_connected_at'));
 
@@ -606,7 +608,7 @@ class IntegrationsController extends Controller
             'ninjaClientId', 'ninjaConnected', 'ninjaConnectedAt', 'ninjaEnabled',
             'levelHasApiKey', 'levelConnected', 'levelConnectedAt', 'levelWebhookSecret', 'levelHasInstallAccountToken', 'levelEnabled',
             'litsrmmHasApiKey', 'litsrmmBaseUrl', 'litsrmmConfigured', 'litsrmmEnabled', 'litsrmmScheduleEnabled', 'litsrmmConnectedAt',
-            'meshHasApiKey', 'meshBaseUrl', 'meshConnected', 'meshEnabled',
+            'meshHasApiKey', 'meshKeyUnusable', 'meshBaseUrl', 'meshConnected', 'meshEnabled',
             'huntressConfigured', 'huntressConnected', 'huntressEnabled',
             'huntressWebhookSecretStored', 'huntressWebhookAccountId', 'huntressWebhooksEnabled',
             'huntressUserKeyStored', 'huntressUserSecretStored', 'huntressWriteConfigured',
@@ -1544,7 +1546,8 @@ class IntegrationsController extends Controller
     public function syncMesh()
     {
         if (! MeshConfig::isConfigured()) {
-            return back()->with('error', 'Mesh is not configured.');
+            // #6213: a stored '0' is set but unusable, not 'not configured'.
+            return back()->with('error', MeshConfig::notConfiguredText('Mesh is not configured.'));
         }
 
         try {

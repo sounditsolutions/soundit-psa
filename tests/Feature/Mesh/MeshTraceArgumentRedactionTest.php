@@ -20,9 +20,12 @@ use Tests\TestCase;
  * reporter does not). Each row drives one public method of a Mesh client
  * into a failure and reads the clients' own frames in getTrace():
  *
- *  - every named #[\SensitiveParameter] parameter is a
- *    SensitiveParameterValue in its frame (one row per parameter, so
- *    dropping any one attribute fails its row);
+ *  - every parameter a row names is a SensitiveParameterValue in its
+ *    frame, so dropping that attribute fails the row. #6215: not every
+ *    #[\SensitiveParameter] has a row here: ruleAbsent()'s $ruleId (it
+ *    catches the MeshClientException) and the constructors' $config are
+ *    measured in MeshTraceFrameHardeningTest, and getCustomers()' $filter
+ *    only as a non-null value;
  *  - no argument of any Mesh client frame carries the key, tenant id,
  *    filter, sender, comment, rule id or patch value;
  *  - positive control: an unmarked argument ($method) is kept, so the

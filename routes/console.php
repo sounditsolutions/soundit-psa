@@ -60,7 +60,10 @@ Schedule::command('mesh:reap-allow-rules')
     ->hourly()
     ->withoutOverlapping()
     ->runInBackground()
-    ->when(fn () => \App\Support\MeshConfig::isEnabled() && \App\Support\MeshConfig::isConfigured());
+    // #6212: gated on a STORED key, not on a usable one. A blank or
+    // unusable stored key still runs the command, which logs that no rules
+    // were reaped; only no stored key at all (or Mesh switched off) skips.
+    ->when(fn () => \App\Support\MeshConfig::isEnabled() && \App\Support\MeshConfig::get('api_key') !== null);
 
 // CIPP M365 license sync — daily
 Schedule::command('cipp:sync-licenses')

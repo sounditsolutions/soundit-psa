@@ -23,7 +23,11 @@ use Tests\TestCase;
  *
  *  - '(redirect not followed)' only for a redirect status (300, 301, 302,
  *    303, 307, 308) that carries a Location; 304, 305, 306, and any 3xx
- *    without a Location, name the status only (#6158).
+ *    without a Location, name the status only (#6158). Every redirect
+ *    status has a row (#6222), and an empty Location names no target
+ *    (#6224).
+ *  - each line is read with its level: the 3xx failure is an error
+ *    (#6223, G-14 addendum: a demotion to info or debug fails).
  *  - 300 and 399 are failures by status in both clients; 299 is not a
  *    3xx and is decoded as an answer (#6159: kills `>= 300` -> `> 300`
  *    and `< 400` -> `< 399`).
@@ -42,7 +46,7 @@ class MeshRedirectBoundaryTest extends TestCase
 
     private const TENANT = '11111111-2222-3333-4444-555555555555';
 
-    /** @var list<string> */
+    /** @var list<string> level, then message */
     private array $logged = [];
 
     protected function setUp(): void
@@ -50,7 +54,7 @@ class MeshRedirectBoundaryTest extends TestCase
         parent::setUp();
         Http::preventStrayRequests();
         Event::listen(MessageLogged::class, function (MessageLogged $e): void {
-            $this->logged[] = $e->message;
+            $this->logged[] = $e->level.' '.$e->message;
         });
     }
 
@@ -66,6 +70,10 @@ class MeshRedirectBoundaryTest extends TestCase
             '300 without Location' => [300, false, ''],
             '302 with Location' => [302, true, $note],
             '302 without Location' => [302, false, ''],
+            '301 with Location' => [301, true, $note],
+            '303 with Location' => [303, true, $note],
+            '307 with Location' => [307, true, $note],
+            '307 without Location' => [307, false, ''],
             '304 with Location' => [304, true, ''],
             '305 with Location' => [305, true, ''],
             '306 with Location' => [306, true, ''],
@@ -86,6 +94,24 @@ class MeshRedirectBoundaryTest extends TestCase
         return new Response($status, $location ? ['Location' => 'https://elsewhere-6158.example.test/x'] : [], '{"results":[{"id":"from-3xx"}]}');
     }
 
+    /** @return array<string, array{0: string}> an empty Location value */
+    public static function emptyLocations(): array
+    {
+        return ['empty' => [''], 'spaces only' => ['   ']];
+    }
+
+    /** #6224: a Location with no value offered no target to follow. */
+    #[DataProvider('emptyLocations')]
+    public function test_an_empty_location_is_not_named_a_redirect(string $value): void
+    {
+        foreach ([302, 307] as $status) {
+            $response = new Response($status, ['Location' => $value]);
+            $this->assertTrue($response->hasHeader('Location'), 'premise: the header is present');
+            $this->assertSame('', MeshClient::redirectNote($response), "HTTP {$status}");
+        }
+        $this->assertSame(' (redirect not followed)', MeshClient::redirectNote(new Response(302, ['Location' => '/x'])), 'positive control');
+    }
+
     #[DataProvider('threeHundreds')]
     public function test_the_read_client_fails_every_3xx_and_names_a_redirect_only_when_one_was_offered(int $status, bool $location, string $suffix): void
     {
@@ -100,7 +126,7 @@ class MeshRedirectBoundaryTest extends TestCase
             $this->assertSame($status, $e->getCode());
             $this->assertSame("Mesh API error: GET api/customers/ failed with HTTP {$status}{$suffix}", $e->getMessage());
         }
-        $this->assertSame(["[MeshClient] GET api/customers/ failed with HTTP {$status}{$suffix}"], $this->logged);
+        $this->assertSame(["error [MeshClient] GET api/customers/ failed with HTTP {$status}{$suffix}"], $this->logged);
         $this->assertSame(1, $mock->count(), 'one request only');
     }
 
@@ -118,7 +144,7 @@ class MeshRedirectBoundaryTest extends TestCase
             $this->assertFalse($e->nothingWasSent());
             $this->assertSame("Mesh API error: POST api/rule-allows-blocks/ failed with HTTP {$status}{$suffix}", $e->getMessage());
         }
-        $this->assertSame(["[MeshWriteClient] POST api/rule-allows-blocks/ failed with HTTP {$status}{$suffix}"], $this->logged);
+        $this->assertSame(["error [MeshWriteClient] POST api/rule-allows-blocks/ failed with HTTP {$status}{$suffix}"], $this->logged);
         $this->assertSame(1, $mock->count(), 'one request only');
     }
 

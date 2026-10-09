@@ -399,26 +399,26 @@ class MeshClientLogPathTest extends TestCase
             "scheme-less '//user:password@host'" => ["//{$u}:{$p}@{$h}/api/customers/{$id}/", '/api/customers/<customer>', ['/api/customers/'], false, 'redacted'],
             'IPv4 host, user and password' => ["{$u}:{$p}@192.0.2.10:{$port}/api/devices/", "192.0.2.10:{$port}/api/devices/", ['192.0.2.10', ":{$port}", '/api/devices/'], true, 'user-info drop'],
             'user and password, host, no path' => ["{$u}:{$p}@{$h}", $h, [$h], true, 'user-info drop'],
-            "password holding '/' (unparseable)" => ["{$u}:{$p}/z@{$h}:{$port}/api/customers/{$id}/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
-            "password holding '?' (unparseable)" => ["{$u}:{$p}?z@{$h}:{$port}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
-            "password holding '#' (unparseable)" => ["{$u}:{$p}#z@{$h}:{$port}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
+            "password holding '/' (unparseable)" => ["{$u}:{$p}/z@{$h}:{$port}/api/customers/{$id}/", MeshClient::WITHHELD_ENDPOINT, [MeshClient::WITHHELD_ENDPOINT], true, 'unparseable'],
+            "password holding '?' (unparseable)" => ["{$u}:{$p}?z@{$h}:{$port}/api/devices/", MeshClient::WITHHELD_ENDPOINT, [MeshClient::WITHHELD_ENDPOINT], true, 'unparseable'],
+            "password holding '#' (unparseable)" => ["{$u}:{$p}#z@{$h}:{$port}/api/devices/", MeshClient::WITHHELD_ENDPOINT, [MeshClient::WITHHELD_ENDPOINT], true, 'unparseable'],
             // #5761 r3 (diff:1): user-info holding '//' leaves the user (and
             // the password's start) before the '//', where no '@' search
             // looks; bytes kept there are never logged with an '@'.
-            "password holding '//' (unparseable)" => ["{$u}:{$p}//z@{$h}:{$port}/api/customers/{$id}/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
-            "user holding '//' (unparseable)" => ["{$u}//z@{$h}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], false, 'unparseable'],
+            "password holding '//' (unparseable)" => ["{$u}:{$p}//z@{$h}:{$port}/api/customers/{$id}/", MeshClient::WITHHELD_ENDPOINT, [MeshClient::WITHHELD_ENDPOINT], true, 'unparseable'],
+            "user holding '//' (unparseable)" => ["{$u}//z@{$h}/api/devices/", MeshClient::WITHHELD_ENDPOINT, [MeshClient::WITHHELD_ENDPOINT], false, 'unparseable'],
             // A first segment that reads as 'host:' with no port digits
             // ('https:' here) is not a host, so user-info after it is not
             // logged as path.
-            'single slash after the scheme, user and password (unparseable)' => ["https:/{$u}:{$p}@{$h}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], false, 'unparseable'],
+            'single slash after the scheme, user and password (unparseable)' => ["https:/{$u}:{$p}@{$h}/api/devices/", MeshClient::WITHHELD_ENDPOINT, [MeshClient::WITHHELD_ENDPOINT], false, 'unparseable'],
             // A user, or a user and a numeric password, ending at '?' or
             // '#' reads as a host and port; the '@' after it is caught.
-            "user holding '?' (unparseable)" => ["{$u}?z@{$h}:{$port}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], false, 'unparseable'],
-            "numeric password holding '#' (unparseable)" => ["{$u}:4821#z@{$h}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
+            "user holding '?' (unparseable)" => ["{$u}?z@{$h}:{$port}/api/devices/", MeshClient::WITHHELD_ENDPOINT, [MeshClient::WITHHELD_ENDPOINT], false, 'unparseable'],
+            "numeric password holding '#' (unparseable)" => ["{$u}:4821#z@{$h}/api/devices/", MeshClient::WITHHELD_ENDPOINT, [MeshClient::WITHHELD_ENDPOINT], true, 'unparseable'],
             // #5761 r2 (context:1): the other '?'/'#' shapes.
-            "user holding '#' (unparseable)" => ["{$u}#z@{$h}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], false, 'unparseable'],
-            "numeric password holding '?' (unparseable)" => ["{$u}:4821?z@{$h}:{$port}/api/customers/{$id}/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
-            "empty password, then '?' (unparseable)" => ["{$u}:?z@{$h}/api/devices/", '[unparseable endpoint]', ['[unparseable endpoint]'], true, 'unparseable'],
+            "user holding '#' (unparseable)" => ["{$u}#z@{$h}/api/devices/", MeshClient::WITHHELD_ENDPOINT, [MeshClient::WITHHELD_ENDPOINT], false, 'unparseable'],
+            "numeric password holding '?' (unparseable)" => ["{$u}:4821?z@{$h}:{$port}/api/customers/{$id}/", MeshClient::WITHHELD_ENDPOINT, [MeshClient::WITHHELD_ENDPOINT], true, 'unparseable'],
+            "empty password, then '?' (unparseable)" => ["{$u}:?z@{$h}/api/devices/", MeshClient::WITHHELD_ENDPOINT, [MeshClient::WITHHELD_ENDPOINT], true, 'unparseable'],
             'bare path, no authority (unchanged)' => ["/api/customers/{$id}/", '/api/customers/<customer>', ['/api/customers/'], false, 'redacted'],
         ];
     }
@@ -531,7 +531,7 @@ class MeshClientLogPathTest extends TestCase
         $this->assertSame(['authority strip only' => 3, 'kept' => 1, 'query cut only' => 1, 'redacted' => 11, 'unparseable' => 11, 'user-info drop' => 6], $kinds, 'user-info rows by kind');
         // '//user:password@' with a '/' in the password: PSR-7 refuses it
         // (no request, no line), so it is checked here only.
-        $this->assertSame('[unparseable endpoint]', $logPath->invoke(null, '//'.self::USER.':'.self::PASS.'/z@'.self::ENDPOINT_HOST.'/api/'));
+        $this->assertSame(MeshClient::WITHHELD_ENDPOINT, $logPath->invoke(null, '//'.self::USER.':'.self::PASS.'/z@'.self::ENDPOINT_HOST.'/api/'));
         // #5761 r2: a '//' after a space, with no scheme; PSR-7 reads it
         // as a path, logPath() as an authority whose user-info it drops.
         $this->assertSame(' //'.self::ENDPOINT_HOST.'/api/devices/', $logPath->invoke(null, ' //'.self::USER.':'.self::PASS.'@'.self::ENDPOINT_HOST.'/api/devices/'));
@@ -1171,7 +1171,7 @@ class MeshClientLogPathTest extends TestCase
         // before it), else at the start; it runs to the first '/', '?' or
         // '#'. What follows its last '@' must be a host[:port] to PHP's
         // parse_url() (or empty), with digits after any ':', else an
-        // endpoint holding any '@' is the fixed '[unparseable endpoint]';
+        // endpoint holding any '@' is the fixed WITHHELD_ENDPOINT (#6225);
         // so is one whose authority ends at a '?' or '#' with an '@'
         // after it. A kind of its own only where no
         // '//' strip removes the authority anyway.
@@ -1198,7 +1198,7 @@ class MeshClientLogPathTest extends TestCase
         // the endpoint is unparseable too.
         $keptHead = $start > 0 && trim($head) !== '' && ! str_ends_with($head, ':');
         if ($atPastQuery || (str_contains($endpoint, '@') && ($notHost || $keptHead))) {
-            return $out === '[unparseable endpoint]' ? 'unparseable' : null;
+            return $out === MeshClient::WITHHELD_ENDPOINT ? 'unparseable' : null;
         }
         $userInfoDrop = count($pieces) > 1;
         $endpoint = substr($endpoint, 0, $start).$hostPort.substr($endpoint, $end);

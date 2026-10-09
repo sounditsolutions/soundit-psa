@@ -2,6 +2,7 @@
 
 namespace Tests\Unit\Mesh;
 
+use App\Services\Mesh\MeshClient;
 use App\Services\Mesh\MeshClientException;
 use App\Services\Mesh\MeshWriteClient;
 use App\Services\Mesh\MeshWriteRejectedException;
@@ -19,8 +20,12 @@ use Tests\TestCase;
  * #6107, #6117, #6118: MeshWriteClient::logPath() is an allowlist. The
  * rule collection path is logged as it is; a path under it (a rule id,
  * encoded or not) is logged as 'api/rule-allows-blocks/<rule>/'; anything
- * else is '[endpoint outside the rule route]' (#6157: they parse, so
- * not '[unparseable endpoint]'). Each row names the predicate it kills. The 400 warning line and the other failure lines are driven
+ * else that parses is '[endpoint not written as the rule route]' (#6157:
+ * they parse, so not '[unparseable endpoint]'; #6218: the label says how
+ * the endpoint is written, so '/api/rule-allows-blocks/x/' and an
+ * absolute rule-route URL, which may resolve onto the route, get it too).
+ * #6217: an endpoint PSR-7 cannot parse is '[unparseable endpoint]' from
+ * logPath() itself, whatever calls it. Each row names the predicate it kills. The 400 warning line and the other failure lines are driven
  * through the public methods with a rule id, so they no longer log the
  * same text as the raw endpoint (#6117).
  *
@@ -73,6 +78,15 @@ class MeshWriteLogPathRedactionTest extends TestCase
             'another route' => ['api/customers/11111111-2222-3333-4444-555555555555/', $u],
             'collection without its slash' => ['api/rule-allows-blocks', $u],
             'empty' => ['', $u],
+            // #6218: written otherwise, though each may resolve onto the
+            // rule route: the label says how it is written.
+            'rooted rule route' => ['/api/rule-allows-blocks/abc/', $u],
+            'dot-relative rule route' => ['./api/rule-allows-blocks/abc/', $u],
+            'upper-case rule route' => ['API/rule-allows-blocks/', $u],
+            // #6217: unparseable, so the fixed fail-closed label from
+            // logPath() itself, not the 'not written as' label.
+            'unparseable: out-of-range port' => ['//mesh.example.test:99999/api/rule-allows-blocks/', MeshClient::UNPARSEABLE_ENDPOINT],
+            'unparseable: empty authority' => ['https:///api/rule-allows-blocks/x/', MeshClient::UNPARSEABLE_ENDPOINT],
         ];
     }
 

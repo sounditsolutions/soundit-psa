@@ -74,7 +74,7 @@ class MeshAllowRuleReaper
         $counts = ['examined' => 0, 'reaped' => 0, 'unresolved' => 0, 'failed' => 0];
 
         if (! $this->client->isConfigured()) {
-            Log::warning('[MeshAllowRuleReaper] Mesh is not configured; no allow rules were reaped. Expired rules are not being removed and may still be live upstream.');
+            Log::warning('[MeshAllowRuleReaper] Mesh has no usable API key; no allow rules were reaped. Expired rules are not being removed and may still be live upstream.');
 
             return $counts;
         }

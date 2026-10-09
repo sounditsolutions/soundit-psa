@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Models\Setting;
+use App\Services\Mesh\MeshClient;
 
 class MeshConfig
 {
@@ -21,23 +22,55 @@ class MeshConfig
     }
 
     /**
-     * #6162: true only for a key the Mesh clients would send past their
-     * own key checks: isSendableKey(), the same predicate
-     * MeshWriteClient::isConfigured() uses and the same two sets
-     * MeshClient::apiKeyRefusal() refuses before send. So a blank key or
-     * true is no longer configured here while every client refuses it.
-     * Why a key is not usable is apiKeyRefusal()'s text, which tells a
-     * missing key from a stored one the PSA does not send (#6161).
+     * #6162: isSendableKey() of the stored key, the same predicate
+     * MeshWriteClient::isConfigured() uses. False for a missing key and
+     * for a stored '0' (get() returns a string or null, so only those
+     * reach this method). Not the whole of what the clients refuse
+     * before send (#6207): the header rule (MeshClient::headerValueRefusal())
+     * is the clients' own, so a stored key holding a CR or LF is
+     * configured here and every client then refuses it before send.
+     * Why a key is not usable is MeshClient::apiKeyRefusal()'s text,
+     * which tells a missing key from a stored one the PSA does not send
+     * (#6161).
      */
     public static function isConfigured(): bool
     {
         return self::isSendableKey(self::get('api_key'));
     }
 
-    /** Neither apiKeyMissing() nor apiKeyUnusable(). The header rule is the clients' own. */
+    /**
+     * #6213: a key IS stored, but isConfigured() is false because the PSA
+     * does not send it (a stored '0'). Operator texts use this to say the
+     * key is set but unusable instead of 'not configured'.
+     */
+    public static function isKeyStoredButUnusable(): bool
+    {
+        $key = self::get('api_key');
+
+        return ! self::isSendableKey($key) && ! self::apiKeyMissing($key);
+    }
+
+    /**
+     * #6213: the operator text for isConfigured() being false: $missing
+     * when no key is stored (null, '' or blanks), else that the stored key
+     * is set but unusable, with MeshClient::UNUSABLE_KEY's wording.
+     */
+    public static function notConfiguredText(string $missing): string
+    {
+        return self::isKeyStoredButUnusable()
+            ? 'The Mesh API key '.MeshClient::UNUSABLE_KEY.'. Replace it in Settings → Integrations.'
+            : $missing;
+    }
+
+    /**
+     * A scalar that is neither apiKeyMissing() nor apiKeyUnusable(). #6208:
+     * an array (even []) or an object is not sendable, as the old empty()
+     * test also refused []. The rest of the header rule is the clients'
+     * own (see isConfigured()).
+     */
     public static function isSendableKey(mixed $key): bool
     {
-        return ! self::apiKeyMissing($key) && ! self::apiKeyUnusable($key);
+        return is_scalar($key) && ! self::apiKeyMissing($key) && ! self::apiKeyUnusable($key);
     }
 
     /**
