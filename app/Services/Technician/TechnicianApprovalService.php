@@ -72,9 +72,17 @@ class TechnicianApprovalService
         }
     }
 
-    /** #6256: the result when closeOrRollBack() rolled the transaction back. */
-    private static function claimLost(): TechnicianApprovalResult
+    /**
+     * #6256: the result when closeOrRollBack() rolled the transaction back. #6311: the rollback
+     * also removed the gate's audit row, so this writes the durable record, outside the rolled
+     * back transaction: one warning line with the run id and action type only.
+     */
+    private static function claimLost(TechnicianRun $run): TechnicianApprovalResult
     {
+        Log::warning('[Technician] approval rolled back: this request no longer holds the run', [
+            'run_id' => $run->id, 'action' => $run->action_type,
+        ]);
+
         return new TechnicianApprovalResult('gate_declined', message: 'Nothing was applied: this request no longer holds the run, so its changes were rolled back. Check the run\'s current state before acting on it again.');
     }
 
@@ -192,7 +200,7 @@ class TechnicianApprovalService
                 approvedRecipients: $resolved->toAuditArray(),
             );
         } catch (RunClaimLostException) {
-            return self::claimLost();
+            return self::claimLost($run);
         } catch (\Throwable $e) {
             // Unexpected throw between claim and email send — revert so the operator can retry.
             $run->releaseClaim();
@@ -303,7 +311,7 @@ class TechnicianApprovalService
                 confidence: null,
             );
         } catch (RunClaimLostException) {
-            return self::claimLost();
+            return self::claimLost($run);
         } catch (\Throwable $e) {
             // Unexpected throw between claim and execution — revert so the operator can retry.
             $run->releaseClaim();
@@ -442,10 +450,11 @@ class TechnicianApprovalService
                     runId: $run->id,
                     executor: function () use ($run, $survivor, $loser, $approverId): void {
                         app(TicketService::class)->mergeTickets($survivor, $loser, $approverId);
-                        TechnicianRun::query()->where('ticket_id', $loser->id)
+                        // #6306: every sibling is tried; a false return does not stop the sweep.
+                        TechnicianRun::supersedeEach(TechnicianRun::query()->where('ticket_id', $loser->id)
                             ->whereKeyNot($run->id)
                             ->where('state', TechnicianRunState::AwaitingApproval->value)
-                            ->get()->each(fn (TechnicianRun $pending) => $pending->markSuperseded());
+                            ->get());
                         self::closeOrRollBack($run);
                     },
                     approvalToken: $token,
@@ -455,7 +464,7 @@ class TechnicianApprovalService
                 return new TechnicianApprovalResult($gateResult->status === 'executed' ? 'merged' : 'gate_declined');
             });
         } catch (RunClaimLostException) {
-            return self::claimLost();
+            return self::claimLost($run);
         } catch (\Throwable $e) {
             $run->releaseClaim();
             throw $e;
@@ -497,12 +506,12 @@ class TechnicianApprovalService
                 executor: function () use ($run, $primary, $secondary, $approverId): void {
                     app(TicketService::class)->mergeTickets($primary, $secondary, $approverId);
 
-                    TechnicianRun::query()
+                    // #6306: every sibling is tried; a false return does not stop the sweep.
+                    TechnicianRun::supersedeEach(TechnicianRun::query()
                         ->where('ticket_id', $secondary->id)
                         ->whereKeyNot($run->id)
                         ->where('state', TechnicianRunState::AwaitingApproval->value)
-                        ->get()
-                        ->each(fn (TechnicianRun $pending) => $pending->markSuperseded());
+                        ->get());
 
                     self::closeOrRollBack($run);
                 },
@@ -511,7 +520,7 @@ class TechnicianApprovalService
                 confidence: null,
             );
         } catch (RunClaimLostException) {
-            return self::claimLost();
+            return self::claimLost($run);
         } catch (\Throwable $e) {
             $run->releaseClaim();
             throw $e;
@@ -570,7 +579,7 @@ class TechnicianApprovalService
                 confidence: null,
             );
         } catch (RunClaimLostException) {
-            return self::claimLost();
+            return self::claimLost($run);
         } catch (\Throwable $e) {
             $run->releaseClaim();
             throw $e;
@@ -756,7 +765,7 @@ class TechnicianApprovalService
                 approvedRecipients: $resolved?->toAuditArray(),
             );
         } catch (RunClaimLostException) {
-            return self::claimLost();
+            return self::claimLost($run);
         } catch (\Throwable $e) {
             $run->releaseClaim();
             throw $e;

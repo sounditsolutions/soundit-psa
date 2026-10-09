@@ -151,7 +151,7 @@ class StaffCalendarTokenFailureWireTest extends TestCase
         $this->assertCount(1, $this->mock, 'the spare response is still queued');
         $this->assertCount(1, $this->history, 'and nothing else was requested');
         $this->assertSame(
-            ['Graph calendar write not sent (no Graph access token was obtained): Failed to obtain Graph API token (HTTP 400)'],
+            ['Graph calendar write not sent (no Graph access token was obtained): GraphTokenException'],
             TechnicianActionLog::where('ticket_id', $ticket->id)->where('result_status', 'error')->pluck('summary')->all(),
         );
         $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%indeterminate%')->count());
@@ -177,11 +177,11 @@ class StaffCalendarTokenFailureWireTest extends TestCase
     }
 
     /**
-     * #6010: the audit row keeps a 140-character slice of the real GraphTokenException message.
-     * On each getToken() arm the message is fixed text plus a status, the Guzzle exception
-     * class or a field name, so the row carries no tenant, token endpoint path, identity
-     * provider text or token. Each failure below plants all of those where Guzzle's own message
-     * or the response body would carry them.
+     * #6010 / #6308 (C-56): the audit row names the exception's class, never its message. Each
+     * failure below plants a tenant, the token endpoint, identity provider text and a token where
+     * Guzzle's own message or the response body would carry them, and none reaches the row. Each
+     * data set's second value is the message GraphClient::getToken() builds on that arm; the row
+     * does not carry it either.
      *
      * @return array<string, array{0: \Closure(): (Response|\Closure), 1: string}>
      */
@@ -207,7 +207,8 @@ class StaffCalendarTokenFailureWireTest extends TestCase
 
         $this->assertCount(1, $this->requestsTo('login.microsoftonline.com'), 'positive control: the token request ran');
         $summaries = TechnicianActionLog::where('ticket_id', $ticket->id)->where('result_status', 'error')->pluck('summary')->all();
-        $this->assertSame(['Graph calendar write not sent (no Graph access token was obtained): '.$message], $summaries);
+        $this->assertSame(['Graph calendar write not sent (no Graph access token was obtained): GraphTokenException'], $summaries);
+        $this->assertStringNotContainsString($message, $summaries[0], 'the exception message is not copied');
         foreach (['tenant-wire6022-synthetic', 'login.microsoftonline.com', 'oauth2', 'AADSTS', 'B4N-SYNTHETIC-IDP-MARKER', 'cURL', self::ISSUED_ACCESS_FIXTURE, 'wire6022-synthetic-secret-not-real'] as $needle) {
             $this->assertStringNotContainsString($needle, $summaries[0]);
         }
@@ -434,7 +435,7 @@ class StaffCalendarTokenFailureWireTest extends TestCase
         $this->assertCount(1, $this->mock, 'the spare response is still queued');
         $this->assertCount(1, $this->history, 'and nothing else was requested');
         $this->assertSame(
-            ['Graph calendar write not sent (no Graph access token was obtained): Failed to obtain Graph API token (HTTP 400)'],
+            ['Graph calendar write not sent (no Graph access token was obtained): GraphTokenException'],
             TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->pluck('summary')->all(),
         );
         $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%indeterminate%')->count());

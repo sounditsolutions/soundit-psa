@@ -8,6 +8,7 @@ use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Facades\Log;
 
 /**
  * @property int $id
@@ -73,16 +74,41 @@ class TechnicianRun extends Model
      *
      * #6267 / #6270: the instance's other unsaved changes ride in the same fenced UPDATE, so no
      * second, unfenced write follows and no model event fires on this path. The observer acts
-     * only on a move into AwaitingApproval, which no claimed caller makes. Any other in-memory
-     * state saves as before.
+     * only on a move into AwaitingApproval, which no claimed caller makes.
+     *
+     * #6305: a run that another path moved out of Executing after this holder's side effect
+     * (for example reopened to AwaitingApproval) is left where that path put it; this holder
+     * does not land it Done over the other path's decision. The caller gets false and must say
+     * that the run was not closed, and its lost-fence record (audit row or log line) is what
+     * shows that the side effect ran. No path reopens an Executing vendor-executor run today:
+     * the stale-claim reaper reopens only RECOVERY_SAFE_ACTION_TYPES, whose lost fence rolls
+     * the side effect back (TechnicianApprovalService::closeOrRollBack()).
+     *
+     * #6310 / #6262: the bool is the UPDATE's affected-row count. MariaDB reports changed rows,
+     * not matched rows (PDO::MYSQL_ATTR_FOUND_ROWS is not set). The fence requires the stored
+     * state to be Executing, so for every target other than Executing the state column changes
+     * and the owner's UPDATE reports 1; that, not updated_at (stored to the second), is the
+     * guarantee. A same-second advance from Executing to Executing with nothing else dirty can
+     * report 0, and so false, on MariaDB while SQLite reports 1. No app caller targets
+     * Executing; a caller that ever does must not read false there as a lost fence.
+     *
+     * #6317: an instance that holds no claim (any other in-memory state) moves the run only
+     * while the stored state is still the state this instance holds in memory, read under a
+     * row lock inside a transaction, and saves through the model so its events still fire
+     * (the observer's AwaitingApproval notification). A run another request moved meanwhile
+     * (for example claimed it to Executing) is not overwritten: the call returns false.
      */
     public function advanceTo(TechnicianRunState $state): bool
     {
-        if ($this->state !== TechnicianRunState::Executing || ! $this->exists) {
+        if (! $this->exists) {
             $this->state = $state;
             $this->save();
 
             return true;
+        }
+
+        if ($this->state !== TechnicianRunState::Executing) {
+            return $this->advanceUnclaimedTo($state);
         }
 
         $now = $this->freshTimestamp();
@@ -101,11 +127,34 @@ class TechnicianRun extends Model
         return true;
     }
 
+    /** #6317: the unclaimed branch of advanceTo(): a compare-and-set on the in-memory state. */
+    private function advanceUnclaimedTo(TechnicianRunState $state): bool
+    {
+        $expected = $this->state;
+
+        return $this->getConnection()->transaction(function () use ($state, $expected): bool {
+            $stored = static::query()->whereKey($this->getKey())->lockForUpdate()->first(['id', 'state']);
+            if ($stored === null || $stored->state !== $expected) {
+                return false;
+            }
+
+            $this->state = $state;
+            if (! $this->save()) {
+                $this->state = $expected;
+
+                return false;
+            }
+
+            return true;
+        });
+    }
+
     /**
      * #6125 / #6197: the claim-owner fence. Narrows $query to the run still Executing under the
      * claim this instance holds: the claimed_at stamp its claimForExecution() /
      * claimQueuedForExecution() wrote, or that it was loaded with (null for a legacy claim with
-     * no stamp). A run reopened and claimed again carries the new claim's stamp, so a stale
+     * no stamp). #6323: the stamp is read from the instance's original attributes, so a
+     * claimed_at the caller changed in memory and has not saved does not move the fence key. A run reopened and claimed again carries the new claim's stamp, so a stale
      * holder's write matches no row. The stamp is stored to the second, so a re-claim within the
      * same second is not told apart (#6191), and an instance that reloads the run after another
      * claim carries that claim's stamp (#6190).
@@ -115,10 +164,12 @@ class TechnicianRun extends Model
      */
     private function whereHoldsClaim(Builder $query): Builder
     {
+        $claimedAt = $this->getOriginal('claimed_at');
+
         return $query->where('state', TechnicianRunState::Executing->value)
-            ->where(fn (Builder $q) => $this->claimed_at === null
+            ->where(fn (Builder $q) => $claimedAt === null
                 ? $q->whereNull('claimed_at')
-                : $q->where('claimed_at', $this->claimed_at));
+                : $q->where('claimed_at', $claimedAt));
     }
 
     /**
@@ -161,6 +212,8 @@ class TechnicianRun extends Model
         if ($claimed) {
             $this->state = TechnicianRunState::Executing;
             $this->claimed_at = $now;
+            // #6323: the row now holds this claim, so it is the original the fence keys on.
+            $this->syncOriginalAttributes(['state', 'claimed_at']);
         }
 
         return $claimed;
@@ -307,6 +360,8 @@ class TechnicianRun extends Model
         if ($claimed) {
             $this->state = TechnicianRunState::Executing;
             $this->claimed_at = $now;
+            // #6323: as in claimForExecution().
+            $this->syncOriginalAttributes(['state', 'claimed_at']);
         }
 
         return $claimed;
@@ -481,6 +536,31 @@ class TechnicianRun extends Model
     public function markSuperseded(): bool
     {
         return $this->advanceTo(TechnicianRunState::Superseded);
+    }
+
+    /**
+     * #6306: supersede every run in $runs. Each run is tried on its own: a run another request
+     * moved meanwhile (markSuperseded() false) is left where that request put it, and the sweep
+     * goes on to the rest. (Collection::each() stops at a callback that returns false, which an
+     * arrow function or a higher-order ->each->markSuperseded() would.) Returns the ids that
+     * were not superseded, and logs them (ids only) when there are any.
+     *
+     * @param  iterable<TechnicianRun>  $runs
+     * @return list<int>
+     */
+    public static function supersedeEach(iterable $runs): array
+    {
+        $kept = [];
+        foreach ($runs as $run) {
+            if (! $run->markSuperseded()) {
+                $kept[] = (int) $run->id;
+            }
+        }
+        if ($kept !== []) {
+            Log::info('[TechnicianRun] supersede sweep: runs not superseded', ['run_ids' => $kept]);
+        }
+
+        return $kept;
     }
 
     /**

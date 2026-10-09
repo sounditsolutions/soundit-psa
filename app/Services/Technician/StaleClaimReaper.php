@@ -47,13 +47,14 @@ class StaleClaimReaper
             ->get()
             ->each(function (TechnicianRun $run) use (&$reaped, &$flaggedUnsafe): void {
                 if (! $run->isRecoverySafeToReopen()) {
-                    // A staged vendor action (CIPP/Tactical) may have already fired its upstream
-                    // call before the crash. Reopening it would let a re-approval DUPLICATE that
-                    // side effect, so we never do — we surface it loudly for a human to reconcile.
+                    // A staged external action (CIPP, Tactical, Huntress, Mesh, Calendar, ...) may
+                    // have already fired its upstream call before the crash. Reopening it would let
+                    // a re-approval DUPLICATE that side effect, so we never do. #6266: the run is
+                    // only logged here; nothing moves it to Flagged.
                     $flaggedUnsafe[] = $run->id;
                     Log::error(
                         '[Technician] A side-effecting action is stranded in "executing" and needs '.
-                        'MANUAL review — its vendor side effect (CIPP/Tactical) may already have fired, '.
+                        'MANUAL review — its external side effect may already have fired, '.
                         'so it is NOT auto-returned to the approval queue (a re-approval could duplicate it).',
                         [
                             'run_id' => $run->id,

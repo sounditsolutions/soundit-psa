@@ -52,7 +52,9 @@ class StaffCalendarToolExecutor
      * GraphTokenRefreshFailedException, a sibling class that takes the indeterminate arm
      * (#6014, #6015), except on the event read before an update with a body, where it is
      * wrapped as a CalendarPreReadFailedException and takes that "not sent" arm (#6121). A
-     * GraphTokenException from that read is not wrapped and takes this arm (#6193).
+     * GraphTokenException from that read is not wrapped and takes this arm (#6193). #6308 (C-56):
+     * the row is completed by the exception's class, never its message; GraphClient::getToken()
+     * writes its own record of the token endpoint's status.
      */
     private const TOKEN_FAILURE_AUDIT = 'Graph calendar write not sent (no Graph access token was obtained): ';
 
@@ -491,7 +493,7 @@ class StaffCalendarToolExecutor
             // request is GraphTokenRefreshFailedException: not this arm's class, so the
             // GraphClientException arm below catches it as indeterminate (#6014, #6128). On the
             // update pre-read it is caught as CalendarPreReadFailedException instead (#6121).
-            $this->safeAudit($directTool, 'error', $ticket, $contentHash, self::TOKEN_FAILURE_AUDIT.mb_substr($e->getMessage(), 0, 140), $actorLabel);
+            $this->safeAudit($directTool, 'error', $ticket, $contentHash, self::TOKEN_FAILURE_AUDIT.class_basename($e), $actorLabel);
 
             return ['error' => 'The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar, so a retry cannot duplicate it.'];
         } catch (CalendarPreReadFailedException $e) {
@@ -977,7 +979,7 @@ class StaffCalendarToolExecutor
                 // #6252: this arm has settled "not sent", so a later throwable (from the release
                 // below) is not relabelled as an unresolved write by the outer catch.
                 $writeEntered = false;
-                $this->safeAudit($run->action_type, 'error', $ticket, $run->content_hash, self::TOKEN_FAILURE_AUDIT.mb_substr($e->getMessage(), 0, 140), $this->approverLabel($approverId), $run->id, $approverId);
+                $this->safeAudit($run->action_type, 'error', $ticket, $run->content_hash, self::TOKEN_FAILURE_AUDIT.class_basename($e), $this->approverLabel($approverId), $run->id, $approverId);
                 $reopened = $run->releaseClaim();
 
                 return $this->declined('The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar; '
@@ -1051,12 +1053,15 @@ class StaffCalendarToolExecutor
             // advanceTo(Done) itself threw, do NOT reopen
             // (double-execute risk): leave the run claimed/Executing, which the stale-claim
             // reaper never reopens (this family is not in RECOVERY_SAFE_ACTION_TYPES).
+            // #6314: nothing flags the run, so the record is this error line and an
+            // executed_with_fault audit row, and the approver gets the fault on the error channel.
             if ($writeCommitted) {
-                Log::error('[Calendar] finalizing an executed calendar write failed; run left claimed for manual review', [
+                Log::error('[Calendar] closing the run failed after an approved calendar write executed; run not reopened', [
                     'run_id' => $run->id, 'exception' => $e::class,
                 ]);
+                $this->safeAudit($run->action_type, 'executed_with_fault', $ticket, $run->content_hash, 'Calendar write EXECUTED, but closing the run failed ('.class_basename($e).'). Do NOT re-approve; check the calendar and the run.', $this->approverLabel($approverId), $run->id, $approverId);
 
-                return new TechnicianApprovalResult('executed', message: 'Calendar write executed; finalizing the run failed and was flagged — do NOT re-approve.');
+                return new TechnicianApprovalResult('executed_with_fault', message: 'Calendar write executed, but closing the run failed. Do NOT re-approve it; check the calendar and the run.');
             }
 
             // #6185: the write call was entered, and what failed is not a GraphClientException
@@ -1068,10 +1073,11 @@ class StaffCalendarToolExecutor
             // entered nothing was sent, so the release below stays safe.
             if ($writeEntered) {
                 // #6251: the throwable's class, file and line, never its message (C-56: a
-                // message can carry a mailbox or path), so the fault can be located.
+                // message can carry a mailbox or path), so the fault can be located. #6309: the
+                // file is relative to the application root, never the server's absolute path.
                 Log::error('[Calendar] approved calendar write outcome unresolved: an unexpected failure was raised after the write call was entered; run not reopened', [
                     'run_id' => $run->id, 'action' => $run->action_type, 'exception' => $e::class,
-                    'file' => $e->getFile(), 'line' => $e->getLine(),
+                    'file' => self::relativeSourcePath($e->getFile()), 'line' => $e->getLine(),
                 ]);
                 $this->safeAudit($run->action_type, 'error', $ticket, $run->content_hash, self::UNRESOLVED_AUDIT.class_basename($e), $this->approverLabel($approverId), $run->id, $approverId);
 
@@ -1145,6 +1151,17 @@ class StaffCalendarToolExecutor
         return class_basename($e).($status > 0 ? " (HTTP status {$status})" : ' (no HTTP status)');
     }
 
+    /**
+     * #6309: a source file path relative to the application root. A file outside the root keeps
+     * only its base name, so no absolute server path is logged.
+     */
+    private static function relativeSourcePath(string $file): string
+    {
+        $root = base_path().DIRECTORY_SEPARATOR;
+
+        return str_starts_with($file, $root) ? substr($file, strlen($root)) : basename($file);
+    }
+
     private function declined(string $reason): TechnicianApprovalResult
     {
         return new TechnicianApprovalResult('gate_declined', message: mb_substr($reason, 0, 300));
@@ -1177,7 +1194,9 @@ class StaffCalendarToolExecutor
         try {
             $this->auditWrite($actionType, $resultStatus, $ticket, $contentHash, $summary, $actorLabel, $runId, $approverId);
         } catch (\Throwable $e) {
-            Log::error('[Calendar] audit write failed', ['action' => $actionType, 'status' => $resultStatus, 'error' => $e->getMessage()]);
+            // #6316 (C-56): the class only; a QueryException's message carries the INSERT's bound
+            // values (actor label, summary).
+            Log::error('[Calendar] audit write failed', ['action' => $actionType, 'status' => $resultStatus, 'exception' => $e::class]);
         }
     }
 

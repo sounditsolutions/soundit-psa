@@ -1018,7 +1018,7 @@ class StaffCippWriteToolExecutor
             if ($this->isLicenseNoChange($directTool, $upstream)) {
                 $this->auditAttempt($run->action_type, self::RESULT_NO_OP, $client->id, $ticket, $person, $license, $run->content_hash, "Operator-approved {$run->action_type}: ".self::LICENSE_NO_CHANGE_MESSAGE, $this->approverLabel($approverId), $run->id, $approverId);
                 if (! $run->advanceTo(TechnicianRunState::Done)) {
-                    return TechnicianApprovalResult::executedNotClosed('The approved CIPP action', 'CIPP');
+                    return self::executedNotClosed($run);
                 }
 
                 return new TechnicianApprovalResult('executed', message: self::LICENSE_NO_CHANGE_MESSAGE);
@@ -1026,7 +1026,7 @@ class StaffCippWriteToolExecutor
 
             $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $person, $license, $run->content_hash, "Operator-approved {$run->action_type} executed.".$this->executedAuditSuffix($directTool, $mailbox), $this->approverLabel($approverId), $run->id, $approverId);
             if (! $run->advanceTo(TechnicianRunState::Done)) {
-                return TechnicianApprovalResult::executedNotClosed('The approved CIPP action', 'CIPP');
+                return self::executedNotClosed($run);
             }
 
             return new TechnicianApprovalResult('executed');
@@ -2065,7 +2065,7 @@ class StaffCippWriteToolExecutor
 
             $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed for ".$this->emailSecurityAuditTarget($directTool, $params).'.', $this->approverLabel($approverId), $run->id, $approverId);
             if (! $run->advanceTo(TechnicianRunState::Done)) {
-                return TechnicianApprovalResult::executedNotClosed('The approved CIPP action', 'CIPP');
+                return self::executedNotClosed($run);
             }
 
             return new TechnicianApprovalResult('executed');
@@ -3470,7 +3470,7 @@ class StaffCippWriteToolExecutor
 
             $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — ".$this->groupMembershipAuditDetail((string) $params['operation'], $group['name'], (string) $params['group_id']).'.', $this->approverLabel($approverId), $run->id, $approverId);
             if (! $run->advanceTo(TechnicianRunState::Done)) {
-                return TechnicianApprovalResult::executedNotClosed('The approved CIPP action', 'CIPP');
+                return self::executedNotClosed($run);
             }
 
             return new TechnicianApprovalResult('executed');
@@ -4380,7 +4380,7 @@ class StaffCippWriteToolExecutor
 
             $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — ".$this->licenseTargetAuditDetail($user, $license).'.', $this->approverLabel($approverId), $run->id, $approverId);
             if (! $run->advanceTo(TechnicianRunState::Done)) {
-                return TechnicianApprovalResult::executedNotClosed('The approved CIPP action', 'CIPP');
+                return self::executedNotClosed($run);
             }
 
             return new TechnicianApprovalResult('executed');
@@ -7213,6 +7213,20 @@ class StaffCippWriteToolExecutor
      * #6256: a duplicate or already-satisfied arm sent nothing upstream, but advanceTo() lost
      * the claim-owner fence, so this request did not close the run either.
      */
+    /**
+     * #6311: an approved CIPP action executed (its executed row is already written) but
+     * advanceTo() lost the claim-owner fence. The warning line is the durable record that this
+     * request did not close the run. Ids only.
+     */
+    private static function executedNotClosed(TechnicianRun $run): TechnicianApprovalResult
+    {
+        \Illuminate\Support\Facades\Log::warning('[CIPP] an approved action executed but the run was not closed: this request no longer holds it', [
+            'run_id' => $run->id, 'action' => $run->action_type,
+        ]);
+
+        return TechnicianApprovalResult::executedNotClosed('The approved CIPP action', 'CIPP');
+    }
+
     private static function sentNothingNotClosed(): TechnicianApprovalResult
     {
         return new TechnicianApprovalResult('gate_declined', message: 'Nothing was sent to CIPP, and the run was not closed because this request no longer holds it. Check the run\'s current state before acting on it again.');

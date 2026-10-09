@@ -245,7 +245,7 @@ class TacticalCmdOutcomeUnknownRetryTest extends TestCase
         [$run, $approval] = $this->stageAndApproveLosingTheClaim($f, $token, fn () => throw $failure);
 
         $this->assertSame('gate_declined', $approval->status);
-        $this->assertSame('Tactical did not answer before the timeout after the approved action was sent; it may have run. The run was not closed: this approval no longer holds it, and it was not reopened for re-approval. Check the device to find out whether it ran, and check the run before acting on it again.', $approval->message);
+        $this->assertSame('Tactical did not answer before the timeout after the approved action was sent; it may have run. The run was not closed: this request no longer holds it, and this request did not reopen it. Check the device to find out whether it ran, and check the run before acting on it again.', $approval->message);
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is untouched');
         $this->assertSame('outcome_unknown', TechnicianActionLog::where('run_id', $run->id)->latest('id')->value('result_status'), 'positive control: the outcome-unknown arm ran');
     }
@@ -259,7 +259,7 @@ class TacticalCmdOutcomeUnknownRetryTest extends TestCase
         [$run, $approval] = $this->stageAndApproveLosingTheClaim($f, $token, fn () => 'done');
 
         $this->assertSame('executed_with_fault', $approval->status);
-        $this->assertSame('The approved Tactical action executed, but the run was not closed because this approval no longer holds it. Do NOT re-approve it; check the device and the run.', $approval->message);
+        $this->assertSame('The approved Tactical action executed, but the run was not closed because this request no longer holds it. Do NOT re-approve it; check the device and the run.', $approval->message);
         $this->assertNull($approval->secret);
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is untouched');
         $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed')->count(), 'positive control: the action executed');

@@ -522,7 +522,7 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
 
         $this->assertSame(['error' => 'The calendar write was not sent: the PSA could not obtain a Microsoft Graph access token. Nothing was written to the calendar, so a retry cannot duplicate it.'], $result);
         $this->assertSame(
-            ['Graph calendar write not sent (no Graph access token was obtained): Failed to obtain Graph API token (HTTP 400)'],
+            ['Graph calendar write not sent (no Graph access token was obtained): GraphTokenException'],
             TechnicianActionLog::where('ticket_id', $ticket->id)->where('result_status', 'error')->pluck('summary')->all(),
         );
         $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%indeterminate%')->count(), 'no indeterminate-outcome row');

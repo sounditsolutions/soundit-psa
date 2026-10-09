@@ -3803,6 +3803,14 @@ class StaffTacticalAdminToolExecutor
             // #6256: on a lost claim-owner fence this request did not close the run. The
             // action executed, so this is never a success and never a retry.
             if (! $run->advanceTo(TechnicianRunState::Done)) {
+                // #6311: the durable record of an executed action on a run this request did not
+                // close. Ids only. #6320: the extra text is the executor's own fault sentence
+                // (executeAgentRemoval() composes it; the vendor's reply is kept apart, under
+                // upstream_message, and is not forwarded).
+                \Illuminate\Support\Facades\Log::warning('[TacticalAdmin] an approved action executed but the run was not closed: this request no longer holds it', [
+                    'run_id' => $run->id, 'action' => $run->action_type,
+                ]);
+
                 return TechnicianApprovalResult::executedNotClosed('The approved Tactical admin action', 'Tactical', isset($result['fault']) && is_string($result['message'] ?? null) ? $result['message'] : '');
             }
 

@@ -268,7 +268,10 @@ class StaffCalendarReleaseHonestyTest extends TestCase
         $this->assertCount(1, $records);
         $this->assertSame('error', $records[0]->level);
         // #6251: class, file and line locate the fault; the message (which can carry a mailbox) is not logged.
-        $this->assertSame(['run_id' => $run->id, 'action' => $stagedTool, 'exception' => \TypeError::class, 'file' => $failure->getFile(), 'line' => $failure->getLine()], $records[0]->context);
+        // #6309: the file is relative to the application root (positive control: the throwable's own path is absolute).
+        $this->assertStringStartsWith(base_path().DIRECTORY_SEPARATOR, $failure->getFile());
+        $this->assertSame(['run_id' => $run->id, 'action' => $stagedTool, 'exception' => \TypeError::class, 'file' => 'tests/Feature/Mcp/StaffCalendarReleaseHonestyTest.php', 'line' => $failure->getLine()], $records[0]->context);
+        $this->assertStringNotContainsString(base_path(), json_encode($records[0]->context) ?: '');
         $this->assertStringNotContainsString(self::OWNER, json_encode($records[0]->context) ?: '');
         $this->assertSame([], array_values(array_filter($logged(), fn (MessageLogged $m) => str_contains($m->message, 'was not reopened') && ! str_contains($m->message, 'unresolved'))));
         $this->assertSame(
@@ -281,7 +284,9 @@ class StaffCalendarReleaseHonestyTest extends TestCase
     /**
      * #6252: the token arm has already settled "not sent". If its release then throws, the
      * outer catch must not relabel the write as unresolved: no UNRESOLVED row, no
-     * outcome_unknown, and the throwable goes on to the handler as before.
+     * outcome_unknown. #6325: the outer catch then tries its own release, which the hook also
+     * fails, and that second throwable is the one that escapes to the handler; the count of
+     * failed releases shows both ran.
      */
     public function test_a_throw_after_the_token_arm_settled_not_sent_is_not_relabelled_unresolved(): void
     {
@@ -293,16 +298,19 @@ class StaffCalendarReleaseHonestyTest extends TestCase
                 $armed = true;
             }
         });
-        DB::beforeExecuting(function (string $sql) use (&$armed): void {
+        $failed = 0;
+        DB::beforeExecuting(function (string $sql) use (&$armed, &$failed): void {
             if ($armed && str_starts_with(strtolower($sql), 'update "technician_runs"')) {
-                throw new \RuntimeException('synthetic release failure');
+                $failed++;
+                throw new \RuntimeException('synthetic release failure '.$failed);
             }
         });
 
         $thrown = rescue(fn () => app(StaffCalendarToolExecutor::class)->approveStagedRun($run->fresh(), $this->approver->id), fn ($e) => $e, false);
 
         $this->assertInstanceOf(\RuntimeException::class, $thrown, 'the release failure is not swallowed into a result');
-        $this->assertSame('synthetic release failure', $thrown->getMessage());
+        $this->assertSame(2, $failed, "the token arm's release, then the outer catch's release");
+        $this->assertSame('synthetic release failure 2', $thrown->getMessage(), "the outer catch's release failure escapes");
         $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%UNRESOLVED%')->count());
     }
 
@@ -351,6 +359,76 @@ class StaffCalendarReleaseHonestyTest extends TestCase
             TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed_with_fault')->pluck('summary')->all(),
         );
         $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->count());
+    }
+
+    /**
+     * #6314: the write ran and advanceTo(Done) itself threw. The run is not reopened. The
+     * approver gets the fault on the error channel (executed_with_fault, not a green
+     * 'executed'), the text claims no flag, and an executed_with_fault audit row and an error
+     * line are the record.
+     */
+    public function test_an_executed_write_whose_close_throws_is_a_recorded_fault_not_a_success(): void
+    {
+        $run = $this->staged(['user_upn' => self::OWNER, 'event_id' => 'EVT-6124', 'comment' => 'x', 'reason' => 'Resolved.']);
+        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->once()->andReturnUsing(function () {
+            DB::beforeExecuting(function (string $sql, array $bindings): void {
+                if (str_starts_with(strtolower($sql), 'update') && str_contains($sql, 'technician_runs')
+                    && in_array(TechnicianRunState::Done->value, $bindings, true)) {
+                    throw new \RuntimeException('synthetic close failure '.self::OWNER);
+                }
+            });
+
+            return null;
+        }));
+        $logged = $this->captureLogs();
+
+        $r = app(StaffCalendarToolExecutor::class)->approveStagedRun($run->fresh(), $this->approver->id);
+
+        $this->assertSame('executed_with_fault', $r->status);
+        $this->assertSame('Calendar write executed, but closing the run failed. Do NOT re-approve it; check the calendar and the run.', $r->message);
+        $this->assertStringNotContainsString('flagged', (string) $r->message);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'not reopened');
+        $this->assertSame(
+            ['Calendar write EXECUTED, but closing the run failed (RuntimeException). Do NOT re-approve; check the calendar and the run.'],
+            TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed_with_fault')->pluck('summary')->all(),
+        );
+        $records = array_values(array_filter($logged(), fn (MessageLogged $m) => str_contains($m->message, 'closing the run failed')));
+        $this->assertCount(1, $records);
+        $this->assertSame('error', $records[0]->level);
+        $this->assertSame(['run_id' => $run->id, 'exception' => \RuntimeException::class], $records[0]->context);
+    }
+
+    /**
+     * #6316 (C-56): when the audit insert itself fails, the log line names the exception's class,
+     * never its message. Positive control (#6326): the failure's message carries the mailbox, so
+     * a message-copying line would contain it.
+     */
+    public function test_a_failed_audit_insert_is_logged_by_class_not_message(): void
+    {
+        $run = $this->staged(['user_upn' => self::OWNER, 'event_id' => 'EVT-6124', 'comment' => 'x', 'reason' => 'Resolved.']);
+        $failure = new \RuntimeException('synthetic audit insert failure '.self::OWNER);
+        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('cancelEvent')->once()->andReturnUsing(function () use ($failure) {
+            DB::beforeExecuting(function (string $sql, array $bindings) use ($failure): void {
+                if (str_starts_with(strtolower($sql), 'update') && str_contains($sql, 'technician_runs')
+                    && in_array(TechnicianRunState::Done->value, $bindings, true)) {
+                    throw new \LogicException('synthetic close failure');
+                }
+                if (str_contains($sql, 'insert into "technician_action_logs"')) {
+                    throw $failure;
+                }
+            });
+
+            return null;
+        }));
+        $logged = $this->captureLogs();
+
+        app(StaffCalendarToolExecutor::class)->approveStagedRun($run->fresh(), $this->approver->id);
+
+        $this->assertStringContainsString(self::OWNER, $failure->getMessage(), 'positive control: the failure carries the mailbox');
+        $records = array_values(array_filter($logged(), fn (MessageLogged $m) => $m->message === '[Calendar] audit write failed'));
+        $this->assertCount(1, $records);
+        $this->assertSame(['action' => 'calendar_stage_cancel_event', 'status' => 'executed_with_fault', 'exception' => \RuntimeException::class], $records[0]->context);
+        $this->assertStringNotContainsString(self::OWNER, json_encode($records[0]->context) ?: '');
     }
 
     /** @return \Closure(): list<MessageLogged> */
