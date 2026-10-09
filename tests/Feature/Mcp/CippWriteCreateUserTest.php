@@ -636,7 +636,7 @@ class CippWriteCreateUserTest extends TestCase
         $this->configureCipp();
         $actor = $this->configureAiActor();
         $fixture = $this->cippFixture();
-        $secret = 'Lost-Fence-6303!';
+        $minted = 'Lost-Fence-6303!';
 
         $this->blockedClient();
         $staged = $this->callTool($this->token([self::STAGED_TOOL]), self::STAGED_TOOL, $this->validArguments($fixture, [
@@ -645,10 +645,10 @@ class CippWriteCreateUserTest extends TestCase
         $run = TechnicianRun::findOrFail($this->decodedResult($staged)['run_id']);
 
         $approveClient = Mockery::mock(CippRestWriteClient::class);
-        $approveClient->shouldReceive('createUser')->once()->andReturnUsing(function () use ($run, $secret) {
+        $approveClient->shouldReceive('createUser')->once()->andReturnUsing(function () use ($run, $minted) {
             TechnicianRun::whereKey($run->id)->update(['claimed_at' => now()->addMinute()]);
 
-            return ['success' => true, 'status' => 200, 'body' => $this->addUserBody('newhire@acme.onmicrosoft.com', $secret)];
+            return ['success' => true, 'status' => 200, 'body' => $this->addUserBody('newhire@acme.onmicrosoft.com', $minted)];
         });
         $this->app->instance(CippRestWriteClient::class, $approveClient);
 
@@ -666,7 +666,7 @@ class CippWriteCreateUserTest extends TestCase
         foreach ($rows as $row) {
             $this->assertStringNotContainsString('delivered once', (string) $row->summary);
         }
-        $this->assertStringNotContainsString($secret, json_encode(TechnicianActionLog::all()->toArray()));
+        $this->assertStringNotContainsString($minted, json_encode(TechnicianActionLog::all()->toArray()));
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
     }
 
