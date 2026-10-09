@@ -56,7 +56,7 @@ class RetryEmailAttachmentsJobTest extends TestCase
      * literal so a base without the constant fails on an assertion, not on an undefined
      * constant (#6411).
      */
-    private const DELETE_UNMATCHED = '[RetryEmailAttachments] Duplicate queue rows of one push whose DELETE reported no matched row';
+    private const DELETE_UNMATCHED = '[RetryEmailAttachments] Queue rows of one push whose DELETE reported no matched row';
 
     /** @var array<int, array{request: \Psr\Http\Message\RequestInterface}> */
     private array $history = [];
