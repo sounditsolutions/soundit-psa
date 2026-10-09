@@ -837,7 +837,7 @@ class ControlDOnboardClientTest extends TestCase
         foreach ([new Response(503), $this->ok(['sub_organizations' => [$this->listed('otherorg01')]]), $this->ok(['sub_organizations' => [array_merge($this->listed('testorg001'), ['parent_profile' => null])]])] as $answer) {
             $this->vendor([$answer]);
             $result = $this->decoded($this->callTool($this->token(), 'controld_onboard_client', ['client_id' => $fixture['client']->id, 'ticket_id' => $fixture['ticket']->id, 'reason' => 'x', 'staged' => true]));
-            $this->assertSame(StaffControlDOnboardingToolExecutor::UNREADABLE_REFUSAL, $result['error'] ?? null, json_encode($result));
+            $this->assertSame(self::UNREADABLE_REFUSAL, $result['error'] ?? null, json_encode($result));
         }
         $this->assertSame(0, TechnicianRun::count());
     }
@@ -1011,7 +1011,10 @@ class ControlDOnboardClientTest extends TestCase
         }
     }
 
-    private const UNREADABLE_AT_APPROVAL = 'Control D onboarding approval could not re-check the client\'s current step ('.StaffControlDOnboardingToolExecutor::UNREADABLE_REFUSAL.'). Nothing was created. Approving again helps only if the cause was temporary; otherwise fix it or deny this proposal.';
+    /** #6232 (diff:7): exact text, true whether globalProfileState() threw before or after its GET. */
+    private const UNREADABLE_REFUSAL = 'Could not confirm whether the Control D global profile is enforced on this client\'s organization (the configured global profile setting is missing or invalid, Control D is disabled or unconfigured, or the parent organization list could not be read or did not list this organization exactly once with a well-formed global profile); nothing was staged.';
+
+    private const UNREADABLE_AT_APPROVAL = 'Control D onboarding approval could not re-check the client\'s current step ('.self::UNREADABLE_REFUSAL.'). Nothing was created. Approving again helps only if the cause was temporary; otherwise fix it or deny this proposal.';
 
     /** Item 8 (contract-s1:6): a pre-admission refusal after a read says 'before any vendor write', never 'vendor call'. */
     public function test_pre_admission_refusal_after_a_read_says_vendor_write_and_names_admin_release(): void
@@ -1196,5 +1199,21 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertStringNotContainsString('(step 3)', $html);
         $this->assertStringNotContainsString('(step 2)', $html);
         $this->assertStringNotContainsString('is never replaced', $html);
+    }
+
+    /** #6232 (diff:7), no-request arm: an invalid profile setting refuses in globalProfileState() before any GET; the text does not claim a failed read. */
+    public function test_unreadable_refusal_without_any_request_does_not_claim_a_failed_read(): void
+    {
+        $this->configure();
+        $this->aiActor();
+        Setting::setValue('controld_default_profile_id', 'not a valid pk!');
+        $this->assertTrue(ControlDConfig::isOnboardingActive(), 'the verb is live, so nextStep() is reached');
+        $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
+        $this->vendor([]);
+        $result = $this->decoded($this->callTool($this->token(), 'controld_onboard_client', $this->stageArgs($fixture)));
+        $this->assertSame(self::UNREADABLE_REFUSAL, $result['error'] ?? null, json_encode($result));
+        $this->assertStringNotContainsString('check of the parent organization list failed', $result['error']);
+        $this->assertCount(0, $this->history, 'no request was made');
+        $this->assertSame(0, TechnicianRun::count());
     }
 }
