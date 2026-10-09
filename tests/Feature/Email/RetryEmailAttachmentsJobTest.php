@@ -2460,6 +2460,67 @@ class RetryEmailAttachmentsJobTest extends TestCase
         $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy());
     }
 
+    /**
+     * #6183: a worker reserves the earlier of two rows of one push as the push returns, before
+     * its run's check: before the pass reads the rows, or between that read and the pass's
+     * DELETE of the row (which then matches nothing). The pass leaves both rows; the reserved
+     * row's run must still find the later row once the pending entry is gone.
+     *
+     * @return array<string, array{0: string}>
+     */
+    public static function earlierRowReservedAtTheEndOfThePush(): array
+    {
+        return ['before the pass reads' => ['before_read'], 'between the read and the delete' => ['before_delete']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('earlierRowReservedAtTheEndOfThePush')]
+    public function test_an_earlier_row_reserved_at_the_end_of_the_push_still_skips_for_the_later_row(string $when): void
+    {
+        $this->databaseQueue();
+        $this->graph([$this->failedRead()]);
+        $email = $this->email();
+        $ids = null;
+        $reserved = null;
+        $pushId = null;
+        $this->duringPush(function (RetryEmailAttachments $job) use ($when, &$ids, &$reserved, &$pushId) {
+            $pushId = $job->pushId;
+            $row = $this->retryRows()[0];
+            $ids = [(int) $row->id, $this->copyRow($row)];
+            if ($when === 'before_read') {
+                $reserved = $this->popRetry();
+
+                return;
+            }
+            DB::beforeExecuting(function (string $sql) use (&$reserved) {
+                if ($reserved === null && str_starts_with(strtolower($sql), 'delete from "jobs"')) {
+                    $reserved = false;
+                    $reserved = $this->popRetry();
+                }
+            });
+        });
+
+        $ticket = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertInstanceOf(\Illuminate\Queue\Jobs\DatabaseJob::class, $reserved, 'positive control: a worker reserved a row');
+        $this->assertSame($ids[0], (int) $reserved->getJobId(), 'positive control: the earlier row');
+        $this->assertSame($ids, array_map(fn ($r) => (int) $r->id, $this->retryRows()), 'the pass left both rows');
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::DUPLICATE_ROWS_DROPPED));
+        $this->assertNotContains('retry-email-attachments:pending:'.$pushId, $this->readBackCacheKeys(), 'positive control: the push has returned');
+
+        $this->mock->append($this->read());
+        $reserved->fire();
+
+        $this->assertSame([['email_id' => $email->id, 'ticket_id' => $ticket->id, 'job_id' => $ids[0], 'later_job_ids' => [$ids[1]]]],
+            array_map(fn ($r) => $r->context, $this->withMessage(RetryEmailAttachments::DUPLICATE_ROW_SKIPPED)), 'the reserved row found the later one');
+        $this->assertSame([], $this->seen->getArrayCopy(), 'the reserved row did not run');
+        $this->popRetry()->fire();
+        $this->assertSame([['notifyEmailAdded', $ticket->id, 1]], $this->seen->getArrayCopy(), 'the later row ran, once');
+        $this->assertSame([], $this->retryRows());
+        $this->assertSame(2, $this->messageReads(), "the import's failed read and one retry read, not two");
+        $this->assertContains('retry-email-attachments:kept:'.$pushId, $this->readBackCacheKeys(), 'the kept entry');
+        $this->assertSame([], $this->withMessage(RetryEmailAttachments::CACHE_STEP_FAILED));
+    }
+
     public function test_one_row_of_a_push_is_left_alone_by_the_pass_after_the_push(): void
     {
         // #6179 control: one unreserved row and no run started: nothing is deleted or recorded.

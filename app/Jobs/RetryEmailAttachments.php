@@ -434,7 +434,11 @@ class RetryEmailAttachments implements ShouldQueue
      * while the pending entry is held), every row not yet reserved is deleted, which covers a run that checked
      * before the re-run INSERT landed; otherwise, when two or more rows are unreserved, all
      * but the highest id are. A DELETE matches only a row still unreserved, so a row a worker
-     * has reserved is never deleted under it. Recorded as DUPLICATE_ROWS_DROPPED; a read or
+     * has reserved is never deleted under it. #6183: when no run has started and two or more
+     * rows are left (one is reserved, or a worker reserved one before its DELETE), the kept
+     * entry is written (a failed write is CACHE_STEP_FAILED kept_put), so each left row's run
+     * still checks for a later row once the pending entry is gone. Recorded as
+     * DUPLICATE_ROWS_DROPPED; a read or
      * delete that throws is DUPLICATE_CHECK_FAILED (step push) and every row is left to run.
      * Never throws. Not a database queue, no pushId or no jobs floor: nothing is read.
      *
@@ -466,7 +470,10 @@ class RetryEmailAttachments implements ShouldQueue
                 $drop = array_slice($unreserved, 0, -1);
             } else {
                 // A row is reserved and no run has started: a worker holds it now (its run's
-                // own check, handle(), sees the rest) or died holding it. Left to run.
+                // own check, handle(), sees the rest: the kept entry below keeps that check on
+                // once the pending entry is gone) or died holding it. Left to run. A worker
+                // whose check ran before the later row was written, and that has not yet
+                // written its started entry, runs as well, as before #6179.
                 $drop = [];
             }
             $dropped = [];
@@ -474,6 +481,11 @@ class RetryEmailAttachments implements ShouldQueue
                 if ($table()->where('id', $id)->whereNull('reserved_at')->delete() === 1) {
                     $dropped[] = $id;
                 }
+            }
+            if (! $started && $rows->count() - count($dropped) >= 2) {
+                // #6183: two or more rows are left and no run has started (a row is reserved,
+                // or a worker reserved one before its DELETE): their runs' checks stay on.
+                $this->cacheStep('kept_put', fn () => \Illuminate\Support\Facades\Cache::put(self::keptKey($this->pushId), true, now()->addMinutes(10)));
             }
         } catch (\Throwable $e) {
             $this->warnDuplicateCheck('push', $e);
@@ -541,6 +553,16 @@ class RetryEmailAttachments implements ShouldQueue
     private static function pendingKey(string $pushId): string
     {
         return 'retry-email-attachments:pending:'.$pushId;
+    }
+
+    /**
+     * #6183: the cache key dropDuplicateRows() writes when it left two or more rows of the push
+     * of $pushId and no run had started, so those rows' runs still check for a later row after
+     * the pending entry is gone. Not removed; left to expire.
+     */
+    private static function keptKey(string $pushId): string
+    {
+        return 'retry-email-attachments:kept:'.$pushId;
     }
 
     /**
@@ -796,11 +818,12 @@ class RetryEmailAttachments implements ShouldQueue
             return false;
         }
         try {
-            // #6183: only while this push is in flight (its pending entry is held); after the
-            // push returns, queueAfterCommit() has removed the duplicate rows itself
-            // (dropDuplicateRows()). A pending read that throws is treated as in flight;
-            // markStarted() records it.
-            if (! \Illuminate\Support\Facades\Cache::has(self::pendingKey($this->pushId))) {
+            // #6183: only while this push is in flight (its pending entry is held), or while the
+            // kept entry is held, which dropDuplicateRows() writes when it left two or more rows
+            // of this push and no run had started. A read that throws is treated as in flight;
+            // markStarted() records a failed pending read.
+            if (! \Illuminate\Support\Facades\Cache::has(self::pendingKey($this->pushId))
+                && ! \Illuminate\Support\Facades\Cache::has(self::keptKey($this->pushId))) {
                 return false;
             }
         } catch (\Throwable) {
