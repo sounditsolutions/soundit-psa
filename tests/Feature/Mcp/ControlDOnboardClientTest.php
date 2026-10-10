@@ -813,6 +813,7 @@ class ControlDOnboardClientTest extends TestCase
     /** A mapped sub-org WITHOUT parent_profile proposes the global-profile step, not code; approval PUTs and reads back. */
     public function test_mapped_org_without_the_global_profile_proposes_and_executes_the_global_profile_step_first(): void
     {
+        $this->travelTo(now()->startOfSecond()); // the mocked read-back ts_exp must equal the sent one
         $this->configure();
         $this->aiActor();
         $fixture = $this->fixture(['controld_org_id' => 'testorg001']);
