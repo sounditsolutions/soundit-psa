@@ -83,4 +83,69 @@ class ClientControlDOnboardingController extends Controller
 
         return redirect()->route('clients.show', $client)->with('success', "Control D onboarding intent {$row->id} released; the onboarding lock it held is free and no Control D call was made.");
     }
+
+    /**
+     * P7A74iGD (a): Admin-only (RequireAdmin on the route), audited, GET-only reconcile of a
+     * posted or uncertain intent of THIS client (ControlDOnboardingStaged::reconcile()). Binds
+     * when Control D shows exactly what the intent sent, releases on strict absence, and
+     * otherwise refuses with nothing changed. Makes NO Control D write on any arm. An intent of
+     * another client is a 404. Inert (404) unless onboarding is active, the same gate as stage().
+     */
+    public function reconcile(Request $request, Client $client, string $intent)
+    {
+        abort_unless(ControlDConfig::isEnabled() && ControlDConfig::isConfigured() && ControlDConfig::isOnboardingActive(), 404);
+
+        $row = ControlDOnboardingIntent::find($intent);
+        if ($row === null || (int) $row->client_id !== (int) $client->id) {
+            abort(404);
+        }
+        try {
+            $result = $this->service()->reconcile($request->user(), (int) $client->id, $row->id);
+        } catch (ControlDClientException $e) {
+            return redirect()->route('clients.show', $client)->withErrors(['controld_onboarding' => $e->getMessage()]);
+        }
+        if ($result['outcome'] === ControlDOnboardingStaged::RECONCILED_REFUSED) {
+            return redirect()->route('clients.show', $client)->withErrors(['controld_onboarding' => "Reconcile of intent {$row->id} refused: ".$result['message']]);
+        }
+
+        return redirect()->route('clients.show', $client)->with('success', "Control D onboarding intent {$row->id} reconciled: ".$result['message']);
+    }
+
+    /**
+     * P7A74iGD (a): the "Invalidate code" button. Admin-only (RequireAdmin on the route); it
+     * stages the invalidate step for cockpit approval by a SECOND Admin and calls nothing at
+     * Control D itself. Inert (404) unless onboarding is active.
+     */
+    public function invalidate(Request $request, Client $client, StaffControlDOnboardingToolExecutor $executor)
+    {
+        abort_unless(ControlDConfig::isEnabled() && ControlDConfig::isConfigured() && ControlDConfig::isOnboardingActive(), 404);
+
+        $validated = $request->validate([
+            'ticket_id' => ['required', 'integer', 'min:1'],
+            'reason' => ['required', 'string', 'max:500'],
+        ]);
+        $ticket = Ticket::find((int) $validated['ticket_id']);
+        if (! $ticket || (int) $ticket->client_id !== (int) $client->id) {
+            return redirect()->route('clients.show', $client)->withErrors(['ticket_id' => 'Pick one of this client\'s tickets to hold the proposal on.']);
+        }
+        $result = $executor->stageInvalidateForClient($client, $ticket, $validated['reason'], $request->user());
+        if (isset($result['error'])) {
+            return redirect()->route('clients.show', $client)->withErrors(['controld_onboarding' => $result['error']]);
+        }
+        $message = ($result['idempotent'] ?? false)
+            ? ($result['message'] ?? 'Already staged.')
+            : "Invalidating this client's Control D code was staged for cockpit approval by a second Admin (run #{$result['run_id']}).";
+
+        return redirect()->route('clients.show', $client)->with('success', $message);
+    }
+
+    private function service(): ControlDOnboardingStaged
+    {
+        if (app()->bound(ControlDOnboardingStaged::class)) {
+            return app(ControlDOnboardingStaged::class);
+        }
+        $vendor = new ControlDClient(['api_key' => ControlDConfig::get('api_key')]);
+
+        return new ControlDOnboardingStaged($vendor, new ControlDProvisioning($vendor));
+    }
 }

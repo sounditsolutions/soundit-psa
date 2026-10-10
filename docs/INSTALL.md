@@ -1380,9 +1380,9 @@ means the POST may have happened, NOT that it succeeded. Own-POST PK checkpoints
 read-back;
 verified client binding and `bound` commit together. Rejected/bound intents release the
 lock. Uncertain and crash-left posted/staged records retain it indefinitely; no automatic
-retry, timeout release, cleanup, resume or reconciliation endpoint is installed for
-admitted intents. Manual reconciliation of those requires a separate bounded ruling, not
-direct row edits or a re-cut. The one exception is a NEVER-ADMITTED intent (state
+retry, timeout release, cleanup or resume is installed for admitted intents; the one
+way out for them is the Admin **Reconcile** below, which reads only, never writes to
+Control D, and never re-cuts. The one exception is a NEVER-ADMITTED intent (state
 `staged`, phase `preflight`, no vendor PK): an active Admin may release it from the
 client page's Control D onboarding card with a reason (XULQ2iix). That card, and so the
 release form, is shown only while Control D and client onboarding are enabled and
@@ -1393,6 +1393,75 @@ moves it to the terminal state `released` and frees the lock, so a `posted`,
 left unchanged; the release writes a `controld_release_intent` audit row (the reason
 passes through the same redactor as other onboarding audit rows) and makes no vendor
 call.
+
+**Reconcile a posted or uncertain intent (P7A74iGD (a)).** On the client page's Control D
+onboarding card an active Admin sees a **Reconcile with Control D** button for each
+`posted` or `uncertain` intent that still holds that client's lock (route
+`POST /clients/{client}/controld/intents/{intent}/reconcile`, Admin-only, 404 unless
+onboarding is enabled and configured, and 404 for another client's intent). It sends
+GETs only, never a PUT, POST or DELETE, and never retries the write:
+- *organization*: the parent's complete sub-organization list. A match is exactly one row
+  with the intent's org PK (when one was recorded) or the payload name, named as the payload
+  and carrying the configured global profile.
+- *global-profile*: the org's row. A match is a `parent_profile` equal to the pinned profile
+  PK; unset is absent; any other profile is refused.
+- *code*: the org's complete `GET provision` list. A match is exactly one row with the
+  recorded code PK, active and equal to the exact fields that intent sent. Without a recorded
+  PK, only a complete, well-formed EMPTY list counts as absent, and any row refuses.
+A failed, unconfirmed, partial or malformed list always refuses, because a lost code is worse
+than a held lock.
+
+Outcomes:
+- **Match**: binds with exactly the end state a confirmed write would have written (the
+  mapping, the stored code, or nothing local for the global profile). This happens in one
+  transaction that locks the intent and the client and re-checks the state, the lock and the
+  payload.
+- **Strict absence**: releases the intent (state `released`) and frees the lock.
+- **Anything else**: refuses and changes nothing.
+
+Each outcome writes one `controld_reconcile_intent` audit row (ids and status only). A
+**code intent recorded before this release** did not keep the exact fields it sent. If
+Control D shows its PK, it cannot be rebuilt exactly from a read, so reconcile refuses and
+leaves it held ("cannot reconstruct; leave held"). A by-hand ruling is still needed for that
+case. Undoing a reconcile works the same as undoing a confirmed step:
+- A bound code can be removed by **Invalidate code** below.
+- A bound organization mapping is reserved like any onboarded one. The client-page unlink
+  refuses it, so changing it needs a by-hand ruling.
+- A release leaves any vendor object in place, because reconcile never deletes anything at
+  Control D. Staging the step again proposes a fresh write.
+
+**Invalidate code (P7A74iGD (a)).** On an onboarded client whose code was cut by onboarding (its
+bound code intent recorded the code's Control D PK), the card offers **Stage invalidating this
+code for approval** (route `POST /clients/{client}/controld/invalidate`, Admin-only, 404 unless
+onboarding is active). It stages a cockpit proposal on the same action type
+(`controld_stage_onboard_client`, step `invalidate`, with the org PK and the code PK pinned).
+A **second** Admin approves it; there is no MCP verb for it. On approval:
+1. One `PUT provision/{PK}/invalidate` is sent.
+2. The code is read back, and the read-back must show status -1.
+3. Only a confirmed read-back removes the code and deactivation PIN from the client record,
+   in one guarded transaction.
+
+A vendor error, or a read-back that does not confirm, ends the intent `uncertain`. The code
+and PIN are kept, the client stays locked until reconciled by hand, and nothing is retried.
+Invalidating stops the code working for new enrollments. **Devices already enrolled with it
+are NOT removed.** A code with no recorded PK (stored by another path) cannot be invalidated
+from here; it is never looked up at Control D by its value. The code value never appears in
+the proposal, the audit, the result or the logs. Invalidation cannot be undone. To keep
+onboarding devices, stage the onboarding verb again for a new code.
+
+**Code values pinned at staging (P7A74iGD (a), item E).** A code-step proposal now pins its
+derived values on the sealed payload and shows them on the card: device limit (asset count +
+headroom), expiry days, analytics level, intercept mode and enforced profile. Approval
+re-derives them. If any differs (a setting changed, or the client's asset count changed),
+approval refuses with no write and no Control D call, and says to stage again. The values that
+execute are the pinned ones. **A code proposal staged before this release has no pins and is
+refused with the same re-stage message.** Deny it and stage again after the deploy. The code
+intent's encrypted payload now also keeps the exact wire fields it sent (no secret), for
+reconcile.
+
+**Control D's message on the client page.** The onboarding card shows the most recent rejected
+intent's `reason_detail`, labelled as Control D's message, escaped, and only when it is
+non-null. No new column is added.
 
 **Global Profile (XULQ2iix).** Both organization writers (B2 and the B3
 `organization` step) send `parent_profile` = the Enforced profile ID default

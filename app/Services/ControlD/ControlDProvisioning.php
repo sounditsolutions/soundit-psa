@@ -57,32 +57,8 @@ class ControlDProvisioning
                 $recordPostedPk($pk);
             }
             $phase = 'read-back';
-            $row = $this->readBack($orgPk, $pk);
-            foreach (['profile_id', 'max', 'ts_exp', 'stats', 'intercept_mode', 'icon'] as $key) {
-                if (! property_exists($row, $key) || $body[$key] !== $row->$key) {
-                    $this->refuse('Provisioning read-back differs from requested fields.');
-                }
-            }
-            if (isset($body['name_prefix'])) {
-                if (($row->name_prefix ?? null) !== $body['name_prefix']) {
-                    $this->refuse('Provisioning prefix read-back differs.');
-                }
-            } elseif (property_exists($row, 'name_prefix') && $row->name_prefix !== '') {
-                $this->refuse('Provisioning read-back has an unexpected prefix.');
-            }
-            if ($pin !== null) {
-                if (! is_int($row->deactivation_pin ?? null) || (string) $row->deactivation_pin !== $pin) {
-                    $this->refuse('Provisioning PIN read-back is missing or differs.');
-                }
-            } elseif (property_exists($row, 'deactivation_pin')) {
-                $this->refuse('Provisioning read-back has an unexpected PIN.');
-            }
-            if (! is_string($row->code ?? null) || strlen($row->code) !== 32
-                || ($row->status ?? null) !== 1 || ($row->expired ?? null) !== 0) {
-                $this->refuse('Provisioning read-back is not an active usable code.');
-            }
 
-            return ['PK' => $pk, 'code' => $row->code, 'deactivation_pin' => $pin];
+            return $this->confirmRow($this->readBack($orgPk, $pk), $pk, $body, $pin);
         } catch (ControlDWriteRejectedException $e) {
             if ($phase === 'post') {
                 throw $e;
@@ -91,6 +67,52 @@ class ControlDProvisioning
         } catch (\Throwable) {
             throw new ControlDWriteUncertainException($orgPk, $pk, $phase);
         }
+    }
+
+    /**
+     * Read-only reconcile of an EXISTING row against the fields a create would have sent:
+     * the same validation and the same read-back checks create() applies after its POST
+     * (confirmRow()). Returns the same ['PK', 'code', 'deactivation_pin'] create() returns;
+     * throws ControlDClientException on any difference. Makes no request itself.
+     */
+    public function confirmExisting(stdClass $row, string $pk, array $fields, #[\SensitiveParameter] ?string $pin = null): array
+    {
+        $this->identifier($pk);
+        if (($row->PK ?? null) !== $pk) {
+            $this->refuse('Provisioning row does not carry the expected PK.');
+        }
+
+        return $this->confirmRow($row, $pk, $this->validate($fields, $pin), $pin);
+    }
+
+    /** The create() read-back checks, shared with confirmExisting(). */
+    private function confirmRow(stdClass $row, string $pk, #[\SensitiveParameter] array $body, #[\SensitiveParameter] ?string $pin): array
+    {
+        foreach (['profile_id', 'max', 'ts_exp', 'stats', 'intercept_mode', 'icon'] as $key) {
+            if (! property_exists($row, $key) || $body[$key] !== $row->$key) {
+                $this->refuse('Provisioning read-back differs from requested fields.');
+            }
+        }
+        if (isset($body['name_prefix'])) {
+            if (($row->name_prefix ?? null) !== $body['name_prefix']) {
+                $this->refuse('Provisioning prefix read-back differs.');
+            }
+        } elseif (property_exists($row, 'name_prefix') && $row->name_prefix !== '') {
+            $this->refuse('Provisioning read-back has an unexpected prefix.');
+        }
+        if ($pin !== null) {
+            if (! is_int($row->deactivation_pin ?? null) || (string) $row->deactivation_pin !== $pin) {
+                $this->refuse('Provisioning PIN read-back is missing or differs.');
+            }
+        } elseif (property_exists($row, 'deactivation_pin')) {
+            $this->refuse('Provisioning read-back has an unexpected PIN.');
+        }
+        if (! is_string($row->code ?? null) || strlen($row->code) !== 32
+            || ($row->status ?? null) !== 1 || ($row->expired ?? null) !== 0) {
+            $this->refuse('Provisioning read-back is not an active usable code.');
+        }
+
+        return ['PK' => $pk, 'code' => $row->code, 'deactivation_pin' => $pin];
     }
 
     public function invalidate(string $orgPk, string $pk): void
@@ -212,17 +234,38 @@ class ControlDProvisioning
         }
     }
 
-    private function readBack(string $orgPk, string $pk): stdClass
+    /**
+     * Read-only: the organization's COMPLETE provisioning list (one GET provision under
+     * X-Force-Org-Id; producer notes in tests/Fixtures/ControlD/README.md: GET returns
+     * `body.provisions`). Throws ControlDClientException, never returns a partial or empty
+     * stand-in, when the request fails, the response is not a confirmed success, the list
+     * is missing or not an array, or ANY row is not an object with a string PK belonging to
+     * this organization. So an empty array returned here is a complete, well-formed empty
+     * list. Rows carry secrets (code, PIN): callers must not log or serialize them.
+     *
+     * @return array<int, stdClass>
+     */
+    public function provisions(string $orgPk): array
     {
+        $this->available();
+        $this->identifier($orgPk);
         $body = $this->body($this->client->requestForOrg('GET', 'provision', $orgPk));
         if (! is_array($body->provisions ?? null)) {
             $this->refuse('Provisioning inventory response is malformed.');
         }
-        $matches = [];
         foreach ($body->provisions as $row) {
             if (! $row instanceof stdClass || ! is_string($row->PK ?? null) || ($row->org ?? null) !== $orgPk) {
                 $this->refuse('Provisioning inventory row is malformed or outside this organization.');
             }
+        }
+
+        return array_values($body->provisions);
+    }
+
+    private function readBack(string $orgPk, string $pk): stdClass
+    {
+        $matches = [];
+        foreach ($this->provisions($orgPk) as $row) {
             if ($row->PK === $pk) {
                 $matches[] = $row;
             }
