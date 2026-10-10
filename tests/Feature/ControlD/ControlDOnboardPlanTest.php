@@ -532,6 +532,17 @@ class ControlDOnboardPlanTest extends TestCase
         $this->assertSame(1, TechnicianActionLog::where('run_id', $staged['run_id'])->where('result_status', 'error')->where('summary', 'like', '%plan summary: deploy=refused; refused before any write; run returned to awaiting approval.')->count());
     }
 
+    /** A field present but holding '' is empty: it is written with the code, read back, and the script runs. */
+    public function test_a_present_empty_field_is_written_like_an_absent_one(): void
+    {
+        $this->fieldValue = '';
+        $staged = $this->deployOnly($this->onboarded(), 'all');
+        $this->assertSame(['GET clients/', 'GET clients/'.self::TC.'/', 'PUT clients/'.self::TC.'/', 'GET clients/'.self::TC.'/', 'GET agents/?client='.self::TC,
+            'PUT agents/agent-a/runscript/', 'PUT agents/agent-b/runscript/'], $this->tacticalRequests());
+        $this->assertSame('executed', $staged['result']->status, (string) $staged['result']->message);
+        $this->assertSame(self::CODE, $this->fieldValue);
+    }
+
     /** A value equal to the bound code is not rewritten; the script runs. */
     public function test_an_equal_field_is_not_written_and_the_script_runs(): void
     {
