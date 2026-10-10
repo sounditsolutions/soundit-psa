@@ -140,7 +140,7 @@ class ControlDClient
             if ($error instanceof \stdClass && ($error->success ?? null) === false
                 && ($error->error ?? null) instanceof \stdClass && is_int($error->error->code ?? null)) {
                 if ($method === 'POST' || $organizationPut) {
-                    throw new ControlDWriteRejectedException('Control D scoped request was explicitly rejected by the vendor envelope (HTTP 4xx).', $error->error->code, $response->getStatusCode());
+                    throw new ControlDWriteRejectedException('Control D scoped request was explicitly rejected by the vendor envelope (HTTP 4xx).', $error->error->code, $response->getStatusCode(), $this->vendorMessage($error->error->message ?? null, $body));
                 }
                 throw new ControlDClientException('Control D scoped request was explicitly rejected by the vendor envelope (HTTP 4xx).');
             }
@@ -198,7 +198,7 @@ class ControlDClient
         if ($method === 'POST' && $status >= 400 && $status < 500
             && $decoded instanceof \stdClass && ($decoded->success ?? null) === false
             && ($decoded->error ?? null) instanceof \stdClass && is_int($decoded->error->code ?? null)) {
-            throw new ControlDWriteRejectedException('Control D parent POST was explicitly rejected by the vendor envelope.', $decoded->error->code, $status);
+            throw new ControlDWriteRejectedException('Control D parent POST was explicitly rejected by the vendor envelope.', $decoded->error->code, $status, $this->vendorMessage($decoded->error->message ?? null, $body));
         }
         if ($status < 200 || $status >= 300 || ! $decoded instanceof \stdClass
             || ($decoded->success ?? null) !== true || ! ($decoded->body ?? null) instanceof \stdClass) {
@@ -206,6 +206,59 @@ class ControlDClient
         }
 
         return ['success' => true, 'body' => $decoded->body];
+    }
+
+    /** Longest vendor rejection message kept, in characters (the column holds 255). */
+    public const VENDOR_MESSAGE_MAX = 200;
+
+    /**
+     * The vendor's own `error.message` from a rejection envelope, made safe to store and show
+     * (C-56: vendor text only, never the raw body or a request field). Only a string is kept.
+     * Control characters become spaces, whitespace is collapsed, and the result is capped at
+     * VENDOR_MESSAGE_MAX characters. A vendor message can echo request input, so the WHOLE
+     * message is dropped (null) when, before capping, it contains the API key, the
+     * deactivation PIN, the contact email or organization name sent, or any run of 32 or
+     * more letters and digits (the shape of a provisioning code or a key). Invalid UTF-8 and
+     * an empty result are null too.
+     */
+    private function vendorMessage(mixed $message, #[\SensitiveParameter] ?array $body): ?string
+    {
+        if (! is_string($message) || ! mb_check_encoding($message, 'UTF-8')) {
+            return null;
+        }
+        $clean = preg_replace('/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u', ' ', $message);
+        $clean = $clean === null ? null : preg_replace('/\s+/u', ' ', $clean);
+        $clean = $clean === null ? '' : trim($clean);
+        if ($clean === '') {
+            return null;
+        }
+        // Compare with every separator removed too, so a secret split by a control
+        // character or whitespace is still recognised. A false match only drops the text.
+        $compact = static fn (string $s): string => (string) preg_replace('/[\p{Cc}\p{Cf}\p{Z}\s]+/u', '', $s);
+        if (preg_match('/[A-Za-z0-9]{32,}/', $message) || preg_match('/[A-Za-z0-9]{32,}/', $clean)) {
+            return null;
+        }
+        $needles = [(string) ($this->config['api_key'] ?? '')];
+        foreach (['contact_email', 'name', 'name_prefix', 'deactivation_pin'] as $key) {
+            if (is_string($body[$key] ?? null) || is_int($body[$key] ?? null)) {
+                $needles[] = (string) $body[$key];
+            }
+        }
+        foreach ([$message, $clean, $compact($message)] as $haystack) {
+            foreach ($needles as $needle) {
+                $needle = trim($needle);
+                if ($needle === '') {
+                    continue;
+                }
+                if (ctype_digit($needle)
+                    ? preg_match('/(?<![0-9])'.$needle.'(?![0-9])/', $haystack)
+                    : (mb_stripos($haystack, $needle) !== false || mb_stripos($haystack, $compact($needle)) !== false)) {
+                    return null;
+                }
+            }
+        }
+
+        return mb_strlen($clean) > self::VENDOR_MESSAGE_MAX ? mb_substr($clean, 0, self::VENDOR_MESSAGE_MAX - 1).'…' : $clean;
     }
 
     /**

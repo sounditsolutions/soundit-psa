@@ -1432,7 +1432,14 @@ error envelope is a definite rejection, and any other refusal of that POST is un
 Capability is observed ONLY at the intended write. HTTP403 with vendor `success:false`
 and integer `error.code:40301` records terminal `rejected`, phase `post`, reason code
 40301 and fixed reason `vendor key is read-only`, with no created PK or follow-up GET.
-Other POST failures preserve envelope-only rejection versus uncertainty. No key-type
+Other POST failures preserve envelope-only rejection versus uncertainty. A `rejected`
+intent also keeps the vendor's own `error.message` in the nullable `reason_detail`
+column (migration `2026_10_10_000001`), and the approval result and action-log row
+quote it as "Control D's message (code N)". Only a string is kept, with control
+characters stripped, whitespace collapsed and a 200-character cap. It is dropped
+(null) when it contains the API key, the PIN, the name prefix, the contact email or
+organization name sent, or a run of 32 or more letters and digits. Uncertain and
+transport outcomes keep nothing, and logs never carry it. No key-type
 probe or cached capability exists: changing token type in place can affect a later
 explicit intent, never cause an automatic retry. No schema operation here authorizes
 a production migration or caller activation. The existing manual mapping writer remains
