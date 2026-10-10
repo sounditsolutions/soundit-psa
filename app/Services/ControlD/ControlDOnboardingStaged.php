@@ -121,9 +121,11 @@ class ControlDOnboardingStaged
     public const INVALIDATE = 'invalidate';
 
     /**
-     * The PK of the client's stored provisioning code: the vendor_pk of its most recent
-     * `bound` code intent under the client's CURRENT org, or null when there is none (a code
-     * stored by another path, or no code). Read-only, local only.
+     * The PK onboarding last recorded for the client's stored provisioning code: the vendor_pk
+     * of its most recent `bound` code intent under the client's CURRENT org, unless a `bound`
+     * invalidate intent of this client already spent that PK; otherwise null (a code stored by
+     * another path, a spent PK, or no code). Read-only, local only: it does NOT prove the
+     * stored code is that record; invalidateCode() proves that at Control D before any write.
      */
     public static function boundCodePk(Client $client): ?string
     {
@@ -134,7 +136,12 @@ class ControlDOnboardingStaged
         $pk = ControlDOnboardingIntent::where('client_id', $client->id)->where('operation', 'code')->where('state', 'bound')
             ->where('org_pk', $client->controld_org_id)->latest('updated_at')->latest('id')->value('vendor_pk');
 
-        return is_string($pk) && preg_match('/\A[A-Za-z0-9_-]{1,255}\z/', $pk) ? $pk : null;
+        if (! is_string($pk) || ! preg_match('/\A[A-Za-z0-9_-]{1,255}\z/', $pk)) {
+            return null;
+        }
+
+        return ControlDOnboardingIntent::where('client_id', $client->id)->where('operation', self::INVALIDATE)->where('state', 'bound')
+            ->where('vendor_pk', $pk)->exists() ? null : $pk;
     }
 
     private function invalidatePinsStillLive(?Client $client, mixed $orgPk, mixed $codePk): void
@@ -281,7 +288,7 @@ class ControlDOnboardingStaged
 
     /** Fixed refusal texts (status only, never vendor text). */
     private const RECONCILE_REFUSALS = [
-        'ineligible' => 'Only a posted or uncertain Control D intent of this client that still holds its onboarding lock can be reconciled; nothing was changed.',
+        'ineligible' => 'Only an uncertain Control D intent of this client that still holds its onboarding lock can be reconciled (a posted one may still have its write in flight, so it is never reconciled here); nothing was changed.',
         'unavailable' => 'Control D is disabled or unconfigured, so nothing was read; nothing was changed.',
         'read-failed' => 'Control D could not be read completely (a failed, unconfirmed or malformed response); nothing was changed and the intent keeps its lock.',
         'ambiguous' => 'Control D shows more than one candidate, or something besides what this intent would have created; nothing was changed and the intent keeps its lock.',
@@ -291,8 +298,10 @@ class ControlDOnboardingStaged
     ];
 
     /**
-     * P7A74iGD (a): Admin-only, audited, GET-only reconcile of ONE posted or uncertain intent
-     * of $clientId that still holds the client's lock. NO vendor write is made on any arm and
+     * P7A74iGD (a): Admin-only, audited, GET-only reconcile of ONE uncertain intent of
+     * $clientId that still holds the client's lock. A posted intent is refused: admit() sets
+     * posted just before the write and finish() records the outcome after it, so a read could
+     * race a write still in flight; it needs a ruling by hand. NO vendor write is made on any arm and
      * nothing is retried. Per operation (reads only):
      *  - organization: the parent's complete sub-organization list (ControlDSubOrganizations::rows()).
      *    With a recorded vendor PK: exactly one row with that PK, named as the payload, carrying
@@ -310,7 +319,7 @@ class ControlDOnboardingStaged
      * Match: bind()'s own end state (applyBoundEndState()) in ONE transaction that locks the
      * intent and the client FOR UPDATE and re-checks state, lock, client and payload identity.
      * Absent: released, through the guarded-UPDATE pattern of releaseNeverAdmitted() with state
-     * posted or uncertain. Anything else: refused, nothing changed. One TechnicianActionLog row
+     * uncertain. Anything else: refused, nothing changed. One TechnicianActionLog row
      * per outcome (ids and status only), written in the same transaction as the change; a
      * refusal writes its own row.
      *
@@ -323,7 +332,7 @@ class ControlDOnboardingStaged
         $this->authorize(User::find($actor->getKey()));
         $actorId = (int) $actor->getKey();
         $intent = ControlDOnboardingIntent::whereKey($intentId)->where('client_id', $clientId)->first();
-        if ($intent === null || ! in_array($intent->state, ['posted', 'uncertain'], true) || (int) $intent->active_client_id !== $clientId
+        if ($intent === null || $intent->state !== 'uncertain' || (int) $intent->active_client_id !== $clientId
             || ! in_array($intent->operation, ['organization', self::GLOBAL_PROFILE, 'code'], true)) {
             return $this->reconcileRefused($intentId, $clientId, $actorId, $intent?->operation ?? 'unknown', 'ineligible');
         }
@@ -352,15 +361,15 @@ class ControlDOnboardingStaged
             $locked = ControlDOnboardingIntent::whereKey($intentId)->lockForUpdate()->first();
             $client = Client::query()->lockForUpdate()->find($clientId);
             if ($locked === null || $client === null || $this->intentIdentity($locked) !== $snapshot
-                || ! in_array($locked->state, ['posted', 'uncertain'], true) || (int) $locked->active_client_id !== $clientId) {
+                || $locked->state !== 'uncertain' || (int) $locked->active_client_id !== $clientId) {
                 throw new ControlDClientException('changed');
             }
             $this->authorize(User::query()->lockForUpdate()->find($actorId));
             if ($verdict === 'match') {
-                $this->applyBoundEndState($locked, $client, $operation, $orgPk, $created, ['posted', 'uncertain']);
+                $this->applyBoundEndState($locked, $client, $operation, $orgPk, $created, ['uncertain']);
             } else {
                 $released = ControlDOnboardingIntent::whereKey($intentId)->where('client_id', $clientId)
-                    ->where('active_client_id', $clientId)->whereIn('state', ['posted', 'uncertain'])
+                    ->where('active_client_id', $clientId)->where('state', 'uncertain')
                     ->update(['state' => self::RELEASED, 'active_client_id' => null, 'reason' => 'reconciled absent by admin #'.$actorId, 'updated_at' => now()]);
                 if ($released !== 1) {
                     throw new ControlDClientException('changed');
@@ -777,7 +786,9 @@ class ControlDOnboardingStaged
     /**
      * P7A74iGD (a): invalidate the client's bound provisioning code. Pre-admission (definite,
      * no write): the pinned org PK and code PK must still be the client's mapping and its
-     * bound code PK. Then one PUT provision/{PK}/invalidate and the read-back that must show
+     * bound code PK, and one GET of the org's provisioning list must show that PK exactly once
+     * carrying the code the client stores (invalidateTargetIsStoredCode()). Then one PUT
+     * provision/{PK}/invalidate and the read-back that must show
      * status -1 (ControlDProvisioning::invalidate()). Any failure after admission (a vendor
      * error or refusal of the PUT, a failed or unconfirmed read-back) is uncertain: the
      * client's code and PIN are KEPT and nothing is retried. Only a confirmed read-back
@@ -786,9 +797,13 @@ class ControlDOnboardingStaged
     private function invalidateCode(ControlDOnboardingIntent $intent, #[\SensitiveParameter] User $actor): void
     {
         $payload = $intent->payload;
-        $this->invalidatePinsStillLive(Client::find($intent->client_id), $payload['org_pk'] ?? null, $payload['code_pk'] ?? null);
+        $client = Client::find($intent->client_id);
+        $this->invalidatePinsStillLive($client, $payload['org_pk'] ?? null, $payload['code_pk'] ?? null);
         $orgPk = $payload['org_pk'];
         $codePk = $payload['code_pk'];
+        // P7A74iGD (a): the recorded PK alone does not prove the stored code is that record (a
+        // code stored by another path keeps the old PK). Pre-admission, so a refusal is definite.
+        $stored = $this->invalidateTargetIsStoredCode($client, $orgPk, $codePk);
         $intent->org_pk = $orgPk;
         $intent->saveOrFail();
         $this->admit($intent);
@@ -799,7 +814,31 @@ class ControlDOnboardingStaged
             throw new ControlDWriteUncertainException($orgPk, $codePk, 'post');
         }
         $intent->phase = 'local-persistence';
-        $this->bind($intent, $actor, $orgPk, ['PK' => $codePk]);
+        $this->bind($intent, $actor, $orgPk, ['PK' => $codePk, 'code' => $stored]);
+    }
+
+    public const INVALIDATE_TARGET_REFUSAL = 'Control D did not confirm that the code record on this card carries the provisioning code stored on the client record; nothing was written.';
+
+    /**
+     * Pre-admission, read-only (one GET provision): the org's complete provisioning list shows
+     * $codePk exactly once, carrying exactly the code value the client record stores. Throws
+     * INVALIDATE_TARGET_REFUSAL on any other read, a failed or malformed one included, so the
+     * refusal is definite and precedes any write. Returns the stored value for bind()'s locked
+     * re-check that the client still stores it; it is never logged or written anywhere.
+     */
+    private function invalidateTargetIsStoredCode(Client $client, string $orgPk, string $codePk): string
+    {
+        $stored = $client->controld_provisioning_code;
+        try {
+            $rows = array_values(array_filter($this->provisioning->provisions($orgPk), static fn (\stdClass $row): bool => $row->PK === $codePk));
+        } catch (\Throwable) {
+            $rows = [];
+        }
+        if (! is_string($stored) || $stored === '' || count($rows) !== 1 || ! is_string($rows[0]->code ?? null) || ! hash_equals($stored, $rows[0]->code)) {
+            throw new ControlDClientException(self::INVALIDATE_TARGET_REFUSAL);
+        }
+
+        return $stored;
     }
 
     private function code(ControlDOnboardingIntent $intent, #[\SensitiveParameter] User $actor): void
@@ -860,8 +899,9 @@ class ControlDOnboardingStaged
      *  - global-profile: the mapping is still the org; nothing local changes.
      *  - code: the mapping is still the org and no code or PIN is stored; the code and PIN
      *    columns = $created['code'] and $created['deactivation_pin'].
-     *  - invalidate: the mapping is still the org and $created['PK'] is still the client's
-     *    bound code PK; the code and PIN columns are nulled.
+     *  - invalidate: the mapping is still the org, $created['PK'] is still the client's
+     *    bound code PK and the client still stores $created['code'] (the value
+     *    invalidateCode() confirmed at Control D); the code and PIN columns are nulled.
      * Then the intent, by a guarded UPDATE (state in $fromStates, still holding the lock) that
      * must affect exactly one row: bound, phase local-persistence, org_pk, vendor_pk
      * ($created['PK'] or the org PK), lock released, reason and reason_code cleared.
@@ -880,7 +920,8 @@ class ControlDOnboardingStaged
             }
             $client->controld_org_id = $orgPk;
         } elseif ($operation === self::INVALIDATE) {
-            if ($client->controld_org_id !== $orgPk || ! is_string($created['PK'] ?? null) || self::boundCodePk($client) !== $created['PK']) {
+            if ($client->controld_org_id !== $orgPk || ! is_string($created['PK'] ?? null) || self::boundCodePk($client) !== $created['PK']
+                || ! is_string($created['code'] ?? null) || ! is_string($client->controld_provisioning_code) || ! hash_equals($created['code'], $client->controld_provisioning_code)) {
                 throw new ControlDClientException('Control D organization mapping or stored code changed.');
             }
             $client->controld_provisioning_code = null;

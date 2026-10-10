@@ -22,7 +22,7 @@ use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
- * P7A74iGD (a): the Admin's GET-only reconcile of a posted or uncertain Control D onboarding
+ * P7A74iGD (a): the Admin's GET-only reconcile of an uncertain Control D onboarding
  * intent (ControlDOnboardingStaged::reconcile(), client-page route). Per operation: match ->
  * bound with bind()'s end state; strict absence -> released; anything else -> refused with
  * nothing changed. Every arm: no PUT, POST or DELETE is sent, one audit row (ids and status),
@@ -227,7 +227,7 @@ class ControlDReconcileTest extends TestCase
     public function test_organization_match_with_a_recorded_pk_binds(): void
     {
         $client = Client::factory()->create();
-        $intent = $this->intent($client, 'organization', 'posted', $this->orgPayload(), self::ORG, self::ORG);
+        $intent = $this->intent($client, 'organization', 'uncertain', $this->orgPayload(), self::ORG, self::ORG);
         $this->bindVendor([$this->ok(['sub_organizations' => [$this->subOrg()]])]);
 
         $this->reconcile($client, $intent)->assertSessionHas('success');
@@ -265,7 +265,8 @@ class ControlDReconcileTest extends TestCase
     public function test_organization_malformed_list_is_refused_unchanged(): void
     {
         $client = Client::factory()->create();
-        $intent = $this->intent($client, 'organization', 'posted', $this->orgPayload());
+        $intent = $this->intent($client, 'organization', 'uncertain', $this->orgPayload());
+        $intent->refresh();
         $before = $this->state($intent);
         $bad = $this->subOrg();
         unset($bad['name']);
@@ -277,7 +278,7 @@ class ControlDReconcileTest extends TestCase
     public function test_organization_listed_under_another_name_than_the_payload_is_refused(): void
     {
         $client = Client::factory()->create();
-        $intent = $this->intent($client, 'organization', 'posted', $this->orgPayload(), self::ORG, self::ORG);
+        $intent = $this->intent($client, 'organization', 'uncertain', $this->orgPayload(), self::ORG, self::ORG);
         $before = $this->state($intent);
         $this->bindVendor([$this->ok(['sub_organizations' => [$this->subOrg(self::ORG, 'Renamed Org')]])]);
 
@@ -309,7 +310,7 @@ class ControlDReconcileTest extends TestCase
     public function test_global_profile_absent_releases(): void
     {
         $client = Client::factory()->create(['controld_org_id' => self::ORG]);
-        $intent = $this->intent($client, 'global-profile', 'posted', $this->profilePayload(), self::ORG);
+        $intent = $this->intent($client, 'global-profile', 'uncertain', $this->profilePayload(), self::ORG);
         $this->bindVendor([$this->ok(['sub_organizations' => [$this->subOrg(self::ORG, self::NAME, null)]])]);
 
         $this->reconcile($client, $intent)->assertSessionHas('success');
@@ -387,7 +388,7 @@ class ControlDReconcileTest extends TestCase
     public function test_code_without_a_vendor_pk_and_an_empty_complete_list_releases(): void
     {
         $client = Client::factory()->create(['controld_org_id' => self::ORG]);
-        $intent = $this->codeIntent($client, null, true, 'posted');
+        $intent = $this->codeIntent($client, null, true, 'uncertain');
         $this->bindVendor([$this->ok(['provisions' => []])]);
 
         $this->reconcile($client, $intent)->assertSessionHas('success');
@@ -525,9 +526,10 @@ class ControlDReconcileTest extends TestCase
         $this->assertSame(0, TechnicianActionLog::count());
     }
 
-    public function test_staged_bound_rejected_released_and_lockless_intents_are_refused_unchanged(): void
+    /** A posted intent may still have its write in flight (finish() is unguarded): refused before any read. */
+    public function test_posted_staged_bound_rejected_released_and_lockless_intents_are_refused_unchanged(): void
     {
-        foreach ([['staged', true], ['bound', false], ['rejected', false], [ControlDOnboardingStaged::RELEASED, false], ['uncertain', false]] as [$state, $locked]) {
+        foreach ([['posted', true], ['staged', true], ['bound', false], ['rejected', false], [ControlDOnboardingStaged::RELEASED, false], ['uncertain', false]] as [$state, $locked]) {
             $this->reset();
             $client = Client::factory()->create(['controld_org_id' => self::ORG]);
             $intent = $this->intent($client, 'code', $state, $this->codePayload(), self::ORG, self::CODE_PK, $locked);
@@ -577,7 +579,7 @@ class ControlDReconcileTest extends TestCase
         $this->assertRefusedUnchanged($this->reconcile($client, $intent), $intent, $client, $before, [null, null, null]);
     }
 
-    public function test_the_client_page_offers_reconcile_only_for_a_locked_posted_or_uncertain_intent(): void
+    public function test_the_client_page_offers_reconcile_only_for_a_locked_uncertain_intent(): void
     {
         $client = Client::factory()->create(['controld_org_id' => self::ORG]);
         $held = $this->codeIntent($client);
@@ -589,5 +591,11 @@ class ControlDReconcileTest extends TestCase
         $this->assertStringContainsString('Reconcile reads Control D only (no write)', $html);
         $html = $this->actingAs($this->admin())->get(route('clients.show', $other))->assertOk()->getContent();
         $this->assertStringNotContainsString(route('clients.controld.intent.reconcile', [$other, $lockless->id]), $html);
+
+        // A posted intent may still have its write in flight: never offered.
+        $third = Client::factory()->create(['controld_org_id' => 'testorg003']);
+        $posted = $this->intent($third, 'code', 'posted', $this->codePayload(), 'testorg003', self::CODE_PK);
+        $html = $this->actingAs($this->admin())->get(route('clients.show', $third))->assertOk()->getContent();
+        $this->assertStringNotContainsString(route('clients.controld.intent.reconcile', [$third, $posted->id]), $html);
     }
 }

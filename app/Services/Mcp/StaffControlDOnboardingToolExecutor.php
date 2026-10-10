@@ -616,7 +616,7 @@ class StaffControlDOnboardingToolExecutor
         if ($step === self::STEP_INVALIDATE) {
             return "Control D: invalidate the provisioning code of client '{$name}' (#{$client->id}), organization ".$this->fence->neutralizeUntrusted((string) ($pins['org_pk'] ?? '')).', code record '.($pins['code_pk'] ?? '').".\n"
                 .'Sends one invalidate request for that code to Control D, then reads the code back; only when the read-back shows it invalidated are the code and deactivation PIN removed from the client record. '.self::INVALIDATE_EFFECT."\n"
-                .'If the result cannot be confirmed, the step ends uncertain, the code stays on the client record, and nothing is retried. Approval refuses if the client\'s organization or stored code no longer matches this card. The code itself is never shown here, in the audit log or in the result. Cutting a new code afterwards is a separate onboarding proposal.';
+                .'If the result cannot be confirmed, the step ends uncertain, the code stays on the client record, and nothing is retried. Approval refuses, with nothing written, if the client\'s organization or stored code no longer matches this card, or if Control D, read before the invalidate request, does not show this code record carrying the stored code. The code itself is never shown here, in the audit log or in the result. Cutting a new code afterwards is a separate onboarding proposal.';
         }
         $codePins = $pins['code_pins'] ?? [];
 

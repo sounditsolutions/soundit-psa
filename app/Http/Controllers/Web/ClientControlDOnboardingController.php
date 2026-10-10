@@ -85,8 +85,9 @@ class ClientControlDOnboardingController extends Controller
     }
 
     /**
-     * P7A74iGD (a): Admin-only (RequireAdmin on the route), audited, GET-only reconcile of a
-     * posted or uncertain intent of THIS client (ControlDOnboardingStaged::reconcile()). Binds
+     * P7A74iGD (a): Admin-only (RequireAdmin on the route), audited, GET-only reconcile of an
+     * uncertain intent of THIS client (ControlDOnboardingStaged::reconcile(); a posted one is
+     * refused, its write may still be in flight). Binds
      * when Control D shows exactly what the intent sent, releases on strict absence, and
      * otherwise refuses with nothing changed. Makes NO Control D write on any arm. An intent of
      * another client is a 404. Inert (404) unless onboarding is active, the same gate as stage().

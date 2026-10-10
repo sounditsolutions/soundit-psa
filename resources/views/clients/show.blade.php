@@ -996,10 +996,11 @@
                         // P7A74iGD (a): an onboarded client whose code was cut by onboarding can stage "invalidate code".
                         $cdCodePk = $cdStep === null ? \App\Services\ControlD\ControlDOnboardingStaged::boundCodePk($client) : null;
                         $cdTickets = ($cdStep || $cdCodePk) ? $client->tickets()->open()->orderByDesc('id')->limit(25)->get(['id', 'halo_id', 'subject']) : collect();
-                        // Posted or uncertain intents still holding this client's lock: the reconcile candidates
-                        // (the same predicates ControlDOnboardingStaged::reconcile() re-checks).
+                        // Uncertain intents still holding this client's lock: the reconcile candidates (the same
+                        // predicates ControlDOnboardingStaged::reconcile() re-checks); a posted one may still have
+                        // its write in flight and is not offered.
                         $cdReconcilable = \App\Models\ControlDOnboardingIntent::where('client_id', $client->id)->where('active_client_id', $client->id)
-                            ->whereIn('state', ['posted', 'uncertain'])->whereIn('operation', ['organization', 'global-profile', 'code'])->get(['id', 'operation', 'state', 'updated_at']);
+                            ->where('state', 'uncertain')->whereIn('operation', ['organization', 'global-profile', 'code'])->get(['id', 'operation', 'state', 'updated_at']);
                         // The most recent rejected intent's Control D message (#6522 remainder). Escaped output only.
                         $cdRejected = \App\Models\ControlDOnboardingIntent::where('client_id', $client->id)->where('state', 'rejected')
                             ->latest('updated_at')->latest('id')->first(['id', 'operation', 'reason_code', 'reason_detail']);

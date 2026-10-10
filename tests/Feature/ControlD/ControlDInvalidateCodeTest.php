@@ -27,7 +27,8 @@ use Tests\TestCase;
 
 /**
  * P7A74iGD (a), item 5: the Admin "invalidate code" undo. Staged from the client page by one
- * Admin, approved in the cockpit by a second; on approval one PUT provision/{PK}/invalidate and
+ * Admin, approved in the cockpit by a second; on approval one GET provision that must show the
+ * pinned record carrying the stored code, then one PUT provision/{PK}/invalidate and
  * the read-back that must show status -1. Confirmed: the code and PIN columns are nulled in one
  * guarded transaction. Unconfirmed read-back or a vendor error: uncertain, code KEPT, never
  * retried. The code value never appears in the proposal, the audit, the result or the logs.
@@ -85,12 +86,19 @@ class ControlDInvalidateCodeTest extends TestCase
         $this->app->instance(ControlDOnboardingStaged::class, new ControlDOnboardingStaged($transport, new ControlDProvisioning($transport)));
     }
 
-    private function row(int $status): array
+    private function row(int $status, string $org = self::ORG): array
     {
         $row = json_decode(file_get_contents(base_path('tests/Fixtures/ControlD/provision.json')), true);
         $row['status'] = $status;
+        $row['org'] = $org;
 
         return $row;
+    }
+
+    /** The pre-admission GET: the pinned record listed once, carrying the stored code. */
+    private function listedActive(string $org = self::ORG): Response
+    {
+        return $this->ok(['provisions' => [$this->row(1, $org)]]);
     }
 
     /** An onboarded client: mapped, code and PIN stored, and the bound code intent that recorded the code's PK. */
@@ -171,13 +179,13 @@ class ControlDInvalidateCodeTest extends TestCase
     {
         $fixture = $this->fixture();
         $run = $this->stage($fixture);
-        $this->bindVendor([$this->ok([]), $this->ok(['provisions' => [$this->row(-1)]])]);
+        $this->bindVendor([$this->listedActive(), $this->ok([]), $this->ok(['provisions' => [$this->row(-1)]])]);
 
         $message = $this->approve($run);
 
         $this->assertSame([null, null], $this->stored($fixture['client']));
-        $this->assertSame(['PUT /provision/'.self::CODE_PK.'/invalidate', 'GET /provision'], $this->sent());
-        $this->assertSame(self::ORG, $this->history[0]['request']->getHeaderLine('X-Force-Org-Id'));
+        $this->assertSame(['GET /provision', 'PUT /provision/'.self::CODE_PK.'/invalidate', 'GET /provision'], $this->sent());
+        $this->assertSame([self::ORG, self::ORG], [$this->history[0]['request']->getHeaderLine('X-Force-Org-Id'), $this->history[1]['request']->getHeaderLine('X-Force-Org-Id')]);
         $intent = ControlDOnboardingIntent::where('operation', 'invalidate')->sole();
         $this->assertSame(['bound', self::ORG, self::CODE_PK, null], [$intent->state, $intent->org_pk, $intent->vendor_pk, $intent->active_client_id]);
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
@@ -191,14 +199,14 @@ class ControlDInvalidateCodeTest extends TestCase
     {
         $fixture = $this->fixture();
         $run = $this->stage($fixture);
-        $this->bindVendor([$this->ok([]), $this->ok(['provisions' => [$this->row(1)]])]);
+        $this->bindVendor([$this->listedActive(), $this->ok([]), $this->ok(['provisions' => [$this->row(1)]])]);
 
         $message = $this->approve($run);
 
         $this->assertSame([self::CODE, self::PIN], $this->stored($fixture['client']), 'the code is kept');
         $intent = ControlDOnboardingIntent::where('operation', 'invalidate')->sole();
         $this->assertSame(['uncertain', (int) $fixture['client']->id], [$intent->state, (int) $intent->active_client_id], 'uncertain keeps the lock');
-        $this->assertSame(['PUT /provision/'.self::CODE_PK.'/invalidate', 'GET /provision'], $this->sent(), 'one PUT, never retried');
+        $this->assertSame(['GET /provision', 'PUT /provision/'.self::CODE_PK.'/invalidate', 'GET /provision'], $this->sent(), 'one PUT, never retried');
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state, 'terminal; never re-armed');
         $this->assertStringStartsWith('HARD FAULT', $message);
         $this->assertStringContainsString('the code and PIN were kept on the client record', $message);
@@ -211,7 +219,7 @@ class ControlDInvalidateCodeTest extends TestCase
             [$this->ok([]), new Response(503)], [$this->ok([]), $this->ok(['provisions' => []])]] as $i => $responses) {
             $fixture = $this->fixture(true, 'testorg1'.$i);
             $run = $this->stage($fixture);
-            $this->bindVendor($responses);
+            $this->bindVendor([$this->listedActive('testorg1'.$i), ...$responses]);
 
             $message = $this->approve($run);
 
@@ -289,5 +297,44 @@ class ControlDInvalidateCodeTest extends TestCase
         $other = $this->fixture(false, 'testorg002');
         $html = $this->actingAs($fixture['stager'])->get(route('clients.show', $other['client']))->assertOk()->getContent();
         $this->assertStringNotContainsString(route('clients.controld.invalidate', $other['client']), $html);
+    }
+
+    /** A PK left from an earlier code never removes a different stored code: refused before any write. */
+    public function test_a_stored_code_that_is_not_the_pinned_record_refuses_before_any_write(): void
+    {
+        $fixture = $this->fixture();
+        $run = $this->stage($fixture);
+        $replaced = str_repeat('b', 32);
+        Client::findOrFail($fixture['client']->id)->forceFill(['controld_provisioning_code' => $replaced])->save();
+        $this->bindVendor([$this->listedActive()]);
+
+        $message = $this->approve($run);
+
+        $this->assertSame([$replaced, self::PIN], $this->stored($fixture['client']), 'the stored code and PIN are kept');
+        $this->assertSame(['GET /provision'], $this->sent(), 'one read, no invalidate request');
+        $this->assertStringContainsString('refused before any vendor write', $message);
+        $this->assertStringContainsString(ControlDOnboardingStaged::INVALIDATE_TARGET_REFUSAL, $message);
+        $this->assertSame('staged', ControlDOnboardingIntent::where('operation', 'invalidate')->sole()->state);
+        $this->assertStringNotContainsString($replaced, $message);
+        $this->assertSecretsAbsent($run, $message);
+    }
+
+    /** Once onboarding invalidated a code's PK, that PK no longer names a later stored code. */
+    public function test_after_a_confirmed_invalidation_a_later_stored_code_has_no_bound_pk(): void
+    {
+        $fixture = $this->fixture();
+        $run = $this->stage($fixture);
+        $this->bindVendor([$this->listedActive(), $this->ok([]), $this->ok(['provisions' => [$this->row(-1)]])]);
+        $this->approve($run);
+        $this->assertSame([null, null], $this->stored($fixture['client']));
+
+        Client::findOrFail($fixture['client']->id)->forceFill(['controld_provisioning_code' => str_repeat('b', 32), 'controld_deactivation_pin' => '9135'])->save();
+
+        $this->assertNull(ControlDOnboardingStaged::boundCodePk(Client::findOrFail($fixture['client']->id)));
+        $this->bindVendor([]);
+        $this->actingAs($fixture['stager'])->post(route('clients.controld.invalidate', $fixture['client']), ['ticket_id' => $fixture['ticket']->id, 'reason' => 'x'])
+            ->assertSessionHasErrors('controld_onboarding');
+        $this->assertSame(1, TechnicianRun::where('client_id', $fixture['client']->id)->count());
+        $this->assertSame([], $this->history);
     }
 }

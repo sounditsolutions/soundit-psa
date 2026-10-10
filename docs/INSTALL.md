@@ -1381,8 +1381,9 @@ read-back;
 verified client binding and `bound` commit together. Rejected/bound intents release the
 lock. Uncertain and crash-left posted/staged records retain it indefinitely; no automatic
 retry, timeout release, cleanup or resume is installed for admitted intents; the one
-way out for them is the Admin **Reconcile** below, which reads only, never writes to
-Control D, and never re-cuts. The one exception is a NEVER-ADMITTED intent (state
+way out for an `uncertain` one is the Admin **Reconcile** below, which reads only, never
+writes to Control D, and never re-cuts. A `posted` one is not reconciled from the page
+(its write may still be in flight) and needs a ruling by hand. The one exception is a NEVER-ADMITTED intent (state
 `staged`, phase `preflight`, no vendor PK): an active Admin may release it from the
 client page's Control D onboarding card with a reason (XULQ2iix). That card, and so the
 release form, is shown only while Control D and client onboarding are enabled and
@@ -1394,11 +1395,14 @@ left unchanged; the release writes a `controld_release_intent` audit row (the re
 passes through the same redactor as other onboarding audit rows) and makes no vendor
 call.
 
-**Reconcile a posted or uncertain intent (P7A74iGD (a)).** On the client page's Control D
+**Reconcile an uncertain intent (P7A74iGD (a)).** On the client page's Control D
 onboarding card an active Admin sees a **Reconcile with Control D** button for each
-`posted` or `uncertain` intent that still holds that client's lock (route
+`uncertain` intent that still holds that client's lock (route
 `POST /clients/{client}/controld/intents/{intent}/reconcile`, Admin-only, 404 unless
-onboarding is enabled and configured, and 404 for another client's intent). It sends
+onboarding is enabled and configured, and 404 for another client's intent). A `posted`
+intent gets no button and is refused with nothing changed: `posted` is set just before
+the write and the outcome is recorded after it, so a read then could race a write still
+in flight. It sends
 GETs only, never a PUT, POST or DELETE, and never retries the write:
 - *organization*: the parent's complete sub-organization list. A match is exactly one row
   with the intent's org PK (when one was recorded) or the payload name, named as the payload
@@ -1436,16 +1440,21 @@ code for approval** (route `POST /clients/{client}/controld/invalidate`, Admin-o
 onboarding is active). It stages a cockpit proposal on the same action type
 (`controld_stage_onboard_client`, step `invalidate`, with the org PK and the code PK pinned).
 A **second** Admin approves it; there is no MCP verb for it. On approval:
-1. One `PUT provision/{PK}/invalidate` is sent.
-2. The code is read back, and the read-back must show status -1.
-3. Only a confirmed read-back removes the code and deactivation PIN from the client record,
-   in one guarded transaction.
+1. One `GET provision` must list the pinned code PK exactly once, carrying the code the
+   client record stores. Otherwise approval refuses before any write: the code and PIN are
+   kept, and the staged intent can be released from the card. So a PK left from an earlier
+   code (already invalidated, or replaced by a code stored by another path) never removes a
+   different stored code.
+2. One `PUT provision/{PK}/invalidate` is sent.
+3. The code is read back, and the read-back must show status -1.
+4. Only a confirmed read-back removes the code and deactivation PIN from the client record,
+   in one guarded transaction, which re-checks that the client still stores that code.
 
 A vendor error, or a read-back that does not confirm, ends the intent `uncertain`. The code
 and PIN are kept, the client stays locked until reconciled by hand, and nothing is retried.
 Invalidating stops the code working for new enrollments. **Devices already enrolled with it
-are NOT removed.** A code with no recorded PK (stored by another path) cannot be invalidated
-from here; it is never looked up at Control D by its value. The code value never appears in
+are NOT removed.** A code with no recorded PK (stored by another path), or whose recorded PK
+was already invalidated through onboarding, cannot be invalidated from here; it is never looked up at Control D by its value. The code value never appears in
 the proposal, the audit, the result or the logs. Invalidation cannot be undone. To keep
 onboarding devices, stage the onboarding verb again for a new code.
 
