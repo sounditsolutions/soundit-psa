@@ -609,6 +609,25 @@ class ControlDOnboardPlanTest extends TestCase
         $this->assertSame(TechnicianRunState::Done, TechnicianRun::find($staged['run_id'])->state);
     }
 
+    /**
+     * G-14 (Jeeves 13:3xZ, diff:4): an uncertain deploy writes no intent, so the card and the result must not
+     * say it keeps the client locked or needs a reconcile; they say what is true and the client stays unlocked.
+     */
+    public function test_an_uncertain_deploy_says_it_holds_no_lock_and_needs_no_reconcile(): void
+    {
+        $this->putFails = true;
+        $f = $this->onboarded();
+        $staged = $this->deployOnly($f, 'all');
+        $card = (string) TechnicianRun::findOrFail($staged['run_id'])->proposed_content;
+        $this->assertStringContainsString('A Control D step (organization, global profile or code) that ends uncertain is never retried and keeps this client locked until it is reconciled. The deploy step holds no lock and needs no reconcile, whatever its outcome: if it ends uncertain, check the devices and the custom field in Tactical; staging again re-reads the field and never overwrites a value that differs from the code.', $card);
+        $this->assertStringNotContainsString('An uncertain step is never retried and keeps this client locked', $card);
+        $message = (string) $staged['result']->message;
+        $this->assertStringStartsWith("The onboarding run did not complete: the 'deploy' step ended uncertain.", $message);
+        $this->assertStringEndsWith('Steps already bound are not redone when the plan is staged again; the deploy step holds no lock and needs no reconcile: check the devices and the custom field in Tactical; staging again re-reads the field and never overwrites a value that differs from the code.', $message);
+        $this->assertStringNotContainsString('must be reconciled', $message);
+        $this->assertSame(0, \App\Models\ControlDOnboardingIntent::where('active_client_id', $f['client']->id)->count(), 'the deploy holds no client lock');
+    }
+
     /** A pinned agent Tactical no longer lists under the client is refused; the others still run. */
     public function test_a_pinned_agent_outside_the_client_is_refused(): void
     {

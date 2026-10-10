@@ -114,6 +114,9 @@ class StaffControlDOnboardingToolExecutor
     /** P7A74iGD (b): the plan's Tactical deploy step (after the code). */
     public const STEP_DEPLOY = 'deploy';
 
+    /** G-14 (Jeeves 13:3xZ, diff:4): a deploy writes no intent, so it never holds the client lock or needs a reconcile. */
+    private const DEPLOY_NO_LOCK = 'the deploy step holds no lock and needs no reconcile: check the devices and the custom field in Tactical; staging again re-reads the field and never overwrites a value that differs from the code.';
+
     /** Approval refusal for an onboarding proposal staged before the one-approval plan existed. */
     public const LEGACY_STEP_REFUSAL = 'This Control D onboarding proposal was staged as a single step, before onboarding became one plan per approval, so it cannot be shown to match what would run now. Deny this proposal and stage again; the new card lists every step. Nothing was created and nothing was changed at Control D or in Tactical.';
 
@@ -673,7 +676,7 @@ class StaffControlDOnboardingToolExecutor
         $name = $this->fence->neutralizeUntrusted((string) $client->name);
         $steps = $pins['plan'] ?? [];
         $lines = ["Control D onboarding plan for client '{$name}' (#{$client->id}): ".count($steps).' step'.(count($steps) === 1 ? '' : 's').', approved once, run in this order.',
-            'Each step runs only after the step before it succeeded. The first step that Control D rejects, or whose outcome is uncertain, stops the plan and nothing after it runs. An uncertain step is never retried and keeps this client locked until it is reconciled. Approval derives the plan again from the client\'s current state and refuses, with nothing written, if it differs from this card (a step already done, a changed setting or pinned value, or a changed device link); stage again then.'];
+            'Each step runs only after the step before it succeeded. The first step that Control D rejects, or whose outcome is uncertain, stops the plan and nothing after it runs. A Control D step (organization, global profile or code) that ends uncertain is never retried and keeps this client locked until it is reconciled. The deploy step holds no lock and needs no reconcile, whatever its outcome: if it ends uncertain, check the devices and the custom field in Tactical; staging again re-reads the field and never overwrites a value that differs from the code. Approval derives the plan again from the client\'s current state and refuses, with nothing written, if it differs from this card (a step already done, a changed setting or pinned value, or a changed device link); stage again then.'];
         $org = $this->fence->neutralizeUntrusted((string) ($pins['org_pk'] ?? $client->controld_org_id ?? ''));
         foreach ($steps as $i => $step) {
             $n = ($i + 1).'. ';
@@ -1180,7 +1183,7 @@ class StaffControlDOnboardingToolExecutor
         }
         $this->safeAudit($run->action_type, $ok ? 'executed' : 'error', $client->id, $ticket, $hash, "{$key}: plan summary: {$summary}; ".($ok ? 'run completed' : "run did not complete; failed step: {$failed[0]} ({$failed[1]})").'; run '.($closed ? 'closed (state done)' : ($closeFailed ? 'close failed; left claimed, not reopened' : 'not closed by this request')).'.', $approverLabel, $run->id, $approverId);
         $text = ($ok ? 'Control D onboarding plan completed. ' : $incomplete.' ').implode(' ', $lines)
-            .($ok ? '' : ($closed ? ' The run is closed and is not re-approved; its state reads done, which here does not mean every step succeeded.' : '').' Steps already bound are not redone when the plan is staged again; a step that ended uncertain must be reconciled first.');
+            .($ok ? '' : ($closed ? ' The run is closed and is not re-approved; its state reads done, which here does not mean every step succeeded.' : '').' Steps already bound are not redone when the plan is staged again; '.($failed[0] === self::STEP_DEPLOY ? self::DEPLOY_NO_LOCK : 'a step that ended uncertain must be reconciled first.'));
         if ($closeFailed) {
             return new TechnicianApprovalResult('executed_with_fault', message: $text.' Closing the run failed afterwards, so it stays claimed and was not reopened. Do NOT re-approve it; check the run.');
         }
