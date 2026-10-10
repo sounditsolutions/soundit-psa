@@ -16,6 +16,14 @@ enum TechnicianRunState: string
     case Scheduled = 'scheduled';
     case Executing = 'executing';
     case Done = 'done';
+
+    /**
+     * P7A74iGD (b): an approved run that executed and ended with a step that did not succeed
+     * (rejected, uncertain, refused or failed), so it is NOT Done. Terminal; never re-armed and
+     * never re-approved. Written today only by the Control D onboarding approval
+     * (StaffControlDOnboardingToolExecutor), whose result and audit rows name each step's outcome.
+     */
+    case Failed = 'failed';
     case Denied = 'denied';
     case Superseded = 'superseded';
 

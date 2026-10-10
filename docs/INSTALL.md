@@ -1481,7 +1481,8 @@ all five values unchanged is not treated as drift. Approval still refuses, with 
 message, if the values can no longer be derived (an onboarding default missing or invalid,
 or the asset count plus headroom outside 1..10000), and on its other checks. The values that
 execute are the pinned ones. **A code proposal staged before this release has no pins and is
-refused with the same re-stage message.** Deny it and stage again after the deploy. The code
+refused with a re-stage message** (since P7A74iGD (b), any single-step proposal is refused
+that way). Deny it and stage again after the deploy. The code
 intent's encrypted payload now also keeps the exact wire fields it sent (no secret), for
 reconcile.
 
@@ -1553,6 +1554,65 @@ Its `down()` refuses any populated table: intent evidence must not be deleted by
 rollback or client/user deletion. No FK cascade exists. Revert callers only through
 normal review; do not delete vendor objects, clear mappings or release uncertain locks.
 
+**One-approval onboarding plan and the Tactical deploy (P7A74iGD (b)).** `controld_onboard_client`
+(MCP) and the client-page button now stage ONE plan per client, approved ONCE. The plan is
+the not-yet-bound subset of these steps, in this order: `organization` (or `global-profile`
+for a mapped organization with no global profile), `code`, and, only when a deploy scope is
+chosen at staging, `deploy`. An organization created by the plan already carries the
+configured global profile, so it never needs the `global-profile` step. A client that is
+already onboarded (mapped, code stored) may stage a deploy-only plan. Everything the plan
+will run is pinned in the sealed proposal: the steps, the global-profile step's organization
+and profile PKs, the code values (item E above), the deploy scope, and for a selected deploy
+each PSA asset's Tactical agent id. Approval derives the plan again from the current state
+and refuses, with nothing written at Control D or in Tactical, if any of it differs (a step
+already done, a changed setting or pinned value, a changed asset-to-agent link): deny and
+stage again. Steps then run in order through the existing B3 intents, one intent per Control D
+step: `bound` continues; `rejected` or `uncertain` stops the plan and nothing after it runs.
+A rejected stop spends the proposal; staging again proposes only the steps not yet bound. An
+uncertain step keeps the client's lock until it is reconciled and is never retried. Audit: one
+row per step outcome and one plan summary row (ids and status only).
+
+The **run state now reflects the outcome**: a plan in which every step succeeded closes
+`done`; a plan that stopped on an error, or whose deploy was not fully started, closes the
+new terminal state `failed` (never re-approved, never re-armed). Before this change an
+errored onboarding run closed `done`. The single-step invalidate approval's error arms close
+`failed` too. A plan refused before anything was written goes back to awaiting approval. No
+migration: the run state is a string column.
+
+**The deploy step** runs ONLY when the plan's code step bound in the same approval, or the
+client already stored its code; otherwise it makes no Tactical request at all. It needs the
+Tactical integration enabled and two settings on the Control D card: the existing **Tactical
+client custom field ID** (`controld_tactical_client_field_id`) and the new **Tactical deploy
+script ID** (`controld_tactical_deploy_script_id`, a positive integer). Either unset refuses
+the deploy (fail closed); neither has a default. The client's Tactical client is found by the
+name of its Tactical mapping (exactly one exact-case match). Then:
+1. Read the client record's custom field. **If it already holds a value different from the
+   client's provisioning code, the deploy refuses and writes nothing** (an existing value is
+   never overwritten). If it equals the code, it is left as it is.
+2. If it is empty, write the code (decrypted only for that request) and read it back. A failed
+   write or a read-back that does not equal the code ends the deploy `uncertain` and no script
+   runs; nothing is retried.
+3. List the Tactical client's agents. `all` targets every agent Tactical lists under that
+   client at approval; a selected list targets only its pinned agents, each refused unless
+   Tactical lists it under that client and its asset link still matches the pin.
+4. Request the deploy script on each target with **no arguments from the PSA**: the script
+   reads the client custom field itself. Per agent the result is `started` (Tactical accepted
+   the request; it does NOT mean Control D was installed), `refused` or `failed`.
+The code never appears in script arguments, the proposal, the audit, logs or the result.
+
+**Undo.** From the PSA only the provisioning code can be undone (Invalidate code, above); devices
+already enrolled are not removed, and the organization, its global profile and the Tactical
+custom field stay as they are.
+
+**Deploy note: re-stage proposals staged before this release.** A single-step onboarding
+proposal staged before this release refuses at approval with nothing written ("staged as a
+single step ... stage again"); deny it and stage again after the deploy. Code intents
+recorded before (a) with no sent fields still refuse Reconcile and stay held for a by-hand
+ruling. No schedule changes.
+
+**Client onboarding enabled** behaviour, the second-Admin rule and the per-lane staging rules
+below are unchanged.
+
 **B4 caller (staged verb + client-page button), shipped INERT.** The MCP verb
 `controld_onboard_client` and the Admin-only "Control D onboarding" card on the client
 page are the only callers of the B3 service. Both are inert unless BOTH hold: the six
@@ -1565,8 +1625,9 @@ deliberately; installation and deployment do none of them. The verb is held-only
 it has no immediate lane whatever mode is granted (`controld_onboard_client:immediate`
 is rejected as a grant), is explicit-grant-only (never inherited by a legacy
 full-surface token), and requires `staged=true`, a `ticket_id` belonging to the client
-and a `reason`. Each proposal is ONE step, decided by the server from the client
-record: `organization` when the client has no `controld_org_id` (creates the
+and a `reason`. **Since P7A74iGD (b) each proposal is ONE PLAN approved once** (see
+"One-approval onboarding plan" below); the steps it runs are decided by the server from the
+client record: `organization` when the client has no `controld_org_id` (creates the
 sub-organization from the client's name and contact email, two-factor required, the
 panel's auto-detected analytics region; binds the returned id), then `code` once
 mapped and its sub-organization already enforces the configured Global Profile
@@ -1599,7 +1660,7 @@ was cleared, or that was revoked, paused, deleted or had the grant removed after
 is refused — the re-read applies the same liveness gate and the same normalised grant
 list authentication applies). A non-Admin can neither
 stage from the button nor approve. Approval re-derives the
-step from live state and refuses if it changed. Outcomes: `bound` executes; a vendor
+plan from live state and refuses if it changed. Per step, outcomes: `bound` executes and the plan continues; a vendor
 `40301` read-only rejection is terminal for that proposal with nothing created and the
 fix named (replace the API key with a Write token), a fresh proposal may follow; an
 uncertain outcome is terminal, is never re-armed, and leaves the B3 intent holding the
@@ -1646,16 +1707,16 @@ stage and approve alone; the button lane was never affected. Then:
    and has it re-staged by the ai_actor token (or the button). This is procedure, not a
    migration: nothing is rewritten in place. On an instance where the verb was never
    granted or published before B4.1, there is nothing to drain (the count is 0).
-3. **The first client, two approvals, a second Admin watching.** Pick one client whose
-   record has a valid contact email and no `controld_org_id`. Stage step 1 (the
-   organization) — by the token with a `ticket_id` belonging to that client and a
-   `reason`, or by the button on a ticket of that client. Approve it in the AI Technician
-   cockpit: on the token lane any active Admin; on the button lane an Admin other than the
-   one who staged it. Have a second Admin present for the first run either way. Confirm the
-   client now shows a bound Control D organization on its page, then stage and approve
-   step 2 (the provisioning code) the same way. Refusals are final for that proposal and
-   name the cause; deny and re-stage after fixing it. An `uncertain` outcome stops here and
-   is reconciled by hand — do not re-stage over it.
+3. **The first client, one approval, a second Admin watching.** Pick one client whose
+   record has a valid contact email and no `controld_org_id`. Stage the onboarding plan —
+   by the token with a `ticket_id` belonging to that client and a `reason` (and `deploy`
+   only if you mean it), or by the button on a ticket of that client. Approve it in the AI
+   Technician cockpit: on the token lane any active Admin; on the button lane an Admin other
+   than the one who staged it. Have a second Admin present for the first run either way. The
+   one approval runs the organization step and then the code step. Refusals before any write
+   leave the proposal waiting; deny and re-stage after fixing the cause. A step that Control
+   D rejects stops the plan and spends the proposal; staging again resumes from that step.
+   An `uncertain` outcome stops here and is reconciled — do not re-stage over it.
 4. **Readback.** In the Control D admin portal, confirm exactly one new sub-organization
    (the client's name, contact email, two-factor required) and exactly one provisioning
    code under it, and that they match the intent rows the PSA recorded for that client

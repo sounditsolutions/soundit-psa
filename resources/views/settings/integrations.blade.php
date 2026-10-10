@@ -2536,6 +2536,30 @@
                                 </div>
                             </div>
                             <div class="col-md-6 mb-3">
+                                <label for="controld_tactical_deploy_script_id" class="form-label">Tactical deploy script ID</label>
+                                <input type="number" min="1" step="1"
+                                       class="form-control @error('tactical_deploy_script_id') is-invalid @enderror"
+                                       id="controld_tactical_deploy_script_id"
+                                       name="tactical_deploy_script_id"
+                                       value="{{ $controldOld('tactical_deploy_script_id', $controldDeployScriptId ?? '') }}">
+                                @error('tactical_deploy_script_id')
+                                    <div class="invalid-feedback">{{ $message }}</div>
+                                @enderror
+                                @if (isset($controldNumericUnusable['tactical_deploy_script_id']))
+                                    <div class="form-text text-danger">
+                                        Stored value <code>{{ $controldNumericUnusable['tactical_deploy_script_id'] }}</code>
+                                        is not a value onboarding can use. Leaving this field blank when
+                                        saving clears the stored value; enter a valid replacement to replace it.
+                                    </div>
+                                @endif
+                                <div class="form-text">
+                                    The Tactical RMM script the onboarding plan's deploy step runs on each
+                                    agent it deploys to. It is run with no arguments from the PSA, so the
+                                    script must read the client custom field above itself. Leave blank and
+                                    the deploy step is refused (no Tactical write, no script run).
+                                </div>
+                            </div>
+                            <div class="col-md-6 mb-3">
                                 <label for="controld_default_profile_id" class="form-label">Enforced profile ID</label>
                                 <input type="text"
                                        class="form-control @error('default_profile_id') is-invalid @enderror"

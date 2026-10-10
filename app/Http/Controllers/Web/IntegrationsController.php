@@ -242,6 +242,8 @@ class IntegrationsController extends Controller
         };
 
         $controldTacticalFieldIdRead = ControlDConfig::tacticalClientOrgFieldId();
+        $controldDeployScriptIdRead = ControlDConfig::tacticalDeployScriptId();
+        $controldDeployScriptId = $displayInt($controldDeployScriptIdRead);
         $controldCodeExpiryDaysRead = ControlDConfig::codeExpiryDays();
         $controldCodeHeadroomRead = ControlDConfig::codeDeviceLimitHeadroom();
 
@@ -257,6 +259,7 @@ class IntegrationsController extends Controller
         // Keyed by the input NAME so the view can warn beside the field it concerns.
         $controldNumericUnusable = array_filter([
             'tactical_client_field_id' => $unusableInt(ControlDConfig::get('tactical_client_org_field_id'), $controldTacticalFieldIdRead),
+            'tactical_deploy_script_id' => $unusableInt(ControlDConfig::get('tactical_deploy_script_id'), $controldDeployScriptIdRead),
             'code_expiry_days' => $unusableInt(ControlDConfig::get('code_expiry_days'), $controldCodeExpiryDaysRead),
             'code_device_limit_headroom' => $unusableInt(ControlDConfig::get('code_device_limit_headroom'), $controldCodeHeadroomRead),
         ], static fn (?string $raw): bool => $raw !== null);
@@ -618,7 +621,7 @@ class IntegrationsController extends Controller
             'powerdmarcConfigured', 'powerdmarcConnected', 'powerdmarcBaseUrl', 'powerdmarcMsspBaseUrl', 'powerdmarcMsspWalkSeconds', 'powerdmarcEnabled',
             'servosityConfigured', 'servosityConnected', 'servosityConnectedAt', 'servosityEnabled',
             'controldConfigured', 'controldConnected', 'controldEnabled',
-            'controldTacticalFieldId', 'controldDefaultProfileId', 'controldCodeExpiryDays',
+            'controldTacticalFieldId', 'controldDeployScriptId', 'controldDefaultProfileId', 'controldCodeExpiryDays',
             'controldCodeHeadroom', 'controldCodeAnalyticsLevel', 'controldCodeInterceptMode',
             'controldOnboardingConfigured', 'controldOnboardingEnabled', 'controldNumericUnusable',
             'zorusConfigured', 'zorusConnected', 'zorusEnabled',
@@ -2347,6 +2350,8 @@ class IntegrationsController extends Controller
             // negative id is always a typo, and an operator who is told so on the spot
             // does not go hunting for why onboarding refuses a value the panel accepted.
             'tactical_client_field_id' => 'nullable|integer|min:1',
+            // P7A74iGD (b): the deploy step's script id; a positive integer or blank (blank = the deploy step refuses).
+            'tactical_deploy_script_id' => 'nullable|integer|min:1',
             'default_profile_id' => 'nullable|string|max:64',
             'code_expiry_days' => 'nullable|integer|min:1',
             // Zero is a real answer here — see ControlDConfig::codeDeviceLimitHeadroom().
@@ -2358,6 +2363,7 @@ class IntegrationsController extends Controller
             'code_intercept_mode' => 'nullable|string|max:64',
         ], [], [
             'tactical_client_field_id' => 'Tactical client custom field ID',
+            'tactical_deploy_script_id' => 'Tactical deploy script ID',
             'default_profile_id' => 'Enforced profile ID',
             'code_expiry_days' => 'Code expiry (days)',
             'code_device_limit_headroom' => 'Device limit headroom',
@@ -2403,6 +2409,7 @@ class IntegrationsController extends Controller
 
         $onboardingDefaults = [
             'tactical_client_field_id' => [ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING, $canonicalInt],
+            'tactical_deploy_script_id' => [ControlDConfig::TACTICAL_DEPLOY_SCRIPT_SETTING, $canonicalInt],
             'default_profile_id' => [ControlDConfig::DEFAULT_PROFILE_SETTING, null],
             'code_expiry_days' => [ControlDConfig::CODE_EXPIRY_DAYS_SETTING, $canonicalInt],
             'code_device_limit_headroom' => [ControlDConfig::CODE_DEVICE_LIMIT_HEADROOM_SETTING, $canonicalInt],

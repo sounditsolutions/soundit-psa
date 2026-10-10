@@ -22,6 +22,15 @@ class ControlDConfig
     public const TACTICAL_CLIENT_ORG_FIELD_SETTING = 'controld_tactical_client_field_id';
 
     /**
+     * P7A74iGD (b): the Tactical RMM script id the onboarding plan's deploy step runs on each
+     * agent (with no argument override, so the script's own client-field substitution supplies
+     * the value). Instance state like the field id above: unset or not a positive integer is
+     * null, and the deploy step then refuses (fails closed). Not one of the six onboarding
+     * defaults: the Control D steps run without it; only a plan with a deploy step needs it.
+     */
+    public const TACTICAL_DEPLOY_SCRIPT_SETTING = 'controld_tactical_deploy_script_id';
+
+    /**
      * Control D profile enforced as a new sub-organisation's Global Profile. An opaque
      * vendor primary key, not a number of ours — stored and echoed as typed, apart
      * from surrounding whitespace (see the normalisation note below).
@@ -65,6 +74,7 @@ class ControlDConfig
             'api_key' => Setting::getEncrypted('controld_api_key'),
             'stats_endpoint' => Setting::getValue('controld_stats_endpoint'),
             'tactical_client_org_field_id' => Setting::getValue(self::TACTICAL_CLIENT_ORG_FIELD_SETTING),
+            'tactical_deploy_script_id' => Setting::getValue(self::TACTICAL_DEPLOY_SCRIPT_SETTING),
             'default_profile_id' => Setting::getValue(self::DEFAULT_PROFILE_SETTING),
             'code_expiry_days' => Setting::getValue(self::CODE_EXPIRY_DAYS_SETTING),
             'code_device_limit_headroom' => Setting::getValue(self::CODE_DEVICE_LIMIT_HEADROOM_SETTING),
@@ -126,6 +136,15 @@ class ControlDConfig
     public static function tacticalClientOrgFieldId(): ?int
     {
         return self::readInt('tactical_client_org_field_id', 1);
+    }
+
+    /**
+     * The configured Tactical deploy script id, or null when it is unset or not a positive
+     * integer. Callers must treat null as a refusal.
+     */
+    public static function tacticalDeployScriptId(): ?int
+    {
+        return self::readInt('tactical_deploy_script_id', 1);
     }
 
     /**

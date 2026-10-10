@@ -105,7 +105,7 @@ class ControlDCodePinsTest extends TestCase
         $this->actingAs($fixture['stager'])->post(route('clients.controld.onboard', $fixture['client']), ['ticket_id' => $fixture['ticket']->id, 'reason' => 'new client'])
             ->assertSessionHas('success');
         $run = TechnicianRun::where('client_id', $fixture['client']->id)->sole();
-        $this->assertSame('code', $run->proposed_meta['redacted_params']['step']);
+        $this->assertSame(['plan', ['code']], [$run->proposed_meta['redacted_params']['step'], $run->proposed_meta['redacted_params']['steps']]);
 
         return $run;
     }
@@ -150,7 +150,7 @@ class ControlDCodePinsTest extends TestCase
             $this->assertSame('/organizations/sub_organizations', $exchange['request']->getUri()->getPath(), 'no code-step vendor call');
         }
         $this->assertStringContainsString('stage again', $message);
-        $this->assertStringContainsString('Nothing was created and nothing was changed at Control D.', $message);
+        $this->assertStringContainsString('Nothing was created', $message);
         $this->assertStringNotContainsString('no Control D call', $message, 'G-14: approval already made the step-ordering GET');
     }
 
@@ -160,8 +160,9 @@ class ControlDCodePinsTest extends TestCase
         $run = $this->stage($fixture);
 
         $this->assertSame(['max' => 5, 'expiry_days' => 7, 'stats' => 0, 'intercept_mode' => 'standard', 'profile_id' => 'testprofile01'], $this->payload($run)['code_pins']);
-        $this->assertStringContainsString('enforced profile testprofile01, expiry 7 days, device limit = asset count (3) + headroom 2 = 5, analytics level 0, intercept mode standard', $run->proposed_content);
-        $this->assertStringContainsString('These five derived values are pinned on this card. Approval derives them again from the current settings and asset count; if any of them differs, approval refuses and the proposal must be staged again. A settings or asset-count change that leaves all five unchanged is not treated as drift; approval still refuses, with its own message, if the values can no longer be derived (an onboarding default missing or invalid, or the asset count plus headroom outside 1..10000), and on its other checks.', $run->proposed_content);
+        // P7A74iGD (b): the plan card shows the pinned values and says that approval re-derives the plan and refuses on any difference.
+        $this->assertStringContainsString('with these pinned values: enforced profile testprofile01, expiry 7 days, device limit 5 (asset count 3 + headroom 2), analytics level 0, intercept mode standard', $run->proposed_content);
+        $this->assertStringContainsString('Approval derives the plan again from the client\'s current state and refuses, with nothing written, if it differs from this card (a step already done, a changed setting or pinned value, or a changed device link); stage again then.', $run->proposed_content);
         $this->assertStringNotContainsString('leaves all five unchanged does not refuse', $run->proposed_content, 'G-14 (contract:1): underivable values and other checks still refuse');
         $this->assertStringNotContainsString('if a setting or the client\'s asset count changes before approval, approval refuses', $run->proposed_content);
         $this->assertArrayNotHasKey('code_pins', $run->proposed_meta, 'pins live only in the sealed payload');
@@ -230,7 +231,7 @@ class ControlDCodePinsTest extends TestCase
         $this->assertRefusedWithNothingWritten($run, $fixture, $message);
         $this->assertStringContainsString('no longer match the current Control D settings or the client\'s asset count', $message);
         $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'blocked')
-            ->where('summary', 'like', '%the pinned code values differ from the current settings or asset count; nothing was changed at Control D.%')->count());
+            ->where('summary', 'like', '%the derived code values (device limit, expiry, analytics level, intercept mode or enforced profile) differ from the ones pinned on this card; nothing was changed at Control D or in Tactical.%')->count());
         $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%no Control D call%')->count(), 'G-14: the drift audit row does not claim no call');
     }
 
@@ -264,10 +265,10 @@ class ControlDCodePinsTest extends TestCase
         $message = $this->approve($run);
 
         $this->assertRefusedWithNothingWritten($run, $fixture, $message);
-        $this->assertSame(StaffControlDOnboardingToolExecutor::CODE_PINS_MISSING, $message);
-        $this->assertStringContainsString('staged before the code values were pinned', $message);
+        // P7A74iGD (b): a plan card whose pins are missing differs from the fresh derivation, so it refuses as drift.
+        $this->assertStringContainsString('The code values pinned on this card', $message);
         $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'blocked')
-            ->where('summary', 'like', '%the card carries no pinned code values; nothing was changed at Control D.%')->count());
+            ->where('summary', 'like', '%differ from the ones pinned on this card; nothing was changed at Control D or in Tactical.%')->count());
     }
 
     public function test_malformed_pins_are_treated_as_legacy_and_refused(): void
@@ -281,7 +282,7 @@ class ControlDCodePinsTest extends TestCase
         $run->forceFill(['proposed_meta' => $meta])->save();
         $this->bindVendor([$this->ok(['sub_organizations' => [$this->listed()]])]);
 
-        $this->assertSame(StaffControlDOnboardingToolExecutor::CODE_PINS_MISSING, $this->approve($run));
+        $this->assertStringContainsString('The code values pinned on this card', $this->approve($run));
         $this->assertSame(0, ControlDOnboardingIntent::count());
     }
 
@@ -311,7 +312,7 @@ class ControlDCodePinsTest extends TestCase
         $this->assertSame(StaffControlDOnboardingToolExecutor::CODE_PINS_UNDERIVABLE, $message);
         $this->assertStringNotContainsString('no longer match', $message);
         $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'blocked')
-            ->where('summary', 'like', '%the code values could not be derived again from the current settings and asset count; nothing was changed at Control D.%')->count());
-        $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%the pinned code values differ%')->count());
+            ->where('summary', 'like', '%approval refused%nothing was changed at Control D or in Tactical.%')->count());
+        $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%differ from the ones pinned%')->count());
     }
 }

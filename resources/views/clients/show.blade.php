@@ -995,7 +995,9 @@
                         $cdStep = ! $cdMapped ? 'organization' : (! $cdHasCode ? 'code' : null);
                         // P7A74iGD (a): an onboarded client whose code was cut by onboarding can stage "invalidate code".
                         $cdCodePk = $cdStep === null ? \App\Services\ControlD\ControlDOnboardingStaged::boundCodePk($client) : null;
-                        $cdTickets = ($cdStep || $cdCodePk) ? $client->tickets()->open()->orderByDesc('id')->limit(25)->get(['id', 'halo_id', 'subject']) : collect();
+                        $cdTickets = $client->tickets()->open()->orderByDesc('id')->limit(25)->get(['id', 'halo_id', 'subject']);
+                        // P7A74iGD (b): devices the plan's deploy step can target (assets linked to a Tactical agent).
+                        $cdDeployAssets = $client->assets()->whereHas('tacticalAsset')->orderBy('name')->limit(\App\Services\ControlD\ControlDTacticalDeploy::MAX_ASSETS)->get(['id', 'name']);
                         // Uncertain intents still holding this client's lock: the reconcile candidates (the same
                         // predicates ControlDOnboardingStaged::reconcile() re-checks); a posted one may still have
                         // its write in flight and is not offered.
@@ -1021,7 +1023,7 @@
                                         @if($cdStep === null)
                                             <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Onboarded</span>
                                         @elseif($cdStep === 'organization')
-                                            <span class="badge bg-secondary">Step 1 of up to 3</span>
+                                            <span class="badge bg-secondary">Not onboarded</span>
                                         @else
                                             <span class="badge bg-secondary">Organization mapped; no code yet</span>
                                         @endif
@@ -1054,6 +1056,21 @@
                                     @endforeach
                                     @if($cdStep === null)
                                         <div class="text-muted small">Mapped to organization <code>{{ $client->controld_org_id }}</code> with a provisioning code stored encrypted. Re-cutting a code is a separate action.</div>
+                                        @if($cdTickets->isNotEmpty() && $cdReconcilable->isEmpty() && $cdReleasable->isEmpty())
+                                            <form method="POST" action="{{ route('clients.controld.onboard', $client) }}" class="d-flex flex-column gap-2 mt-2" data-testid="controld-deploy">
+                                                @csrf
+                                                <p class="text-muted small mb-0">Deploy to devices: stages a plan with only the deploy step, for a <strong>second Admin</strong> to approve. It writes this client's provisioning code into the Tactical client custom field if that field is empty (a different value there refuses), then asks Tactical to run the deploy script on the chosen devices. {{ \App\Services\Mcp\StaffControlDOnboardingToolExecutor::DEPLOY_STARTED_MEANS }}</p>
+                                                @include('clients.partials.controld-deploy-scope', ['cdDeployAssets' => $cdDeployAssets, 'cdRequired' => true])
+                                                <select name="ticket_id" class="form-select form-select-sm" required>
+                                                    <option value="">Hold on ticket…</option>
+                                                    @foreach($cdTickets as $cdTicket)
+                                                        <option value="{{ $cdTicket->id }}">{{ $cdTicket->display_id }} — {{ \Illuminate\Support\Str::limit($cdTicket->subject, 60) }}</option>
+                                                    @endforeach
+                                                </select>
+                                                <input type="text" name="reason" class="form-control form-control-sm" maxlength="500" placeholder="Reason (shown to the approver)" required>
+                                                <button type="submit" class="btn btn-outline-primary btn-sm align-self-start"><i class="bi bi-pc-display me-1"></i>Stage the deploy for approval</button>
+                                            </form>
+                                        @endif
                                         @if($cdCodePk !== null && $cdTickets->isNotEmpty() && $cdReconcilable->isEmpty() && $cdReleasable->isEmpty())
                                             <form method="POST" action="{{ route('clients.controld.invalidate', $client) }}" class="d-flex flex-column gap-2 mt-2" data-testid="controld-invalidate">
                                                 @csrf
@@ -1071,10 +1088,11 @@
                                     @else
                                         <p class="text-muted small mb-2">
                                             @if($cdStep === 'organization')
-                                                Creates the client's Control D sub-organization (name and contact email from this record, two-factor required) and binds it here. The global profile (if needed) and the provisioning code are staged separately afterwards.
+                                                One plan, one approval: creates the client's Control D sub-organization (name and contact email from this record, two-factor required, the configured global profile) and binds it here, then cuts one provisioning code with the Control D panel defaults (stored encrypted, never shown), then, if you choose devices below, deploys to them through Tactical.
                                             @else
-                                                Mapped to organization <code>{{ $client->controld_org_id }}</code>. If it has no global profile set, the next proposal sets the configured one; if the configured one is already enforced, the next proposal cuts one provisioning code with the Control D panel defaults (stored encrypted, never shown). If a different global profile is already set when staging reads it, staging refuses and no proposal is created; if one is set by the time approval reads it, approval refuses; either way nothing is written to Control D. {{ \App\Services\Mcp\StaffControlDOnboardingToolExecutor::RACE_DISCLOSURE }}
+                                                Mapped to organization <code>{{ $client->controld_org_id }}</code>. One plan, one approval: if the organization has no global profile set, the plan sets the configured one first; then it cuts one provisioning code with the Control D panel defaults (stored encrypted, never shown); then, if you choose devices below, it deploys to them through Tactical. If a different global profile is already set when staging reads it, staging refuses and no proposal is created; if one is set by the time approval reads it, approval refuses; either way nothing is written to Control D. {{ \App\Services\Mcp\StaffControlDOnboardingToolExecutor::RACE_DISCLOSURE }}
                                             @endif
+                                            The plan stops at the first step that does not succeed; the deploy step runs only once the code is bound. {{ \App\Services\Mcp\StaffControlDOnboardingToolExecutor::PLAN_UNDO }}
                                             Staging holds a proposal in the cockpit for a <strong>second Admin</strong> to approve; nothing is created by this button.
                                         </p>
                                         @if($cdTickets->isEmpty())
@@ -1088,9 +1106,10 @@
                                                         <option value="{{ $cdTicket->id }}">{{ $cdTicket->display_id }} — {{ \Illuminate\Support\Str::limit($cdTicket->subject, 60) }}</option>
                                                     @endforeach
                                                 </select>
+                                                @include('clients.partials.controld-deploy-scope', ['cdDeployAssets' => $cdDeployAssets, 'cdRequired' => false])
                                                 <input type="text" name="reason" class="form-control form-control-sm" maxlength="500" placeholder="Reason (shown to the approver)" required>
                                                 <button type="submit" class="btn btn-primary btn-sm align-self-start">
-                                                    <i class="bi bi-shield-plus me-1"></i>Stage {{ $cdStep === 'organization' ? 'onboarding step 1' : 'the next onboarding step' }} for approval
+                                                    <i class="bi bi-shield-plus me-1"></i>Stage the onboarding plan for approval
                                                 </button>
                                             </form>
                                         @endif

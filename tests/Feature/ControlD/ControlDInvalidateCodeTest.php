@@ -209,7 +209,8 @@ class ControlDInvalidateCodeTest extends TestCase
         $intent = ControlDOnboardingIntent::where('operation', 'invalidate')->sole();
         $this->assertSame(['uncertain', (int) $fixture['client']->id], [$intent->state, (int) $intent->active_client_id], 'uncertain keeps the lock');
         $this->assertSame(['GET /provision', 'PUT /provision/'.self::CODE_PK.'/invalidate', 'GET /provision'], $this->sent(), 'one PUT, never retried');
-        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state, 'terminal; never re-armed');
+        // P7A74iGD (b): an errored run closes Failed, never Done; still terminal and never re-armed.
+        $this->assertSame(TechnicianRunState::Failed, $run->fresh()->state, 'terminal; never re-armed');
         $this->assertStringStartsWith('HARD FAULT', $message);
         $this->assertStringContainsString('the code and PIN were kept on the client record', $message);
         $this->assertSecretsAbsent($run, $message);
