@@ -145,7 +145,9 @@ class ControlDOnboardingStagedTest extends TestCase
         $this->refusal(fn () => $writer->execute($actor, $id));
         $this->assertCount(1, $this->history);
         $this->assertSame('POST', $this->history[0]['request']->getMethod());
-        $this->assertStringNotContainsString('This read-only token', json_encode($row));
+        // eGIRKv51: the vendor's sanitized error.message is kept only in reason_detail; the fixed reason is unchanged.
+        $this->assertSame('This read-only token does not have access to this endpoint', $row->reason_detail);
+        $this->assertStringNotContainsString('This read-only token', json_encode(array_diff_key($row->getAttributes(), ['reason_detail' => true])), 'no other column carries vendor text');
     }
 
     public function test_independent_process_cannot_stage_same_client_during_post_but_can_stage_other_client(): void

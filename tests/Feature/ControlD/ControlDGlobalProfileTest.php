@@ -403,7 +403,9 @@ class ControlDGlobalProfileTest extends TestCase
         $writer->execute($actor, $id);
         $intent = ControlDOnboardingIntent::findOrFail($id);
         $this->assertSame(['rejected', 40000, null], [$intent->state, $intent->reason_code, $intent->active_client_id]);
-        $this->assertStringNotContainsString('vendor text', json_encode($intent->toArray()));
+        // eGIRKv51: the vendor's sanitized error.message is kept only in reason_detail; the PSA's own reason stays fixed.
+        $this->assertSame(['vendor rejected the write', 'vendor text'], [$intent->reason, $intent->reason_detail]);
+        $this->assertStringNotContainsString('vendor text', json_encode(array_diff_key($intent->getAttributes(), ['reason_detail' => true])), 'no other column carries vendor text');
         $this->assertCount(2, $this->history);
     }
 

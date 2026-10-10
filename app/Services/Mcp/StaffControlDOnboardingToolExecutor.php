@@ -762,10 +762,13 @@ class StaffControlDOnboardingToolExecutor
                 // catch keeps a rejected run terminal) never loses the refusal.
                 $reason = (string) ($intent->reason ?? 'vendor rejected the write');
                 $nothing = $step === self::STEP_GLOBAL_PROFILE ? 'nothing changed' : 'nothing created';
-                $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Control D rejected the '{$step}' write — {$reason} (code {$intent->reason_code}); intent {$intent->id} rejected, {$nothing}.", $approverLabel, $run->id, $approverId);
+                // The vendor's own sanitized error.message, quoted and attributed to Control D;
+                // absent, the text is unchanged.
+                $said = self::vendorSaid($intent);
+                $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Control D rejected the '{$step}' write — {$reason} (code {$intent->reason_code}); intent {$intent->id} rejected, {$nothing}.{$said}", $approverLabel, $run->id, $approverId);
                 $closed = $this->closeRunOrRecordLostFence($run, $client->id, $ticket, $contentHash, $targetKey, $approverLabel, $approverId);
 
-                return new TechnicianApprovalResult('executed_with_fault', message: "Control D rejected the {$step} write: {$reason}".($intent->reason_code === 40301 ? ' — the API key is a Read token; replace it with a Write token in Settings > Integrations, then stage again.' : '.').' '.ucfirst($nothing).'.'.($closed ? '' : ' '.self::NOT_CLOSED));
+                return new TechnicianApprovalResult('executed_with_fault', message: "Control D rejected the {$step} write: {$reason}".($intent->reason_code === 40301 ? ' — the API key is a Read token; replace it with a Write token in Settings > Integrations, then stage again.' : '.').' '.ucfirst($nothing).'.'.$said.($closed ? '' : ' '.self::NOT_CLOSED));
             }
 
             // uncertain, posted, or unknown: a vendor write MAY have happened. Terminal;
@@ -838,6 +841,23 @@ class StaffControlDOnboardingToolExecutor
 
             throw $e;
         }
+    }
+
+    /**
+     * ' Control D's message (code N): "<message>"' when the rejected intent kept the
+     * vendor's sanitized error.message (reason_detail), else ''. The text is Control D's,
+     * quoted; the PSA asserts nothing about what it means. The quote is a JSON string, so an
+     * embedded double quote or backslash is escaped and cannot end the attribution early;
+     * text with neither is quoted unchanged.
+     */
+    private static function vendorSaid(ControlDOnboardingIntent $intent): string
+    {
+        $detail = $intent->reason_detail;
+        if (! is_string($detail) || $detail === '') {
+            return '';
+        }
+
+        return " Control D's message (code {$intent->reason_code}): ".json_encode($detail, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     }
 
     private function onboarding(): ControlDOnboardingStaged
