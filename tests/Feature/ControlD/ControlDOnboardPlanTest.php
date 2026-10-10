@@ -404,6 +404,9 @@ class ControlDOnboardPlanTest extends TestCase
         if ($how === 'uncertain') {
             $this->assertSame((int) $f['client']->id, (int) $intent->active_client_id, 'uncertain keeps the lock');
             $this->assertStringContainsString('never retried', (string) $result->message);
+            // #6575: the plan has a deploy step, but the failed step is a Control D one, so the Control D tail is given.
+            $this->assertStringEndsWith('Steps already bound are not redone when the plan is staged again; a step that ended uncertain must be reconciled first.', (string) $result->message);
+            $this->assertStringNotContainsString('holds no lock', (string) $result->message);
             $this->assertSame(1, collect($this->cd)->filter(fn ($h) => in_array($h['request']->getMethod(), ['POST', 'PUT'], true))->count(), 'the uncertain write was sent once and never retried');
         } else {
             $this->assertNull($intent->active_client_id);
@@ -610,8 +613,9 @@ class ControlDOnboardPlanTest extends TestCase
     }
 
     /**
-     * G-14 (Jeeves 13:3xZ, diff:4): an uncertain deploy writes no intent, so the card and the result must not
-     * say it keeps the client locked or needs a reconcile; they say what is true and the client stays unlocked.
+     * G-14 (Jeeves 13:3xZ, diff:4; #6574, #6576, #6578): an uncertain deploy writes no intent, so the card and the
+     * result must not say it keeps the client locked or needs a reconcile; they say what is true, and a new plan
+     * for the same client can be staged at once.
      */
     public function test_an_uncertain_deploy_says_it_holds_no_lock_and_needs_no_reconcile(): void
     {
@@ -619,13 +623,56 @@ class ControlDOnboardPlanTest extends TestCase
         $f = $this->onboarded();
         $staged = $this->deployOnly($f, 'all');
         $card = (string) TechnicianRun::findOrFail($staged['run_id'])->proposed_content;
-        $this->assertStringContainsString('A Control D step (organization, global profile or code) that ends uncertain is never retried and keeps this client locked until it is reconciled. The deploy step holds no lock and needs no reconcile, whatever its outcome: if it ends uncertain, check the devices and the custom field in Tactical; staging again re-reads the field and never overwrites a value that differs from the code.', $card);
+        $this->assertStringContainsString('A Control D step (organization, global profile or code) that ends uncertain is never retried and keeps this client locked until it is reconciled. The deploy step holds no lock and needs no reconcile, whatever its outcome: if it ends uncertain, check the devices and the custom field in Tactical; approving a newly staged plan re-reads the field and never overwrites a value that differs from the code.', $card);
         $this->assertStringNotContainsString('An uncertain step is never retried and keeps this client locked', $card);
+        $this->assertStringNotContainsString('staging again re-reads', $card);
         $message = (string) $staged['result']->message;
         $this->assertStringStartsWith("The onboarding run did not complete: the 'deploy' step ended uncertain.", $message);
-        $this->assertStringEndsWith('Steps already bound are not redone when the plan is staged again; the deploy step holds no lock and needs no reconcile: check the devices and the custom field in Tactical; staging again re-reads the field and never overwrites a value that differs from the code.', $message);
-        $this->assertStringNotContainsString('must be reconciled', $message);
-        $this->assertSame(0, \App\Models\ControlDOnboardingIntent::where('active_client_id', $f['client']->id)->count(), 'the deploy holds no client lock');
+        $this->assertStringEndsWith('Steps already bound are not redone when the plan is staged again; the deploy step holds no lock and needs no reconcile: check the devices and the custom field in Tactical; approving a newly staged plan re-reads the field and never overwrites a value that differs from the code.', $message);
+        // #6574: outside the one sentence that denies them, the result speaks of no lock and no reconcile anywhere.
+        $rest = substr($message, 0, -strlen('Steps already bound are not redone when the plan is staged again; the deploy step holds no lock and needs no reconcile: check the devices and the custom field in Tactical; approving a newly staged plan re-reads the field and never overwrites a value that differs from the code.'));
+        $this->assertDoesNotMatchRegularExpression('/lock|reconcil/i', $rest);
+        // #6578: the lock that refuses a new proposal is an open intent of this client; there is none, and a new
+        // plan for the same client stages at once (a new ticket, so it is a new run, not the closed one).
+        $this->assertFalse(ControlDOnboardingIntent::where('client_id', $f['client']->id)->whereIn('state', ['staged', 'posted', 'uncertain'])->exists());
+        $ticket = Ticket::factory()->for($f['client'])->create(['subject' => 'Onboard to Control D again', 'status' => \App\Enums\TicketStatus::New->value]);
+        $this->controlD([]);
+        $again = $this->stage($f['client'], $ticket, 'all');
+        $this->assertSame(['deploy'], $again['steps'] ?? null, json_encode($again));
+        $this->assertNotSame($staged['run_id'], $again['run_id']);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, TechnicianRun::findOrFail($again['run_id'])->state);
+    }
+
+    /** #6573: a plan with no deploy step says nothing about a deploy step or Tactical. */
+    public function test_a_plan_without_a_deploy_step_does_not_describe_one(): void
+    {
+        $f = $this->fixture();
+        $staged = $this->stage($f['client'], $f['ticket']);
+        $this->assertSame(['organization', 'code'], $staged['steps'] ?? null, json_encode($staged));
+        $card = (string) TechnicianRun::findOrFail($staged['run_id'])->proposed_content;
+        $this->assertStringContainsString('that ends uncertain is never retried and keeps this client locked until it is reconciled. Approval derives', $card);
+        // The rules paragraph and the steps (the Undo line names what undo leaves untouched, and is out of scope here).
+        $body = strstr($card, "\nUndo: ", true);
+        $this->assertNotFalse($body);
+        $this->assertStringNotContainsString('deploy', strtolower($body));
+        $this->assertStringNotContainsString('Tactical', $body);
+    }
+
+    /** #6580: a hard fault inside the deploy gives the hard-fault text, never the no-lock promise. */
+    public function test_a_hard_fault_in_the_deploy_does_not_promise_no_lock(): void
+    {
+        $f = $this->onboarded();
+        $this->controlD([]);
+        $staged = $this->stage($f['client'], $f['ticket'], 'all');
+        $this->app->bind(TacticalClient::class, static fn () => throw new \RuntimeException('synthetic fault'));
+        $result = $this->approve($staged['run_id']);
+        $message = (string) $result->message;
+        $this->assertSame('executed_with_fault', $result->status);
+        $this->assertStringStartsWith("The onboarding run did not complete: the 'deploy' step ended error.", $message);
+        $this->assertStringContainsString('HARD FAULT: the plan failed while running', $message);
+        $this->assertStringEndsWith('Steps already bound are not redone when the plan is staged again; for the deploy step, check the devices and the custom field in Tactical.', $message);
+        $this->assertStringNotContainsString('holds no lock', $message);
+        $this->assertStringNotContainsString('re-reads the field', $message);
     }
 
     /** A pinned agent Tactical no longer lists under the client is refused; the others still run. */
@@ -869,6 +916,9 @@ class ControlDOnboardPlanTest extends TestCase
         $this->assertStringContainsString($says, $message);
         $this->assertStringNotContainsString('The run is closed', $message);
         $this->assertStringNotContainsString('reads done', $message);
+        // #6579: the run stays claimed, so a re-stage on this ticket stages nothing; no no-lock promise is made.
+        $this->assertStringContainsString('Steps already bound are not redone when the plan is staged again; for the deploy step, check the devices and the custom field in Tactical.', $message);
+        $this->assertStringNotContainsString('holds no lock', $message);
         $run = TechnicianRun::findOrFail($staged['run_id']);
         $this->assertSame(TechnicianRunState::Executing, $run->state, 'not closed, and never reopened');
         $this->assertSame(['completed' => false, 'failed_step' => 'deploy', 'failed_state' => 'uncertain'], array_slice($run->proposed_meta['plan_outcome'], 0, 3));
