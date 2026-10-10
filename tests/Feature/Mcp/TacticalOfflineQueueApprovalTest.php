@@ -19,6 +19,9 @@ use App\Services\Tactical\TacticalClientException;
 use App\Services\Technician\TechnicianApprovalService;
 use App\Support\McpConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Log\Events\MessageLogged;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Testing\TestResponse;
 use Mockery;
 use Tests\TestCase;
@@ -325,5 +328,78 @@ class TacticalOfflineQueueApprovalTest extends TestCase
         $this->assertSame(TechnicianRunState::Executing, $runB->fresh()->state, 'not superseded');
         $this->assertSame(0, $runA->fresh()->coalesce_count, 'not counted onto the queued row');
         $this->assertNotQueuedAudit($runB);
+    }
+
+    /**
+     * #6312: after the queue write committed, the audit insert for result status $status throws.
+     * The failure's message carries a synthetic marker, so a line that copied it would show it.
+     *
+     * @return \Closure(): list<MessageLogged>
+     */
+    private function failTheAuditInsert(string $status): \Closure
+    {
+        DB::beforeExecuting(function (string $sql, array $bindings) use ($status): void {
+            if (str_contains($sql, 'insert into "technician_action_logs"') && in_array($status, $bindings, true)) {
+                throw new \RuntimeException('synthetic audit failure SECRET-6312-MARKER');
+            }
+        });
+        $logged = new \ArrayObject;
+        Event::listen(MessageLogged::class, function (MessageLogged $m) use ($logged): void {
+            $logged[] = $m;
+        });
+
+        return fn () => $logged->getArrayCopy();
+    }
+
+    /**
+     * #6312: the queue committed and then the audit insert threw. The run is queued, so the
+     * approver is told it is queued (never an error), with a note that the audit row was not
+     * written; one error line names the exception's class only (C-56).
+     */
+    public function test_a_committed_queue_whose_audit_insert_fails_still_reports_queued(): void
+    {
+        $approver = $this->configure();
+        $fixture = $this->endpointFixture();
+        $run = $this->stageScript($fixture['client'], $fixture['ticket'], $this->script());
+        $this->offlineClient();
+        $logged = $this->failTheAuditInsert('queued_offline');
+
+        $result = app(TechnicianApprovalService::class)->approveStagedTacticalAction($run, $approver->id);
+
+        $this->assertSame('queued_offline', $result->status);
+        $this->assertSame('Device offline: the action is queued to run when the device comes back online. The audit row for this request was not written.', $result->message);
+        $this->assertSame(TechnicianRunState::QueuedOffline, $run->fresh()->state, 'the queue write committed');
+        $this->assertSame('agent-1', $run->fresh()->queued_agent_id);
+        $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'queued_offline')->count(), 'positive control: the insert really failed');
+        $records = array_values(array_filter($logged(), fn (MessageLogged $m) => str_contains($m->message, 'audit row not written')));
+        $this->assertCount(1, $records);
+        $this->assertSame('error', $records[0]->level);
+        $this->assertSame('[Tactical] offline queue audit row not written', $records[0]->message);
+        $this->assertSame(['run_id' => $run->id, 'status' => 'queued_offline', 'exception' => \RuntimeException::class], $records[0]->context);
+        $this->assertStringNotContainsString('SECRET-6312-MARKER', json_encode(array_map(fn (MessageLogged $m) => [$m->message, $m->context], $logged())) ?: '');
+    }
+
+    /**
+     * #6312: on the lost-fence arm nothing was queued; if its audit insert then throws, the
+     * approver still gets the not-queued decline (not an exception), plus the audit note.
+     */
+    public function test_a_lost_fence_whose_audit_insert_fails_still_says_not_queued(): void
+    {
+        $approver = $this->configure();
+        $fixture = $this->endpointFixture();
+        $run = $this->stageScript($fixture['client'], $fixture['ticket'], $this->script());
+        $this->offlineClientThatLosesTheClaim($run);
+        $logged = $this->failTheAuditInsert('offline');
+
+        $result = app(TechnicianApprovalService::class)->approveStagedTacticalAction($run, $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame(self::NOT_QUEUED_TEXT.' The audit row for this request was not written.', $result->message);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
+        $this->assertSame(0, TechnicianRun::where('state', TechnicianRunState::QueuedOffline->value)->count());
+        $records = array_values(array_filter($logged(), fn (MessageLogged $m) => str_contains($m->message, 'audit row not written')));
+        $this->assertCount(1, $records);
+        $this->assertSame('error', $records[0]->level);
+        $this->assertSame(['run_id' => $run->id, 'status' => 'offline', 'exception' => \RuntimeException::class], $records[0]->context);
     }
 }

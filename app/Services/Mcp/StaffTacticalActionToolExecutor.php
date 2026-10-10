@@ -40,12 +40,19 @@ use App\Support\TacticalConfig;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 
 class StaffTacticalActionToolExecutor
 {
     private const DIRECT_DEDUP_HOURS = 24;
+
+    /** #6312: the tail when the offline-queue outcome committed but its audit row insert threw. */
+    private const AUDIT_NOT_WRITTEN = 'The audit row for this request was not written.';
+
+    /** #6312: the queued result's message when the queue committed and its audit row was not written. */
+    private const QUEUED_AUDIT_NOT_WRITTEN = 'Device offline: the action is queued to run when the device comes back online. '.self::AUDIT_NOT_WRITTEN;
 
     /** @var array<int, string> */
     private const UPSTREAM_IDENTIFIER_KEYS = [
@@ -446,24 +453,40 @@ class StaffTacticalActionToolExecutor
      * #6254: the audit row is written after the queue attempt: queued_offline when the run was
      * queued or coalesced, and the bus status with a not-queued summary when the claim-owner
      * fence was lost.
+     *
+     * #6312: parkOrCoalesce() has committed by the time the audit row is written, so an audit
+     * failure cannot undo the queue outcome. It is caught, logged by class only (C-56: a
+     * QueryException's message carries the INSERT's bound values), and the result still reports
+     * the committed outcome, with a note that the audit row was not written.
      */
     private function enqueueOfflineRun(TechnicianRun $run, string $agentId, string $directTool, array $params, int $approverId, Ticket $ticket, Asset $asset, TacticalActionResult $busResult): TechnicianApprovalResult
     {
         $dedupKey = $this->queueDedupKey($agentId, $directTool, $params);
         $queued = $this->parkOrCoalesce($run, $agentId, $dedupKey, $approverId);
+        $status = $queued ? 'queued_offline' : $busResult->status;
 
-        $this->auditAttempt(
-            $run->action_type,
-            $queued ? 'queued_offline' : $busResult->status,
-            (int) $run->client_id,
-            $ticket,
-            $asset,
-            $run->content_hash,
-            $queued ? $this->approvalSummary($run, $busResult) : "Operator-approved {$run->action_type} {$busResult->status}; not queued: this request no longer holds the run.",
-            $this->approverLabel($approverId),
-            $run->id,
-            $approverId,
-        );
+        try {
+            $this->auditAttempt(
+                $run->action_type,
+                $status,
+                (int) $run->client_id,
+                $ticket,
+                $asset,
+                $run->content_hash,
+                $queued ? $this->approvalSummary($run, $busResult) : "Operator-approved {$run->action_type} {$busResult->status}; not queued: this request no longer holds the run.",
+                $this->approverLabel($approverId),
+                $run->id,
+                $approverId,
+            );
+        } catch (\Throwable $e) {
+            Log::error('[Tactical] offline queue audit row not written', [
+                'run_id' => $run->id, 'status' => $status, 'exception' => $e::class,
+            ]);
+
+            return $queued
+                ? new TechnicianApprovalResult('queued_offline', message: self::QUEUED_AUDIT_NOT_WRITTEN)
+                : new TechnicianApprovalResult('gate_declined', message: self::notQueuedOffline()->message.' '.self::AUDIT_NOT_WRITTEN);
+        }
 
         return $queued ? new TechnicianApprovalResult('queued_offline') : self::notQueuedOffline();
     }
