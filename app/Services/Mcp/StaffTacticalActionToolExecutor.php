@@ -49,7 +49,7 @@ class StaffTacticalActionToolExecutor
     private const DIRECT_DEDUP_HOURS = 24;
 
     /** #6312: the tail when the offline-queue outcome committed but its audit row insert threw. */
-    private const AUDIT_NOT_WRITTEN = 'The audit row for this approval was not written.';
+    private const AUDIT_NOT_WRITTEN = 'The audit row for this request was not written.';
 
     /** #6312: the queued result's message when the queue committed and its audit row was not written. */
     private const QUEUED_AUDIT_NOT_WRITTEN = 'Device offline: the action is queued to run when the device comes back online. '.self::AUDIT_NOT_WRITTEN;

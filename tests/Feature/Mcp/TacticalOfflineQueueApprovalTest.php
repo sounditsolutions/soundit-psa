@@ -367,7 +367,7 @@ class TacticalOfflineQueueApprovalTest extends TestCase
         $result = app(TechnicianApprovalService::class)->approveStagedTacticalAction($run, $approver->id);
 
         $this->assertSame('queued_offline', $result->status);
-        $this->assertSame('Device offline: the action is queued to run when the device comes back online. The audit row for this approval was not written.', $result->message);
+        $this->assertSame('Device offline: the action is queued to run when the device comes back online. The audit row for this request was not written.', $result->message);
         $this->assertSame(TechnicianRunState::QueuedOffline, $run->fresh()->state, 'the queue write committed');
         $this->assertSame('agent-1', $run->fresh()->queued_agent_id);
         $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'queued_offline')->count(), 'positive control: the insert really failed');
@@ -394,7 +394,7 @@ class TacticalOfflineQueueApprovalTest extends TestCase
         $result = app(TechnicianApprovalService::class)->approveStagedTacticalAction($run, $approver->id);
 
         $this->assertSame('gate_declined', $result->status);
-        $this->assertSame(self::NOT_QUEUED_TEXT.' The audit row for this approval was not written.', $result->message);
+        $this->assertSame(self::NOT_QUEUED_TEXT.' The audit row for this request was not written.', $result->message);
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
         $this->assertSame(0, TechnicianRun::where('state', TechnicianRunState::QueuedOffline->value)->count());
         $records = array_values(array_filter($logged(), fn (MessageLogged $m) => str_contains($m->message, 'audit row not written')));
