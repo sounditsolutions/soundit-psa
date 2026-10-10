@@ -18,7 +18,7 @@ use Illuminate\Http\Request;
  * The client-page "Onboard to Control D" button (B4). Admin-only (RequireAdmin on
  * the route). It stages the SAME cockpit proposal the `controld_onboard_client`
  * verb stages — it never calls the onboarding services itself — so the second-Admin
- * approval, the audit row and the one-step-per-proposal rule are identical whether
+ * approval, the audit rows and the one-plan-per-approval rule are identical whether
  * the trigger was a person or an MCP token. The route is inert (404) unless
  * ControlDConfig::isOnboardingActive(), matching the button's own render guard.
  */
@@ -31,6 +31,10 @@ class ClientControlDOnboardingController extends Controller
         $validated = $request->validate([
             'ticket_id' => ['required', 'integer', 'min:1'],
             'reason' => ['required', 'string', 'max:500'],
+            // P7A74iGD (b): the plan's deploy scope. 'none' stages the Control D steps only.
+            'deploy_scope' => ['nullable', 'string', 'in:none,all,selected'],
+            'deploy_assets' => ['nullable', 'array', 'max:'.\App\Services\ControlD\ControlDTacticalDeploy::MAX_ASSETS],
+            'deploy_assets.*' => ['integer', 'min:1'],
         ]);
 
         $ticket = Ticket::find((int) $validated['ticket_id']);
@@ -38,16 +42,21 @@ class ClientControlDOnboardingController extends Controller
             return redirect()->route('clients.show', $client)->withErrors(['ticket_id' => 'Pick one of this client\'s tickets to hold the onboarding proposal on.']);
         }
 
-        $result = $executor->stageForClient($client, $ticket, $validated['reason'], $request->user());
+        $deploy = match ($validated['deploy_scope'] ?? 'none') {
+            'all' => \App\Services\ControlD\ControlDTacticalDeploy::SCOPE_ALL,
+            'selected' => array_values(array_map('intval', $validated['deploy_assets'] ?? [])),
+            default => null,
+        };
+        $result = $executor->stageForClient($client, $ticket, $validated['reason'], $request->user(), $deploy);
 
         if (isset($result['error'])) {
             return redirect()->route('clients.show', $client)->withErrors(['controld_onboarding' => $result['error']]);
         }
 
-        $step = $result['step'] ?? '';
+        $steps = implode(', ', $result['steps'] ?? [$result['step'] ?? '']);
         $message = ($result['idempotent'] ?? false)
             ? ($result['message'] ?? 'Already staged.')
-            : "Control D onboarding step '{$step}' staged for cockpit approval by a second Admin (run #{$result['run_id']}).";
+            : "Control D onboarding plan ({$steps}) staged for one cockpit approval by a second Admin (run #{$result['run_id']}).";
 
         return redirect()->route('clients.show', $client)->with('success', $message);
     }

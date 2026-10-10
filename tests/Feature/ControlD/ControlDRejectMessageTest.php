@@ -143,9 +143,29 @@ class ControlDRejectMessageTest extends TestCase
         return (string) session('error');
     }
 
+    /**
+     * P7A74iGD (b): the failing step's own audit row of the plan, with its 'onboard:N:plan:STEP:'
+     * prefix shown as the single-step 'onboard:N:STEP:' prefix, so the step text is compared as before.
+     */
     private function summary(TechnicianRun $run): string
     {
-        return (string) TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->sole()->summary;
+        $row = (string) TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->where('summary', 'not like', '%plan summary%')->sole()->summary;
+
+        return (string) preg_replace('/^onboard:(\d+):plan:/', 'onboard:$1:', $row);
+    }
+
+    /** P7A74iGD (b): the plan result wraps the step's text: a stop is a failed plan, and the step line is kept exactly. */
+    private function stepText(string $error): string
+    {
+        $this->assertSame(1, preg_match("/^The onboarding run did not complete: the '[a-z-]+' step ended [a-z]+\\. /", $error), $error);
+        $head = substr($error, 0, strpos($error, '. ') + 2);
+        $tail = ' The run is closed and is not re-approved; its state reads done, which here does not mean every step succeeded. Steps already bound are not redone when the plan is staged again; a step that ended uncertain must be reconciled first.';
+        $this->assertStringStartsWith($head, $error);
+        $this->assertStringEndsWith($tail, $error);
+        $body = substr($error, strlen($head), -strlen($tail));
+
+        // A later step that did not run adds no line; the deploy is not in these plans.
+        return $body;
     }
 
     /** The code step's approval exchange up to the POST: step re-derivation GET, devices/types, profiles. */
@@ -166,14 +186,14 @@ class ControlDRejectMessageTest extends TestCase
         $fixture = $this->fixture(['controld_org_id' => self::ORG]);
         $this->bindVendor([$this->ok(['sub_organizations' => [$this->listed()]])]);
         $run = $this->stageRun($fixture);
-        $this->assertSame('code', $run->proposed_meta['redacted_params']['step']);
+        $this->assertSame(['code'], $run->proposed_meta['redacted_params']['steps']);
         $this->bindVendor([...$this->codeUpToPost(), $this->envelope(40003, 'Invalid parameter: max')]);
         $error = $this->approve($run);
 
         $intent = ControlDOnboardingIntent::sole();
         $this->assertSame(['rejected', 'post', 40003, 'vendor rejected the write', 'Invalid parameter: max', null],
             [$intent->state, $intent->phase, $intent->reason_code, $intent->reason, $intent->reason_detail, $intent->active_client_id]);
-        $this->assertSame('Control D rejected the code write: vendor rejected the write. Nothing created. Control D\'s message (code 40003): "Invalid parameter: max"', $error);
+        $this->assertSame('Control D rejected the code write: vendor rejected the write. Nothing created. Control D\'s message (code 40003): "Invalid parameter: max"', $this->stepText($error));
         $this->assertSame("onboard:{$fixture['client']->id}:code: Control D rejected the 'code' write — vendor rejected the write (code 40003); intent {$intent->id} rejected, nothing created. Control D's message (code 40003): \"Invalid parameter: max\"", $this->summary($run));
         $this->assertSame('POST', $this->history[3]['request']->getMethod());
         $this->assertCount(4, $this->history);
@@ -184,13 +204,13 @@ class ControlDRejectMessageTest extends TestCase
         $this->configure();
         $fixture = $this->fixture();
         $run = $this->stageRun($fixture);
-        $this->assertSame('organization', $run->proposed_meta['redacted_params']['step']);
+        $this->assertSame(['organization', 'code'], $run->proposed_meta['redacted_params']['steps']);
         $this->bindVendor([$this->envelope(40001, 'Sub-organization limit reached')]);
         $error = $this->approve($run);
 
         $intent = ControlDOnboardingIntent::sole();
         $this->assertSame(['organization', 'rejected', 40001, 'Sub-organization limit reached'], [$intent->operation, $intent->state, $intent->reason_code, $intent->reason_detail]);
-        $this->assertSame('Control D rejected the organization write: vendor rejected the write. Nothing created. Control D\'s message (code 40001): "Sub-organization limit reached"', $error);
+        $this->assertSame('Control D rejected the organization write: vendor rejected the write. Nothing created. Control D\'s message (code 40001): "Sub-organization limit reached"', $this->stepText($error));
         $this->assertSame("onboard:{$fixture['client']->id}:organization: Control D rejected the 'organization' write — vendor rejected the write (code 40001); intent {$intent->id} rejected, nothing created. Control D's message (code 40001): \"Sub-organization limit reached\"", $this->summary($run));
         $this->assertNull($fixture['client']->fresh()->controld_org_id);
         $this->assertSame(['POST /organizations/suborg'], array_map(fn ($h) => $h['request']->getMethod().' '.$h['request']->getUri()->getPath(), $this->history));
@@ -202,7 +222,7 @@ class ControlDRejectMessageTest extends TestCase
         $fixture = $this->fixture(['controld_org_id' => self::ORG]);
         $this->bindVendor([$this->ok(['sub_organizations' => [$this->listed(null)]])]);
         $run = $this->stageRun($fixture);
-        $this->assertSame('global-profile', $run->proposed_meta['redacted_params']['step']);
+        $this->assertSame(['global-profile', 'code'], $run->proposed_meta['redacted_params']['steps']);
         $this->bindVendor([
             $this->ok(['sub_organizations' => [$this->listed(null)]]),
             $this->ok(['sub_organizations' => [$this->listed(null)]]),
@@ -212,7 +232,7 @@ class ControlDRejectMessageTest extends TestCase
 
         $intent = ControlDOnboardingIntent::sole();
         $this->assertSame(['global-profile', 'rejected', 40000, 'Profile not found'], [$intent->operation, $intent->state, $intent->reason_code, $intent->reason_detail]);
-        $this->assertSame('Control D rejected the global-profile write: vendor rejected the write. Nothing changed. Control D\'s message (code 40000): "Profile not found"', $error);
+        $this->assertSame('Control D rejected the global-profile write: vendor rejected the write. Nothing changed. Control D\'s message (code 40000): "Profile not found"', $this->stepText($error));
         $this->assertSame("onboard:{$fixture['client']->id}:global-profile: Control D rejected the 'global-profile' write — vendor rejected the write (code 40000); intent {$intent->id} rejected, nothing changed. Control D's message (code 40000): \"Profile not found\"", $this->summary($run));
         $this->assertSame('PUT', $this->history[2]['request']->getMethod());
     }
@@ -245,7 +265,7 @@ class ControlDRejectMessageTest extends TestCase
         $intent = ControlDOnboardingIntent::sole();
         $this->assertSame(['rejected', 40003, null], [$intent->state, $intent->reason_code, $intent->reason_detail]);
         // Byte-identical to the text before this change.
-        $this->assertSame('Control D rejected the code write: vendor rejected the write. Nothing created.', $error);
+        $this->assertSame('Control D rejected the code write: vendor rejected the write. Nothing created.', $this->stepText($error));
         $this->assertSame("onboard:{$fixture['client']->id}:code: Control D rejected the 'code' write — vendor rejected the write (code 40003); intent {$intent->id} rejected, nothing created.", $this->summary($run));
     }
 
@@ -259,7 +279,7 @@ class ControlDRejectMessageTest extends TestCase
         $error = $this->approve($run);
         $intent = ControlDOnboardingIntent::sole();
         $this->assertSame(['vendor key is read-only', 'This read-only token does not have access to this endpoint'], [$intent->reason, $intent->reason_detail]);
-        $this->assertSame('Control D rejected the organization write: vendor key is read-only — the API key is a Read token; replace it with a Write token in Settings > Integrations, then stage again. Nothing created. Control D\'s message (code 40301): "This read-only token does not have access to this endpoint"', $error);
+        $this->assertSame('Control D rejected the organization write: vendor key is read-only — the API key is a Read token; replace it with a Write token in Settings > Integrations, then stage again. Nothing created. Control D\'s message (code 40301): "This read-only token does not have access to this endpoint"', $this->stepText($error));
     }
 
     // ── uncertain / transport / non-envelope -> nothing stored, nothing shown ─────────
@@ -291,7 +311,7 @@ class ControlDRejectMessageTest extends TestCase
 
         $intent = ControlDOnboardingIntent::sole();
         $this->assertSame(['uncertain', null, null], [$intent->state, $intent->reason_code, $intent->reason_detail]);
-        $this->assertStringStartsWith('HARD FAULT', $error);
+        $this->assertStringStartsWith('HARD FAULT', $this->stepText($error));
         $this->assertStringNotContainsString('Invalid parameter', $error);
         $this->assertStringNotContainsString("Control D's message", $error);
         $this->assertStringNotContainsString('Invalid parameter', $this->summary($run));
@@ -343,7 +363,7 @@ class ControlDRejectMessageTest extends TestCase
         $intent = ControlDOnboardingIntent::sole();
         $this->assertSame(['uncertain', 'post', $fixture['client']->id], [$intent->state, $intent->phase, $intent->active_client_id]);
         $this->assertArrayNotHasKey('reason_detail', $intent->getAttributes());
-        $this->assertStringStartsWith("HARD FAULT: the Control D 'code' write for client #{$fixture['client']->id} ended uncertain (intent {$intent->id}, phase post)", $error);
+        $this->assertStringStartsWith("HARD FAULT: the Control D 'code' write for client #{$fixture['client']->id} ended uncertain (intent {$intent->id}, phase post)", $this->stepText($error));
         $this->assertStringNotContainsString('could not', $error);
     }
 
@@ -443,7 +463,7 @@ class ControlDRejectMessageTest extends TestCase
         $intent = ControlDOnboardingIntent::sole();
         $this->assertSame('x" Run closed; safe to re-approve. "y \\ z', $intent->reason_detail);
         $quoted = 'Control D\'s message (code 40003): "x\\" Run closed; safe to re-approve. \\"y \\\\ z"';
-        $this->assertSame('Control D rejected the code write: vendor rejected the write. Nothing created. '.$quoted, $error);
+        $this->assertSame('Control D rejected the code write: vendor rejected the write. Nothing created. '.$quoted, $this->stepText($error));
         $this->assertSame("onboard:{$fixture['client']->id}:code: Control D rejected the 'code' write — vendor rejected the write (code 40003); intent {$intent->id} rejected, nothing created. ".$quoted, $this->summary($run));
         // The quote opens once and every inner quote is escaped: exactly two bare quotes remain.
         $this->assertSame(2, preg_match_all('/(?<!\\\\)"/', $quoted));
