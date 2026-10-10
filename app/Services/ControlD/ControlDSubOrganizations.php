@@ -35,16 +35,8 @@ final class ControlDSubOrganizations
      */
     public function row(string $orgPk): stdClass
     {
-        $response = $this->vendor->requestParent('GET', 'organizations/sub_organizations');
-        $rows = $response['body']->sub_organizations ?? null;
-        if (! is_array($rows)) {
-            throw new ControlDClientException('Control D parent inventory is malformed.');
-        }
         $matches = [];
-        foreach ($rows as $listed) {
-            if (! $listed instanceof stdClass || ! is_string($listed->PK ?? null) || ! is_string($listed->name ?? null)) {
-                throw new ControlDClientException('Control D parent inventory is malformed.');
-            }
+        foreach ($this->rows() as $listed) {
             if ($listed->PK === $orgPk) {
                 $matches[] = $listed;
             }
@@ -54,6 +46,32 @@ final class ControlDSubOrganizations
         }
 
         return $matches[0];
+    }
+
+    /**
+     * The parent's sub-organization list as ONE GET returns it. Callers treat it as the
+     * complete list: no paging, cursor, total or truncation marker is checked (none appears in
+     * the recorded fixtures). Throws ControlDClientException when the request fails or is
+     * unconfirmed (requestParent()), the list is missing or not an array, or ANY row is not an
+     * object with a string PK and a string name. An empty array returned here is therefore a
+     * well-formed empty response.
+     *
+     * @return array<int, stdClass>
+     */
+    public function rows(): array
+    {
+        $response = $this->vendor->requestParent('GET', 'organizations/sub_organizations');
+        $rows = $response['body']->sub_organizations ?? null;
+        if (! is_array($rows)) {
+            throw new ControlDClientException('Control D parent inventory is malformed.');
+        }
+        foreach ($rows as $listed) {
+            if (! $listed instanceof stdClass || ! is_string($listed->PK ?? null) || ! is_string($listed->name ?? null)) {
+                throw new ControlDClientException('Control D parent inventory is malformed.');
+            }
+        }
+
+        return array_values($rows);
     }
 
     /**

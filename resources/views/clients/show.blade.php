@@ -993,7 +993,17 @@
                         $cdMapped = ! empty($client->controld_org_id);
                         $cdHasCode = $client->getRawOriginal('controld_provisioning_code') !== null || $client->getRawOriginal('controld_deactivation_pin') !== null;
                         $cdStep = ! $cdMapped ? 'organization' : (! $cdHasCode ? 'code' : null);
-                        $cdTickets = $cdStep ? $client->tickets()->open()->orderByDesc('id')->limit(25)->get(['id', 'halo_id', 'subject']) : collect();
+                        // P7A74iGD (a): an onboarded client whose code was cut by onboarding can stage "invalidate code".
+                        $cdCodePk = $cdStep === null ? \App\Services\ControlD\ControlDOnboardingStaged::boundCodePk($client) : null;
+                        $cdTickets = ($cdStep || $cdCodePk) ? $client->tickets()->open()->orderByDesc('id')->limit(25)->get(['id', 'halo_id', 'subject']) : collect();
+                        // Uncertain intents still holding this client's lock: the reconcile candidates (the same
+                        // predicates ControlDOnboardingStaged::reconcile() re-checks); a posted one may still have
+                        // its write in flight and is not offered.
+                        $cdReconcilable = \App\Models\ControlDOnboardingIntent::where('client_id', $client->id)->where('active_client_id', $client->id)
+                            ->where('state', 'uncertain')->whereIn('operation', ['organization', 'global-profile', 'code'])->get(['id', 'operation', 'state', 'updated_at']);
+                        // The most recent rejected intent's Control D message (#6522 remainder). Escaped output only.
+                        $cdRejected = \App\Models\ControlDOnboardingIntent::where('client_id', $client->id)->where('state', 'rejected')
+                            ->latest('updated_at')->latest('id')->first(['id', 'operation', 'reason_code', 'reason_detail']);
                         // A never-admitted intent (staged, preflight, no vendor PK) holding this client's lock:
                         // the same predicates as ControlDOnboardingStaged::releaseNeverAdmitted(), lock included.
                         $cdReleasable = \App\Models\ControlDOnboardingIntent::where('client_id', $client->id)->where('active_client_id', $client->id)
@@ -1021,6 +1031,18 @@
                                             {{ $errors->first('controld_onboarding') ?: ($errors->first('ticket_id') ?: $errors->first('reason')) }}
                                         </div>
                                     @endif
+                                    @if($cdRejected !== null && $cdRejected->reason_detail !== null)
+                                        <div class="small border rounded p-2 mb-2" data-testid="controld-reason-detail">
+                                            <i class="bi bi-x-octagon me-1"></i>The last rejected {{ $cdRejected->operation }} step (code {{ $cdRejected->reason_code }}). Control D's message: <q>{{ $cdRejected->reason_detail }}</q>
+                                        </div>
+                                    @endif
+                                    @foreach($cdReconcilable as $cdIntent)
+                                        <form method="POST" action="{{ route('clients.controld.intent.reconcile', [$client, $cdIntent->id]) }}" class="d-flex flex-column gap-2 mb-2 border rounded p-2" data-testid="controld-intent-reconcile">
+                                            @csrf
+                                            <div class="small"><i class="bi bi-exclamation-triangle me-1"></i>Intent <code>{{ $cdIntent->id }}</code> ({{ $cdIntent->operation }}) is {{ $cdIntent->state }}: its Control D write may have happened, so it holds this client's onboarding lock and is never retried. Reconcile reads Control D only (no write) and compares, for this step: an organization's name, recorded PK and the currently configured global profile; a global profile's profile against the one this intent sent; a code's fields against the ones this intent sent. If those match, the intent is bound; if Control D's list (one read, treated as complete) shows nothing from it, the intent is released; otherwise nothing changes. The result is audited.</div>
+                                            <button type="submit" class="btn btn-outline-primary btn-sm align-self-start"><i class="bi bi-arrow-repeat me-1"></i>Reconcile with Control D</button>
+                                        </form>
+                                    @endforeach
                                     {{-- Release is offered whenever this card renders (Admin, client onboarding enabled), whatever step the client is at. --}}
                                     @foreach($cdReleasable as $cdIntent)
                                         <form method="POST" action="{{ route('clients.controld.intent.release', [$client, $cdIntent->id]) }}" class="d-flex flex-column gap-2 mb-2 border rounded p-2" data-testid="controld-intent-release">
@@ -1032,6 +1054,20 @@
                                     @endforeach
                                     @if($cdStep === null)
                                         <div class="text-muted small">Mapped to organization <code>{{ $client->controld_org_id }}</code> with a provisioning code stored encrypted. Re-cutting a code is a separate action.</div>
+                                        @if($cdCodePk !== null && $cdTickets->isNotEmpty() && $cdReconcilable->isEmpty() && $cdReleasable->isEmpty())
+                                            <form method="POST" action="{{ route('clients.controld.invalidate', $client) }}" class="d-flex flex-column gap-2 mt-2" data-testid="controld-invalidate">
+                                                @csrf
+                                                <p class="text-muted small mb-0">Invalidate code: stages a proposal for a <strong>second Admin</strong> to approve. On approval Control D is asked to invalidate the code and the result is read back; only a confirmed result removes the code and PIN from this record. {{ \App\Services\Mcp\StaffControlDOnboardingToolExecutor::INVALIDATE_EFFECT }}</p>
+                                                <select name="ticket_id" class="form-select form-select-sm" required>
+                                                    <option value="">Hold on ticket…</option>
+                                                    @foreach($cdTickets as $cdTicket)
+                                                        <option value="{{ $cdTicket->id }}">{{ $cdTicket->display_id }} — {{ \Illuminate\Support\Str::limit($cdTicket->subject, 60) }}</option>
+                                                    @endforeach
+                                                </select>
+                                                <input type="text" name="reason" class="form-control form-control-sm" maxlength="500" placeholder="Reason (shown to the approver)" required>
+                                                <button type="submit" class="btn btn-outline-primary btn-sm align-self-start"><i class="bi bi-x-circle me-1"></i>Stage invalidating this code for approval</button>
+                                            </form>
+                                        @endif
                                     @else
                                         <p class="text-muted small mb-2">
                                             @if($cdStep === 'organization')

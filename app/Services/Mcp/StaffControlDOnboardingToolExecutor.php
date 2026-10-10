@@ -116,6 +116,22 @@ class StaffControlDOnboardingToolExecutor
     /** Fill an ABSENT or null parent_profile on a mapped sub-organization with the configured Global Profile. */
     public const STEP_GLOBAL_PROFILE = ControlDOnboardingStaged::GLOBAL_PROFILE;
 
+    /**
+     * P7A74iGD (a): invalidate the client's bound provisioning code (the undo). Staged only from
+     * the client page by an Admin (stageInvalidateForClient()); a second Admin approves in the
+     * cockpit under the same action type, so the cockpit dispatch is unchanged.
+     */
+    public const STEP_INVALIDATE = ControlDOnboardingStaged::INVALIDATE;
+
+    /** G-14: what invalidating does and does not do; on the card, the client page and the result. */
+    public const INVALIDATE_EFFECT = 'After it is invalidated, the code stops working for new enrollments: no new device can enroll with it. Devices already enrolled with it are NOT removed and keep their Control D enrollment.';
+
+    /** Approval refusal for a code proposal staged without pinned values (staged before this check existed). */
+    public const CODE_PINS_MISSING = 'This provisioning code proposal was staged before the code values were pinned on the card, so what would run cannot be shown to match what was approved. Deny this proposal and stage again; the new card pins the values. Nothing was created and nothing was changed at Control D.';
+
+    /** Approval refusal when codePins() cannot derive the five values again (it threw), so a match with the card cannot be shown. */
+    public const CODE_PINS_UNDERIVABLE = 'Approval could not derive the code values again from the current settings and the client\'s asset count (an onboarding default is missing or invalid, or the asset count plus the device-limit headroom is outside 1..10000), so they cannot be shown to match the values pinned on this card. Fix the cause, then deny this proposal and stage again so the current values are shown and approved on a new card. Nothing was created and nothing was changed at Control D.';
+
     public function __construct(
         private readonly ActionRedactor $redactor,
         private readonly PromptFence $fence,
@@ -283,6 +299,62 @@ class StaffControlDOnboardingToolExecutor
         return $this->stageProposal($client, $ticket, $reason, 'staff:'.$stager->id, self::STAGED_TOOL, (int) $stager->id, null, null);
     }
 
+    /**
+     * P7A74iGD (a): the client-page "Invalidate code" button. Admin-only; stages the invalidate
+     * step on the same cockpit action type, for a SECOND Admin to approve (button lane only:
+     * there is no MCP verb for it). The org PK and the bound code's PK (the vendor PK its bound
+     * code intent recorded; never looked up at Control D by value) are pinned on the card.
+     *
+     * @return array<string, mixed>
+     */
+    public function stageInvalidateForClient(Client $client, Ticket $ticket, string $reason, User $stager): array
+    {
+        if (! ControlDConfig::isEnabled() || ! ControlDConfig::isConfigured() || ! ControlDConfig::isOnboardingActive()) {
+            return ['error' => 'Control D client onboarding is not enabled on this instance.'];
+        }
+        if (! $stager->exists || ! $stager->is_active || ! $stager->isAdmin()) {
+            return ['error' => 'Only an active Admin can stage invalidating a Control D code.'];
+        }
+        if ((int) $ticket->client_id !== (int) $client->id) {
+            return ['error' => 'Ticket does not belong to this client.'];
+        }
+        $reason = mb_substr(trim($reason), 0, self::REASON_MAX);
+        if ($reason === '') {
+            return ['error' => 'reason is required'];
+        }
+        if (TechnicianConfig::killSwitchEngaged()) {
+            return ['error' => 'Technician kill-switch engaged; Control D onboarding refused'];
+        }
+
+        return $this->stageProposal($client, $ticket, $reason, 'staff:'.$stager->id, self::STAGED_TOOL, (int) $stager->id, null, null, $this->invalidateStep($client));
+    }
+
+    /**
+     * The invalidate step for this client now, or an error: the client is mapped, carries a
+     * stored code, no intent owns it, and its bound code intent recorded the code's PK.
+     *
+     * @return array{step?: string, org_pk?: string, code_pk?: string, error?: string, reason?: string}
+     */
+    private function invalidateStep(Client $client): array
+    {
+        $client = Client::withTrashed()->find($client->id) ?? $client;
+        if ($client->trashed()) {
+            return ['error' => 'Client is deleted; nothing was staged.', 'reason' => 'Client is deleted'];
+        }
+        if (! is_string($client->controld_org_id) || $client->controld_org_id === '' || $client->getRawOriginal('controld_provisioning_code') === null) {
+            return ['error' => 'This client has no stored Control D provisioning code to invalidate; nothing was staged.', 'reason' => 'This client has no stored Control D provisioning code to invalidate'];
+        }
+        if (ControlDOnboardingIntent::where('client_id', $client->id)->whereIn('state', ['staged', 'posted', 'uncertain'])->exists()) {
+            return ['error' => self::OWNED_REFUSAL, 'reason' => self::OWNED_REASON];
+        }
+        $codePk = ControlDOnboardingStaged::boundCodePk($client);
+        if ($codePk === null) {
+            return ['error' => 'The stored code has no recorded Control D code record (it was not cut by onboarding), so it cannot be invalidated from here; nothing was staged.', 'reason' => 'The stored code has no recorded Control D code record'];
+        }
+
+        return ['step' => self::STEP_INVALIDATE, 'org_pk' => (string) $client->controld_org_id, 'code_pk' => $codePk];
+    }
+
     // ── step derivation ─────────────────────────────────────────────────────────
 
     /**
@@ -419,11 +491,11 @@ class StaffControlDOnboardingToolExecutor
      * $stagerTokenId (token lane: the ai_actor token that staged) is set; approval
      * applies the lane's half of the two-person rule from whichever is present.
      */
-    private function stageProposal(Client $client, Ticket $ticket, string $reason, string $actorLabel, string $tool, ?int $stagerUserId, ?int $stagerTokenId, ?string $tokenLabel): array
+    private function stageProposal(Client $client, Ticket $ticket, string $reason, string $actorLabel, string $tool, ?int $stagerUserId, ?int $stagerTokenId, ?string $tokenLabel, ?array $forced = null): array
     {
         $clientId = (int) $client->id;
-        $derived = $this->nextStep($client);
-        $pins = array_intersect_key($derived, ['org_pk' => true, 'profile_pk' => true]);
+        $derived = $forced ?? $this->nextStep($client);
+        $pins = array_intersect_key($derived, ['org_pk' => true, 'profile_pk' => true, 'code_pk' => true]);
         $contentHash = $this->contentHash($tool, $clientId, $ticket->id, ['step' => $derived['step'] ?? 'none', ...$pins]);
         if (isset($derived['error'])) {
             $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, $derived['error'], $actorLabel);
@@ -444,6 +516,19 @@ class StaffControlDOnboardingToolExecutor
             $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, "{$targetKey}: {$message}", $actorLabel);
 
             return ['error' => $message];
+        }
+        if ($step === self::STEP_CODE) {
+            // Item E: pin the derived code values the card shows; approval refuses on drift and
+            // executes these exact values. No secret is among them.
+            try {
+                $pins = ['code_pins' => ControlDOnboardingStaged::codePins($client)];
+            } catch (ControlDClientException $e) {
+                $message = mb_substr($e->getMessage(), 0, 300).' Nothing was staged.';
+                $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $contentHash, "{$targetKey}: {$message}", $actorLabel);
+
+                return ['error' => $message];
+            }
+            $contentHash = $this->contentHash($tool, $clientId, $ticket->id, ['step' => $step, ...$pins]);
         }
 
         if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
@@ -531,10 +616,19 @@ class StaffControlDOnboardingToolExecutor
                 .'No provisioning code is cut by this step; once the mapping is bound, stage the verb again for the next step.';
         }
 
+        if ($step === self::STEP_INVALIDATE) {
+            return "Control D: invalidate the provisioning code of client '{$name}' (#{$client->id}), organization ".$this->fence->neutralizeUntrusted((string) ($pins['org_pk'] ?? '')).', code record '.($pins['code_pk'] ?? '').".\n"
+                .'Sends one invalidate request for that code to Control D, then reads the code back; only when the read-back shows it invalidated are the code and deactivation PIN removed from the client record. '.self::INVALIDATE_EFFECT."\n"
+                .'If the result cannot be confirmed, the step ends uncertain, the code stays on the client record, and nothing is retried. Approval refuses, with nothing written, if the client\'s organization or stored code no longer matches this card, or if Control D, read before the invalidate request, does not show this code record carrying the stored code. The code itself is never shown here, in the audit log or in the result. Cutting a new code afterwards is a separate onboarding proposal.';
+        }
+        $codePins = $pins['code_pins'] ?? [];
+
+        // The values shown are the pinned ones (codePins()), which approval re-derives and executes.
         return "Control D onboarding — final step (provisioning code) for client '{$name}' (#{$client->id}), organization ".$this->fence->neutralizeUntrusted((string) $client->controld_org_id).".\n"
-            .'Cuts one provisioning code under that organization with the panel defaults: enforced profile '.ControlDConfig::defaultProfileId()
-            .', expiry '.ControlDConfig::codeExpiryDays().' days, device limit = asset count ('.$client->assets()->count().') + headroom '.ControlDConfig::codeDeviceLimitHeadroom()
-            .', analytics level '.ControlDConfig::codeAnalyticsLevel().', intercept mode '.ControlDConfig::codeInterceptMode().', icon '.self::CODE_ICON.".\n"
+            .'Cuts one provisioning code under that organization with the panel defaults: enforced profile '.($codePins['profile_id'] ?? '')
+            .', expiry '.($codePins['expiry_days'] ?? '').' days, device limit = asset count ('.$client->assets()->count().') + headroom '.ControlDConfig::codeDeviceLimitHeadroom().' = '.($codePins['max'] ?? '')
+            .', analytics level '.($codePins['stats'] ?? '').', intercept mode '.($codePins['intercept_mode'] ?? '').', icon '.self::CODE_ICON.".\n"
+            .'These five derived values are pinned on this card. Approval derives them again from the current settings and asset count; if any of them differs, approval refuses and the proposal must be staged again. A settings or asset-count change that leaves all five unchanged is not treated as drift; approval still refuses, with its own message, if the values can no longer be derived (an onboarding default missing or invalid, or the asset count plus headroom outside 1..10000), and on its other checks. '
             .'No deactivation PIN and no hostname prefix (deferred). The code is stored encrypted on the client record and is never shown here, in the audit log or in the tool result.';
     }
 
@@ -599,7 +693,8 @@ class StaffControlDOnboardingToolExecutor
             $ticket = Ticket::automationVisible()->find((int) ($payload['ticket_id'] ?? 0));
             $step = (string) ($payload['step'] ?? '');
             if (! $client || (int) $client->id !== (int) $run->client_id || ! $ticket || (int) $ticket->client_id !== (int) $client->id
-                || ! in_array($step, [self::STEP_ORGANIZATION, self::STEP_GLOBAL_PROFILE, self::STEP_CODE], true)) {
+                || ! in_array($step, [self::STEP_ORGANIZATION, self::STEP_GLOBAL_PROFILE, self::STEP_CODE, self::STEP_INVALIDATE], true)
+                || ($step === self::STEP_INVALIDATE && ($payload['staged_by_user_id'] ?? null) === null)) {
                 $run->releaseClaim();
 
                 return new TechnicianApprovalResult('gate_declined');
@@ -663,15 +758,16 @@ class StaffControlDOnboardingToolExecutor
             // The step the client needs NOW must be the step the approver read, and for
             // the global-profile step the org and profile PKs on the card must still be
             // the live mapping and setting.
-            $derived = $this->nextStep($client);
-            $pinDrift = $step === self::STEP_GLOBAL_PROFILE && ($derived['step'] ?? null) === $step
-                && (($payload['org_pk'] ?? null) !== ($derived['org_pk'] ?? null) || ($payload['profile_pk'] ?? null) !== ($derived['profile_pk'] ?? null));
+            $derived = $step === self::STEP_INVALIDATE ? $this->invalidateStep($client) : $this->nextStep($client);
+            $pinDrift = in_array($step, [self::STEP_GLOBAL_PROFILE, self::STEP_INVALIDATE], true) && ($derived['step'] ?? null) === $step
+                && (($payload['org_pk'] ?? null) !== ($derived['org_pk'] ?? null) || ($payload['profile_pk'] ?? null) !== ($derived['profile_pk'] ?? null)
+                    || ($payload['code_pk'] ?? null) !== ($derived['code_pk'] ?? null));
             if (($derived['step'] ?? null) !== $step || $pinDrift) {
                 // A refusal that says 'nothing was staged' at staging (unreadable, owned,
                 // already onboarded) carries a reason without that clause: this proposal is
                 // still staged.
                 $why = $derived['reason'] ?? $derived['error'] ?? ($pinDrift
-                    ? "the client's Control D organization or the configured global profile no longer matches the values on this card"
+                    ? ($step === self::STEP_INVALIDATE ? "the client's Control D organization or stored code no longer matches the values on this card" : "the client's Control D organization or the configured global profile no longer matches the values on this card")
                     : "the client now needs the '".($derived['step'] ?? 'none')."' step, not '{$step}'");
                 $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $contentHash, "{$targetKey}: approval refused — {$why}", $approverLabel, $run->id, $approverId);
                 $run->releaseClaim();
@@ -693,6 +789,39 @@ class StaffControlDOnboardingToolExecutor
                 return new TechnicianApprovalResult('gate_declined', message: "The client's Control D state changed since this was staged ({$why}). Deny this proposal and stage again so the current step is read and approved on its own card. Nothing was created.");
             }
 
+            if ($step === self::STEP_CODE) {
+                // Item E: what was approved is what runs. A card without pins (staged before
+                // this check), whose pins differ from a fresh derivation, or whose values can no
+                // longer be derived (codePins() threw) refuses, each with its own text, with nothing
+                // changed at Control D (only the step-ordering read above was made); the pinned
+                // values are what stageCode() executes.
+                $pinned = $payload['code_pins'] ?? null;
+                $why = null;
+                if (! ControlDOnboardingStaged::wellFormedCodePins($pinned)) {
+                    $why = 'legacy';
+                } else {
+                    try {
+                        $why = ControlDOnboardingStaged::codePins($client) === $pinned ? null : 'drift';
+                    } catch (ControlDClientException) {
+                        $why = 'underivable';
+                    }
+                }
+                if ($why !== null) {
+                    $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $contentHash, "{$targetKey}: approval refused — ".match ($why) {
+                        'legacy' => 'the card carries no pinned code values',
+                        'underivable' => 'the code values could not be derived again from the current settings and asset count',
+                        default => 'the pinned code values differ from the current settings or asset count',
+                    }.'; nothing was changed at Control D.', $approverLabel, $run->id, $approverId);
+                    $run->releaseClaim();
+
+                    return new TechnicianApprovalResult('gate_declined', message: match ($why) {
+                        'legacy' => self::CODE_PINS_MISSING,
+                        'underivable' => self::CODE_PINS_UNDERIVABLE,
+                        default => 'The code values pinned on this card (device limit, expiry, analytics level, intercept mode or enforced profile) no longer match the current Control D settings or the client\'s asset count. Deny this proposal and stage again so the current values are shown and approved on a new card. Nothing was created and nothing was changed at Control D.',
+                    });
+                }
+            }
+
             $service = $this->onboarding();
             try {
                 if ($step === self::STEP_ORGANIZATION) {
@@ -703,8 +832,10 @@ class StaffControlDOnboardingToolExecutor
                     $intentId = $service->stageOrganization($approver, (int) $client->id, $inputs['name'], $inputs['contact_email'], self::REQUIRE_MFA, $inputs['stats_endpoint']);
                 } elseif ($step === self::STEP_GLOBAL_PROFILE) {
                     $intentId = $service->stageGlobalProfile($approver, (int) $client->id, (string) ($payload['org_pk'] ?? ''), (string) ($payload['profile_pk'] ?? ''));
+                } elseif ($step === self::STEP_INVALIDATE) {
+                    $intentId = $service->stageInvalidate($approver, (int) $client->id, (string) ($payload['org_pk'] ?? ''), (string) ($payload['code_pk'] ?? ''));
                 } else {
-                    $intentId = $service->stageCode($approver, (int) $client->id, self::CODE_ICON, null, null);
+                    $intentId = $service->stageCode($approver, (int) $client->id, self::CODE_ICON, null, null, $payload['code_pins']);
                 }
                 $service->execute($approver, $intentId);
             } catch (ControlDClientException $e) {
@@ -742,6 +873,7 @@ class StaffControlDOnboardingToolExecutor
                 $this->safeAudit($run->action_type, 'executed', $client->id, $ticket, $contentHash, "{$targetKey}: operator-approved Control D onboarding step '{$step}' executed; intent {$intent->id} bound".match ($step) {
                     self::STEP_ORGANIZATION => " to organization {$intent->org_pk}",
                     self::STEP_GLOBAL_PROFILE => "; global profile confirmed on organization {$intent->org_pk}",
+                    self::STEP_INVALIDATE => "; code record {$intent->vendor_pk} confirmed invalidated by read-back; code and PIN removed from the client record",
                     default => '; code stored encrypted on the client record',
                 }.'.', $approverLabel, $run->id, $approverId);
                 if (! $closed) {
@@ -751,6 +883,7 @@ class StaffControlDOnboardingToolExecutor
                 return new TechnicianApprovalResult('executed', message: match ($step) {
                     self::STEP_ORGANIZATION => "Control D organization created with the global profile and bound to the client (organization {$intent->org_pk}). Stage the verb again for the provisioning code.",
                     self::STEP_GLOBAL_PROFILE => "Control D global profile enforced on organization {$intent->org_pk} and confirmed by read-back. Stage the verb again for the provisioning code.",
+                    self::STEP_INVALIDATE => 'Control D provisioning code invalidated and confirmed by read-back; the code and deactivation PIN were removed from the client record. '.self::INVALIDATE_EFFECT.' Cutting a new code is a separate onboarding proposal.',
                     default => 'Control D provisioning code cut and stored encrypted on the client record. Nothing else remains for this client in this leg.',
                 });
             }
@@ -776,7 +909,11 @@ class StaffControlDOnboardingToolExecutor
             // reconciliation; one whose row is gone holds none, and the text says so.
             $closed = $this->closeRunOrRecordLostFence($run, $client->id, $ticket, $contentHash, $targetKey, $approverLabel, $approverId);
             $fault = "HARD FAULT: the Control D '{$step}' write for client #{$client->id} ended {$state}".($intent !== null ? " (intent {$intent->id}, phase {$intent->phase}".($intent->vendor_pk !== null ? ($step === self::STEP_GLOBAL_PROFILE ? ", org PK {$intent->vendor_pk}" : ", vendor PK {$intent->vendor_pk}") : '').')' : '')
-                .($step === self::STEP_GLOBAL_PROFILE ? '. The vendor PUT may have committed.' : '. The vendor POST may have committed.').' Do NOT re-approve or re-stage: reconcile upstream and local state by hand; '.($intent !== null
+                .match ($step) {
+                    self::STEP_GLOBAL_PROFILE => '. The vendor PUT may have committed.',
+                    self::STEP_INVALIDATE => '. The invalidate request may or may not have taken effect; the code and PIN were kept on the client record.',
+                    default => '. The vendor POST may have committed.',
+                }.' Do NOT re-approve or re-stage: reconcile upstream and local state by hand; '.($intent !== null
                     ? 'the intent keeps this client\'s onboarding lock until then.'
                     : "intent {$intentId} could not be found afterwards, so it holds no onboarding lock and does not block a new proposal for this client; do not stage one until then.")
                 .($closed ? '' : ' '.self::NOT_CLOSED);
