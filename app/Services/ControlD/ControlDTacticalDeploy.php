@@ -68,7 +68,8 @@ class ControlDTacticalDeploy
 
     /**
      * Run the deploy step for $client under $pins (already re-derived and compared by the
-     * caller). Returns status only, never the code:
+     * caller). The Tactical field and script ids are the pinned ones: when either setting no longer
+     * equals its pin, the step refuses before any Tactical request. Returns status only, never the code:
      * ['outcome' => started|partial|failed|refused|uncertain, 'reason' => text,
      *  'field' => written|equal|untouched|unknown, 'tactical_client_id' => ?int,
      *  'agents' => [agent_id => started|refused|failed]].
@@ -82,6 +83,9 @@ class ControlDTacticalDeploy
         $scriptId = ControlDConfig::tacticalDeployScriptId();
         if ($fieldId === null || $scriptId === null) {
             return ['reason' => 'the Tactical client custom field ID or the deploy script ID is not set'] + $result;
+        }
+        if (($pins['field_id'] ?? null) !== $fieldId || ($pins['script_id'] ?? null) !== $scriptId) {
+            return ['reason' => 'the Tactical client custom field ID or the deploy script ID differs from the one pinned on the card'] + $result;
         }
         $name = (string) ($pins['tactical_client'] ?? '');
         $scope = $pins['scope'] ?? null;
@@ -232,7 +236,7 @@ class ControlDTacticalDeploy
      * staging and again at approval; approval refuses when the two differ.
      * $requested is 'all' or a list of PSA asset ids.
      *
-     * @return array{scope?: string, tactical_client?: string, assets?: list<array{0: int, 1: string}>, error?: string}
+     * @return array{scope?: string, tactical_client?: string, assets?: list<array{0: int, 1: string}>, field_id?: int, script_id?: int, error?: string}
      */
     public static function pins(Client $client, mixed $requested): array
     {
@@ -251,7 +255,7 @@ class ControlDTacticalDeploy
             return ['error' => 'The deploy step needs this client mapped to a Tactical RMM client, and it is not.'];
         }
         if ($requested === self::SCOPE_ALL) {
-            return ['scope' => self::SCOPE_ALL, 'tactical_client' => $name, 'assets' => []];
+            return ['scope' => self::SCOPE_ALL, 'tactical_client' => $name, 'assets' => [], 'field_id' => ControlDConfig::tacticalClientOrgFieldId(), 'script_id' => ControlDConfig::tacticalDeployScriptId()];
         }
         if (! is_array($requested) || $requested === [] || ! array_is_list($requested) || count($requested) > self::MAX_ASSETS) {
             return ['error' => 'deploy must be "all" or a list of 1 to '.self::MAX_ASSETS.' asset ids of this client.'];
@@ -274,7 +278,7 @@ class ControlDTacticalDeploy
             $assets[] = [$id, $agent];
         }
 
-        return ['scope' => self::SCOPE_SELECTED, 'tactical_client' => $name, 'assets' => $assets];
+        return ['scope' => self::SCOPE_SELECTED, 'tactical_client' => $name, 'assets' => $assets, 'field_id' => ControlDConfig::tacticalClientOrgFieldId(), 'script_id' => ControlDConfig::tacticalDeployScriptId()];
     }
 
     /** The one Tactical agent id linked to this client's live asset $assetId, or null. Local only. */

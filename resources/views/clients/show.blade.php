@@ -1012,7 +1012,7 @@
                             ->where('state', 'staged')->where('phase', 'preflight')->whereNull('vendor_pk')->get(['id', 'operation', 'created_at']);
                         // P7A74iGD (b): the most recent approved onboarding plan run; shown below only when it did not complete.
                         $cdLastPlan = \App\Models\TechnicianRun::where('client_id', $client->id)->where('action_type', \App\Services\Mcp\StaffControlDOnboardingToolExecutor::STAGED_TOOL)
-                            ->whereNotNull('proposed_meta->plan_outcome')->latest('updated_at')->latest('id')->first(['id', 'proposed_meta', 'updated_at']);
+                            ->whereNotNull('proposed_meta->plan_outcome')->latest('updated_at')->latest('id')->first(['id', 'state', 'proposed_meta', 'updated_at']);
                         $cdLastOutcome = $cdLastPlan?->proposed_meta['plan_outcome'] ?? null;
                     @endphp
                     <div class="row g-3 mb-3" id="controld-onboarding">
@@ -1039,7 +1039,11 @@
                                     @endif
                                     @if(is_array($cdLastOutcome) && ($cdLastOutcome['completed'] ?? true) === false)
                                         <div class="small border border-danger rounded p-2 mb-2" data-testid="controld-plan-incomplete">
-                                            <i class="bi bi-exclamation-octagon me-1"></i>The last onboarding run (#{{ $cdLastPlan->id }}) did not complete: the '{{ $cdLastOutcome['failed_step'] ?? 'unknown' }}' step ended {{ $cdLastOutcome['failed_state'] ?? 'unknown' }}. Its run state reads done because the run is closed, not because every step succeeded.
+                                            <i class="bi bi-exclamation-octagon me-1"></i>The last onboarding run (#{{ $cdLastPlan->id }}) did not complete: the '{{ $cdLastOutcome['failed_step'] ?? 'unknown' }}' step ended {{ $cdLastOutcome['failed_state'] ?? 'unknown' }}. @if($cdLastPlan->state === \App\Enums\TechnicianRunState::Done)
+                                                Its run state reads done because the run is closed, not because every step succeeded.
+                                            @else
+                                                Its run state reads {{ $cdLastPlan->state?->value ?? 'unknown' }}, not done: the run was not closed after these steps ran; check the run before acting on it.
+                                            @endif
                                         </div>
                                     @endif
                                     @if($cdRejected !== null && $cdRejected->reason_detail !== null)

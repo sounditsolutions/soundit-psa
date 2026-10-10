@@ -1561,9 +1561,12 @@ for a mapped organization with no global profile), `code`, and, only when a depl
 chosen at staging, `deploy`. An organization created by the plan already carries the
 configured global profile, so it never needs the `global-profile` step. A client that is
 already onboarded (mapped, code stored) may stage a deploy-only plan. Everything the plan
-will run is pinned in the sealed proposal: the steps, the global-profile step's organization
-and profile PKs, the code values (item E above), the deploy scope, and for a selected deploy
-each PSA asset's Tactical agent id. Approval derives the plan again from the current state
+will run is pinned in the sealed proposal: the steps, the organization step's inputs (client
+name, contact email, analytics region and configured global profile, which that step then
+sends), the global-profile step's organization and profile PKs, the code values (item E
+above), the deploy scope with the Tactical client custom field ID and deploy script ID (the
+deploy step refuses, with no Tactical request, if either setting no longer equals its pin),
+and for a selected deploy each PSA asset's Tactical agent id. Approval derives the plan again from the current state
 and refuses, with nothing written at Control D or in Tactical, if any of it differs (a step
 already done, a changed setting or pinned value, a changed asset-to-agent link): deny and
 stage again. Steps then run in order through the existing B3 intents, one intent per Control D
@@ -1577,7 +1580,10 @@ or not every step succeeded (no new run state is added here; a proper failed sta
 separate ticket), so `done` alone does not mean success. When a step did not succeed (stopped
 on an error, or a deploy that was not fully started), the approval result (on the cockpit's
 error channel), the plan summary audit row and the client page's Control D card each say
-"the onboarding run did not complete" and name the failed step and how it ended. A plan
+"the onboarding run did not complete" and name the failed step and how it ended. The outcome is
+recorded before the run is closed; if closing then fails, or this request no longer holds the
+run, the result says the run was not closed (and does not say it reads done), and the card
+shows the run's actual state. A plan
 refused before anything was written goes back to awaiting approval.
 
 **The deploy step** runs ONLY when the plan's code step bound in the same approval, or the

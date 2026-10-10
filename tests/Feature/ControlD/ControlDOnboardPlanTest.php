@@ -27,6 +27,7 @@ use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Foundation\Testing\RefreshDatabaseState;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Psr\Http\Message\RequestInterface;
@@ -436,6 +437,21 @@ class ControlDOnboardPlanTest extends TestCase
             'the deploy script setting cleared' => [function (array $f): void {
                 Setting::setValue(ControlDConfig::TACTICAL_DEPLOY_SCRIPT_SETTING, '');
             }, 'Tactical deploy script ID'],
+            'the deploy script setting changed' => [function (array $f): void {
+                Setting::setValue(ControlDConfig::TACTICAL_DEPLOY_SCRIPT_SETTING, (string) (self::SCRIPT + 1));
+            }, 'Tactical client custom field ID or deploy script ID differs'],
+            'the client custom field setting changed' => [function (array $f): void {
+                Setting::setValue('controld_tactical_client_field_id', (string) (self::FIELD + 1));
+            }, 'Tactical client custom field ID or deploy script ID differs'],
+            'the client contact email changed' => [function (array $f): void {
+                $f['client']->forceFill(['email' => 'changed@example.invalid'])->save();
+            }, "the client's name or contact email, or the configured analytics region or global profile, differs"],
+            'the analytics region changed' => [function (array $f): void {
+                Setting::setValue('controld_stats_endpoint', 'other-region');
+            }, "the client's name or contact email, or the configured analytics region or global profile, differs"],
+            'the configured global profile changed' => [function (array $f): void {
+                Setting::setValue('controld_default_profile_id', 'testprofile02');
+            }, "the client's name or contact email, or the configured analytics region or global profile, differs"],
         ];
     }
 
@@ -773,5 +789,77 @@ class ControlDOnboardPlanTest extends TestCase
         $this->assertSame(1, ControlDOnboardingIntent::where('operation', 'organization')->count(), 'the organization was created once');
         $this->assertSame(0, collect($this->cd)->filter(fn ($h) => str_contains($h['request']->getUri()->getPath(), 'suborg'))->count());
         $this->assertSame(self::CODE, $f['client']->fresh()->controld_provisioning_code);
+    }
+
+    /** The organization inputs and the Tactical field and script ids are pinned and shown on the card; the deploy refuses ids that differ from its pins. */
+    public function test_the_organization_inputs_and_the_tactical_ids_are_pinned_on_the_card(): void
+    {
+        $f = $this->fixture();
+        $staged = $this->stage($f['client'], $f['ticket'], 'all');
+        $payload = $this->payload($staged['run_id']);
+        $this->assertSame(['name' => 'Synthetic Organization', 'contact_email' => 'synthetic@example.invalid', 'stats_endpoint' => 'synthetic-region', 'profile_id' => 'testprofile01'], $payload['org_inputs']);
+        $this->assertSame([self::FIELD, self::SCRIPT], [$payload['deploy']['field_id'], $payload['deploy']['script_id']]);
+        $c = TechnicianRun::findOrFail($staged['run_id'])->proposed_content;
+        $this->assertStringContainsString('analytics region synthetic-region, with the configured global profile testprofile01, and binds', $c);
+        $this->assertStringContainsString('Reads custom field #'.self::FIELD.' of Tactical client', $c);
+        $this->assertStringContainsString('run the configured deploy script (#'.self::SCRIPT.'), with no arguments from the PSA', $c);
+
+        // The deploy service runs only the pinned ids: a setting that differs from its pin refuses before any Tactical request.
+        $g = $this->onboarded();
+        $pins = ['scope' => 'all', 'tactical_client' => self::TC_NAME, 'assets' => [], 'field_id' => self::FIELD, 'script_id' => self::SCRIPT];
+        foreach ([['script_id' => self::SCRIPT + 1], ['field_id' => self::FIELD + 1], ['field_id' => null]] as $other) {
+            $this->tac = [];
+            $out = (new \App\Services\ControlD\ControlDTacticalDeploy(app(TacticalClient::class)))->execute($g['client'], array_merge($pins, $other));
+            $this->assertSame(['refused', 'the Tactical client custom field ID or the deploy script ID differs from the one pinned on the card'], [$out['outcome'], $out['reason']]);
+            $this->assertSame([], $this->tacticalRequests());
+        }
+        $this->tac = [];
+        $out = (new \App\Services\ControlD\ControlDTacticalDeploy(app(TacticalClient::class)))->execute($g['client'], $pins);
+        $this->assertSame(\App\Services\ControlD\ControlDTacticalDeploy::STARTED, $out['outcome'], 'positive control: the pinned ids run');
+    }
+
+    /**
+     * A plan close that throws, or that loses its fence, never says the run is closed or reads
+     * done; the outcome is recorded before the close, so the client card still shows the run that
+     * did not complete, with its actual state. SQLite triggers stand in for the two failed closes.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function failedCloses(): array
+    {
+        return [
+            'the close throws' => ["RAISE(ABORT, 'synthetic close failure')", 'Closing the run failed afterwards, so it stays claimed'],
+            'the close loses its fence' => ['RAISE(IGNORE)', StaffControlDOnboardingToolExecutor::NOT_CLOSED],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('failedCloses')]
+    public function test_a_plan_close_that_fails_or_loses_its_fence_says_so_and_the_card_still_shows_the_outcome(string $raise, string $says): void
+    {
+        $f = $this->onboarded();
+        $this->putFails = true;
+        DB::statement("CREATE TRIGGER synthetic_plan_close BEFORE UPDATE OF state ON technician_runs WHEN NEW.state = 'done' BEGIN SELECT {$raise}; END");
+        try {
+            $staged = $this->deployOnly($f, 'all');
+        } finally {
+            DB::statement('DROP TRIGGER synthetic_plan_close');
+        }
+        $message = (string) $staged['result']->message;
+        $this->assertSame('executed_with_fault', $staged['result']->status);
+        $this->assertStringStartsWith("The onboarding run did not complete: the 'deploy' step ended uncertain.", $message);
+        $this->assertStringContainsString($says, $message);
+        $this->assertStringNotContainsString('The run is closed', $message);
+        $this->assertStringNotContainsString('reads done', $message);
+        $run = TechnicianRun::findOrFail($staged['run_id']);
+        $this->assertSame(TechnicianRunState::Executing, $run->state, 'not closed, and never reopened');
+        $this->assertSame(['completed' => false, 'failed_step' => 'deploy', 'failed_state' => 'uncertain'], array_slice($run->proposed_meta['plan_outcome'], 0, 3));
+        $summary = TechnicianActionLog::where('run_id', $staged['run_id'])->where('summary', 'like', '%plan summary%')->sole()->summary;
+        $this->assertStringNotContainsString('closed (state done)', $summary);
+        $admin = User::factory()->admin()->create(['is_active' => true]);
+        $this->actingAs($admin)->get(route('clients.show', $f['client']))->assertOk()
+            ->assertSee('data-testid="controld-plan-incomplete"', false)
+            ->assertSee("did not complete: the 'deploy' step ended uncertain.", false)
+            ->assertSee('Its run state reads executing, not done', false)
+            ->assertDontSee('Its run state reads done because', false);
     }
 }

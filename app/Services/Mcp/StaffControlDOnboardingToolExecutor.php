@@ -319,8 +319,9 @@ class StaffControlDOnboardingToolExecutor
      * then code, or code; an organization created by onboarding already carries the configured
      * global profile, which its read-back confirms), then `deploy` when $deployRequest is given
      * ('all' or a list of PSA asset ids). An onboarded client gets a deploy-only plan. Pins: the
+     * organization step's inputs (name, contact email, analytics region, global profile), the
      * global-profile step's org and profile PKs, the code step's derived values (item E) and the
-     * deploy scope with each selected asset's Tactical agent id. Called at staging and again at
+     * deploy scope with the Tactical field and script ids and each selected asset's Tactical agent id. Called at staging and again at
      * approval, which refuses unless the two are identical. Read-only (one Control D GET at most).
      *
      * @return array<string, mixed>
@@ -341,6 +342,13 @@ class StaffControlDOnboardingToolExecutor
             default => [],
         };
         $plan = ['step' => self::STEP_PLAN, 'plan' => $steps] + array_intersect_key($first, ['org_pk' => true, 'profile_pk' => true]);
+        if (in_array(self::STEP_ORGANIZATION, $steps, true)) {
+            // What the card shows and the organization step sends. An input error leaves it unset: staging refuses on that error.
+            $inputs = $this->organizationInputs(Client::find($client->id) ?? $client);
+            if (! isset($inputs['error'])) {
+                $plan['org_inputs'] = $inputs + ['profile_id' => ControlDConfig::defaultProfileId()];
+            }
+        }
         if (in_array(self::STEP_CODE, $steps, true)) {
             try {
                 $plan['code_pins'] = ControlDOnboardingStaged::codePins($client);
@@ -650,7 +658,7 @@ class StaffControlDOnboardingToolExecutor
     }
 
     /** The payload keys a plan (or invalidate) proposal pins; approval compares each with a fresh derivation. */
-    private const PLAN_PIN_KEYS = ['plan', 'org_pk', 'profile_pk', 'code_pk', 'code_pins', 'deploy', 'deploy_request'];
+    private const PLAN_PIN_KEYS = ['plan', 'org_pk', 'profile_pk', 'org_inputs', 'code_pk', 'code_pins', 'deploy', 'deploy_request'];
 
     /**
      * P7A74iGD (b), addition 3 (G-14): the one-approval plan card. Every step and what it writes
@@ -670,12 +678,12 @@ class StaffControlDOnboardingToolExecutor
         foreach ($steps as $i => $step) {
             $n = ($i + 1).'. ';
             $lines[] = match ($step) {
-                self::STEP_ORGANIZATION => $n.'Organization (writes at Control D): creates a sub-organization named after the client, contact email from the client record ('.$this->fence->neutralizeUntrusted($inputs['contact_email'] ?? '').'), two-factor required, analytics region '.($inputs['stats_endpoint'] ?? '').', with the configured global profile '.ControlDConfig::defaultProfileId().', and binds the returned organization id to the client.',
+                self::STEP_ORGANIZATION => $n.'Organization (writes at Control D): creates a sub-organization named after the client, contact email from the client record ('.$this->fence->neutralizeUntrusted((string) ($pins['org_inputs']['contact_email'] ?? '')).'), two-factor required, analytics region '.($pins['org_inputs']['stats_endpoint'] ?? '').', with the configured global profile '.($pins['org_inputs']['profile_id'] ?? '').', and binds the returned organization id to the client.',
                 self::STEP_GLOBAL_PROFILE => $n.'Global profile (writes at Control D): sets the configured global profile '.($pins['profile_pk'] ?? '')." on organization {$org}, which has none set (one update, then a read-back). If a different global profile is set when this runs, the step refuses and writes nothing. ".self::RACE_DISCLOSURE,
                 self::STEP_CODE => $n.'Provisioning code (writes at Control D): cuts one provisioning code under the client\'s organization with these pinned values: enforced profile '.($pins['code_pins']['profile_id'] ?? '')
                     .', expiry '.($pins['code_pins']['expiry_days'] ?? '').' days, device limit '.($pins['code_pins']['max'] ?? '').' (asset count '.$client->assets()->count().' + headroom '.ControlDConfig::codeDeviceLimitHeadroom().'), analytics level '.($pins['code_pins']['stats'] ?? '').', intercept mode '.($pins['code_pins']['intercept_mode'] ?? '').', icon '.self::CODE_ICON
                     .'. No deactivation PIN and no hostname prefix. The code is stored encrypted on the client record and is never shown here, in the audit log or in the result.',
-                self::STEP_DEPLOY => $n.'Deploy (writes in Tactical RMM): runs only if the provisioning code is bound (by this plan, or before it). Reads the custom field of Tactical client "'.$this->fence->neutralizeUntrusted((string) ($pins['deploy']['tactical_client'] ?? '')).'". If the field is empty, writes the client\'s provisioning code into it and reads it back; if it already holds that same code, it is left as it is; if it holds a different value, the deploy step refuses and writes nothing. Then it asks Tactical to run the configured deploy script, with no arguments from the PSA, on '
+                self::STEP_DEPLOY => $n.'Deploy (writes in Tactical RMM): runs only if the provisioning code is bound (by this plan, or before it). Reads custom field #'.($pins['deploy']['field_id'] ?? '').' of Tactical client "'.$this->fence->neutralizeUntrusted((string) ($pins['deploy']['tactical_client'] ?? '')).'". If the field is empty, writes the client\'s provisioning code into it and reads it back; if it already holds that same code, it is left as it is; if it holds a different value, the deploy step refuses and writes nothing. Then it asks Tactical to run the configured deploy script (#'.($pins['deploy']['script_id'] ?? '').'), with no arguments from the PSA, on '
                     .$this->fence->neutralizeUntrusted(ControlDTacticalDeploy::describe($pins['deploy'] ?? [])).'. A device is refused if Tactical does not list it under that client or its link to the PSA asset has changed. '.self::DEPLOY_STARTED_MEANS,
                 default => $n.$step,
             };
@@ -1012,9 +1020,10 @@ class StaffControlDOnboardingToolExecutor
         'plan' => 'the steps the client needs now differ from the steps on this card (a step may already be done)',
         'org_pk' => "the client's Control D organization or the configured global profile no longer matches the values on this card",
         'profile_pk' => "the client's Control D organization or the configured global profile no longer matches the values on this card",
+        'org_inputs' => "the client's name or contact email, or the configured analytics region or global profile, differs from the values on this card",
         'code_pk' => 'the stored code record differs from the one on this card',
         'code_pins' => 'the derived code values (device limit, expiry, analytics level, intercept mode or enforced profile) differ from the ones pinned on this card',
-        'deploy' => "the deploy scope, the Tactical client or a device's Tactical agent link differs from the one on this card",
+        'deploy' => "the deploy scope, the Tactical client, a device's Tactical agent link, or the configured Tactical client custom field ID or deploy script ID differs from the one on this card",
         'deploy_request' => 'the deploy scope differs from the one on this card',
     ];
 
@@ -1057,7 +1066,7 @@ class StaffControlDOnboardingToolExecutor
                 (bool) ($derived['different'] ?? false) => "This organization's global profile does not match the configured profile ({$why}). This proposal cannot be approved, and staging again is refused the same way, while this organization enforces a global profile other than the configured one. Nothing was created.",
                 (bool) ($derived['underivable'] ?? false) => self::CODE_PINS_UNDERIVABLE,
                 $drift === 'code_pins' => 'The code values pinned on this card (device limit, expiry, analytics level, intercept mode or enforced profile) no longer match the current Control D settings or the client\'s asset count. Deny this proposal and stage again so the current values are shown and approved on a new card. Nothing was created and nothing was changed at Control D.',
-                in_array($drift, ['org_pk', 'profile_pk', 'deploy', 'deploy_request'], true) => "The values pinned on this card are out of date ({$why}). Deny this proposal and stage again so the current values are read and approved on a new card. Nothing was created.",
+                in_array($drift, ['org_pk', 'profile_pk', 'org_inputs', 'deploy', 'deploy_request'], true) => "The values pinned on this card are out of date ({$why}). Deny this proposal and stage again so the current values are read and approved on a new card. Nothing was created.",
                 default => "The client's Control D state changed since this was staged ({$why}). Deny this proposal and stage again so the current plan is read and approved on its own card. Nothing was created.",
             };
 
@@ -1141,9 +1150,22 @@ class StaffControlDOnboardingToolExecutor
                 : 'The onboarding plan was refused before anything was written. '.implode(' ', $lines));
         }
         // Status only (no secret): the client page's Control D card shows a run that did not complete.
-        // The fenced close writes it with the state (advanceTo() carries the run's unsaved changes).
+        // Recorded on the stored row first (that key only, never the state), so the card shows it even
+        // when the close below throws or loses its fence; the fenced close also carries it.
+        $outcome = ['completed' => $ok, 'failed_step' => $failed[0] ?? null, 'failed_state' => $failed[1] ?? null, 'steps' => $outcomes];
+        try {
+            $run->getConnection()->transaction(function () use ($run, $outcome): void {
+                $stored = TechnicianRun::query()->whereKey($run->id)->lockForUpdate()->first(['id', 'proposed_meta']);
+                if ($stored !== null) {
+                    $stored->proposed_meta = array_merge((array) ($stored->proposed_meta ?? []), ['plan_outcome' => $outcome]);
+                    $stored->save();
+                }
+            });
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('[StaffControlDOnboardingToolExecutor] Recording the onboarding plan outcome failed', ['run_id' => $run->id, 'exception' => $e::class]);
+        }
         $meta = $run->proposed_meta;
-        $meta['plan_outcome'] = ['completed' => $ok, 'failed_step' => $failed[0] ?? null, 'failed_state' => $failed[1] ?? null, 'steps' => $outcomes];
+        $meta['plan_outcome'] = $outcome;
         $run->proposed_meta = $meta;
         $closeFailed = false;
         try {
@@ -1158,7 +1180,7 @@ class StaffControlDOnboardingToolExecutor
         }
         $this->safeAudit($run->action_type, $ok ? 'executed' : 'error', $client->id, $ticket, $hash, "{$key}: plan summary: {$summary}; ".($ok ? 'run completed' : "run did not complete; failed step: {$failed[0]} ({$failed[1]})").'; run '.($closed ? 'closed (state done)' : ($closeFailed ? 'close failed; left claimed, not reopened' : 'not closed by this request')).'.', $approverLabel, $run->id, $approverId);
         $text = ($ok ? 'Control D onboarding plan completed. ' : $incomplete.' ').implode(' ', $lines)
-            .($ok ? '' : ' The run is closed and is not re-approved; its state reads done, which here does not mean every step succeeded. Steps already bound are not redone when the plan is staged again; a step that ended uncertain must be reconciled first.');
+            .($ok ? '' : ($closed ? ' The run is closed and is not re-approved; its state reads done, which here does not mean every step succeeded.' : '').' Steps already bound are not redone when the plan is staged again; a step that ended uncertain must be reconciled first.');
         if ($closeFailed) {
             return new TechnicianApprovalResult('executed_with_fault', message: $text.' Closing the run failed afterwards, so it stays claimed and was not reopened. Do NOT re-approve it; check the run.');
         }
@@ -1182,9 +1204,11 @@ class StaffControlDOnboardingToolExecutor
         $refusal = null;
         try {
             if ($step === self::STEP_ORGANIZATION) {
-                $inputs = $this->organizationInputs(Client::find($client->id) ?? $client);
-                if (isset($inputs['error'])) {
-                    throw new ControlDClientException($inputs['error']);
+                // The inputs pinned on the card (compared with a fresh derivation at approval); never re-read here.
+                $inputs = $payload['org_inputs'] ?? null;
+                if (! is_array($inputs) || ! is_string($inputs['name'] ?? null) || ! is_string($inputs['contact_email'] ?? null) || ! is_string($inputs['stats_endpoint'] ?? null)
+                    || ($inputs['profile_id'] ?? null) !== ControlDConfig::defaultProfileId()) {
+                    throw new ControlDClientException('The organization values pinned on this card are missing, or the configured global profile changed after approval began; nothing was written. Deny this proposal and stage again.');
                 }
                 $intentId = $service->stageOrganization($approver, (int) $client->id, $inputs['name'], $inputs['contact_email'], self::REQUIRE_MFA, $inputs['stats_endpoint']);
             } elseif ($step === self::STEP_GLOBAL_PROFILE) {
