@@ -29,8 +29,8 @@ use Tests\TestCase;
 /**
  * P7A74iGD (a), item E (Jeeves 2026-10-09 21:45 PT): the code step pins its derived values
  * (max, expiry days, analytics level, intercept mode, enforced profile) on the sealed staged
- * payload; approval re-derives them and refuses (re-stage, nothing written, no vendor call)
- * on any drift; a card staged without pins refuses the same way; the values that execute are
+ * payload; approval re-derives them and refuses (re-stage, nothing written, nothing changed
+ * at Control D: only the step-ordering GET) on any drift; a card staged without pins refuses the same way; the values that execute are
  * the pinned ones. Guzzle MockHandler for every vendor exchange; Http::preventStrayRequests().
  */
 class ControlDCodePinsTest extends TestCase
@@ -150,7 +150,8 @@ class ControlDCodePinsTest extends TestCase
             $this->assertSame('/organizations/sub_organizations', $exchange['request']->getUri()->getPath(), 'no code-step vendor call');
         }
         $this->assertStringContainsString('stage again', $message);
-        $this->assertStringContainsString('Nothing was created and no Control D call was made', $message);
+        $this->assertStringContainsString('Nothing was created and nothing was changed at Control D.', $message);
+        $this->assertStringNotContainsString('no Control D call', $message, 'G-14: approval already made the step-ordering GET');
     }
 
     public function test_staging_pins_the_five_derived_values_and_the_card_shows_them(): void
@@ -160,7 +161,8 @@ class ControlDCodePinsTest extends TestCase
 
         $this->assertSame(['max' => 5, 'expiry_days' => 7, 'stats' => 0, 'intercept_mode' => 'standard', 'profile_id' => 'testprofile01'], $this->payload($run)['code_pins']);
         $this->assertStringContainsString('enforced profile testprofile01, expiry 7 days, device limit = asset count (3) + headroom 2 = 5, analytics level 0, intercept mode standard', $run->proposed_content);
-        $this->assertStringContainsString('These values are pinned on this card: if a setting or the client\'s asset count changes before approval, approval refuses and the proposal must be staged again.', $run->proposed_content);
+        $this->assertStringContainsString('These five derived values are pinned on this card. Approval derives them again from the current settings and asset count; if any of them differs, approval refuses and the proposal must be staged again. A settings or asset-count change that leaves all five unchanged does not refuse.', $run->proposed_content);
+        $this->assertStringNotContainsString('if a setting or the client\'s asset count changes before approval, approval refuses', $run->proposed_content);
         $this->assertArrayNotHasKey('code_pins', $run->proposed_meta, 'pins live only in the sealed payload');
     }
 
@@ -227,7 +229,24 @@ class ControlDCodePinsTest extends TestCase
         $this->assertRefusedWithNothingWritten($run, $fixture, $message);
         $this->assertStringContainsString('no longer match the current Control D settings or the client\'s asset count', $message);
         $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'blocked')
-            ->where('summary', 'like', '%the pinned code values differ from the current settings or asset count%')->count());
+            ->where('summary', 'like', '%the pinned code values differ from the current settings or asset count; nothing was changed at Control D.%')->count());
+        $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%no Control D call%')->count(), 'G-14: the drift audit row does not claim no call');
+    }
+
+    /** G-14 (contract-s1:6): only the five pinned values are checked; a change that leaves them all equal does not refuse. */
+    public function test_a_change_that_leaves_every_pin_equal_does_not_refuse(): void
+    {
+        $fixture = $this->fixture(3);
+        $run = $this->stage($fixture);
+        // asset count 3 -> 2 and headroom 2 -> 3: max stays 5, so no pin moves.
+        Asset::where('client_id', $fixture['client']->id)->first()->delete();
+        Setting::setValue('controld_code_device_limit_headroom', '3');
+        $this->bindVendor($this->codeExchange(5, 7, 0, 'standard', 'testprofile01'));
+
+        $this->approve($run);
+
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertSame('bound', ControlDOnboardingIntent::sole()->state);
     }
 
     public function test_a_legacy_card_without_pins_refuses_with_the_restage_wording(): void
@@ -246,6 +265,8 @@ class ControlDCodePinsTest extends TestCase
         $this->assertRefusedWithNothingWritten($run, $fixture, $message);
         $this->assertSame(StaffControlDOnboardingToolExecutor::CODE_PINS_MISSING, $message);
         $this->assertStringContainsString('staged before the code values were pinned', $message);
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'blocked')
+            ->where('summary', 'like', '%the card carries no pinned code values; nothing was changed at Control D.%')->count());
     }
 
     public function test_malformed_pins_are_treated_as_legacy_and_refused(): void

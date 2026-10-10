@@ -127,7 +127,7 @@ class StaffControlDOnboardingToolExecutor
     public const INVALIDATE_EFFECT = 'After it is invalidated, the code stops working for new enrollments: no new device can enroll with it. Devices already enrolled with it are NOT removed and keep their Control D enrollment.';
 
     /** Approval refusal for a code proposal staged without pinned values (staged before this check existed). */
-    public const CODE_PINS_MISSING = 'This provisioning code proposal was staged before the code values were pinned on the card, so what would run cannot be shown to match what was approved. Deny this proposal and stage again; the new card pins the values. Nothing was created and no Control D call was made.';
+    public const CODE_PINS_MISSING = 'This provisioning code proposal was staged before the code values were pinned on the card, so what would run cannot be shown to match what was approved. Deny this proposal and stage again; the new card pins the values. Nothing was created and nothing was changed at Control D.';
 
     public function __construct(
         private readonly ActionRedactor $redactor,
@@ -625,7 +625,7 @@ class StaffControlDOnboardingToolExecutor
             .'Cuts one provisioning code under that organization with the panel defaults: enforced profile '.($codePins['profile_id'] ?? '')
             .', expiry '.($codePins['expiry_days'] ?? '').' days, device limit = asset count ('.$client->assets()->count().') + headroom '.ControlDConfig::codeDeviceLimitHeadroom().' = '.($codePins['max'] ?? '')
             .', analytics level '.($codePins['stats'] ?? '').', intercept mode '.($codePins['intercept_mode'] ?? '').', icon '.self::CODE_ICON.".\n"
-            .'These values are pinned on this card: if a setting or the client\'s asset count changes before approval, approval refuses and the proposal must be staged again. '
+            .'These five derived values are pinned on this card. Approval derives them again from the current settings and asset count; if any of them differs, approval refuses and the proposal must be staged again. A settings or asset-count change that leaves all five unchanged does not refuse. '
             .'No deactivation PIN and no hostname prefix (deferred). The code is stored encrypted on the client record and is never shown here, in the audit log or in the tool result.';
     }
 
@@ -788,8 +788,9 @@ class StaffControlDOnboardingToolExecutor
 
             if ($step === self::STEP_CODE) {
                 // Item E: what was approved is what runs. A card without pins (staged before
-                // this check) or whose pins differ from a fresh derivation refuses with no
-                // write and no vendor call; the pinned values are what stageCode() executes.
+                // this check) or whose pins differ from a fresh derivation refuses with nothing
+                // changed at Control D (only the step-ordering read above was made); the pinned
+                // values are what stageCode() executes.
                 $pinned = $payload['code_pins'] ?? null;
                 $why = null;
                 if (! ControlDOnboardingStaged::wellFormedCodePins($pinned)) {
@@ -802,11 +803,11 @@ class StaffControlDOnboardingToolExecutor
                     }
                 }
                 if ($why !== null) {
-                    $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $contentHash, "{$targetKey}: approval refused — ".($why === 'legacy' ? 'the card carries no pinned code values' : 'the pinned code values differ from the current settings or asset count').'; no Control D call.', $approverLabel, $run->id, $approverId);
+                    $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $contentHash, "{$targetKey}: approval refused — ".($why === 'legacy' ? 'the card carries no pinned code values' : 'the pinned code values differ from the current settings or asset count').'; nothing was changed at Control D.', $approverLabel, $run->id, $approverId);
                     $run->releaseClaim();
 
                     return new TechnicianApprovalResult('gate_declined', message: $why === 'legacy' ? self::CODE_PINS_MISSING
-                        : 'The code values pinned on this card (device limit, expiry, analytics level, intercept mode or enforced profile) no longer match the current Control D settings or the client\'s asset count. Deny this proposal and stage again so the current values are shown and approved on a new card. Nothing was created and no Control D call was made.');
+                        : 'The code values pinned on this card (device limit, expiry, analytics level, intercept mode or enforced profile) no longer match the current Control D settings or the client\'s asset count. Deny this proposal and stage again so the current values are shown and approved on a new card. Nothing was created and nothing was changed at Control D.');
                 }
             }
 

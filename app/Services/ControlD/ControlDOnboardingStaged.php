@@ -286,15 +286,25 @@ class ControlDOnboardingStaged
 
     public const RECONCILED_REFUSED = 'refused';
 
-    /** Fixed refusal texts (status only, never vendor text). */
+    /** Fixed refusal texts (status only, never vendor text). Each must be true on every path that emits it (G-14). */
     private const RECONCILE_REFUSALS = [
-        'ineligible' => 'Only an uncertain Control D intent of this client that still holds its onboarding lock can be reconciled (a posted one may still have its write in flight, so it is never reconciled here); nothing was changed.',
+        'ineligible' => 'Only an uncertain organization, global-profile or code intent of this client that still holds its onboarding lock can be reconciled here; nothing was changed. An uncertain invalidate intent, or a posted intent (its write may still be in flight, or the process stopped after it), is held for a by-hand ruling: there is no in-app way out for it yet.',
         'unavailable' => 'Control D is disabled or unconfigured, so nothing was read; nothing was changed.',
-        'read-failed' => 'Control D could not be read completely (a failed, unconfirmed or malformed response); nothing was changed and the intent keeps its lock.',
+        'read-failed' => 'Control D could not be read (a failed, unconfirmed or malformed response), or this intent\'s stored payload could not be read; nothing was changed and the intent keeps its lock.',
+        'setting-missing' => 'The configured global profile setting is missing or malformed, so the organization could not be compared; Control D was not read, nothing was changed and the intent keeps its lock.',
         'ambiguous' => 'Control D shows more than one candidate, or something besides what this intent would have created; nothing was changed and the intent keeps its lock.',
-        'mismatch' => 'Control D shows a record that does not match what this intent sent; nothing was changed and the intent keeps its lock.',
+        'mismatch' => 'Control D shows a record that differs on what reconcile compares for this step (organization: the name, the recorded PK and the currently configured global profile; global profile: the profile this intent sent; code: the fields this intent sent), or this intent lacks what that comparison needs; nothing was changed and the intent keeps its lock.',
+        'expired-or-used' => 'Control D lists this intent\'s code record, but it is expired or used (not an active code) at Control D; nothing was changed, the intent keeps its lock and is held for a by-hand ruling.',
         'cannot-reconstruct' => 'This code intent was recorded before the exact fields it sent were kept, so a match cannot be rebuilt exactly from a read; nothing was changed and the intent keeps its lock (cannot reconstruct; leave held).',
-        'changed' => 'The intent or the client changed while Control D was being read, or the local state no longer allows this outcome; nothing was changed.',
+        'not-saved' => 'The outcome could not be saved locally, so it was rolled back and nothing was changed by this reconcile. Possible causes: the intent, the client or your Admin rights changed while Control D was being read; the organization is already mapped to another client; or the client record or the audit row could not be written.',
+        'unlisted' => 'Reconcile refused this intent; nothing was changed.',
+    ];
+
+    /** The bound message names, per operation, exactly what was compared (G-14). */
+    private const RECONCILE_BOUND_MATCH = [
+        'organization' => 'Control D lists exactly one sub-organization with this intent\'s name (and its recorded PK, when one was recorded), carrying the currently configured global profile, so it was bound. The contact email, MFA and stats settings this intent sent were not compared.',
+        self::GLOBAL_PROFILE => 'Control D shows the organization\'s global profile equal to the profile this intent sent, so it was bound.',
+        'code' => 'Control D lists this intent\'s code record once, active, with the enforced profile, device limit, expiry, analytics level, intercept mode, icon, prefix and PIN this intent sent, so it was bound.',
     ];
 
     /**
@@ -302,26 +312,30 @@ class ControlDOnboardingStaged
      * $clientId that still holds the client's lock. A posted intent is refused: admit() sets
      * posted just before the write and finish() records the outcome after it, so a read could
      * race a write still in flight; it needs a ruling by hand. NO vendor write is made on any arm and
-     * nothing is retried. Per operation (reads only):
-     *  - organization: the parent's complete sub-organization list (ControlDSubOrganizations::rows()).
+     * nothing is retried. Every list below is the one a single GET returns, treated as the
+     * complete list: no paging or truncation marker is checked (none appears in the recorded
+     * fixtures). Per operation (reads only):
+     *  - organization: the parent's sub-organization list (ControlDSubOrganizations::rows()).
      *    With a recorded vendor PK: exactly one row with that PK, named as the payload, carrying
      *    the configured global profile, and no other row with the payload name = match; no row
      *    with the PK or the name = absent. Without one: exactly one row with the payload name (and
      *    the configured global profile) = match; none = absent; more than one = ambiguous.
      *  - global-profile: the org's row listed exactly once (ControlDSubOrganizations::row());
      *    parent_profile === the payload's profile_pk = match; unset = absent; any other = refuse.
-     *  - code: the org's complete provisioning list (ControlDProvisioning::provisions()). With a
+     *  - code: the org's provisioning list (ControlDProvisioning::provisions()). With a
      *    recorded vendor PK: exactly one row with it, active and equal to the fields this intent
      *    sent (ControlDProvisioning::confirmExisting(), the create() read-back checks) = match; no
-     *    row with it = absent. Without one: a complete EMPTY list = absent; any row = ambiguous.
+     *    row with it = absent; listed but expired or used = refused as such (held). Without one:
+     *    a well-formed EMPTY list = absent; any row = ambiguous.
      *    A failed, unconfirmed or malformed list always refuses: a lost code is worse than a held
      *    lock. An intent that did not keep its sent fields cannot be matched (refused, held).
      * Match: bind()'s own end state (applyBoundEndState()) in ONE transaction that locks the
      * intent and the client FOR UPDATE and re-checks state, lock, client and payload identity.
      * Absent: released, through the guarded-UPDATE pattern of releaseNeverAdmitted() with state
-     * uncertain. Anything else: refused, nothing changed. One TechnicianActionLog row
-     * per outcome (ids and status only), written in the same transaction as the change; a
-     * refusal writes its own row.
+     * uncertain. Anything else: refused, nothing changed. A bound or released outcome writes
+     * one TechnicianActionLog row (ids and status only) in the same transaction as the change;
+     * a refusal writes its own row, and a failure to write that refusal row is logged (ids and
+     * exception class), not retried (ticketed).
      *
      * @return array{outcome: string, message: string}
      */
@@ -362,7 +376,7 @@ class ControlDOnboardingStaged
             $client = Client::query()->lockForUpdate()->find($clientId);
             if ($locked === null || $client === null || $this->intentIdentity($locked) !== $snapshot
                 || $locked->state !== 'uncertain' || (int) $locked->active_client_id !== $clientId) {
-                throw new ControlDClientException('changed');
+                throw new ControlDClientException('not-saved');
             }
             $this->authorize(User::query()->lockForUpdate()->find($actorId));
             if ($verdict === 'match') {
@@ -372,21 +386,21 @@ class ControlDOnboardingStaged
                     ->where('active_client_id', $clientId)->where('state', 'uncertain')
                     ->update(['state' => self::RELEASED, 'active_client_id' => null, 'reason' => 'reconciled absent by admin #'.$actorId, 'updated_at' => now()]);
                 if ($released !== 1) {
-                    throw new ControlDClientException('changed');
+                    throw new ControlDClientException('not-saved');
                 }
             }
             $outcome = $verdict === 'match' ? self::RECONCILED_BOUND : self::RECONCILED_RELEASED;
-            $this->reconcileAudit($intentId, $clientId, $actorId, $operation, $outcome, 'executed', $verdict === 'match' ? 'vendor state matches the intent' : 'vendor shows nothing from the intent');
+            $this->reconcileAudit($intentId, $clientId, $actorId, $operation, $outcome, 'executed', $verdict === 'match' ? 'vendor state matches the compared fields' : 'vendor list shows nothing from the intent');
             $connection->commit();
         } catch (\Throwable) {
             $connection->rollBack();
 
-            return $this->reconcileRefused($intentId, $clientId, $actorId, $operation, 'changed');
+            return $this->reconcileRefused($intentId, $clientId, $actorId, $operation, 'not-saved');
         }
 
         return ['outcome' => $outcome, 'message' => $outcome === self::RECONCILED_BOUND
-            ? 'Control D shows exactly what this intent sent, so it was bound: the client record now holds the same state a confirmed write would have written. No Control D write was made.'
-            : 'Control D shows nothing from this intent, so it was released and the client\'s onboarding lock is free. No Control D write was made; stage the step again to retry it.'];
+            ? self::RECONCILE_BOUND_MATCH[$operation].' The client record now holds the same state a confirmed write would have written. No Control D write was made.'
+            : 'Control D\'s list (one read, treated as complete) shows nothing from this intent, so it was released and the client\'s onboarding lock is free. No Control D write was made; stage the step again to retry it.'];
     }
 
     /** What a reconcile must find unchanged under its lock: identity, operation, payload ciphertext, PKs. */
@@ -403,7 +417,11 @@ class ControlDOnboardingStaged
         if (! is_string($name) || $name === '') {
             return ['mismatch', null, null];
         }
-        $global = $this->globalProfileSetting();
+        try {
+            $global = $this->globalProfileSetting();
+        } catch (ControlDClientException) {
+            return ['setting-missing', null, null];
+        }
         $recorded = $intent->vendor_pk;
         $byName = [];
         $byPk = [];
@@ -469,8 +487,8 @@ class ControlDOnboardingStaged
         $rows = $this->provisioning->provisions($orgPk);
         $recorded = $intent->vendor_pk;
         if ($recorded === null) {
-            // Strict absence (Jeeves addition 2): only a complete, well-formed EMPTY list
-            // releases; any row at all could be this intent's code and is ambiguous.
+            // Strict absence (Jeeves addition 2): only a well-formed EMPTY list (the single
+            // GET, treated as complete; no paging marker is checked) releases; any row at all could be this intent's code and is ambiguous.
             return $rows === [] ? ['absent', null, null] : ['ambiguous', null, null];
         }
         $matches = array_values(array_filter($rows, static fn (\stdClass $row): bool => $row->PK === $recorded));
@@ -486,7 +504,7 @@ class ControlDOnboardingStaged
         try {
             $created = $this->provisioning->confirmExisting($matches[0], $recorded, $payload['fields'], $payload['pin']);
         } catch (ControlDClientException) {
-            return ['mismatch', null, null];
+            return [($matches[0]->status ?? null) !== 1 || ($matches[0]->expired ?? null) !== 0 ? 'expired-or-used' : 'mismatch', null, null];
         }
 
         return ['match', $orgPk, $created];
@@ -495,7 +513,7 @@ class ControlDOnboardingStaged
     /** @return array{outcome: string, message: string} */
     private function reconcileRefused(string $intentId, int $clientId, int $actorId, string $operation, string $why): array
     {
-        $why = array_key_exists($why, self::RECONCILE_REFUSALS) ? $why : 'changed';
+        $why = array_key_exists($why, self::RECONCILE_REFUSALS) ? $why : 'unlisted';
         try {
             $this->reconcileAudit($intentId, $clientId, $actorId, $operation, self::RECONCILED_REFUSED, 'blocked', $why);
         } catch (\Throwable $e) {
@@ -820,7 +838,7 @@ class ControlDOnboardingStaged
     public const INVALIDATE_TARGET_REFUSAL = 'Control D did not confirm that the code record on this card carries the provisioning code stored on the client record; nothing was written.';
 
     /**
-     * Pre-admission, read-only (one GET provision): the org's complete provisioning list shows
+     * Pre-admission, read-only (one GET provision): the org's provisioning list shows
      * $codePk exactly once, carrying exactly the code value the client record stores. Throws
      * INVALIDATE_TARGET_REFUSAL on any other read, a failed or malformed one included, so the
      * refusal is definite and precedes any write. Returns the stored value for bind()'s locked

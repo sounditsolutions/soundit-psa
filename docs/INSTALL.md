@@ -1380,10 +1380,12 @@ means the POST may have happened, NOT that it succeeded. Own-POST PK checkpoints
 read-back;
 verified client binding and `bound` commit together. Rejected/bound intents release the
 lock. Uncertain and crash-left posted/staged records retain it indefinitely; no automatic
-retry, timeout release, cleanup or resume is installed for admitted intents; the one
-way out for an `uncertain` one is the Admin **Reconcile** below, which reads only, never
-writes to Control D, and never re-cuts. A `posted` one is not reconciled from the page
-(its write may still be in flight) and needs a ruling by hand. The one exception is a NEVER-ADMITTED intent (state
+retry, timeout release, cleanup or resume is installed for admitted intents. An
+`uncertain` organization, global-profile or code intent can be resolved with the Admin
+**Reconcile** below, which reads only, never writes to Control D, and never re-cuts. An
+`uncertain` **invalidate** intent, and a `posted` intent of any step (its write may still
+be in flight, or the process stopped after it), are held for a by-hand ruling: there is
+no in-app way out for them yet. The one exception is a NEVER-ADMITTED intent (state
 `staged`, phase `preflight`, no vendor PK): an active Admin may release it from the
 client page's Control D onboarding card with a reason (XULQ2iix). That card, and so the
 release form, is shown only while Control D and client onboarding are enabled and
@@ -1403,17 +1405,22 @@ onboarding is enabled and configured, and 404 for another client's intent). A `p
 intent gets no button and is refused with nothing changed: `posted` is set just before
 the write and the outcome is recorded after it, so a read then could race a write still
 in flight. It sends
-GETs only, never a PUT, POST or DELETE, and never retries the write:
-- *organization*: the parent's complete sub-organization list. A match is exactly one row
-  with the intent's org PK (when one was recorded) or the payload name, named as the payload
-  and carrying the configured global profile.
-- *global-profile*: the org's row. A match is a `parent_profile` equal to the pinned profile
-  PK; unset is absent; any other profile is refused.
-- *code*: the org's complete `GET provision` list. A match is exactly one row with the
-  recorded code PK, active and equal to the exact fields that intent sent. Without a recorded
-  PK, only a complete, well-formed EMPTY list counts as absent, and any row refuses.
-A failed, unconfirmed, partial or malformed list always refuses, because a lost code is worse
-than a held lock.
+GETs only, never a PUT, POST or DELETE, and never retries the write. Each list is the one
+a single GET returns, and it is treated as the complete list: no paging or truncation check
+is made (the recorded fixtures carry no paging marker). What is compared, per step:
+- *organization*: the parent's sub-organization list. A match is exactly one row with the
+  intent's org PK (when one was recorded) or the payload name, named as the payload and
+  carrying the **currently configured** global profile. Only the name, the recorded PK and
+  that profile are compared; the contact email, MFA and stats settings the intent sent are
+  not.
+- *global-profile*: the org's row. A match is a `parent_profile` equal to the profile PK the
+  intent sent; unset is absent; any other profile is refused.
+- *code*: the org's `GET provision` list. A match is exactly one row with the recorded code
+  PK, active and equal to the exact fields that intent sent. A listed row that is expired or
+  used at Control D is refused as such and held for a by-hand ruling. Without a recorded PK,
+  only a well-formed EMPTY list counts as absent, and any row refuses.
+A failed, unconfirmed or malformed response (a missing list, or any malformed row) always
+refuses, because a lost code is worse than a held lock.
 
 Outcomes:
 - **Match**: binds with exactly the end state a confirmed write would have written (the
@@ -1423,7 +1430,9 @@ Outcomes:
 - **Strict absence**: releases the intent (state `released`) and frees the lock.
 - **Anything else**: refuses and changes nothing.
 
-Each outcome writes one `controld_reconcile_intent` audit row (ids and status only). A
+Each outcome writes a `controld_reconcile_intent` audit row (ids and status only): a bind or
+release writes it in the same transaction, so neither commits without it. A failure to write
+a refusal's row is logged (ids and the exception class), not retried. A
 **code intent recorded before this release** did not keep the exact fields it sent. If
 Control D shows its PK, it cannot be rebuilt exactly from a read, so reconcile refuses and
 leaves it held ("cannot reconstruct; leave held"). A by-hand ruling is still needed for that
@@ -1451,18 +1460,23 @@ A **second** Admin approves it; there is no MCP verb for it. On approval:
    in one guarded transaction, which re-checks that the client still stores that code.
 
 A vendor error, or a read-back that does not confirm, ends the intent `uncertain`. The code
-and PIN are kept, the client stays locked until reconciled by hand, and nothing is retried.
+and PIN are kept, and nothing is retried. The intent keeps the client's onboarding lock and
+is held for a by-hand ruling: Reconcile does not take an invalidate intent, so there is no
+in-app way out for it yet.
 Invalidating stops the code working for new enrollments. **Devices already enrolled with it
 are NOT removed.** A code with no recorded PK (stored by another path), or whose recorded PK
 was already invalidated through onboarding, cannot be invalidated from here; it is never looked up at Control D by its value. The code value never appears in
-the proposal, the audit, the result or the logs. Invalidation cannot be undone. To keep
+the proposal, the audit or the result, and the tests find it in no record written through
+the application logger on the invalidate and reconcile paths they cover. Invalidation cannot be undone. To keep
 onboarding devices, stage the onboarding verb again for a new code.
 
 **Code values pinned at staging (P7A74iGD (a), item E).** A code-step proposal now pins its
 derived values on the sealed payload and shows them on the card: device limit (asset count +
 headroom), expiry days, analytics level, intercept mode and enforced profile. Approval
-re-derives them. If any differs (a setting changed, or the client's asset count changed),
-approval refuses with no write and no Control D call, and says to stage again. The values that
+re-derives them from the current settings and asset count. If any of the five differs,
+approval refuses, says to stage again, and nothing is changed at Control D (approval has
+already made its step-ordering read, a GET). A settings or asset-count change that leaves
+all five values unchanged does not refuse. The values that
 execute are the pinned ones. **A code proposal staged before this release has no pins and is
 refused with the same re-stage message.** Deny it and stage again after the deploy. The code
 intent's encrypted payload now also keeps the exact wire fields it sent (no secret), for

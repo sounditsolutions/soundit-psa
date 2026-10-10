@@ -235,13 +235,15 @@ class ControlDProvisioning
     }
 
     /**
-     * Read-only: the organization's COMPLETE provisioning list (one GET provision under
+     * Read-only: the organization's provisioning list as ONE GET provision returns it (under
      * X-Force-Org-Id; producer notes in tests/Fixtures/ControlD/README.md: GET returns
-     * `body.provisions`). Throws ControlDClientException, never returns a partial or empty
-     * stand-in, when the request fails, the response is not a confirmed success, the list
-     * is missing or not an array, or ANY row is not an object with a string PK belonging to
-     * this organization. So an empty array returned here is a complete, well-formed empty
-     * list. Rows carry secrets (code, PIN): callers must not log or serialize them.
+     * `body.provisions`). Callers treat it as the complete list: no paging, cursor, total or
+     * truncation marker is checked (none appears in the recorded fixtures). Throws
+     * ControlDClientException, never returns an empty stand-in, when the request fails, the
+     * response is not a confirmed success, the list is missing or not an array, or ANY row is
+     * not an object with a string PK belonging to this organization. So an empty array
+     * returned here is a well-formed empty response. Rows carry secrets (code, PIN): callers
+     * must not log or serialize them.
      *
      * @return array<int, stdClass>
      */

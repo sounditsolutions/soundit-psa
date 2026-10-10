@@ -49,10 +49,12 @@ final class ControlDSubOrganizations
     }
 
     /**
-     * The parent's COMPLETE sub-organization list (one GET). Throws ControlDClientException,
-     * never returns a partial list, when the request fails or is unconfirmed (requestParent()),
-     * the list is missing or not an array, or ANY row is not an object with a string PK and a
-     * string name. An empty array returned here is therefore a complete, well-formed empty list.
+     * The parent's sub-organization list as ONE GET returns it. Callers treat it as the
+     * complete list: no paging, cursor, total or truncation marker is checked (none appears in
+     * the recorded fixtures). Throws ControlDClientException when the request fails or is
+     * unconfirmed (requestParent()), the list is missing or not an array, or ANY row is not an
+     * object with a string PK and a string name. An empty array returned here is therefore a
+     * well-formed empty response.
      *
      * @return array<int, stdClass>
      */

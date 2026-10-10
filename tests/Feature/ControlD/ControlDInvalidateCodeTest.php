@@ -31,7 +31,9 @@ use Tests\TestCase;
  * pinned record carrying the stored code, then one PUT provision/{PK}/invalidate and
  * the read-back that must show status -1. Confirmed: the code and PIN columns are nulled in one
  * guarded transaction. Unconfirmed read-back or a vendor error: uncertain, code KEPT, never
- * retried. The code value never appears in the proposal, the audit, the result or the logs.
+ * retried. The code value never appears in the proposal, the audit or the result, and no record
+ * written through the application logger on the invalidate paths below carries it (measured by
+ * Log::listen in test_no_log_record_carries_the_code_or_pin_on_any_invalidate_path).
  * Guzzle MockHandler for every vendor exchange; Http::preventStrayRequests().
  */
 class ControlDInvalidateCodeTest extends TestCase
@@ -258,6 +260,43 @@ class ControlDInvalidateCodeTest extends TestCase
         $this->assertSame([self::CODE, self::PIN], $this->stored($fixture['client']));
         $this->assertSame([], $this->history);
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+    }
+
+    /**
+     * G-14 (diff:8): every record written through the application logger, across the confirmed,
+     * unconfirmed, vendor-error and refused-target invalidate paths, is captured and must not
+     * carry the code or the PIN. A positive control proves the listener sees this test's records.
+     */
+    public function test_no_log_record_carries_the_code_or_pin_on_any_invalidate_path(): void
+    {
+        $records = [];
+        \Illuminate\Support\Facades\Log::listen(function (\Illuminate\Log\Events\MessageLogged $e) use (&$records): void {
+            $records[] = $e->level.' '.$e->message.' '.json_encode($e->context);
+        });
+        $cases = [
+            [$this->ok([]), $this->ok(['provisions' => [$this->row(-1)]])],
+            [$this->ok([]), $this->ok(['provisions' => [$this->row(1)]])],
+            [new Response(503)],
+            [$this->ok([]), new Response(503)],
+        ];
+        foreach ($cases as $i => $responses) {
+            $fixture = $this->fixture(true, 'testorg2'.$i);
+            $run = $this->stage($fixture);
+            $this->bindVendor([$this->listedActive('testorg2'.$i), ...$responses]);
+            $this->approve($run);
+        }
+        $fixture = $this->fixture(true, 'testorg29');
+        $run = $this->stage($fixture);
+        $this->bindVendor([new Response(503)]);
+        $this->approve($run);
+
+        \Illuminate\Support\Facades\Log::warning('positive control');
+        $this->assertNotEmpty(array_filter($records, fn ($r) => str_contains($r, 'positive control')), 'the listener captures records');
+        $this->assertGreaterThan(1, count($records), 'the vendor-error paths log through the listener');
+        foreach ($records as $record) {
+            $this->assertStringNotContainsString(self::CODE, $record);
+            $this->assertStringNotContainsString(self::PIN, $record);
+        }
     }
 
     /** No stored PK: the code is never looked up at Control D by value; staging refuses. */
