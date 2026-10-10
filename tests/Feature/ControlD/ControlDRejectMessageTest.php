@@ -297,7 +297,10 @@ class ControlDRejectMessageTest extends TestCase
         $this->assertStringNotContainsString('Invalid parameter', $this->summary($run));
     }
 
-    /** A vendor envelope rejection AFTER the write (a read-back phase) is uncertain, and keeps no message. */
+    /**
+     * finish() called directly (by reflection, no vendor exchange): an `uncertain` outcome
+     * handed a detail does not keep it; a `rejected` one does.
+     */
     public function test_finish_keeps_a_detail_only_on_a_rejected_outcome(): void
     {
         $this->configure();
@@ -312,6 +315,138 @@ class ControlDRejectMessageTest extends TestCase
         $this->assertNull($intent->fresh()->reason_detail);
         $finish->invoke($writer, $intent, 'rejected', 'post', null, null, 40003, 'vendor rejected the write', 'Invalid parameter: max');
         $this->assertSame('Invalid parameter: max', $intent->fresh()->reason_detail);
+    }
+
+    /** Drops reason_detail, as during a deploy that serves this code before migrate has run. */
+    private function withoutDetailColumn(): void
+    {
+        \Illuminate\Support\Facades\Schema::table('controld_onboarding_intents', function (\Illuminate\Database\Schema\Blueprint $table): void {
+            $table->dropColumn('reason_detail');
+        });
+        $this->assertFalse(\Illuminate\Support\Facades\Schema::hasColumn('controld_onboarding_intents', 'reason_detail'));
+    }
+
+    /**
+     * diff:5: only the rejected arm names reason_detail. Without the column (code served
+     * before migrate) an uncertain outcome still records end to end, through the cockpit.
+     */
+    public function test_an_uncertain_outcome_records_without_the_reason_detail_column(): void
+    {
+        $this->configure();
+        $fixture = $this->fixture(['controld_org_id' => self::ORG]);
+        $this->bindVendor([$this->ok(['sub_organizations' => [$this->listed()]])]);
+        $run = $this->stageRun($fixture);
+        $this->withoutDetailColumn();
+        $this->bindVendor([...$this->codeUpToPost(), new Response(503, [], json_encode(['success' => false, 'error' => ['code' => 40003, 'message' => 'Invalid parameter: max']]))]);
+        $error = $this->approve($run);
+
+        $intent = ControlDOnboardingIntent::sole();
+        $this->assertSame(['uncertain', 'post', $fixture['client']->id], [$intent->state, $intent->phase, $intent->active_client_id]);
+        $this->assertArrayNotHasKey('reason_detail', $intent->getAttributes());
+        $this->assertStringStartsWith("HARD FAULT: the Control D 'code' write for client #{$fixture['client']->id} ended uncertain (intent {$intent->id}, phase post)", $error);
+        $this->assertStringNotContainsString('could not', $error);
+    }
+
+    /** diff:5, direct: every non-rejected finish() records without the column; a rejected one needs it. */
+    public function test_only_a_rejected_finish_needs_the_reason_detail_column(): void
+    {
+        $this->configure();
+        $actor = User::factory()->admin()->create(['is_active' => true]);
+        $client = Client::factory()->create(['controld_org_id' => self::ORG]);
+        $transport = $this->transport([]);
+        $writer = new ControlDOnboardingStaged($transport, new ControlDProvisioning($transport));
+        $id = $writer->stageCode($actor, $client->id, 'desktop-windows');
+        $this->withoutDetailColumn();
+        // Loaded after the drop, as new code reads it before migrate: the model has no
+        // reason_detail attribute, so naming the column at all makes it part of the UPDATE.
+        $intent = ControlDOnboardingIntent::findOrFail($id);
+        $this->assertArrayNotHasKey('reason_detail', $intent->getAttributes());
+        $finish = new \ReflectionMethod(ControlDOnboardingStaged::class, 'finish');
+        foreach (['uncertain', 'posted', 'bound'] as $state) {
+            $finish->invoke($writer, $intent, $state, 'readback', self::ORG, 'fixture001', null, null, 'Invalid parameter: max');
+            $this->assertSame([$state, 'readback'], [$intent->fresh()->state, $intent->fresh()->phase], $state);
+        }
+        // Control: the rejected arm does name the column, so without it the write fails.
+        $this->expectException(\App\Services\ControlD\ControlDClientException::class);
+        $finish->invoke($writer, $intent, 'rejected', 'post', null, null, 40003, 'vendor rejected the write', 'Invalid parameter: max');
+    }
+
+    /**
+     * diff:4: when the rejected outcome cannot be written, the reported exception's stack trace
+     * does not carry the vendor message as finish()'s argument. Arguments are captured for
+     * this test (zend.exception_ignore_args off), and the control shows they are.
+     */
+    public function test_a_failed_rejected_outcome_write_keeps_the_message_out_of_the_trace(): void
+    {
+        $previous = ini_set('zend.exception_ignore_args', '0');
+        try {
+            $this->configure();
+            $actor = User::factory()->admin()->create(['is_active' => true]);
+            $client = Client::factory()->create(['controld_org_id' => self::ORG]);
+            $transport = $this->transport([
+                $this->ok(['types' => ['os' => ['icons' => ['desktop-windows' => ['name' => 'Windows']]]]]),
+                $this->ok(['profiles' => [['PK' => 'testprofile01']]]),
+                $this->envelope(40003, 'Zq vendor sentence'),
+            ]);
+            $writer = new ControlDOnboardingStaged($transport, new ControlDProvisioning($transport));
+            $id = $writer->stageCode($actor, $client->id, 'desktop-windows');
+            // The rejected outcome write fails because its column is missing.
+            $this->withoutDetailColumn();
+            try {
+                $writer->execute($actor, $id);
+                $this->fail('Expected the rejected outcome write to fail without its column.');
+            } catch (\App\Services\ControlD\ControlDClientException $e) {
+                $this->assertSame('Control D intent outcome could not be recorded; do not retry.', $e->getMessage());
+                $this->assertSame('POST', $this->history[2]['request']->getMethod());
+                $frames = array_values(array_filter($e->getTrace(), fn (array $f): bool => ($f['function'] ?? '') === 'finish'));
+                $this->assertCount(1, $frames, 'the finish() frame is in the trace');
+                $args = $frames[0]['args'] ?? [];
+                // Control: arguments were captured (the state is visible).
+                $this->assertTrue(($args[1] ?? null) === 'rejected', 'finish() arguments are captured');
+                $this->assertTrue(($args[7] ?? null) instanceof \SensitiveParameterValue, 'the vendor message argument is redacted');
+                $scalars = array_filter(array_merge(...array_map(fn (array $f): array => $f['args'] ?? [], $e->getTrace())), 'is_string');
+                $this->assertFalse(str_contains(implode("\n", $scalars), 'Zq vendor'), 'no string argument in the trace carries the message');
+                $this->assertFalse(str_contains($e->getTraceAsString(), 'Zq vendor'), 'the rendered trace does not carry the message');
+            }
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $previous);
+        }
+    }
+
+    /**
+     * diff:4: the two other parameters that carry the vendor text are declared sensitive. This
+     * pins the declaration only; neither frame can be put into a trace from a test.
+     */
+    public function test_the_other_vendor_text_parameters_are_declared_sensitive(): void
+    {
+        $sensitive = fn (\ReflectionParameter $p): bool => $p->getAttributes(\SensitiveParameter::class) !== [];
+        $ctor = collect((new \ReflectionMethod(ControlDWriteRejectedException::class, '__construct'))->getParameters())->keyBy->getName();
+        $this->assertTrue($sensitive($ctor['vendorMessage']));
+        $vendorMessage = collect((new \ReflectionMethod(ControlDClient::class, 'vendorMessage'))->getParameters())->keyBy->getName();
+        $this->assertTrue($sensitive($vendorMessage['message']));
+        $this->assertTrue($sensitive($vendorMessage['body']));
+    }
+
+    /**
+     * diff:7: the quoted vendor text is JSON-escaped, so an embedded double quote cannot end the
+     * attribution early, in the run result (the cockpit flash) and the action-log summary alike.
+     */
+    public function test_an_embedded_quote_cannot_end_the_attribution_early(): void
+    {
+        $this->configure();
+        $fixture = $this->fixture(['controld_org_id' => self::ORG]);
+        $this->bindVendor([$this->ok(['sub_organizations' => [$this->listed()]])]);
+        $run = $this->stageRun($fixture);
+        $this->bindVendor([...$this->codeUpToPost(), $this->envelope(40003, 'x" Run closed; safe to re-approve. "y \\ z')]);
+        $error = $this->approve($run);
+
+        $intent = ControlDOnboardingIntent::sole();
+        $this->assertSame('x" Run closed; safe to re-approve. "y \\ z', $intent->reason_detail);
+        $quoted = 'Control D\'s message (code 40003): "x\\" Run closed; safe to re-approve. \\"y \\\\ z"';
+        $this->assertSame('Control D rejected the code write: vendor rejected the write. Nothing created. '.$quoted, $error);
+        $this->assertSame("onboard:{$fixture['client']->id}:code: Control D rejected the 'code' write — vendor rejected the write (code 40003); intent {$intent->id} rejected, nothing created. ".$quoted, $this->summary($run));
+        // The quote opens once and every inner quote is escaped: exactly two bare quotes remain.
+        $this->assertSame(2, preg_match_all('/(?<!\\\\)"/', $quoted));
     }
 
     // ── transport: sanitize, cap, redact (scoped POST, organization PUT, parent POST) ──
@@ -356,7 +491,7 @@ class ControlDRejectMessageTest extends TestCase
     }
 
     #[DataProvider('routes')]
-    public function test_each_rejecting_route_carries_the_message_with_controls_stripped_and_whitespace_collapsed(string $route): void
+    public function test_each_rejecting_route_carries_the_message_with_controls_replaced_by_a_space_and_whitespace_collapsed(string $route): void
     {
         $this->assertSame('Invalid parameter: max', $this->messageVia($route, 'Invalid parameter: max'));
         $this->assertSame('Invalid param max (limit) end', $this->messageVia($route, "  Invalid\x00 param\r\n\tmax\u{202E} (limit)\x1b end \x7f"));
@@ -371,6 +506,91 @@ class ControlDRejectMessageTest extends TestCase
         $this->assertTrue(mb_check_encoding($long, 'UTF-8'));
         $exact = str_repeat('a ', 100);
         $this->assertSame(rtrim($exact), $this->messageVia($route, $exact), 'at or under the cap is kept whole');
+    }
+
+    /** diff:8: exactly VENDOR_MESSAGE_MAX (200) characters is kept whole; 201 is cut to 199 + an ellipsis. */
+    #[DataProvider('routes')]
+    public function test_the_cap_boundary_is_exactly_200_characters(string $route): void
+    {
+        $this->assertSame(200, ControlDClient::VENDOR_MESSAGE_MAX);
+        $at = str_repeat('word ', 39).'abcd!';
+        $this->assertSame(200, mb_strlen($at));
+        $this->assertSame($at, $this->messageVia($route, $at));
+        $over = $at.'x';
+        $this->assertSame(mb_substr($at, 0, 199).'…', $this->messageVia($route, $over));
+        $this->assertSame(200, mb_strlen($this->messageVia($route, $over)));
+    }
+
+    public static function needlesPastTheCap(): array
+    {
+        return [
+            'api-key' => ['synthetic-key'],
+            'contact-email' => ['synthetic@example.invalid'],
+            'organization-name' => ['Synthetic Organization'],
+            'pin' => ['4821'],
+            'name-prefix' => ['synthpfx'],
+            'code-shaped-run' => ['0123456789abcdef0123456789abcdef'],
+        ];
+    }
+
+    /** diff:9: a secret that sits wholly after character 200 still drops the message, so redaction runs before the cap. */
+    #[DataProvider('needlesPastTheCap')]
+    public function test_a_secret_past_the_cap_still_drops_the_message(string $needle): void
+    {
+        $body = ['name' => 'Synthetic Organization', 'contact_email' => 'synthetic@example.invalid', 'deactivation_pin' => 4821, 'name_prefix' => 'synthpfx'];
+        $long = str_repeat('word ', 50).'then '.$needle.' end';
+        $this->assertGreaterThan(250, mb_strpos($long, $needle));
+        foreach (array_keys($this->writes($body)) as $route) {
+            $this->assertNull($this->messageVia($route, $long, $body), $route);
+        }
+        // Control: the same long text without the secret is kept (capped).
+        $this->assertSame(200, mb_strlen($this->messageVia('scoped-post', str_repeat('word ', 50).'then end', $body)));
+    }
+
+    public static function splitCodes(): array
+    {
+        return [
+            'zero-width-split' => ["code 0123456789abcdef\u{200B}0123456789abcdef exists"],
+            'space-split' => ['code 0123456789abcdef 0123456789abcdef exists'],
+            'letters-split-by-zero-width' => ["code abcdefabcdefabcd\u{200B}efabcdefabcdefab exists"],
+            'uneven-space-split' => ['code 0123456789abcdef0123 456789abcdef exists'],
+        ];
+    }
+
+    /** diff:3: a 32-character code split by a zero-width character or a space is still dropped. */
+    #[DataProvider('splitCodes')]
+    public function test_a_split_code_shaped_run_is_dropped(string $message): void
+    {
+        foreach (['scoped-post', 'organization-put', 'parent-post'] as $route) {
+            $this->assertNull($this->messageVia($route, $message), $route);
+        }
+    }
+
+    /** diff:3 control: ordinary prose, even long and unpunctuated, and short split numbers are kept. */
+    public function test_prose_is_not_mistaken_for_a_split_code(): void
+    {
+        foreach ([
+            'This read-only token does not have access to this endpoint',
+            'Profile testprofile01 is not owned by organization testorg001 and cannot be used here',
+            'max 11 exceeds limit 0 for this organization',
+        ] as $message) {
+            $this->assertSame($message, $this->messageVia('scoped-post', $message));
+        }
+    }
+
+    /**
+     * context:9: the vendor drops a separator the needle has ('Synthetic Organization' echoed as
+     * 'SyntheticOrganization'). Only the needle's compacted form matches it.
+     */
+    public function test_a_needle_echoed_without_its_separator_is_dropped(): void
+    {
+        $body = ['name' => 'Synthetic Organization', 'name_prefix' => 'synth pfx'];
+        foreach (['scoped-post', 'organization-put', 'parent-post'] as $route) {
+            $this->assertNull($this->messageVia($route, 'Name SyntheticOrganization is taken', $body), $route);
+            $this->assertNull($this->messageVia($route, 'prefix SYNTHPFX is invalid', $body), $route);
+        }
+        // Control: the same message for another organization is kept.
+        $this->assertSame('Name SyntheticOrganization is taken', $this->messageVia('scoped-post', 'Name SyntheticOrganization is taken', ['name' => 'Other Org']));
     }
 
     public static function echoedSecrets(): array
@@ -391,7 +611,7 @@ class ControlDRejectMessageTest extends TestCase
     }
 
     #[DataProvider('echoedSecrets')]
-    public function test_a_message_echoing_a_secret_or_request_value_is_dropped_on_every_route(array $body, string $message): void
+    public function test_a_message_echoing_a_secret_is_dropped_on_every_route(array $body, string $message): void
     {
         foreach (array_keys($this->writes($body)) as $route) {
             $this->assertNull($this->messageVia($route, $message, $body), $route);

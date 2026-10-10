@@ -214,14 +214,16 @@ class ControlDClient
     /**
      * The vendor's own `error.message` from a rejection envelope, made safe to store and show
      * (C-56: vendor text only, never the raw body or a request field). Only a string is kept.
-     * Control characters become spaces, whitespace is collapsed, and the result is capped at
-     * VENDOR_MESSAGE_MAX characters. A vendor message can echo request input, so the WHOLE
-     * message is dropped (null) when, before capping, it contains the API key, the
-     * deactivation PIN, the contact email or organization name sent, or any run of 32 or
-     * more letters and digits (the shape of a provisioning code or a key). Invalid UTF-8 and
-     * an empty result are null too.
+     * Control and format characters are replaced with a space, whitespace is collapsed, and the
+     * result is capped at VENDOR_MESSAGE_MAX characters. A vendor message can echo a secret, so
+     * the WHOLE message is dropped (null) when, before capping, it contains the API key, the
+     * deactivation PIN, the name prefix, the contact email or organization name sent, or a run
+     * of 32 or more letters and digits (the shape of a provisioning code or a key). The run is
+     * also looked for with zero-width and other non-whitespace control or format characters
+     * removed, and across whitespace between pieces that each hold a digit or are 16 or more
+     * characters long. Invalid UTF-8 and an empty result are null too.
      */
-    private function vendorMessage(mixed $message, #[\SensitiveParameter] ?array $body): ?string
+    private function vendorMessage(#[\SensitiveParameter] mixed $message, #[\SensitiveParameter] ?array $body): ?string
     {
         if (! is_string($message) || ! mb_check_encoding($message, 'UTF-8')) {
             return null;
@@ -235,7 +237,7 @@ class ControlDClient
         // Compare with every separator removed too, so a secret split by a control
         // character or whitespace is still recognised. A false match only drops the text.
         $compact = static fn (string $s): string => (string) preg_replace('/[\p{Cc}\p{Cf}\p{Z}\s]+/u', '', $s);
-        if (preg_match('/[A-Za-z0-9]{32,}/', $message) || preg_match('/[A-Za-z0-9]{32,}/', $clean)) {
+        if (self::carriesCodeRun($message)) {
             return null;
         }
         $needles = [(string) ($this->config['api_key'] ?? '')];
@@ -259,6 +261,30 @@ class ControlDClient
         }
 
         return mb_strlen($clean) > self::VENDOR_MESSAGE_MAX ? mb_substr($clean, 0, self::VENDOR_MESSAGE_MAX - 1).'…' : $clean;
+    }
+
+    /**
+     * True when the text holds a run of 32 or more letters and digits: as written, with
+     * zero-width and other non-whitespace control or format characters removed, or rejoined
+     * across whitespace between pieces that each contain a digit or are 16 or more characters
+     * long (a split code). Ordinary words (letters only, under 16) are never joined, so prose
+     * is kept.
+     */
+    private static function carriesCodeRun(#[\SensitiveParameter] string $text): bool
+    {
+        $joined = (string) preg_replace('/(?:(?!\s)\p{Cc}|\p{Cf})+/u', '', $text);
+        if (preg_match('/[A-Za-z0-9]{32,}/', $joined)) {
+            return true;
+        }
+        $piece = '(?:[A-Za-z0-9]*[0-9][A-Za-z0-9]*|[A-Za-z0-9]{16,})';
+        preg_match_all('/(?<![A-Za-z0-9])'.$piece.'(?:[\s\p{Z}]+'.$piece.')*(?![A-Za-z0-9])/u', $joined, $chains);
+        foreach ($chains[0] as $chain) {
+            if (strlen((string) preg_replace('/[^A-Za-z0-9]/', '', $chain)) >= 32) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

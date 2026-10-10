@@ -299,14 +299,18 @@ class ControlDOnboardingStaged
         $intent->refresh();
     }
 
-    /** $reasonDetail is the sanitized vendor `error.message`, kept only on a `rejected` outcome. */
-    private function finish(ControlDOnboardingIntent $intent, string $state, string $phase, ?string $orgPk, ?string $pk, ?int $reasonCode = null, ?string $reason = null, ?string $reasonDetail = null): void
+    /**
+     * $reasonDetail is the sanitized vendor `error.message`, written only on a `rejected`
+     * outcome. Every other outcome leaves the reason_detail column out of the UPDATE entirely,
+     * so it still records if the code is served before that column's migration has run.
+     */
+    private function finish(ControlDOnboardingIntent $intent, string $state, string $phase, ?string $orgPk, ?string $pk, ?int $reasonCode = null, ?string $reason = null, #[\SensitiveParameter] ?string $reasonDetail = null): void
     {
         try {
             $intent->forceFill(['state' => $state, 'phase' => $phase, 'org_pk' => $orgPk, 'vendor_pk' => $pk,
                 'reason_code' => $reasonCode, 'reason' => $reason ?? 'outcome requires reconciliation; do not retry',
-                'reason_detail' => $state === 'rejected' ? $reasonDetail : null,
-                'active_client_id' => $state === 'rejected' ? null : $intent->client_id])->saveOrFail();
+                'active_client_id' => $state === 'rejected' ? null : $intent->client_id]
+                + ($state === 'rejected' ? ['reason_detail' => $reasonDetail] : []))->saveOrFail();
         } catch (\Throwable) {
             throw new ControlDClientException('Control D intent outcome could not be recorded; do not retry.');
         }

@@ -846,7 +846,9 @@ class StaffControlDOnboardingToolExecutor
     /**
      * ' Control D's message (code N): "<message>"' when the rejected intent kept the
      * vendor's sanitized error.message (reason_detail), else ''. The text is Control D's,
-     * quoted; the PSA asserts nothing about what it means.
+     * quoted; the PSA asserts nothing about what it means. The quote is a JSON string, so an
+     * embedded double quote or backslash is escaped and cannot end the attribution early;
+     * text with neither is quoted unchanged.
      */
     private static function vendorSaid(ControlDOnboardingIntent $intent): string
     {
@@ -855,7 +857,7 @@ class StaffControlDOnboardingToolExecutor
             return '';
         }
 
-        return " Control D's message (code {$intent->reason_code}): \"{$detail}\"";
+        return " Control D's message (code {$intent->reason_code}): ".json_encode($detail, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     }
 
     private function onboarding(): ControlDOnboardingStaged
