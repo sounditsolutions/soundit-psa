@@ -498,8 +498,8 @@ class ControlDReconcileTest extends TestCase
         }
     }
 
-    /** G-14 (context:4): a listed code that is expired or used is said to be so, held for a by-hand ruling, not a fault of the intent. */
-    public function test_code_row_expired_or_used_at_control_d_is_refused_as_such_and_held(): void
+    /** G-14 (diff:1): a listed code that is not active (status -1 is the invalidate read-back value) is said to be not active, no cause is named, and it is held. */
+    public function test_code_row_not_active_at_control_d_is_refused_as_such_and_held(): void
     {
         foreach ([['status' => -1], ['expired' => 1], ['status' => 2, 'max' => 13]] as $i => $drift) {
             $this->reset();
@@ -509,8 +509,11 @@ class ControlDReconcileTest extends TestCase
             $this->bindVendor([$this->ok(['provisions' => [$this->provision($drift)]])]);
 
             $this->assertRefusedUnchanged($this->reconcile($client, $intent), $intent, $client, $before, [self::ORG, null, null]);
-            $this->assertRefusalSays('Control D lists this intent\'s code record, but it is expired or used (not an active code) at Control D; nothing was changed, the intent keeps its lock and is held for a by-hand ruling.');
-            $this->assertStringNotContainsString(self::MISMATCH, session('errors')->first('controld_onboarding'), "case {$i}");
+            $this->assertRefusalSays('Control D lists this intent\'s code record, but not as an active code: its status is not 1 (active), or its expired flag is not 0 (an invalidated code, for example, has status -1). Why it is not active is not determined here; nothing was changed, the intent keeps its lock and is held for a by-hand ruling.');
+            $error = session('errors')->first('controld_onboarding');
+            $this->assertStringNotContainsString(self::MISMATCH, $error, "case {$i}");
+            $this->assertStringNotContainsString('expired or used', $error, "case {$i}: status -1 is invalidated, so no cause is asserted");
+            $this->assertStringContainsString('refused (inactive)', $this->audit($intent)->summary, "case {$i}");
         }
     }
 

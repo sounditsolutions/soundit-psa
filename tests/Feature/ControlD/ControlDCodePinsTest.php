@@ -161,7 +161,8 @@ class ControlDCodePinsTest extends TestCase
 
         $this->assertSame(['max' => 5, 'expiry_days' => 7, 'stats' => 0, 'intercept_mode' => 'standard', 'profile_id' => 'testprofile01'], $this->payload($run)['code_pins']);
         $this->assertStringContainsString('enforced profile testprofile01, expiry 7 days, device limit = asset count (3) + headroom 2 = 5, analytics level 0, intercept mode standard', $run->proposed_content);
-        $this->assertStringContainsString('These five derived values are pinned on this card. Approval derives them again from the current settings and asset count; if any of them differs, approval refuses and the proposal must be staged again. A settings or asset-count change that leaves all five unchanged does not refuse.', $run->proposed_content);
+        $this->assertStringContainsString('These five derived values are pinned on this card. Approval derives them again from the current settings and asset count; if any of them differs, approval refuses and the proposal must be staged again. A settings or asset-count change that leaves all five unchanged is not treated as drift; approval still refuses, with its own message, if the values can no longer be derived (an onboarding default missing or invalid, or the asset count plus headroom outside 1..10000), and on its other checks.', $run->proposed_content);
+        $this->assertStringNotContainsString('leaves all five unchanged does not refuse', $run->proposed_content, 'G-14 (contract:1): underivable values and other checks still refuse');
         $this->assertStringNotContainsString('if a setting or the client\'s asset count changes before approval, approval refuses', $run->proposed_content);
         $this->assertArrayNotHasKey('code_pins', $run->proposed_meta, 'pins live only in the sealed payload');
     }
@@ -282,5 +283,35 @@ class ControlDCodePinsTest extends TestCase
 
         $this->assertSame(StaffControlDOnboardingToolExecutor::CODE_PINS_MISSING, $this->approve($run));
         $this->assertSame(0, ControlDOnboardingIntent::count());
+    }
+
+    public static function underivable(): array
+    {
+        return [
+            'analytics level not 0, 1 or 2' => [fn () => Setting::setValue('controld_code_analytics_level', '7')],
+            'asset count plus headroom below 1' => [function (Client $client): void {
+                Setting::setValue('controld_code_device_limit_headroom', '0');
+                Asset::where('client_id', $client->id)->delete();
+            }],
+        ];
+    }
+
+    /** G-14 (contract:1): when codePins() cannot derive the values, approval refuses with its own text, not the drift text. */
+    #[\PHPUnit\Framework\Attributes\DataProvider('underivable')]
+    public function test_values_that_can_no_longer_be_derived_refuse_with_their_own_text(\Closure $break): void
+    {
+        $fixture = $this->fixture(3);
+        $run = $this->stage($fixture);
+        $break($fixture['client']);
+        $this->bindVendor([$this->ok(['sub_organizations' => [$this->listed()]])]);
+
+        $message = $this->approve($run);
+
+        $this->assertRefusedWithNothingWritten($run, $fixture, $message);
+        $this->assertSame(StaffControlDOnboardingToolExecutor::CODE_PINS_UNDERIVABLE, $message);
+        $this->assertStringNotContainsString('no longer match', $message);
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'blocked')
+            ->where('summary', 'like', '%the code values could not be derived again from the current settings and asset count; nothing was changed at Control D.%')->count());
+        $this->assertSame(0, TechnicianActionLog::where('summary', 'like', '%the pinned code values differ%')->count());
     }
 }

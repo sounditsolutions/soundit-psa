@@ -1416,8 +1416,9 @@ is made (the recorded fixtures carry no paging marker). What is compared, per st
 - *global-profile*: the org's row. A match is a `parent_profile` equal to the profile PK the
   intent sent; unset is absent; any other profile is refused.
 - *code*: the org's `GET provision` list. A match is exactly one row with the recorded code
-  PK, active and equal to the exact fields that intent sent. A listed row that is expired or
-  used at Control D is refused as such and held for a by-hand ruling. Without a recorded PK,
+  PK, active and equal to the exact fields that intent sent. A listed row that is not active
+  at Control D (status not 1, or expired flag not 0; an invalidated code has status -1) is
+  refused as not active, without naming a cause, and held for a by-hand ruling. Without a recorded PK,
   only a well-formed EMPTY list counts as absent, and any row refuses.
 A failed, unconfirmed or malformed response (a missing list, or any malformed row) always
 refuses, because a lost code is worse than a held lock.
@@ -1476,7 +1477,9 @@ headroom), expiry days, analytics level, intercept mode and enforced profile. Ap
 re-derives them from the current settings and asset count. If any of the five differs,
 approval refuses, says to stage again, and nothing is changed at Control D (approval has
 already made its step-ordering read, a GET). A settings or asset-count change that leaves
-all five values unchanged does not refuse. The values that
+all five values unchanged is not treated as drift. Approval still refuses, with its own
+message, if the values can no longer be derived (an onboarding default missing or invalid,
+or the asset count plus headroom outside 1..10000), and on its other checks. The values that
 execute are the pinned ones. **A code proposal staged before this release has no pins and is
 refused with the same re-stage message.** Deny it and stage again after the deploy. The code
 intent's encrypted payload now also keeps the exact wire fields it sent (no secret), for

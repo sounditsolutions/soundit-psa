@@ -294,7 +294,7 @@ class ControlDOnboardingStaged
         'setting-missing' => 'The configured global profile setting is missing or malformed, so the organization could not be compared; Control D was not read, nothing was changed and the intent keeps its lock.',
         'ambiguous' => 'Control D shows more than one candidate, or something besides what this intent would have created; nothing was changed and the intent keeps its lock.',
         'mismatch' => 'Control D shows a record that differs on what reconcile compares for this step (organization: the name, the recorded PK and the currently configured global profile; global profile: the profile this intent sent; code: the fields this intent sent), or this intent lacks what that comparison needs; nothing was changed and the intent keeps its lock.',
-        'expired-or-used' => 'Control D lists this intent\'s code record, but it is expired or used (not an active code) at Control D; nothing was changed, the intent keeps its lock and is held for a by-hand ruling.',
+        'inactive' => 'Control D lists this intent\'s code record, but not as an active code: its status is not 1 (active), or its expired flag is not 0 (an invalidated code, for example, has status -1). Why it is not active is not determined here; nothing was changed, the intent keeps its lock and is held for a by-hand ruling.',
         'cannot-reconstruct' => 'This code intent was recorded before the exact fields it sent were kept, so a match cannot be rebuilt exactly from a read; nothing was changed and the intent keeps its lock (cannot reconstruct; leave held).',
         'not-saved' => 'The outcome could not be saved locally, so it was rolled back and nothing was changed by this reconcile. Possible causes: the intent, the client or your Admin rights changed while Control D was being read; the organization is already mapped to another client; or the client record or the audit row could not be written.',
         'unlisted' => 'Reconcile refused this intent; nothing was changed.',
@@ -325,7 +325,8 @@ class ControlDOnboardingStaged
      *  - code: the org's provisioning list (ControlDProvisioning::provisions()). With a
      *    recorded vendor PK: exactly one row with it, active and equal to the fields this intent
      *    sent (ControlDProvisioning::confirmExisting(), the create() read-back checks) = match; no
-     *    row with it = absent; listed but expired or used = refused as such (held). Without one:
+     *    row with it = absent; listed but not active (status not 1 or expired flag not 0, for
+     *    example invalidated, status -1) = refused as not active, cause not named (held). Without one:
      *    a well-formed EMPTY list = absent; any row = ambiguous.
      *    A failed, unconfirmed or malformed list always refuses: a lost code is worse than a held
      *    lock. An intent that did not keep its sent fields cannot be matched (refused, held).
@@ -504,7 +505,7 @@ class ControlDOnboardingStaged
         try {
             $created = $this->provisioning->confirmExisting($matches[0], $recorded, $payload['fields'], $payload['pin']);
         } catch (ControlDClientException) {
-            return [($matches[0]->status ?? null) !== 1 || ($matches[0]->expired ?? null) !== 0 ? 'expired-or-used' : 'mismatch', null, null];
+            return [($matches[0]->status ?? null) !== 1 || ($matches[0]->expired ?? null) !== 0 ? 'inactive' : 'mismatch', null, null];
         }
 
         return ['match', $orgPk, $created];
