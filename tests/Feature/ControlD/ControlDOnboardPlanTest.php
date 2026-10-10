@@ -326,7 +326,7 @@ class ControlDOnboardPlanTest extends TestCase
         $this->assertStringStartsWith("{$prefix}:organization: bound (intent ", $rows[0]->summary);
         $this->assertStringStartsWith("{$prefix}:code: bound (intent ", $rows[1]->summary);
         $this->assertStringStartsWith("{$prefix}:deploy: started; Tactical client #".self::TC.', field written; script run requested on 2 of 2 agents', $rows[2]->summary);
-        $this->assertSame("{$prefix}: plan summary: organization=bound, code=bound, deploy=started; run closed done.", $rows[3]->summary);
+        $this->assertSame("{$prefix}: plan summary: organization=bound, code=bound, deploy=started; run completed; run closed (state done).", $rows[3]->summary);
         $this->assertSame(['executed', 'executed', 'executed', 'executed'], $rows->pluck('result_status')->all());
         foreach (TechnicianActionLog::all() as $row) {
             $this->assertStringNotContainsString(self::CODE, (string) $row->summary);
@@ -335,7 +335,8 @@ class ControlDOnboardPlanTest extends TestCase
 
     /**
      * A stop at each Control D step, rejected (a 4xx vendor envelope) and uncertain (a 503):
-     * later steps do not run, the deploy makes no Tactical request at all, the run is Failed.
+     * later steps do not run, the deploy makes no Tactical request at all, and the result, the
+     * summary row and the client page name the failed step and say the run did not complete.
      *
      * @return array<string, array{string, string}>
      */
@@ -380,7 +381,15 @@ class ControlDOnboardPlanTest extends TestCase
 
         $this->assertSame([], $this->tacticalRequests(), 'THE DEPLOY GATE: no Tactical request of any kind when the code is not bound');
         $this->assertSame('executed_with_fault', $result->status);
-        $this->assertSame(TechnicianRunState::Failed, TechnicianRun::find($staged['run_id'])->state, 'an errored plan never closes done');
+        // Jeeves 10:51Z: no new run state; the run closes Done and every surface says it did not complete.
+        $this->assertSame(TechnicianRunState::Done, TechnicianRun::find($staged['run_id'])->state);
+        $this->assertStringStartsWith("The onboarding run did not complete: the '{$at}' step ended {$how}.", (string) $result->message);
+        $this->assertStringContainsString('its state reads done, which here does not mean every step succeeded', (string) $result->message);
+        $this->assertSame(['completed' => false, 'failed_step' => $at, 'failed_state' => $how], array_slice(TechnicianRun::find($staged['run_id'])->proposed_meta['plan_outcome'], 0, 3));
+        $admin = User::factory()->admin()->create(['is_active' => true]);
+        $this->actingAs($admin)->get(route('clients.show', $f['client']))->assertOk()
+            ->assertSee('data-testid="controld-plan-incomplete"', false)
+            ->assertSee("did not complete: the '{$at}' step ended {$how}.", false);
         $intent = ControlDOnboardingIntent::where('operation', $at)->sole();
         $this->assertSame($how, $intent->state);
         $this->assertSame(1, ControlDOnboardingIntent::count(), 'nothing after the stop was staged');
@@ -388,9 +397,8 @@ class ControlDOnboardPlanTest extends TestCase
         $summary = TechnicianActionLog::where('run_id', $staged['run_id'])->where('summary', 'like', '%plan summary%')->sole();
         $this->assertSame('error', $summary->result_status);
         $after = $at === 'code' ? '' : ', code=not-run';
-        $this->assertStringContainsString("{$at}={$how}{$after}, deploy=not-run; run closed failed.", $summary->summary);
+        $this->assertStringContainsString("{$at}={$how}{$after}, deploy=not-run; run did not complete; failed step: {$at} ({$how}); run closed (state done).", $summary->summary);
         $this->assertSame(1, TechnicianActionLog::where('run_id', $staged['run_id'])->where('summary', 'like', '%:deploy: not run; the provisioning code is not bound%')->count());
-        $this->assertStringContainsString('the run is marked failed', (string) $result->message);
         $this->assertStringContainsString('Deploy: not run, because the provisioning code is not bound; nothing was written in Tactical and no script was run.', (string) $result->message);
         if ($how === 'uncertain') {
             $this->assertSame((int) $f['client']->id, (int) $intent->active_client_id, 'uncertain keeps the lock');
@@ -529,7 +537,7 @@ class ControlDOnboardPlanTest extends TestCase
         $this->assertSame('gate_declined', $staged['result']->status);
         $this->assertSame(TechnicianRunState::AwaitingApproval, TechnicianRun::find($staged['run_id'])->state);
         $this->assertSame('The onboarding plan was refused before anything was written. Deploy: refused: the Tactical client custom field already holds a different value; it was left as it is.', $staged['result']->message);
-        $this->assertSame(1, TechnicianActionLog::where('run_id', $staged['run_id'])->where('result_status', 'error')->where('summary', 'like', '%plan summary: deploy=refused; refused before any write; run returned to awaiting approval.')->count());
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $staged['run_id'])->where('result_status', 'error')->where('summary', 'like', '%plan summary: deploy=refused; run did not complete; failed step: deploy (refused); refused before any write; run returned to awaiting approval.')->count());
     }
 
     /** A field present but holding '' is empty: it is written with the code, read back, and the script runs. */
@@ -571,7 +579,7 @@ class ControlDOnboardPlanTest extends TestCase
         $staged = $this->deployOnly($this->onboarded(), 'all');
         $this->assertSame(['GET clients/', 'GET clients/'.self::TC.'/', 'PUT clients/'.self::TC.'/', 'GET clients/'.self::TC.'/'], $this->tacticalRequests());
         $this->assertSame([], $this->scriptRuns());
-        $this->assertSame(TechnicianRunState::Failed, TechnicianRun::find($staged['run_id'])->state);
+        $this->assertSame(TechnicianRunState::Done, TechnicianRun::find($staged['run_id'])->state);
         $this->assertStringContainsString('Deploy: uncertain: the read-back did not show the bound code in the custom field; no script was run.', (string) $staged['result']->message);
     }
 
@@ -582,7 +590,7 @@ class ControlDOnboardPlanTest extends TestCase
         $staged = $this->deployOnly($this->onboarded(), 'all');
         $this->assertSame(['GET clients/', 'GET clients/'.self::TC.'/', 'PUT clients/'.self::TC.'/'], $this->tacticalRequests());
         $this->assertStringContainsString('Deploy: uncertain: the custom field write or its read-back failed', (string) $staged['result']->message);
-        $this->assertSame(TechnicianRunState::Failed, TechnicianRun::find($staged['run_id'])->state);
+        $this->assertSame(TechnicianRunState::Done, TechnicianRun::find($staged['run_id'])->state);
     }
 
     /** A pinned agent Tactical no longer lists under the client is refused; the others still run. */
@@ -596,7 +604,8 @@ class ControlDOnboardPlanTest extends TestCase
         $this->assertSame(['agent-a'], array_column($this->scriptRuns(), 'agent'));
         $this->assertSame('executed_with_fault', $staged['result']->status);
         $this->assertStringContainsString('Agents: agent-a=started, agent-z=refused.', (string) $staged['result']->message);
-        $this->assertSame(TechnicianRunState::Failed, TechnicianRun::find($staged['run_id'])->state, 'a partial deploy is not done');
+        $this->assertSame(TechnicianRunState::Done, TechnicianRun::find($staged['run_id'])->state);
+        $this->assertStringStartsWith("The onboarding run did not complete: the 'deploy' step ended partial.", (string) $staged['result']->message, 'a partial deploy is not a completed run');
     }
 
     /** Unset field id or script id: the deploy step refuses at staging (fail closed); nothing reaches Tactical. */
@@ -699,6 +708,35 @@ class ControlDOnboardPlanTest extends TestCase
         $this->assertStringNotContainsString('Deploy (writes in Tactical RMM)', $plain->proposed_content);
     }
 
+    /**
+     * Jeeves 10:51Z (G-14): approved through the cockpit, a plan that stopped flashes on the error
+     * channel that the run did not complete and names the step; a completed one does not.
+     */
+    public function test_the_cockpit_flash_names_the_failed_step_and_says_the_run_did_not_complete(): void
+    {
+        $f = $this->fixture(['controld_org_id' => 'flashorg01']);
+        $this->controlD([$this->ok(['sub_organizations' => [$this->listed('flashorg01')]])]);
+        $staged = $this->stage($f['client'], $f['ticket'], 'all');
+        $code = $this->codeResponses('flashorg01');
+        $this->controlD([$this->ok(['sub_organizations' => [$this->listed('flashorg01')]]), $code[0], $code[1], new Response(503, [], 'upstream')]);
+        $this->tac = [];
+        $approver = User::factory()->admin()->create(['is_active' => true]);
+        $this->actingAs($approver)->post(route('cockpit.approve', TechnicianRun::findOrFail($staged['run_id'])))->assertRedirect();
+        $error = (string) session('error');
+        $this->assertStringStartsWith("The onboarding run did not complete: the 'code' step ended uncertain.", $error);
+        $this->assertNull(session('success'), 'never on the success channel');
+        $this->assertSame([], $this->tacticalRequests());
+
+        // Positive control: a completed deploy-only plan is on the success channel and says it completed.
+        $g = $this->onboarded();
+        $this->controlD([]);
+        $ok = $this->stage($g['client'], $g['ticket'], 'all');
+        $this->actingAs($approver)->post(route('cockpit.approve', TechnicianRun::findOrFail($ok['run_id'])))->assertRedirect();
+        $this->assertStringStartsWith('Control D onboarding plan completed.', (string) session('success'));
+        $this->assertStringNotContainsString('did not complete', (string) session('success'));
+        $this->actingAs($approver)->get(route('clients.show', $g['client']))->assertOk()->assertDontSee('data-testid="controld-plan-incomplete"', false);
+    }
+
     /** An onboarded client offers a deploy-only plan; one already locked by an intent refuses it. */
     public function test_a_deploy_only_plan_refuses_while_an_intent_holds_the_client(): void
     {
@@ -722,7 +760,7 @@ class ControlDOnboardPlanTest extends TestCase
         $this->controlD([$this->ok(['organization' => $this->orgRow()]), $this->ok(['sub_organizations' => [$this->listed()]]), $code[0], $code[1],
             new Response(403, [], file_get_contents(base_path('tests/Fixtures/ControlD/read-only-rejection.json')))]);
         $this->approve($staged['run_id']);
-        $this->assertSame(TechnicianRunState::Failed, TechnicianRun::find($staged['run_id'])->state);
+        $this->assertSame(TechnicianRunState::Done, TechnicianRun::find($staged['run_id'])->state);
         $this->assertSame('syntheticOrg01', $f['client']->fresh()->controld_org_id);
 
         $this->controlD([$this->ok(['sub_organizations' => [$this->listed()]])]);

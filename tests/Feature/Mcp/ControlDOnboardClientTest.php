@@ -752,8 +752,9 @@ class ControlDOnboardClientTest extends TestCase
         $run = $this->stage($fixture);
         $this->vendor([new Response(403, [], file_get_contents(base_path('tests/Fixtures/ControlD/read-only-rejection.json')))]);
         $response = $this->approve($run, User::factory()->admin()->create(['is_active' => true]));
-        // P7A74iGD (b): an errored run closes Failed, never Done.
-        $this->assertSame(TechnicianRunState::Failed, $run->fresh()->state);
+        // P7A74iGD (b): the run closes Done (no new state, Jeeves 10:51Z) and the result says it did not complete.
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertStringStartsWith("The onboarding run did not complete: the 'organization' step ended rejected.", (string) session('error'));
         $this->assertNull($fixture['client']->fresh()->controld_org_id);
         $intent = ControlDOnboardingIntent::sole();
         $this->assertSame(['rejected', 40301, null], [$intent->state, $intent->reason_code, $intent->active_client_id]);
@@ -771,7 +772,8 @@ class ControlDOnboardClientTest extends TestCase
         $run = $this->stage($fixture);
         $this->vendor([new Response(503, [], 'upstream')]);
         $response = $this->approve($run, User::factory()->admin()->create(['is_active' => true]));
-        $this->assertSame(TechnicianRunState::Failed, $run->fresh()->state);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertStringStartsWith("The onboarding run did not complete: the 'organization' step ended uncertain.", (string) session('error'));
         $intent = ControlDOnboardingIntent::sole();
         $this->assertSame(['uncertain', $fixture['client']->id], [$intent->state, (int) $intent->active_client_id]);
         $this->assertStringContainsString('HARD FAULT', (string) session('error'));
@@ -1498,15 +1500,15 @@ class ControlDOnboardClientTest extends TestCase
         $this->assertStringNotContainsString('keeps this client\'s onboarding lock', $error);
         // #6405: the exact text, one audit row carrying it, and no row holding this client's lock.
         $this->assertNotNull($intentId, 'the intent existed before the pre-admission read');
-        $this->assertSame("Control D onboarding plan stopped: not every step succeeded, and the run is marked failed. HARD FAULT: the Control D 'global-profile' write for client #{$fixture['client']->id} ended unknown. The vendor PUT may have committed. Do NOT re-approve or re-stage: reconcile upstream and local state by hand; intent {$intentId} could not be found afterwards, so it holds no onboarding lock and does not block a new proposal for this client; do not stage one until then. Steps already bound are not redone when the plan is staged again; a step that ended uncertain must be reconciled first.", $error);
+        $this->assertSame("The onboarding run did not complete: the 'global-profile' step ended unknown. HARD FAULT: the Control D 'global-profile' write for client #{$fixture['client']->id} ended unknown. The vendor PUT may have committed. Do NOT re-approve or re-stage: reconcile upstream and local state by hand; intent {$intentId} could not be found afterwards, so it holds no onboarding lock and does not block a new proposal for this client; do not stage one until then. The run is closed and is not re-approved; its state reads done, which here does not mean every step succeeded. Steps already bound are not redone when the plan is staged again; a step that ended uncertain must be reconciled first.", $error);
         // P7A74iGD (b): one step row carrying the text, plus the plan summary row (code not run).
         $this->assertSame(2, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'error')->count(), 'the step row and the summary row');
         $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%holds no onboarding lock and does not block a new proposal%')->count(), 'the step audit row carries the same text');
-        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%plan summary: global-profile=unknown, code=not-run; run closed failed.')->count());
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%plan summary: global-profile=unknown, code=not-run; run did not complete; failed step: global-profile (unknown); run closed (state done).')->count());
         $this->assertSame(0, ControlDOnboardingIntent::where('active_client_id', $fixture['client']->id)->count(), 'nothing holds the per-client lock');
         $this->assertSame(0, TechnicianActionLog::where('run_id', $run->id)->where('summary', 'like', '%keeps this client%')->count());
         $this->assertSame(0, ControlDOnboardingIntent::count(), 'no intent row, so no lock row');
-        $this->assertSame(TechnicianRunState::Failed, $run->fresh()->state, 'an errored run never closes done');
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
         $this->assertSame(['GET', 'GET'], array_map(fn ($h) => $h['request']->getMethod(), $this->history));
     }
 

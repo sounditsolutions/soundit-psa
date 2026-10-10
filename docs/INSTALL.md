@@ -1572,12 +1572,13 @@ A rejected stop spends the proposal; staging again proposes only the steps not y
 uncertain step keeps the client's lock until it is reconciled and is never retried. Audit: one
 row per step outcome and one plan summary row (ids and status only).
 
-The **run state now reflects the outcome**: a plan in which every step succeeded closes
-`done`; a plan that stopped on an error, or whose deploy was not fully started, closes the
-new terminal state `failed` (never re-approved, never re-armed). Before this change an
-errored onboarding run closed `done`. The single-step invalidate approval's error arms close
-`failed` too. A plan refused before anything was written goes back to awaiting approval. No
-migration: the run state is a string column.
+**A run that did not complete says so.** The approved run closes with state `done` whether
+or not every step succeeded (no new run state is added here; a proper failed state is a
+separate ticket), so `done` alone does not mean success. When a step did not succeed (stopped
+on an error, or a deploy that was not fully started), the approval result (on the cockpit's
+error channel), the plan summary audit row and the client page's Control D card each say
+"the onboarding run did not complete" and name the failed step and how it ended. A plan
+refused before anything was written goes back to awaiting approval.
 
 **The deploy step** runs ONLY when the plan's code step bound in the same approval, or the
 client already stored its code; otherwise it makes no Tactical request at all. It needs the

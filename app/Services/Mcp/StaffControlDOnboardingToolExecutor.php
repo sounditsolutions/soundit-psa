@@ -709,7 +709,7 @@ class StaffControlDOnboardingToolExecutor
      * (lane, approver, settings, kill switch); a single-step onboarding proposal staged
      * before the plan refuses (LEGACY_STEP_REFUSAL); the rest of this method handles the
      * `invalidate` step only: re-derived and compared with the card, then one intent
-     * (stageInvalidate), then execute. Error outcomes close the run Failed, never Done.
+     * (stageInvalidate), then execute.
      *
      * OUTCOMES. B3 records the truth on the intent row: `bound` = done; `rejected` =
      * the vendor refused (read-only key, envelope error) — definite, nothing created,
@@ -926,7 +926,7 @@ class StaffControlDOnboardingToolExecutor
                 // absent, the text is unchanged.
                 $said = self::vendorSaid($intent);
                 $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Control D rejected the '{$step}' write — {$reason} (code {$intent->reason_code}); intent {$intent->id} rejected, {$nothing}.{$said}", $approverLabel, $run->id, $approverId);
-                $closed = $this->closeRunOrRecordLostFence($run, $client->id, $ticket, $contentHash, $targetKey, $approverLabel, $approverId, TechnicianRunState::Failed);
+                $closed = $this->closeRunOrRecordLostFence($run, $client->id, $ticket, $contentHash, $targetKey, $approverLabel, $approverId);
 
                 return new TechnicianApprovalResult('executed_with_fault', message: "Control D rejected the {$step} write: {$reason}".($intent->reason_code === 40301 ? ' — the API key is a Read token; replace it with a Write token in Settings > Integrations, then stage again.' : '.').' '.ucfirst($nothing).'.'.$said.($closed ? '' : ' '.self::NOT_CLOSED));
             }
@@ -934,7 +934,7 @@ class StaffControlDOnboardingToolExecutor
             // uncertain, posted, or unknown: a vendor write MAY have happened. Terminal;
             // never re-armed. An intent row that still exists holds the client's lock for manual
             // reconciliation; one whose row is gone holds none, and the text says so.
-            $closed = $this->closeRunOrRecordLostFence($run, $client->id, $ticket, $contentHash, $targetKey, $approverLabel, $approverId, TechnicianRunState::Failed);
+            $closed = $this->closeRunOrRecordLostFence($run, $client->id, $ticket, $contentHash, $targetKey, $approverLabel, $approverId);
             $fault = "HARD FAULT: the Control D '{$step}' write for client #{$client->id} ended {$state}".($intent !== null ? " (intent {$intent->id}, phase {$intent->phase}".($intent->vendor_pk !== null ? ($step === self::STEP_GLOBAL_PROFILE ? ", org PK {$intent->vendor_pk}" : ", vendor PK {$intent->vendor_pk}") : '').')' : '')
                 .match ($step) {
                     self::STEP_GLOBAL_PROFILE => '. The vendor PUT may have committed.',
@@ -977,7 +977,7 @@ class StaffControlDOnboardingToolExecutor
                 // did not close the run; a close that throws is logged and the run stays claimed.
                 $closed = true;
                 try {
-                    $closed = $this->closeRunOrRecordLostFence($run, (int) $run->client_id, null, (string) $run->content_hash, "onboard: intent {$intentId}", $label, $approverId, TechnicianRunState::Failed);
+                    $closed = $this->closeRunOrRecordLostFence($run, (int) $run->client_id, null, (string) $run->content_hash, "onboard: intent {$intentId}", $label, $approverId);
                 } catch (\Throwable) {
                     \Illuminate\Support\Facades\Log::error('[StaffControlDOnboardingToolExecutor] Closing the run failed after its intent could not be read', ['run_id' => $run->id]);
                 }
@@ -987,7 +987,7 @@ class StaffControlDOnboardingToolExecutor
             if ($caughtState === 'rejected') {
                 $label = $this->approverLabel($approverId);
                 $this->safeAudit($run->action_type, 'error', (int) $run->client_id, null, (string) $run->content_hash, "onboard: finishing after Control D rejected the write failed; intent {$intentId} rejected; run NOT reopened.", $label, $run->id, $approverId);
-                if (! $this->closeRunOrRecordLostFence($run, (int) $run->client_id, null, (string) $run->content_hash, "onboard: intent {$intentId}", $label, $approverId, TechnicianRunState::Failed)) {
+                if (! $this->closeRunOrRecordLostFence($run, (int) $run->client_id, null, (string) $run->content_hash, "onboard: intent {$intentId}", $label, $approverId)) {
                     return new TechnicianApprovalResult('executed_with_fault', message: "Control D rejected the onboarding write (intent {$intentId}); finishing this approval failed afterwards. ".self::NOT_CLOSED.' Stage a fresh proposal once the cause is fixed.');
                 }
 
@@ -997,7 +997,7 @@ class StaffControlDOnboardingToolExecutor
                 // Post-admission: a write may have happened. Keep the run terminal.
                 $label = $this->approverLabel($approverId);
                 $this->safeAudit($run->action_type, 'error', (int) $run->client_id, null, (string) $run->content_hash, "onboard: finalizing after a possible vendor write failed; intent {$intentId}; run NOT reopened.", $label, $run->id, $approverId);
-                $closed = $this->closeRunOrRecordLostFence($run, (int) $run->client_id, null, (string) $run->content_hash, "onboard: intent {$intentId}", $label, $approverId, TechnicianRunState::Failed);
+                $closed = $this->closeRunOrRecordLostFence($run, (int) $run->client_id, null, (string) $run->content_hash, "onboard: intent {$intentId}", $label, $approverId);
 
                 return new TechnicianApprovalResult('executed_with_fault', message: "HARD FAULT: recording the Control D onboarding outcome failed after a possible vendor write (intent {$intentId}). Do NOT re-approve; reconcile by hand.".($closed ? '' : ' '.self::NOT_CLOSED));
             }
@@ -1026,8 +1026,9 @@ class StaffControlDOnboardingToolExecutor
      * continues; anything else stops, and later steps are recorded as not run. The deploy step
      * runs only when the code step bound in this run, or (a deploy-only plan) the client already
      * stores its code. One audit row per step plus one summary row, ids and status only. The run
-     * closes Done only when every step succeeded, and Failed otherwise; a first step refused
-     * before any write (nothing done) returns the run to awaiting approval instead.
+     * closes Done (Jeeves 10:51Z: no new run state in (b)); when a step did not succeed, the
+     * result text and the summary row name that step and say the run did not complete. A first
+     * step refused before any write (nothing done) returns the run to awaiting approval instead.
      */
     private function approvePlan(TechnicianRun $run, array $payload, Client $client, Ticket $ticket, User $approver, string $approverLabel): TechnicianApprovalResult
     {
@@ -1069,6 +1070,7 @@ class StaffControlDOnboardingToolExecutor
         $stopped = false;
         $wrote = false;
         $firstRefusal = null;
+        $current = null;
         try {
             foreach ($steps as $step) {
                 if ($step === self::STEP_DEPLOY) {
@@ -1080,6 +1082,7 @@ class StaffControlDOnboardingToolExecutor
 
                     continue;
                 }
+                $current = $step;
                 $r = $this->runPlanStep($step, $payload, $client, $approver);
                 $firstRefusal ??= $r['state'] === 'refused' && $outcomes === [] ? $r['refusal'] : null;
                 $outcomes[$step] = $r['state'];
@@ -1099,6 +1102,7 @@ class StaffControlDOnboardingToolExecutor
                     $lines[] = 'Deploy: not run, because the provisioning code is not bound; nothing was written in Tactical and no script was run.';
                     $this->safeAudit($run->action_type, 'blocked', $client->id, $ticket, $hash, "{$key}:deploy: not run; the provisioning code is not bound, so no Tactical write and no script run.", $approverLabel, $run->id, $approverId);
                 } else {
+                    $current = self::STEP_DEPLOY;
                     $d = (new ControlDTacticalDeploy(app(TacticalClient::class)))->execute($client, $payload['deploy']);
                     $outcomes[self::STEP_DEPLOY] = $d['outcome'];
                     $wrote = $wrote || ! in_array($d['field'], ['untouched', 'equal'], true) || array_diff($d['agents'], [ControlDTacticalDeploy::AGENT_REFUSED]) !== [];
@@ -1110,16 +1114,24 @@ class StaffControlDOnboardingToolExecutor
             }
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::error('[StaffControlDOnboardingToolExecutor] The onboarding plan failed while running', ['run_id' => $run->id, 'exception' => $e::class]);
-            $outcomes['unknown'] = 'error';
+            $outcomes[$current ?? 'unknown'] = 'error';
             $wrote = true;
             $lines[] = 'HARD FAULT: the plan failed while running, so a write cannot be ruled out for the step that was running. Do NOT re-approve; check Control D, Tactical and the client\'s onboarding intents.';
         }
 
         $ok = array_diff($outcomes, ['bound', ControlDTacticalDeploy::STARTED]) === [];
         $summary = implode(', ', array_map(static fn (string $s, string $o): string => "{$s}={$o}", array_keys($outcomes), $outcomes));
+        $failed = null;
+        foreach ($outcomes as $s => $o) {
+            if (! in_array($o, ['bound', ControlDTacticalDeploy::STARTED], true)) {
+                $failed = [$s, $o];
+                break;
+            }
+        }
+        $incomplete = $failed === null ? '' : "The onboarding run did not complete: the '{$failed[0]}' step ended {$failed[1]}.";
         if (! $ok && ! $wrote) {
             // The first step refused before any write; nothing was done, so the card may be approved again.
-            $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $hash, "{$key}: plan summary: {$summary}; refused before any write; run returned to awaiting approval.", $approverLabel, $run->id, $approverId);
+            $this->safeAudit($run->action_type, 'error', $client->id, $ticket, $hash, "{$key}: plan summary: {$summary}; run did not complete; failed step: {$failed[0]} ({$failed[1]}); refused before any write; run returned to awaiting approval.", $approverLabel, $run->id, $approverId);
             $run->releaseClaim();
             // A Control D step refused before admission keeps the single-step text (it is the same fact).
             $first = $firstRefusal ?? null;
@@ -1128,18 +1140,25 @@ class StaffControlDOnboardingToolExecutor
                 ? 'Control D onboarding was refused before any vendor write: '.$first
                 : 'The onboarding plan was refused before anything was written. '.implode(' ', $lines));
         }
+        // Status only (no secret): the client page's Control D card shows a run that did not complete.
+        // The fenced close writes it with the state (advanceTo() carries the run's unsaved changes).
+        $meta = $run->proposed_meta;
+        $meta['plan_outcome'] = ['completed' => $ok, 'failed_step' => $failed[0] ?? null, 'failed_state' => $failed[1] ?? null, 'steps' => $outcomes];
+        $run->proposed_meta = $meta;
         $closeFailed = false;
         try {
-            $closed = $this->closeRunOrRecordLostFence($run, $client->id, $ticket, $hash, $key, $approverLabel, $approverId, $ok ? TechnicianRunState::Done : TechnicianRunState::Failed);
+            // Jeeves 10:51Z: no new run state in (b). The run closes Done either way; when a step did not
+            // succeed, the result, the summary row and the cockpit message say so and name the step.
+            $closed = $this->closeRunOrRecordLostFence($run, $client->id, $ticket, $hash, $key, $approverLabel, $approverId);
         } catch (\Throwable $e) {
             // A step may have written, so the run is never released for re-approval: it stays claimed.
             \Illuminate\Support\Facades\Log::error('[StaffControlDOnboardingToolExecutor] Closing the onboarding plan run failed', ['run_id' => $run->id, 'exception' => $e::class]);
             $closed = false;
             $closeFailed = true;
         }
-        $this->safeAudit($run->action_type, $ok ? 'executed' : 'error', $client->id, $ticket, $hash, "{$key}: plan summary: {$summary}; run ".($closed ? 'closed '.($ok ? 'done' : 'failed') : ($closeFailed ? 'close failed; left claimed, not reopened' : 'not closed by this request')).'.', $approverLabel, $run->id, $approverId);
-        $text = ($ok ? 'Control D onboarding plan completed. ' : 'Control D onboarding plan stopped: not every step succeeded, and the run is marked failed. ').implode(' ', $lines)
-            .($ok ? '' : ' Steps already bound are not redone when the plan is staged again; a step that ended uncertain must be reconciled first.');
+        $this->safeAudit($run->action_type, $ok ? 'executed' : 'error', $client->id, $ticket, $hash, "{$key}: plan summary: {$summary}; ".($ok ? 'run completed' : "run did not complete; failed step: {$failed[0]} ({$failed[1]})").'; run '.($closed ? 'closed (state done)' : ($closeFailed ? 'close failed; left claimed, not reopened' : 'not closed by this request')).'.', $approverLabel, $run->id, $approverId);
+        $text = ($ok ? 'Control D onboarding plan completed. ' : $incomplete.' ').implode(' ', $lines)
+            .($ok ? '' : ' The run is closed and is not re-approved; its state reads done, which here does not mean every step succeeded. Steps already bound are not redone when the plan is staged again; a step that ended uncertain must be reconciled first.');
         if ($closeFailed) {
             return new TechnicianApprovalResult('executed_with_fault', message: $text.' Closing the run failed afterwards, so it stays claimed and was not reopened. Do NOT re-approve it; check the run.');
         }
@@ -1363,9 +1382,9 @@ class StaffControlDOnboardingToolExecutor
      * ids-only warning line and an audit row (safeAudit(), so a failed audit is logged
      * status-only and never throws). A throw from advanceTo() is not caught here.
      */
-    private function closeRunOrRecordLostFence(TechnicianRun $run, ?int $clientId, ?Ticket $ticket, string $contentHash, string $prefix, string $actorLabel, int $approverId, TechnicianRunState $state = TechnicianRunState::Done): bool
+    private function closeRunOrRecordLostFence(TechnicianRun $run, ?int $clientId, ?Ticket $ticket, string $contentHash, string $prefix, string $actorLabel, int $approverId): bool
     {
-        if ($run->advanceTo($state)) {
+        if ($run->advanceTo(TechnicianRunState::Done)) {
             return true;
         }
         \Illuminate\Support\Facades\Log::warning('[StaffControlDOnboardingToolExecutor] This request did not close the run: it no longer holds it', ['run_id' => $run->id, 'action' => $run->action_type]);

@@ -157,8 +157,9 @@ class ControlDRejectMessageTest extends TestCase
     /** P7A74iGD (b): the plan result wraps the step's text: a stop is a failed plan, and the step line is kept exactly. */
     private function stepText(string $error): string
     {
-        $head = 'Control D onboarding plan stopped: not every step succeeded, and the run is marked failed. ';
-        $tail = ' Steps already bound are not redone when the plan is staged again; a step that ended uncertain must be reconciled first.';
+        $this->assertSame(1, preg_match("/^The onboarding run did not complete: the '[a-z-]+' step ended [a-z]+\\. /", $error), $error);
+        $head = substr($error, 0, strpos($error, '. ') + 2);
+        $tail = ' The run is closed and is not re-approved; its state reads done, which here does not mean every step succeeded. Steps already bound are not redone when the plan is staged again; a step that ended uncertain must be reconciled first.';
         $this->assertStringStartsWith($head, $error);
         $this->assertStringEndsWith($tail, $error);
         $body = substr($error, strlen($head), -strlen($tail));
