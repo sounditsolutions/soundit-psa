@@ -53,10 +53,20 @@ jobs:
         run: |
           cp .env.example .env
           php artisan key:generate
+      # The filter has its own delimiters, so PHPUnit uses it as written:
+      # anchored to Class::method and case-sensitive (#7195). A leg that skips,
+      # makes no assertion, or is not selected at all fails the job (#7192,
+      # #7193); the next step checks that exactly these two tests ran.
       - name: Run lock-order tests in both move directions
         run: >-
           php -d memory_limit=1024M vendor/bin/phpunit --fail-on-warning --fail-on-skipped
-          --filter 'test_m4_lock_order_native_mariadb|test_reverse_transfer_native_mariadb'
+          --fail-on-risky --fail-on-empty-test-suite --log-junit lock-order-junit.xml
+          --filter '/^Tests\\Feature\\Prepay\\(?:MoveEntryContractTest::test_m4_lock_order_native_mariadb|TransferLockOrderTest::test_reverse_transfer_native_mariadb)$/'
+      - name: Check that both native legs ran and asserted
+        run: >-
+          php scripts/ci/check-junit-ran.php lock-order-junit.xml
+          'Tests\Feature\Prepay\MoveEntryContractTest::test_m4_lock_order_native_mariadb'
+          'Tests\Feature\Prepay\TransferLockOrderTest::test_reverse_transfer_native_mariadb'
 
   verify:
     name: Tests & style gate
