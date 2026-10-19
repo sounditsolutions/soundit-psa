@@ -22,11 +22,28 @@ class TechnicianDigestCommandTest extends TestCase
     public function test_enabled_builds_notifies_and_records(): void
     {
         Setting::setValue('technician_enabled', '1');
-        $this->mock(OperatorNotifier::class, fn (MockInterface $m) => $m->shouldReceive('notify')->once());
+        // Delivered → the last-digest-sent stamp is recorded.
+        $this->mock(OperatorNotifier::class, fn (MockInterface $m) => $m->shouldReceive('notify')->once()->andReturn(true));
 
         $this->assertNull(TechnicianConfig::lastDigestAt());
         $this->artisan('technician:digest')->assertSuccessful();
         $this->assertNotNull(TechnicianConfig::lastDigestAt());
+    }
+
+    /**
+     * psa-tmdw: recordDigestSent() must NOT stamp "digest sent" when notify()
+     * delivered nothing (no channel configured) — otherwise technician_last_digest_at
+     * reports success on a delivery that never happened.
+     */
+    public function test_digest_not_recorded_when_delivery_fails(): void
+    {
+        Setting::setValue('technician_enabled', '1');
+        // Nothing delivered (no webhook, no email) → notify() returns false.
+        $this->mock(OperatorNotifier::class, fn (MockInterface $m) => $m->shouldReceive('notify')->once()->andReturn(false));
+
+        $this->assertNull(TechnicianConfig::lastDigestAt());
+        $this->artisan('technician:digest')->assertSuccessful();
+        $this->assertNull(TechnicianConfig::lastDigestAt());
     }
 
     public function test_digest_disabled_sends_nothing(): void

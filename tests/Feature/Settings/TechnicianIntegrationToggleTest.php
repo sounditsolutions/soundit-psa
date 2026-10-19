@@ -315,4 +315,47 @@ class TechnicianIntegrationToggleTest extends TestCase
             ->assertSee('Teams webhook URL')
             ->assertSee('Notify email');
     }
+
+    // --- psa-tmdw: notify panel warns when a notification path is active with no channel ---
+
+    public function test_notify_panel_warns_when_enabled_with_no_delivery_channel(): void
+    {
+        // Technician on (→ worker-down alert + digest active), but no webhook and no email.
+        Setting::setValue('technician_enabled', '1');
+
+        $this->assertTrue(TechnicianConfig::notificationsUndeliverable());
+
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertSee('no delivery channel');
+    }
+
+    public function test_notify_panel_no_warning_when_a_channel_is_configured(): void
+    {
+        Setting::setValue('technician_enabled', '1');
+        Setting::setValue('technician_notify_email', 'ops@example.com');
+
+        $this->assertFalse(TechnicianConfig::notificationsUndeliverable());
+
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertDontSee('no delivery channel');
+    }
+
+    public function test_notify_panel_no_warning_when_technician_fully_off(): void
+    {
+        // Fully off → neither the worker-down alert nor the digest can fire, so no warning
+        // even though digest defaults on when unset.
+        Setting::setValue('technician_enabled', '0');
+        Setting::setValue('technician_emergency_enabled', '0');
+
+        $this->assertFalse(TechnicianConfig::notificationsUndeliverable());
+
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertDontSee('no delivery channel');
+    }
 }

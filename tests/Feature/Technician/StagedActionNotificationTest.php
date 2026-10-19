@@ -153,6 +153,8 @@ class StagedActionNotificationTest extends TestCase
         $notifier->shouldReceive('notify')->once()
             ->andReturnUsing(function (string $subject, string $body) use (&$captured) {
                 $captured = ['subject' => $subject, 'body' => $body];
+
+                return true; // notify(): bool — delivered (psa-tmdw)
             });
         $this->app->instance(OperatorNotifier::class, $notifier);
 

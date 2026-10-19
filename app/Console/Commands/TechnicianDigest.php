@@ -20,8 +20,12 @@ class TechnicianDigest extends Command
         }
 
         $digest = $builder->build();
-        $notifier->notify($digest->subject, $digest->body);
-        TechnicianConfig::recordDigestSent();
+
+        // psa-tmdw: only stamp "digest sent" when it actually reached a channel —
+        // otherwise technician_last_digest_at reports success on a non-delivery.
+        if ($notifier->notify($digest->subject, $digest->body)) {
+            TechnicianConfig::recordDigestSent();
+        }
 
         return self::SUCCESS;
     }
