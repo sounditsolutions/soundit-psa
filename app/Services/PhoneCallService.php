@@ -1202,8 +1202,20 @@ class PhoneCallService
 
     /**
      * Link an existing call to a PSA ticket.
-     * Sets billability from triage if classification exists, otherwise leaves
-     * it null — the triage pipeline will set it after classification runs.
+     *
+     * A call whose is_billable is already set keeps it. A call with is_billable null
+     * gets a value at link time whenever the ticket exists (card 6ad7c912):
+     *  - a Missed or Voicemail call is set non-billable;
+     *  - any other call takes TicketService::defaultBillable($ticket): not billable when
+     *    the ticket's latest triage classification says work_covered_by_managed, and
+     *    billable when it says otherwise or when the ticket has no triage run or no
+     *    classification.
+     * Triage, if it later classifies the ticket, can still flip a completed call either
+     * way (TriagePipeline::reconcileBillabilityAfterClassification).
+     *
+     * A billable call with a duration is debited from prepay here. A billable call with
+     * no duration is not debited here, and debitFromPhoneCall() records nothing for a
+     * call with no effective duration.
      */
     public function linkCallToTicket(PhoneCall $call, int $ticketId): PhoneCall
     {
@@ -1217,10 +1229,13 @@ class PhoneCallService
             $call->contract_held_at = null;
         }
 
-        // Only set billability if triage has already classified this ticket
+        // Set billability at link time (card 6ad7c912) so a call is never left null on an
+        // existing ticket: triage does not run on every ticket.
         if ($call->is_billable === null) {
             $ticket = Ticket::with('latestTriageRun')->find($ticketId);
-            if ($ticket?->latestTriageRun?->stageResult('classification')) {
+            if (in_array($call->status, [CallStatus::Missed, CallStatus::Voicemail], true)) {
+                $call->is_billable = false;
+            } elseif ($ticket) {
                 $call->is_billable = app(TicketService::class)->defaultBillable($ticket);
             }
         }
