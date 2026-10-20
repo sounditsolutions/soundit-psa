@@ -147,6 +147,19 @@ class LitsrmmAssetSyncTest extends TestCase
         $this->assertL9NoUnused($result, $records);
     }
 
+    public function test_l9_lock_build_failure_refuses_without_reads_or_unused_codes(): void
+    {
+        $records = $this->captureLogs();
+        $service = $this->service();
+        \Illuminate\Support\Facades\Cache::shouldReceive('lock')->with('litsrmm-asset-sync', 3600)->once()->andThrow(new \RuntimeException('synthetic private message'));
+        $result = $service->sync($this->client, ['12:b:1:5:4:5:1:0:d0123456789']);
+        $this->assertSame(['The LITSRMM run lock could not be taken (the cache store failed); nothing was read.'], $result->errorMessages);
+        $this->assertSame(1, $result->errors);
+        $this->assertCount(0, $this->history);
+        $this->assertLogRecords($records, '[LitsrmmAssetSync] run refused: run lock unavailable', [['client_id' => $this->client->id, 'error' => 'RuntimeException']]);
+        $this->assertL9NoUnused($result, $records);
+    }
+
     private function assertL9NoUnused(\App\Services\SyncResult $result, \ArrayObject $records): void
     {
         $this->assertArrayNotHasKey('short_read_accept_unused', $result->details);

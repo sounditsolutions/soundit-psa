@@ -407,8 +407,8 @@ class LitsrmmAssetSyncService
         }
 
         // Default cache store; it must be shared and lock-capable — see docs/INSTALL.md 'LITSRMM sync run lock (C-58)'.
-        $lock = \Illuminate\Support\Facades\Cache::lock('litsrmm-asset-sync', self::SYNC_LOCK_TTL);
         try {
+            $lock = \Illuminate\Support\Facades\Cache::lock('litsrmm-asset-sync', self::SYNC_LOCK_TTL);
             $acquired = $lock->get();
         } catch (\Throwable $e) {
             Log::warning('[LitsrmmAssetSync] run refused: run lock unavailable', ['client_id' => $only?->id, 'error' => class_basename($e)]);
