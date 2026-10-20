@@ -199,6 +199,11 @@ class Contract extends Model
         return $this->belongsTo(Client::class);
     }
 
+    public function lines(): HasMany
+    {
+        return $this->hasMany(ContractLine::class);
+    }
+
     public function profiles(): HasMany
     {
         return $this->hasMany(RecurringInvoiceProfile::class);
