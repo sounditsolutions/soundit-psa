@@ -367,7 +367,7 @@ class LitsrmmSyncControlsTest extends TestCase
 
     public function test_l5_settings_sync_has_the_shared_throttle(): void
     {
-        $this->assertContains('throttle:10,1', app('router')->getRoutes()->getByName('settings.integrations.litsrmm.sync-devices')->gatherMiddleware());
+        $this->assertContains('throttle:10,1,litsrmm-sync', app('router')->getRoutes()->getByName('settings.integrations.litsrmm.sync-devices')->gatherMiddleware());
     }
 
     public function test_l5_disabled_settings_post_keeps_the_controller_guard(): void

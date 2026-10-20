@@ -361,7 +361,10 @@ class LitsrmmAssetSyncService
         $refusals = array_values(array_filter($messages, fn (string $m) => self::refusalCodeLine($m) !== null));
         $others = array_values(array_filter($messages, fn (string $m) => self::refusalCodeLine($m) === null));
 
-        $joined = $others === [] ? '' : implode('; ', $others).($refusals === [] ? '.' : '; ');
+        $joined = implode('; ', $others);
+        if ($joined !== '') {
+            $joined .= $refusals === [] ? (str_ends_with($joined, '.') ? '' : '.') : '; ';
+        }
 
         return $joined.implode("\n", $refusals);
     }
@@ -388,7 +391,7 @@ class LitsrmmAssetSyncService
      * id in details['short_read_accept_unused'], and logged. When a client's
      * transaction throws, the exception leaves this method and no result is
      * returned, so those ids are in the log record only (#5868).
-     * Two refusals return before any client is read and so list and log no unused code: LITSRMM unavailable, and the run lock already held.
+     * Three refusals return before any client is read and so list and log no unused code: LITSRMM unavailable, the run lock already held, and the run lock unavailable.
      * Nothing marks a code used beyond this run.
      *
      * @param  list<string>  $acceptShortRead
@@ -403,8 +406,17 @@ class LitsrmmAssetSyncService
             return $result;
         }
 
-        $lock = \Illuminate\Support\Facades\Cache::lock('litsrmm-asset-sync', self::SYNC_LOCK_TTL);
-        if (! $lock->get()) {
+        // Default cache store; it must be shared and lock-capable — see docs/INSTALL.md 'LITSRMM sync run lock (C-58)'.
+        try {
+            $lock = \Illuminate\Support\Facades\Cache::lock('litsrmm-asset-sync', self::SYNC_LOCK_TTL);
+            $acquired = $lock->get();
+        } catch (\Throwable $e) {
+            Log::warning('[LitsrmmAssetSync] run refused: run lock unavailable', ['client_id' => $only?->id, 'error' => class_basename($e)]);
+            $result->recordError('The LITSRMM run lock could not be taken (the cache store failed); nothing was read.');
+
+            return $result;
+        }
+        if (! $acquired) {
             Log::warning('[LitsrmmAssetSync] run refused: run lock held', ['client_id' => $only?->id]);
             $result->recordError('Another LITSRMM device sync is running, or one that stopped early still holds the lock (it frees itself within an hour); nothing was read.');
 
@@ -414,12 +426,17 @@ class LitsrmmAssetSyncService
         try {
             return $this->syncLocked($only, $acceptShortRead);
         } finally {
-            $lock->release();
+            try {
+                $lock->release();
+            } catch (\Throwable $e) {
+                Log::warning('[LitsrmmAssetSync] run lock release failed', ['error' => class_basename($e)]);
+            }
         }
     }
 
     // The TTL must exceed the longest real full-sync run (not measured).
-    // A killed holder expires after this interval.
+    // The lock expires this long after it was acquired, even if its holder was killed.
+    // A holder killed before finally (a fatal, a timeout or a killed worker) blocks every entry point until the lock expires, up to 3600 s; the way out, only once no sync is running, is Cache::lock('litsrmm-asset-sync')->forceRelease().
     private const SYNC_LOCK_TTL = 3600;
 
     /** @param list<string> $acceptShortRead */
