@@ -12,6 +12,8 @@ use App\Models\SignalEvent;
 use App\Models\User;
 use App\Services\EmailService;
 use App\Services\Graph\GraphClient;
+use App\Services\Signals\SignalHub;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Bus;
@@ -188,5 +190,46 @@ class EmailUnresolvedOriginTest extends TestCase
 
         $this->assertSame(0, SignalEvent::where('type_key', 'intake.email_unresolved')->count());
         Bus::assertNotDispatched(SendTicketNotification::class);
+    }
+
+    public function test_initial_backfill_poll_advances_the_cursor_when_the_summary_emit_throws(): void
+    {
+        $service = $this->serviceReturning([$this->message('summary-throws')]);
+        $this->app->instance(SignalHub::class, new class extends SignalHub
+        {
+            public function __construct() {}
+
+            public function emit(
+                string $typeKey,
+                ?Model $entity,
+                string $summary,
+                array $context = [],
+                ?int $originEventId = null,
+            ): ?SignalEvent {
+                throw new \RuntimeException('summary emit failed');
+            }
+        });
+        $records = [];
+        Log::listen(function (MessageLogged $record) use (&$records): void {
+            $records[] = $record;
+        });
+
+        $thrown = null;
+        try {
+            $result = $service->pollMailbox();
+        } catch (\RuntimeException $e) {
+            $thrown = $e;
+        }
+
+        $this->assertNull($thrown, 'a failed summary emit must not abort the poll');
+        $this->assertSame(0, $result->errors);
+        $this->assertNotNull(Setting::getValue('graph_last_poll_at'), 'the cursor must advance so the next poll is live');
+        $summaryWarnings = array_values(array_filter(
+            $records,
+            fn (MessageLogged $r): bool => ($r->context['type_key'] ?? null) === 'intake.email_unresolved'
+                && ($r->context['count'] ?? null) === 1
+        ));
+        $this->assertCount(1, $summaryWarnings);
+        $this->assertSame('warning', $summaryWarnings[0]->level);
     }
 }

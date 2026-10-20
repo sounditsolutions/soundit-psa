@@ -427,7 +427,15 @@ class EmailService
     public function emitUnresolvedImportSummary(int $count): void
     {
         if ($count > 0) {
-            app(\App\Services\Signals\SignalHub::class)->emit('intake.email_unresolved', null, "{$count} unresolved imported", []);
+            try {
+                app(\App\Services\Signals\SignalHub::class)->emit('intake.email_unresolved', null, "{$count} unresolved imported", []);
+            } catch (\Throwable $e) {
+                Log::warning('[EmailService] Intake summary signal emit failed', [
+                    'type_key' => 'intake.email_unresolved',
+                    'count' => $count,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
     }
 
