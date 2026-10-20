@@ -45,6 +45,9 @@ class EmailService
 
     public const ORIGIN_BACKFILL = 'backfill';
 
+    // Present while a backfill poll has stopped short of the end of its backlog (see pollMailbox).
+    private const BACKFILL_PENDING_KEY = 'graph_poll_backfill_pending';
+
     private const FREE_EMAIL_DOMAINS = \App\Support\FreeEmailDomains::ALL;
 
     private const GRAPH_SELECT_FIELDS = 'id,internetMessageId,conversationId,from,toRecipients,ccRecipients,subject,bodyPreview,body,hasAttachments,importance,receivedDateTime,internetMessageHeaders';
@@ -69,7 +72,13 @@ class EmailService
         }
 
         $storedCursor = Setting::getValue('graph_last_poll_at');
-        $origin = $sinceDate === null && $storedCursor !== null ? self::ORIGIN_LIVE : self::ORIGIN_BACKFILL;
+        // A backfill that stopped short (page limit, or a failure holding the cursor back)
+        // left the stored cursor inside its backlog. The scheduled polls that walk the rest
+        // of that backlog continue the backfill; they are not live until one reaches the end.
+        $backfillPending = Setting::getValue(self::BACKFILL_PENDING_KEY) !== null;
+        $origin = $sinceDate === null && $storedCursor !== null && ! $backfillPending
+            ? self::ORIGIN_LIVE
+            : self::ORIGIN_BACKFILL;
         $unresolved = [];
 
         $since = $sinceDate
@@ -270,6 +279,20 @@ class EmailService
 
         if ($cursorTarget) {
             Setting::setValue('graph_last_poll_at', $cursorTarget);
+        }
+
+        // A backfill that did not reach the end of its backlog keeps the next scheduled
+        // poll backfill; one that did hands the cursor back to live polling.
+        if ($origin === self::ORIGIN_BACKFILL) {
+            $stoppedShort = $hitPageLimit
+                || $cursorTarget !== $lastSuccessfulReceivedAt
+                || ($cursorTarget === null && $result->errors > 0);
+
+            if ($stoppedShort) {
+                Setting::setValue(self::BACKFILL_PENDING_KEY, '1');
+            } else {
+                Setting::where('key', self::BACKFILL_PENDING_KEY)->delete();
+            }
         }
 
         if ($result->errors > 0) {

@@ -17,6 +17,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Mockery;
@@ -284,5 +285,85 @@ class EmailUnresolvedOriginTest extends TestCase
         $this->assertCount(1, $summaryWarnings);
         $this->assertSame('warning', $summaryWarnings[0]->level);
         $this->assertSame('RuntimeException', $summaryWarnings[0]->context['error']);
+    }
+
+    public function test_scheduled_poll_after_a_held_back_initial_backfill_stays_backfill(): void
+    {
+        // The initial 30-day backfill fails one message from day -20, so its cursor is
+        // held at that failure plus the lookback. The next scheduled poll (stored cursor,
+        // no since) walks the same backlog: it continues the backfill.
+        Event::listen('eloquent.creating: '.Email::class, function (Email $email): void {
+            if ($email->graph_id === 'held-poison') {
+                throw new \RuntimeException('synthetic import failure');
+            }
+        });
+        $backlog = [$this->message('held-poison', 480), $this->message('held-one', 456), $this->message('held-two', 432)];
+        $graph = Mockery::mock(GraphClient::class);
+        $graph->shouldReceive('getMailboxMessages')->andReturn($backlog, $backlog, [$this->message('held-fresh')]);
+        $this->app->instance(GraphClient::class, $graph);
+        $service = $this->app->make(EmailService::class);
+        $records = [];
+        Log::listen(function (MessageLogged $record) use (&$records): void {
+            if (str_contains($record->message, 'UNWATCHED SUPPORT EMAIL')) {
+                $records[] = $record;
+            }
+        });
+
+        $this->assertSame(1, $service->pollMailbox()->errors);
+        $this->assertSame(1, $service->pollMailbox()->errors);
+
+        $this->assertSame(2, Email::count());
+        $this->assertSame(['2 unresolved imported'], SignalEvent::where('type_key', 'intake.email_unresolved')
+            ->orderBy('id')->pluck('summary')->all());
+        $this->assertSame(0, SignalEvent::where('type_key', 'intake.email_unresolved')->whereNotNull('entity_id')->count());
+        Bus::assertNotDispatched(SendTicketNotification::class);
+        $this->assertCount(0, $records);
+
+        // The second walk reached the end of the backlog, so the next poll is live again.
+        $this->assertSame(0, $service->pollMailbox()->errors);
+        $fresh = Email::where('graph_id', 'held-fresh')->sole();
+        $this->assertSame([$fresh->id], SignalEvent::where('type_key', 'intake.email_unresolved')
+            ->whereNotNull('entity_id')->pluck('entity_id')->all());
+        Bus::assertDispatchedTimes(SendTicketNotification::class, 1);
+        $this->assertCount(1, $records);
+    }
+
+    public function test_scheduled_poll_after_a_page_limited_backfill_stays_backfill(): void
+    {
+        // The initial backfill fills the 2,500-message page limit, so its cursor stops
+        // inside the backlog. The entries with no id are skipped by the poll; they only
+        // fill the page to the limit.
+        $graph = Mockery::mock(GraphClient::class);
+        $graph->shouldReceive('getMailboxMessages')->andReturn(
+            array_merge([$this->message('paged-one', 480)], array_fill(0, 2498, []), [$this->message('paged-two', 456)]),
+            [$this->message('paged-two', 456), $this->message('paged-three', 288)],
+            [$this->message('paged-fresh')],
+        );
+        $this->app->instance(GraphClient::class, $graph);
+        $service = $this->app->make(EmailService::class);
+        $records = [];
+        Log::listen(function (MessageLogged $record) use (&$records): void {
+            if (str_contains($record->message, 'UNWATCHED SUPPORT EMAIL')) {
+                $records[] = $record;
+            }
+        });
+
+        $this->assertSame(0, $service->pollMailbox()->errors);
+        $this->assertSame(0, $service->pollMailbox()->errors);
+
+        $this->assertSame(3, Email::count());
+        $this->assertSame(['2 unresolved imported', '1 unresolved imported'], SignalEvent::where('type_key', 'intake.email_unresolved')
+            ->orderBy('id')->pluck('summary')->all());
+        $this->assertSame(0, SignalEvent::where('type_key', 'intake.email_unresolved')->whereNotNull('entity_id')->count());
+        Bus::assertNotDispatched(SendTicketNotification::class);
+        $this->assertCount(0, $records);
+
+        // The second walk reached the end of the backlog, so the next poll is live again.
+        $this->assertSame(0, $service->pollMailbox()->errors);
+        $fresh = Email::where('graph_id', 'paged-fresh')->sole();
+        $this->assertSame([$fresh->id], SignalEvent::where('type_key', 'intake.email_unresolved')
+            ->whereNotNull('entity_id')->pluck('entity_id')->all());
+        Bus::assertDispatchedTimes(SendTicketNotification::class, 1);
+        $this->assertCount(1, $records);
     }
 }
