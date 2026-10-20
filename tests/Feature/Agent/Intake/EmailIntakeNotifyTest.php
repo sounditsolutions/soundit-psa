@@ -143,7 +143,7 @@ class EmailIntakeNotifyTest extends TestCase
         $this->autoTicketOff();
         $email = $this->inboundEmail(Client::factory()->create());
 
-        app(EmailService::class)->processInbound($email);
+        app(EmailService::class)->processInbound($email, EmailService::ORIGIN_LIVE);
 
         $this->assertContains(
             EmailTriageWatch::SIGNAL,
@@ -159,7 +159,7 @@ class EmailIntakeNotifyTest extends TestCase
         $destination = $this->wireChetsInbox();
         $email = $this->inboundEmail(Client::factory()->create());
 
-        app(EmailService::class)->processInbound($email);
+        app(EmailService::class)->processInbound($email, EmailService::ORIGIN_LIVE);
 
         // The whole chain, for real: emit → route → deliver → McpSink → the inbox Chet polls.
         $entry = SignalInboxEntry::where('destination_id', $destination->id)->first();
@@ -304,7 +304,7 @@ class EmailIntakeNotifyTest extends TestCase
         $this->wireChetsInbox(tokenTools: ['find_staff']);
         $email = $this->inboundEmail(Client::factory()->create());
 
-        $warnings = $this->warningsDuring(fn () => app(EmailService::class)->processInbound($email));
+        $warnings = $this->warningsDuring(fn () => app(EmailService::class)->processInbound($email, EmailService::ORIGIN_LIVE));
 
         $this->assertCount(
             1,
@@ -397,7 +397,7 @@ class EmailIntakeNotifyTest extends TestCase
         $this->autoTicketOff();
         $email = $this->inboundEmail(Client::factory()->create());
 
-        $warnings = $this->warningsDuring(fn () => app(EmailService::class)->processInbound($email));
+        $warnings = $this->warningsDuring(fn () => app(EmailService::class)->processInbound($email, EmailService::ORIGIN_LIVE));
 
         $this->assertCount(
             1,
@@ -412,7 +412,7 @@ class EmailIntakeNotifyTest extends TestCase
         $this->wireChetsInbox();
         $email = $this->inboundEmail(Client::factory()->create());
 
-        $warnings = $this->warningsDuring(fn () => app(EmailService::class)->processInbound($email));
+        $warnings = $this->warningsDuring(fn () => app(EmailService::class)->processInbound($email, EmailService::ORIGIN_LIVE));
 
         $this->assertSame(
             [],

@@ -29,12 +29,16 @@ class EmailReprocessUnmatched extends Command
 
         $matched = 0;
         $skipped = 0;
+        $unresolved = 0;
 
         Email::whereNull('ticket_id')
             ->where('direction', EmailDirection::Inbound)
-            ->chunkById(100, function ($emails) use ($emailService, &$matched, &$skipped) {
+            ->chunkById(100, function ($emails) use ($emailService, &$matched, &$skipped, &$unresolved) {
                 foreach ($emails as $email) {
-                    $emailService->processInbound($email);
+                    $emailService->processInbound($email, EmailService::ORIGIN_BACKFILL);
+                    if ($emailService->isUnsignalledUnresolved($email->fresh())) {
+                        $unresolved++;
+                    }
 
                     if ($email->ticket_id !== null) {
                         $matched++;
@@ -44,6 +48,8 @@ class EmailReprocessUnmatched extends Command
                     }
                 }
             });
+
+        $emailService->emitUnresolvedImportSummary($unresolved);
 
         $this->info("Done: {$matched} matched, {$skipped} unmatched.");
 
