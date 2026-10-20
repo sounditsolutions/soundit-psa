@@ -90,6 +90,165 @@ class LitsrmmAssetSyncTest extends TestCase
         $this->client = $this->mappedClient(self::VENDOR_CLIENT);
     }
 
+    public function test_l9_busy_is_visible_on_both_web_entry_points(): void
+    {
+        $this->app->instance(LitsrmmAssetSyncService::class, $this->service());
+        $this->actingAs(User::factory()->admin()->create());
+        $lock = \Illuminate\Support\Facades\Cache::lock('litsrmm-asset-sync', 60);
+        $this->assertTrue($lock->get());
+        try {
+            foreach ([route('settings.integrations.litsrmm.sync-devices'), route('clients.litsrmm.sync', $this->client)] as $url) {
+                $this->post($url)->assertSessionHas('error', fn ($text) => str_contains($text, 'Another LITSRMM device sync is running, or one that stopped early still holds the lock (it frees itself within an hour); nothing was read.'));
+                $this->assertCount(0, $this->history);
+            }
+        } finally {
+            $lock->release();
+        }
+    }
+
+    public function test_l9_other_throttle_does_not_exhaust_sync_counter(): void
+    {
+        $this->freezeSecond();
+        $this->actingAs(User::factory()->admin()->create());
+        Setting::setValue('litsrmm_enabled', '0');
+        Setting::setValue('controld_enabled', '0');
+        for ($i = 0; $i < 10; $i++) {
+            $this->post(route('clients.controld.intent.release', [$this->client, 'synthetic']))->assertStatus(404);
+        }
+        $this->post(route('settings.integrations.litsrmm.sync-devices'))->assertStatus(302);
+        Http::assertNothingSent();
+    }
+
+    public function test_l9_sync_routes_share_ten_attempts(): void
+    {
+        $this->freezeSecond();
+        $this->actingAs(User::factory()->admin()->create());
+        Setting::setValue('litsrmm_enabled', '0');
+        for ($i = 0; $i < 10; $i++) {
+            $this->post($i % 2 === 0 ? route('clients.litsrmm.sync', $this->client) : route('settings.integrations.litsrmm.sync-devices'))->assertStatus(302);
+        }
+        $this->post(route('settings.integrations.litsrmm.sync-devices'))->assertStatus(429);
+        Http::assertNothingSent();
+    }
+
+    public function test_l9_lock_get_failure_refuses_without_reads_or_unused_codes(): void
+    {
+        $records = $this->captureLogs();
+        $service = $this->service();
+        $lock = \Mockery::mock(\Illuminate\Contracts\Cache\Lock::class);
+        $lock->shouldReceive('get')->once()->andThrow(new \RuntimeException('synthetic private message'));
+        $lock->shouldNotReceive('release');
+        \Illuminate\Support\Facades\Cache::shouldReceive('lock')->with('litsrmm-asset-sync', 3600)->once()->andReturn($lock);
+        $result = $service->sync($this->client, ['12:b:1:5:4:5:1:0:d0123456789']);
+        $this->assertSame(['The LITSRMM run lock could not be taken (the cache store failed); nothing was read.'], $result->errorMessages);
+        $this->assertSame(1, $result->errors);
+        $this->assertCount(0, $this->history);
+        $this->assertLogRecords($records, '[LitsrmmAssetSync] run refused: run lock unavailable', [['client_id' => $this->client->id, 'error' => 'RuntimeException']]);
+        $this->assertL9NoUnused($result, $records);
+    }
+
+    private function assertL9NoUnused(\App\Services\SyncResult $result, \ArrayObject $records): void
+    {
+        $this->assertArrayNotHasKey('short_read_accept_unused', $result->details);
+        $matching = array_filter($records->getArrayCopy(), fn (MessageLogged $record) => str_contains($record->message, 'an --accept-short-read code given for it passed nothing'));
+        $this->assertCount(0, $matching);
+    }
+
+    public function test_l9_release_failure_keeps_successful_result(): void
+    {
+        $records = $this->captureLogs();
+        $service = $this->service();
+        $lock = \Mockery::mock(\Illuminate\Contracts\Cache\Lock::class);
+        $lock->shouldReceive('get')->once()->andReturnTrue();
+        $lock->shouldReceive('release')->once()->andThrow(new \RuntimeException('synthetic private message'));
+        \Illuminate\Support\Facades\Cache::shouldReceive('lock')->with('litsrmm-asset-sync', 3600)->once()->andReturn($lock);
+        $result = $service->sync();
+        $this->assertSame(0, $result->errors);
+        $this->assertLogRecords($records, '[LitsrmmAssetSync] run lock release failed', [['error' => 'RuntimeException']]);
+    }
+
+    public function test_l9_release_failure_keeps_in_flight_exception(): void
+    {
+        $records = $this->captureLogs();
+        $this->device('1');
+        $service = $this->service();
+        $lock = \Mockery::mock(\Illuminate\Contracts\Cache\Lock::class);
+        $lock->shouldReceive('get')->once()->andReturnTrue();
+        $lock->shouldReceive('release')->once()->andThrow(new \RuntimeException('synthetic release failure'));
+        \Illuminate\Support\Facades\Cache::shouldReceive('lock')->with('litsrmm-asset-sync', 3600)->once()->andReturn($lock);
+        $original = new \RuntimeException('synthetic sync failure');
+        $dispatcher = Asset::getEventDispatcher();
+        Asset::setEventDispatcher(clone $dispatcher);
+        Asset::creating(function () use ($original): void {
+            throw $original;
+        });
+        try {
+            $service->sync();
+            $this->fail('Expected the sync exception.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame($original, $e);
+        } finally {
+            Asset::setEventDispatcher($dispatcher);
+        }
+        $this->assertLogRecords($records, '[LitsrmmAssetSync] run lock release failed', [['error' => 'RuntimeException']]);
+    }
+
+    public function test_l9_old_owner_does_not_release_replacement_owner(): void
+    {
+        $this->device('1');
+        $service = $this->service();
+        $ownerB = null;
+        $dispatcher = Asset::getEventDispatcher();
+        Asset::setEventDispatcher(clone $dispatcher);
+        Asset::creating(function () use (&$ownerB): void {
+            \Illuminate\Support\Facades\Cache::lock('litsrmm-asset-sync')->forceRelease();
+            $ownerB = \Illuminate\Support\Facades\Cache::lock('litsrmm-asset-sync', 60);
+            $this->assertTrue($ownerB->get());
+        });
+        try {
+            $this->assertSame(0, $service->sync()->errors);
+            $this->assertNotNull($ownerB);
+            $this->assertFalse(\Illuminate\Support\Facades\Cache::lock('litsrmm-asset-sync', 1)->get());
+        } finally {
+            Asset::setEventDispatcher($dispatcher);
+            $ownerB?->release();
+        }
+    }
+
+    public function test_l9_held_description_has_one_full_stop(): void
+    {
+        $service = $this->service();
+        $lock = \Illuminate\Support\Facades\Cache::lock('litsrmm-asset-sync', 60);
+        $this->assertTrue($lock->get());
+        try {
+            $text = LitsrmmAssetSyncService::describe($service->sync());
+            $this->assertSame(1, substr_count($text, 'nothing was read.'));
+            $this->assertStringNotContainsString('..', $text);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    public function test_l9_held_and_unavailable_do_not_report_unused_codes(): void
+    {
+        $records = $this->captureLogs();
+        $service = $this->service();
+        $lock = \Illuminate\Support\Facades\Cache::lock('litsrmm-asset-sync', 60);
+        $this->assertTrue($lock->get());
+        try {
+            $result = $service->sync(null, ['12:b:1:5:4:5:1:0:d0123456789']);
+            $this->assertSame(1, $result->errors);
+            $this->assertL9NoUnused($result, $records);
+            Setting::setValue('litsrmm_enabled', '0');
+            $result = $service->sync(null, ['12:b:1:5:4:5:1:0:d0123456789']);
+            $this->assertSame(1, $result->errors);
+            $this->assertL9NoUnused($result, $records);
+            $this->assertCount(0, $this->history);
+        } finally {
+            $lock->release();
+        }
+    }
+
     public function test_l7_only_suspended_rows_reports_no_asset_changes(): void
     {
         $this->client->update(['litsrmm_client_id' => null]);

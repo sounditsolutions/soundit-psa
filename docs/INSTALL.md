@@ -418,6 +418,8 @@ These commands execute automatically based on their schedule:
 | `model:prune --model=App\Models\ApiRequestLog` | Daily at 04:10 | Delete `api_request_logs` rows (PSA REST API request and token lifecycle audit) older than 90 days. |
 | `briefing:send-daily` | Every minute; fires once per local day at `briefing_time` (default 07:00) | Email each active technician their personalized daily briefing — open tickets, SLA risks, overnight alerts, voicemails, and AI-suggested next actions. Ships dormant; only runs when `briefing_enabled=1`. Per-technician idempotency via the `daily_briefings` table. Use `--dry-run` to preview recipients, `--user=ID` to target one technician. |
 
+**LITSRMM sync run lock (C-58).** The `litsrmm-asset-sync` lock uses the default cache store (`CACHE_STORE`). That store must be shared by every process that can run a sync and must support locks. `file` is fine on one host; `array`, `null`, or `file` across several web nodes is not. `php artisan cache:clear` drops a held lock, so do not run it while a sync is in progress. A sync killed before it finishes (a fatal, a timeout or a killed worker) refuses every Sync button and scheduled run until the lock expires, up to an hour after it was taken. Once you are sure no sync is running, `php artisan tinker --execute="Cache::lock('litsrmm-asset-sync')->forceRelease();"` frees it.
+
 **Ad-hoc maintenance commands** (not scheduled — run manually when needed):
 
 - `php artisan technician:scheduled-drain` — authorized persisted quiesce/wait/recovery; see [scheduled disable/drain](SCHEDULED-APPROVALS.md#disable-and-drain-safely).

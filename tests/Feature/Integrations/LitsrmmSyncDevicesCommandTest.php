@@ -61,6 +61,33 @@ class LitsrmmSyncDevicesCommandTest extends TestCase
         $this->app->instance(LitsrmmAssetSyncService::class, $service);
     }
 
+    public function test_l9_busy_command_refuses_visibly_without_reading(): void
+    {
+        $this->mapClient();
+        $requests = 0;
+        $client = new LitsrmmClient([
+            'api_key' => 'synthetic',
+            'base_url' => 'https://litsrmm.test',
+            'handler' => HandlerStack::create(function () use (&$requests) {
+                $requests++;
+
+                return Create::promiseFor(new Response(200, [], '{"devices":[],"nextCursor":null}'));
+            }),
+        ]);
+        $this->app->instance(LitsrmmAssetSyncService::class, new LitsrmmAssetSyncService($client));
+        $lock = \Illuminate\Support\Facades\Cache::lock('litsrmm-asset-sync', 60);
+        $this->assertTrue($lock->get());
+        try {
+            $this->artisan('litsrmm:sync-devices')
+                ->expectsOutputToContain('Another LITSRMM device sync is running, or one that stopped early still holds the lock (it frees itself within an hour); nothing was read.')
+                ->assertExitCode(\Symfony\Component\Console\Command\Command::FAILURE);
+            $this->assertSame(0, $requests);
+            Http::assertNothingSent();
+        } finally {
+            $lock->release();
+        }
+    }
+
     public function test_l7_reports_duplicate_seats(): void
     {
         $this->mapClient();
