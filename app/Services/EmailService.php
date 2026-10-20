@@ -171,10 +171,9 @@ class EmailService
                     $result->created++;
                     $this->resolveSender($email);
                     $this->processInbound($email, $origin);
-                }
-
-                if ($origin === self::ORIGIN_BACKFILL && $this->isUnsignalledUnresolved($email->fresh())) {
-                    $unresolved[$email->id] = true;
+                    if ($origin === self::ORIGIN_BACKFILL && $this->isUnsignalledUnresolved($email->fresh())) {
+                        $unresolved[$email->id] = true;
+                    }
                 }
 
                 $lastSuccessfulReceivedAt = $msg['receivedDateTime'] ?? $lastSuccessfulReceivedAt;
@@ -433,7 +432,7 @@ class EmailService
                 Log::warning('[EmailService] Intake summary signal emit failed', [
                     'type_key' => 'intake.email_unresolved',
                     'count' => $count,
-                    'error' => $e->getMessage(),
+                    'error' => class_basename($e),
                 ]);
             }
         }

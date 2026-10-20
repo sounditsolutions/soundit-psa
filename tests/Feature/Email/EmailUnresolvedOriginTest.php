@@ -77,10 +77,65 @@ class EmailUnresolvedOriginTest extends TestCase
         $this->assertNull($email->fresh()->ticket_id);
         $this->assertSame(1, SignalEvent::where('type_key', 'intake.email_unresolved')
             ->where('entity_type', $email->getMorphClass())->where('entity_id', $email->id)->count());
+        $this->assertSame(1, SignalEvent::where('type_key', 'intake.email_unresolved')->count());
+        Bus::assertDispatchedTimes(SendTicketNotification::class, 1);
+    }
+
+    public function test_cursor_poll_creates_new_live_unresolved_email(): void
+    {
+        Setting::setValue('graph_last_poll_at', now()->subHours(2)->toIso8601String());
+        $records = [];
+        Log::listen(function (MessageLogged $record) use (&$records): void {
+            if (str_contains($record->message, 'UNWATCHED SUPPORT EMAIL')) {
+                $records[] = $record;
+            }
+        });
+        $result = $this->serviceReturning([$this->message('cursor-new')])->pollMailbox();
+
+        $this->assertSame(0, $result->errors);
+        $email = Email::where('graph_id', 'cursor-new')->sole();
+        $this->assertNull($email->ticket_id);
+        $events = SignalEvent::where('type_key', 'intake.email_unresolved')->get();
+        $this->assertCount(1, $events);
+        $this->assertSame($email->id, $events->sole()->entity_id);
+        Bus::assertDispatchedTimes(SendTicketNotification::class, 1);
+        $this->assertCount(1, $records);
+        $this->assertSame('warning', $records[0]->level);
+    }
+
+    public function test_backfill_rerun_existing_unsignalled_rows_emits_nothing(): void
+    {
+        $service = $this->serviceReturning([$this->message('backfill-retry')]);
+        $since = now()->subDays(4)->toIso8601String();
+        $this->assertSame(0, $service->pollMailbox($since)->errors);
+        $email = Email::where('graph_id', 'backfill-retry')->sole();
+        $this->assertNull($email->ticket_id);
+        $this->assertTrue($service->isUnsignalledUnresolved($email));
+        $this->assertSame(1, SignalEvent::where('type_key', 'intake.email_unresolved')->count());
+        SignalEvent::where('type_key', 'intake.email_unresolved')->delete();
+        $records = [];
+        Log::listen(function (MessageLogged $record) use (&$records): void {
+            if (str_contains($record->message, 'UNWATCHED SUPPORT EMAIL')) {
+                $records[] = $record;
+            }
+        });
+
+        $this->assertSame(0, $service->pollMailbox($since)->errors);
+        $this->assertSame(1, Email::count());
+        $this->assertSame(0, SignalEvent::where('type_key', 'intake.email_unresolved')->count());
+        Bus::assertNotDispatched(SendTicketNotification::class);
+        $this->assertCount(0, $records);
     }
 
     public function test_b_explicit_backfill_emits_only_one_summary(): void
     {
+        Setting::setValue('graph_last_poll_at', now()->subHours(2)->toIso8601String());
+        $records = [];
+        Log::listen(function (MessageLogged $record) use (&$records): void {
+            if (str_contains($record->message, 'UNWATCHED SUPPORT EMAIL')) {
+                $records[] = $record;
+            }
+        });
         $result = $this->serviceReturning([
             $this->message('backfill-one'), $this->message('backfill-two'), $this->message('backfill-three'),
         ])->pollMailbox(now()->subDays(4)->toIso8601String());
@@ -95,6 +150,7 @@ class EmailUnresolvedOriginTest extends TestCase
         $this->assertSame('3 unresolved imported', $events->sole()->summary);
         $this->assertSame([], $events->sole()->context);
         Bus::assertNotDispatched(SendTicketNotification::class);
+        $this->assertCount(0, $records);
     }
 
     public function test_b_zero_unresolved_backfill_emits_no_summary(): void
@@ -158,7 +214,7 @@ class EmailUnresolvedOriginTest extends TestCase
         Bus::assertDispatchedTimes(SendTicketNotification::class, 1);
     }
 
-    public function test_operator_reprocess_emits_one_summary_without_per_email_outputs(): void
+    public function test_operator_reprocess_emits_no_summary_or_per_email_outputs(): void
     {
         foreach (['one', 'two', 'three'] as $id) {
             Email::create([
@@ -169,11 +225,7 @@ class EmailUnresolvedOriginTest extends TestCase
         }
         $this->artisan('emails:reprocess-unmatched')->assertSuccessful();
         $events = SignalEvent::where('type_key', 'intake.email_unresolved')->get();
-        $this->assertCount(1, $events);
-        $this->assertNull($events->sole()->entity_id);
-        $this->assertNull($events->sole()->entity_type);
-        $this->assertSame('3 unresolved imported', $events->sole()->summary);
-        $this->assertSame([], $events->sole()->context);
+        $this->assertCount(0, $events);
         Bus::assertNotDispatched(SendTicketNotification::class);
     }
 
@@ -231,5 +283,6 @@ class EmailUnresolvedOriginTest extends TestCase
         ));
         $this->assertCount(1, $summaryWarnings);
         $this->assertSame('warning', $summaryWarnings[0]->level);
+        $this->assertSame('RuntimeException', $summaryWarnings[0]->context['error']);
     }
 }
