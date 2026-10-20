@@ -236,6 +236,7 @@ class EmailService
         // from), not the stored cursor: on an operator backfill the stored cursor is
         // unrelated to this page and would call a first failure "already retried".
         $cursorTarget = $lastSuccessfulReceivedAt;
+        $heldAtFloor = false;
 
         if ($cursorTarget !== null && $failures !== []) {
             $windowStart = Carbon::parse($since);
@@ -269,10 +270,12 @@ class EmailService
                 // next scheduled poll and, past the page limit, stall new mail behind
                 // it. The stored cursor is the floor.
                 $floor = $storedCursor !== null ? Carbon::parse($storedCursor) : null;
-                $clampTarget = ($floor !== null && $floor->gt($clamp)) ? $floor : $clamp;
+                $floorHolds = $floor !== null && $floor->gt($clamp);
+                $clampTarget = $floorHolds ? $floor : $clamp;
 
                 if (Carbon::parse($cursorTarget)->gt($clampTarget)) {
                     $cursorTarget = $clampTarget->toIso8601String();
+                    $heldAtFloor = $floorHolds;
                 }
             }
         }
@@ -282,11 +285,13 @@ class EmailService
         }
 
         // A backfill that did not reach the end of its backlog keeps the next scheduled
-        // poll backfill; one that did hands the cursor back to live polling.
+        // poll backfill; one that did hands the cursor back to live polling. When the
+        // cursor did not move (held at the stored cursor, or nothing imported cleanly),
+        // this walk put it into no backlog, so the flag stays as it was.
         if ($origin === self::ORIGIN_BACKFILL) {
+            $cursorHeld = $heldAtFloor || ($cursorTarget === null && $result->errors > 0);
             $stoppedShort = $hitPageLimit
-                || $cursorTarget !== $lastSuccessfulReceivedAt
-                || ($cursorTarget === null && $result->errors > 0);
+                || ($cursorHeld ? $backfillPending : $cursorTarget !== $lastSuccessfulReceivedAt);
 
             if ($stoppedShort) {
                 Setting::setValue(self::BACKFILL_PENDING_KEY, '1');

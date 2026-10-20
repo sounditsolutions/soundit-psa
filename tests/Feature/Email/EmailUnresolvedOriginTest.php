@@ -16,6 +16,7 @@ use App\Services\Signals\SignalHub;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Log\Events\MessageLogged;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
@@ -365,5 +366,88 @@ class EmailUnresolvedOriginTest extends TestCase
             ->whereNotNull('entity_id')->pluck('entity_id')->all());
         Bus::assertDispatchedTimes(SendTicketNotification::class, 1);
         $this->assertCount(1, $records);
+    }
+
+    public function test_operator_backfill_held_at_the_live_cursor_leaves_the_next_poll_live(): void
+    {
+        // An operator backfill under a live cursor fails one first-time message from day -10.
+        // Its retry clamp is held at the live cursor, so the cursor does not move and enters
+        // no backlog: the next scheduled poll stays live.
+        $cursor = now()->subHours(2)->toIso8601String();
+        Setting::setValue('graph_last_poll_at', $cursor);
+        Event::listen('eloquent.creating: '.Email::class, function (Email $email): void {
+            if ($email->graph_id === 'floor-poison') {
+                throw new \RuntimeException('synthetic import failure');
+            }
+        });
+        $graph = Mockery::mock(GraphClient::class);
+        $graph->shouldReceive('getMailboxMessages')->andReturn(
+            [$this->message('floor-poison', 240), $this->message('floor-old', 200), $this->message('floor-recent', 1)],
+            [$this->message('floor-fresh')],
+        );
+        $this->app->instance(GraphClient::class, $graph);
+        $service = $this->app->make(EmailService::class);
+        $records = [];
+        Log::listen(function (MessageLogged $record) use (&$records): void {
+            if (str_contains($record->message, 'UNWATCHED SUPPORT EMAIL')) {
+                $records[] = $record;
+            }
+        });
+
+        $this->assertSame(1, $service->pollMailbox(now()->subDays(30)->toIso8601String())->errors);
+
+        $this->assertTrue(Carbon::parse(Setting::getValue('graph_last_poll_at'))->equalTo(Carbon::parse($cursor)));
+        $this->assertNull(Setting::getValue('graph_poll_backfill_pending'));
+        $this->assertSame(0, SignalEvent::where('type_key', 'intake.email_unresolved')->whereNotNull('entity_id')->count());
+        Bus::assertNotDispatched(SendTicketNotification::class);
+        $this->assertCount(0, $records);
+
+        $this->assertSame(0, $service->pollMailbox()->errors);
+        $fresh = Email::where('graph_id', 'floor-fresh')->sole();
+        $this->assertSame([$fresh->id], SignalEvent::where('type_key', 'intake.email_unresolved')
+            ->whereNotNull('entity_id')->pluck('entity_id')->all());
+        Bus::assertDispatchedTimes(SendTicketNotification::class, 1);
+        $this->assertCount(1, $records);
+        $this->assertSame('warning', $records[0]->level);
+        $this->assertSame($fresh->id, $records[0]->context['email_id']);
+    }
+
+    public function test_operator_backfill_held_at_a_backlog_cursor_keeps_the_backfill_pending(): void
+    {
+        // PIN (green before this change): a backfill continuation is pending at a cursor from
+        // day -10. An operator backfill fails one message from day -20, so its clamp is held
+        // at that stored cursor. The cursor stays inside the backlog, so the flag stays and
+        // the next scheduled poll continues the backfill.
+        Setting::setValue('graph_last_poll_at', now()->subDays(10)->toIso8601String());
+        Setting::setValue('graph_poll_backfill_pending', '1');
+        Event::listen('eloquent.creating: '.Email::class, function (Email $email): void {
+            if ($email->graph_id === 'pend-poison') {
+                throw new \RuntimeException('synthetic import failure');
+            }
+        });
+        $graph = Mockery::mock(GraphClient::class);
+        $graph->shouldReceive('getMailboxMessages')->andReturn(
+            [$this->message('pend-poison', 480), $this->message('pend-one', 120)],
+            [$this->message('pend-one', 120), $this->message('pend-two', 100)],
+        );
+        $this->app->instance(GraphClient::class, $graph);
+        $service = $this->app->make(EmailService::class);
+        $records = [];
+        Log::listen(function (MessageLogged $record) use (&$records): void {
+            if (str_contains($record->message, 'UNWATCHED SUPPORT EMAIL')) {
+                $records[] = $record;
+            }
+        });
+
+        $this->assertSame(1, $service->pollMailbox(now()->subDays(30)->toIso8601String())->errors);
+        $this->assertNotNull(Setting::getValue('graph_poll_backfill_pending'));
+
+        $this->assertSame(0, $service->pollMailbox()->errors);
+        $this->assertSame(['1 unresolved imported', '1 unresolved imported'], SignalEvent::where('type_key', 'intake.email_unresolved')
+            ->orderBy('id')->pluck('summary')->all());
+        $this->assertSame(0, SignalEvent::where('type_key', 'intake.email_unresolved')->whereNotNull('entity_id')->count());
+        Bus::assertNotDispatched(SendTicketNotification::class);
+        $this->assertCount(0, $records);
+        $this->assertNull(Setting::getValue('graph_poll_backfill_pending'));
     }
 }
