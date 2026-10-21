@@ -27,7 +27,9 @@ use Tests\TestCase;
  * Card 6ad7c912: a completed call linked to an existing ticket gets its billability at link
  * time, so a ticket triage never classifies no longer leaves such calls is_billable=null and
  * undebited. On an unclassified ticket a call still ringing or in progress stays unset at
- * link and takes the default once a webhook records it Completed with stored duration.
+ * link and takes the default once a webhook records it Completed with a positive stored
+ * duration (at the recording callback, one stored before the recording's length is copied
+ * in). On a classified ticket any call but Voicemail takes the default at link, as at base.
  * Voicemail is excluded at link and in the gate. Synthetic data only (G-13).
  */
 class CallBillableAtLinkTest extends TestCase
@@ -265,10 +267,11 @@ class CallBillableAtLinkTest extends TestCase
     /**
      * A call linked while ringing that the hangup records Missed stays unset; a late answer then
      * records it Completed with no duration and leaves billability unset.
-     * The recording callback then debits the recording's length. recording_disk_path is preset
-     * so no download is attempted.
+     * The recording callback then copies its length into the stored duration. That length was
+     * not stored before the callback, so billability stays unset and nothing is debited, as at
+     * base. recording_disk_path is preset so no download is attempted.
      */
-    public function test_call_completed_by_a_late_answer_with_no_duration_takes_default_and_is_debited_when_the_recording_lands(): void
+    public function test_call_completed_by_a_late_answer_with_no_duration_stays_unset_when_the_recording_lands(): void
     {
         Queue::fake();
         $ticket = $this->ticket();
@@ -285,8 +288,9 @@ class CallBillableAtLinkTest extends TestCase
 
         $service->handleRecordingReady($call->call_uuid, 'https://example.invalid/synthetic.mp3', 1800);
 
-        $this->assertTrue($call->fresh()->is_billable);
-        $this->assertDebited($call, 0.5);
+        $this->assertEquals(1800, $call->fresh()->duration);
+        $this->assertNull($call->fresh()->is_billable);
+        $this->assertNotDebited($call);
     }
 
     public function test_classified_missed_call_uses_billable_default_and_debits(): void
@@ -298,14 +302,63 @@ class CallBillableAtLinkTest extends TestCase
         $this->assertDebited($call, 0.05);
     }
 
-    public function test_recording_completion_defaults_and_debits_once_across_all_three_webhooks(): void
+    /**
+     * As at base: on a classified ticket a call stored at 0 s takes the default at link. It is
+     * not debited at link. After a hangup with no Duration, the recording callback debits the
+     * recording's length, unchanged from base.
+     */
+    public function test_classified_zero_duration_call_takes_default_at_link_and_bills_as_at_base(): void
+    {
+        Queue::fake();
+        $ticket = $this->ticket();
+        $this->classify($ticket, false);
+        $call = $this->link($this->makeCall([
+            'duration' => 0, 'recording_duration' => null, 'answered_at' => now()->subMinutes(30),
+            'recording_disk_path' => 'call-recordings/synthetic.mp3',
+        ]), $ticket);
+        $this->assertTrue($call->is_billable);
+        $this->assertNotDebited($call);
+        $service = app(PhoneCallService::class);
+        $service->handleCallEnded($call->call_uuid, []);
+        $this->assertNull($call->fresh()->duration);
+        $this->assertNotDebited($call);
+        $service->handleRecordingReady($call->call_uuid, 'https://example.invalid/synthetic.mp3', 1800);
+        $this->assertDebited($call, 0.5);
+    }
+
+    /**
+     * As at base: a call linked to a classified ticket while still ringing takes the default at
+     * link. A hangup with a Duration and no answer evidence records it Missed, and it debits
+     * that duration (Missed is not in the debit gate).
+     */
+    public function test_classified_call_linked_while_ringing_that_ends_missed_takes_default_and_debits(): void
+    {
+        Queue::fake();
+        $ticket = $this->ticket();
+        $this->classify($ticket, false);
+        $call = $this->link($this->makeCall(['status' => 'ringing', 'duration' => null]), $ticket);
+        $this->assertTrue($call->is_billable);
+        $this->assertNotDebited($call);
+        app(PhoneCallService::class)->handleCallEnded($call->call_uuid, ['Duration' => '180']);
+        $this->assertSame(CallStatus::Missed, $call->fresh()->status);
+        $this->assertDebited($call, 0.05);
+    }
+
+    /**
+     * Recording trigger. A constructed state, not a webhook replay: an in-progress call with a
+     * positive stored duration and no ended_at, linked to an unclassified ticket, stays unset at
+     * link. The recording callback records it Completed, gives it the default from the duration
+     * stored before the callback, and debits it. The hangup and the late answer add nothing.
+     */
+    public function test_recording_completion_with_a_stored_duration_defaults_and_debits_once_across_all_three_webhooks(): void
     {
         Queue::fake();
         $call = $this->link($this->makeCall([
-            'status' => 'in-progress', 'duration' => null, 'answered_at' => now()->subMinutes(30),
+            'status' => 'in-progress', 'duration' => 1800, 'answered_at' => now()->subMinutes(30),
             'recording_disk_path' => 'call-recordings/synthetic.mp3',
         ]), $this->ticket());
         $this->assertNull($call->is_billable);
+        $this->assertNotDebited($call);
         $service = app(PhoneCallService::class);
         $service->handleRecordingReady($call->call_uuid, 'https://example.invalid/synthetic.mp3', 1800);
         $this->assertSame(CallStatus::Completed, $call->fresh()->status);
@@ -317,17 +370,66 @@ class CallBillableAtLinkTest extends TestCase
         $this->assertDebited($call, 0.5);
     }
 
+    /** A linked Completed call stored at 0 s on an unclassified ticket gets no default from its recording's length. */
+    public function test_recording_on_a_zero_duration_call_does_not_default_or_debit(): void
+    {
+        Queue::fake();
+        $call = $this->link($this->makeCall([
+            'duration' => 0, 'recording_duration' => null, 'answered_at' => now()->subMinutes(30),
+            'ended_at' => now(), 'recording_disk_path' => 'call-recordings/synthetic.mp3',
+        ]), $this->ticket());
+        $this->assertNull($call->is_billable);
+        app(PhoneCallService::class)->handleRecordingReady($call->call_uuid, 'https://example.invalid/synthetic.mp3', 1800);
+        $this->assertEquals(1800, $call->fresh()->duration);
+        $this->assertNull($call->fresh()->is_billable);
+        $this->assertNotDebited($call);
+    }
+
+    /**
+     * The recording lands first on a call with no stored duration. It records the call Completed
+     * but gives no default. The hangup's Duration then gives the default and the debit, and the
+     * late answer adds nothing: exactly one PrepayTransaction across all three webhooks.
+     */
+    public function test_hangup_after_recording_defaults_and_debits_once_across_all_three_webhooks(): void
+    {
+        Queue::fake();
+        $call = $this->link($this->makeCall([
+            'status' => 'in-progress', 'duration' => null, 'answered_at' => now()->subMinutes(30),
+            'recording_disk_path' => 'call-recordings/synthetic.mp3',
+        ]), $this->ticket());
+        $this->assertNull($call->is_billable);
+        $service = app(PhoneCallService::class);
+        $service->handleRecordingReady($call->call_uuid, 'https://example.invalid/synthetic.mp3', 1800);
+        $this->assertSame(CallStatus::Completed, $call->fresh()->status);
+        $this->assertNull($call->fresh()->is_billable);
+        $this->assertNotDebited($call);
+        $service->handleCallEnded($call->call_uuid, ['Duration' => '1800']);
+        $this->assertTrue($call->fresh()->is_billable);
+        $this->assertDebited($call, 0.5);
+        $service->handleCallAnswered($call->call_uuid, ['DialAction' => 'answer']);
+        $this->assertSame(1, PrepayTransaction::where('phone_call_id', $call->id)->count());
+        $this->assertDebited($call, 0.5);
+    }
+
     public function test_zero_at_link_then_durationless_hangup_does_not_introduce_null_duration_debit(): void
     {
         Queue::fake();
         $call = $this->link($this->makeCall([
             'duration' => 0, 'recording_duration' => 1800,
             'answered_at' => now()->subMinutes(30),
+            'recording_disk_path' => 'call-recordings/synthetic.mp3',
         ]), $this->ticket());
         $this->assertNull($call->fresh()->is_billable);
         $this->assertNotDebited($call);
         app(PhoneCallService::class)->handleCallEnded($call->call_uuid, []);
         $this->assertNull($call->fresh()->duration);
+        $this->assertNull($call->fresh()->is_billable);
+        $this->assertSame(0, PrepayTransaction::where('phone_call_id', $call->id)->count());
+        $this->assertNotDebited($call);
+        // The STOP2 sequence: the 1800 s recording is copied into the stored duration, but it
+        // gives no default, so nothing is debited, as at base.
+        app(PhoneCallService::class)->handleRecordingReady($call->call_uuid, 'https://example.invalid/synthetic.mp3', 1800);
+        $this->assertEquals(1800, $call->fresh()->duration);
         $this->assertNull($call->fresh()->is_billable);
         $this->assertSame(0, PrepayTransaction::where('phone_call_id', $call->id)->count());
         $this->assertNotDebited($call);
@@ -414,6 +516,10 @@ class CallBillableAtLinkTest extends TestCase
             $service->setBillable($call, true);
         }
         $this->assertNull($call->fresh()->duration);
+        if ($path === 'link-classified') {
+            // As at base, a classified ticket gives the default at link whatever the duration.
+            $this->assertTrue($call->fresh()->is_billable);
+        }
         if ($debited) {
             $this->assertSame(1, PrepayTransaction::where('phone_call_id', $call->id)->count());
             $this->assertDebited($call, $path === 'recording' ? 4.0 : 0.5);

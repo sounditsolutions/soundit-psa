@@ -185,6 +185,32 @@ class CallBillableMoneyPathTest extends TestCase
         $this->assertDebited($call);
     }
 
+    public function test_public_pipeline_flips_classified_missed_link_default_and_reverses_debit(): void
+    {
+        TriageRun::create([
+            'ticket_id' => $this->ticket->id, 'status' => 'completed', 'stages_completed' => ['classification'],
+            'stage_results' => ['classification' => ['work_covered_by_managed' => false]],
+        ]);
+        $call = $this->makeCall(['status' => 'missed']);
+        $this->link($call);
+        $this->assertTrue($call->fresh()->is_billable);
+        $this->assertDebited($call);
+        $this->runPipeline(true);
+        $this->assertFalse($call->fresh()->is_billable);
+        $this->assertNotDebited($call);
+    }
+
+    public function test_public_pipeline_defaults_an_unclassified_missed_call_and_debits_as_at_base(): void
+    {
+        $call = $this->makeCall(['status' => 'missed']);
+        $this->link($call);
+        $this->assertNull($call->fresh()->is_billable);
+        $this->assertNotDebited($call);
+        $this->runPipeline(false);
+        $this->assertTrue($call->fresh()->is_billable);
+        $this->assertDebited($call);
+    }
+
     public function test_null_duration_call_waits_for_classification_before_debiting_its_recording(): void
     {
         $call = $this->makeCall(['duration' => null, 'recording_duration' => 1800]);

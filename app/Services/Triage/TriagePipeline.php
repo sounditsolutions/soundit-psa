@@ -466,11 +466,11 @@ class TriagePipeline
 
         $shouldBeBillable = ! $classification['work_covered_by_managed'];
 
-        // Update phone calls with unset or mismatched billability. A Missed or Voicemail call
-        // is excluded (card 6ad7c912): it stays non-billable, because a voicemail's
-        // recording_duration counts as effective duration and would be debited.
+        // Update phone calls with unset or mismatched billability. A Voicemail call is not
+        // selected (card 6ad7c912); Voicemail is excluded at link and in the debit gate. A Missed
+        // call is reconciled as at base, so triage can still flip a Missed call's default.
         $calls = PhoneCall::where('ticket_id', $ticket->id)
-            ->whereNotIn('status', [\App\Enums\CallStatus::Missed->value, \App\Enums\CallStatus::Voicemail->value])
+            ->whereNotIn('status', [\App\Enums\CallStatus::Voicemail->value])
             ->where(fn ($q) => $q->whereNull('is_billable')->orWhere('is_billable', '!=', $shouldBeBillable))
             ->get();
 
