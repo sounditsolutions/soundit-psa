@@ -11,6 +11,7 @@ use App\Models\User;
 use App\Services\EmailService;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
+use App\Services\NotificationService;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
@@ -260,6 +261,46 @@ class EmailPollModifiedPassTest extends TestCase
         $this->assertSame(['1 unresolved imported'], SignalEvent::where('type_key', 'intake.email_unresolved')
             ->orderBy('id')->pluck('summary')->all());
         $this->assertSame(0, SignalEvent::where('type_key', 'intake.email_unresolved')->whereNotNull('entity_id')->count());
+        Bus::assertNotDispatched(SendTicketNotification::class);
+    }
+
+    private function strandModifiedImport(): void
+    {
+        $notifications = Mockery::mock(NotificationService::class);
+        $notifications->shouldReceive('notifyUnresolvedEmail')->once()->andThrow(new \RuntimeException('synthetic notify failure'));
+        $this->app->instance(NotificationService::class, $notifications);
+        $result = $this->service([], [$this->message('stranded')])->pollMailbox();
+        $this->assertSame(['Failed to import message stranded: synthetic notify failure'], $result->errorMessages);
+        $this->assertSame(1, Email::count());
+        $this->assertSame(0, SignalEvent::where('type_key', 'intake.email_received')->count());
+        $this->assertSame(0, SignalEvent::where('type_key', 'intake.email_unresolved')->count());
+        $this->assertSame(self::CURSOR, Setting::getValue('graph_last_poll_at'));
+        $this->app->forgetInstance(NotificationService::class);
+    }
+
+    public function test_j_modified_pass_retries_its_own_import_whose_processing_threw(): void
+    {
+        $this->strandModifiedImport();
+
+        $result = $this->service([], [$this->message('stranded')])->pollMailbox();
+        $this->assertSame(0, $result->errors);
+        $this->assertSame(0, $result->created);
+        $email = Email::sole();
+        $this->assertSame([$email->id], SignalEvent::where('type_key', 'intake.email_unresolved')->pluck('entity_id')->all());
+        $this->assertSame(1, SignalEvent::where('type_key', 'intake.email_received')->count());
+        Bus::assertDispatchedTimes(SendTicketNotification::class, 1);
+    }
+
+    public function test_j_modified_pass_does_not_retry_a_row_created_before_its_window(): void
+    {
+        $this->strandModifiedImport();
+        Email::query()->update(['created_at' => '2026-10-20 07:59:59']);
+
+        $result = $this->service([], [$this->message('stranded')])->pollMailbox();
+        $this->assertSame(0, $result->errors);
+        $this->assertSame(1, Email::count());
+        $this->assertSame(0, SignalEvent::where('type_key', 'intake.email_received')->count());
+        $this->assertSame(0, SignalEvent::where('type_key', 'intake.email_unresolved')->count());
         Bus::assertNotDispatched(SendTicketNotification::class);
     }
 

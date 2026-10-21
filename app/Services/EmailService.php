@@ -198,14 +198,25 @@ class EmailService
                             }
                         }
 
-                        // Retry processing for unprocessed inbound emails. Pass 1 only: pass 2
-                        // selects by lastModifiedDateTime, so it revisits rows of any age (a
-                        // backfill import, a row from before the once-check) whenever they are
-                        // read, flagged or categorised, and a LIVE retry would notify for each.
-                        if ($pass === 1
-                            && $email->direction === \App\Enums\EmailDirection::Inbound
+                        // Retry processing for unprocessed inbound emails. Pass 2 selects by
+                        // lastModifiedDateTime, so it revisits rows of any age (a backfill import,
+                        // a row from before the once-check) whenever they are read, flagged or
+                        // categorised, and a LIVE retry would notify for each. Pass 2 retries only
+                        // a row created inside this poll's window that has no intake.email_received
+                        // signal. processInbound ends by emitting one whenever it leaves a row
+                        // inbound, unticketed and undismissed, so a row without one is a row whose
+                        // processing threw (or whose signal emit failed). Pass 1 does not fetch such
+                        // a row again once its receivedDateTime is behind the window.
+                        if ($email->direction === \App\Enums\EmailDirection::Inbound
                             && $email->ticket_id === null
                             && $email->dismissed_at === null
+                            && ($pass === 1 || (
+                                $email->created_at?->gte(Carbon::parse($sinceFormatted))
+                                && ! \App\Models\SignalEvent::where('type_key', 'intake.email_received')
+                                    ->where('entity_type', $email->getMorphClass())
+                                    ->where('entity_id', $email->id)
+                                    ->exists()
+                            ))
                         ) {
                             $this->resolveSender($email);
                             $this->processInbound($email, $origin);
