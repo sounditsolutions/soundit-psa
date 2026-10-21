@@ -109,99 +109,127 @@ class EmailService
         $failedGraphIds = [];
         $hitPageLimit = count($messages) >= 2500; // 50 pages * 50 per page
 
-        foreach ($messages as $msg) {
-            try {
-                $graphId = $msg['id'] ?? null;
-                if (! $graphId) {
-                    continue;
+        $seenGraphIds = [];
+        $passOneErrors = 0;
+        foreach ([1, 2] as $pass) {
+            if ($pass === 2) {
+                $passOneErrors = $result->errors;
+                try {
+                    $messages = $this->graphClient->getMailboxMessages($mailbox, [
+                        '$select' => self::GRAPH_SELECT_FIELDS,
+                        '$filter' => "lastModifiedDateTime ge {$sinceFormatted}",
+                        '$orderby' => 'lastModifiedDateTime asc',
+                        '$top' => 50,
+                    ]);
+                } catch (GraphClientException $e) {
+                    $result->recordError('Graph API error: '.$e->getMessage());
+
+                    break;
                 }
-
-                $mapped = $this->mapGraphMessage($msg);
-                $internetMessageId = $mapped['internet_message_id'] ?? null;
-
-                // Dedup by internet_message_id (globally unique RFC 5322 ID).
-                // Graph's internal id can be recycled when messages are deleted/moved.
-                // internet_message_id is only indexed, not unique, so several rows can
-                // share one — prefer the row that already carries this graph id, which
-                // needs no write at all.
-                $email = null;
-                if ($internetMessageId) {
-                    $email = Email::where('internet_message_id', $internetMessageId)
-                        ->where('graph_id', $graphId)
-                        ->first()
-                        ?? Email::where('internet_message_id', $internetMessageId)->first();
-                }
-
-                if ($email) {
-                    // Exact match by internet_message_id — same email, maybe different graph_id
-                    if ($email->graph_id !== $graphId) {
-                        // graph_id is UNIQUE. If another row already owns this id, claiming
-                        // it throws on every poll forever and (before the cursor fix below)
-                        // froze graph_last_poll_at with it. Leave the id where it is.
-                        $owner = Email::where('graph_id', $graphId)
-                            ->where('id', '!=', $email->id)
-                            ->first();
-
-                        if ($owner && $owner->internet_message_id === $internetMessageId) {
-                            // Duplicate rows for one message. Work on the row Graph's id
-                            // already points at and leave the id alone.
-                            Log::warning('[EmailService] Duplicate email rows share an internet_message_id — using the row that holds the graph id', [
-                                'graph_id' => $graphId,
-                                'owner_email_id' => $owner->id,
-                                'duplicate_email_id' => $email->id,
-                            ]);
-                            $email = $owner;
-                        } else {
-                            if ($owner) {
-                                // Recycled graph id: clear it off the stale row first, the
-                                // same way the new-email branch below does.
-                                $owner->update(['graph_id' => null]);
-                            }
-                            $email->update(['graph_id' => $graphId]);
-                        }
+            }
+            foreach ($messages as $msg) {
+                try {
+                    $graphId = $msg['id'] ?? null;
+                    if (! $graphId) {
+                        continue;
                     }
 
-                    // Retry processing for unprocessed inbound emails
-                    if ($email->direction === \App\Enums\EmailDirection::Inbound
-                        && $email->ticket_id === null
-                        && $email->dismissed_at === null
-                    ) {
+                    if ($pass === 2 && isset($seenGraphIds[$graphId])) {
+                        continue;
+                    }
+                    if ($pass === 1) {
+                        $seenGraphIds[$graphId] = true;
+                    }
+
+                    $mapped = $this->mapGraphMessage($msg);
+                    $internetMessageId = $mapped['internet_message_id'] ?? null;
+
+                    // Dedup by internet_message_id (globally unique RFC 5322 ID).
+                    // Graph's internal id can be recycled when messages are deleted/moved.
+                    // internet_message_id is only indexed, not unique, so several rows can
+                    // share one — prefer the row that already carries this graph id, which
+                    // needs no write at all.
+                    $email = null;
+                    if ($internetMessageId) {
+                        $email = Email::where('internet_message_id', $internetMessageId)
+                            ->where('graph_id', $graphId)
+                            ->first()
+                            ?? Email::where('internet_message_id', $internetMessageId)->first();
+                    }
+
+                    if ($email) {
+                        // Exact match by internet_message_id — same email, maybe different graph_id
+                        if ($email->graph_id !== $graphId) {
+                            // graph_id is UNIQUE. If another row already owns this id, claiming
+                            // it throws on every poll forever and (before the cursor fix below)
+                            // froze graph_last_poll_at with it. Leave the id where it is.
+                            $owner = Email::where('graph_id', $graphId)
+                                ->where('id', '!=', $email->id)
+                                ->first();
+
+                            if ($owner && $owner->internet_message_id === $internetMessageId) {
+                                // Duplicate rows for one message. Work on the row Graph's id
+                                // already points at and leave the id alone.
+                                Log::warning('[EmailService] Duplicate email rows share an internet_message_id — using the row that holds the graph id', [
+                                    'graph_id' => $graphId,
+                                    'owner_email_id' => $owner->id,
+                                    'duplicate_email_id' => $email->id,
+                                ]);
+                                $email = $owner;
+                            } else {
+                                if ($owner) {
+                                    // Recycled graph id: clear it off the stale row first, the
+                                    // same way the new-email branch below does.
+                                    $owner->update(['graph_id' => null]);
+                                }
+                                $email->update(['graph_id' => $graphId]);
+                            }
+                        }
+
+                        // Retry processing for unprocessed inbound emails
+                        if ($email->direction === \App\Enums\EmailDirection::Inbound
+                            && $email->ticket_id === null
+                            && $email->dismissed_at === null
+                        ) {
+                            $this->resolveSender($email);
+                            $this->processInbound($email, $origin);
+                            if ($email->fresh()->ticket_id !== null) {
+                                $result->created++;
+                            }
+                        }
+                    } else {
+                        // New email — clear any stale graph_id from old records before creating
+                        Email::where('graph_id', $graphId)->update(['graph_id' => null]);
+
+                        $email = Email::create(array_merge(['graph_id' => $graphId], $mapped));
+                        $result->created++;
                         $this->resolveSender($email);
                         $this->processInbound($email, $origin);
-                        if ($email->fresh()->ticket_id !== null) {
-                            $result->created++;
+                        if ($origin === self::ORIGIN_BACKFILL && $this->isUnsignalledUnresolved($email->fresh())) {
+                            $unresolved[$email->id] = true;
                         }
                     }
-                } else {
-                    // New email — clear any stale graph_id from old records before creating
-                    Email::where('graph_id', $graphId)->update(['graph_id' => null]);
 
-                    $email = Email::create(array_merge(['graph_id' => $graphId], $mapped));
-                    $result->created++;
-                    $this->resolveSender($email);
-                    $this->processInbound($email, $origin);
-                    if ($origin === self::ORIGIN_BACKFILL && $this->isUnsignalledUnresolved($email->fresh())) {
-                        $unresolved[$email->id] = true;
+                    if ($pass === 1) {
+                        $lastSuccessfulReceivedAt = $msg['receivedDateTime'] ?? $lastSuccessfulReceivedAt;
                     }
-                }
-
-                $lastSuccessfulReceivedAt = $msg['receivedDateTime'] ?? $lastSuccessfulReceivedAt;
-            } catch (\Throwable $e) {
-                $failedGraphIds[] = $graphId ?? 'unknown';
-                // Every failure needs its own retry window. Recording only the oldest
-                // means that once the oldest is dropped the cursor advances past every
-                // other failure in the page, including ones that have failed just once.
-                if (isset($msg['receivedDateTime'])) {
-                    $failures[] = [
+                } catch (\Throwable $e) {
+                    $failedGraphIds[] = $graphId ?? 'unknown';
+                    // Every failure needs its own retry window. Recording only the oldest
+                    // means that once the oldest is dropped the cursor advances past every
+                    // other failure in the page, including ones that have failed just once.
+                    if ($pass === 1 && isset($msg['receivedDateTime'])) {
+                        $failures[] = [
+                            'graph_id' => $graphId ?? 'unknown',
+                            'received_at' => $msg['receivedDateTime'],
+                        ];
+                    }
+                    $result->recordError("Failed to import message {$graphId}: ".$e->getMessage());
+                    Log::error('[EmailService] Failed to import email', [
                         'graph_id' => $graphId ?? 'unknown',
-                        'received_at' => $msg['receivedDateTime'],
-                    ];
+                        'error' => $e->getMessage(),
+                    ]);
                 }
-                $result->recordError("Failed to import message {$graphId}: ".$e->getMessage());
-                Log::error('[EmailService] Failed to import email', [
-                    'graph_id' => $graphId ?? 'unknown',
-                    'error' => $e->getMessage(),
-                ]);
             }
         }
 
@@ -289,7 +317,7 @@ class EmailService
         // cursor did not move (held at the stored cursor, or nothing imported cleanly),
         // this walk put it into no backlog, so the flag stays as it was.
         if ($origin === self::ORIGIN_BACKFILL) {
-            $cursorHeld = $heldAtFloor || ($cursorTarget === null && $result->errors > 0);
+            $cursorHeld = $heldAtFloor || ($cursorTarget === null && $passOneErrors > 0);
             $stoppedShort = $hitPageLimit
                 || ($cursorHeld ? $backfillPending : $cursorTarget !== $lastSuccessfulReceivedAt);
 
@@ -301,7 +329,7 @@ class EmailService
         }
 
         if ($result->errors > 0) {
-            Log::warning('[EmailService] Poll finished with per-message import failures', [
+            Log::warning('[EmailService] Poll finished with errors', [
                 'errors' => $result->errors,
                 'failed_graph_ids' => $failedGraphIds,
                 'cursor_advanced_to' => $cursorTarget,
