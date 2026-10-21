@@ -86,6 +86,12 @@ class SendTicketNotification implements ShouldQueue
 
     private function buildSubject(NotificationEventType $event, ?Ticket $ticket): string
     {
+        if ($event === NotificationEventType::EmailIntakeAlarm) {
+            $ctx = json_decode($this->extraContext ?? '{}', true);
+
+            return 'PSA email intake alarm: '.$ctx['condition'];
+        }
+
         if ($event === NotificationEventType::UnresolvedInboundEmail) {
             return 'Unresolved inbound email — '.Str::limit($this->extraContext ?? 'unknown sender', 80);
         }
@@ -146,6 +152,12 @@ class SendTicketNotification implements ShouldQueue
 
     private function buildBody(NotificationEventType $event, ?Ticket $ticket, ?User $actor): string
     {
+        if ($event === NotificationEventType::EmailIntakeAlarm) {
+            $ctx = json_decode($this->extraContext ?? '{}', true);
+
+            return $ctx['condition']."\n".$ctx['detail'];
+        }
+
         $actorName = $actor?->name ?? 'System';
         $lines = [];
 

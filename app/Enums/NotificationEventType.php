@@ -21,6 +21,7 @@ enum NotificationEventType: string
     case InvoiceGenerationFailed = 'invoice_generation_failed';
     case InvoicePushFailed = 'invoice_push_failed';
     case DailyBriefing = 'daily_briefing';
+    case EmailIntakeAlarm = 'email_intake_alarm';
 
     public function label(): string
     {
@@ -42,6 +43,7 @@ enum NotificationEventType: string
             self::InvoiceGenerationFailed => 'Invoice generation failed',
             self::InvoicePushFailed => 'Invoice push failed',
             self::DailyBriefing => 'Daily briefing',
+            self::EmailIntakeAlarm => 'Email intake alarms',
         };
     }
 
@@ -65,6 +67,7 @@ enum NotificationEventType: string
             self::InvoiceGenerationFailed => 'When automatic invoice generation fails for a billing profile',
             self::InvoicePushFailed => 'When an invoice fails to push to QBO or Stripe',
             self::DailyBriefing => 'A personalized start-of-day digest of your tickets, SLA risks, overnight alerts, and voicemails',
+            self::EmailIntakeAlarm => 'Admins only. Sent once when support email stops reaching an agent route or could pile up unhandled, or the Microsoft Graph mail subscription is missing, expired or due to expire within 20 hours. Turning this off stops the email; the critical log entry is always written.',
         };
     }
 
@@ -88,6 +91,7 @@ enum NotificationEventType: string
             self::InvoiceGenerationFailed => 'bi-exclamation-triangle',
             self::InvoicePushFailed => 'bi-exclamation-triangle',
             self::DailyBriefing => 'bi-newspaper',
+            self::EmailIntakeAlarm => 'bi-envelope-slash',
         };
     }
 
