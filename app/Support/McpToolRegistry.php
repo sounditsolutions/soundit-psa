@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use App\Models\CarbonMcpTool;
 use App\Models\CippMcpTool;
 use App\Services\Agent\RequestToolTool;
 use App\Services\Assistant\AssistantToolDefinitions;
@@ -80,6 +81,9 @@ class McpToolRegistry
                 TriageToolDefinitions::meshTools(),
                 TriageToolDefinitions::cippTools(),
                 self::dynamicCippReadTools(),
+                // Carbon Connect MCP reads (card PEYvh4NL): readOnlyHint === true rows,
+                // the same tier the dynamic CIPP reads sit in.
+                self::dynamicCarbonReadTools(),
                 ChetDataSurfaceTools::registryIntegrationTools(),
             ));
             $integrationNames = array_flip(array_column($integration, 'name'));
@@ -119,6 +123,8 @@ class McpToolRegistry
                 self::cippWriteTools(),
             )));
             $cippAdmin = self::shape(self::cippAdminTools());
+            // Carbon Connect MCP tools Carbon does not mark read-only (card PEYvh4NL).
+            $carbonWrites = self::shape(self::dynamicCarbonWriteTools());
             $tacticalActions = self::shape(self::withoutStagedAliases(self::tacticalActionTools()));
             $tacticalAdmin = self::shape(self::withoutStagedAliases(self::tacticalAdminTools()));
             $huntressActions = self::shape(self::withoutStagedAliases(self::huntressActionTools()));
@@ -151,6 +157,7 @@ class McpToolRegistry
                 'integration' => ['label' => 'Integration (RMM / M365)', 'sensitive' => false, 'tools' => $integration],
                 'cipp_write' => ['label' => 'CIPP write-class (sensitive)', 'sensitive' => true, 'tools' => $cippWrites],
                 'cipp_admin' => ['label' => 'CIPP sync & maintenance (sensitive)', 'sensitive' => true, 'tools' => $cippAdmin],
+                'carbon_write' => ['label' => 'Carbon Connect writes and drafts (sensitive)', 'sensitive' => true, 'tools' => $carbonWrites],
                 'tactical_action' => ['label' => 'Tactical endpoint actions (sensitive)', 'sensitive' => true, 'tools' => $tacticalActions],
                 'tactical_admin' => ['label' => 'Tactical admin/provisioning (sensitive)', 'sensitive' => true, 'tools' => $tacticalAdmin],
                 'huntress_action' => ['label' => 'Huntress SOC escalation actions (sensitive)', 'sensitive' => true, 'tools' => $huntressActions],
@@ -221,6 +228,7 @@ class McpToolRegistry
                 'calendar_write' => ['calendar', 'write', 'Write & schedule', 2],
                 'cipp_write' => ['cipp', 'write', 'Write & remediate', 2],
                 'cipp_admin' => ['cipp', 'admin', 'Sync & maintenance', 3],
+                'carbon_write' => ['carbon', 'write', 'Write & draft', 2],
                 'tactical_action' => ['tactical', 'actions', 'Endpoint actions', 2],
                 'tactical_admin' => ['tactical', 'admin', 'Admin & provisioning', 3],
                 'huntress_action' => ['huntress', 'actions', 'SOC escalation actions', 2],
@@ -348,6 +356,7 @@ class McpToolRegistry
             'screenconnect' => ['label' => 'ScreenConnect', 'blurb' => 'Remote-access session & online state (read-only)', 'icon' => 'bi-display', 'accent' => '#ea580c'],
             'teams' => ['label' => 'Teams & Operator', 'blurb' => 'Teams chat reads & the operator bridge', 'icon' => 'bi-chat-dots', 'accent' => '#4b53bc'],
             'calendar' => ['label' => 'Calendar & Scheduling', 'blurb' => 'Staff calendar reads & scheduling (Microsoft Graph)', 'icon' => 'bi-calendar-event', 'accent' => '#6d28d9'],
+            'carbon' => ['label' => 'Carbon Connect', 'blurb' => 'Hardware sourcing, quotes & draft orders (Carbon MCP)', 'icon' => 'bi-pc-display', 'accent' => '#334155'],
             'controld' => ['label' => 'Control D', 'blurb' => 'DNS filtering: device reads & staged client onboarding', 'icon' => 'bi-shield-lock', 'accent' => '#0f766e'],
             'other' => ['label' => 'Other integrations', 'blurb' => 'Level · Mailprotector · Comet · Servosity · Zorus · DNS', 'icon' => 'bi-plugin', 'accent' => '#7c3aed'],
             'benjipays' => ['label' => 'BenjiPays', 'blurb' => 'Payments, invoices & autopay (read-only)', 'icon' => 'bi-credit-card', 'accent' => '#15803d'],
@@ -365,6 +374,7 @@ class McpToolRegistry
         return match (true) {
             str_starts_with($name, 'benjipays_') => 'benjipays',
             str_starts_with($name, 'cipp_') => 'cipp',
+            str_starts_with($name, 'carbon_') => 'carbon',
             str_starts_with($name, 'tactical_') => 'tactical',
             str_starts_with($name, 'ninja_') => 'ninja',
             str_starts_with($name, 'huntress_') => 'huntress',
@@ -448,6 +458,60 @@ class McpToolRegistry
         });
 
         return $toolNames;
+    }
+
+    /**
+     * Active Carbon Connect MCP rows Carbon marks read-only (card PEYvh4NL). Feeds the
+     * grant catalog ungated; publication gates on CarbonMcpConfig::isLive() in
+     * McpToolSurface, the CIPP split.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function dynamicCarbonReadTools(): array
+    {
+        /** @var array<int, array<string, mixed>> $tools */
+        $tools = self::memoized('dynamic_carbon_read_tools', fn (): array => self::carbonDefinitions(true));
+
+        return $tools;
+    }
+
+    /** @return array<int, array<string, mixed>> active Carbon rows that are writes (sensitive) */
+    public static function dynamicCarbonWriteTools(): array
+    {
+        /** @var array<int, array<string, mixed>> $tools */
+        $tools = self::memoized('dynamic_carbon_write_tools', fn (): array => self::carbonDefinitions(false));
+
+        return $tools;
+    }
+
+    /** @return array<int, string> */
+    public static function dynamicCarbonToolNames(): array
+    {
+        /** @var array<int, string> $names */
+        $names = self::memoized('dynamic_carbon_tool_names', fn (): array => array_values(array_unique(array_column(
+            array_merge(self::dynamicCarbonReadTools(), self::dynamicCarbonWriteTools()),
+            'name',
+        ))));
+
+        return $names;
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private static function carbonDefinitions(bool $readOnly): array
+    {
+        try {
+            return CarbonMcpTool::query()
+                ->active()
+                ->where(fn ($q) => $readOnly
+                    ? $q->where('read_only', true)->where('sensitive', false)
+                    : $q->where('read_only', false)->orWhere('sensitive', true))
+                ->orderBy('local_name')
+                ->get()
+                ->map(fn (CarbonMcpTool $tool): array => $tool->toolDefinition())
+                ->all();
+        } catch (\Throwable) {
+            return [];
+        }
     }
 
     /** @return array<int, array<string, mixed>> */

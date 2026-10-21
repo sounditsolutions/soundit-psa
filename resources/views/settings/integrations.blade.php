@@ -2089,6 +2089,100 @@
             </div>
         </div>
 
+        {{-- Carbon Connect MCP Card (card PEYvh4NL; mockups design/mockups/settings/carbon-mcp-*.html) --}}
+        @php
+            $carbonState = $carbonMcp['state'] ?? 'not_connected';
+        @endphp
+        <div class="card card-static shadow-sm mb-4" id="carbon-mcp-card" data-state="{{ $carbonState }}">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="bi bi-pc-display me-2"></i>Carbon Connect (MCP)
+                </div>
+                @if($carbonState === 'connected')
+                    <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Connected</span>
+                @elseif($carbonState === 'refresh_failed')
+                    <span class="badge bg-danger"><i class="bi bi-exclamation-triangle me-1"></i>Refresh failed</span>
+                @else
+                    <span class="badge bg-secondary"><i class="bi bi-dash-circle me-1"></i>Not connected</span>
+                @endif
+            </div>
+            <div class="card-body">
+                <p class="small text-muted mb-3">
+                    Passes every tool Carbon Connect publishes (product sourcing, configuration, quotes and draft orders) through to staff MCP tokens as <code>carbon_*</code> tools.
+                    Each token gets only the Carbon tools granted to it on Settings &gt; MCP tokens. The sign-in requests all five Carbon scopes.
+                </p>
+
+                @if($carbonState === 'not_connected')
+                    <p class="small mb-2" id="carbon-mcp-not-connected">Not connected. No Carbon tools are offered to any token until an admin signs in.</p>
+                @else
+                    <dl class="row small mb-2" id="carbon-mcp-connection">
+                        <dt class="col-sm-3">Connected by</dt>
+                        <dd class="col-sm-9">{{ $carbonMcp['connected_by'] ?? 'unknown' }} on {{ $carbonMcp['connected_at'] ?? 'unknown' }}</dd>
+                        <dt class="col-sm-3">Scopes</dt>
+                        <dd class="col-sm-9" id="carbon-mcp-scopes">
+                            @forelse($carbonMcp['scopes'] ?? [] as $scope)
+                                <code class="me-1">{{ $scope }}</code>
+                            @empty
+                                <span class="text-muted">none recorded</span>
+                            @endforelse
+                        </dd>
+                        <dt class="col-sm-3">Access token</dt>
+                        <dd class="col-sm-9">Expires {{ $carbonMcp['access_expires_at'] ?? 'unknown' }}; refreshed automatically.</dd>
+                        <dt class="col-sm-3">Tool catalogue</dt>
+                        <dd class="col-sm-9" id="carbon-mcp-catalogue">
+                            {{ $carbonMcpToolCounts['active'] ?? 0 }} active tools ({{ $carbonMcpToolCounts['read_only'] ?? 0 }} read-only, {{ ($carbonMcpToolCounts['active'] ?? 0) - ($carbonMcpToolCounts['read_only'] ?? 0) }} write).
+                            Last sync: {{ $carbonMcp['last_sync_at'] ?? 'never' }}.
+                        </dd>
+                    </dl>
+                    @if($carbonState === 'refresh_failed')
+                        <div class="alert alert-danger small py-2 mb-2" role="alert">
+                            <i class="bi bi-exclamation-triangle me-1"></i>
+                            Refresh failed at {{ $carbonMcp['failed_at'] ?? 'unknown' }}
+                            (error code: <code>{{ $carbonMcp['error_code'] ?? 'unknown' }}</code>).
+                            The stored Carbon sign-in no longer works; Carbon tools fail until an admin reconnects.
+                        </div>
+                    @endif
+                @endif
+
+                @if(auth()->user()?->isAdmin())
+                    <div class="d-flex flex-wrap gap-2 mb-2">
+                        <a href="{{ route('auth.carbon-mcp') }}" class="btn btn-outline-primary btn-sm" id="carbon-mcp-connect-btn">
+                            <i class="bi bi-box-arrow-in-right me-1"></i>{{ $carbonState === 'not_connected' ? 'Connect Carbon' : 'Reconnect Carbon' }}
+                        </a>
+                        @if($carbonState !== 'not_connected')
+                            <form method="POST" action="{{ route('settings.integrations.carbon.sync-mcp-catalog') }}" class="d-inline">
+                                @csrf
+                                <button type="submit" class="btn btn-outline-secondary btn-sm" id="carbon-mcp-sync-btn">
+                                    <i class="bi bi-arrow-repeat me-1"></i>Sync tools now
+                                </button>
+                            </form>
+                            <form method="POST" action="{{ route('auth.carbon-mcp.disconnect') }}" class="d-inline"
+                                  onsubmit="return confirm('Sign out of Carbon? PSA revokes its Carbon token and every carbon_* tool stops working until someone reconnects.');">
+                                @csrf
+                                <button type="submit" class="btn btn-outline-danger btn-sm" id="carbon-mcp-signout-btn">
+                                    <i class="bi bi-box-arrow-right me-1"></i>Sign out
+                                </button>
+                            </form>
+                        @endif
+                    </div>
+                    <small class="text-muted d-block mb-2">Sign in with the Carbon Connect account PSA should act as. PSA registers itself with Carbon on the first Connect.</small>
+                @endif
+
+                <form method="POST" action="{{ route('settings.integrations.toggle') }}" class="border-top pt-3 mt-3">
+                    @csrf
+                    <input type="hidden" name="integration" value="carbon_mcp">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" name="enabled" value="1"
+                               id="carbon_mcp_enabled" {{ ($carbonMcpEnabled ?? false) ? 'checked' : '' }} onchange="this.form.submit()">
+                        <label class="form-check-label" for="carbon_mcp_enabled">
+                            Offer Carbon tools on MCP
+                            <small class="text-muted d-block">While this is off, or Carbon is not connected, no token can list or call a carbon_* tool and the daily catalogue sync (06:07) is skipped.</small>
+                        </label>
+                    </div>
+                </form>
+            </div>
+        </div>
+
         {{-- Huntress EDR/ITDR Card --}}
         <div class="card card-static shadow-sm mb-4">
             <div class="card-header d-flex justify-content-between align-items-center">
