@@ -55,6 +55,8 @@ class CarbonMcpSettingsTest extends TestCase
         $this->assertStringContainsString('Reconnect Carbon', $html);
         $this->assertStringContainsString('id="carbon-mcp-sync-btn"', $html);
         $this->assertStringContainsString('id="carbon-mcp-signout-btn"', $html);
+        $this->assertStringContainsString("confirm('Sign out of Carbon? PSA clears the local Carbon connection and, where it can, first asks Carbon to revoke the token; the message afterwards says whether Carbon confirmed it. Every carbon_* tool stops working until someone reconnects.')", $html);
+        $this->assertStringNotContainsString('PSA revokes its Carbon token', $html);
         $this->assertStringContainsString('id="carbon_mcp_enabled" checked', $html);
         $this->assertStringNotContainsString(self::REFRESH, $html);
         $this->assertStringNotContainsString(self::CLIENT_SECRET_CANARY, $html);

@@ -1113,7 +1113,7 @@ Passes every tool Carbon Systems' Carbon Connect MCP server publishes (product s
 4. Turn on **Offer Carbon tools on MCP**. It cannot be turned on before a sign-in. While it is off, or Carbon is signed out, no token can list or call a `carbon_*` tool and the daily sync is skipped.
 5. Grant tools per token on Settings > MCP tokens, under the **Carbon Connect** card (reads in its Read tier, everything else under **Write & draft**). Carbon tools are explicit-grant-only: the legacy full-surface token never gets them. There is no further approval step; the grant is the decision.
 6. Every call writes one staff MCP audit row with the tool name, outcome and duration. Its arguments are recorded as names only (`argument_keys`), and Carbon's results and error text are never written to the audit log or the application log.
-7. **Sign out** (admin only) revokes the refresh token at Carbon and deletes the local connection. If Carbon does not confirm the revocation, the card says so and the local token is deleted anyway.
+7. **Sign out** (admin only) deletes the local connection. When a readable refresh token is stored and Carbon's metadata names a revocation endpoint, PSA first asks Carbon to revoke it; otherwise nothing is sent to Carbon. The message shown after sign-out says which happened: the token was revoked at Carbon (Carbon answered the revocation with success), nothing was sent to Carbon, or Carbon did not confirm the revocation. The local token is deleted in every case.
 
 ### Stripe (Invoicing)
 

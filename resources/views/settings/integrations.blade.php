@@ -2163,7 +2163,7 @@
                                 </button>
                             </form>
                             <form method="POST" action="{{ route('auth.carbon-mcp.disconnect') }}" class="d-inline"
-                                  onsubmit="return confirm('Sign out of Carbon? PSA revokes its Carbon token and every carbon_* tool stops working until someone reconnects.');">
+                                  onsubmit="return confirm('Sign out of Carbon? PSA clears the local Carbon connection and, where it can, first asks Carbon to revoke the token; the message afterwards says whether Carbon confirmed it. Every carbon_* tool stops working until someone reconnects.');">
                                 @csrf
                                 <button type="submit" class="btn btn-outline-danger btn-sm" id="carbon-mcp-signout-btn">
                                     <i class="bi bi-box-arrow-right me-1"></i>Sign out

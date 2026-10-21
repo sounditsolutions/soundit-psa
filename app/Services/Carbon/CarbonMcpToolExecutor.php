@@ -67,7 +67,7 @@ class CarbonMcpToolExecutor
         } catch (CarbonMcpAuthException $e) {
             Log::warning('[CarbonMcpToolExecutor] Carbon MCP sign-in failed', ['tool' => $toolName, 'error' => $e->getMessage()]);
 
-            return ['error' => 'Carbon tool unavailable: PSA could not sign in to Carbon MCP ('.$e->getMessage().'). An admin reconnects at Settings > Integrations > Carbon Connect.'];
+            return ['error' => 'Carbon tool unavailable: PSA could not sign in to Carbon MCP ('.$e->getMessage().'). This may clear on a later call; if it keeps failing, an admin reconnects at Settings > Integrations > Carbon Connect.'];
         } catch (CarbonMcpException $e) {
             Log::warning('[CarbonMcpToolExecutor] Carbon MCP call failed', ['tool' => $toolName, 'error' => $e->getMessage()]);
 

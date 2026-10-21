@@ -244,6 +244,34 @@ class CarbonMcpToolsTest extends TestCase
         $this->assertStringNotContainsString('could not reach', (string) json_encode($this->logs));
     }
 
+    public function test_a_transient_refresh_failure_does_not_tell_the_agent_an_admin_must_reconnect(): void
+    {
+        $token = McpConfig::rotateStaffToken(['carbon_get_quote_example'], 'chet');
+        app(\App\Services\Carbon\CarbonMcpConnector::class)->forgetAccessToken();
+        $this->carbonTokenNoResponse = true;
+
+        $failed = $this->callTool($token, 'carbon_get_quote_example', ['quote_id' => 'Q-1']);
+
+        $this->assertTrue((bool) $failed->json('result.isError'));
+        $this->assertStringContainsString('if it keeps failing, an admin reconnects', (string) $failed->json('result.content.0.text'));
+        $this->assertNoToolsCallSent();
+
+        // The token endpoint answers again: the next call runs with no reconnect.
+        $this->carbonTokenNoResponse = false;
+        $again = $this->callTool($token, 'carbon_get_quote_example', ['quote_id' => 'Q-1']);
+        $this->assertFalse((bool) $again->json('result.isError'), (string) $again->json('result.content.0.text'));
+
+        $audits = McpAuditLog::where('tool_name', 'carbon_get_quote_example')->orderBy('id')->get();
+        $this->assertCount(2, $audits);
+        $this->assertSame('error', $audits[0]->status);
+        $this->assertSame(
+            'Carbon tool unavailable: PSA could not sign in to Carbon MCP (Carbon MCP refresh failed: no response (ConnectionException)).'
+            .' This may clear on a later call; if it keeps failing, an admin reconnects at Settings > Integrations > Carbon Connect.',
+            $audits[0]->error_message,
+        );
+        $this->assertSame('success', $audits[1]->status);
+    }
+
     private function assertNoToolsCallSent(): void
     {
         Http::assertNotSent(fn (HttpRequest $r): bool => $r->url() === 'https://api.carbonsys.com/mcp' && ($r->data()['method'] ?? null) === 'tools/call');

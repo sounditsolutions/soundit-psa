@@ -23,6 +23,9 @@ trait FakesCarbonMcp
     /** When set, tools/call gets no response (a connect failure, as on a timeout). */
     protected bool $carbonCallNoResponse = false;
 
+    /** When set, the token endpoint gets no response (a transient refresh failure). */
+    protected bool $carbonTokenNoResponse = false;
+
     /** The CallToolResult tools/call answers with; null is a plain text success. */
     protected ?array $carbonCallResult = null;
 
@@ -78,11 +81,17 @@ trait FakesCarbonMcp
         Setting::setValue('carbon_mcp_enabled', $enabled ? '1' : '0');
     }
 
-    /** Token endpoint answering a refresh with ACCESS. */
+    /** Token endpoint answering a refresh with ACCESS, or with no response while $carbonTokenNoResponse is set. */
     protected function tokenFake(): array
     {
         return [
-            'https://api.carbonsys.com/token' => Http::response(['access_token' => self::ACCESS, 'token_type' => 'Bearer', 'expires_in' => 3600], 200),
+            'https://api.carbonsys.com/token' => function (HttpRequest $request) {
+                if ($this->carbonTokenNoResponse) {
+                    return (Http::failedConnection('cURL error 28: Operation timed out'))($request);
+                }
+
+                return Http::response(['access_token' => self::ACCESS, 'token_type' => 'Bearer', 'expires_in' => 3600], 200);
+            },
         ];
     }
 
