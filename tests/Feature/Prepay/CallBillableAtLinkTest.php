@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Prepay;
 
+use App\Enums\CallStatus;
 use App\Enums\TicketSource;
 use App\Models\Client;
 use App\Models\Contract;
@@ -17,15 +18,17 @@ use App\Services\Triage\TriagePipeline;
 use App\Support\TriageConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use ReflectionClass;
 use Tests\TestCase;
 
 /**
- * Card 6ad7c912: a call linked to an existing ticket gets its billability at link time,
- * so a ticket triage never classifies no longer leaves its calls is_billable=null and
- * undebited. Missed and voicemail calls stay non-billable, at link and through triage's
- * reconcile. Synthetic data only (G-13).
+ * Card 6ad7c912: a completed call with a stored duration linked to an existing ticket gets
+ * its billability at link time, so a ticket triage never classifies no longer leaves such
+ * calls is_billable=null and undebited. On an unclassified ticket a call still ringing, or
+ * one with no stored duration, stays unset. Missed and voicemail calls stay non-billable,
+ * at link and through triage's reconcile. Synthetic data only (G-13).
  */
 class CallBillableAtLinkTest extends TestCase
 {
@@ -158,19 +161,20 @@ class CallBillableAtLinkTest extends TestCase
         $this->assertNotDebited($call);
     }
 
-    /** @return array<string, array{?int}> */
+    /** @return array<string, array{?int, ?bool}> */
     public static function emptyDurations(): array
     {
-        return ['zero' => [0], 'null' => [null]];
+        // A stored 0 takes the default; a null stored duration on an unclassified ticket stays unset.
+        return ['zero' => [0, true], 'null' => [null, null]];
     }
 
     #[DataProvider('emptyDurations')]
-    public function test_completed_call_with_no_duration_is_not_debited(?int $duration): void
+    public function test_completed_call_with_no_duration_is_not_debited(?int $duration, ?bool $billable): void
     {
         $ticket = $this->ticket();
         $call = $this->link($this->makeCall(['duration' => $duration, 'recording_duration' => null]), $ticket);
 
-        $this->assertTrue($call->is_billable);
+        $this->assertSame($billable, $call->is_billable);
         $this->assertNotDebited($call);
 
         // A later debit attempt on the same row still records nothing.
@@ -184,6 +188,30 @@ class CallBillableAtLinkTest extends TestCase
         $call = $this->link($this->makeCall(['is_billable' => false]), $ticket);
 
         $this->assertFalse($call->is_billable);
+        $this->assertNotDebited($call);
+    }
+
+    /**
+     * A call linked while still ringing to an unclassified ticket stays unset, so when it ends
+     * unanswered (a hangup whose Duration includes voicemail recording time) and is then marked
+     * voicemail, nothing is debited.
+     */
+    public function test_call_linked_while_ringing_stays_unset_and_is_not_debited_when_it_ends_as_voicemail(): void
+    {
+        Queue::fake();
+        $ticket = $this->ticket();
+        $call = $this->link($this->makeCall(['status' => 'ringing', 'duration' => null]), $ticket);
+        $this->assertNull($call->is_billable);
+
+        $service = app(PhoneCallService::class);
+        $service->handleCallEnded($call->call_uuid, ['Duration' => '45']);
+        $this->assertSame(CallStatus::Missed, $call->fresh()->status);
+        $this->assertNotDebited($call);
+
+        $service->markAsVoicemail($call->call_uuid);
+
+        $this->assertSame(CallStatus::Voicemail, $call->fresh()->status);
+        $this->assertNull($call->fresh()->is_billable);
         $this->assertNotDebited($call);
     }
 

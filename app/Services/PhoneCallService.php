@@ -1204,12 +1204,16 @@ class PhoneCallService
      * Link an existing call to a PSA ticket.
      *
      * A call whose is_billable is already set keeps it. A call with is_billable null
-     * gets a value at link time whenever the ticket exists (card 6ad7c912):
+     * gets a value at link time when the ticket exists (card 6ad7c912):
      *  - a Missed or Voicemail call is set non-billable;
-     *  - any other call takes TicketService::defaultBillable($ticket): not billable when
-     *    the ticket's latest triage classification says work_covered_by_managed, and
-     *    billable when it says otherwise or when the ticket has no triage run or no
-     *    classification.
+     *  - on a ticket whose latest triage run has a classification, any other call takes
+     *    TicketService::defaultBillable($ticket): not billable when the classification
+     *    says work_covered_by_managed, billable when it says otherwise;
+     *  - on a ticket with no triage run or no classification, only a Completed call with
+     *    a non-null stored duration takes the default (billable). Any other call stays
+     *    null: a call still ringing or in progress may yet end as Missed or Voicemail,
+     *    and a call with no stored duration is left for triage's reconcile, which bills
+     *    it from its recording through debitFromPhoneCall().
      * Triage, if it later classifies the ticket, can still flip a completed call either
      * way (TriagePipeline::reconcileBillabilityAfterClassification).
      *
@@ -1233,9 +1237,10 @@ class PhoneCallService
         // existing ticket: triage does not run on every ticket.
         if ($call->is_billable === null) {
             $ticket = Ticket::with('latestTriageRun')->find($ticketId);
+            $classified = (bool) $ticket?->latestTriageRun?->stageResult('classification');
             if (in_array($call->status, [CallStatus::Missed, CallStatus::Voicemail], true)) {
                 $call->is_billable = false;
-            } elseif ($ticket) {
+            } elseif ($ticket && ($classified || ($call->status === CallStatus::Completed && $call->duration !== null))) {
                 $call->is_billable = app(TicketService::class)->defaultBillable($ticket);
             }
         }

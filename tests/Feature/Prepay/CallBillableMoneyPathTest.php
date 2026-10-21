@@ -184,4 +184,15 @@ class CallBillableMoneyPathTest extends TestCase
         $this->assertTrue($call->fresh()->is_billable);
         $this->assertDebited($call);
     }
+
+    public function test_null_duration_call_with_recording_linked_to_unclassified_ticket_stays_unset_and_reconcile_debits_its_recording(): void
+    {
+        $call = $this->makeCall(['duration' => null, 'recording_duration' => 1800]);
+        $this->link($call);
+        $this->assertNull($call->fresh()->is_billable);
+        $this->assertNotDebited($call);
+        $this->runPipeline(false);
+        $this->assertTrue($call->fresh()->is_billable);
+        $this->assertDebited($call);
+    }
 }
