@@ -17,6 +17,24 @@ class AssetLitsrmmClaimTest extends TestCase
         Http::preventStrayRequests();
     }
 
+    public function test_person_status_change_preserves_a_never_retired_link(): void
+    {
+        $asset = Asset::factory()->create([
+            'is_active' => true,
+            'litsrmm_device_id' => '00000000-0000-4000-8000-000000000005',
+            'litsrmm_synced_at' => '2026-10-01 00:00:00',
+            'litsrmm_retired_at' => null,
+        ]);
+
+        app(\App\Services\AssetService::class)->updateAsset($asset, ['is_active' => false]);
+
+        $asset->refresh();
+        $this->assertFalse($asset->is_active);
+        $this->assertSame('00000000-0000-4000-8000-000000000005', $asset->litsrmm_device_id);
+        $this->assertSame('2026-10-01 00:00:00', $asset->litsrmm_synced_at?->format('Y-m-d H:i:s'));
+        $this->assertNull($asset->litsrmm_retired_at);
+    }
+
     public function test_same_write_replacement_retired_stamp_is_preserved(): void
     {
         $this->assertSameWriteStampPreserved(true);

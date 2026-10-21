@@ -134,6 +134,7 @@ class AssetMergeServiceTest extends TestCase
         $this->assertSame('00000000-0000-4000-8000-000000000011', $survivor->litsrmm_device_id);
         $this->assertSame('2026-10-01 00:00:00', $survivor->litsrmm_synced_at?->format('Y-m-d H:i:s'));
         $this->assertSame('2026-10-02 00:00:00', $survivor->litsrmm_retired_at?->format('Y-m-d H:i:s'));
+        $this->assertFalse($survivor->is_active);
         $this->assertNotContains('litsrmm_device_id', $summary['carried_identities'] ?? []);
         $this->assertTrue($duplicate->fresh()->trashed());
     }
@@ -181,6 +182,8 @@ class AssetMergeServiceTest extends TestCase
         ]);
         $summary = $this->service()->mergeAssets($survivor, $duplicate, $user->id);
         $survivor->refresh();
+        // The fixture starts active; an inactive retired duplicate does not deactivate it.
+        $this->assertTrue($survivor->is_active);
         $this->assertNull($survivor->litsrmm_device_id);
         $this->assertNull($survivor->litsrmm_retired_at);
         $this->assertNotContains('litsrmm_device_id', $summary['carried_identities']);

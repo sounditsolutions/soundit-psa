@@ -476,13 +476,13 @@ class AssetService
             // of a duplicate the sync did not retire, when that duplicate is linked
             // (whether or not it is active: an inactive retired survivor that takes
             // a person-inactive duplicate's link stays inactive, as that duplicate was).
-            // An unlinked
-            // duplicate leaves the survivor's link and stamp as they are unless
-            // it is active and not soft-deleted: the survivor then ends active
-            // (billing safety below), so it gives up its retired link and stamp,
-            // or the next sync would retire it again. A survivor that ends the merge
-            // active never keeps a retired stamp (see the step after billing safety,
-            // #7309). A retired duplicate never supplies a claim.
+            // An unlinked duplicate that is active and not soft-deleted makes the
+            // survivor end active (billing safety below), so it gives up its retired
+            // link and stamp, or the next sync would retire it again. Any survivor
+            // that ends the merge active gives up a retired stamp, its link and
+            // synced_at (the step after billing safety, #7309); otherwise an unlinked
+            // duplicate leaves them as they are.
+            // A retired duplicate never supplies a claim.
             $carriedIdentities = [];
             foreach (self::EXTERNAL_IDENTITY_COLUMNS as $column => $companions) {
                 if ($column === 'litsrmm_device_id') {
