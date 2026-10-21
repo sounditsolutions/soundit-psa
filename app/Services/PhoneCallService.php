@@ -314,7 +314,16 @@ class PhoneCallService
                 }
             }
 
+            // Card 6ad7c912: a late answer can be the delivery that records an ended call
+            // Completed, so it takes the default here and runs the same debit as
+            // handleCallEnded(). A live answer leaves the call InProgress and is not debited.
+            $this->applyDefaultBillabilityOnceCompleted($call);
+
             $call->save();
+
+            if ($callEnded && $call->ticket_id && $call->is_billable && $call->duration !== null) {
+                app(PrepayService::class)->debitFromPhoneCall($call);
+            }
 
             return $call;
         });
@@ -561,6 +570,8 @@ class PhoneCallService
                 $call->status = CallStatus::Completed;
             }
 
+            $this->applyDefaultBillabilityOnceCompleted($call);
+
             $call->save();
 
             $becameCompleted = $statusBefore !== CallStatus::Completed
@@ -680,6 +691,9 @@ class PhoneCallService
                 $call->recording_duration = $duration;
             }
 
+            // Card 6ad7c912: the duration stored BEFORE this callback, for the default below.
+            $storedCallDuration = $call->duration;
+
             // Plivo occasionally omits Duration from the hangup webhook. When
             // the recording webhook arrives afterward, use its duration as the
             // call duration so UI, reports, and exports all render correctly.
@@ -710,6 +724,12 @@ class PhoneCallService
 
             $this->finaliseCallTheHangupNeverClosed($call, $recordingIsComplete);
             $this->reconcileAnsweredStateWithDuration($call);
+            // A length copied in above from the recording does not give the default: a call
+            // stored at 0 s or with no duration is not defaulted from its recording here, and
+            // the helper declines it on every later delivery because the recording is then stored.
+            if ($storedCallDuration > 0) {
+                $this->applyDefaultBillabilityOnceCompleted($call);
+            }
 
             $call->save();
 
@@ -1202,8 +1222,30 @@ class PhoneCallService
 
     /**
      * Link an existing call to a PSA ticket.
-     * Sets billability from triage if classification exists, otherwise leaves
-     * it null — the triage pipeline will set it after classification runs.
+     *
+     * A call whose is_billable is already set keeps it. A call with is_billable null
+     * gets a value at link time when the ticket exists (card 6ad7c912):
+     *  - Voicemail is excluded at link and in the gate; unset billability becomes false;
+     *  - on a ticket whose latest triage run has a classification, any other call takes
+     *    TicketService::defaultBillable($ticket), whatever its status or stored duration, as
+     *    at base: not billable when the classification says work_covered_by_managed,
+     *    billable when it says otherwise;
+     *  - on a ticket with no triage run or no classification, a Completed call takes the
+     *    default (billable) only with a positive stored duration and no recording stored.
+     *    handleRecordingReady() copies a recording's length into a null or 0 s duration, and
+     *    the link cannot tell that copy from a measured duration, so a call with a stored
+     *    recording stays null at link, as at base; that includes the auto-link
+     *    handleRecordingReady() runs after it completes a call. Any other call, Missed
+     *    included, stays null; a call still ringing or in progress may yet end as Missed or
+     *    Voicemail, and takes the default when a webhook records it Completed with a
+     *    positive stored duration and no recording stored before that webhook, on the terms
+     *    in applyDefaultBillabilityOnceCompleted().
+     * Triage, if it later classifies the ticket, can still flip the default either way for
+     * any call but Voicemail (TriagePipeline::reconcileBillabilityAfterClassification).
+     *
+     * Only billable calls with a truthy stored duration reach the debit service here.
+     * A null stored duration is not debited at link, even with a recording. The service
+     * gate rejects non-positive stored durations.
      */
     public function linkCallToTicket(PhoneCall $call, int $ticketId): PhoneCall
     {
@@ -1217,10 +1259,15 @@ class PhoneCallService
             $call->contract_held_at = null;
         }
 
-        // Only set billability if triage has already classified this ticket
+        // Default classified calls, and on an unclassified ticket a Completed call with a positive
+        // stored duration and no stored recording (a recording may have supplied that duration);
+        // leave other unclassified calls unset.
         if ($call->is_billable === null) {
             $ticket = Ticket::with('latestTriageRun')->find($ticketId);
-            if ($ticket?->latestTriageRun?->stageResult('classification')) {
+            $classified = (bool) $ticket?->latestTriageRun?->stageResult('classification');
+            if ($call->status === CallStatus::Voicemail) {
+                $call->is_billable = false;
+            } elseif ($ticket && ($classified || ($call->status === CallStatus::Completed && $call->duration > 0 && $call->recording_url === null))) {
                 $call->is_billable = app(TicketService::class)->defaultBillable($ticket);
             }
         }
@@ -1231,12 +1278,44 @@ class PhoneCallService
         // arrives (card I3EvQKUV §3). Several active contracts and no default leave it NULL.
         app(PrepayService::class)->stampPhoneCallContract($call);
 
-        // Trigger prepay debit only if billability is determined
+        // Preserve the base link-time stored-duration requirement.
         if ($call->is_billable && $call->duration) {
             app(PrepayService::class)->debitFromPhoneCall($call);
         }
 
         return $call;
+    }
+
+    /**
+     * Card 6ad7c912: a linked call whose is_billable is still null once it is Completed takes
+     * TicketService::defaultBillable() for its ticket, so the debit that follows can run. At
+     * link, a call still ringing or in progress on a ticket triage has not classified stays
+     * null, since it may yet end as Missed or Voicemail. A call whose is_billable is set, an
+     * unlinked call, a call without positive stored duration, and a call in any other status
+     * are left as they are. So is a call that had a recording stored before this delivery:
+     * handleRecordingReady() copies a recording's length into a null or 0 s duration, and a
+     * later hangup (the controller can re-send that stored length as Duration on a coalesced
+     * recording+terminal POST), a redelivered recording callback or a late answer cannot tell
+     * the copy from a measured duration. handleRecordingReady() calls it only when the duration
+     * was positive before that callback. So on these webhooks a length copied in from the
+     * recording never gives the default, and billability stays unset, as at base.
+     * Mutates the model only; the caller saves.
+     */
+    private function applyDefaultBillabilityOnceCompleted(PhoneCall $call): void
+    {
+        if ($call->is_billable !== null || ! $call->ticket_id || $call->status !== CallStatus::Completed || ! ($call->duration > 0)) {
+            return;
+        }
+
+        // The row as read under the lock: a recording already stored may have set this duration.
+        if ($call->getOriginal('recording_url') !== null) {
+            return;
+        }
+
+        $ticket = Ticket::find($call->ticket_id);
+        if ($ticket) {
+            $call->is_billable = app(TicketService::class)->defaultBillable($ticket);
+        }
     }
 
     /**
