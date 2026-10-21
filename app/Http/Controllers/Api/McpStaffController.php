@@ -1617,8 +1617,9 @@ class McpStaffController extends Controller
      * Card 6ad8e6a1: an image returned by get_ticket_attachment or
      * get_teams_message_attachment as a native MCP image content block, so a
      * client renders it as a picture instead of a base64 string in text. Null
-     * for any other tool, an error, a non-image file, or a result without
-     * image bytes and an image/* media type.
+     * for any other tool, an error, a non-image file, an image/* type outside
+     * the vision set (is_image false), or a result without image bytes and an
+     * image/* media type.
      *
      * @return array{type: 'image', data: string, mimeType: string}|null
      */
