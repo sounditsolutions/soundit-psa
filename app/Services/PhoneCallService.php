@@ -1231,7 +1231,11 @@ class PhoneCallService
      *    at base: not billable when the classification says work_covered_by_managed,
      *    billable when it says otherwise;
      *  - on a ticket with no triage run or no classification, a Completed call takes the
-     *    default (billable) only with a positive stored duration. Any other call, Missed
+     *    default (billable) only with a positive stored duration and no recording stored.
+     *    handleRecordingReady() copies a recording's length into a null or 0 s duration, and
+     *    the link cannot tell that copy from a measured duration, so a call with a stored
+     *    recording stays null at link, as at base; that includes the auto-link
+     *    handleRecordingReady() runs after it completes a call. Any other call, Missed
      *    included, stays null; a call still ringing or in progress may yet end as Missed or
      *    Voicemail, and takes the default when a webhook records it Completed with a
      *    positive stored duration and no recording stored before that webhook, on the terms
@@ -1255,13 +1259,15 @@ class PhoneCallService
             $call->contract_held_at = null;
         }
 
-        // Default classified calls and completed calls; leave other unclassified calls unset.
+        // Default classified calls, and on an unclassified ticket a Completed call with a positive
+        // stored duration and no stored recording (a recording may have supplied that duration);
+        // leave other unclassified calls unset.
         if ($call->is_billable === null) {
             $ticket = Ticket::with('latestTriageRun')->find($ticketId);
             $classified = (bool) $ticket?->latestTriageRun?->stageResult('classification');
             if ($call->status === CallStatus::Voicemail) {
                 $call->is_billable = false;
-            } elseif ($ticket && ($classified || ($call->status === CallStatus::Completed && $call->duration > 0))) {
+            } elseif ($ticket && ($classified || ($call->status === CallStatus::Completed && $call->duration > 0 && $call->recording_url === null))) {
                 $call->is_billable = app(TicketService::class)->defaultBillable($ticket);
             }
         }

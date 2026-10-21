@@ -4,8 +4,10 @@ namespace Tests\Feature\Prepay;
 
 use App\Enums\CallStatus;
 use App\Enums\TicketSource;
+use App\Enums\TicketStatus;
 use App\Models\Client;
 use App\Models\Contract;
+use App\Models\Person;
 use App\Models\PhoneCall;
 use App\Models\PrepayTransaction;
 use App\Models\Setting;
@@ -29,7 +31,9 @@ use Tests\TestCase;
  * undebited. On an unclassified ticket a call still ringing or in progress stays unset at
  * link and takes the default once a webhook records it Completed with a positive stored
  * duration (at the recording callback, one stored before the recording's length is copied
- * in; a webhook after a stored recording gives no default). On a classified ticket any call
+ * in; a webhook after a stored recording gives no default). On an unclassified ticket a
+ * Completed call with a stored recording stays unset at link, manual or automatic, since its
+ * stored duration may be the recording's copied length. On a classified ticket any call
  * but Voicemail takes the default at link, as at base.
  * Voicemail is excluded at link and in the gate. Synthetic data only (G-13).
  */
@@ -423,6 +427,64 @@ class CallBillableAtLinkTest extends TestCase
         $service->handleCallAnswered($call->call_uuid, ['DialAction' => 'answer']);
         $this->assertNull($call->fresh()->is_billable);
         $this->assertSame(0, PrepayTransaction::where('phone_call_id', $call->id)->count());
+        $this->assertNotDebited($call);
+    }
+
+    /**
+     * The auto-link inside handleRecordingReady(): an answered call with no stored duration is
+     * completed by its recording, whose length is copied into the stored duration, and is then
+     * auto-linked to its contact's sole open ticket, which triage has not classified. The copied
+     * length gives no default at that link, so nothing is debited, as at base. A hangup that
+     * re-sends that length as Duration gives no default either.
+     */
+    public function test_auto_link_after_a_recording_copies_its_length_gives_no_default_and_no_debit(): void
+    {
+        Queue::fake();
+        Setting::setValue('call_autolink_enabled', '1');
+        $person = Person::create([
+            'client_id' => $this->client->id, 'first_name' => 'Synthetic', 'last_name' => 'Linkcaller',
+            'phone' => '+15555550143', 'is_active' => true,
+        ]);
+        $ticket = $this->ticket(['contact_id' => $person->id, 'status' => TicketStatus::InProgress->value]);
+        $call = $this->makeCall([
+            'status' => 'in-progress', 'duration' => null, 'answered_at' => now()->subMinutes(30),
+            'started_at' => now()->subMinutes(31), 'client_id' => $this->client->id, 'person_id' => $person->id,
+            'recording_disk_path' => 'call-recordings/synthetic.mp3',
+        ]);
+        $service = app(PhoneCallService::class);
+        $service->handleRecordingReady($call->call_uuid, 'https://example.invalid/synthetic.mp3', 1800);
+
+        $this->assertSame($ticket->id, $call->fresh()->ticket_id);
+        $this->assertSame(CallStatus::Completed, $call->fresh()->status);
+        $this->assertEquals(1800, $call->fresh()->duration);
+        $this->assertNull($call->fresh()->is_billable);
+        $this->assertNotDebited($call);
+
+        $service->handleCallEnded($call->call_uuid, ['Duration' => '1800']);
+        $this->assertNull($call->fresh()->is_billable);
+        $this->assertNotDebited($call);
+    }
+
+    /**
+     * A manual or MCP link of a call whose recording landed before the link: the recording
+     * completed the call and its length was copied into the stored duration. On a ticket triage
+     * has not classified, that length gives no default at link, so nothing is debited, as at base.
+     */
+    public function test_manual_link_after_a_recording_copies_its_length_gives_no_default_and_no_debit(): void
+    {
+        Queue::fake();
+        $call = $this->makeCall([
+            'status' => 'in-progress', 'duration' => null, 'answered_at' => now()->subMinutes(30),
+            'started_at' => now()->subMinutes(31), 'recording_disk_path' => 'call-recordings/synthetic.mp3',
+        ]);
+        app(PhoneCallService::class)->handleRecordingReady($call->call_uuid, 'https://example.invalid/synthetic.mp3', 1800);
+        $this->assertSame(CallStatus::Completed, $call->fresh()->status);
+        $this->assertEquals(1800, $call->fresh()->duration);
+        $this->assertNull($call->fresh()->ticket_id);
+
+        $call = $this->link($call->fresh(), $this->ticket());
+
+        $this->assertNull($call->is_billable);
         $this->assertNotDebited($call);
     }
 
