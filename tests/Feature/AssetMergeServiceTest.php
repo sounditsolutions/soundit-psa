@@ -15,6 +15,7 @@ use App\Services\AssetService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class AssetMergeServiceTest extends TestCase
@@ -25,6 +26,7 @@ class AssetMergeServiceTest extends TestCase
     {
         parent::setUp();
         Bus::fake();
+        Http::preventStrayRequests();
     }
 
     public function test_retired_survivor_takes_live_duplicate_claim(): void
@@ -45,6 +47,70 @@ class AssetMergeServiceTest extends TestCase
     public function test_neither_retired_with_different_links_conflicts(): void
     {
         $this->assertLitsrmmMergeOutcome(false, false);
+    }
+
+    public function test_active_retired_duplicate_reactivates_survivor_without_a_retired_claim(): void
+    {
+        $this->assertActiveSurvivorEndsRetiredClaim(false, true);
+    }
+
+    public function test_already_active_retired_survivor_ends_claim_with_inactive_unlinked_duplicate(): void
+    {
+        $this->assertActiveSurvivorEndsRetiredClaim(true, false);
+    }
+
+    private function assertActiveSurvivorEndsRetiredClaim(bool $survivorActive, bool $duplicateActive): void
+    {
+        $client = Client::factory()->create();
+        $user = User::factory()->create();
+        $survivor = Asset::factory()->for($client)->create([
+            'is_active' => $survivorActive,
+            'litsrmm_device_id' => '00000000-0000-4000-8000-000000000011',
+            'litsrmm_synced_at' => '2026-10-01 00:00:00',
+            'litsrmm_retired_at' => '2026-10-02 00:00:00',
+        ]);
+        $duplicate = Asset::factory()->for($client)->create([
+            'is_active' => $duplicateActive,
+            'litsrmm_device_id' => $duplicateActive ? '00000000-0000-4000-8000-000000000012' : null,
+            'litsrmm_synced_at' => $duplicateActive ? '2026-10-03 00:00:00' : null,
+            'litsrmm_retired_at' => $duplicateActive ? '2026-10-04 00:00:00' : null,
+        ]);
+
+        $summary = $this->service()->mergeAssets($survivor, $duplicate, $user->id);
+
+        $survivor->refresh();
+        $this->assertTrue($survivor->is_active);
+        $this->assertNull($survivor->litsrmm_retired_at);
+        $this->assertNull($survivor->litsrmm_device_id);
+        $this->assertNull($survivor->litsrmm_synced_at);
+        $this->assertNotContains('litsrmm_device_id', $summary['carried_identities']);
+    }
+
+    public function test_active_retired_survivor_takes_inactive_unretired_duplicate_claim_and_stays_active(): void
+    {
+        $client = Client::factory()->create();
+        $user = User::factory()->create();
+        $survivor = Asset::factory()->for($client)->create([
+            'is_active' => true,
+            'litsrmm_device_id' => '00000000-0000-4000-8000-000000000011',
+            'litsrmm_synced_at' => '2026-10-01 00:00:00',
+            'litsrmm_retired_at' => '2026-10-02 00:00:00',
+        ]);
+        $duplicate = Asset::factory()->for($client)->create([
+            'is_active' => false,
+            'litsrmm_device_id' => '00000000-0000-4000-8000-000000000012',
+            'litsrmm_synced_at' => '2026-10-03 00:00:00',
+            'litsrmm_retired_at' => null,
+        ]);
+
+        $summary = $this->service()->mergeAssets($survivor, $duplicate, $user->id);
+
+        $survivor->refresh();
+        $this->assertTrue($survivor->is_active);
+        $this->assertSame('00000000-0000-4000-8000-000000000012', $survivor->litsrmm_device_id);
+        $this->assertSame('2026-10-03 00:00:00', $survivor->litsrmm_synced_at?->format('Y-m-d H:i:s'));
+        $this->assertNull($survivor->litsrmm_retired_at);
+        $this->assertContains('litsrmm_device_id', $summary['carried_identities']);
     }
 
     public function test_unlinked_duplicate_leaves_retired_survivor_claim(): void
@@ -161,14 +227,26 @@ class AssetMergeServiceTest extends TestCase
         ]);
         if (! $survivorRetired && ! $duplicateRetired) {
             $this->assertArrayHasKey('litsrmm_device_id', $this->service()->assetMergeIdentityConflicts($survivor, $duplicate));
-            $this->expectException(\RuntimeException::class);
-            $this->service()->mergeAssets($survivor, $duplicate, $user->id);
+            $columns = ['is_active', 'litsrmm_device_id', 'litsrmm_synced_at', 'litsrmm_retired_at', 'merged_into_asset_id'];
+            $before = [$survivor->only($columns), $duplicate->only($columns)];
+            try {
+                $this->service()->mergeAssets($survivor, $duplicate, $user->id);
+                $this->fail('Differing live LITSRMM identities should refuse.');
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('litsrmm_device_id (survivor: 00000000-0000-4000-8000-000000000011, duplicate: 00000000-0000-4000-8000-000000000012)', $e->getMessage());
+            }
+            foreach ([$survivor->fresh(), $duplicate->fresh()] as $index => $asset) {
+                $this->assertEquals($before[$index], $asset->only($columns));
+                $this->assertNull($asset->merged_into_asset_id);
+                $this->assertFalse($asset->trashed());
+            }
 
             return;
         }
         $this->assertSame([], $this->service()->assetMergeIdentityConflicts($survivor, $duplicate));
         $this->service()->mergeAssets($survivor, $duplicate, $user->id);
         $survivor->refresh();
+        $this->assertSame(! ($survivorRetired && $duplicateRetired), $survivor->is_active);
         $takesDuplicate = $survivorRetired && ! $duplicateRetired;
         $this->assertSame($takesDuplicate ? '00000000-0000-4000-8000-000000000012' : '00000000-0000-4000-8000-000000000011', $survivor->litsrmm_device_id);
         $this->assertSame($takesDuplicate ? '2026-10-03 00:00:00' : '2026-10-01 00:00:00', $survivor->litsrmm_synced_at->format('Y-m-d H:i:s'));
