@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Enums\CallStatus;
 use App\Enums\ContractStatus;
 use App\Enums\InvoiceStatus;
 use App\Enums\PrepayTransactionSource;
@@ -1271,7 +1272,10 @@ class PrepayService
             $alertContract = $contract;
 
             $durationSeconds = $call->effectiveDurationSeconds();
-            if (! $call->is_billable || ! $durationSeconds || $durationSeconds <= 0) {
+            // Card 6ad7c912: a Voicemail call, or one whose stored duration is non-null and <= 0, never debits. Missed and null-duration calls are not gated.
+            $neverDebits = $call->status === CallStatus::Voicemail
+                || ($call->duration !== null && (int) $call->duration <= 0);
+            if ($neverDebits || ! $call->is_billable || ! $durationSeconds || $durationSeconds <= 0) {
                 $this->reverseDebitForPhoneCall($call);
                 if (! $existing) {
                     $alertContract = null;
