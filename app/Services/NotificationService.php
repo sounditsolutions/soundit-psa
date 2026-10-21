@@ -692,6 +692,24 @@ class NotificationService
         }
     }
 
+    public function notifyEmailIntakeGauge(string $condition, string $detail): void
+    {
+        $context = json_encode(['condition' => $condition, 'detail' => $detail]);
+        $users = User::where('is_active', true)->whereNotNull('email')->where('role', 'admin')->get();
+
+        foreach ($users as $user) {
+            if ($user->wantsNotification(NotificationEventType::EmailIntakeAlarm)) {
+                SendTicketNotification::dispatch(
+                    $user->id,
+                    NotificationEventType::EmailIntakeAlarm->value,
+                    null,
+                    null,
+                    $context,
+                );
+            }
+        }
+    }
+
     public function notifyInvoicePushFailed(\App\Models\Invoice $invoice, string $backend, string $error): void
     {
         $context = json_encode([

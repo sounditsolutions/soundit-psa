@@ -409,7 +409,8 @@ These commands execute automatically based on their schedule:
 | `qbo:sync-financials` | Daily at 05:40 | Pull bank account balances and recent expenses from QuickBooks (only if connected). Flags: `--balances`, `--expenses`, `--since=YYYY-MM-DD` |
 | `stripe:sync-invoices` | Every 4 hours | Push/pull invoices to/from Stripe (if configured). Add `--import` for one-time historical import. `--full` resets incremental marker. `--since=YYYY-MM-DD` overrides start date. |
 | `email:subscription-renew` | Every 2 hours | Renew Microsoft Graph webhook subscription |
-| `email:poll` | Hourly | Fallback email poll (catches anything webhooks missed) |
+| `email:poll` | Every 5 minutes | Fallback email poll (catches anything webhooks missed) |
+| `email:intake-gauge` | Every 15 minutes | Check unwatched routes, pile-up risk and missing, expired or soon-expiring Graph subscriptions; email admins who have "Email intake alarms" on, and always write a critical log, on each unhealthy transition |
 | `triage:review-open` | Hourly | AI review of open tickets — assesses conversation state, writes recommendation notes. Only runs if triage auto-review is enabled in Settings. |
 | `attachments:clean-orphans` | Daily at 04:00 | Deletes unlinked attachment files older than 24h (orphans from abandoned editor sessions) |
 | `prepay:expire` | Daily at 04:10 | Forfeit the unconsumed remainder of expired prepaid-time credits (no-op until a contract sets an expiration policy). Use `--dry-run` to preview, `--contract=ID` to scope. |

@@ -392,6 +392,10 @@ Schedule::command('email:poll')
     ->withoutOverlapping(10)
     ->runInBackground();
 
+Schedule::command('email:intake-gauge')
+    ->everyFifteenMinutes()
+    ->withoutOverlapping(10);
+
 // AI Triage — review open tickets for status changes (only if enabled)
 // Frequency configurable via triage_review_frequency_minutes setting (default: 60)
 Schedule::command('triage:review-open')
