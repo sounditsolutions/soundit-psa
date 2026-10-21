@@ -2,7 +2,6 @@
 
 namespace Tests\Feature\Carbon;
 
-use App\Models\CarbonMcpTool;
 use App\Models\McpAuditLog;
 use App\Models\Setting;
 use App\Services\Carbon\CarbonMcpCatalogSyncService;
