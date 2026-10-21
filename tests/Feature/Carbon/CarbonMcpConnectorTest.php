@@ -42,7 +42,7 @@ class CarbonMcpConnectorTest extends TestCase
     {
         return ['https://api.carbonsys.com/register' => Http::response([
             'client_id' => 'carbon-client-1',
-            'client_secret' => self::CLIENT_SECRET,
+            'client_secret' => self::CLIENT_SECRET_CANARY,
             'redirect_uris' => [route('auth.carbon-mcp.callback')],
         ], 201)];
     }
@@ -88,8 +88,8 @@ class CarbonMcpConnectorTest extends TestCase
                 && $r['scope'] === 'mcp:read mcp:products:write mcp:orders:draft mcp:companies:write mcp:customers:write';
         });
         $this->assertSame('carbon-client-1', Setting::getValue(CarbonMcpConnector::CLIENT_ID_SETTING));
-        $this->assertSame(self::CLIENT_SECRET, Setting::getEncrypted(CarbonMcpConnector::CLIENT_SECRET_SETTING));
-        $this->assertStringNotContainsString(self::CLIENT_SECRET, (string) DB::table('settings')->where('key', CarbonMcpConnector::CLIENT_SECRET_SETTING)->value('value'));
+        $this->assertSame(self::CLIENT_SECRET_CANARY, Setting::getEncrypted(CarbonMcpConnector::CLIENT_SECRET_SETTING));
+        $this->assertStringNotContainsString(self::CLIENT_SECRET_CANARY, (string) DB::table('settings')->where('key', CarbonMcpConnector::CLIENT_SECRET_SETTING)->value('value'));
     }
 
     public function test_a_second_connect_reuses_the_registration(): void
@@ -174,7 +174,7 @@ class CarbonMcpConnectorTest extends TestCase
             && $r['code'] === self::CODE
             && $r['code_verifier'] === $verifier
             && $r['client_id'] === 'carbon-client-1'
-            && $r['client_secret'] === self::CLIENT_SECRET
+            && $r['client_secret'] === self::CLIENT_SECRET_CANARY
             && $r['redirect_uri'] === route('auth.carbon-mcp.callback'));
 
         $status = app(CarbonMcpConnector::class)->status();
@@ -213,7 +213,7 @@ class CarbonMcpConnectorTest extends TestCase
         Http::assertSentCount(1);
         Http::assertSent(fn (HttpRequest $r): bool => $r['grant_type'] === 'refresh_token'
             && $r['refresh_token'] === self::REFRESH
-            && $r['client_secret'] === self::CLIENT_SECRET
+            && $r['client_secret'] === self::CLIENT_SECRET_CANARY
             && $r['resource'] === 'https://api.carbonsys.com/mcp');
         $this->assertSame(self::ROTATED, Setting::getEncrypted(CarbonMcpConnector::REFRESH_TOKEN_SETTING));
         $this->assertNotNull(Setting::getValue(CarbonMcpConnector::ACCESS_EXPIRES_AT));
@@ -251,7 +251,7 @@ class CarbonMcpConnectorTest extends TestCase
             && $r['token'] === self::REFRESH
             && $r['token_type_hint'] === 'refresh_token'
             && $r['client_id'] === 'carbon-client-1'
-            && $r['client_secret'] === self::CLIENT_SECRET);
+            && $r['client_secret'] === self::CLIENT_SECRET_CANARY);
         $this->assertFalse(app(CarbonMcpConnector::class)->isConnected());
         $this->assertNull(Setting::getValue(CarbonMcpConnector::GRANTED_SCOPES));
     }
@@ -280,7 +280,7 @@ class CarbonMcpConnectorTest extends TestCase
     private function assertNoSecretInLogs(): void
     {
         $dump = json_encode($this->logs);
-        foreach ([self::REFRESH, self::ROTATED, self::ACCESS, self::CLIENT_SECRET, self::CODE, self::CUSTOMER_CANARY] as $canary) {
+        foreach ([self::REFRESH, self::ROTATED, self::ACCESS, self::CLIENT_SECRET_CANARY, self::CODE, self::CUSTOMER_CANARY] as $canary) {
             $this->assertStringNotContainsString($canary, (string) $dump);
         }
     }

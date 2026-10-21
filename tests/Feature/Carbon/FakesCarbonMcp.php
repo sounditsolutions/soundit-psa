@@ -29,7 +29,7 @@ trait FakesCarbonMcp
 
     protected const ACCESS = 'AT-CANARY-carbon-7b22-access';
 
-    protected const CLIENT_SECRET = 'CS-CANARY-carbon-55d1-client';
+    protected const CLIENT_SECRET_CANARY = 'CS-CANARY-carbon-55d1-client';
 
     protected const CODE = 'AUTHCODE-CANARY-carbon-0c3d';
 
@@ -68,7 +68,7 @@ trait FakesCarbonMcp
             'revocation_endpoint' => $as['revocation_endpoint'],
         ]));
         Setting::setValue(CarbonMcpConnector::CLIENT_ID_SETTING, 'carbon-client-1');
-        Setting::setEncrypted(CarbonMcpConnector::CLIENT_SECRET_SETTING, self::CLIENT_SECRET);
+        Setting::setEncrypted(CarbonMcpConnector::CLIENT_SECRET_SETTING, self::CLIENT_SECRET_CANARY);
         Setting::setEncrypted(CarbonMcpConnector::REFRESH_TOKEN_SETTING, self::REFRESH);
         Setting::setValue(CarbonMcpConnector::CONNECTED_AT, '2026-10-21T17:00:00+00:00');
         Setting::setValue(CarbonMcpConnector::GRANTED_SCOPES, CarbonMcpConnector::scope());

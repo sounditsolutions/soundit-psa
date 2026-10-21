@@ -57,7 +57,7 @@ class CarbonMcpSettingsTest extends TestCase
         $this->assertStringContainsString('id="carbon-mcp-signout-btn"', $html);
         $this->assertStringContainsString('id="carbon_mcp_enabled" checked', $html);
         $this->assertStringNotContainsString(self::REFRESH, $html);
-        $this->assertStringNotContainsString(self::CLIENT_SECRET, $html);
+        $this->assertStringNotContainsString(self::CLIENT_SECRET_CANARY, $html);
     }
 
     public function test_a_non_admin_sees_status_but_no_connect_sync_or_sign_out(): void
