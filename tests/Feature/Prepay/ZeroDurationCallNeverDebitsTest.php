@@ -20,9 +20,9 @@ use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 use Tests\TestCase;
 
 /**
- * Card 6ad7c912, Jeeves's option 2 ruling (19:28 PT 10/20): debitFromPhoneCall() never debits
- * a Voicemail call, or a call whose stored duration is non-null and <= 0, and reverses any
- * debit such a call already has. Missed is not in the gate: a Missed call with a positive
+ * Card 6ad7c912, Jeeves's option 2 ruling (19:28 PT 10/20): Voicemail is excluded
+ * at link and in the gate. debitFromPhoneCall() reverses an existing debit when invoked
+ * for Voicemail or a call whose stored duration is non-null and <= 0. Missed is not in the gate: a Missed call with a positive
  * duration still debits, as at base. A null stored duration is not gated: it still bills from
  * recording_duration, unchanged from base. Synthetic data only (G-13).
  *
@@ -154,7 +154,7 @@ class ZeroDurationCallNeverDebitsTest extends TestCase
     }
 
     /**
-     * z2: a Voicemail call with a recording never debits. The pipeline's reconcile already
+     * z2: Voicemail is excluded at link and in the gate. The pipeline's reconcile already
      * skips voicemail at this branch, so this drives PhoneCallService::setBillable(), a
      * public caller that reaches debitFromPhoneCall() for any status. A voicemail set
      * billable is the shape the 9 debited prod rows have.

@@ -27,8 +27,8 @@ use Tests\TestCase;
  * Card 6ad7c912: a completed call linked to an existing ticket gets its billability at link
  * time, so a ticket triage never classifies no longer leaves such calls is_billable=null and
  * undebited. On an unclassified ticket a call still ringing or in progress stays unset at
- * link and takes the default once a webhook records it Completed. Missed and voicemail calls
- * stay non-billable, at link and through triage's reconcile. Synthetic data only (G-13).
+ * link and takes the default once a webhook records it Completed with stored duration.
+ * Voicemail is excluded at link and in the gate. Synthetic data only (G-13).
  */
 class CallBillableAtLinkTest extends TestCase
 {
@@ -88,6 +88,7 @@ class CallBillableAtLinkTest extends TestCase
 
     private function assertDebited(PhoneCall $call, float $hours): void
     {
+        $this->assertSame(1, PrepayTransaction::where('phone_call_id', $call->id)->count());
         $row = PrepayTransaction::where('phone_call_id', $call->id)->sole();
         $this->assertSame($this->contract->id, $row->contract_id);
         $this->assertEquals(-$hours, (float) $row->hours);
@@ -152,20 +153,20 @@ class CallBillableAtLinkTest extends TestCase
         $this->assertNotDebited($call);
     }
 
-    public function test_missed_call_is_not_billable_and_not_debited(): void
+    public function test_unclassified_missed_call_stays_unset_and_not_debited(): void
     {
         $ticket = $this->ticket();
-        $call = $this->link($this->makeCall(['status' => 'missed', 'duration' => 20]), $ticket);
+        $call = $this->link($this->makeCall(['status' => 'missed', 'duration' => 180]), $ticket);
 
-        $this->assertFalse($call->is_billable);
+        $this->assertNull($call->is_billable);
         $this->assertNotDebited($call);
     }
 
     /** @return array<string, array{?int, ?bool}> */
     public static function emptyDurations(): array
     {
-        // Both take the default; with no recording neither has a length to debit.
-        return ['zero' => [0, true], 'null' => [null, true]];
+        // No positive stored duration means no new link default.
+        return ['zero' => [0, null], 'null' => [null, null], 'negative' => [-5, null]];
     }
 
     #[DataProvider('emptyDurations')]
@@ -263,7 +264,7 @@ class CallBillableAtLinkTest extends TestCase
 
     /**
      * A call linked while ringing that the hangup records Missed stays unset; a late answer then
-     * records it Completed with no duration and gives it the default, with nothing to debit yet.
+     * records it Completed with no duration and leaves billability unset.
      * The recording callback then debits the recording's length. recording_disk_path is preset
      * so no download is attempted.
      */
@@ -279,13 +280,146 @@ class CallBillableAtLinkTest extends TestCase
         $this->assertSame(CallStatus::Missed, $call->fresh()->status);
         $service->handleCallAnswered($call->call_uuid, ['DialBLegUUID' => 'synthetic-bleg']);
         $this->assertSame(CallStatus::Completed, $call->fresh()->status);
-        $this->assertTrue($call->fresh()->is_billable);
+        $this->assertNull($call->fresh()->is_billable);
         $this->assertNotDebited($call);
 
         $service->handleRecordingReady($call->call_uuid, 'https://example.invalid/synthetic.mp3', 1800);
 
         $this->assertTrue($call->fresh()->is_billable);
         $this->assertDebited($call, 0.5);
+    }
+
+    public function test_classified_missed_call_uses_billable_default_and_debits(): void
+    {
+        $ticket = $this->ticket();
+        $this->classify($ticket, false);
+        $call = $this->link($this->makeCall(['status' => 'missed', 'duration' => 180]), $ticket);
+        $this->assertTrue($call->is_billable);
+        $this->assertDebited($call, 0.05);
+    }
+
+    public function test_recording_completion_defaults_and_debits_once_across_all_three_webhooks(): void
+    {
+        Queue::fake();
+        $call = $this->link($this->makeCall([
+            'status' => 'in-progress', 'duration' => null, 'answered_at' => now()->subMinutes(30),
+            'recording_disk_path' => 'call-recordings/synthetic.mp3',
+        ]), $this->ticket());
+        $this->assertNull($call->is_billable);
+        $service = app(PhoneCallService::class);
+        $service->handleRecordingReady($call->call_uuid, 'https://example.invalid/synthetic.mp3', 1800);
+        $this->assertSame(CallStatus::Completed, $call->fresh()->status);
+        $this->assertTrue($call->fresh()->is_billable);
+        $this->assertDebited($call, 0.5);
+        $service->handleCallEnded($call->call_uuid, ['Duration' => '1800']);
+        $service->handleCallAnswered($call->call_uuid, ['DialAction' => 'answer']);
+        $this->assertSame(1, PrepayTransaction::where('phone_call_id', $call->id)->count());
+        $this->assertDebited($call, 0.5);
+    }
+
+    public function test_zero_at_link_then_durationless_hangup_does_not_introduce_null_duration_debit(): void
+    {
+        Queue::fake();
+        $call = $this->link($this->makeCall([
+            'duration' => 0, 'recording_duration' => 1800,
+            'answered_at' => now()->subMinutes(30),
+        ]), $this->ticket());
+        $this->assertNull($call->fresh()->is_billable);
+        $this->assertNotDebited($call);
+        app(PhoneCallService::class)->handleCallEnded($call->call_uuid, []);
+        $this->assertNull($call->fresh()->duration);
+        $this->assertNull($call->fresh()->is_billable);
+        $this->assertSame(0, PrepayTransaction::where('phone_call_id', $call->id)->count());
+        $this->assertNotDebited($call);
+    }
+
+    public function test_classified_billable_zero_then_durationless_hangup_then_recording_matches_base(): void
+    {
+        Queue::fake();
+        $ticket = $this->ticket();
+        $this->classify($ticket, false);
+        // Already classified billable: A must not change the existing billable path.
+        $call = $this->link($this->makeCall([
+            'is_billable' => true, 'duration' => 0, 'recording_duration' => null,
+            'answered_at' => now()->subMinutes(30),
+            'recording_disk_path' => 'call-recordings/synthetic.mp3',
+        ]), $ticket);
+        $this->assertTrue($call->is_billable);
+        $this->assertNotDebited($call);
+        $service = app(PhoneCallService::class);
+        $service->handleCallEnded($call->call_uuid, []);
+        $this->assertNull($call->fresh()->duration);
+        $this->assertNotDebited($call);
+        $service->handleRecordingReady($call->call_uuid, 'https://example.invalid/synthetic.mp3', 1800);
+        $this->assertDebited($call, 0.5);
+    }
+
+    public function test_zero_completion_does_not_default_billability(): void
+    {
+        Queue::fake();
+        $call = $this->makeCall([
+            'ticket_id' => $this->ticket()->id, 'duration' => null,
+            'answered_at' => now()->subMinutes(30), 'recording_duration' => 1800,
+        ]);
+        app(PhoneCallService::class)->handleCallEnded($call->call_uuid, ['Duration' => '0']);
+        $this->assertNull($call->fresh()->is_billable);
+        $this->assertNotDebited($call);
+    }
+
+    /** Runtime comparison cases: execute unchanged against base and final service bytes. */
+    public static function nullPaths(): array
+    {
+        return [
+            'link unclassified' => ['link', false, false],
+            'link already billable' => ['link', true, false],
+            'link classified' => ['link-classified', false, false],
+            'late answer unset' => ['answer', false, false],
+            'late answer billable' => ['answer', true, false],
+            'hangup unset' => ['ended', false, false],
+            'hangup billable' => ['ended', true, true],
+            'recording unset' => ['recording', false, false],
+            'recording billable' => ['recording', true, true],
+            'explicit set billable' => ['set', false, true],
+        ];
+    }
+
+    #[DataProvider('nullPaths')]
+    public function test_null_duration_path_matches_base(string $path, bool $preset, bool $debited): void
+    {
+        Queue::fake();
+        $ticket = $this->ticket();
+        if ($path === 'link-classified') {
+            $this->classify($ticket, false);
+        }
+        $call = $this->makeCall([
+            'duration' => null, 'recording_duration' => 1800,
+            'is_billable' => $preset ? true : null,
+            'ticket_id' => str_starts_with($path, 'link') ? null : $ticket->id,
+            'answered_at' => now()->subMinutes(30), 'ended_at' => now(),
+            'recording_disk_path' => 'call-recordings/synthetic.mp3',
+        ]);
+        $service = app(PhoneCallService::class);
+        if (str_starts_with($path, 'link')) {
+            $service->linkCallToTicket($call, $ticket->id);
+        } elseif ($path === 'answer') {
+            $service->handleCallAnswered($call->call_uuid, ['DialAction' => 'answer']);
+        } elseif ($path === 'ended') {
+            $service->handleCallEnded($call->call_uuid, []);
+        } elseif ($path === 'recording') {
+            // Preserve a stored ceiling-length recording while the incoming callback has
+            // no duration; this reaches recording fallback with stored duration still null.
+            $call->forceFill(['recording_duration' => 14400])->save();
+            $service->handleRecordingReady($call->call_uuid, 'https://example.invalid/synthetic.mp3', null);
+        } else {
+            $service->setBillable($call, true);
+        }
+        $this->assertNull($call->fresh()->duration);
+        if ($debited) {
+            $this->assertSame(1, PrepayTransaction::where('phone_call_id', $call->id)->count());
+            $this->assertDebited($call, $path === 'recording' ? 4.0 : 0.5);
+        } else {
+            $this->assertNotDebited($call);
+        }
     }
 
     public function test_reconcile_after_billable_classification_leaves_voicemail_false_and_undebited(): void

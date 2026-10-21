@@ -321,7 +321,7 @@ class PhoneCallService
 
             $call->save();
 
-            if ($callEnded && $call->ticket_id && $call->is_billable) {
+            if ($callEnded && $call->ticket_id && $call->is_billable && $call->duration !== null) {
                 app(PrepayService::class)->debitFromPhoneCall($call);
             }
 
@@ -1217,22 +1217,23 @@ class PhoneCallService
      *
      * A call whose is_billable is already set keeps it. A call with is_billable null
      * gets a value at link time when the ticket exists (card 6ad7c912):
-     *  - a Missed or Voicemail call is set non-billable;
-     *  - on a ticket whose latest triage run has a classification, any other call takes
+     *  - Voicemail is excluded at link and in the gate; unset billability becomes false;
+     *  - a Missed call on an unclassified ticket stays unset;
+     *  - with positive stored duration, on a ticket whose latest triage run has a
+     *    classification, any other call takes
      *    TicketService::defaultBillable($ticket): not billable when the classification
      *    says work_covered_by_managed, billable when it says otherwise;
      *  - on a ticket with no triage run or no classification, a Completed call takes the
-     *    default (billable). A call still ringing or in progress stays null, since it may
+     *    default (billable) only with a positive stored duration. A call still ringing
+     *    or in progress stays null, since it may
      *    yet end as Missed or Voicemail; it takes the default when a webhook records it
      *    Completed (applyDefaultBillabilityOnceCompleted()).
      * Triage, if it later classifies the ticket, can still flip a completed call either
      * way (TriagePipeline::reconcileBillabilityAfterClassification).
      *
-     * A billable call with a stored duration is debited from prepay here. A call given its
-     * default here is debited even with no stored duration: debitFromPhoneCall() bills its
-     * recording if it has one, records nothing if it has none, and never debits a stored
-     * duration of 0 or less. A call already set billable with no stored duration is not
-     * debited here.
+     * Only billable calls with a truthy stored duration reach the debit service here.
+     * A null stored duration is not debited at link, even with a recording. The service
+     * gate rejects non-positive stored durations.
      */
     public function linkCallToTicket(PhoneCall $call, int $ticketId): PhoneCall
     {
@@ -1246,17 +1247,14 @@ class PhoneCallService
             $call->contract_held_at = null;
         }
 
-        // Set billability at link time (card 6ad7c912) so a call is never left null on an
-        // existing ticket: triage does not run on every ticket.
-        $defaulted = false;
+        // Default classified calls and completed calls; leave other unclassified calls unset.
         if ($call->is_billable === null) {
             $ticket = Ticket::with('latestTriageRun')->find($ticketId);
             $classified = (bool) $ticket?->latestTriageRun?->stageResult('classification');
-            if (in_array($call->status, [CallStatus::Missed, CallStatus::Voicemail], true)) {
+            if ($call->status === CallStatus::Voicemail) {
                 $call->is_billable = false;
-            } elseif ($ticket && ($classified || $call->status === CallStatus::Completed)) {
+            } elseif ($ticket && $call->duration > 0 && ($classified || $call->status === CallStatus::Completed)) {
                 $call->is_billable = app(TicketService::class)->defaultBillable($ticket);
-                $defaulted = true;
             }
         }
 
@@ -1266,9 +1264,8 @@ class PhoneCallService
         // arrives (card I3EvQKUV §3). Several active contracts and no default leave it NULL.
         app(PrepayService::class)->stampPhoneCallContract($call);
 
-        // Trigger prepay debit only if billability is determined. A call given its default
-        // above is debited from its recording when it has no stored duration.
-        if ($call->is_billable && ($call->duration || ($defaulted && $call->effectiveDurationSeconds()))) {
+        // Preserve the base link-time stored-duration requirement.
+        if ($call->is_billable && $call->duration) {
             app(PrepayService::class)->debitFromPhoneCall($call);
         }
 
@@ -1280,12 +1277,13 @@ class PhoneCallService
      * TicketService::defaultBillable() for its ticket, so the debit that follows can run. At
      * link, a call still ringing or in progress on a ticket triage has not classified stays
      * null, since it may yet end as Missed or Voicemail. A call whose is_billable is set, an
-     * unlinked call, and a call in any other status are left as they are. Mutates the model
+     * unlinked call, a call without positive stored duration, and a call in any other status
+     * are left as they are. Mutates the model
      * only; the caller saves.
      */
     private function applyDefaultBillabilityOnceCompleted(PhoneCall $call): void
     {
-        if ($call->is_billable !== null || ! $call->ticket_id || $call->status !== CallStatus::Completed) {
+        if ($call->is_billable !== null || ! $call->ticket_id || $call->status !== CallStatus::Completed || ! ($call->duration > 0)) {
             return;
         }
 
