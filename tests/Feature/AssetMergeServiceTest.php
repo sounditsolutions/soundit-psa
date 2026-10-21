@@ -139,6 +139,33 @@ class AssetMergeServiceTest extends TestCase
         $this->assertTrue($duplicate->fresh()->trashed());
     }
 
+    public function test_soft_deleted_active_unlinked_duplicate_leaves_inactive_retired_survivor_claim(): void
+    {
+        $client = Client::factory()->create();
+        $user = User::factory()->create();
+        $survivor = Asset::factory()->for($client)->create([
+            'is_active' => false,
+            'litsrmm_device_id' => '00000000-0000-4000-8000-000000000011',
+            'litsrmm_synced_at' => '2026-10-01 00:00:00',
+            'litsrmm_retired_at' => '2026-10-02 00:00:00',
+        ]);
+        $duplicate = Asset::factory()->for($client)->create([
+            'is_active' => true,
+            'litsrmm_device_id' => null,
+            'litsrmm_synced_at' => null,
+            'litsrmm_retired_at' => null,
+            'deleted_at' => '2026-10-03 00:00:00',
+        ]);
+
+        $this->service()->mergeAssets($survivor, $duplicate, $user->id);
+
+        $survivor = $survivor->fresh();
+        $this->assertSame('00000000-0000-4000-8000-000000000011', $survivor->litsrmm_device_id);
+        $this->assertSame('2026-10-01 00:00:00', $survivor->litsrmm_synced_at?->format('Y-m-d H:i:s'));
+        $this->assertSame('2026-10-02 00:00:00', $survivor->litsrmm_retired_at?->format('Y-m-d H:i:s'));
+        $this->assertFalse($survivor->is_active);
+    }
+
     public function test_live_unlinked_duplicate_ends_retired_survivor_claim(): void
     {
         $client = Client::factory()->create();

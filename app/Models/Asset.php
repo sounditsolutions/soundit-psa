@@ -136,7 +136,7 @@ class Asset extends Model
 
     /**
      * End the sync's retirement claim on an explicit person status change or restore.
-     * It acts on the stored stamp, and leaves a stamp the same write sets alone.
+     * It acts on the stored stamp, and leaves alone a stamp the same write changes.
      */
     public function endLitsrmmClaim(): void
     {

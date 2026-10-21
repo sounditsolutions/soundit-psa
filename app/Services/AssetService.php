@@ -288,8 +288,9 @@ class AssetService
      * that duplicate was retired too, gives up its own link and stamp to an
      * unlinked duplicate that is active and not soft-deleted, and a duplicate's
      * link the sync retired is never carried; a survivor that ends the merge active
-     * never keeps a retired stamp or link, so the both-retired case keeps the
-     * survivor's own link and stamp only when it ends inactive (#7309), #5374),
+     * never keeps a retired stamp, its link or synced_at, so the both-retired
+     * case keeps the survivor's own link and stamp only when it ends inactive
+     * (#7309), #5374),
      * clears EVERY external identity AND the
      * serial_number on the duplicate (the RMM sync/webhook paths match on vendor
      * id and FALL BACK to a serial_number match guarded by `whereNull(<vendor
