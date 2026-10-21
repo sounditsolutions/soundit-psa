@@ -34,7 +34,7 @@ class EmailReprocessUnmatched extends Command
             ->where('direction', EmailDirection::Inbound)
             ->chunkById(100, function ($emails) use ($emailService, &$matched, &$skipped) {
                 foreach ($emails as $email) {
-                    $emailService->processInbound($email);
+                    $emailService->processInbound($email, EmailService::ORIGIN_BACKFILL);
 
                     if ($email->ticket_id !== null) {
                         $matched++;

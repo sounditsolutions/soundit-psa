@@ -114,7 +114,7 @@ class IntakeEmailEmissionsTest extends TestCase
             'client_id' => $client->id,
         ]);
 
-        app(EmailService::class)->processInbound($email);
+        app(EmailService::class)->processInbound($email, EmailService::ORIGIN_LIVE);
 
         $received = $this->assertSingleSignalEvent('intake.email_received');
         $this->assertStringContainsString('unresolved', $received->summary);
@@ -139,8 +139,7 @@ class IntakeEmailEmissionsTest extends TestCase
 
         app(EmailService::class)->processInbound($email);
 
-        // Site B (E1) fires unconditionally on fallthrough; E2 is gated by the native
-        // 24h notify guard, so a >24h backfill must NOT wake the unresolved feed.
+        // E1 fires on fallthrough; the default backfill origin suppresses per-email E2.
         $received = $this->assertSingleSignalEvent('intake.email_received');
         $this->assertSame(['client_id' => $client->id], $received->context);
         $this->assertSame(0, SignalEvent::where('type_key', 'intake.email_unresolved')->count());
@@ -160,7 +159,7 @@ class IntakeEmailEmissionsTest extends TestCase
             'client_id' => $client->id,
         ]);
 
-        app(EmailService::class)->processInbound($email);
+        app(EmailService::class)->processInbound($email, EmailService::ORIGIN_LIVE);
 
         // Falls through to unresolved exactly like the 24h test above — both E1 and E2 fire.
         $events = SignalEvent::where('type_key', 'like', 'intake.email_%')->get();

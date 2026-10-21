@@ -41,6 +41,13 @@ use Soundasleep\Html2Text;
 
 class EmailService
 {
+    public const ORIGIN_LIVE = 'live';
+
+    public const ORIGIN_BACKFILL = 'backfill';
+
+    // Present while a backfill poll has stopped short of the end of its backlog (see pollMailbox).
+    private const BACKFILL_PENDING_KEY = 'graph_poll_backfill_pending';
+
     private const FREE_EMAIL_DOMAINS = \App\Support\FreeEmailDomains::ALL;
 
     private const GRAPH_SELECT_FIELDS = 'id,internetMessageId,conversationId,from,toRecipients,ccRecipients,subject,bodyPreview,body,hasAttachments,importance,receivedDateTime,internetMessageHeaders';
@@ -65,6 +72,14 @@ class EmailService
         }
 
         $storedCursor = Setting::getValue('graph_last_poll_at');
+        // A backfill that stopped short (page limit, or a failure holding the cursor back)
+        // left the stored cursor inside its backlog. The scheduled polls that walk the rest
+        // of that backlog continue the backfill; they are not live until one reaches the end.
+        $backfillPending = Setting::getValue(self::BACKFILL_PENDING_KEY) !== null;
+        $origin = $sinceDate === null && $storedCursor !== null && ! $backfillPending
+            ? self::ORIGIN_LIVE
+            : self::ORIGIN_BACKFILL;
+        $unresolved = [];
 
         $since = $sinceDate
             ?? $storedCursor
@@ -152,7 +167,7 @@ class EmailService
                         && $email->dismissed_at === null
                     ) {
                         $this->resolveSender($email);
-                        $this->processInbound($email);
+                        $this->processInbound($email, $origin);
                         if ($email->fresh()->ticket_id !== null) {
                             $result->created++;
                         }
@@ -164,7 +179,10 @@ class EmailService
                     $email = Email::create(array_merge(['graph_id' => $graphId], $mapped));
                     $result->created++;
                     $this->resolveSender($email);
-                    $this->processInbound($email);
+                    $this->processInbound($email, $origin);
+                    if ($origin === self::ORIGIN_BACKFILL && $this->isUnsignalledUnresolved($email->fresh())) {
+                        $unresolved[$email->id] = true;
+                    }
                 }
 
                 $lastSuccessfulReceivedAt = $msg['receivedDateTime'] ?? $lastSuccessfulReceivedAt;
@@ -185,6 +203,10 @@ class EmailService
                     'error' => $e->getMessage(),
                 ]);
             }
+        }
+
+        if ($origin === self::ORIGIN_BACKFILL) {
+            $this->emitUnresolvedImportSummary(count($unresolved));
         }
 
         if ($hitPageLimit) {
@@ -214,6 +236,7 @@ class EmailService
         // from), not the stored cursor: on an operator backfill the stored cursor is
         // unrelated to this page and would call a first failure "already retried".
         $cursorTarget = $lastSuccessfulReceivedAt;
+        $heldAtFloor = false;
 
         if ($cursorTarget !== null && $failures !== []) {
             $windowStart = Carbon::parse($since);
@@ -247,16 +270,34 @@ class EmailService
                 // next scheduled poll and, past the page limit, stall new mail behind
                 // it. The stored cursor is the floor.
                 $floor = $storedCursor !== null ? Carbon::parse($storedCursor) : null;
-                $clampTarget = ($floor !== null && $floor->gt($clamp)) ? $floor : $clamp;
+                $floorHolds = $floor !== null && $floor->gt($clamp);
+                $clampTarget = $floorHolds ? $floor : $clamp;
 
                 if (Carbon::parse($cursorTarget)->gt($clampTarget)) {
                     $cursorTarget = $clampTarget->toIso8601String();
+                    $heldAtFloor = $floorHolds;
                 }
             }
         }
 
         if ($cursorTarget) {
             Setting::setValue('graph_last_poll_at', $cursorTarget);
+        }
+
+        // A backfill that did not reach the end of its backlog keeps the next scheduled
+        // poll backfill; one that did hands the cursor back to live polling. When the
+        // cursor did not move (held at the stored cursor, or nothing imported cleanly),
+        // this walk put it into no backlog, so the flag stays as it was.
+        if ($origin === self::ORIGIN_BACKFILL) {
+            $cursorHeld = $heldAtFloor || ($cursorTarget === null && $result->errors > 0);
+            $stoppedShort = $hitPageLimit
+                || ($cursorHeld ? $backfillPending : $cursorTarget !== $lastSuccessfulReceivedAt);
+
+            if ($stoppedShort) {
+                Setting::setValue(self::BACKFILL_PENDING_KEY, '1');
+            } else {
+                Setting::where('key', self::BACKFILL_PENDING_KEY)->delete();
+            }
         }
 
         if ($result->errors > 0) {
@@ -302,7 +343,7 @@ class EmailService
 
                 $email = Email::create(array_merge(['graph_id' => $graphId], $mapped));
                 $this->resolveSender($email);
-                $this->processInbound($email);
+                $this->processInbound($email, self::ORIGIN_LIVE);
             } else {
                 // Update graph_id if it changed
                 if ($email->graph_id !== $graphId) {
@@ -322,7 +363,7 @@ class EmailService
      * and pollMailbox() (poll path) — these are separate code paths that each
      * handle their own import loop.
      */
-    public function processInbound(Email $email): void
+    public function processInbound(Email $email, string $origin = self::ORIGIN_BACKFILL): void
     {
         // direction is cast to EmailDirection enum — must compare to enum, not string
         if ($email->direction !== EmailDirection::Inbound || $email->ticket_id !== null) {
@@ -372,8 +413,7 @@ class EmailService
             }
         }
 
-        // Auto-create only if: setting on, client known, AND email is recent (< 24h)
-        // The 24h guard prevents mass auto-ticketing during poll backfill runs
+        // Auto-ticketing requires the setting, a known client and receipt within 24 hours.
         if (Setting::getValue('email_auto_ticket')
             && $email->client_id
             && $email->received_at >= now()->subHours(24)
@@ -383,7 +423,7 @@ class EmailService
 
         // Notify if email remains unresolved after all processing paths
         $email->refresh();
-        if ($email->ticket_id === null && $email->received_at >= now()->subHours(24)) {
+        if ($origin === self::ORIGIN_LIVE && $this->isUnsignalledUnresolved($email)) {
             app(NotificationService::class)->notifyUnresolvedEmail($email);
 
             $this->emitIntakeSignal('intake.email_unresolved', $email, 'inbound email unresolved (no ticket)');
@@ -398,6 +438,32 @@ class EmailService
         // (AgentConfig::intakeEmailEnabled()). Revisit this label if intake routing is enabled.
         $outcome = $email->ticket_id !== null ? 'ticket created' : 'unresolved (no ticket)';
         $this->emitIntakeSignal('intake.email_received', $email, 'inbound email received — '.$outcome);
+    }
+
+    public function isUnsignalledUnresolved(Email $email): bool
+    {
+        return $email->ticket_id === null
+            && $email->dismissed_at === null
+            && $email->direction === EmailDirection::Inbound
+            && ! \App\Models\SignalEvent::where('type_key', 'intake.email_unresolved')
+                ->where('entity_type', $email->getMorphClass())
+                ->where('entity_id', $email->id)
+                ->exists();
+    }
+
+    public function emitUnresolvedImportSummary(int $count): void
+    {
+        if ($count > 0) {
+            try {
+                app(\App\Services\Signals\SignalHub::class)->emit('intake.email_unresolved', null, "{$count} unresolved imported", []);
+            } catch (\Throwable $e) {
+                Log::warning('[EmailService] Intake summary signal emit failed', [
+                    'type_key' => 'intake.email_unresolved',
+                    'count' => $count,
+                    'error' => class_basename($e),
+                ]);
+            }
+        }
     }
 
     /**
@@ -1045,9 +1111,7 @@ PROMPT;
     }
 
     /**
-     * Auto-create a ticket from an inbound email for a known client.
-     * Only called when: email_auto_ticket setting is on, client_id is set,
-     * and the email was received within the last 24 hours (backfill guard).
+     * Create a ticket for a known client; processInbound requires auto-ticketing on and receipt within 24 hours.
      *
      * Public (psa-ip15 W2): reused directly by the MCP intake_manage
      * create_ticket_from_email verb. Returns the ticket — either the
