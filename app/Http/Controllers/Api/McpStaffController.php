@@ -1613,7 +1613,6 @@ class McpStaffController extends Controller
         ]);
     }
 
-    /** @return array<string, mixed> */
     /**
      * Card 6ad8e6a1: an image returned by get_ticket_attachment or
      * get_teams_message_attachment as a native MCP image content block, so a
@@ -1639,6 +1638,7 @@ class McpStaffController extends Controller
         return ['type' => 'image', 'data' => $data, 'mimeType' => $mimeType];
     }
 
+    /** @return array<string, mixed> */
     private function sendReply(array $arguments, Request $request): array
     {
         $ticketId = $this->positiveIntegerArgument($arguments['ticket_id'] ?? null);
