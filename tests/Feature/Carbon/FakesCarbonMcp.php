@@ -20,6 +20,9 @@ trait FakesCarbonMcp
     /** When set, the MCP endpoint answers with this HTTP status and a body holding a canary. */
     protected ?int $carbonMcpDown = null;
 
+    /** The CallToolResult tools/call answers with; null is a plain text success. */
+    protected ?array $carbonCallResult = null;
+
     protected const REFRESH = 'RT-CANARY-carbon-4e1f-refresh';
 
     protected const ROTATED = 'RT-CANARY-carbon-rotated-9a0c';
@@ -89,9 +92,10 @@ trait FakesCarbonMcp
     protected function mcpFake(string $firstPage = 'tools-list-page-1.json', ?array $callResult = null): array
     {
         $this->carbonFirstPage = $firstPage;
+        $this->carbonCallResult = $callResult;
 
         return [
-            'https://api.carbonsys.com/mcp' => function (HttpRequest $request) use ($callResult) {
+            'https://api.carbonsys.com/mcp' => function (HttpRequest $request) {
                 if ($this->carbonMcpDown !== null) {
                     return Http::response('{"detail":"'.self::CUSTOMER_CANARY.'"}', $this->carbonMcpDown);
                 }
@@ -108,7 +112,7 @@ trait FakesCarbonMcp
                         200,
                         ['Content-Type' => 'application/json'],
                     ),
-                    'tools/call' => Http::response(['jsonrpc' => '2.0', 'id' => $request->data()['id'], 'result' => $callResult ?? [
+                    'tools/call' => Http::response(['jsonrpc' => '2.0', 'id' => $request->data()['id'], 'result' => $this->carbonCallResult ?? [
                         'content' => [['type' => 'text', 'text' => 'Quote Q-EXAMPLE-1 for '.self::CUSTOMER_CANARY]],
                         'isError' => false,
                     ]], 200),
