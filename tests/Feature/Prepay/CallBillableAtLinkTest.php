@@ -24,11 +24,11 @@ use ReflectionClass;
 use Tests\TestCase;
 
 /**
- * Card 6ad7c912: a completed call with a stored duration linked to an existing ticket gets
- * its billability at link time, so a ticket triage never classifies no longer leaves such
- * calls is_billable=null and undebited. On an unclassified ticket a call still ringing, or
- * one with no stored duration, stays unset. Missed and voicemail calls stay non-billable,
- * at link and through triage's reconcile. Synthetic data only (G-13).
+ * Card 6ad7c912: a completed call linked to an existing ticket gets its billability at link
+ * time, so a ticket triage never classifies no longer leaves such calls is_billable=null and
+ * undebited. On an unclassified ticket a call still ringing or in progress stays unset at
+ * link and takes the default once a webhook records it Completed. Missed and voicemail calls
+ * stay non-billable, at link and through triage's reconcile. Synthetic data only (G-13).
  */
 class CallBillableAtLinkTest extends TestCase
 {
@@ -164,8 +164,8 @@ class CallBillableAtLinkTest extends TestCase
     /** @return array<string, array{?int, ?bool}> */
     public static function emptyDurations(): array
     {
-        // A stored 0 takes the default; a null stored duration on an unclassified ticket stays unset.
-        return ['zero' => [0, true], 'null' => [null, null]];
+        // Both take the default; with no recording neither has a length to debit.
+        return ['zero' => [0, true], 'null' => [null, true]];
     }
 
     #[DataProvider('emptyDurations')]
@@ -213,6 +213,53 @@ class CallBillableAtLinkTest extends TestCase
         $this->assertSame(CallStatus::Voicemail, $call->fresh()->status);
         $this->assertNull($call->fresh()->is_billable);
         $this->assertNotDebited($call);
+    }
+
+    /**
+     * A call linked while in progress to an unclassified ticket stays unset at link, then takes
+     * the default when the hangup records it Completed, and its duration is debited.
+     */
+    public function test_call_linked_while_in_progress_takes_default_when_it_ends_completed_and_is_debited(): void
+    {
+        Queue::fake();
+        $ticket = $this->ticket();
+        $call = $this->link($this->makeCall([
+            'status' => 'in-progress', 'duration' => null, 'answered_at' => now()->subMinutes(30),
+        ]), $ticket);
+        $this->assertNull($call->is_billable);
+        $this->assertNotDebited($call);
+
+        app(PhoneCallService::class)->handleCallEnded($call->call_uuid, ['Duration' => '1800']);
+
+        $this->assertSame(CallStatus::Completed, $call->fresh()->status);
+        $this->assertTrue($call->fresh()->is_billable);
+        $this->assertDebited($call, 0.5);
+    }
+
+    /**
+     * A call linked while ringing that the hangup records Missed stays unset; a late answer then
+     * records it Completed with no duration, and the recording callback gives it the default and
+     * debits the recording's length. recording_disk_path is preset so no download is attempted.
+     */
+    public function test_call_completed_by_a_late_answer_takes_default_when_the_recording_lands_and_is_debited(): void
+    {
+        Queue::fake();
+        $ticket = $this->ticket();
+        $call = $this->link($this->makeCall([
+            'status' => 'ringing', 'duration' => null, 'recording_disk_path' => 'call-recordings/synthetic.mp3',
+        ]), $ticket);
+        $service = app(PhoneCallService::class);
+        $service->handleCallEnded($call->call_uuid, []);
+        $this->assertSame(CallStatus::Missed, $call->fresh()->status);
+        $service->handleCallAnswered($call->call_uuid, ['DialBLegUUID' => 'synthetic-bleg']);
+        $this->assertSame(CallStatus::Completed, $call->fresh()->status);
+        $this->assertNull($call->fresh()->is_billable);
+        $this->assertNotDebited($call);
+
+        $service->handleRecordingReady($call->call_uuid, 'https://example.invalid/synthetic.mp3', 1800);
+
+        $this->assertTrue($call->fresh()->is_billable);
+        $this->assertDebited($call, 0.5);
     }
 
     public function test_reconcile_after_billable_classification_leaves_voicemail_false_and_undebited(): void
