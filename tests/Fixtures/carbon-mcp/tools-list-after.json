@@ -1,0 +1,7 @@
+{"jsonrpc":"2.0","id":2,"result":{"tools":[
+ {"name":"search_products_example","title":"Search products (example)","description":"Search the Carbon catalogue, now with a category filter (synthetic fixture).","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"category":{"type":"string"}},"required":["query"]},"annotations":{"readOnlyHint":true}},
+ {"name":"getQuoteExample","description":"Read one quote (synthetic fixture).","inputSchema":{"type":"object","properties":{"quote_id":{"type":"string"}},"required":["quote_id"]},"annotations":{"readOnlyHint":false,"destructiveHint":false}},
+ {"name":"create_draft_order_example","description":"Create a draft order; takes no payment (synthetic fixture).","inputSchema":{"type":"object","properties":{"company_id":{"type":"string"},"lines":{"type":"array","items":{"type":"object"}}},"required":["company_id","lines"]},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false}},
+ {"name":"update_company_example","description":"Update a company record (synthetic fixture).","inputSchema":{"type":"object","properties":{"company_id":{"type":"string"},"name":{"type":"string"}},"required":["company_id"]},"annotations":{"destructiveHint":true}},
+ {"name":"list_customers_example","description":"List customers, no annotations at all (synthetic fixture).","inputSchema":{"type":"object","properties":{}}}
+]}}

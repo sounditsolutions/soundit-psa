@@ -623,6 +623,13 @@ Route::middleware('auth')->group(function () {
     Route::get('/auth/cipp-mcp', [\App\Http\Controllers\Web\CippMcpOAuthController::class, 'redirect'])->middleware('admin')->name('auth.cipp-mcp');
     Route::get('/auth/cipp-mcp/callback', [\App\Http\Controllers\Web\CippMcpOAuthController::class, 'callback'])->middleware('admin')->name('auth.cipp-mcp.callback');
 
+    // Carbon Connect MCP (card PEYvh4NL): OAuth + PKCE with dynamic registration.
+    // Admin-only, as Connect CIPP MCP: it grants the PSA a standing Carbon sign-in.
+    Route::get('/auth/carbon-mcp', [\App\Http\Controllers\Web\CarbonMcpOAuthController::class, 'redirect'])->middleware('admin')->name('auth.carbon-mcp');
+    Route::get('/auth/carbon-mcp/callback', [\App\Http\Controllers\Web\CarbonMcpOAuthController::class, 'callback'])->middleware('admin')->name('auth.carbon-mcp.callback');
+    Route::post('/auth/carbon-mcp/disconnect', [\App\Http\Controllers\Web\CarbonMcpOAuthController::class, 'disconnect'])->middleware('admin')->name('auth.carbon-mcp.disconnect');
+    Route::post('/settings/integrations/carbon/sync-mcp-catalog', [IntegrationsController::class, 'syncCarbonMcpCatalog'])->middleware('admin')->name('settings.integrations.carbon.sync-mcp-catalog');
+
     // AJAX endpoints (must be in web.php for session auth, NOT api.php)
     Route::get('/api/qbo/customers', [QboController::class, 'customers'])->name('api.qbo.customers');
     Route::get('/api/ninja/orgs', [NinjaOrgController::class, 'apiOrgs'])->name('api.ninja.orgs');

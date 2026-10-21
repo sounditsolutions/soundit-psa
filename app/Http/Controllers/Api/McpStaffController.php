@@ -1399,6 +1399,14 @@ class McpStaffController extends Controller
                     (int) $clientId,
                     $this->actorLabel($request),
                 );
+            } elseif (\App\Models\CarbonMcpTool::handles((string) $name)) {
+                // Carbon Connect MCP passthrough (card PEYvh4NL): the MSP's own Carbon
+                // account, so a supplied client_id is refused by the executor, not used.
+                $result = app(\App\Services\Carbon\CarbonMcpToolExecutor::class)->execute(
+                    (string) $name,
+                    $arguments,
+                    $hasClientIdArgument,
+                );
             } elseif (CippMcpTool::handles((string) $name)) {
                 $result = app(CippMcpDynamicToolExecutor::class)->execute(
                     (string) $name,
@@ -1740,6 +1748,12 @@ class McpStaffController extends Controller
     /** @return array<string, mixed> */
     private function auditArguments(?string $tool, array $args): array
     {
+        // Carbon Connect MCP (card PEYvh4NL): arguments can carry Carbon company and
+        // customer data, so the audit row keeps the argument NAMES only.
+        if (str_starts_with((string) $tool, \App\Models\CarbonMcpTool::NAME_PREFIX)) {
+            return ['argument_keys' => array_values(array_map('strval', array_keys($args)))];
+        }
+
         if (in_array($tool, ['resolve_email_item', 'stage_resolve_email_item'], true)) {
             $safe = [];
             foreach (['email_id', 'client_id'] as $key) {
@@ -3300,6 +3314,13 @@ class McpStaffController extends Controller
         }
 
         if (CippMcpTool::handles($toolName)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
+        // Carbon Connect MCP catalogue tools (card PEYvh4NL): EXPLICIT-GRANT-ONLY, as the
+        // dynamic CIPP rows above. The legacy full-surface token never inherits them; the
+        // operator's per-token grant is the only approval (Charlie's ruling, 10/21).
+        if (\App\Models\CarbonMcpTool::handles($toolName)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 

@@ -307,6 +307,15 @@ Schedule::command('cipp:sync-mcp-catalog')
     ->runInBackground()
     ->when(fn () => \App\Support\CippConfig::isMcpCatalogSyncEnabled());
 
+// Carbon Connect MCP tool catalogue (card PEYvh4NL) — daily refresh of the tools Carbon
+// publishes, so one that appears or disappears is picked up without a deploy. Runs only
+// while Carbon MCP is switched on AND signed in.
+Schedule::command('carbon:sync-mcp-catalog')
+    ->dailyAt('06:07')
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->when(fn () => \App\Support\CarbonMcpConfig::isLive());
+
 // CIPP tenant mail security posture — daily snapshot (transport, Safe Links, Safe Attachments)
 Schedule::command('cipp:sync-tenant-security')
     ->dailyAt('06:01')

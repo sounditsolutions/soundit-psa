@@ -74,6 +74,7 @@ class McpToolSurface
         // Read once: the Tactical admin tools and the asset watch tools (card
         // K3VEcxtw) gate on the same predicate, and tools/list assembles this twice.
         $tacticalLive = \App\Services\Triage\TriageToolDefinitions::isTacticalAvailable();
+        $carbonLive = CarbonMcpConfig::isLive();
 
         return array_merge(
             AssistantToolDefinitions::getTools(hasClient: false),
@@ -109,6 +110,12 @@ class McpToolSurface
             // OFF=OFF: live only while Tactical is enabled, the predicate the poller
             // and its schedule gate on. Declares its own client_id where it takes one.
             $tacticalLive ? McpToolRegistry::assetWatchTools() : [],
+            // Carbon Connect MCP (card PEYvh4NL): the MSP's own Carbon account, so general
+            // (never client-scoped). OFF=OFF: live only while carbon_mcp_enabled is on AND a
+            // Carbon sign-in is stored, the predicate CarbonMcpToolExecutor refuses on.
+            // Read once per assembly; the default-off switch short-circuits after one query.
+            $carbonLive ? McpToolRegistry::dynamicCarbonReadTools() : [],
+            $carbonLive ? McpToolRegistry::dynamicCarbonWriteTools() : [],
         );
     }
 

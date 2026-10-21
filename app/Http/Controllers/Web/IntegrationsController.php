@@ -82,6 +82,7 @@ class IntegrationsController extends Controller
         'zorus' => 'AI triage',
         'unifi' => 'MCP',
         'powerdmarc' => 'MCP',
+        'carbon_mcp' => 'MCP',
     ];
 
     public function index(NinjaClient $ninja, LevelClient $level)
@@ -425,6 +426,16 @@ class IntegrationsController extends Controller
         $cippContactSyncEnabled = CippConfig::isContactSyncEnabled();
         $cippDeviceSyncEnabled = CippConfig::isDeviceSyncEnabled();
         $cippMcpCatalogSyncEnabled = CippConfig::isMcpCatalogSyncEnabled();
+        // Carbon Connect MCP (card PEYvh4NL)
+        $carbonMcp = app(\App\Services\Carbon\CarbonMcpConnector::class)->status();
+        foreach (['connected_at', 'access_expires_at', 'failed_at', 'last_sync_at'] as $ts) {
+            $carbonMcp[$ts] = $fmtTs($carbonMcp[$ts]);
+        }
+        $carbonMcpEnabled = \App\Support\CarbonMcpConfig::isEnabled();
+        $carbonMcpToolCounts = [
+            'active' => \App\Models\CarbonMcpTool::query()->where('active', true)->count(),
+            'read_only' => \App\Models\CarbonMcpTool::query()->where('active', true)->where('read_only', true)->count(),
+        ];
         $huntressEnabled = HuntressConfig::isEnabled();
         $unifiEnabled = UnifiConfig::isEnabled();
         $powerdmarcEnabled = PowerDmarcConfig::isEnabled();
@@ -629,7 +640,7 @@ class IntegrationsController extends Controller
             'appriverConfigured', 'appriverConnected', 'appriverConnectedAt', 'appriverEnabled',
             'appriverLoginDropped', 'appriverManualSync',
             'printixConfigured', 'printixPartnerId', 'printixHasSecret', 'printixConnected', 'printixEnabled',
-            'cippConfigured', 'cippApiUrl', 'cippTenantId', 'cippClientId', 'cippApplicationId', 'cippHasSecret', 'cippMcpClientId', 'cippMcpHasSecret', 'cippMcpConfigured', 'cippMcpBackendHost', 'cippMcpConnector', 'cippConnected', 'cippEnabled', 'cippMcpEnabled', 'cippContactSyncEnabled', 'cippDeviceSyncEnabled', 'cippMcpCatalogSyncEnabled',
+            'cippConfigured', 'cippApiUrl', 'cippTenantId', 'cippClientId', 'cippApplicationId', 'cippHasSecret', 'cippMcpClientId', 'cippMcpHasSecret', 'cippMcpConfigured', 'cippMcpBackendHost', 'cippMcpConnector', 'cippConnected', 'cippEnabled', 'cippMcpEnabled', 'cippContactSyncEnabled', 'cippDeviceSyncEnabled', 'cippMcpCatalogSyncEnabled', 'carbonMcp', 'carbonMcpEnabled', 'carbonMcpToolCounts',
             'plivoAuthId', 'plivoDidNumber', 'plivoAppId', 'plivoHasToken', 'plivoHasWebhookSecret', 'plivoConnectedAt', 'plivoEnabled',
             'graphMailbox', 'graphConnectedAt', 'graphEmailSignature', 'emailAutoTicket', 'emailTriageUnwatched', 'graphEnabled', 'autoCloseResolvedDays', 'gravatarDefault',
             'calendarEnabled', 'calendarAvailable', 'calendarGraphConfigured', 'calendarAllowedOwnerUpns',
@@ -661,13 +672,20 @@ class IntegrationsController extends Controller
     public function toggleIntegration(Request $request)
     {
         $allowed = [
-            'ninja', 'level', 'mesh', 'cipp', 'cipp_mcp', 'cipp_contact_sync', 'cipp_device_sync', 'cipp_mcp_catalog_sync', 'huntress', 'unifi', 'powerdmarc', 'servosity', 'controld', 'controld_onboarding', 'zorus', 'appriver', 'printix',
+            'ninja', 'level', 'mesh', 'cipp', 'cipp_mcp', 'cipp_contact_sync', 'cipp_device_sync', 'cipp_mcp_catalog_sync', 'carbon_mcp', 'huntress', 'unifi', 'powerdmarc', 'servosity', 'controld', 'controld_onboarding', 'zorus', 'appriver', 'printix',
             'plivo', 'graph', 'stripe', 't2t', 'ai', 'screenconnect', 'tactical', 'litsrmm',
         ];
 
         $request->validate([
             'integration' => ['required', 'string', 'in:'.implode(',', $allowed)],
         ]);
+
+        // Carbon Connect MCP publishes tools that write at Carbon on grant, so its
+        // switch is admin-only (Jeeves's ruling ctx:14 A, card PEYvh4NL). The other
+        // integrations' switches are unchanged here; parity is a separate ticket.
+        if ($request->input('integration') === 'carbon_mcp' && ! $request->user()?->isAdmin()) {
+            abort(403, 'Administrator access required.');
+        }
 
         $key = $request->input('integration').'_enabled';
         $enabled = $request->has('enabled') ? '1' : '0';
@@ -686,6 +704,13 @@ class IntegrationsController extends Controller
                 ->with('error', 'CIPP MCP catalog auto-sync requires the MCP Client ID plus its secret or a Connect CIPP MCP sign-in before it can be enabled.');
         }
 
+        if ($request->input('integration') === 'carbon_mcp' && $enabled === '1' && ! \App\Support\CarbonMcpConfig::isConnected()) {
+            Setting::setValue(\App\Support\CarbonMcpConfig::ENABLED_SETTING, '0');
+
+            return redirect()->route('settings.integrations')
+                ->with('error', 'Carbon Connect MCP needs a Connect Carbon sign-in before it can be switched on.');
+        }
+
         // The onboarding caller's switch (B4) is explicit and separate from the
         // integration's master switch: it cannot be turned on while any of the six
         // onboarding defaults is missing, and turning it on never fills one in.
@@ -700,9 +725,11 @@ class IntegrationsController extends Controller
 
         $label = $request->input('integration');
         $state = $enabled === '1' ? 'enabled' : 'disabled';
-        $message = $label === 'controld_onboarding'
-            ? "Control D client onboarding {$state}."
-            : ucfirst($label)." integration {$state}.";
+        $message = match ($label) {
+            'controld_onboarding' => "Control D client onboarding {$state}.",
+            'carbon_mcp' => "Carbon Connect MCP {$state}.",
+            default => ucfirst($label)." integration {$state}.",
+        };
 
         if ($surfaces = self::AI_GATING_INTEGRATIONS[$label] ?? null) {
             $message .= $enabled === '1'
@@ -1752,6 +1779,28 @@ class IntegrationsController extends Controller
         } catch (\Throwable $e) {
             return redirect()->route('settings.integrations')
                 ->with('error', "CIPP MCP catalog sync failed: {$e->getMessage()}");
+        }
+    }
+
+    /** Sync now (card PEYvh4NL): admin-only, like Connect Carbon. */
+    public function syncCarbonMcpCatalog(\App\Services\Carbon\CarbonMcpCatalogSyncService $service, \App\Services\Carbon\CarbonMcpConnector $connector)
+    {
+        if (! $connector->isConnected()) {
+            return redirect()->route('settings.integrations')
+                ->with('error', 'Carbon is not connected. Click Connect Carbon first.');
+        }
+
+        try {
+            $result = $service->sync();
+
+            return redirect()->route('settings.integrations')
+                ->with('success', \App\Services\Carbon\CarbonMcpCatalogSyncService::summary($result));
+        } catch (\App\Services\Carbon\CarbonMcpException $e) {
+            return redirect()->route('settings.integrations')
+                ->with('error', 'Carbon tool sync failed: '.$e->getMessage());
+        } catch (\Throwable $e) {
+            return redirect()->route('settings.integrations')
+                ->with('error', 'Carbon tool sync failed ('.class_basename($e).').');
         }
     }
 

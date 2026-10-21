@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Carbon Connect (MCP) settings card: not connected</title>
+<link rel="stylesheet" href="../_tokens.css">
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--psa-colors-canvas); color: var(--psa-colors-ink); font-family: var(--psa-typography-body-font-family); font-size: var(--psa-typography-body-font-size); line-height: var(--psa-typography-body-line-height); }
+main { padding: var(--psa-spacing-lg); max-width: 900px; }
+.card { background: var(--psa-colors-surface); border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-md); overflow: hidden; }
+.card-header { background: var(--psa-colors-navy); color: var(--psa-colors-surface); font-family: var(--psa-typography-title-font-family); font-size: var(--psa-typography-title-font-size); font-weight: var(--psa-typography-title-font-weight); padding: var(--psa-spacing-md); display: flex; justify-content: space-between; align-items: center; gap: var(--psa-spacing-sm); }
+.card-body { padding: var(--psa-spacing-md); }
+.muted { color: var(--psa-colors-muted-ink); }
+.small { font-size: var(--psa-typography-label-font-size); }
+.badge { border-radius: var(--psa-rounded-pill); padding: var(--psa-spacing-xs) var(--psa-spacing-sm); font-size: var(--psa-typography-label-font-size); font-family: var(--psa-typography-body-font-family); }
+.ok { background: var(--psa-colors-success); color: var(--psa-colors-surface); }
+.off { background: var(--psa-colors-neutral); color: var(--psa-colors-surface); }
+dl { display: grid; grid-template-columns: 9rem 1fr; gap: var(--psa-spacing-xs) var(--psa-spacing-md); margin: var(--psa-spacing-md) 0; }
+dt { font-weight: var(--psa-typography-label-font-weight); color: var(--psa-colors-navy); }
+dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+dd.chips { display: flex; flex-wrap: wrap; gap: var(--psa-spacing-xs); }
+code { background: var(--psa-colors-canvas); border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-sm); padding: 0 var(--psa-spacing-xs); margin-right: var(--psa-spacing-xs); font-size: var(--psa-typography-label-font-size); }
+.actions { display: flex; flex-wrap: wrap; gap: var(--psa-spacing-sm); margin-top: var(--psa-spacing-md); }
+button { padding: var(--psa-spacing-xs) var(--psa-spacing-md); border: 1px solid var(--psa-colors-navy); border-radius: var(--psa-rounded-sm); background: var(--psa-colors-surface); color: var(--psa-colors-navy); font: inherit; }
+button.danger { border-color: var(--psa-colors-danger); color: var(--psa-colors-danger); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--psa-colors-navy-light); outline-offset: 2px; }
+.section { border-top: 1px solid var(--psa-colors-border); margin-top: var(--psa-spacing-md); padding-top: var(--psa-spacing-md); }
+label { font-weight: var(--psa-typography-label-font-weight); color: var(--psa-colors-navy); }
+input[type=checkbox] { accent-color: var(--psa-colors-navy); }
+p { margin: var(--psa-spacing-sm) 0; }
+.caption { font-family: var(--psa-typography-title-font-family); color: var(--psa-colors-muted-ink); margin: 0 0 var(--psa-spacing-sm); }
+</style>
+</head>
+<body>
+<main>
+<p class="caption">Settings &gt; Integrations &gt; Carbon Connect (MCP), not connected, admin view</p>
+<article class="card">
+<header class="card-header"><span>Carbon Connect (MCP)</span><span class="badge off">Not connected</span></header>
+<div class="card-body">
+<p class="muted small">Passes every tool Carbon Connect publishes (product sourcing, configuration, quotes and draft orders) through to staff MCP tokens as <code>carbon_*</code> tools. Each token gets only the Carbon tools granted to it on Settings &gt; MCP tokens. The sign-in requests all five Carbon scopes.</p>
+<p class="small">Not connected. No Carbon tools are offered to any token until an admin signs in.</p>
+<div class="actions"><button type="button">Connect Carbon</button></div>
+<p class="muted small">Sign in with the Carbon Connect account PSA should act as. PSA registers itself with Carbon on the first Connect.</p>
+<div class="section"><label><input type="checkbox"> Offer Carbon tools on MCP</label>
+<p class="muted small">While this is off, or Carbon is not connected, no token can list or call a carbon_* tool and the daily catalogue sync (06:07) is skipped.</p></div>
+</div>
+</article>
+</main>
+</body>
+</html>

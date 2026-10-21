@@ -121,7 +121,15 @@ class McpToolsListResilienceTest extends TestCase
         // read — +1 x 2 assemblies = +2 flat, independent of catalog size. (A configured
         // instance pays the encrypted hdb_password read and then the t2t_enabled
         // switch read on top: +4 more, still flat.)
-        $this->assertLessThanOrEqual(102, count($queries), $sql);
+        //
+        // Raised 102 -> 106 for the Carbon Connect MCP passthrough (card PEYvh4NL): the
+        // grant catalog (McpToolRegistry::groups(), memoized per request) reads
+        // carbon_mcp_tools twice, once for the read tier and once for the write tier,
+        // and CarbonMcpConfig::isLive() is consulted in liveGeneralToolDefinitions(),
+        // which tools/list assembles twice. carbon_mcp_enabled defaults OFF, so isLive()
+        // short-circuits after the single switch read. 2 + 1 x 2 assemblies = +4 flat,
+        // independent of the size of either catalog.
+        $this->assertLessThanOrEqual(106, count($queries), $sql);
     }
 
     public function test_tools_list_repairs_dynamic_cipp_schema_before_publishing(): void
