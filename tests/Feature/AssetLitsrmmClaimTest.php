@@ -11,9 +11,59 @@ class AssetLitsrmmClaimTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Http::preventStrayRequests();
+    }
+
+    public function test_person_status_change_preserves_a_never_retired_link(): void
+    {
+        $asset = Asset::factory()->create([
+            'is_active' => true,
+            'litsrmm_device_id' => '00000000-0000-4000-8000-000000000005',
+            'litsrmm_synced_at' => '2026-10-01 00:00:00',
+            'litsrmm_retired_at' => null,
+        ]);
+
+        app(\App\Services\AssetService::class)->updateAsset($asset, ['is_active' => false]);
+
+        $asset->refresh();
+        $this->assertFalse($asset->is_active);
+        $this->assertSame('00000000-0000-4000-8000-000000000005', $asset->litsrmm_device_id);
+        $this->assertSame('2026-10-01 00:00:00', $asset->litsrmm_synced_at?->format('Y-m-d H:i:s'));
+        $this->assertNull($asset->litsrmm_retired_at);
+    }
+
+    public function test_same_write_replacement_retired_stamp_is_preserved(): void
+    {
+        $this->assertSameWriteStampPreserved(true);
+    }
+
+    public function test_same_write_new_retired_stamp_is_preserved(): void
+    {
+        $this->assertSameWriteStampPreserved(false);
+    }
+
+    private function assertSameWriteStampPreserved(bool $previouslyRetired): void
+    {
+        $asset = $this->retiredAsset();
+        if (! $previouslyRetired) {
+            $asset->forceFill(['litsrmm_retired_at' => null])->save();
+        }
+        $asset = $asset->fresh();
+        $asset->forceFill(['litsrmm_retired_at' => '2026-10-05 00:00:00']);
+        $asset->endLitsrmmClaim();
+        $asset->save();
+
+        $asset->refresh();
+        $this->assertSame('2026-10-05 00:00:00', $asset->litsrmm_retired_at?->format('Y-m-d H:i:s'));
+        $this->assertSame('00000000-0000-4000-8000-000000000003', $asset->litsrmm_device_id);
+        $this->assertSame('2026-10-01 00:00:00', $asset->litsrmm_synced_at?->format('Y-m-d H:i:s'));
+    }
+
     public function test_litsrmm_claim_columns_are_not_mass_assignable(): void
     {
-        Http::preventStrayRequests();
         $data = [
             'name' => 'Synthetic workstation',
             'litsrmm_device_id' => '00000000-0000-4000-8000-000000000001',
@@ -104,7 +154,6 @@ class AssetLitsrmmClaimTest extends TestCase
 
     public function test_vendor_reactivation_preserves_the_sync_claim(): void
     {
-        Http::preventStrayRequests();
         $asset = Asset::factory()->create([
             'is_active' => false,
             'litsrmm_device_id' => '00000000-0000-4000-8000-000000000002',

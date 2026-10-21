@@ -134,10 +134,13 @@ class Asset extends Model
         ];
     }
 
-    /** End the sync's retirement claim on an explicit person status change or restore. */
+    /**
+     * End the sync's retirement claim on an explicit person status change or restore.
+     * It acts on the stored stamp, and leaves alone a stamp the same write changes.
+     */
     public function endLitsrmmClaim(): void
     {
-        if ($this->litsrmm_retired_at !== null) {
+        if ($this->getOriginal('litsrmm_retired_at') !== null && ! $this->isDirty('litsrmm_retired_at')) {
             $this->litsrmm_retired_at = null;
             if (! $this->isDirty('litsrmm_device_id')) {
                 $this->litsrmm_device_id = null;

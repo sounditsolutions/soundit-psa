@@ -287,7 +287,11 @@ class AssetService
      * takes a linked duplicate's link and sync stamp in place of its own unless
      * that duplicate was retired too, gives up its own link and stamp to an
      * unlinked duplicate that is active and not soft-deleted, and a duplicate's
-     * link the sync retired is never carried, #5374), clears EVERY external identity AND the
+     * link the sync retired is never carried; a survivor that ends the merge active
+     * never keeps a retired stamp, its link or synced_at, so the both-retired
+     * case keeps the survivor's own link and stamp only when it ends inactive
+     * (#7309), #5374),
+     * clears EVERY external identity AND the
      * serial_number on the duplicate (the RMM sync/webhook paths match on vendor
      * id and FALL BACK to a serial_number match guarded by `whereNull(<vendor
      * id>)`, then write `deleted_at => null` straight through, never restore() —
@@ -469,13 +473,17 @@ class AssetService
             }
 
             // External identities — carry missing identities and blank companions.
-            // For LITSRMM, a retired survivor instead takes a live duplicate's
-            // link and sync stamp when that duplicate is linked (whether or not it is live: a retired survivor that takes a person-inactive duplicate's link stays inactive, as that duplicate was). An unlinked
-            // duplicate leaves the survivor's link and stamp as they are unless
-            // it is active and not soft-deleted: the survivor then ends active
-            // (billing safety below), so it gives up its retired link and stamp,
-            // or the next sync would retire it again. A retired duplicate never
-            // supplies a claim.
+            // For LITSRMM, a retired survivor instead takes the link and sync stamp
+            // of a duplicate the sync did not retire, when that duplicate is linked
+            // (whether or not it is active: an inactive retired survivor that takes
+            // a person-inactive duplicate's link stays inactive, as that duplicate was).
+            // An unlinked duplicate that is active and not soft-deleted makes the
+            // survivor end active (billing safety below), so it gives up its retired
+            // link and stamp, or the next sync would retire it again. Any survivor
+            // that ends the merge active gives up a retired stamp, its link and
+            // synced_at (the step after billing safety, #7309); otherwise an unlinked
+            // duplicate leaves them as they are.
+            // A retired duplicate never supplies a claim.
             $carriedIdentities = [];
             foreach (self::EXTERNAL_IDENTITY_COLUMNS as $column => $companions) {
                 if ($column === 'litsrmm_device_id') {
@@ -525,6 +533,11 @@ class AssetService
             if ($duplicateWasLive && ! $survivor->is_active) {
                 $survivor->is_active = true;
                 $reactivatedSurvivor = true;
+            }
+            if ($survivor->is_active && $survivor->litsrmm_retired_at !== null) {
+                $survivor->litsrmm_retired_at = null;
+                $survivor->litsrmm_device_id = null;
+                $survivor->litsrmm_synced_at = null;
             }
             $duplicateType = $duplicate->getAttribute('asset_type');
             if ($duplicateWasLive && $duplicateType !== null && $duplicateType !== ''
