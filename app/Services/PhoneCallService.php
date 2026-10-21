@@ -314,7 +314,16 @@ class PhoneCallService
                 }
             }
 
+            // Card 6ad7c912: a late answer can be the delivery that records an ended call
+            // Completed, so it takes the default here and runs the same debit as
+            // handleCallEnded(). A live answer leaves the call InProgress and is not debited.
+            $this->applyDefaultBillabilityOnceCompleted($call);
+
             $call->save();
+
+            if ($callEnded && $call->ticket_id && $call->is_billable) {
+                app(PrepayService::class)->debitFromPhoneCall($call);
+            }
 
             return $call;
         });

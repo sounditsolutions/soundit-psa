@@ -237,11 +237,37 @@ class CallBillableAtLinkTest extends TestCase
     }
 
     /**
-     * A call linked while ringing that the hangup records Missed stays unset; a late answer then
-     * records it Completed with no duration, and the recording callback gives it the default and
-     * debits the recording's length. recording_disk_path is preset so no download is attempted.
+     * A call linked while ringing whose hangup carries a Duration but no answer evidence is
+     * recorded Missed and stays unset. The late DialAction=answer then records it Completed from
+     * its stored duration, gives it the default and debits that duration, with no recording
+     * callback and no triage run.
      */
-    public function test_call_completed_by_a_late_answer_takes_default_when_the_recording_lands_and_is_debited(): void
+    public function test_call_completed_by_a_late_answer_with_a_duration_takes_default_and_is_debited(): void
+    {
+        Queue::fake();
+        $ticket = $this->ticket();
+        $call = $this->link($this->makeCall(['status' => 'ringing', 'duration' => null]), $ticket);
+        $this->assertNull($call->is_billable);
+        $service = app(PhoneCallService::class);
+        $service->handleCallEnded($call->call_uuid, ['Duration' => '1800']);
+        $this->assertSame(CallStatus::Missed, $call->fresh()->status);
+        $this->assertNull($call->fresh()->is_billable);
+        $this->assertNotDebited($call);
+
+        $service->handleCallAnswered($call->call_uuid, ['DialAction' => 'answer']);
+
+        $this->assertSame(CallStatus::Completed, $call->fresh()->status);
+        $this->assertTrue($call->fresh()->is_billable);
+        $this->assertDebited($call, 0.5);
+    }
+
+    /**
+     * A call linked while ringing that the hangup records Missed stays unset; a late answer then
+     * records it Completed with no duration and gives it the default, with nothing to debit yet.
+     * The recording callback then debits the recording's length. recording_disk_path is preset
+     * so no download is attempted.
+     */
+    public function test_call_completed_by_a_late_answer_with_no_duration_takes_default_and_is_debited_when_the_recording_lands(): void
     {
         Queue::fake();
         $ticket = $this->ticket();
@@ -253,7 +279,7 @@ class CallBillableAtLinkTest extends TestCase
         $this->assertSame(CallStatus::Missed, $call->fresh()->status);
         $service->handleCallAnswered($call->call_uuid, ['DialBLegUUID' => 'synthetic-bleg']);
         $this->assertSame(CallStatus::Completed, $call->fresh()->status);
-        $this->assertNull($call->fresh()->is_billable);
+        $this->assertTrue($call->fresh()->is_billable);
         $this->assertNotDebited($call);
 
         $service->handleRecordingReady($call->call_uuid, 'https://example.invalid/synthetic.mp3', 1800);
