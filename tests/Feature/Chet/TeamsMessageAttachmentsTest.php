@@ -244,7 +244,8 @@ class TeamsMessageAttachmentsTest extends TestCase
         $this->assertSame('inline-1', $out['attachment_id']);
         $this->assertSame('image/png', $out['media_type']);
         $this->assertTrue($out['is_image']);
-        $size = getimagesizefromstring(base64_decode($out['data_base64'], true));
+        // Card 6ad8e6a1: the bytes ride the native image block, not the JSON text.
+        $size = getimagesizefromstring(base64_decode((string) $r->json('result.content.1.data'), true));
         $this->assertSame([1568, 784], [$size[0], $size[1]]);
 
         $this->assertSame([

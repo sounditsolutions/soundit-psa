@@ -1536,9 +1536,19 @@ class McpStaffController extends Controller
                 $start, $request,
             );
 
+            $imageBlock = $this->attachmentImageBlock((string) $name, $result);
+            if ($imageBlock !== null) {
+                // The bytes travel once, in the image block; the text says where they are.
+                unset($result['data_base64']);
+                $result['image_block'] = true;
+            }
+
             $content = [
                 ['type' => 'text', 'text' => json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)],
             ];
+            if ($imageBlock !== null) {
+                $content[] = $imageBlock;
+            }
 
             // Alerts-Hub payload piggyback (psa-0j6i): if this token has unread nudge-flagged
             // alerts, ride a short awareness notice on the NORMAL response of this tool call so
@@ -1601,6 +1611,32 @@ class McpStaffController extends Controller
             'id' => $id,
             'error' => ['code' => $code, 'message' => $message],
         ]);
+    }
+
+    /**
+     * Card 6ad8e6a1: an image returned by get_ticket_attachment or
+     * get_teams_message_attachment as a native MCP image content block, so a
+     * client renders it as a picture instead of a base64 string in text. Null
+     * for any other tool, an error, a non-image file, an image/* type outside
+     * the vision set (is_image false), or a result without image bytes and an
+     * image/* media type.
+     *
+     * @return array{type: 'image', data: string, mimeType: string}|null
+     */
+    private function attachmentImageBlock(string $name, mixed $result): ?array
+    {
+        if (! in_array($name, ['get_ticket_attachment', 'get_teams_message_attachment'], true)
+            || ! is_array($result) || isset($result['error']) || ($result['is_image'] ?? null) !== true) {
+            return null;
+        }
+
+        $data = $result['data_base64'] ?? null;
+        $mimeType = $result['media_type'] ?? null;
+        if (! is_string($data) || $data === '' || ! is_string($mimeType) || ! str_starts_with($mimeType, 'image/')) {
+            return null;
+        }
+
+        return ['type' => 'image', 'data' => $data, 'mimeType' => $mimeType];
     }
 
     /** @return array<string, mixed> */
