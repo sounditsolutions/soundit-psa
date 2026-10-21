@@ -25,7 +25,15 @@ class ContractLinesDriftReport extends Command
                 ->when($this->option('contract') !== null, fn ($query) => $query->where('contract_id', $this->option('contract')))
                 ->orderBy('contract_id')->orderBy('id')->get();
             $rows = [];
+            $skipped = 0;
+            $activeCounts = $profiles->countBy('contract_id');
             foreach ($profiles as $profile) {
+                if ($activeCounts[$profile->contract_id] > 1) {
+                    $rows[] = [$profile->contract_id, $profile->id, '', '', 'skipped: multiple active profiles'];
+                    $skipped++;
+
+                    continue;
+                }
                 $version = DB::table('contract_lines')->where('contract_id', $profile->contract_id)->max('version');
                 $lines = $version === null ? [] : DB::table('contract_lines')
                     ->where('contract_id', $profile->contract_id)->where('version', $version)
@@ -38,7 +46,7 @@ class ContractLinesDriftReport extends Command
                 }
             }
             $this->table(['contract_id', 'profile_id', 'contract_line_id', 'profile_line_id', 'status'], $rows);
-            $this->line('profiles='.$profiles->count().' drift='.count($rows));
+            $this->line('profiles='.$profiles->count().' drift='.(count($rows) - $skipped).' skipped='.$skipped);
         } catch (Throwable $error) {
             $this->error('status=failed class='.$error::class);
         }

@@ -116,6 +116,26 @@ class ContractLinesDriftTest extends TestCase
         $this->assertStringContainsString('drift=0', $this->report());
     }
 
+    public function test_contract_with_multiple_active_profiles_is_skipped_not_compared(): void
+    {
+        $this->line();
+        Artisan::call('contract-lines:backfill-v0', ['--commit' => true]);
+        $second = $this->profile->replicate();
+        $second->save();
+        $second->lines()->create([
+            'description' => 'Synthetic second profile', 'unit_price' => '91.23',
+            'quantity_type' => 'fixed', 'fixed_quantity' => '2.00', 'is_taxable' => true, 'sort_order' => 0,
+        ]);
+        $output = $this->report();
+        foreach ([$this->profile, $second] as $profile) {
+            $this->assertMatchesRegularExpression('/\|\s*'.$profile->contract_id.'\s*\|\s*'.$profile->id.'\s*\|[^\n]*multiple active profiles/', $output);
+        }
+        $this->assertStringContainsString('profiles=2 drift=0 skipped=2', $output);
+        foreach (['removed', 'added', 'changed'] as $status) {
+            $this->assertStringNotContainsString($status, $output);
+        }
+    }
+
     public function test_latest_version_and_all_client_facing_columns_are_compared(): void
     {
         $line = $this->line();
