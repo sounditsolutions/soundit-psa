@@ -126,6 +126,18 @@ class EmailService
 
                     break;
                 }
+
+                // Pass 2 walks oldest-modified first and never moves the cursor, so a walk
+                // that fills the page limit can leave the newest-modified messages unread on
+                // every poll until pass 1's cursor moves the window. Record it as an error.
+                // The backfill flag stays with pass 1: holding it on this cap would keep
+                // every later poll backfill while the cap persists.
+                if (count($messages) >= 2500) { // 50 pages * 50 per page
+                    Log::warning('[EmailService] Hit page limit during modified pass', [
+                        'since' => $sinceFormatted,
+                    ]);
+                    $result->recordError('Hit page limit during modified pass');
+                }
             }
             foreach ($messages as $msg) {
                 try {
@@ -186,8 +198,12 @@ class EmailService
                             }
                         }
 
-                        // Retry processing for unprocessed inbound emails
-                        if ($email->direction === \App\Enums\EmailDirection::Inbound
+                        // Retry processing for unprocessed inbound emails. Pass 1 only: pass 2
+                        // selects by lastModifiedDateTime, so it revisits rows of any age (a
+                        // backfill import, a row from before the once-check) whenever they are
+                        // read, flagged or categorised, and a LIVE retry would notify for each.
+                        if ($pass === 1
+                            && $email->direction === \App\Enums\EmailDirection::Inbound
                             && $email->ticket_id === null
                             && $email->dismissed_at === null
                         ) {

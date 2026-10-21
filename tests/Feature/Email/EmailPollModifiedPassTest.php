@@ -18,9 +18,11 @@ use GuzzleHttp\Psr7\Response;
 use Illuminate\Cache\ArrayStore;
 use Illuminate\Cache\Repository;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Mockery;
 use Tests\TestCase;
 
@@ -222,6 +224,42 @@ class EmailPollModifiedPassTest extends TestCase
         $this->assertCount(1, $events);
         $this->assertNull($events->sole()->entity_id);
         $this->assertSame('2 unresolved imported', $events->sole()->summary);
+        Bus::assertNotDispatched(SendTicketNotification::class);
+    }
+
+    public function test_h_modified_pass_page_limit_is_reported_and_keeps_cursor(): void
+    {
+        $records = [];
+        Log::listen(function (MessageLogged $record) use (&$records): void {
+            if (str_contains($record->message, 'page limit')) {
+                $records[] = $record;
+            }
+        });
+        $first = $this->message('first', '2026-10-20T13:00:00+00:00');
+        $result = $this->service([$first], array_fill(0, 2500, []))->pollMailbox();
+        $this->assertSame(1, $result->errors);
+        $this->assertSame(['Hit page limit during modified pass'], $result->errorMessages);
+        $this->assertSame(1, Email::count());
+        $this->assertSame($first['receivedDateTime'], Setting::getValue('graph_last_poll_at'));
+        $this->assertCount(1, $records);
+        $this->assertSame('warning', $records[0]->level);
+        $this->assertSame('[EmailService] Hit page limit during modified pass', $records[0]->message);
+    }
+
+    public function test_i_modified_pass_does_not_retry_backfill_imported_row_live(): void
+    {
+        $this->assertSame(0, $this->service([$this->message('touched')], [])->pollMailbox(self::CURSOR)->errors);
+        $this->assertSame(1, Email::count());
+        Setting::setValue('graph_last_poll_at', self::CURSOR);
+        Setting::where('key', 'graph_poll_backfill_pending')->delete();
+
+        $result = $this->service([], [$this->message('touched')])->pollMailbox();
+        $this->assertSame(0, $result->errors);
+        $this->assertSame(0, $result->created);
+        $this->assertSame(1, Email::count());
+        $this->assertSame(['1 unresolved imported'], SignalEvent::where('type_key', 'intake.email_unresolved')
+            ->orderBy('id')->pluck('summary')->all());
+        $this->assertSame(0, SignalEvent::where('type_key', 'intake.email_unresolved')->whereNotNull('entity_id')->count());
         Bus::assertNotDispatched(SendTicketNotification::class);
     }
 
