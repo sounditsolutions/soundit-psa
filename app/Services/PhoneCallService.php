@@ -725,7 +725,8 @@ class PhoneCallService
             $this->finaliseCallTheHangupNeverClosed($call, $recordingIsComplete);
             $this->reconcileAnsweredStateWithDuration($call);
             // A length copied in above from the recording does not give the default: a call
-            // stored at 0 s or with no duration is not defaulted from its recording here.
+            // stored at 0 s or with no duration is not defaulted from its recording here, and
+            // the helper declines it on every later delivery because the recording is then stored.
             if ($storedCallDuration > 0) {
                 $this->applyDefaultBillabilityOnceCompleted($call);
             }
@@ -1233,7 +1234,8 @@ class PhoneCallService
      *    default (billable) only with a positive stored duration. Any other call, Missed
      *    included, stays null; a call still ringing or in progress may yet end as Missed or
      *    Voicemail, and takes the default when a webhook records it Completed with a
-     *    positive stored duration (applyDefaultBillabilityOnceCompleted()).
+     *    positive stored duration and no recording stored before that webhook, on the terms
+     *    in applyDefaultBillabilityOnceCompleted().
      * Triage, if it later classifies the ticket, can still flip the default either way for
      * any call but Voicemail (TriagePipeline::reconcileBillabilityAfterClassification).
      *
@@ -1284,13 +1286,23 @@ class PhoneCallService
      * link, a call still ringing or in progress on a ticket triage has not classified stays
      * null, since it may yet end as Missed or Voicemail. A call whose is_billable is set, an
      * unlinked call, a call without positive stored duration, and a call in any other status
-     * are left as they are. handleRecordingReady() calls it only when the duration was positive
-     * before that callback, so a length copied in from the recording never gives the default.
+     * are left as they are. So is a call that had a recording stored before this delivery:
+     * handleRecordingReady() copies a recording's length into a null or 0 s duration, and a
+     * later hangup (the controller can re-send that stored length as Duration on a coalesced
+     * recording+terminal POST), a redelivered recording callback or a late answer cannot tell
+     * the copy from a measured duration. handleRecordingReady() calls it only when the duration
+     * was positive before that callback. So on these webhooks a length copied in from the
+     * recording never gives the default, and billability stays unset, as at base.
      * Mutates the model only; the caller saves.
      */
     private function applyDefaultBillabilityOnceCompleted(PhoneCall $call): void
     {
         if ($call->is_billable !== null || ! $call->ticket_id || $call->status !== CallStatus::Completed || ! ($call->duration > 0)) {
+            return;
+        }
+
+        // The row as read under the lock: a recording already stored may have set this duration.
+        if ($call->getOriginal('recording_url') !== null) {
             return;
         }
 
