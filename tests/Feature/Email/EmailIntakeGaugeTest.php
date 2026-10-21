@@ -25,7 +25,7 @@ class EmailIntakeGaugeTest extends TestCase
 
     private const UNWATCHED = 'Support inbox email is not reaching any agent route';
 
-    private const PILE_UP = 'Auto-ticketing is off and no agent route is watching: inbound support email will pile up unhandled';
+    private const PILE_UP = 'Auto-ticketing is off and no agent route is watching: inbound support email could pile up unhandled';
 
     private const LAPSE = 'Microsoft Graph mail subscription is missing, expired or due to expire within 20 hours; if it lapses, new mail will arrive only via the fallback poll';
 
@@ -41,7 +41,7 @@ class EmailIntakeGaugeTest extends TestCase
         Http::fake();
         Http::preventStrayRequests();
         Queue::fake();
-        $this->freezeTime();
+        $this->freezeSecond();
         Setting::setValue('email_auto_ticket', '1');
         $this->admin = User::factory()->create(['role' => 'admin', 'is_active' => true, 'email' => 'admin@example.test']);
         McpToken::create(['label' => 'gauge-test', 'token_hash' => 'synthetic-gauge-hash', 'tools' => ['poll_signals'], 'activated_at' => now()]);

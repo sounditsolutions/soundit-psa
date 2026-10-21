@@ -37,7 +37,7 @@ class EmailIntakeGauge extends Command
         $previous = json_decode(Setting::getValue('email_intake_gauge_state', '{}'), true) ?? [];
         $texts = [
             'unwatched' => 'Support inbox email is not reaching any agent route',
-            'pile_up' => 'Auto-ticketing is off and no agent route is watching: inbound support email will pile up unhandled',
+            'pile_up' => 'Auto-ticketing is off and no agent route is watching: inbound support email could pile up unhandled',
             'subscription_lapse' => 'Microsoft Graph mail subscription is missing, expired or due to expire within 20 hours; if it lapses, new mail will arrive only via the fallback poll',
         ];
         $autoTicket = $watch->autoTicketEnabled();
