@@ -226,6 +226,24 @@ class CarbonMcpToolsTest extends TestCase
         $this->assertTrue(collect($this->logs)->contains(fn ($l) => ($l['context']['error'] ?? null) === 'Carbon MCP initialize failed: HTTP 502'));
     }
 
+    public function test_a_call_with_no_response_says_it_may_have_been_delivered_never_could_not_reach(): void
+    {
+        $token = McpConfig::rotateStaffToken(['carbon_create_draft_order_example'], 'chet');
+        $this->carbonCallNoResponse = true;
+
+        $response = $this->callTool($token, 'carbon_create_draft_order_example', ['company_id' => 'co-1', 'lines' => []]);
+
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $audit = McpAuditLog::where('tool_name', 'carbon_create_draft_order_example')->sole();
+        $this->assertSame(
+            'Carbon tool call failed: Carbon MCP tools/call got no response from Carbon (may have been delivered): ConnectionException.'
+            .' If the tool call went out, it may have taken effect at Carbon; check Carbon before retrying a write.',
+            $audit->error_message,
+        );
+        $this->assertStringNotContainsString('could not reach', (string) json_encode($response->json()));
+        $this->assertStringNotContainsString('could not reach', (string) json_encode($this->logs));
+    }
+
     private function assertNoToolsCallSent(): void
     {
         Http::assertNotSent(fn (HttpRequest $r): bool => $r->url() === 'https://api.carbonsys.com/mcp' && ($r->data()['method'] ?? null) === 'tools/call');

@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -275,6 +276,142 @@ class CarbonMcpConnectorTest extends TestCase
         $this->actingAs(User::factory()->tech()->create())->post(route('auth.carbon-mcp.disconnect'))->assertForbidden();
         $this->assertTrue(app(CarbonMcpConnector::class)->isConnected());
         Http::assertNothingSent();
+    }
+
+    public function test_sign_out_with_no_stored_token_says_nothing_was_sent_to_carbon(): void
+    {
+        $this->seedConnected();
+        Setting::where('key', CarbonMcpConnector::REFRESH_TOKEN_SETTING)->delete();
+        Http::fake();
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->post(route('auth.carbon-mcp.disconnect'))
+            ->assertRedirect(route('settings.integrations'))
+            ->assertSessionHas('success', 'Carbon signed out locally. The local connection was cleared and nothing was sent to Carbon (no_stored_token).');
+
+        Http::assertNothingSent();
+        $this->assertNull(Setting::getValue(CarbonMcpConnector::GRANTED_SCOPES));
+    }
+
+    public function test_sign_out_says_revoked_at_carbon_only_when_revoke_answered_2xx(): void
+    {
+        $this->seedConnected();
+        Http::fake(['https://api.carbonsys.com/revoke' => Http::response('', 200)]);
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->post(route('auth.carbon-mcp.disconnect'))
+            ->assertSessionHas('success', 'Carbon signed out. The token was revoked at Carbon and the local connection cleared.');
+        Http::assertSentCount(1);
+    }
+
+    public function test_sign_out_with_no_response_from_revoke_is_a_warning_not_revoked(): void
+    {
+        $this->seedConnected();
+        Http::fake(['https://api.carbonsys.com/revoke' => Http::failedConnection()]);
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->post(route('auth.carbon-mcp.disconnect'))
+            ->assertSessionHas('warning', 'Carbon signed out locally. Carbon did not confirm the revocation (no response (ConnectionException)); the stored token has been deleted from PSA.')
+            ->assertSessionMissing('success');
+        $this->assertFalse(app(CarbonMcpConnector::class)->isConnected());
+    }
+
+    public function test_callback_error_flash_does_not_claim_nothing_was_stored(): void
+    {
+        Http::fake();
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->withSession(['carbon_mcp_oauth_state' => 'st-1', 'carbon_mcp_oauth_verifier' => str_repeat('a', 64)])
+            ->get(route('auth.carbon-mcp.callback', ['state' => 'st-1', 'error' => 'access_denied']))
+            ->assertRedirect(route('settings.integrations'))
+            ->assertSessionHas('error', 'Carbon sign-in failed (error code: access_denied). Click Connect Carbon to try again.');
+        Http::assertNothingSent();
+    }
+
+    public function test_a_code_exchange_with_no_response_says_it_may_have_been_delivered(): void
+    {
+        $this->seedConnected();
+        Setting::where('key', CarbonMcpConnector::REFRESH_TOKEN_SETTING)->delete();
+        Http::fake(['https://api.carbonsys.com/token' => Http::failedConnection()]);
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->withSession(['carbon_mcp_oauth_state' => 'st-1', 'carbon_mcp_oauth_verifier' => str_repeat('a', 64)])
+            ->get(route('auth.carbon-mcp.callback', ['state' => 'st-1', 'code' => self::CODE]))
+            ->assertSessionHas('error', 'Could not connect Carbon: Carbon MCP code exchange got no response from Carbon (may have been delivered): ConnectionException');
+        $this->assertNoSecretInLogs();
+    }
+
+    /** @return array<string, array{0: callable(array, array): array{0: array, 1: array}, 1: string}> */
+    public static function discoveryRefusals(): array
+    {
+        return [
+            'resource names another server' => [
+                fn (array $prm, array $as): array => [['resource' => 'https://evil.example/mcp'] + $prm, $as],
+                'names a different resource than the configured MCP URL',
+            ],
+            'authorization server is not https' => [
+                fn (array $prm, array $as): array => [['authorization_servers' => ['http://api.carbonsys.com/']] + $prm, $as],
+                'names no https authorization server',
+            ],
+            'issuer does not match' => [
+                fn (array $prm, array $as): array => [$prm, ['issuer' => 'https://other-issuer.example/'] + $as],
+                'issuer does not match the protected resource',
+            ],
+            'token endpoint is not https' => [
+                fn (array $prm, array $as): array => [$prm, ['token_endpoint' => 'http://api.carbonsys.com/token'] + $as],
+                'has no https token_endpoint',
+            ],
+        ];
+    }
+
+    #[DataProvider('discoveryRefusals')]
+    public function test_discovery_refuses_untrusted_metadata_and_registers_nothing(callable $mutate, string $expected): void
+    {
+        [$prm, $as] = $mutate(self::fixtureJson('protected-resource.json'), self::fixtureJson('authorization-server.json'));
+        Http::fake([
+            'https://api.carbonsys.com/.well-known/oauth-protected-resource/mcp' => Http::response($prm, 200),
+            'https://api.carbonsys.com/.well-known/oauth-authorization-server' => Http::response($as, 200),
+            'http://api.carbonsys.com/*' => Http::response($as, 200),
+            'https://other-issuer.example/*' => Http::response($as, 200),
+        ]);
+
+        $this->actingAs(User::factory()->admin()->create())->get(route('auth.carbon-mcp'))
+            ->assertRedirect(route('settings.integrations'))
+            ->assertSessionHas('error', fn (string $m): bool => str_contains($m, $expected));
+        Http::assertNotSent(fn (HttpRequest $r): bool => str_contains($r->url(), '/register'));
+        $this->assertNull(Setting::getValue(CarbonMcpConnector::METADATA_SETTING));
+        $this->assertNull(Setting::getValue(CarbonMcpConnector::CLIENT_ID_SETTING));
+    }
+
+    /** @return array<string, array{0: string, 1: string}> */
+    public static function oauthErrorCodes(): array
+    {
+        return [
+            'rfc 6749 code kept' => ['invalid_grant', 'invalid_grant'],
+            'forty characters kept' => [str_repeat('a', 40), str_repeat('a', 40)],
+            'long input' => [str_repeat('a', 41), 'unknown_error'],
+            'input with spaces' => ['access denied by customer', 'unknown_error'],
+            'input with html' => ['<b>access_denied</b>', 'unknown_error'],
+            'uppercase' => ['Invalid_Grant', 'unknown_error'],
+            'empty' => ['', 'unknown_error'],
+        ];
+    }
+
+    #[DataProvider('oauthErrorCodes')]
+    public function test_sanitize_code_allows_only_the_rfc_6749_shape(string $input, string $expected): void
+    {
+        $this->assertSame($expected, CarbonMcpConnector::sanitizeCode($input));
+    }
+
+    public function test_a_vendor_error_with_html_never_reaches_the_flash_or_log(): void
+    {
+        Http::fake();
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->withSession(['carbon_mcp_oauth_state' => 'st-1', 'carbon_mcp_oauth_verifier' => str_repeat('a', 64)])
+            ->get(route('auth.carbon-mcp.callback', ['state' => 'st-1', 'error' => '<script>x</script> '.self::CUSTOMER_CANARY]))
+            ->assertSessionHas('error', 'Carbon sign-in failed (error code: unknown_error). Click Connect Carbon to try again.');
+        $this->assertNoSecretInLogs();
     }
 
     private function assertNoSecretInLogs(): void

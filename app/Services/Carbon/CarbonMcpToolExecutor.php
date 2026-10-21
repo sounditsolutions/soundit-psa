@@ -71,11 +71,11 @@ class CarbonMcpToolExecutor
         } catch (CarbonMcpException $e) {
             Log::warning('[CarbonMcpToolExecutor] Carbon MCP call failed', ['tool' => $toolName, 'error' => $e->getMessage()]);
 
-            return ['error' => 'Carbon tool call failed: '.$e->getMessage().'. The call may or may not have reached Carbon; check Carbon before retrying a write.'];
+            return ['error' => 'Carbon tool call failed: '.$e->getMessage().'. If the tool call went out, it may have taken effect at Carbon; check Carbon before retrying a write.'];
         } catch (\Throwable $e) {
             Log::warning('[CarbonMcpToolExecutor] Carbon MCP call failed', ['tool' => $toolName, 'exception' => class_basename($e)]);
 
-            return ['error' => 'Carbon tool call failed ('.class_basename($e).'). The call may or may not have reached Carbon; check Carbon before retrying a write.'];
+            return ['error' => 'Carbon tool call failed ('.class_basename($e).'). If the tool call went out, it may have taken effect at Carbon; check Carbon before retrying a write.'];
         }
 
         $text = $this->resultText($result);

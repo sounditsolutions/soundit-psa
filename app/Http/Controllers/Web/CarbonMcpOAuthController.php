@@ -70,7 +70,7 @@ class CarbonMcpOAuthController extends Controller
             Log::warning('[Carbon MCP OAuth] Authorization error', ['error' => $code]);
 
             return redirect()->route('settings.integrations')
-                ->with('error', "Carbon sign-in failed (error code: {$code}). Nothing was stored; click Connect Carbon to try again.");
+                ->with('error', "Carbon sign-in failed (error code: {$code}). Click Connect Carbon to try again.");
         }
 
         $code = $request->query('code');
@@ -94,17 +94,33 @@ class CarbonMcpOAuthController extends Controller
             ->with('success', 'Carbon connected. Run Sync tools now to load the Carbon tool catalogue.');
     }
 
-    /** Sign out: revoke at Carbon, then clear the local connection either way. */
+    /**
+     * Sign out: revoke at Carbon when a refresh token is stored, then clear the
+     * local connection either way. "Revoked at Carbon" is said only when /revoke
+     * was called and answered 2xx.
+     */
     public function disconnect(CarbonMcpConnector $connector)
     {
         $outcome = $connector->disconnect();
-        Log::info('[Carbon MCP OAuth] Signed out', ['revocation' => $outcome ?? 'accepted']);
+        Log::info('[Carbon MCP OAuth] Signed out', [
+            'revocation_sent' => $outcome['sent'],
+            'revoked' => $outcome['revoked'],
+            'reason' => $outcome['reason'],
+        ]);
 
-        return redirect()->route('settings.integrations')->with(
-            $outcome === null ? 'success' : 'warning',
-            $outcome === null
-                ? 'Carbon signed out. The token was revoked at Carbon and the local connection cleared.'
-                : "Carbon signed out locally. Carbon did not confirm the revocation ({$outcome}); the stored token has been deleted from PSA.",
-        );
+        if ($outcome['revoked']) {
+            return redirect()->route('settings.integrations')
+                ->with('success', 'Carbon signed out. The token was revoked at Carbon and the local connection cleared.');
+        }
+
+        if (! $outcome['sent']) {
+            // No stored token: nothing to revoke. A stored token that could not be
+            // read or sent is still valid at Carbon, so that case is a warning.
+            return redirect()->route('settings.integrations')
+                ->with($outcome['reason'] === 'no_stored_token' ? 'success' : 'warning', "Carbon signed out locally. The local connection was cleared and nothing was sent to Carbon ({$outcome['reason']}).");
+        }
+
+        return redirect()->route('settings.integrations')
+            ->with('warning', "Carbon signed out locally. Carbon did not confirm the revocation ({$outcome['reason']}); the stored token has been deleted from PSA.");
     }
 }

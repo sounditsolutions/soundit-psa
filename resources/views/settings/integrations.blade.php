@@ -2127,7 +2127,13 @@
                             @endforelse
                         </dd>
                         <dt class="col-sm-3">Access token</dt>
-                        <dd class="col-sm-9">Expires {{ $carbonMcp['access_expires_at'] ?? 'unknown' }}; refreshed automatically.</dd>
+                        <dd class="col-sm-9" id="carbon-mcp-access-token">
+                            @if($carbonState === 'refresh_failed')
+                                Expires {{ $carbonMcp['access_expires_at'] ?? 'unknown' }}; the last refresh failed (see below).
+                            @else
+                                Expires {{ $carbonMcp['access_expires_at'] ?? 'unknown' }}; refreshed automatically.
+                            @endif
+                        </dd>
                         <dt class="col-sm-3">Tool catalogue</dt>
                         <dd class="col-sm-9" id="carbon-mcp-catalogue">
                             {{ $carbonMcpToolCounts['active'] ?? 0 }} active tools ({{ $carbonMcpToolCounts['read_only'] ?? 0 }} read-only, {{ ($carbonMcpToolCounts['active'] ?? 0) - ($carbonMcpToolCounts['read_only'] ?? 0) }} write).
@@ -2139,7 +2145,7 @@
                             <i class="bi bi-exclamation-triangle me-1"></i>
                             Refresh failed at {{ $carbonMcp['failed_at'] ?? 'unknown' }}
                             (error code: <code>{{ $carbonMcp['error_code'] ?? 'unknown' }}</code>).
-                            The stored Carbon sign-in no longer works; Carbon tools fail until an admin reconnects.
+                            The last refresh failed. PSA retries it on the next Carbon call; if it keeps failing, an admin reconnects Carbon.
                         </div>
                     @endif
                 @endif

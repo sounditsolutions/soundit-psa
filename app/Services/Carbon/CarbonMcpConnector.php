@@ -217,7 +217,7 @@ class CarbonMcpConnector
                     'scope' => self::scope(),
                 ]);
         } catch (\Throwable $e) {
-            throw new CarbonMcpAuthException('Carbon MCP client registration could not reach Carbon ('.class_basename($e).')');
+            throw new CarbonMcpAuthException('Carbon MCP client registration got no response from Carbon (may have been delivered): '.class_basename($e));
         }
 
         $newId = $response->json('client_id');
@@ -289,7 +289,7 @@ class CarbonMcpConnector
                     'resource' => $metadata['resource'],
                 ]);
         } catch (\Throwable $e) {
-            throw new CarbonMcpAuthException('Carbon MCP code exchange could not reach Carbon ('.class_basename($e).')');
+            throw new CarbonMcpAuthException('Carbon MCP code exchange got no response from Carbon (may have been delivered): '.class_basename($e));
         }
 
         if ($response->failed()) {
@@ -352,7 +352,7 @@ class CarbonMcpConnector
             $failure = $response->failed() ? self::errorCode($response) : null;
         } catch (\Throwable $e) {
             $response = null;
-            $failure = 'unreachable ('.class_basename($e).')';
+            $failure = 'no response ('.class_basename($e).')';
         }
 
         $token = $response?->json('access_token');
@@ -390,33 +390,42 @@ class CarbonMcpConnector
 
     /**
      * Sign out: revoke the refresh token at Carbon's /revoke (client_secret_post),
-     * then clear the local connection whatever Carbon answered. Returns null when
-     * the revocation was accepted, else a short reason (status / code / class).
+     * then clear the local connection whatever Carbon answered.
+     *
+     * `sent` is true only when a /revoke request was made; `revoked` only when it
+     * was made and Carbon answered 2xx. `reason` (status / code / class) says why
+     * not, and is null when revoked. With no stored refresh token nothing is sent.
+     *
+     * @return array{sent: bool, revoked: bool, reason: ?string}
      */
-    public function disconnect(): ?string
+    public function disconnect(): array
     {
-        $outcome = null;
+        $sent = false;
+        $revoked = false;
+        $reason = 'no_stored_token';
         $metadata = $this->metadata();
         $refresh = null;
         try {
             $refresh = Setting::getEncrypted(self::REFRESH_TOKEN_SETTING);
         } catch (\Throwable) {
-            $outcome = 'stored_token_unreadable';
+            $reason = 'stored_token_unreadable';
         }
 
         if (is_string($refresh) && $refresh !== '') {
             if (! is_string($metadata['revocation_endpoint'] ?? null)) {
-                $outcome = 'no_revocation_endpoint';
+                $reason = 'no_revocation_endpoint';
             } else {
+                $sent = true;
                 try {
                     $response = Http::asForm()->acceptJson()->timeout(15)->withOptions(['allow_redirects' => false])
                         ->post($metadata['revocation_endpoint'], $this->clientAuthFields() + [
                             'token' => $refresh,
                             'token_type_hint' => 'refresh_token',
                         ]);
-                    $outcome = $response->successful() ? null : self::errorCode($response);
+                    $revoked = $response->successful();
+                    $reason = $revoked ? null : self::errorCode($response);
                 } catch (\Throwable $e) {
-                    $outcome = 'unreachable ('.class_basename($e).')';
+                    $reason = 'no response ('.class_basename($e).')';
                 }
             }
         }
@@ -426,7 +435,7 @@ class CarbonMcpConnector
             Setting::where('key', $key)->delete();
         }
 
-        return $outcome;
+        return ['sent' => $sent, 'revoked' => $revoked, 'reason' => $reason];
     }
 
     // --- bookkeeping / status ---------------------------------------------------------
@@ -442,7 +451,7 @@ class CarbonMcpConnector
             if (Setting::getValue(self::FAILED_AT) === null) {
                 Setting::setValue(self::FAILED_AT, now()->toIso8601String());
             }
-            Setting::setValue(self::FAILED_CODE, self::sanitizeCode($code));
+            Setting::setValue(self::FAILED_CODE, self::sanitizeFailure($code));
         } catch (\Throwable $e) {
             Log::error('[CarbonMcpConnector] Could not record the refresh failure', ['exception' => class_basename($e)]);
         }
@@ -488,12 +497,26 @@ class CarbonMcpConnector
         return 'HTTP '.$response->status();
     }
 
+    /**
+     * A vendor OAuth `error` value, kept only when it has the RFC 6749 shape
+     * `[a-z_]{1,40}`; anything else (too long, spaces, markup, other characters)
+     * becomes `unknown_error`, so vendor text never reaches a log, flash or audit row.
+     */
     public static function sanitizeCode(string $code): string
     {
-        $code = preg_replace('/[^A-Za-z0-9_ .()\/-]/', '', $code) ?? '';
-        $code = mb_substr(trim($code), 0, 80);
+        return preg_match('/^[a-z_]{1,40}$/', $code) === 1 ? $code : 'unknown_error';
+    }
 
-        return $code !== '' ? $code : 'unknown';
+    /**
+     * A PSA-composed refresh-failure reason (a sanitizeCode() value plus an HTTP
+     * status, or an exception class), trimmed to a short safe character set.
+     */
+    private static function sanitizeFailure(string $reason): string
+    {
+        $reason = preg_replace('/[^A-Za-z0-9_ .()\/-]/', '', $reason) ?? '';
+        $reason = mb_substr(trim($reason), 0, 80);
+
+        return $reason !== '' ? $reason : 'unknown_error';
     }
 
     /** Keep only scope-shaped words (mcp:...), so a stored value can carry nothing else. */

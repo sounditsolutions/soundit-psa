@@ -142,7 +142,9 @@ class CarbonMcpClient
         } catch (CarbonMcpException $e) {
             throw $e;
         } catch (\Throwable $e) {
-            throw new CarbonMcpException("Carbon MCP {$label} could not reach Carbon (".class_basename($e).')');
+            // A timeout or connect failure is ambiguous: the request may have been
+            // delivered and acted on, so this never says Carbon was not reached.
+            throw new CarbonMcpException("Carbon MCP {$label} got no response from Carbon (may have been delivered): ".class_basename($e));
         }
 
         if ($response->status() === 401) {

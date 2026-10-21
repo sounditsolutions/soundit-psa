@@ -20,6 +20,9 @@ trait FakesCarbonMcp
     /** When set, the MCP endpoint answers with this HTTP status and a body holding a canary. */
     protected ?int $carbonMcpDown = null;
 
+    /** When set, tools/call gets no response (a connect failure, as on a timeout). */
+    protected bool $carbonCallNoResponse = false;
+
     /** The CallToolResult tools/call answers with; null is a plain text success. */
     protected ?array $carbonCallResult = null;
 
@@ -101,6 +104,9 @@ trait FakesCarbonMcp
                 }
                 $firstPage = $this->carbonFirstPage;
                 $method = $request->data()['method'] ?? null;
+                if ($this->carbonCallNoResponse && $method === 'tools/call') {
+                    return (Http::failedConnection('cURL error 28: Operation timed out'))($request);
+                }
 
                 return match ($method) {
                     'initialize' => Http::response(['jsonrpc' => '2.0', 'id' => $request->data()['id'], 'result' => [

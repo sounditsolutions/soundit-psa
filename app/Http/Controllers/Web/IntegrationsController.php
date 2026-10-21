@@ -680,6 +680,13 @@ class IntegrationsController extends Controller
             'integration' => ['required', 'string', 'in:'.implode(',', $allowed)],
         ]);
 
+        // Carbon Connect MCP publishes tools that write at Carbon on grant, so its
+        // switch is admin-only (Jeeves's ruling ctx:14 A, card PEYvh4NL). The other
+        // integrations' switches are unchanged here; parity is a separate ticket.
+        if ($request->input('integration') === 'carbon_mcp' && ! $request->user()?->isAdmin()) {
+            abort(403, 'Administrator access required.');
+        }
+
         $key = $request->input('integration').'_enabled';
         $enabled = $request->has('enabled') ? '1' : '0';
 
