@@ -48,6 +48,12 @@
             @php
                 $types = ['Workstation', 'Laptop', 'Server', 'Network Device', 'Printer', 'Mobile', 'Other'];
                 $currentType = old('asset_type', $asset->asset_type ?? '');
+                // Integrations write their own types ("Windows Workstation" from
+                // Level/LITSRMM). Offer the stored value too, so saving the form
+                // for an unrelated change keeps it instead of submitting "".
+                if (is_string($currentType) && $currentType !== '' && ! in_array($currentType, $types, true)) {
+                    array_unshift($types, $currentType);
+                }
             @endphp
             @foreach($types as $type)
                 <option value="{{ $type }}" {{ $currentType === $type ? 'selected' : '' }}>{{ $type }}</option>
