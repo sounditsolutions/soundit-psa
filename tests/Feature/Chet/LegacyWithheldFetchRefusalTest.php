@@ -209,7 +209,8 @@ class LegacyWithheldFetchRefusalTest extends TestCase
     {
         $this->assertFalse((bool) $r->json('result.isError'), (string) $r->json('result.content.0.text'));
         $this->assertSame('inline-1', $this->decoded($r)['attachment_id']);
-        $this->assertNotSame('', (string) ($this->decoded($r)['data_base64'] ?? ''));
+        // Card 6ad8e6a1: the bytes ride the native image block, not the JSON text.
+        $this->assertNotSame('', (string) $r->json('result.content.1.data'));
     }
 
     private function graph(Response ...$responses): void
