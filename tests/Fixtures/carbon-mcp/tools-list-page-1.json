@@ -1,0 +1,5 @@
+{"jsonrpc":"2.0","id":2,"result":{"tools":[
+ {"name":"search_products_example","title":"Search products (example)","description":"Search the Carbon catalogue (synthetic fixture).","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]},"annotations":{"readOnlyHint":true,"openWorldHint":false}},
+ {"name":"getQuoteExample","description":"Read one quote (synthetic fixture).","inputSchema":{"type":"object","properties":{"quote_id":{"type":"string"}},"required":["quote_id"]},"annotations":{"readOnlyHint":true}},
+ {"name":"create_draft_order_example","description":"Create a draft order; takes no payment (synthetic fixture).","inputSchema":{"type":"object","properties":{"company_id":{"type":"string"},"lines":{"type":"array","items":{"type":"object"}}},"required":["company_id","lines"]},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false}}
+],"nextCursor":"page-2"}}

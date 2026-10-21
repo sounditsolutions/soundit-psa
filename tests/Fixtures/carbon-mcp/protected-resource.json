@@ -1,0 +1,1 @@
+{"resource":"https://api.carbonsys.com/mcp","authorization_servers":["https://api.carbonsys.com/"],"scopes_supported":["mcp:read","mcp:products:write","mcp:orders:draft","mcp:companies:write","mcp:customers:write"],"resource_name":"Carbon Provider API"}

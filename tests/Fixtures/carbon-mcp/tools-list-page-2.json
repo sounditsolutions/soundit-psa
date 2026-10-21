@@ -1,0 +1,5 @@
+{"jsonrpc":"2.0","id":3,"result":{"tools":[
+ {"name":"update_company_example","description":"Update a company record (synthetic fixture).","inputSchema":{"type":"object","properties":{"company_id":{"type":"string"},"name":{"type":"string"}},"required":["company_id"]},"annotations":{"destructiveHint":true}},
+ {"name":"list_customers_example","description":"List customers, no annotations at all (synthetic fixture).","inputSchema":{"type":"object","properties":{}}},
+ {"name":"configure_product_example","description":"readOnlyHint given as a string, which is not boolean true (synthetic fixture).","inputSchema":{"type":"object","properties":{"sku":{"type":"string"}}},"annotations":{"readOnlyHint":"true"}}
+]}}
