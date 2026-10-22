@@ -39,10 +39,8 @@ footer { margin-top:var(--psa-spacing-lg); color:var(--psa-colors-muted-ink); }
 <h1>DRAFT — Review and sign</h1>
 <p>DRAFT — Review the document below before entering your name.</p>
 <section class="card" aria-label="DRAFT — Document preview"><div class="bar">DRAFT — DOCUMENT</div><div class="pad">
-<!-- Static stand-in for the same-token inline PDF; not a separate public record. -->
-<article class="paper"><h2>DRAFT — Example support agreement</h2><p>DRAFT — Prepared for Example Dental Co.</p><p>DRAFT — This fictional agreement describes support services billed at the rates below.</p>
-<table><thead><tr><th>DRAFT — Service</th><th>DRAFT — Quantity</th><th>DRAFT — Rate</th></tr></thead><tbody><tr><td>DRAFT — Remote support</td><td>DRAFT — 1 hour</td><td>DRAFT — $125.00 / hour</td></tr></tbody></table>
-<p>DRAFT — Work is billed for time used. This sample document is for design review only.</p><p class="muted">DRAFT — End of document</p></article>
-<p><button type="button">DRAFT — Open PDF</button></p></div></section>
+<!-- Static local PDF fixture; application uses the live-token PDF route. -->
+<object data="signing-preview.pdf" type="application/pdf" width="100%" height="500" aria-label="DRAFT — Agreement PDF"><p>DRAFT — Open PDF to review the document.</p></object>
+<p><a class="button" href="signing-preview.pdf">DRAFT — Open PDF</a></p></div></section>
 <section class="card"><div class="pad"><label for="typed-name">DRAFT — Full name</label><input id="typed-name" autocomplete="off" placeholder="DRAFT — Enter your full name"><p>DRAFT — By selecting “Sign agreement”, I agree to the document shown above and intend my typed name to be my electronic signature.</p><button type="button" class="primary">DRAFT — Sign agreement</button></div></section>
 <footer>DRAFT — Design preview only. No signature will be recorded.</footer></main></body></html>

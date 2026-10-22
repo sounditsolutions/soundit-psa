@@ -201,6 +201,182 @@ class SigningGenerateTest extends TestCase
         $this->get('/sign/'.str_repeat('A', 48))->assertOk()->assertSee('DRAFT — Link unavailable');
     }
 
+    public function test_expiry_void_replay_and_pdf_changes_refuse_without_snapshot(): void
+    {
+        $service = app(SigningService::class);
+        foreach (['expired', 'void', 'tampered', 'form'] as $case) {
+            $document = $this->generate();
+            $token = \Illuminate\Support\Str::random(48);
+            $document->update(['status' => 'sent', 'token_hash' => hash('sha256', $token), 'token_expires_at' => now()->addDay()]);
+            if ($case === 'expired') {
+                $document->update(['token_expires_at' => now()->subSecond()]);
+            } elseif ($case === 'void') {
+                $service->void($document);
+                $this->assertNull($document->fresh()->token_hash);
+            } elseif ($case === 'tampered') {
+                Storage::disk('local')->put($document->pdf_path, 'changed');
+            }
+            $this->post('/sign/'.$token, ['typed_name' => 'Alex', 'pdf_sha256' => $case === 'form' ? str_repeat('f', 64) : $document->pdf_sha256])->assertSee('Link unavailable');
+            $this->assertCount(0, $document->snapshots);
+            $this->assertNull($document->fresh()->viewed_at);
+        }
+        $document = $this->generate();
+        $token = str_repeat('R', 48);
+        $document->update(['status' => 'sent', 'token_hash' => hash('sha256', $token), 'token_expires_at' => now()->addDay()]);
+        $form = ['typed_name' => 'Alex', 'pdf_sha256' => $document->pdf_sha256];
+        $this->post('/sign/'.$token, $form)->assertOk();
+        $this->post('/sign/'.$token, $form)->assertOk();
+        $this->assertCount(1, $document->snapshots);
+        $this->assertNull($document->fresh()->token_hash);
+    }
+
+    public function test_snapshot_failure_rolls_back_signature_and_logs_no_token(): void
+    {
+        $document = $this->generate();
+        $token = str_repeat('L', 48);
+        $document->update(['status' => 'sent', 'token_hash' => hash('sha256', $token), 'token_expires_at' => now()->addDay()]);
+        $path = storage_path('logs/signing-control.log');
+        file_put_contents($path, '');
+        config(['logging.default' => 'signing_control', 'logging.channels.signing_control' => ['driver' => 'single', 'path' => $path, 'level' => 'debug']]);
+        \Illuminate\Support\Facades\Log::debug('synthetic-positive-log-control');
+        $records = [];
+        \Illuminate\Support\Facades\Log::listen(function ($event) use (&$records): void {
+            $records[] = [$event->message, $event->context];
+        });
+        \App\Models\SigningSnapshot::created(fn () => throw new RuntimeException('synthetic '.$token));
+        $this->post('/sign/'.$token, ['typed_name' => 'Alex', 'pdf_sha256' => $document->pdf_sha256])->assertOk()->assertDontSee($token);
+        $this->assertCount(0, $document->snapshots);
+        $this->assertSame(hash('sha256', $token), $document->fresh()->token_hash);
+        $this->assertStringContainsString('synthetic-positive-log-control', file_get_contents($path));
+        $this->assertStringNotContainsString($token, file_get_contents($path));
+        $this->assertStringNotContainsString($token, json_encode($records));
+        unlink($path);
+    }
+
+    public function test_send_hash_and_mail_failure_rollback(): void
+    {
+        $document = $this->generate();
+        $link = null;
+        $mail = $this->mock(\App\Services\EmailService::class);
+        $mail->shouldReceive('sendNew')->once()->andReturnUsing(function ($to, $subject, $body, $name, $cc = null, $userId = null, $redact = []) use (&$link) {
+            preg_match('~https?://\\S+~', $body, $matches);
+            $link = $matches[0];
+            $this->assertContains($link, $redact);
+
+            return new \App\Models\Email;
+        });
+        app(SigningService::class)->send($document);
+        $token = basename($link);
+        $this->assertSame(48, strlen($token));
+        $this->assertSame(hash('sha256', $token), $document->fresh()->token_hash);
+        $this->assertStringNotContainsString($token, json_encode($document->fresh()->getAttributes()));
+        $this->assertSame('sent', $document->fresh()->status);
+        $this->assertNotNull($document->fresh()->sent_at);
+        $second = $this->generate();
+        $this->assertNull($document->fresh()->token_hash);
+        $mail->shouldReceive('sendNew')->once()->andThrow(new RuntimeException('synthetic mail failure'));
+        try {
+            app(SigningService::class)->send($second);
+            $this->fail('Mail accepted');
+        } catch (RuntimeException $error) {
+            $this->assertSame('signing_mail_failed', $error->getMessage());
+        }
+        $second->refresh();
+        $this->assertSame('draft', $second->status);
+        $this->assertNull($second->token_hash);
+        $this->assertNull($second->token_expires_at);
+        $this->assertNull($second->sent_at);
+    }
+
+    public function test_finality_no_countersign_and_admin_guard(): void
+    {
+        $this->template->update(['requires_countersign' => false]);
+        $document = $this->generate();
+        $document->update(['status' => 'signed']);
+        $this->assertTrue($document->isFinal());
+        $admin = \App\Models\User::factory()->create(['role' => 'admin']);
+        $this->actingAs($admin)->get(route('contracts.show', $this->contract))->assertSee('Download signed PDF');
+        $this->get(route('signing.download', [$this->contract, $document]))->assertOk();
+        $this->template->update(['requires_countersign' => true]);
+        $pending = $this->generate();
+        $pending->update(['status' => 'signed']);
+        $tech = \App\Models\User::factory()->create(['role' => 'tech']);
+        try {
+            app(SigningService::class)->countersign($pending, $tech, '127.0.0.1', 'Example');
+            $this->fail('Non-admin accepted');
+        } catch (RuntimeException $error) {
+            $this->assertSame('signing_countersign_forbidden', $error->getMessage());
+        }
+        $this->assertCount(0, $pending->snapshots);
+    }
+
+    public function test_headers_throttle_and_snapshot_immutability(): void
+    {
+        foreach (['/sign/'.str_repeat('X', 48), '/sign/'.str_repeat('X', 48).'/pdf', '/sign/invalid'] as $url) {
+            $response = $this->get($url);
+            $this->assertStringContainsString('no-store', $response->headers->get('Cache-Control'));
+            $response->assertHeader('Referrer-Policy', 'no-referrer');
+        }
+        foreach (['signing.public', 'signing.pdf'] as $name) {
+            $this->assertContains('throttle:30,1', app('router')->getRoutes()->getByName($name)->gatherMiddleware());
+        }
+        $document = $this->generate();
+        $token = str_repeat('I', 48);
+        $document->update(['status' => 'sent', 'token_hash' => hash('sha256', $token), 'token_expires_at' => now()->addDay()]);
+        app(SigningService::class)->sign($token, 'Alex', $document->pdf_sha256, '127.0.0.1', str_repeat('x', 600));
+        $snapshot = $document->snapshots()->firstOrFail();
+        $this->assertSame(512, strlen($snapshot->user_agent));
+        foreach (['update', 'delete'] as $operation) {
+            try {
+                $operation === 'update' ? $snapshot->update(['typed_name' => 'Changed']) : $snapshot->delete();
+                $this->fail('Immutable evidence changed');
+            } catch (LogicException $error) {
+                $this->assertSame('signing_snapshot_immutable', $error->getMessage());
+            }
+        }
+    }
+
+    public function test_renderer_strips_active_content_and_makes_no_outbound_socket_connection(): void
+    {
+        \Illuminate\Support\Facades\Http::preventStrayRequests();
+        $socket = stream_socket_server('tcp://127.0.0.1:0', $errorNumber, $errorString);
+        $this->assertIsResource($socket);
+        $address = stream_socket_get_name($socket, false);
+        $marker = storage_path('framework/signing-execution-marker');
+        @unlink($marker);
+        $html = '<img src="http://'.$address.'/image"><script>fetch("http://'.$address.'/script")</script><?php file_put_contents("'.$marker.'", "executed"); ?><p>DRAFT — Safe content</p>';
+        try {
+            $purified = app(TemplateMerge::class)->purify($html);
+            $bytes = (new PdfRenderer)->render($purified);
+            $this->assertStringStartsWith('%PDF-', $bytes);
+            $this->assertFileDoesNotExist($marker);
+            stream_set_blocking($socket, false);
+            $this->assertFalse(@stream_socket_accept($socket, 0));
+            $client = stream_socket_client('tcp://'.$address);
+            $this->assertIsResource($client);
+            $accepted = stream_socket_accept($socket, 1);
+            $this->assertIsResource($accepted, 'Socket detector positive control');
+            fclose($accepted);
+            fclose($client);
+        } finally {
+            fclose($socket);
+            @unlink($marker);
+        }
+    }
+
+    public function test_generate_does_not_change_billing_tables(): void
+    {
+        $tables = ['invoices', 'invoice_lines', 'prepay_transactions', 'recurring_invoice_profiles', 'recurring_invoice_profile_lines'];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = \Illuminate\Support\Facades\DB::table($table)->get()->toJson();
+        }
+        $this->generate();
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], \Illuminate\Support\Facades\DB::table($table)->get()->toJson(), $table);
+        }
+    }
+
     public function test_insert_failure_removes_written_file_and_row(): void
     {
         SignableDocument::creating(fn () => throw new RuntimeException('synthetic_insert_failure'));
