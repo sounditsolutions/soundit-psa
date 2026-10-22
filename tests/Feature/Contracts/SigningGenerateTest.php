@@ -591,5 +591,13 @@ class SigningGenerateTest extends TestCase
         $this->assertNull(session()->getOldInput('name'));
         $this->get($show)->assertOk()->assertSee('value="Example agreement"', false)->assertDontSee('value="Alex Recipient"', false);
         $this->assertDatabaseCount('signable_documents', 0);
+        $html = $this->get($show)->assertOk()->getContent();
+        $start = strpos($html, 'action="'.route('signing.generate', $this->contract).'"');
+        $this->assertNotFalse($start, 'Generate form rendered on the contract page');
+        $form = substr($html, $start, strpos($html, '</form>', $start) - $start);
+        $this->assertStringContainsString('name="recipient_name"', $form);
+        $this->assertStringContainsString('name="recipient_email"', $form);
+        $this->assertStringNotContainsString('name="name"', $form);
+        $this->assertStringNotContainsString('name="email"', $form);
     }
 }
