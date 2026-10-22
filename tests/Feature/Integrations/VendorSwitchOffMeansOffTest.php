@@ -372,7 +372,7 @@ class VendorSwitchOffMeansOffTest extends TestCase
         $this->assertCount(1, $this->history['controld']);
     }
 
-    public function test_controld_activity_is_refused_without_building_a_client_when_switched_off(): void
+    public function test_controld_activity_is_refused_when_switched_off(): void
     {
         $this->configureAll();
         Setting::setValue('controld_stats_endpoint', 'fixture');
@@ -481,6 +481,40 @@ class VendorSwitchOffMeansOffTest extends TestCase
         $this->assertCount(1, $this->history['level']);
     }
 
+    public function test_refresh_with_level_off_still_refreshes_ninja_when_ninja_is_on(): void
+    {
+        $this->configureAll();
+        $this->switch('ninja', true);
+        $this->switch('level', false);
+        $asset = Asset::factory()->create(['ninja_id' => 4242, 'level_id' => 'fixture-level-device']);
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('assets.refresh', $asset))
+            ->assertRedirect(route('assets.show', $asset))
+            ->assertSessionHas('success', 'Device data refreshed from NinjaRMM.')
+            ->assertSessionHas('error', 'Level is switched off, so it was not refreshed.');
+
+        $this->assertGreaterThan(0, count($this->history['ninja']));
+        $this->assertCount(0, $this->history['level']);
+    }
+
+    public function test_refresh_with_both_rmms_off_names_both_and_makes_no_request(): void
+    {
+        $this->configureAll();
+        $this->switch('ninja', false);
+        $this->switch('level', false);
+        $asset = Asset::factory()->create(['ninja_id' => 4242, 'level_id' => 'fixture-level-device']);
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('assets.refresh', $asset))
+            ->assertRedirect(route('assets.show', $asset))
+            ->assertSessionHas('error', 'NinjaRMM and Level are switched off, so they were not refreshed.')
+            ->assertSessionMissing('success');
+
+        $this->assertCount(0, $this->history['ninja']);
+        $this->assertCount(0, $this->history['level']);
+    }
+
     public function test_refresh_positive_control_calls_both_rmms_when_switched_on(): void
     {
         $this->configureAll();
@@ -567,9 +601,10 @@ class VendorSwitchOffMeansOffTest extends TestCase
     #[DataProvider('connectionTestVendors')]
     public function test_test_connection_positive_control_does_not_report_switched_off_when_on(string $vendor, string $route): void
     {
-        // testNinja/testControlD/testZorus build their clients with `new`, so
-        // these handlers cannot see them. With the switch on and no credentials
-        // stored, each reaches its next refusal, which makes no request: the
+        // testNinja and testZorus build their clients with `new`, so these
+        // handlers cannot see them; testControlD builds through the container.
+        // With the switch on and no credentials stored, each reaches its next
+        // refusal before building a client, which makes no request: the
         // switched-off answer above therefore comes from the switch.
         $this->switch($vendor, true);
 
