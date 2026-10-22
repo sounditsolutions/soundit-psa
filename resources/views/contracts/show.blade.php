@@ -3,6 +3,7 @@
 @section('title', $contract->name . '')
 
 @section('content')
+@include('contracts._signing')
 <div class="row mb-3">
     <div class="col">
         <a href="{{ route('clients.contracts', $contract->client) }}" class="text-decoration-none text-muted">

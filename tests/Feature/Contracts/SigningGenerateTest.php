@@ -157,6 +157,50 @@ class SigningGenerateTest extends TestCase
         }
     }
 
+    public function test_public_embed_bytes_match_hidden_hash_and_staff_download_is_final_only(): void
+    {
+        $document = $this->generate();
+        $token = str_repeat('P', 48);
+        $document->update(['status' => 'sent', 'token_hash' => hash('sha256', $token), 'token_expires_at' => now()->addDays(14)]);
+        $page = $this->get('/sign/'.$token)->assertOk()->assertHeader('Referrer-Policy', 'no-referrer');
+        $pdf = $this->get('/sign/'.$token.'/pdf')->assertOk()->assertHeader('X-Content-Type-Options', 'nosniff');
+        $page->assertSee('value="'.hash('sha256', $pdf->getContent()).'"', false);
+        $page->assertSee('<object', false)->assertDontSee('Example support');
+        $url = route('signing.download', [$this->contract, $document]);
+        $this->get($url)->assertRedirect();
+        $user = \App\Models\User::factory()->create(['role' => 'tech']);
+        $this->actingAs($user)->get($url)->assertForbidden();
+        $this->actingAs($user)->get(route('contracts.show', $this->contract))->assertDontSee('Download signed PDF');
+        $admin = \App\Models\User::factory()->create(['role' => 'admin']);
+        $this->actingAs($admin)->get($url)->assertNotFound();
+        $document->update(['status' => 'signed']);
+        $this->get($url)->assertNotFound();
+        $document->update(['status' => 'countersigned', 'token_hash' => null]);
+        $this->get($url)->assertOk()->assertContent($pdf->getContent());
+        Storage::disk('local')->put($document->pdf_path, 'tampered');
+        $this->get($url)->assertStatus(409)->assertDontSee('tampered');
+        $other = Contract::withoutEvents(fn () => Contract::create([
+            'client_id' => $this->contract->client_id, 'name' => 'Other example', 'type' => 'breakfix', 'status' => 'active', 'start_date' => '2026-01-01',
+        ]));
+        $this->get(route('signing.download', [$other, $document]))->assertNotFound();
+        Contract::withoutEvents(fn () => $this->contract->delete());
+        $this->get($url)->assertNotFound();
+    }
+
+    public function test_switch_off_hides_card_and_refuses_both_surfaces(): void
+    {
+        $document = $this->generate();
+        config(['signing.enabled' => false]);
+        $admin = \App\Models\User::factory()->create(['role' => 'admin']);
+        $this->actingAs($admin)->get(route('contracts.show', $this->contract))->assertDontSee('Download signed PDF')->assertDontSee('Recipient email');
+        $this->get(route('signing.download', [$this->contract, $document]))->assertNotFound();
+        $this->post(route('signing.generate', $this->contract))->assertNotFound();
+        foreach (['send', 'void', 'countersign'] as $action) {
+            $this->post(route('signing.action', [$this->contract, $document, $action]))->assertNotFound();
+        }
+        $this->get('/sign/'.str_repeat('A', 48))->assertOk()->assertSee('DRAFT — Link unavailable');
+    }
+
     public function test_insert_failure_removes_written_file_and_row(): void
     {
         SignableDocument::creating(fn () => throw new RuntimeException('synthetic_insert_failure'));
