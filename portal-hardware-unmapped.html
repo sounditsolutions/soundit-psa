@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Client portal: Hardware page (unmapped, disabled)</title>
+<link rel="stylesheet" href="_tokens.css"><link rel="stylesheet" href="_hw.css"></head>
+<body>
+<nav class="topnav"><b>Example MSP Portal</b><a href="#">Dashboard</a><a href="#">Tickets</a><a href="#">Invoices</a><a href="#">Devices</a><a href="#">Contracts</a><a href="#" class="on">Hardware</a></nav>
+<main>
+<p class="caption">Portal &gt; Hardware, client with no Carbon customer mapped. Sample data only. The page is read-only and the server refuses a submit.</p>
+<div class="alert"><b>Hardware ordering isn't set up for your account yet.</b><br>
+Your IT provider needs to finish setting up ordering for Sample Logistics LLC. Until then you can see the approved list but can't submit a request. Open a ticket if you need hardware now.
+<div style="margin-top:var(--psa-spacing-sm)"><button class="btn btn-sm" type="button">Open a ticket</button></div></div>
+<div class="row2">
+<div class="card"><div class="card-header"><span>Approved hardware</span><span class="badge b-off">Ordering unavailable</span></div>
+<table>
+<thead><tr><th>Model</th><th>Availability</th><th class="num">Price</th><th class="num">Qty</th></tr></thead>
+<tbody>
+<tr><td>Example Laptop 14, 16 GB, 512 GB<div class="muted small">CB-LT14-EX01</div></td><td><span class="badge b-ok">In stock</span></td><td class="num">$1,099.00</td><td class="num"><input class="qty" value="0" disabled></td></tr>
+<tr><td>Example USB-C Dock<div class="muted small">CB-DOCK-EX04</div></td><td><span class="badge b-ok">In stock</span></td><td class="num">$185.00</td><td class="num"><input class="qty" value="0" disabled></td></tr>
+</tbody></table></div>
+<div class="card"><div class="card-header"><span>Request summary</span></div>
+<div class="card-body">
+<p class="muted" style="margin-top:0">No items selected.</p>
+<button class="btn btn-primary" type="button" style="width:100%" disabled>Submit request</button>
+<p class="note">Unavailable: ordering isn't set up for this account.</p>
+</div></div>
+</div>
+</main></body></html>

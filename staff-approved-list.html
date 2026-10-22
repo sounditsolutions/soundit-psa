@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Client hardware: approved list and Carbon customer (staff)</title>
+<link rel="stylesheet" href="_tokens.css"><link rel="stylesheet" href="_hw.css"></head>
+<body><main>
+<p class="caption">Staff &gt; Clients &gt; Example Dental Co. &gt; Hardware tab (new). Sample data only. Staff see both prices; the client sees only the sell price.</p>
+<h4>Example Dental Co.</h4>
+<div class="tabs"><span>Overview</span><span>Tickets</span><span>Assets</span><span>People</span><span>Contracts</span><span class="on">Hardware</span></div>
+
+<div class="card"><div class="card-header"><span>Carbon customer</span><span class="badge b-ok">Mapped</span></div>
+<div class="card-body">
+<dl>
+<dt>Carbon customer</dt><dd><select><option>Example Dental Co. (cus_EXAMPLE0001)</option></select> <button class="btn btn-sm" type="button">Save</button></dd>
+<dt>Client ordering</dt><dd><span class="badge b-ok">On</span> <span class="muted small">Portal users with ordering access can submit draft orders for this client.</span></dd>
+<dt>Tenant switch</dt><dd><span class="badge b-ok">On</span> <span class="muted small">Settings &gt; Integrations &gt; Carbon: "Client hardware ordering (Carbon)". Available only while the Carbon connection is live.</span></dd>
+</dl>
+<p class="note">Orders from the portal are created as Carbon <b>drafts</b> for this customer only. The PSA never sends a new customer to Carbon. If this mapping is cleared, the client's Hardware page is disabled and submits are refused.</p>
+</div></div>
+
+<div class="card"><div class="card-header"><span>Approved models</span><button class="btn btn-sm" type="button" style="background:var(--psa-colors-surface)">Add model</button></div>
+<table>
+<thead><tr><th>Carbon part no.</th><th>Model</th><th class="num">Carbon price</th><th class="num">Sell price (client sees)</th><th class="num">Margin</th><th>Availability</th><th></th></tr></thead>
+<tbody>
+<tr><td><code>CB-LT14-EX01</code></td><td>Example Laptop 14, 16 GB, 512 GB</td><td class="num">$812.00</td><td class="num"><input class="qty" style="width:96px" value="1,049.00"></td><td class="num">22.6%</td><td><span class="badge b-ok">In stock</span> 41</td><td><button class="btn btn-sm" type="button">Remove</button></td></tr>
+<tr><td><code>CB-DT-MINI-EX02</code></td><td>Example Mini Desktop, 16 GB, 256 GB</td><td class="num">$604.00</td><td class="num"><input class="qty" style="width:96px" value="789.00"></td><td class="num">23.4%</td><td><span class="badge b-warn">Low stock</span> 3</td><td><button class="btn btn-sm" type="button">Remove</button></td></tr>
+<tr><td><code>CB-MON27-EX03</code></td><td>Example 27" Monitor</td><td class="num">$171.00</td><td class="num"><input class="qty" style="width:96px" value="229.00"></td><td class="num">25.3%</td><td><span class="badge b-off">Out of stock</span> 0</td><td><button class="btn btn-sm" type="button">Remove</button></td></tr>
+<tr><td><code>CB-DOCK-EX04</code></td><td>Example USB-C Dock</td><td class="num">$138.00</td><td class="num"><input class="qty" style="width:96px" value="179.00"></td><td class="num">22.9%</td><td><span class="badge b-ok">In stock</span> 120</td><td><button class="btn btn-sm" type="button">Remove</button></td></tr>
+</tbody></table>
+<div class="card-body" style="display:flex;justify-content:space-between;align-items:center">
+<span class="note" style="margin:0">Carbon price and availability come from the catalogue sync (last sync 09:12 sample time). Also editable through the MCP tools under the usual token grants.</span>
+<button class="btn btn-primary" type="button">Save prices</button></div>
+</div>
+</main></body></html>

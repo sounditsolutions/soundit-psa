@@ -1,0 +1,79 @@
+/*
+ * Sound PSA design tokens for static mockups.
+ *
+ * SOURCE: the YAML front-matter of DESIGN.md (colors, typography, rounded,
+ * spacing). Copied by hand; DESIGN.md is the source of truth. Naming is
+ * --psa-<group>-<name>, and typography expands to
+ * --psa-typography-<role>-<font-family|font-size|font-weight|line-height|letter-spacing>.
+ *
+ * tests/Unit/DesignMockupTokensTest.php parses the front-matter and fails if a
+ * token is missing here, differs in value, or exists here without a source.
+ * Change DESIGN.md first, then this file.
+ *
+ * Fonts: no CDN and no @font-face. The family stacks are used as written, so
+ * a machine without Montserrat/Inter installed renders the fallbacks.
+ */
+:root {
+    /* colors */
+    --psa-colors-navy: #1a365d;
+    --psa-colors-navy-light: #234179;
+    --psa-colors-navy-deep: #0f2440;
+    --psa-colors-slate-chrome: #0f172a;
+    --psa-colors-signal-gold: #fed136;
+    --psa-colors-signal-gold-hover: #fdc50c;
+    --psa-colors-ink: #374151;
+    --psa-colors-muted-ink: #6b7280;
+    --psa-colors-canvas: #f8fafc;
+    --psa-colors-surface: #ffffff;
+    --psa-colors-border: #e5e7eb;
+    --psa-colors-field-border: #d1d5db;
+    --psa-colors-danger: #dc3545;
+    --psa-colors-warning: #ffc107;
+    --psa-colors-info: #0dcaf0;
+    --psa-colors-success: #198754;
+    --psa-colors-neutral: #6c757d;
+
+    /* typography */
+    --psa-typography-display-font-family: Montserrat, sans-serif;
+    --psa-typography-display-font-size: 1.5rem;
+    --psa-typography-display-font-weight: 800;
+    --psa-typography-display-line-height: 1.2;
+    --psa-typography-display-letter-spacing: 0.5px;
+
+    --psa-typography-headline-font-family: Montserrat, sans-serif;
+    --psa-typography-headline-font-size: 1.75rem;
+    --psa-typography-headline-font-weight: 700;
+    --psa-typography-headline-line-height: 1.25;
+    --psa-typography-headline-letter-spacing: normal;
+
+    --psa-typography-title-font-family: Montserrat, sans-serif;
+    --psa-typography-title-font-size: 0.9rem;
+    --psa-typography-title-font-weight: 600;
+    --psa-typography-title-line-height: 1.3;
+    --psa-typography-title-letter-spacing: 0.5px;
+
+    --psa-typography-body-font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --psa-typography-body-font-size: 1rem;
+    --psa-typography-body-font-weight: 400;
+    --psa-typography-body-line-height: 1.5;
+    --psa-typography-body-letter-spacing: normal;
+
+    --psa-typography-label-font-family: Inter, sans-serif;
+    --psa-typography-label-font-size: 0.9rem;
+    --psa-typography-label-font-weight: 600;
+    --psa-typography-label-line-height: 1.4;
+    --psa-typography-label-letter-spacing: normal;
+
+    /* rounded */
+    --psa-rounded-sm: 8px;
+    --psa-rounded-md: 12px;
+    --psa-rounded-pill: 50rem;
+
+    /* spacing */
+    --psa-spacing-xs: 4px;
+    --psa-spacing-sm: 8px;
+    --psa-spacing-md: 16px;
+    --psa-spacing-lg: 24px;
+    --psa-spacing-topbar: 56px;
+    --psa-spacing-sidebar: 220px;
+}

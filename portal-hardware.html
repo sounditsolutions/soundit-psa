@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Client portal: Hardware page (mapped client)</title>
+<link rel="stylesheet" href="_tokens.css"><link rel="stylesheet" href="_hw.css"></head>
+<body>
+<nav class="topnav"><b>Example MSP Portal</b><a href="#">Dashboard</a><a href="#">Tickets</a><a href="#">Invoices</a><a href="#">Devices</a><a href="#">Contracts</a><a href="#" class="on">Hardware</a></nav>
+<main>
+<p class="caption">Portal &gt; Hardware (new), signed in as alex@example.test of Example Dental Co. Sample data only. Prices are this client's sell prices.</p>
+<div class="row2">
+<div>
+<div class="card"><div class="card-header"><span>Approved hardware</span></div>
+<table>
+<thead><tr><th>Model</th><th>Availability</th><th class="num">Price</th><th class="num">Qty</th></tr></thead>
+<tbody>
+<tr><td>Example Laptop 14, 16 GB, 512 GB<div class="muted small">CB-LT14-EX01</div></td><td><span class="badge b-ok">In stock</span></td><td class="num">$1,049.00</td><td class="num"><input class="qty" value="2"></td></tr>
+<tr><td>Example Mini Desktop, 16 GB, 256 GB<div class="muted small">CB-DT-MINI-EX02</div></td><td><span class="badge b-warn">Low stock</span></td><td class="num">$789.00</td><td class="num"><input class="qty" value="0"></td></tr>
+<tr><td>Example 27" Monitor<div class="muted small">CB-MON27-EX03</div></td><td><span class="badge b-off">Out of stock</span></td><td class="num">$229.00</td><td class="num"><input class="qty" value="0" disabled></td></tr>
+<tr><td>Example USB-C Dock<div class="muted small">CB-DOCK-EX04</div></td><td><span class="badge b-ok">In stock</span></td><td class="num">$179.00</td><td class="num"><input class="qty" value="2"></td></tr>
+</tbody></table></div>
+
+<div class="card"><div class="card-header"><span>Your orders</span></div>
+<table>
+<thead><tr><th>Submitted</th><th>Ticket</th><th>Items</th><th class="num">Total</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>Oct 14</td><td>#10421</td><td>1 x Example Laptop 14</td><td class="num">$1,049.00</td><td><span class="badge b-ok">Paid</span></td></tr>
+<tr><td>Oct 20</td><td>#10488</td><td>3 x Example USB-C Dock</td><td class="num">$537.00</td><td><span class="badge b-info">Invoiced</span></td></tr>
+<tr><td>Oct 22</td><td>#10502</td><td>1 x Example Mini Desktop</td><td class="num">$789.00</td><td><span class="badge b-warn">Awaiting review</span></td></tr>
+</tbody></table>
+<div class="card-body note" style="margin:0">Status comes from Carbon. "Awaiting review" means your IT provider has the request and has not sent a quote or invoice yet.</div></div>
+</div>
+
+<div class="card"><div class="card-header"><span>Request summary</span></div>
+<div class="card-body">
+<div class="tot"><span>2 x Example Laptop 14</span><span>$2,098.00</span></div>
+<div class="tot"><span>2 x Example USB-C Dock</span><span>$358.00</span></div>
+<div class="tot big"><span>Estimated total</span><span>$2,456.00</span></div>
+<p class="note">Before tax and shipping. Your IT provider confirms the final price.</p>
+<label class="small" style="display:block;margin-top:var(--psa-spacing-md);font-weight:600;color:var(--psa-colors-navy)">Ship to</label>
+<select style="width:100%"><option>Main Office, 100 Example St, Sampletown</option><option>Branch Clinic, 22 Test Ave, Sampletown</option></select>
+<p class="note">Your locations on file. To add an address, ask your IT provider.</p>
+<label class="small" style="display:block;margin-top:var(--psa-spacing-sm);font-weight:600;color:var(--psa-colors-navy)">PO number (optional)</label>
+<input style="width:100%" value="PO-EXAMPLE-0042">
+<button class="btn btn-primary" type="button" style="width:100%;margin-top:var(--psa-spacing-md)">Submit request</button>
+<p class="note">This sends a request to your IT provider and opens a ticket. Nothing is charged now; you'll get a quote or invoice from them.</p>
+</div></div>
+</div>
+</main></body></html>
