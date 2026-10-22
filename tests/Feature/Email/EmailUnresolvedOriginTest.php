@@ -300,7 +300,7 @@ class EmailUnresolvedOriginTest extends TestCase
         });
         $backlog = [$this->message('held-poison', 480), $this->message('held-one', 456), $this->message('held-two', 432)];
         $graph = Mockery::mock(GraphClient::class);
-        $graph->shouldReceive('getMailboxMessages')->andReturn($backlog, $backlog, [$this->message('held-fresh')]);
+        $graph->shouldReceive('getMailboxMessages')->andReturn($backlog, [], $backlog, [], [$this->message('held-fresh')], []);
         $this->app->instance(GraphClient::class, $graph);
         $service = $this->app->make(EmailService::class);
         $records = [];
@@ -337,8 +337,11 @@ class EmailUnresolvedOriginTest extends TestCase
         $graph = Mockery::mock(GraphClient::class);
         $graph->shouldReceive('getMailboxMessages')->andReturn(
             array_merge([$this->message('paged-one', 480)], array_fill(0, 2498, []), [$this->message('paged-two', 456)]),
+            [],
             [$this->message('paged-two', 456), $this->message('paged-three', 288)],
+            [],
             [$this->message('paged-fresh')],
+            [],
         );
         $this->app->instance(GraphClient::class, $graph);
         $service = $this->app->make(EmailService::class);
@@ -383,6 +386,7 @@ class EmailUnresolvedOriginTest extends TestCase
         $graph = Mockery::mock(GraphClient::class);
         $graph->shouldReceive('getMailboxMessages')->andReturn(
             [$this->message('floor-poison', 240), $this->message('floor-old', 200), $this->message('floor-recent', 1)],
+            [],
             [$this->message('floor-fresh')],
         );
         $this->app->instance(GraphClient::class, $graph);
@@ -428,7 +432,9 @@ class EmailUnresolvedOriginTest extends TestCase
         $graph = Mockery::mock(GraphClient::class);
         $graph->shouldReceive('getMailboxMessages')->andReturn(
             [$this->message('pend-poison', 480), $this->message('pend-one', 120)],
+            [],
             [$this->message('pend-one', 120), $this->message('pend-two', 100)],
+            [],
         );
         $this->app->instance(GraphClient::class, $graph);
         $service = $this->app->make(EmailService::class);
