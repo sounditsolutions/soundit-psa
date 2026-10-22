@@ -269,6 +269,32 @@ class VendorSwitchOffMeansOffTest extends TestCase
         $this->assertSame([], $this->loggedMessagesContaining('[NinjaSync]'));
     }
 
+    public function test_asset_device_data_tab_says_ninja_is_switched_off_without_a_request(): void
+    {
+        $this->configureAll();
+        $this->switch('ninja', false);
+
+        $this->actingAs(User::factory()->create())
+            ->getJson(route('assets.deviceData', [$this->ninjaAsset(), 'software']))
+            ->assertOk()
+            ->assertExactJson(['error' => 'NinjaRMM is switched off.']);
+
+        $this->assertCount(0, $this->history['ninja']);
+    }
+
+    public function test_asset_device_data_tab_positive_control_calls_ninja_when_switched_on(): void
+    {
+        $this->configureAll();
+        $this->switch('ninja', true);
+
+        $this->actingAs(User::factory()->create())
+            ->getJson(route('assets.deviceData', [$this->ninjaAsset(), 'software']))
+            ->assertOk()
+            ->assertExactJson(['software' => []]);
+
+        $this->assertGreaterThan(0, count($this->history['ninja']));
+    }
+
     private function controlDAsset(): Asset
     {
         $client = Client::factory()->create(['controld_org_id' => 'fixture-org']);

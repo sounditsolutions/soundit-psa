@@ -1602,6 +1602,12 @@ class AssetController extends Controller
 
     private function fetchNinjaDeviceData(Asset $asset, string $section): array
     {
+        // NinjaClient refuses while switched off; answer that here rather than
+        // with the generic retry message below, which would not be true.
+        if (! NinjaConfig::isEnabled()) {
+            return ['error' => 'NinjaRMM is switched off.'];
+        }
+
         $ninjaId = $asset->ninja_id;
         $ninja = app(NinjaClient::class);
 
