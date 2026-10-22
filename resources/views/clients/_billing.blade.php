@@ -81,7 +81,7 @@
     <div class="card-header d-flex justify-content-between align-items-center">
         <span><i class="bi bi-receipt me-2"></i>Invoices</span>
         @if($inv['total_count'] > 0)
-            <span class="small">Open first, then the newest {{ \App\Services\ClientBillingSummary::OTHER_INVOICE_LIMIT }} of {{ $inv['total_count'] }}</span>
+            <span class="small">@if($inv['open_count'] > 0)Open first, then the newest {{ $inv['other_shown'] }}@else Newest {{ $inv['other_shown'] }}@endif of {{ $inv['total_count'] }}</span>
         @endif
     </div>
     @if($inv['total_count'] === 0)

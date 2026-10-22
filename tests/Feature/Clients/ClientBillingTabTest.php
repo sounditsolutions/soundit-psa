@@ -231,6 +231,8 @@ class ClientBillingTabTest extends TestCase
         $this->assertStringContainsString('Part-paid', $tab);
         // The soft-deleted invoice is not even listed.
         $this->assertStringNotContainsString('5,000.00', $tab);
+        // 2 open listed, then the 3 others (draft, void, paid) that exist, not "25".
+        $this->assertStringContainsString('Open first, then the newest 3 of 5', $tab);
     }
 
     public function test_as_of_date_is_the_latest_partial_and_is_labelled_in_the_app_timezone(): void
