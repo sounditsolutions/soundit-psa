@@ -216,7 +216,7 @@ class SigningGenerateTest extends TestCase
             } elseif ($case === 'tampered') {
                 Storage::disk('local')->put($document->pdf_path, 'changed');
             }
-            $this->post('/sign/'.$token, ['typed_name' => 'Alex', 'pdf_sha256' => $case === 'form' ? str_repeat('f', 64) : $document->pdf_sha256])->assertSee('Link unavailable');
+            $this->post('/sign/'.$token, ['typed_name' => 'Alex', 'pdf_sha256' => $case === 'form' ? str_repeat('f', 64) : $document->pdf_sha256])->assertSee('Link unavailable')->assertDontSee('Signature recorded');
             $this->assertCount(0, $document->snapshots);
             $this->assertNull($document->fresh()->viewed_at);
         }
@@ -224,8 +224,8 @@ class SigningGenerateTest extends TestCase
         $token = str_repeat('R', 48);
         $document->update(['status' => 'sent', 'token_hash' => hash('sha256', $token), 'token_expires_at' => now()->addDay()]);
         $form = ['typed_name' => 'Alex', 'pdf_sha256' => $document->pdf_sha256];
-        $this->post('/sign/'.$token, $form)->assertOk();
-        $this->post('/sign/'.$token, $form)->assertOk();
+        $this->post('/sign/'.$token, $form)->assertOk()->assertSee('DRAFT — Signature recorded')->assertDontSee('Link unavailable');
+        $this->post('/sign/'.$token, $form)->assertOk()->assertSee('DRAFT — Link unavailable')->assertDontSee('Signature recorded');
         $this->assertCount(1, $document->snapshots);
         $this->assertNull($document->fresh()->token_hash);
     }
@@ -392,7 +392,7 @@ class SigningGenerateTest extends TestCase
         $service->sign($token, 'Alex Example', $document->pdf_sha256, '127.0.0.1', 'Example');
         $admin = \App\Models\User::factory()->create(['role' => 'admin']);
         $service->countersign($document, $admin, '127.0.0.1', 'Example');
-        $service->void($document);
+        $service->void($this->generate());
         foreach ($tables as $table) {
             $this->assertSame($before[$table], \Illuminate\Support\Facades\DB::table($table)->get()->toJson(), $table);
         }
@@ -422,5 +422,97 @@ class SigningGenerateTest extends TestCase
         }
         $this->assertDatabaseCount('signable_documents', 0);
         $this->assertSame([], Storage::disk('local')->allFiles('signing'));
+    }
+
+    public function test_sku_volume_priced_backup_line_refuses_until_the_volume_card_is_gone(): void
+    {
+        $sku = \App\Models\Sku::create([
+            'name' => 'Example backup storage', 'sku_code' => 'EXAMPLE-BKP', 'unit_price' => '0', 'unit_cost' => '0',
+            'default_quantity_type' => \App\Enums\QuantityType::PerBackupStorageGb, 'is_taxable' => false, 'is_active' => true,
+        ]);
+        $tier = \App\Models\BackupStorageTier::create(['sku_id' => $sku->id, 'up_to_gb' => 100, 'unit_price' => '1.00', 'sort_order' => 0]);
+        $this->contract->lines()->create([
+            'version' => 1, 'source' => 'example', 'sku_id' => $sku->id, 'description' => 'Example backup storage',
+            'quantity_type' => 'per_backup_storage_gb', 'unit_price' => '0.00', 'is_taxable' => false, 'sort_order' => 1,
+        ]);
+        try {
+            $this->generate();
+            $this->fail('SKU volume pricing accepted');
+        } catch (RuntimeException $error) {
+            $this->assertSame('signing_line_price_inherited', $error->getMessage());
+        }
+        $this->assertDatabaseCount('signable_documents', 0);
+        $this->assertSame([], Storage::disk('local')->allFiles('signing'));
+        $tier->delete();
+        $this->assertSame('draft', $this->generate()->status);
+    }
+
+    public function test_void_refuses_final_and_void_rows_and_card_offers_it_only_on_pending_rows(): void
+    {
+        $service = app(SigningService::class);
+        $executed = $this->generate();
+        $executed->update(['status' => 'countersigned']);
+        $this->template->update(['requires_countersign' => false]);
+        $final = $this->generate();
+        $final->update(['status' => 'signed']);
+        $voided = $this->generate();
+        $voided->update(['status' => 'void', 'voided_at' => now()->subDay()]);
+        $this->template->update(['requires_countersign' => true]);
+        $pending = $this->generate();
+        $pending->update(['status' => 'signed']);
+        $admin = \App\Models\User::factory()->create(['role' => 'admin']);
+        $page = $this->actingAs($admin)->get(route('contracts.show', $this->contract))->assertOk();
+        $page->assertSee(route('signing.action', [$this->contract, $pending, 'void']), false);
+        foreach ([$executed, $final, $voided] as $row) {
+            $page->assertDontSee(route('signing.action', [$this->contract, $row, 'void']), false);
+            $before = $row->fresh()->getRawOriginal();
+            try {
+                $service->void($row);
+                $this->fail('Void accepted: '.$row->fresh()->status);
+            } catch (RuntimeException $error) {
+                $this->assertSame('signing_void_unavailable', $error->getMessage());
+            }
+            $this->assertSame($before, $row->fresh()->getRawOriginal());
+        }
+        $this->post(route('signing.action', [$this->contract, $executed, 'void']))
+            ->assertRedirect(route('contracts.show', $this->contract))
+            ->assertSessionHas('signing_error', fn ($message) => str_contains($message, 'signing_void_unavailable'));
+        $this->assertSame('countersigned', $executed->fresh()->status);
+        $this->get(route('signing.download', [$this->contract, $executed]))->assertOk();
+        $service->void($pending);
+        $this->assertSame('void', $pending->fresh()->status);
+    }
+
+    public function test_staff_refusals_redirect_with_their_named_error_instead_of_a_server_error(): void
+    {
+        $admin = \App\Models\User::factory()->create(['role' => 'admin']);
+        $form = ['template_id' => $this->template->id, 'name' => 'Alex Example', 'email' => 'alex@example.test'];
+        $this->template->update(['signing_steps' => 2]);
+        $this->actingAs($admin)->post(route('signing.generate', $this->contract), $form)
+            ->assertRedirect(route('contracts.show', $this->contract))
+            ->assertSessionHas('signing_error', fn ($message) => str_contains($message, 'signing_multistep_unsupported'));
+        $this->assertDatabaseCount('signable_documents', 0);
+        $this->template->update(['signing_steps' => 1]);
+        $document = $this->generate();
+        $document->update(['status' => 'signed']);
+        $this->post(route('signing.action', [$this->contract, $document, 'send']))
+            ->assertRedirect(route('contracts.show', $this->contract))
+            ->assertSessionHas('signing_error', fn ($message) => str_contains($message, 'signing_send_unavailable'));
+        $this->assertNull($document->fresh()->token_hash);
+        $this->post(route('signing.generate', $this->contract), ['template_id' => 999999] + $form)->assertNotFound();
+        $this->template->update(['body' => '<p>{{ client.name }}</p>']);
+        $this->followingRedirects()->post(route('signing.generate', $this->contract), $form)
+            ->assertOk()->assertSee('(signing_unknown_merge_token)');
+        $this->assertDatabaseCount('signable_documents', 1);
+    }
+
+    public function test_today_merge_field_uses_the_app_timezone_date(): void
+    {
+        \App\Models\Setting::updateOrCreate(['key' => 'app_timezone'], ['value' => 'America/Los_Angeles']);
+        $this->travelTo(\Illuminate\Support\Carbon::parse('2026-10-23 01:00:00', 'UTC'));
+        $this->template->update(['body' => '<p>DRAFT — Dated {{today}}</p>{{lines_table}}']);
+        $bytes = Storage::disk('local')->get($this->generate()->pdf_path);
+        $this->assertStringContainsString('DRAFT — Dated 2026-10-22', $bytes);
+        $this->assertStringNotContainsString('2026-10-23', $bytes);
     }
 }
