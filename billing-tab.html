@@ -1,0 +1,44 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Client billing tab (staff)</title><link rel="stylesheet" href="_tokens.css"><link rel="stylesheet" href="_hw.css"></head><body><main>
+<p class="caption">Staff &gt; Clients &gt; Example Dental Co. &gt; Billing tab (new, read-only). Sample data only. No buttons that move money, send or void.</p>
+<h4>Example Dental Co.</h4>
+<div class="tabs"><span>Overview</span><span>Activity</span><span>Tickets</span><span>People</span><span>Assets</span><span>Contracts</span><span>Notes</span><span>Licenses</span><span>Integrations</span><span class="on">Billing</span></div>
+<div class="kpis">
+<div class="kpi signal"><div class="lbl">Outstanding</div><div class="val">$4,312.50</div><div class="note">3 open invoices; includes 1 part-paid invoice (QBO as of Oct 21, 06:00)</div></div>
+<div class="kpi"><div class="lbl">Overdue</div><div class="val">$1,180.00</div><div class="note">1 invoice past due</div></div>
+<div class="kpi"><div class="lbl">Monthly recurring</div><div class="val">$2,450.00</div><div class="note">2 active contracts</div></div>
+<div class="kpi"><div class="lbl">Prepay balance</div><div class="val">6.25 h</div><div class="note">Hours prepay, contract EX-PP-01</div></div>
+</div>
+<div class="card"><div class="card-header"><span>Invoices</span><span class="small" style="text-transform:none">Open first, then the newest 25 of 58</span></div>
+<table><thead><tr><th>Invoice</th><th>Date</th><th>Due</th><th class="num">Total</th><th class="num">Balance</th><th>Status</th></tr></thead><tbody>
+<tr><td><a href="#">INV-EX-1042</a></td><td>Sep 1</td><td>Sep 30</td><td class="num">$1,180.00</td><td class="num">$1,180.00</td><td><span class="badge b-bad">Overdue</span></td></tr>
+<tr><td><a href="#">INV-EX-1051</a></td><td>Oct 1</td><td>Oct 31</td><td class="num">$2,450.00</td><td class="num">$1,225.00 <span class="muted small">QBO, Oct 21</span></td><td><span class="badge b-warn">Part-paid</span></td></tr>
+<tr><td><a href="#">INV-EX-1057</a></td><td>Oct 15</td><td>Nov 14</td><td class="num">$1,907.50</td><td class="num">$1,907.50</td><td><span class="badge b-info">Posted</span></td></tr>
+<tr><td><a href="#">INV-EX-1058</a></td><td>Oct 20</td><td>—</td><td class="num">$310.00</td><td class="num muted">—</td><td><span class="badge b-off">Draft</span></td></tr>
+<tr><td><a href="#">INV-EX-1033</a></td><td>Aug 1</td><td>Aug 31</td><td class="num">$2,450.00</td><td class="num muted">$0.00</td><td><span class="badge b-ok">Paid</span></td></tr>
+<tr><td><a href="#">INV-EX-1029</a></td><td>Jul 18</td><td>Aug 17</td><td class="num">$95.00</td><td class="num muted">—</td><td><span class="badge b-off">Void</span></td></tr>
+</tbody></table>
+<div class="card-body"><a href="#">View all 58 invoices</a> <span class="muted small">(opens Invoices filtered to this client)</span><p class="note">Outstanding counts posted and synced invoices only. Drafts, paid and voided invoices are excluded. A balance below the total is the last QuickBooks figure and is shown with its date.</p></div></div>
+<div class="grid2">
+<div class="card"><div class="card-header"><span>Contracts and recurring</span></div>
+<table><thead><tr><th>Contract</th><th>Type</th><th class="num">Monthly</th><th>Next invoice</th></tr></thead><tbody>
+<tr><td><a href="#">EX-MSP-01</a></td><td>Managed services</td><td class="num">$2,100.00</td><td>Nov 1</td></tr>
+<tr><td><a href="#">EX-BK-02</a></td><td>Backup storage</td><td class="num">$350.00</td><td>Nov 1</td></tr>
+<tr><td><a href="#">EX-PP-01</a></td><td>Hours prepay</td><td class="num muted">—</td><td class="muted">On deposit</td></tr>
+</tbody></table></div>
+<div class="card"><div class="card-header"><span>Prepay</span><span class="small" style="text-transform:none">Balance 6.25 h</span></div>
+<table><thead><tr><th>Date</th><th>Entry</th><th class="num">Hours</th></tr></thead><tbody>
+<tr><td>Oct 21</td><td>Call, ticket T-EX-0007</td><td class="num">−0.50</td></tr>
+<tr><td>Oct 18</td><td>Ticket time, T-EX-0005</td><td class="num">−1.25</td></tr>
+<tr><td>Oct 2</td><td>Deposit from INV-EX-1049</td><td class="num">+10.00</td></tr>
+</tbody></table><div class="card-body"><a href="#">View prepay ledger</a></div></div>
+</div>
+<div class="card"><div class="card-header"><span>BenjiPays</span><span class="small" style="text-transform:none">Read-only, cached</span></div>
+<div class="grid2" style="gap:0">
+<table><thead><tr><th>Payment method</th><th>Autopay</th></tr></thead><tbody>
+<tr><td>Visa ending 4242</td><td><span class="badge b-ok">On</span></td></tr>
+<tr><td>Bank account ending 6789</td><td><span class="badge b-off">Off</span></td></tr></tbody></table>
+<table><thead><tr><th>Payment</th><th>Invoice</th><th class="num">Amount</th></tr></thead><tbody>
+<tr><td>Oct 21</td><td>INV-EX-1051</td><td class="num">$1,225.00</td></tr>
+<tr><td>Sep 3</td><td>INV-EX-1033</td><td class="num">$2,450.00</td></tr></tbody></table>
+</div></div>
+</main></body></html>
