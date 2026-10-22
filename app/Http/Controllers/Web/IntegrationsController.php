@@ -1090,7 +1090,7 @@ class IntegrationsController extends Controller
         }
 
         try {
-            $client = new GuzzleClient(['timeout' => 5]);
+            $client = app()->make(GuzzleClient::class, ['config' => ['timeout' => 5]]);
             $response = $client->get('https://api.level.io/v2/devices', [
                 'query' => ['limit' => 1],
                 'headers' => [

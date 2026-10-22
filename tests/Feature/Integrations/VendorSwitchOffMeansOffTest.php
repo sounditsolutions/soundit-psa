@@ -404,5 +404,240 @@ class VendorSwitchOffMeansOffTest extends TestCase
         $this->assertCount(1, $this->history['zorus']);
     }
 
-    // --- PLACEHOLDER: tests follow ---
+    // ---------------------------------------------------------------
+    // Refresh
+    // ---------------------------------------------------------------
+
+    public function test_refresh_ninja_asset_redirects_with_switched_off_error_and_no_request(): void
+    {
+        $this->configureAll();
+        $this->switch('ninja', false);
+        $asset = $this->ninjaAsset();
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('assets.refresh', $asset))
+            ->assertRedirect(route('assets.show', $asset))
+            ->assertSessionHas('error', 'NinjaRMM is switched off, so it was not refreshed.')
+            ->assertSessionMissing('success');
+
+        $this->assertCount(0, $this->history['ninja']);
+    }
+
+    public function test_refresh_level_asset_redirects_with_switched_off_error_and_no_request(): void
+    {
+        $this->configureAll();
+        $this->switch('level', false);
+        $asset = Asset::factory()->create(['level_id' => 'fixture-level-device']);
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('assets.refresh', $asset))
+            ->assertRedirect(route('assets.show', $asset))
+            ->assertSessionHas('error', 'Level is switched off, so it was not refreshed.')
+            ->assertSessionMissing('success');
+
+        $this->assertCount(0, $this->history['level']);
+    }
+
+    public function test_refresh_with_ninja_off_still_refreshes_level_when_level_is_on(): void
+    {
+        $this->configureAll();
+        $this->switch('ninja', false);
+        $this->switch('level', true);
+        $asset = Asset::factory()->create(['ninja_id' => 4242, 'level_id' => 'fixture-level-device']);
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('assets.refresh', $asset))
+            ->assertRedirect(route('assets.show', $asset))
+            ->assertSessionHas('success', 'Device data refreshed from Level.')
+            ->assertSessionHas('error', 'NinjaRMM is switched off, so it was not refreshed.');
+
+        $this->assertCount(0, $this->history['ninja']);
+        $this->assertCount(1, $this->history['level']);
+    }
+
+    public function test_refresh_positive_control_calls_both_rmms_when_switched_on(): void
+    {
+        $this->configureAll();
+        $this->switch('ninja', true);
+        $this->switch('level', true);
+        $asset = Asset::factory()->create(['ninja_id' => 4242, 'level_id' => 'fixture-level-device']);
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('assets.refresh', $asset))
+            ->assertRedirect(route('assets.show', $asset))
+            ->assertSessionMissing('error');
+
+        $this->assertGreaterThan(0, count($this->history['ninja']));
+        $this->assertCount(1, $this->history['level']);
+    }
+
+    // ---------------------------------------------------------------
+    // Test Connection
+    // ---------------------------------------------------------------
+
+    private function guzzleHistoryForTestLevel(): array
+    {
+        // testLevel builds its own GuzzleClient; the container hands it the
+        // recording stack, so a request it makes is visible here.
+        $this->app->bind(\GuzzleHttp\Client::class, fn ($app, array $params) => new \GuzzleHttp\Client(
+            ($params['config'] ?? []) + ['handler' => $this->stack('level')],
+        ));
+
+        return $this->history['level'];
+    }
+
+    public function test_test_level_reports_switched_off_without_a_request(): void
+    {
+        $this->configureAll();
+        $this->switch('level', false);
+        $this->guzzleHistoryForTestLevel();
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->postJson(route('settings.integrations.level.test'))
+            ->assertOk()
+            ->assertExactJson(['success' => false, 'message' => 'Integration is switched off. Turn it on to test the connection.']);
+
+        $this->assertCount(0, $this->history['level']);
+    }
+
+    public function test_test_level_positive_control_makes_the_request_when_switched_on(): void
+    {
+        $this->configureAll();
+        $this->switch('level', true);
+        $this->guzzleHistoryForTestLevel();
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->postJson(route('settings.integrations.level.test'))
+            ->assertOk()
+            ->assertJson(['success' => true]);
+
+        $this->assertCount(1, $this->history['level']);
+    }
+
+    /** @return array<string, array{0: string, 1: string}> vendor, route */
+    public static function connectionTestVendors(): array
+    {
+        return [
+            'NinjaRMM' => ['ninja', 'settings.integrations.ninja.test'],
+            'Control D' => ['controld', 'settings.integrations.controld.test'],
+            'Zorus' => ['zorus', 'settings.integrations.zorus.test'],
+        ];
+    }
+
+    #[DataProvider('connectionTestVendors')]
+    public function test_test_connection_reports_switched_off_without_a_request(string $vendor, string $route): void
+    {
+        $this->configureAll();
+        $this->switch($vendor, false);
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->postJson(route($route))
+            ->assertOk()
+            ->assertExactJson(['success' => false, 'message' => 'Integration is switched off. Turn it on to test the connection.']);
+
+        $this->assertCount(0, $this->history[$vendor]);
+    }
+
+    #[DataProvider('connectionTestVendors')]
+    public function test_test_connection_positive_control_does_not_report_switched_off_when_on(string $vendor, string $route): void
+    {
+        // testNinja/testControlD/testZorus build their clients with `new`, so
+        // these handlers cannot see them. With the switch on and no credentials
+        // stored, each reaches its next refusal, which makes no request: the
+        // switched-off answer above therefore comes from the switch.
+        $this->switch($vendor, true);
+
+        $response = $this->actingAs(User::factory()->admin()->create())->postJson(route($route))->assertOk();
+
+        $this->assertFalse($response->json('success'));
+        $this->assertContains($response->json('message'), ['Credentials not configured.', 'API credentials not configured.']);
+    }
+
+    // ---------------------------------------------------------------
+    // Schedules
+    // ---------------------------------------------------------------
+
+    private function scheduleFiltersPass(string $command): bool
+    {
+        $events = collect(app(Schedule::class)->events())
+            ->filter(fn ($event) => str_ends_with($event->command ?? '', " {$command}"));
+        $this->assertCount(1, $events, "premise: one {$command} schedule");
+
+        return $events->first()->filtersPass($this->app);
+    }
+
+    /** @return array<string, array{0: string, 1: string}> vendor, command */
+    public static function scheduledCommands(): array
+    {
+        return [
+            'level:sync-devices' => ['level', 'level:sync-devices'],
+            'controld:sync-licenses' => ['controld', 'controld:sync-licenses'],
+            'controld:sync-devices' => ['controld', 'controld:sync-devices'],
+            'zorus:sync-licenses' => ['zorus', 'zorus:sync-licenses'],
+            'zorus:sync-devices' => ['zorus', 'zorus:sync-devices'],
+        ];
+    }
+
+    private function mapEveryVendor(): void
+    {
+        Client::factory()->create([
+            'controld_org_id' => 'fixture-org',
+            'zorus_customer_id' => '00000000-0000-4000-8000-000000000001',
+            'level_group_id' => 'fixture-group',
+        ]);
+    }
+
+    #[DataProvider('scheduledCommands')]
+    public function test_schedule_skips_while_switched_off(string $vendor, string $command): void
+    {
+        $this->configureAll();
+        $this->mapEveryVendor();
+        $this->switch($vendor, false);
+
+        $this->assertFalse($this->scheduleFiltersPass($command));
+    }
+
+    #[DataProvider('scheduledCommands')]
+    public function test_schedule_positive_control_runs_while_switched_on(string $vendor, string $command): void
+    {
+        $this->configureAll();
+        $this->mapEveryVendor();
+        $this->switch($vendor, true);
+
+        $this->assertTrue($this->scheduleFiltersPass($command));
+    }
+
+    // ---------------------------------------------------------------
+    // Commands (run by hand, or by a schedule that passed)
+    // ---------------------------------------------------------------
+
+    #[DataProvider('scheduledCommands')]
+    public function test_command_skips_with_a_warning_and_no_request_while_switched_off(string $vendor, string $command): void
+    {
+        $this->configureAll();
+        $this->mapEveryVendor();
+        $this->switch($vendor, false);
+        $label = ['level' => 'Level', 'controld' => 'Control D', 'zorus' => 'Zorus'][$vendor];
+
+        $this->artisan($command)
+            ->expectsOutput("{$label} integration is switched off (set {$vendor}_enabled=1 to re-enable). Skipping.")
+            ->assertExitCode(0);
+
+        $this->assertCount(0, $this->history[$vendor]);
+        $this->assertSame(0, $this->built[$vendor] ?? 0);
+    }
+
+    #[DataProvider('scheduledCommands')]
+    public function test_command_positive_control_calls_the_vendor_while_switched_on(string $vendor, string $command): void
+    {
+        $this->configureAll();
+        $this->mapEveryVendor();
+        $this->switch($vendor, true);
+
+        $this->artisan($command)
+            ->doesntExpectOutputToContain('switched off')
+            ->run();
+
+        $this->assertGreaterThan(0, count($this->history[$vendor]), "{$command} must reach the vendor while switched on");
+    }
 }
