@@ -231,8 +231,9 @@ class ClientBillingTabTest extends TestCase
         $this->assertStringContainsString('Part-paid', $tab);
         // The soft-deleted invoice is not even listed.
         $this->assertStringNotContainsString('5,000.00', $tab);
-        // 2 open listed, then the 3 others (draft, void, paid) that exist, not "25".
-        $this->assertStringContainsString('Open first, then the newest 3 of 5', $tab);
+        // All 5 are listed (2 open, then draft, void, paid), so the header names all 5, not "25".
+        $this->assertStringContainsString('Open first, then newest · all 5', $tab);
+        $this->assertStringNotContainsString('newest 25', $tab);
     }
 
     public function test_as_of_date_is_the_latest_partial_and_is_labelled_in_the_app_timezone(): void
@@ -321,8 +322,9 @@ class ClientBillingTabTest extends TestCase
             'No invoices for this client yet.', 'No active contracts.', 'This client has no prepay contract.'] as $line) {
             $this->assertStringContainsString($line, $tab);
         }
-        // No QuickBooks customer id: the BenjiPays section is hidden and nothing is called.
+        // No QuickBooks customer id: a "not linked" line, not a hidden section, and nothing is called.
         $this->assertStringNotContainsString('data-section="benjipays"', $tab);
+        $this->assertStringContainsString("BenjiPays isn't linked for this client.", $tab);
         Http::assertNothingSent();
     }
 
@@ -415,11 +417,30 @@ class ClientBillingTabTest extends TestCase
         $tab = $this->tab($this->billing($client)->assertOk());
 
         $this->assertStringContainsString('Open first, then the newest 25 of 31', $tab);
+        $this->assertStringNotContainsString('newest · all 31', $tab);
         $this->assertLessThan(strpos($tab, 'INV-SYN-P30'), strpos($tab, 'INV-SYN-OPEN'));
         $this->assertStringContainsString('INV-SYN-P06', $tab);
         $this->assertStringNotContainsString('INV-SYN-P05', $tab);
         $this->assertSame(26, substr_count($tab, 'data-invoice-row='));
         $this->assertStringContainsString('href="'.route('invoices.index', ['client_id' => $client->id]).'">View all 31 invoices', $tab);
+    }
+
+    public function test_header_says_all_n_when_every_invoice_is_listed_even_above_25(): void
+    {
+        // 25 others is exactly the limit, so nothing is cut: 30 invoices, all 30 rows shown.
+        $client = $this->client();
+        for ($i = 1; $i <= 25; $i++) {
+            $this->invoice($client, InvoiceStatus::Paid, '10.00', ['invoice_date' => sprintf('2026-08-%02d', $i)]);
+        }
+        for ($i = 1; $i <= 5; $i++) {
+            $this->invoice($client, InvoiceStatus::Posted, '20.00');
+        }
+
+        $tab = $this->tab($this->billing($client)->assertOk());
+
+        $this->assertSame(30, substr_count($tab, 'data-invoice-row='));
+        $this->assertStringContainsString('Open first, then newest · all 30', $tab);
+        $this->assertStringNotContainsString('newest 25 of', $tab);
     }
 
     public function test_view_all_target_filters_invoices_index_to_this_client(): void
@@ -493,6 +514,7 @@ class ClientBillingTabTest extends TestCase
         $this->assertStringContainsString('INV-SYN-PAID', $tab);
         $this->assertStringContainsString('$1,225.00', $tab);
         $this->assertStringNotContainsString('Unavailable', $tab);
+        $this->assertStringNotContainsString("isn't linked", $tab);
         Http::assertSentCount(2);
         Http::assertNotSent(fn (HttpRequest $r) => $r->method() !== 'GET');
         Http::assertSent(fn (HttpRequest $r) => str_contains($r->url(), '/v2/transactions') && str_contains($r->url(), 'limit=5'));
@@ -555,14 +577,29 @@ class ClientBillingTabTest extends TestCase
         $this->assertStringNotContainsString('VENDOR-SENTINEL-TEXT', $tab);
     }
 
-    public function test_benjipays_not_configured_hides_the_section_and_calls_nothing(): void
+    public function test_benjipays_not_configured_shows_not_linked_and_sends_zero_requests(): void
     {
         $client = $this->client(['qbo_customer_id' => self::CUST]);
 
         $tab = $this->tab($this->billing($client)->assertOk());
 
         $this->assertStringNotContainsString('data-section="benjipays"', $tab);
-        Http::assertNothingSent();
+        $this->assertSame(1, substr_count($tab, 'data-section="benjipays-unlinked"'));
+        $this->assertStringContainsString("BenjiPays isn't linked for this client.", $tab);
+        $this->assertStringNotContainsString('Unavailable', $tab);
+        Http::assertSentCount(0);
+    }
+
+    public function test_benjipays_configured_but_no_qbo_customer_id_shows_not_linked_and_sends_zero_requests(): void
+    {
+        $this->configureBenjiPays();
+        $client = $this->client(['qbo_customer_id' => null]);
+
+        $tab = $this->tab($this->billing($client)->assertOk());
+
+        $this->assertStringNotContainsString('data-section="benjipays"', $tab);
+        $this->assertStringContainsString("BenjiPays isn't linked for this client.", $tab);
+        Http::assertSentCount(0);
     }
 
     // ── Read-only ───────────────────────────────────────────────────────────

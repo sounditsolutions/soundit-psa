@@ -81,7 +81,8 @@
     <div class="card-header d-flex justify-content-between align-items-center">
         <span><i class="bi bi-receipt me-2"></i>Invoices</span>
         @if($inv['total_count'] > 0)
-            <span class="small">@if($inv['open_count'] > 0)Open first, then the newest {{ $inv['other_shown'] }}@else Newest {{ $inv['other_shown'] }}@endif of {{ $inv['total_count'] }}</span>
+            {{-- Every invoice is listed unless more than 25 non-open ones exist, in which case exactly 25 of them are. --}}
+            <span class="small">@if($inv['open_count'] + $inv['other_shown'] >= $inv['total_count'])Open first, then newest · all {{ $inv['total_count'] }}@else Open first, then the newest {{ \App\Services\ClientBillingSummary::OTHER_INVOICE_LIMIT }} of {{ $inv['total_count'] }}@endif</span>
         @endif
     </div>
     @if($inv['total_count'] === 0)
@@ -237,8 +238,13 @@
     </div>
 </div>
 
-{{-- BenjiPays: hidden when not configured or the client has no QuickBooks customer id --}}
-@if($bp !== null)
+{{-- BenjiPays: when not configured or the client has no QuickBooks customer id, one muted line and no network call --}}
+@if($bp === null)
+<div class="card shadow-sm card-static mb-3" data-section="benjipays-unlinked">
+    <div class="card-header"><i class="bi bi-credit-card me-2"></i>BenjiPays</div>
+    <div class="card-body text-muted">BenjiPays isn't linked for this client.</div>
+</div>
+@else
 <div class="card shadow-sm card-static mb-3" data-section="benjipays">
     <div class="card-header d-flex justify-content-between align-items-center">
         <span><i class="bi bi-credit-card me-2"></i>BenjiPays</span>

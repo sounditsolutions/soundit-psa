@@ -281,7 +281,8 @@ class ClientBillingSummary
     /**
      * Payment methods and the last BENJIPAYS_PAYMENTS payments, through the
      * existing client and projection. Null when BenjiPays is not configured
-     * or the client has no QuickBooks customer id (the section is hidden).
+     * or the client has no QuickBooks customer id (the view shows a
+     * "not linked" line; no network call is made).
      *
      * Cached per client: a success for BENJIPAYS_CACHE_SECONDS, a failure for
      * BENJIPAYS_FAILURE_SECONDS. No retry: one attempt per cache miss, and
