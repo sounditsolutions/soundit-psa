@@ -2,6 +2,7 @@
 
 namespace App\Services\Ninja;
 
+use App\Support\NinjaConfig;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Contracts\Cache\Repository as CacheInterface;
@@ -20,6 +21,8 @@ class NinjaClient
         private readonly CacheInterface $cache,
     ) {
         $this->http = new Client([
+            // Handler injection keeps wire-level tests off the live vendor.
+            'handler' => $this->config['handler'] ?? null,
             'base_uri' => rtrim($this->config['base_url'] ?? 'https://app.ninjarmm.com', '/'),
             'timeout' => $this->config['request_timeout'] ?? 30,
         ]);
@@ -430,6 +433,15 @@ class NinjaClient
      */
     private function getToken(): string
     {
+        // THE SWITCH-OFF CHOKE POINT (card YouDehkS). Every network use in this
+        // class passes through here first: request() asks for a token before it
+        // builds a request, and the token POST below is the only other call.
+        // Checked before the cache read, so a cached token cannot carry a
+        // request past a switched-off integration either.
+        if (! NinjaConfig::isEnabled()) {
+            throw new NinjaClientException('NinjaRMM integration is switched off');
+        }
+
         $cached = $this->cache->get(self::TOKEN_CACHE_KEY);
         if ($cached) {
             return $cached;

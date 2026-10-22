@@ -2,6 +2,7 @@
 
 namespace App\Services\Zorus;
 
+use App\Support\ZorusConfig;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Support\Facades\Log;
@@ -14,6 +15,8 @@ class ZorusClient
         private readonly array $config,
     ) {
         $this->http = new Client([
+            // Handler injection keeps wire-level tests off the live vendor.
+            'handler' => $this->config['handler'] ?? null,
             'base_uri' => 'https://developer.zorustech.com/',
             'timeout' => 30,
             'headers' => [
@@ -31,6 +34,13 @@ class ZorusClient
      */
     public function post(string $endpoint, array $body = []): array
     {
+        // THE SWITCH-OFF CHOKE POINT (card YouDehkS): every Zorus call in this
+        // class goes through post(), so OFF is refused here before any request
+        // is built.
+        if (! ZorusConfig::isEnabled()) {
+            throw new ZorusClientException('Zorus integration is switched off');
+        }
+
         try {
             $response = $this->http->request('POST', $endpoint, [
                 'json' => $body,

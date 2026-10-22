@@ -15,15 +15,21 @@ class ZorusSyncLicenses extends Command
 
     public function handle(): int
     {
+        if (! ZorusConfig::isEnabled()) {
+            $this->warn('Zorus integration is switched off (set zorus_enabled=1 to re-enable). Skipping.');
+
+            return self::SUCCESS;
+        }
+
         if (! ZorusConfig::isConfigured()) {
             $this->error('Zorus is not configured. Add API credentials in Settings > Integrations.');
 
             return self::FAILURE;
         }
 
-        $client = new ZorusClient([
+        $client = app()->make(ZorusClient::class, ['config' => [
             'api_key' => ZorusConfig::get('api_key'),
-        ]);
+        ]]);
 
         $service = new ZorusLicenseSyncService($client);
 

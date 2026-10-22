@@ -21,11 +21,12 @@ Schedule::command('ninja:sync-devices')
     ->runInBackground()
     ->when(fn () => \App\Support\NinjaConfig::isEnabled());
 
-// Level RMM device sync — every 4 hours for mapped clients
+// Level RMM device sync — every 4 hours for mapped clients (only while level_enabled is on)
 Schedule::command('level:sync-devices')
     ->everyFourHours()
     ->withoutOverlapping()
-    ->runInBackground();
+    ->runInBackground()
+    ->when(fn () => \App\Support\LevelConfig::isEnabled());
 
 // LITSRMM device sync — every 4 hours: creates and updates assets from the RMM
 // for mapped, active clients, and keeps their LITSRMM server/workstation seats.
@@ -138,35 +139,39 @@ Schedule::command('huntress:reconcile-escalations')
     ->runInBackground()
     ->when(fn () => \App\Support\HuntressConfig::isConfigured());
 
-// Control D DNS security license sync — daily (only if configured + clients mapped)
+// Control D DNS security license sync — daily (only if switched on + configured + clients mapped)
 Schedule::command('controld:sync-licenses')
     ->dailyAt('05:10')
     ->withoutOverlapping()
     ->runInBackground()
-    ->when(fn () => \App\Support\ControlDConfig::isConfigured()
+    ->when(fn () => \App\Support\ControlDConfig::isEnabled()
+        && \App\Support\ControlDConfig::isConfigured()
         && \App\Models\Client::whereNotNull('controld_org_id')->exists());
 
-// Control D DNS device enrichment — daily (only if configured + clients mapped)
+// Control D DNS device enrichment — daily (only if switched on + configured + clients mapped)
 Schedule::command('controld:sync-devices')
     ->dailyAt('05:12')
     ->withoutOverlapping()
     ->runInBackground()
-    ->when(fn () => \App\Support\ControlDConfig::isConfigured()
+    ->when(fn () => \App\Support\ControlDConfig::isEnabled()
+        && \App\Support\ControlDConfig::isConfigured()
         && \App\Models\Client::whereNotNull('controld_org_id')->exists());
 
-// Zorus license + device sync — daily (only if configured + clients mapped)
+// Zorus license + device sync — daily (only if switched on + configured + clients mapped)
 Schedule::command('zorus:sync-licenses')
     ->dailyAt('05:18')
     ->withoutOverlapping()
     ->runInBackground()
-    ->when(fn () => \App\Support\ZorusConfig::isConfigured()
+    ->when(fn () => \App\Support\ZorusConfig::isEnabled()
+        && \App\Support\ZorusConfig::isConfigured()
         && \App\Models\Client::whereNotNull('zorus_customer_id')->exists());
 
 Schedule::command('zorus:sync-devices')
     ->dailyAt('05:20')
     ->withoutOverlapping()
     ->runInBackground()
-    ->when(fn () => \App\Support\ZorusConfig::isConfigured()
+    ->when(fn () => \App\Support\ZorusConfig::isEnabled()
+        && \App\Support\ZorusConfig::isConfigured()
         && \App\Models\Client::whereNotNull('zorus_customer_id')->exists());
 
 // ScreenConnect license counting — daily (only if configured)

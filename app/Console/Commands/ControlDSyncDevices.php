@@ -15,15 +15,21 @@ class ControlDSyncDevices extends Command
 
     public function handle(): int
     {
+        if (! ControlDConfig::isEnabled()) {
+            $this->warn('Control D integration is switched off (set controld_enabled=1 to re-enable). Skipping.');
+
+            return self::SUCCESS;
+        }
+
         if (! ControlDConfig::isConfigured()) {
             $this->error('Control D is not configured. Add API credentials in Settings → Integrations.');
 
             return self::FAILURE;
         }
 
-        $client = new ControlDClient([
+        $client = app()->make(ControlDClient::class, ['config' => [
             'api_key' => ControlDConfig::get('api_key'),
-        ]);
+        ]]);
 
         $service = new ControlDDeviceSyncService($client);
 

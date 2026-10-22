@@ -1022,6 +1022,12 @@ class IntegrationsController extends Controller
 
     public function testNinja()
     {
+        // NinjaClient refuses while switched off, and isHealthy() reads that as
+        // false. Say so rather than letting it read as a credential problem.
+        if (! \App\Support\NinjaConfig::isEnabled()) {
+            return response()->json(['success' => false, 'message' => 'Integration is switched off. Turn it on to test the connection.']);
+        }
+
         $clientId = Setting::getValue('ninja_client_id');
         $clientSecret = Setting::getEncrypted('ninja_client_secret');
 
@@ -1071,6 +1077,12 @@ class IntegrationsController extends Controller
 
     public function testLevel()
     {
+        // This test builds its own Guzzle client rather than going through
+        // LevelClient, so it must refuse a switched-off integration itself.
+        if (! LevelConfig::isEnabled()) {
+            return response()->json(['success' => false, 'message' => 'Integration is switched off. Turn it on to test the connection.']);
+        }
+
         $apiKey = LevelConfig::get('api_key');
 
         if (! $apiKey) {
@@ -2483,6 +2495,11 @@ class IntegrationsController extends Controller
 
     public function testControlD()
     {
+        // Control D is gated at its call sites, not in its client (card YouDehkS).
+        if (! ControlDConfig::isEnabled()) {
+            return response()->json(['success' => false, 'message' => 'Integration is switched off. Turn it on to test the connection.']);
+        }
+
         if (! ControlDConfig::isConfigured()) {
             return response()->json(['success' => false, 'message' => 'API credentials not configured.']);
         }
@@ -2598,6 +2615,12 @@ class IntegrationsController extends Controller
 
     public function testZorus()
     {
+        // ZorusClient refuses while switched off, and isHealthy() reads that as
+        // false. Say so rather than reporting an API error.
+        if (! ZorusConfig::isEnabled()) {
+            return response()->json(['success' => false, 'message' => 'Integration is switched off. Turn it on to test the connection.']);
+        }
+
         if (! ZorusConfig::isConfigured()) {
             return response()->json(['success' => false, 'message' => 'API credentials not configured.']);
         }
