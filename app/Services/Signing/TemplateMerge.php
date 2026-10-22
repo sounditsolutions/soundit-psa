@@ -2,6 +2,8 @@
 
 namespace App\Services\Signing;
 
+use App\Enums\QuantityType;
+use App\Models\SignableDocument;
 use HTMLPurifier;
 use HTMLPurifier_Config;
 
@@ -17,18 +19,34 @@ class TemplateMerge
     }
 
     /** @return array{html:string,unknown_tokens:array} */
-    public function merge(string $body, array $values, array $lines): array
+    public function merge(string $body, array $values, SignableDocument $document): array
     {
         $body = $this->purify($body);
         $replacements = [];
         foreach (['client.name', 'contract.name', 'contract.type', 'today', 'signer.name'] as $field) {
             $replacements['{{'.$field.'}}'] = htmlspecialchars((string) ($values[$field] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         }
-        $table = '<table><thead><tr><th>Description</th><th>Quantity type</th><th>Quantity</th><th>Unit price</th></tr></thead><tbody>';
-        foreach ($lines as $line) {
+        $table = '<table><thead><tr><th>DRAFT — Description</th><th>DRAFT — Quantity basis</th><th>DRAFT — Quantity</th><th>DRAFT — Rate</th><th>DRAFT — Taxable</th><th>DRAFT — Option group</th><th>DRAFT — Term</th></tr></thead><tbody>';
+        foreach ($document->rendered_lines as $line) {
+            $basis = QuantityType::from($line['quantity_type']);
+            $tiers = $line['pricing_tiers'] ?? [];
+            $rate = (string) ($line['unit_price'] ?? '');
+            if ($tiers !== []) {
+                $bands = [];
+                foreach ($tiers as $tier) {
+                    $bands[] = 'DRAFT — Up to '.($tier['up_to'] ?? 'unlimited').': '.$tier['unit_price'];
+                }
+                $rate = implode('; ', $bands);
+            }
+            $cells = [
+                $line['description'], 'DRAFT — '.$basis->label(),
+                $basis === QuantityType::Fixed ? $line['fixed_quantity'] : 'DRAFT — variable',
+                $rate, 'DRAFT — '.(! empty($line['is_taxable']) ? 'Yes' : 'No'),
+                $line['option_group'] ?? '', $line['term'] ?? '',
+            ];
             $table .= '<tr>';
-            foreach (['description', 'quantity_type', 'fixed_quantity', 'unit_price'] as $key) {
-                $table .= '<td>'.htmlspecialchars((string) ($line[$key] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8').'</td>';
+            foreach ($cells as $cell) {
+                $table .= '<td>'.htmlspecialchars((string) $cell, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8').'</td>';
             }
             $table .= '</tr>';
         }
