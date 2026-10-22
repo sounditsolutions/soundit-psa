@@ -133,6 +133,30 @@ class SigningGenerateTest extends TestCase
         $this->assertTrue(version_compare(\Composer\InstalledVersions::getVersion('dompdf/dompdf'), '3.1.6', '>='));
     }
 
+    public function test_client_and_msp_snapshots_use_frozen_lines_and_spend_token(): void
+    {
+        $document = $this->generate();
+        $frozen = $document->rendered_lines;
+        $token = str_repeat('T', 48);
+        $document->update(['status' => 'sent', 'token_hash' => hash('sha256', $token), 'token_expires_at' => now()->addDays(14)]);
+        $this->contract->lines()->update(['unit_price' => '999.00']);
+        $this->template->update(['requires_countersign' => false, 'body' => 'DRAFT — Changed']);
+        $service = app(SigningService::class);
+        $service->view($token);
+        $service->sign($token, 'Alex Example', $document->pdf_sha256, '127.0.0.1', 'Synthetic agent');
+        $this->assertNull($document->fresh()->token_hash);
+        $this->assertSame('signed', $document->fresh()->status);
+        $this->assertFalse($document->fresh()->isFinal());
+        $admin = \App\Models\User::factory()->create(['role' => 'admin']);
+        $service->countersign($document, $admin, '127.0.0.1', 'Synthetic agent');
+        $this->assertTrue($document->fresh()->isFinal());
+        $this->assertCount(2, $document->snapshots);
+        foreach ($document->snapshots as $snapshot) {
+            $this->assertSame($frozen, $snapshot->lines);
+            $this->assertSame($document->rendered_lines_sha256, $snapshot->lines_sha256);
+        }
+    }
+
     public function test_insert_failure_removes_written_file_and_row(): void
     {
         SignableDocument::creating(fn () => throw new RuntimeException('synthetic_insert_failure'));
