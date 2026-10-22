@@ -164,12 +164,15 @@ class SigningService
                     'recipient_name' => $recipient['name'], 'recipient_email' => $recipient['email'],
                     'created_by' => auth()->id(),
                 ]);
-                $html = $this->merge->merge($template->body, [
+                $merged = $this->merge->merge($template->body, [
                     'client.name' => $contract->client->name, 'contract.name' => $contract->name,
                     'contract.type' => $contract->type->value, 'today' => now()->toDateString(),
                     'signer.name' => $recipient['name'],
-                ], $document)['html'];
-                $bytes = $this->renderer->render($html);
+                ], $document);
+                if ($merged['unknown_tokens'] !== []) {
+                    throw new RuntimeException('signing_unknown_merge_token');
+                }
+                $bytes = $this->renderer->render($merged['html']);
                 $document->pdf_sha256 = hash('sha256', $bytes);
                 $path = 'signing/'.Str::uuid().'-v'.$version.'.pdf';
                 $document->pdf_path = $path;

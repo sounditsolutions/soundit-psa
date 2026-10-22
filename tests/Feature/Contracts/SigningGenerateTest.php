@@ -235,9 +235,10 @@ class SigningGenerateTest extends TestCase
         $document = $this->generate();
         $token = str_repeat('L', 48);
         $document->update(['status' => 'sent', 'token_hash' => hash('sha256', $token), 'token_expires_at' => now()->addDay()]);
-        $path = storage_path('logs/signing-control.log');
-        file_put_contents($path, '');
-        config(['logging.default' => 'signing_control', 'logging.channels.signing_control' => ['driver' => 'single', 'path' => $path, 'level' => 'debug']]);
+        $path = config('logging.channels.single.path');
+        $this->assertSame(storage_path('logs/laravel.log'), $path);
+        $offset = is_file($path) ? filesize($path) : 0;
+        config(['logging.default' => 'single', 'logging.channels.single.level' => 'debug']);
         \Illuminate\Support\Facades\Log::debug('synthetic-positive-log-control');
         $records = [];
         \Illuminate\Support\Facades\Log::listen(function ($event) use (&$records): void {
@@ -247,10 +248,10 @@ class SigningGenerateTest extends TestCase
         $this->post('/sign/'.$token, ['typed_name' => 'Alex', 'pdf_sha256' => $document->pdf_sha256])->assertOk()->assertDontSee($token);
         $this->assertCount(0, $document->snapshots);
         $this->assertSame(hash('sha256', $token), $document->fresh()->token_hash);
-        $this->assertStringContainsString('synthetic-positive-log-control', file_get_contents($path));
-        $this->assertStringNotContainsString($token, file_get_contents($path));
+        $written = substr(file_get_contents($path), $offset);
+        $this->assertStringContainsString('synthetic-positive-log-control', $written);
+        $this->assertStringNotContainsString($token, $written);
         $this->assertStringNotContainsString($token, json_encode($records));
-        unlink($path);
     }
 
     public function test_send_hash_and_mail_failure_rollback(): void
@@ -366,15 +367,48 @@ class SigningGenerateTest extends TestCase
 
     public function test_generate_does_not_change_billing_tables(): void
     {
+        $db = \Illuminate\Support\Facades\DB::class;
+        $db::table('prepay_transactions')->insert(['contract_id' => $this->contract->id, 'halo_id' => 123, 'hours' => 2, 'created_at' => now(), 'updated_at' => now()]);
+        $db::table('invoices')->insert(['contract_id' => $this->contract->id, 'client_id' => $this->contract->client_id, 'invoice_number' => 'EXAMPLE-1', 'invoice_date' => '2026-01-01', 'due_date' => '2026-02-01', 'created_at' => now(), 'updated_at' => now()]);
+        $db::table('recurring_invoice_profiles')->insert(['contract_id' => $this->contract->id, 'name' => 'Example profile', 'next_run_date' => '2026-02-01', 'created_at' => now(), 'updated_at' => now()]);
+        foreach (['prepay_transactions', 'invoices', 'recurring_invoice_profiles'] as $seeded) {
+            $this->assertGreaterThan(0, $db::table($seeded)->count());
+        }
         $tables = ['invoices', 'invoice_lines', 'prepay_transactions', 'recurring_invoice_profiles', 'recurring_invoice_profile_lines'];
         $before = [];
         foreach ($tables as $table) {
             $before[$table] = \Illuminate\Support\Facades\DB::table($table)->get()->toJson();
         }
-        $this->generate();
+        $token = null;
+        $this->mock(\App\Services\EmailService::class)->shouldReceive('sendNew')->once()->andReturnUsing(function ($to, $subject, $body) use (&$token) {
+            preg_match('~/sign/([A-Za-z0-9]{48})~', $body, $matches);
+            $token = $matches[1];
+
+            return new \App\Models\Email;
+        });
+        $document = $this->generate();
+        $service = app(SigningService::class);
+        $service->send($document);
+        $service->sign($token, 'Alex Example', $document->pdf_sha256, '127.0.0.1', 'Example');
+        $admin = \App\Models\User::factory()->create(['role' => 'admin']);
+        $service->countersign($document, $admin, '127.0.0.1', 'Example');
+        $service->void($document);
         foreach ($tables as $table) {
             $this->assertSame($before[$table], \Illuminate\Support\Facades\DB::table($table)->get()->toJson(), $table);
         }
+    }
+
+    public function test_unknown_merge_token_refuses_before_file_or_insert(): void
+    {
+        $this->template->update(['body' => '<p>{{unsupported}}</p>']);
+        try {
+            $this->generate();
+            $this->fail('Unknown token accepted');
+        } catch (RuntimeException $error) {
+            $this->assertSame('signing_unknown_merge_token', $error->getMessage());
+        }
+        $this->assertDatabaseCount('signable_documents', 0);
+        $this->assertSame([], Storage::disk('local')->allFiles('signing'));
     }
 
     public function test_insert_failure_removes_written_file_and_row(): void
