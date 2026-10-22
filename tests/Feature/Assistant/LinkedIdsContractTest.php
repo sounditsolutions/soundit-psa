@@ -61,10 +61,25 @@ class LinkedIdsContractTest extends TestCase
         }
     }
 
+    public function test_only_top_level_columns_are_listed_without_truncating_after_nested_asides(): void
+    {
+        $list = self::linkedIdsList('linked_ids: every PSA, foreign-key and integration id on the device (id, client_id (see also synthetic_only_id (and synthetic_deep_id)), site_id, asset_id (see synthetic_other_id), ticket_id)', 'device');
+
+        foreach (['synthetic_only_id', 'synthetic_deep_id', 'synthetic_other_id'] as $column) {
+            $this->assertDoesNotMatchRegularExpression('/\\b'.preg_quote($column, '/').'\\b/', $list, "{$column} is mentioned only inside an aside, not listed");
+        }
+        foreach (['id', 'client_id', 'site_id', 'asset_id', 'ticket_id'] as $column) {
+            $this->assertMatchesRegularExpression('/\\b'.preg_quote($column, '/').'\\b/', $list, "{$column} is listed at the top level, including after nested asides");
+        }
+        $this->assertSame('id, client_id , site_id, asset_id , ticket_id', $list);
+    }
+
     /**
-     * The text inside the parentheses after "linked_ids: every PSA, foreign-key
-     * and integration id on the <subject> (", up to the parenthesis that closes
-     * that one: an aside in parentheses inside the list stays part of the list
+     * The list's top-level text after "linked_ids: every PSA, foreign-key and
+     * integration id on the <subject> (", with nested parenthesised asides
+     * removed, including their parentheses. A column named only inside an
+     * aside is mentioned, not listed (#7219). Balanced capture still ends at
+     * the list's own closing parenthesis: an aside does not end it early
      * (#7206). get_asset also names merged_into_asset_id and tactical_asset_id
      * in prose outside that list, so a whole-description match cannot tell a
      * listed column from a mentioned one.
@@ -74,7 +89,7 @@ class LinkedIdsContractTest extends TestCase
         $found = preg_match('/linked_ids: every PSA, foreign-key and integration id on the '.$subject.' \\(((?:[^()]++|\\((?1)\\))*)\\)/', $description, $m);
         self::assertSame(1, $found, "the description must introduce linked_ids with a parenthesised list for the {$subject}");
 
-        return $m[1];
+        return preg_replace('/\\((?:[^()]++|(?R))*\\)/', '', $m[1]);
     }
 
     /** The columns the contract governs, derived from the live schema. */
