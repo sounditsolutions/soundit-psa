@@ -14,6 +14,12 @@ class LevelSyncDevices extends Command
 
     public function handle(LevelSyncService $sync): int
     {
+        if (! \App\Support\LevelConfig::isEnabled()) {
+            $this->warn('Level integration is switched off (set level_enabled=1 to re-enable). Skipping.');
+
+            return self::SUCCESS;
+        }
+
         if ($clientId = $this->option('client')) {
             $client = Client::find($clientId);
             if (! $client) {

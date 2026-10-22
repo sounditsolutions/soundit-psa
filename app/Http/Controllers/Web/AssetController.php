@@ -33,6 +33,8 @@ use App\Services\Zorus\ZorusClient;
 use App\Services\Zorus\ZorusClientException;
 use App\Support\AiConfig;
 use App\Support\ControlDConfig;
+use App\Support\LevelConfig;
+use App\Support\NinjaConfig;
 use App\Support\ZorusConfig;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -114,9 +116,11 @@ class AssetController extends Controller
         $asset = Asset::withTrashed()->findOrFail($asset);
         $asset->load(['client', 'contracts', 'activeAlerts', 'users', 'tacticalAsset']);
 
-        // On-access full enrichment for Ninja-linked assets
+        // On-access full enrichment for Ninja-linked assets. While NinjaRMM is
+        // switched off the page renders from stored data only: NinjaClient would
+        // refuse anyway, but asking it would log a fetch failure on every view.
         $backupJobs = null;
-        if ($asset->ninja_id) {
+        if ($asset->ninja_id && NinjaConfig::isEnabled()) {
             try {
                 $ninjaSync->syncDeviceDetail($asset);
             } catch (\Throwable) {
@@ -130,10 +134,11 @@ class AssetController extends Controller
         if (! $asset->controld_device_id
             && $asset->client
             && $asset->client->controld_org_id
+            && ControlDConfig::isEnabled()
             && ControlDConfig::isConfigured()
         ) {
             try {
-                $cdClient = new ControlDClient(['api_key' => ControlDConfig::get('api_key')]);
+                $cdClient = app()->make(ControlDClient::class, ['config' => ['api_key' => ControlDConfig::get('api_key')]]);
                 $allDevices = $cdClient->getDevices($asset->client->controld_org_id);
 
                 // Filter out devices already linked to any asset
@@ -149,10 +154,11 @@ class AssetController extends Controller
         if (! $asset->zorus_endpoint_id
             && $asset->client
             && $asset->client->zorus_customer_id
+            && ZorusConfig::isEnabled()
             && ZorusConfig::isConfigured()
         ) {
             try {
-                $zorusClient = new ZorusClient(['api_key' => ZorusConfig::get('api_key')]);
+                $zorusClient = app()->make(ZorusClient::class, ['config' => ['api_key' => ZorusConfig::get('api_key')]]);
 
                 // Fetch all endpoints (customer filter is unreliable)
                 $allEndpoints = [];
@@ -536,8 +542,13 @@ class AssetController extends Controller
         }
 
         $sources = [];
+        $switchedOff = [];
 
-        if ($asset->ninja_id) {
+        // A switched-off RMM is skipped, not failed: the other linked RMM still
+        // refreshes, and the operator is told which one was not asked.
+        if ($asset->ninja_id && ! NinjaConfig::isEnabled()) {
+            $switchedOff[] = 'NinjaRMM';
+        } elseif ($asset->ninja_id) {
             try {
                 $ninjaSync->syncDeviceDetail($asset);
                 $sources[] = 'NinjaRMM';
@@ -547,7 +558,9 @@ class AssetController extends Controller
             }
         }
 
-        if ($asset->level_id) {
+        if ($asset->level_id && ! LevelConfig::isEnabled()) {
+            $switchedOff[] = 'Level';
+        } elseif ($asset->level_id) {
             try {
                 $levelSync->syncDeviceDetail($asset);
                 $sources[] = 'Level';
@@ -557,8 +570,20 @@ class AssetController extends Controller
             }
         }
 
-        return redirect()->route('assets.show', $asset)
+        $offMessage = $switchedOff === []
+            ? null
+            : implode(' and ', $switchedOff).(count($switchedOff) === 1 ? ' is' : ' are')
+                .' switched off, so '.(count($switchedOff) === 1 ? 'it was' : 'they were').' not refreshed.';
+
+        if ($sources === []) {
+            return redirect()->route('assets.show', $asset)
+                ->with('error', $offMessage);
+        }
+
+        $redirect = redirect()->route('assets.show', $asset)
             ->with('success', 'Device data refreshed from '.implode(' and ', $sources).'.');
+
+        return $offMessage === null ? $redirect : $redirect->with('error', $offMessage);
     }
 
     public function linkControlD(Request $request, Asset $asset)
@@ -569,6 +594,11 @@ class AssetController extends Controller
 
         $deviceId = $request->input('controld_device_id');
 
+        if (! ControlDConfig::isEnabled()) {
+            return redirect()->route('assets.show', $asset)
+                ->with('error', 'Control D is switched off. Turn it on in Settings > Integrations to link a device.');
+        }
+
         // Verify the asset's client has a Control D org mapping
         if (! $asset->client || ! $asset->client->controld_org_id) {
             return redirect()->route('assets.show', $asset)
@@ -577,7 +607,7 @@ class AssetController extends Controller
 
         // Verify the device exists in the client's sub-org
         try {
-            $cdClient = new ControlDClient(['api_key' => ControlDConfig::get('api_key')]);
+            $cdClient = app()->make(ControlDClient::class, ['config' => ['api_key' => ControlDConfig::get('api_key')]]);
             $devices = $cdClient->getDevices($asset->client->controld_org_id);
         } catch (ControlDClientException $e) {
             return redirect()->route('assets.show', $asset)
@@ -630,6 +660,10 @@ class AssetController extends Controller
             return response()->json(['error' => 'Client has no Control D organization'], 422);
         }
 
+        if (! ControlDConfig::isEnabled()) {
+            return response()->json(['error' => 'Control D is switched off'], 422);
+        }
+
         if (! ControlDConfig::isAnalyticsConfigured()) {
             return response()->json(['error' => 'Control D analytics not configured'], 422);
         }
@@ -680,6 +714,11 @@ class AssetController extends Controller
 
         $endpointId = $request->input('zorus_endpoint_id');
 
+        if (! ZorusConfig::isEnabled()) {
+            return redirect()->route('assets.show', $asset)
+                ->with('error', 'Zorus is switched off. Turn it on in Settings > Integrations to link an endpoint.');
+        }
+
         // Verify the asset's client has a Zorus customer mapping
         if (! $asset->client || ! $asset->client->zorus_customer_id) {
             return redirect()->route('assets.show', $asset)
@@ -688,7 +727,7 @@ class AssetController extends Controller
 
         // Verify the endpoint belongs to this client's Zorus customer (server-side ownership validation)
         try {
-            $zorusClient = new ZorusClient(['api_key' => ZorusConfig::get('api_key')]);
+            $zorusClient = app()->make(ZorusClient::class, ['config' => ['api_key' => ZorusConfig::get('api_key')]]);
 
             // Fetch all endpoints (customer filter is unreliable)
             $allEndpoints = [];
@@ -1563,6 +1602,12 @@ class AssetController extends Controller
 
     private function fetchNinjaDeviceData(Asset $asset, string $section): array
     {
+        // NinjaClient refuses while switched off; answer that here rather than
+        // with the generic retry message below, which would not be true.
+        if (! NinjaConfig::isEnabled()) {
+            return ['error' => 'NinjaRMM is switched off.'];
+        }
+
         $ninjaId = $asset->ninja_id;
         $ninja = app(NinjaClient::class);
 

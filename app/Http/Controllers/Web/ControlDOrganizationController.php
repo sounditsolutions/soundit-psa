@@ -14,15 +14,20 @@ class ControlDOrganizationController extends Controller
 {
     public function index()
     {
+        if (! ControlDConfig::isEnabled()) {
+            return redirect()->route('settings.integrations')
+                ->with('error', 'Control D is switched off. Turn it on in Settings > Integrations first.');
+        }
+
         if (! ControlDConfig::isConfigured()) {
             return redirect()->route('settings.integrations')
                 ->with('error', 'Control D is not configured. Add API credentials first.');
         }
 
         try {
-            $client = new ControlDClient([
+            $client = app()->make(ControlDClient::class, ['config' => [
                 'api_key' => ControlDConfig::get('api_key'),
-            ]);
+            ]]);
             $subOrgs = $client->getSubOrganizations();
         } catch (ControlDClientException $e) {
             return redirect()->route('settings.integrations')
@@ -75,15 +80,20 @@ class ControlDOrganizationController extends Controller
      */
     public function autoMatch()
     {
+        if (! ControlDConfig::isEnabled()) {
+            return redirect()->route('settings.integrations')
+                ->with('error', 'Control D is switched off. Turn it on in Settings > Integrations first.');
+        }
+
         if (! ControlDConfig::isConfigured()) {
             return redirect()->route('settings.integrations')
                 ->with('error', 'Control D is not configured.');
         }
 
         try {
-            $client = new ControlDClient([
+            $client = app()->make(ControlDClient::class, ['config' => [
                 'api_key' => ControlDConfig::get('api_key'),
-            ]);
+            ]]);
             $subOrgs = $client->getSubOrganizations();
         } catch (ControlDClientException $e) {
             return redirect()->route('settings.controld-orgs.index')

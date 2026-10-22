@@ -2,6 +2,7 @@
 
 namespace App\Services\Level;
 
+use App\Support\LevelConfig;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Support\Facades\Log;
@@ -14,6 +15,8 @@ class LevelClient
         private readonly array $config,
     ) {
         $this->http = new Client([
+            // Handler injection keeps wire-level tests off the live vendor.
+            'handler' => $this->config['handler'] ?? null,
             'base_uri' => rtrim($this->config['base_url'] ?? 'https://api.level.io', '/'),
             'timeout' => $this->config['request_timeout'] ?? 30,
         ]);
@@ -262,6 +265,13 @@ class LevelClient
      */
     private function request(string $method, string $endpoint, array $options = []): array
     {
+        // THE SWITCH-OFF CHOKE POINT (card YouDehkS): every Level call in this
+        // class goes through request(), so OFF is refused here before any
+        // request is built.
+        if (! LevelConfig::isEnabled()) {
+            throw new LevelClientException('Level integration is switched off');
+        }
+
         $apiKey = $this->config['api_key'] ?? null;
 
         if (! $apiKey) {

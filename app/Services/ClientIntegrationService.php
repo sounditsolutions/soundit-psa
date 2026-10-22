@@ -7,6 +7,7 @@ use App\Models\License;
 use App\Models\Setting;
 use App\Services\Cipp\CippClient;
 use App\Services\ControlD\ControlDClient;
+use App\Services\ControlD\ControlDClientException;
 use App\Services\ControlD\ControlDOrganizationMapping;
 use App\Services\Huntress\HuntressClient;
 use App\Services\Level\LevelClient;
@@ -383,9 +384,14 @@ class ClientIntegrationService
                 'licenseVendor' => 'controld',
                 'configCheck' => fn () => ControlDConfig::isConfigured(),
                 'fetchEntities' => function () {
-                    $client = new ControlDClient([
+                    // Control D is gated at its call sites, not in its client (card YouDehkS).
+                    if (! ControlDConfig::isEnabled()) {
+                        throw new ControlDClientException('Control D integration is switched off');
+                    }
+
+                    $client = app()->make(ControlDClient::class, ['config' => [
                         'api_key' => ControlDConfig::get('api_key'),
-                    ]);
+                    ]]);
 
                     return $client->getSubOrganizations();
                 },

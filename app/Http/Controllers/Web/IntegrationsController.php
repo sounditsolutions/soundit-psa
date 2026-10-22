@@ -1022,6 +1022,12 @@ class IntegrationsController extends Controller
 
     public function testNinja()
     {
+        // NinjaClient refuses while switched off, and isHealthy() reads that as
+        // false. Say so rather than letting it read as a credential problem.
+        if (! \App\Support\NinjaConfig::isEnabled()) {
+            return response()->json(['success' => false, 'message' => 'Integration is switched off. Turn it on to test the connection.']);
+        }
+
         $clientId = Setting::getValue('ninja_client_id');
         $clientSecret = Setting::getEncrypted('ninja_client_secret');
 
@@ -1071,6 +1077,12 @@ class IntegrationsController extends Controller
 
     public function testLevel()
     {
+        // This test builds its own Guzzle client rather than going through
+        // LevelClient, so it must refuse a switched-off integration itself.
+        if (! LevelConfig::isEnabled()) {
+            return response()->json(['success' => false, 'message' => 'Integration is switched off. Turn it on to test the connection.']);
+        }
+
         $apiKey = LevelConfig::get('api_key');
 
         if (! $apiKey) {
@@ -1078,7 +1090,7 @@ class IntegrationsController extends Controller
         }
 
         try {
-            $client = new GuzzleClient(['timeout' => 5]);
+            $client = app()->make(GuzzleClient::class, ['config' => ['timeout' => 5]]);
             $response = $client->get('https://api.level.io/v2/devices', [
                 'query' => ['limit' => 1],
                 'headers' => [
@@ -2483,14 +2495,19 @@ class IntegrationsController extends Controller
 
     public function testControlD()
     {
+        // Control D is gated at its call sites, not in its client (card YouDehkS).
+        if (! ControlDConfig::isEnabled()) {
+            return response()->json(['success' => false, 'message' => 'Integration is switched off. Turn it on to test the connection.']);
+        }
+
         if (! ControlDConfig::isConfigured()) {
             return response()->json(['success' => false, 'message' => 'API credentials not configured.']);
         }
 
         try {
-            $client = new \App\Services\ControlD\ControlDClient([
+            $client = app()->make(\App\Services\ControlD\ControlDClient::class, ['config' => [
                 'api_key' => ControlDConfig::get('api_key'),
-            ]);
+            ]]);
 
             if ($client->isHealthy()) {
                 Setting::setValue('controld_connected_at', now()->toDateTimeString());
@@ -2518,14 +2535,18 @@ class IntegrationsController extends Controller
 
     public function syncControlD()
     {
+        if (! ControlDConfig::isEnabled()) {
+            return back()->with('error', 'Control D is switched off.');
+        }
+
         if (! ControlDConfig::isConfigured()) {
             return back()->with('error', 'Control D is not configured.');
         }
 
         try {
-            $client = new \App\Services\ControlD\ControlDClient([
+            $client = app()->make(\App\Services\ControlD\ControlDClient::class, ['config' => [
                 'api_key' => ControlDConfig::get('api_key'),
-            ]);
+            ]]);
             $service = new \App\Services\ControlD\ControlDLicenseSyncService($client);
             $result = $service->syncLicenses();
 
@@ -2563,14 +2584,18 @@ class IntegrationsController extends Controller
 
     public function syncControlDDevices()
     {
+        if (! ControlDConfig::isEnabled()) {
+            return back()->with('error', 'Control D is switched off.');
+        }
+
         if (! ControlDConfig::isConfigured()) {
             return back()->with('error', 'Control D is not configured.');
         }
 
         try {
-            $client = new \App\Services\ControlD\ControlDClient([
+            $client = app()->make(\App\Services\ControlD\ControlDClient::class, ['config' => [
                 'api_key' => ControlDConfig::get('api_key'),
-            ]);
+            ]]);
             $service = new \App\Services\ControlD\ControlDDeviceSyncService($client);
             $result = $service->syncDevices();
 
@@ -2598,6 +2623,12 @@ class IntegrationsController extends Controller
 
     public function testZorus()
     {
+        // ZorusClient refuses while switched off, and isHealthy() reads that as
+        // false. Say so rather than reporting an API error.
+        if (! ZorusConfig::isEnabled()) {
+            return response()->json(['success' => false, 'message' => 'Integration is switched off. Turn it on to test the connection.']);
+        }
+
         if (! ZorusConfig::isConfigured()) {
             return response()->json(['success' => false, 'message' => 'API credentials not configured.']);
         }
