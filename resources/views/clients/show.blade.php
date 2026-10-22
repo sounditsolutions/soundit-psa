@@ -93,7 +93,7 @@
 
 @php
     $activeContracts = $client->contracts()->active()->withCount('profiles')->get();
-    if (!in_array($activeTab ?? '', ['tickets', 'assets', 'people', 'contracts', 'licenses'])) {
+    if (!in_array($activeTab ?? '', ['tickets', 'assets', 'people', 'contracts', 'licenses', 'billing'])) {
         // True open-ticket count for the badge (uncapped); $openTickets stays a 5-row preview.
         $openTicketsCount = $client->tickets()->open()->count();
         $openTickets = $client->tickets()->open()->with('categoryNode.parent.parent')->orderByDesc('updated_at')->limit(5)->get();
@@ -106,7 +106,7 @@
         $allRecent = collect();
     }
     $clientLicenses = ($activeTab ?? '') === 'licenses' ? collect() : $client->licenses()->with('licenseType')->where('status', 'active')->get();
-    $isTabOverride = in_array($activeTab ?? '', ['tickets', 'assets', 'people', 'contracts', 'licenses']);
+    $isTabOverride = in_array($activeTab ?? '', ['tickets', 'assets', 'people', 'contracts', 'licenses', 'billing']);
 @endphp
 
 <div class="row g-4">
@@ -200,6 +200,13 @@
                 @endif
             </li>
             @endif
+            <li class="nav-item" role="presentation">
+                @if(($activeTab ?? '') === 'billing')
+                    <button class="nav-link active" type="button">Billing</button>
+                @else
+                    <a class="nav-link" href="{{ route('clients.billing', $client) }}">Billing</a>
+                @endif
+            </li>
         </ul>
 
         <div class="tab-content">
@@ -936,6 +943,13 @@
                     </div>
                 @endif
             </div>
+
+            {{-- Billing Tab (read-only, card iNjqGETC): built only on clients.billing --}}
+            @if(($activeTab ?? '') === 'billing')
+            <div class="tab-pane fade show active" id="billing" role="tabpanel">
+                @include('clients._billing', ['billing' => $billing])
+            </div>
+            @endif
 
             {{-- #2010: a refused Control D Link/Unlink throws ValidationException keyed
                  `mappings`, and nothing on this page rendered it — the refusal then read as the
