@@ -274,6 +274,15 @@ class ClientBillingTabTest extends TestCase
         $tab = $this->tab($this->billing($client)->assertOk());
 
         $this->assertSame('$1,000,002.99', $this->figure($tab, 'outstanding'));
+
+        // The rendered figure rounds to 2 places and so hides float drift; the
+        // summed value itself must be the exact decimal string.
+        $other = $this->client();
+        for ($i = 0; $i < 30; $i++) {
+            $this->invoice($other, InvoiceStatus::Posted, '0.10', ['due_date' => '2026-12-31']);
+        }
+        $summary = app(\App\Services\ClientBillingSummary::class)->build($other);
+        $this->assertSame('3.00', $summary['invoices']['outstanding']);
     }
 
     // ── Overdue ─────────────────────────────────────────────────────────────
