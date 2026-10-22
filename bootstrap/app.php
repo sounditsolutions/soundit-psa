@@ -18,6 +18,7 @@ return Application::configure(basePath: dirname(__DIR__))
         },
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->prepend(\App\Http\Middleware\SigningResponseHeaders::class);
         $middleware->trustProxies(at: '127.0.0.1');
         $middleware->web(append: [
             \App\Http\Middleware\CheckStorageHealth::class,

@@ -127,7 +127,23 @@ if (app()->environment('local')) {
 }
 
 // Authenticated routes
+// Public signing routes run without session middleware: StartSession would store the token URL
+// as _previous.url. A cross-site form cannot post here without the 48-char token, so CSRF adds nothing.
+Route::match(['get', 'post'], '/sign/{token}', [\App\Http\Controllers\Web\SigningController::class, 'publicPage'])
+    ->where('token', '[A-Za-z0-9]{48}')->middleware('throttle:30,1')->name('signing.public')
+    ->withoutMiddleware([\Illuminate\Session\Middleware\StartSession::class, \Illuminate\View\Middleware\ShareErrorsFromSession::class, \Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class]);
+Route::get('/sign/{token}/pdf', [\App\Http\Controllers\Web\SigningController::class, 'pdf'])
+    ->where('token', '[A-Za-z0-9]{48}')->middleware('throttle:30,1')->name('signing.pdf')
+    ->withoutMiddleware([\Illuminate\Session\Middleware\StartSession::class, \Illuminate\View\Middleware\ShareErrorsFromSession::class, \Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class]);
+
 Route::middleware('auth')->group(function () {
+    Route::middleware('admin')->group(function () {
+        Route::post('/contracts/{contract}/signing/generate', [\App\Http\Controllers\Web\SigningController::class, 'generate'])->name('signing.generate');
+        Route::post('/contracts/{contract}/signing/{document}/{action}', [\App\Http\Controllers\Web\SigningController::class, 'action'])
+            ->where('action', 'send|void|countersign')->name('signing.action');
+        Route::get('/contracts/{contract}/signing/{document}/download', [\App\Http\Controllers\Web\SigningController::class, 'action'])
+            ->defaults('action', 'download')->name('signing.download');
+    });
     Route::get('/contact-intake', [\App\Http\Controllers\Web\ContactIntakeController::class, 'index'])->name('contact-intake.index');
     Route::get('/contact-intake/{id}', [\App\Http\Controllers\Web\ContactIntakeController::class, 'show'])->name('contact-intake.show');
     Route::post('/contact-intake/{id}/action', [\App\Http\Controllers\Web\ContactIntakeController::class, 'act'])->name('contact-intake.act');

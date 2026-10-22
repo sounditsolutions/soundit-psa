@@ -2371,7 +2371,7 @@ PROMPT;
     /**
      * Send a new email (not a reply) via Graph API.
      */
-    public function sendNew(string $to, string $subject, string $bodyText, ?string $toName = null, ?array $cc = null, ?int $userId = null): Email
+    public function sendNew(string $to, string $subject, string $bodyText, ?string $toName = null, ?array $cc = null, ?int $userId = null, array $redact = []): Email
     {
         $mailbox = Setting::getValue('graph_mailbox');
         if (! $mailbox) {
@@ -2409,9 +2409,9 @@ PROMPT;
             'to_recipients' => [['name' => $toName, 'address' => strtolower(trim($to))]],
             'cc_recipients' => $cc ? array_map(fn ($a) => ['address' => strtolower(trim($a))], $cc) : null,
             'subject' => $subject,
-            'body_preview' => mb_substr($bodyText, 0, 500),
-            'body_text' => $bodyText,
-            'body_html' => $bodyHtml,
+            'body_preview' => mb_substr(str_replace($redact, '[signing link]', $bodyText), 0, 500),
+            'body_text' => str_replace($redact, '[signing link]', $bodyText),
+            'body_html' => str_replace($redact, '[signing link]', $bodyHtml),
             'conversation_id' => null,
             'internet_message_id' => null,
             'in_reply_to' => null,
