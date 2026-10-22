@@ -474,8 +474,9 @@ class ContractC14Test extends TestCase
      * unwrapped; other nested/grouped keys remain conservatively bulk writes.
      * The first top-level ticket id = ?, IN placeholders or IN digits selects
      * the relevant bindings; numeric equality includes floats/padded strings and
-     * PDO's bool-to-int conversion. Non-key predicates remain bulk, including
-     * empty whereIn. SET subqueries and other tables' ids never supply the key.
+     * Laravel's Connection::prepareBindings() bool-to-int conversion. Non-key
+     * predicates remain bulk, including empty whereIn. SET subqueries and other
+     * tables' ids never supply the key.
      */
     private function h15WritesContract(string $sql, array $bindings, int $ticketId): bool
     {
