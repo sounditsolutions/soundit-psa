@@ -2505,9 +2505,9 @@ class IntegrationsController extends Controller
         }
 
         try {
-            $client = new \App\Services\ControlD\ControlDClient([
+            $client = app()->make(\App\Services\ControlD\ControlDClient::class, ['config' => [
                 'api_key' => ControlDConfig::get('api_key'),
-            ]);
+            ]]);
 
             if ($client->isHealthy()) {
                 Setting::setValue('controld_connected_at', now()->toDateTimeString());
@@ -2535,14 +2535,18 @@ class IntegrationsController extends Controller
 
     public function syncControlD()
     {
+        if (! ControlDConfig::isEnabled()) {
+            return back()->with('error', 'Control D is switched off.');
+        }
+
         if (! ControlDConfig::isConfigured()) {
             return back()->with('error', 'Control D is not configured.');
         }
 
         try {
-            $client = new \App\Services\ControlD\ControlDClient([
+            $client = app()->make(\App\Services\ControlD\ControlDClient::class, ['config' => [
                 'api_key' => ControlDConfig::get('api_key'),
-            ]);
+            ]]);
             $service = new \App\Services\ControlD\ControlDLicenseSyncService($client);
             $result = $service->syncLicenses();
 
@@ -2580,14 +2584,18 @@ class IntegrationsController extends Controller
 
     public function syncControlDDevices()
     {
+        if (! ControlDConfig::isEnabled()) {
+            return back()->with('error', 'Control D is switched off.');
+        }
+
         if (! ControlDConfig::isConfigured()) {
             return back()->with('error', 'Control D is not configured.');
         }
 
         try {
-            $client = new \App\Services\ControlD\ControlDClient([
+            $client = app()->make(\App\Services\ControlD\ControlDClient::class, ['config' => [
                 'api_key' => ControlDConfig::get('api_key'),
-            ]);
+            ]]);
             $service = new \App\Services\ControlD\ControlDDeviceSyncService($client);
             $result = $service->syncDevices();
 

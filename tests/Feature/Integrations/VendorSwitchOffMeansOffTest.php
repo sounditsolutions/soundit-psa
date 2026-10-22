@@ -580,6 +580,135 @@ class VendorSwitchOffMeansOffTest extends TestCase
     }
 
     // ---------------------------------------------------------------
+    // Other Control D callers (Jeeves 10/22: every ControlDClient caller
+    // is gated while the gate is not in the client)
+    // ---------------------------------------------------------------
+
+    /** @return array<string, array{0: string, 1: string, 2: string}> method, route, expected flash */
+    public static function controlDSettingsActions(): array
+    {
+        $orgs = 'Control D is switched off. Turn it on in Settings > Integrations first.';
+
+        return [
+            'organization mapping page' => ['get', 'settings.controld-orgs.index', $orgs],
+            'organization auto-match' => ['get', 'settings.controld-orgs.auto-match', $orgs],
+            'Sync licenses button' => ['post', 'settings.integrations.controld.sync', 'Control D is switched off.'],
+            'Sync devices button' => ['post', 'settings.integrations.controld.sync-devices', 'Control D is switched off.'],
+        ];
+    }
+
+    #[DataProvider('controlDSettingsActions')]
+    public function test_controld_settings_action_is_refused_without_building_a_client_when_switched_off(string $method, string $route, string $flash): void
+    {
+        $this->configureAll();
+        $this->mapEveryVendor();
+        $this->switch('controld', false);
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->from(route('settings.integrations'))
+            ->{$method}(route($route))
+            ->assertRedirect()
+            ->assertSessionHas('error', $flash);
+
+        $this->assertSame(0, $this->built['controld']);
+        $this->assertCount(0, $this->history['controld']);
+    }
+
+    #[DataProvider('controlDSettingsActions')]
+    public function test_controld_settings_action_positive_control_calls_the_vendor_when_switched_on(string $method, string $route, string $flash): void
+    {
+        $this->configureAll();
+        $this->mapEveryVendor();
+        $this->switch('controld', true);
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->from(route('settings.integrations'))
+            ->{$method}(route($route));
+
+        $this->assertGreaterThan(0, count($this->history['controld']));
+    }
+
+    public function test_client_page_controld_entity_list_makes_no_request_when_switched_off(): void
+    {
+        $this->configureAll();
+        $this->switch('controld', false);
+        $client = Client::factory()->create();
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->getJson(route('clients.integrations.entities', [$client, 'controld']))
+            ->assertStatus(502);
+
+        $this->assertSame(0, $this->built['controld']);
+        $this->assertCount(0, $this->history['controld']);
+    }
+
+    public function test_client_page_controld_entity_list_positive_control_calls_the_vendor_when_switched_on(): void
+    {
+        $this->configureAll();
+        $this->switch('controld', true);
+        $client = Client::factory()->create();
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->getJson(route('clients.integrations.entities', [$client, 'controld']))
+            ->assertOk();
+
+        $this->assertCount(1, $this->history['controld']);
+    }
+
+    /** @return array<string, array{0: string, 1: array}> tool, input */
+    public static function controlDTriageTools(): array
+    {
+        return [
+            'controld_get_devices' => ['controld_get_devices', []],
+            'controld_dns_queries' => ['controld_dns_queries', ['device_name' => 'HOST-0001']],
+        ];
+    }
+
+    #[DataProvider('controlDTriageTools')]
+    public function test_triage_controld_tool_refuses_without_a_request_when_switched_off(string $tool, array $input): void
+    {
+        $this->configureAll();
+        Setting::setValue('controld_stats_endpoint', 'fixture');
+        $this->switch('controld', false);
+        $client = Client::factory()->create(['controld_org_id' => 'fixture-org']);
+        $ticket = \App\Models\Ticket::factory()->create(['client_id' => $client->id]);
+
+        $result = (new \App\Services\Triage\TriageToolExecutor($ticket))->execute($tool, $input);
+
+        $this->assertSame(['error' => 'Control D is switched off'], $result);
+        $this->assertSame(0, $this->built['controld']);
+    }
+
+    public function test_triage_controld_get_devices_positive_control_calls_the_vendor_when_switched_on(): void
+    {
+        $this->configureAll();
+        $this->switch('controld', true);
+        $client = Client::factory()->create(['controld_org_id' => 'fixture-org']);
+        $ticket = \App\Models\Ticket::factory()->create(['client_id' => $client->id]);
+
+        (new \App\Services\Triage\TriageToolExecutor($ticket))->execute('controld_get_devices', []);
+
+        $this->assertCount(1, $this->history['controld']);
+    }
+
+    public function test_triage_controld_dns_queries_positive_control_passes_the_switch_when_switched_on(): void
+    {
+        // ControlDAnalyticsClient is built with `new` (no seam), so this
+        // control must stop before it: with the switch on and a client with no
+        // Control D org, the tool reaches its next refusal, which makes no
+        // request. The refusal above therefore came from the switch.
+        $this->configureAll();
+        Setting::setValue('controld_stats_endpoint', 'fixture');
+        $this->switch('controld', true);
+        $ticket = \App\Models\Ticket::factory()->create(['client_id' => Client::factory()->create()->id]);
+
+        $result = (new \App\Services\Triage\TriageToolExecutor($ticket))
+            ->execute('controld_dns_queries', ['device_name' => 'HOST-0001']);
+
+        $this->assertSame(['error' => 'Client has no Control D organization mapping'], $result);
+    }
+
+    // ---------------------------------------------------------------
     // Schedules
     // ---------------------------------------------------------------
 

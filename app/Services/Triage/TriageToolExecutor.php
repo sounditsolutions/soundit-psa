@@ -809,6 +809,11 @@ class TriageToolExecutor
 
     private function controldGetDevices(): array
     {
+        // Control D is gated at its call sites, not in its client (card YouDehkS).
+        if (! ControlDConfig::isEnabled()) {
+            return ['error' => 'Control D is switched off'];
+        }
+
         $orgId = $this->ticket->client?->controld_org_id;
 
         if (! $orgId) {
@@ -816,7 +821,7 @@ class TriageToolExecutor
         }
 
         try {
-            $client = new ControlDClient(['api_key' => ControlDConfig::get('api_key')]);
+            $client = app()->make(ControlDClient::class, ['config' => ['api_key' => ControlDConfig::get('api_key')]]);
             $devices = $client->getDevices($orgId);
         } catch (\Throwable $e) {
             Log::warning('[Triage] Control D device query failed', ['error' => $e->getMessage()]);
@@ -844,6 +849,10 @@ class TriageToolExecutor
 
     private function controldDnsQueries(array $input): array
     {
+        if (! ControlDConfig::isEnabled()) {
+            return ['error' => 'Control D is switched off'];
+        }
+
         if (! ControlDConfig::isAnalyticsConfigured()) {
             return ['error' => 'Control D analytics is not configured'];
         }
