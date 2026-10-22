@@ -301,7 +301,7 @@
                         @endforelse
                     </tbody>
                 </table>
-                <p class="small text-muted mb-0 px-2 py-1">Approved payments only; declined, voided and refunded transactions are not listed.</p>
+                <p class="small text-muted mb-0 px-2 py-1">Payments with approved status only; declined and void-pending payments and refund or void entries are not listed. A later refund or void of a listed payment is not checked here.</p>
             </div>
         </div>
     @endif

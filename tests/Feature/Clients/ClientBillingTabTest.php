@@ -652,7 +652,8 @@ class ClientBillingTabTest extends TestCase
         foreach (['INV-SYN-DECLINED', 'INV-SYN-REFUND', 'INV-SYN-VOIDING', '$333.00', '$444.00', '$555.00'] as $hidden) {
             $this->assertStringNotContainsString($hidden, $tab);
         }
-        $this->assertStringContainsString('Approved payments only; declined, voided and refunded transactions are not listed.', $tab);
+        $this->assertStringContainsString('Payments with approved status only; declined and void-pending payments and refund or void entries are not listed. A later refund or void of a listed payment is not checked here.', $tab);
+        $this->assertStringNotContainsString('voided and refunded transactions are not listed', $tab);
     }
 
     public function test_the_billing_tab_contains_no_write_form(): void

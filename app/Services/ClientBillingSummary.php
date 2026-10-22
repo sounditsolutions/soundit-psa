@@ -315,8 +315,10 @@ class ClientBillingSummary
             $result = [
                 'ok' => true,
                 'methods' => $methods['rows'],
-                // Only approved payments are listed; a declined, voided, void-pending or
-                // refunded transaction is not a payment.
+                // Only payment-type rows with approved status are listed: declined and
+                // void-pending rows and refund/void rows are left out. The projection drops
+                // the voided flag and refund/void blocks, so a later refund or void of a
+                // listed payment is not detected here.
                 'payments' => array_values(array_filter($payments['rows'], fn (array $r) => $r['type'] === 'payment'
                     && $r['approved'] === true && $r['status'] === 'approved')),
                 'read_at' => now('UTC')->toIso8601String(),
