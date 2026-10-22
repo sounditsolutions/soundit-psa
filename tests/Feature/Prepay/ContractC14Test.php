@@ -28,14 +28,18 @@ class ContractC14Test extends TestCase
         $spy = $this->h11ResolverSpy();
         $queries = 0;
         $clientQueries = 0;
+        $entryClientQueries = 0;
         $counting = false;
-        DB::listen(function ($query) use (&$queries, &$clientQueries, &$counting, $spy) {
+        DB::listen(function ($query) use (&$queries, &$clientQueries, &$entryClientQueries, &$counting, $spy) {
             if ($counting && preg_match('/^select .* from [`"]contracts[`"]/i', $query->sql)) {
                 $queries++;
             }
-            // Exclude controller eager loads: only reads inside the real forEntry() count.
-            if ($counting && $spy->entryDepth > 0 && preg_match('/^select .* from [`"]clients[`"]/i', $query->sql)) {
+            if ($counting && preg_match('/^select .* from [`"]clients[`"]/i', $query->sql)) {
                 $clientQueries++;
+                // Separate count that excludes controller eager loads: only reads inside the real forEntry().
+                if ($spy->entryDepth > 0) {
+                    $entryClientQueries++;
+                }
             }
         });
         $this->actingAs($user);
@@ -44,18 +48,22 @@ class ContractC14Test extends TestCase
         $counting = false;
         $one = $queries;
         $oneClients = $clientQueries;
+        $oneEntryClients = $entryClientQueries;
         $this->assertGreaterThan(0, $one);
         $this->assertGreaterThan(0, $oneClients);
+        $this->assertGreaterThan(0, $oneEntryClients, 'H4-1: forEntry() itself must select clients on the page');
         $this->h4HeldNote($ticket, $user);
         $this->h4HeldNote($ticket, $user);
         $this->assertSame(3, $ticket->notes()->whereNotNull('contract_held_at')->count());
         $queries = 0;
         $clientQueries = 0;
+        $entryClientQueries = 0;
         $counting = true;
         $this->get(route('tickets.show', $ticket))->assertOk();
         $counting = false;
         $this->assertSame($one, $queries, 'H4-1: three held notes must select contracts exactly as often as one held note');
         $this->assertSame($oneClients, $clientQueries, 'H4-1: three held notes must select clients exactly as often as one held note');
+        $this->assertSame($oneEntryClients, $entryClientQueries, 'H4-1: three held notes must select clients inside forEntry() exactly as often as one held note');
     }
 
     public function test_h4_2_held_badge_text_pins_ambiguous_and_single_contract(): void
