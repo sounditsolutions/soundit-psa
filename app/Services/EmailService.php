@@ -242,9 +242,10 @@ class EmailService
                     }
                 } catch (\Throwable $e) {
                     $failedGraphIds[] = $graphId ?? 'unknown';
-                    // Every failure needs its own retry window. Recording only the oldest
+                    // Every pass-1 failure needs its own retry window. Recording only the oldest
                     // means that once the oldest is dropped the cursor advances past every
                     // other failure in the page, including ones that have failed just once.
+                    // Pass-2 failures stay out of this clamp: pass 2 never moves the cursor.
                     if ($pass === 1 && isset($msg['receivedDateTime'])) {
                         $failures[] = [
                             'graph_id' => $graphId ?? 'unknown',

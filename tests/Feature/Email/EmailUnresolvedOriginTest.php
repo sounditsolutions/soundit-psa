@@ -386,6 +386,7 @@ class EmailUnresolvedOriginTest extends TestCase
         $graph = Mockery::mock(GraphClient::class);
         $graph->shouldReceive('getMailboxMessages')->andReturn(
             [$this->message('floor-poison', 240), $this->message('floor-old', 200), $this->message('floor-recent', 1)],
+            [],
             [$this->message('floor-fresh')],
         );
         $this->app->instance(GraphClient::class, $graph);

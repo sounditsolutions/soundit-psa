@@ -152,7 +152,7 @@ class EmailPollModifiedPassTest extends TestCase
         $this->assertSame($message['receivedDateTime'], Setting::getValue('graph_last_poll_at'));
     }
 
-    public function test_e_modified_pass_cannot_advance_or_rewind_cursor(): void
+    public function test_e_modified_pass_cannot_advance_cursor(): void
     {
         $first = $this->message('first', '2026-10-20T13:00:00+00:00');
         $result = $this->service([$first], [$this->message('later', '2026-10-21T13:00:00+00:00')])->pollMailbox();
