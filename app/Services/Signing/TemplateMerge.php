@@ -18,7 +18,7 @@ class TemplateMerge
         return (new HTMLPurifier($config))->purify($body);
     }
 
-    /** @return array{html:string,unknown_tokens:array} */
+    /** @return array{html:string,unknown_tokens:array,lines_table:bool} */
     public function merge(string $body, array $values, SignableDocument $document): array
     {
         $body = $this->purify($body);
@@ -56,6 +56,7 @@ class TemplateMerge
         return [
             'html' => strtr($body, $replacements),
             'unknown_tokens' => array_values(array_diff(array_unique($matches[0]), array_keys($replacements))),
+            'lines_table' => str_contains($body, '{{lines_table}}'),
         ];
     }
 }

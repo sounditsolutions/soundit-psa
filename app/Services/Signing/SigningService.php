@@ -181,6 +181,9 @@ class SigningService
                 if ($merged['unknown_tokens'] !== []) {
                     throw new RuntimeException('signing_unknown_merge_token');
                 }
+                if (! $merged['lines_table']) {
+                    throw new RuntimeException('signing_lines_table_missing');
+                }
                 $bytes = $this->renderer->render($merged['html']);
                 $document->pdf_sha256 = hash('sha256', $bytes);
                 $path = 'signing/'.Str::uuid().'-v'.$version.'.pdf';
@@ -190,8 +193,9 @@ class SigningService
                 }
                 $document->save();
                 SignableDocument::where('contract_id', $contract->id)->where('kind', 'agreement')
-                    ->where('id', '!=', $document->id)->whereIn('status', ['draft', 'sent', 'viewed'])
-                    ->update(['status' => 'void', 'voided_at' => now(), 'token_hash' => null, 'token_expires_at' => null]);
+                    ->where('id', '!=', $document->id)->lockForUpdate()->get()
+                    ->filter(fn (SignableDocument $previous) => $previous->isVoidable())
+                    ->each(fn (SignableDocument $previous) => $previous->update(['status' => 'void', 'voided_at' => now(), 'token_hash' => null, 'token_expires_at' => null]));
 
                 return $document;
             });

@@ -467,7 +467,7 @@ class SigningGenerateTest extends TestCase
     public function test_staff_refusals_redirect_with_their_named_error_instead_of_a_server_error(): void
     {
         $admin = \App\Models\User::factory()->create(['role' => 'admin']);
-        $form = ['template_id' => $this->template->id, 'name' => 'Alex Example', 'email' => 'alex@example.test'];
+        $form = ['template_id' => $this->template->id, 'recipient_name' => 'Alex Example', 'recipient_email' => 'alex@example.test'];
         $this->template->update(['signing_steps' => 2]);
         $this->actingAs($admin)->post(route('signing.generate', $this->contract), $form)
             ->assertStatus(409)->assertSee('signing_multistep_unsupported');
@@ -508,5 +508,88 @@ class SigningGenerateTest extends TestCase
         $this->get('/sign/'.$token.'/pdf')->assertOk();
         $this->assertContains(['signing_request_refused', ['exception_class' => RuntimeException::class]], $records);
         $this->assertStringNotContainsString($token, json_encode($records));
+    }
+
+    public function test_template_without_lines_table_refuses_before_file_or_insert(): void
+    {
+        $this->template->update(['body' => '<h1>DRAFT — Agreement</h1><p>{{client.name}}</p>']);
+        try {
+            $this->generate();
+            $this->fail('Template without a rate card accepted');
+        } catch (RuntimeException $error) {
+            $this->assertSame('signing_lines_table_missing', $error->getMessage());
+        }
+        $this->assertDatabaseCount('signable_documents', 0);
+        $this->assertSame([], Storage::disk('local')->allFiles('signing'));
+        $this->template->update(['body' => '<h1>DRAFT — Agreement</h1>{{lines_table}}']);
+        $this->assertStringContainsString('Example support', Storage::disk('local')->get($this->generate()->pdf_path));
+    }
+
+    public function test_new_version_voids_a_signed_version_awaiting_countersign_but_not_a_final_one(): void
+    {
+        $service = app(SigningService::class);
+        $admin = \App\Models\User::factory()->create(['role' => 'admin']);
+        $this->template->update(['requires_countersign' => false]);
+        $final = $this->generate();
+        $final->update(['status' => 'signed']);
+        $this->template->update(['requires_countersign' => true]);
+        $awaiting = $this->generate();
+        $token = str_repeat('W', 48);
+        $awaiting->update(['status' => 'sent', 'token_hash' => hash('sha256', $token), 'token_expires_at' => now()->addDay()]);
+        $service->sign($token, 'Alex Example', $awaiting->pdf_sha256, '127.0.0.1', 'Synthetic agent');
+        $this->assertSame('signed', $awaiting->fresh()->status);
+        $this->actingAs($admin)->get(route('contracts.show', $this->contract))->assertOk()
+            ->assertSee(route('signing.action', [$this->contract, $awaiting, 'countersign']), false);
+        $next = $this->generate();
+        $this->assertSame('void', $awaiting->fresh()->status);
+        $this->assertNotNull($awaiting->fresh()->voided_at);
+        $this->assertSame('signed', $final->fresh()->status);
+        $this->assertNull($final->fresh()->voided_at);
+        $this->assertSame('draft', $next->fresh()->status);
+        try {
+            $service->countersign($awaiting, $admin, '127.0.0.1', 'Synthetic agent');
+            $this->fail('Superseded version countersigned');
+        } catch (RuntimeException $error) {
+            $this->assertSame('signing_countersign_unavailable', $error->getMessage());
+        }
+        $this->assertCount(1, $awaiting->fresh()->snapshots);
+        $this->actingAs($admin)->get(route('contracts.show', $this->contract))->assertOk()
+            ->assertDontSee(route('signing.action', [$this->contract, $awaiting, 'countersign']), false)
+            ->assertDontSee(route('signing.download', [$this->contract, $awaiting]), false);
+    }
+
+    public function test_public_signing_routes_keep_the_token_out_of_the_session_store(): void
+    {
+        $document = $this->generate();
+        $token = str_repeat('S', 48);
+        $document->update(['status' => 'sent', 'token_hash' => hash('sha256', $token), 'token_expires_at' => now()->addDay()]);
+        $admin = \App\Models\User::factory()->create(['role' => 'admin']);
+        $show = route('contracts.show', $this->contract);
+        $this->actingAs($admin)->get($show)->assertOk();
+        $this->assertSame($show, session()->previousUrl(), 'Session URL detector positive control');
+        $this->get('/sign/'.$token)->assertOk()->assertSee('DRAFT — Review and sign');
+        $this->get('/sign/'.$token.'/pdf')->assertOk();
+        $this->get('/sign/'.str_repeat('Z', 48))->assertOk()->assertSee('DRAFT — Link unavailable');
+        $this->assertSame($show, session()->previousUrl());
+        $this->assertStringNotContainsString($token, json_encode(session()->all()));
+        $this->post('/sign/'.$token, ['typed_name' => 'Alex Example', 'pdf_sha256' => $document->pdf_sha256])
+            ->assertOk()->assertSee('DRAFT — Signature recorded');
+        $this->assertStringNotContainsString($token, json_encode(session()->all()));
+        foreach (['signing.public', 'signing.pdf'] as $name) {
+            $middleware = app('router')->gatherRouteMiddleware(app('router')->getRoutes()->getByName($name));
+            $this->assertNotContains(\Illuminate\Session\Middleware\StartSession::class, $middleware);
+        }
+    }
+
+    public function test_generate_validation_failure_never_prefills_the_contract_name_with_the_recipient(): void
+    {
+        $admin = \App\Models\User::factory()->create(['role' => 'admin']);
+        $show = route('contracts.show', $this->contract);
+        $this->actingAs($admin)->from($show)->post(route('signing.generate', $this->contract), [
+            'template_id' => $this->template->id, 'recipient_name' => 'Alex Recipient', 'recipient_email' => 'not-an-email',
+        ])->assertRedirect($show)->assertSessionHasErrors('recipient_email');
+        $this->assertNull(session()->getOldInput('name'));
+        $this->get($show)->assertOk()->assertSee('value="Example agreement"', false)->assertDontSee('value="Alex Recipient"', false);
+        $this->assertDatabaseCount('signable_documents', 0);
     }
 }

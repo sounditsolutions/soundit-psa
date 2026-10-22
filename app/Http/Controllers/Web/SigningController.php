@@ -20,6 +20,7 @@ class SigningController extends Controller
         'signing_line_price_missing' => 'A contract line has neither a unit price nor tiers.',
         'signing_line_price_inherited' => 'A backup storage line is priced by its SKU volume tiers, which agreements cannot show yet.',
         'signing_unknown_merge_token' => 'The template contains a merge field that is not supported.',
+        'signing_lines_table_missing' => 'The template does not include the {{lines_table}} rate card.',
         'signing_pdf_write_failed' => 'The PDF could not be stored.',
         'signing_send_unavailable' => 'This document cannot be sent in its current state.',
         'signing_mail_failed' => 'The email send failed; the document stays a draft and its link was cancelled.',
@@ -89,9 +90,9 @@ class SigningController extends Controller
     public function generate(Request $request, Contract $contract, SigningService $service)
     {
         abort_unless(config('signing.enabled'), 404);
-        $data = $request->validate(['template_id' => 'required|integer', 'name' => 'required|string|max:255', 'email' => 'required|email|max:255']);
+        $data = $request->validate(['template_id' => 'required|integer', 'recipient_name' => 'required|string|max:255', 'recipient_email' => 'required|email|max:255']);
         try {
-            $service->generate($contract, AgreementTemplate::findOrFail($data['template_id']), $data);
+            $service->generate($contract, AgreementTemplate::findOrFail($data['template_id']), ['name' => $data['recipient_name'], 'email' => $data['recipient_email']]);
         } catch (RuntimeException $error) {
             return $this->refused($contract, $error);
         }

@@ -127,10 +127,14 @@ if (app()->environment('local')) {
 }
 
 // Authenticated routes
+// Public signing routes run without session middleware: StartSession would store the token URL
+// as _previous.url. A cross-site form cannot post here without the 48-char token, so CSRF adds nothing.
 Route::match(['get', 'post'], '/sign/{token}', [\App\Http\Controllers\Web\SigningController::class, 'publicPage'])
-    ->where('token', '[A-Za-z0-9]{48}')->middleware('throttle:30,1')->name('signing.public');
+    ->where('token', '[A-Za-z0-9]{48}')->middleware('throttle:30,1')->name('signing.public')
+    ->withoutMiddleware([\Illuminate\Session\Middleware\StartSession::class, \Illuminate\View\Middleware\ShareErrorsFromSession::class, \Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class]);
 Route::get('/sign/{token}/pdf', [\App\Http\Controllers\Web\SigningController::class, 'pdf'])
-    ->where('token', '[A-Za-z0-9]{48}')->middleware('throttle:30,1')->name('signing.pdf');
+    ->where('token', '[A-Za-z0-9]{48}')->middleware('throttle:30,1')->name('signing.pdf')
+    ->withoutMiddleware([\Illuminate\Session\Middleware\StartSession::class, \Illuminate\View\Middleware\ShareErrorsFromSession::class, \Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class]);
 
 Route::middleware('auth')->group(function () {
     Route::middleware('admin')->group(function () {

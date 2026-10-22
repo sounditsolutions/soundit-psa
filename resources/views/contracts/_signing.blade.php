@@ -13,8 +13,10 @@
                     <option value="{{ $template->id }}">{{ $template->name }}</option>
                 @endforeach
             </select></label>
-            <label>Recipient name <input name="name" required maxlength="255"></label>
-            <label>Recipient email <input name="email" type="email" required maxlength="255"></label>
+            <label>Recipient name <input name="recipient_name" required maxlength="255"></label>
+            @error('recipient_name')<div class="text-danger" role="alert">{{ $message }}</div>@enderror
+            <label>Recipient email <input name="recipient_email" type="email" required maxlength="255"></label>
+            @error('recipient_email')<div class="text-danger" role="alert">{{ $message }}</div>@enderror
             <button class="btn btn-outline-primary">Generate</button>
         </form>
         <table class="table"><thead><tr><th>Version</th><th>Status</th><th>Actions</th></tr></thead><tbody>

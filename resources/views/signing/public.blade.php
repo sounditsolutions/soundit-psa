@@ -13,7 +13,6 @@
     </div></section>
     <section class="sign-card"><div class="sign-pad">
     <form method="post" action="{{ route('signing.public', $token) }}">
-        @csrf
         <input type="hidden" name="pdf_sha256" value="{{ $hash }}">
         <label for="typed-name">DRAFT — Full name</label>
         <input id="typed-name" name="typed_name" maxlength="255" required autocomplete="off">
