@@ -404,6 +404,33 @@ class ClientBillingTabTest extends TestCase
 
     // ── Invoice list ────────────────────────────────────────────────────────
 
+    public function test_a_profile_that_fails_to_price_is_left_out_without_dropping_its_priced_siblings(): void
+    {
+        $client = $this->client();
+        $mixed = $this->contract($client, 'SYN-MIX-01');
+        $this->profile($mixed, 'monthly', '105.00', '20', '2026-11-01');
+        $bad = $this->profile($mixed, 'quarterly', '1050.00', '1', '2026-12-01');
+        $badOnly = $this->profile($this->contract($client, 'SYN-BAD-02'), 'monthly', '50.00', '1', '2026-11-01');
+        $badIds = [$bad->id, $badOnly->id];
+        $this->partialMock(\App\Services\BillingService::class, function (\Mockery\MockInterface $mock) use ($badIds) {
+            $mock->shouldReceive('previewInvoice')->andReturnUsing(function (RecurringInvoiceProfile $p) use ($badIds) {
+                if (in_array($p->id, $badIds)) {
+                    throw new \RuntimeException('synthetic preview failure');
+                }
+
+                return ['subtotal' => 2100.0];
+            });
+        });
+
+        $tab = $this->tab($this->billing($client)->assertOk());
+
+        // The priced monthly profile still counts; the two failing profiles are left out and counted.
+        $this->assertSame('$2,100.00', $this->figure($tab, 'monthly'));
+        $this->assertStringContainsString('1 active contract with recurring billing; 2 recurring profiles could not be priced and are not included', $tab);
+        $this->assertStringContainsString('1 profile could not be priced, not included', $tab);
+        $this->assertSame(1, substr_count($tab, 'Could not be priced'));
+    }
+
     public function test_open_invoices_come_first_then_the_newest_25_others_and_a_view_all_link(): void
     {
         $client = $this->client();
@@ -603,6 +630,30 @@ class ClientBillingTabTest extends TestCase
     }
 
     // ── Read-only ───────────────────────────────────────────────────────────
+
+    public function test_benjipays_lists_approved_payments_only(): void
+    {
+        $this->configureBenjiPays();
+        Http::fake([
+            'https://api.benjipays.com/v2/payment-methods*' => Http::response(self::page([self::pm()])),
+            'https://api.benjipays.com/v2/transactions*' => Http::response(self::page([
+                self::txn(),
+                self::txn(['id' => 'txn-syn-2', 'status' => 'declined', 'approved' => false, 'amount' => 333.0, 'invoiceNumber' => 'INV-SYN-DECLINED']),
+                self::txn(['id' => 'txn-syn-3', 'type' => 'refund', 'amount' => 444.0, 'invoiceNumber' => 'INV-SYN-REFUND']),
+                self::txn(['id' => 'txn-syn-4', 'status' => 'approved_void_pending', 'amount' => 555.0, 'invoiceNumber' => 'INV-SYN-VOIDING']),
+            ])),
+        ]);
+        $client = $this->client(['qbo_customer_id' => self::CUST]);
+
+        $tab = $this->tab($this->billing($client)->assertOk());
+
+        $this->assertStringContainsString('INV-SYN-PAID', $tab);
+        $this->assertStringContainsString('$1,225.00', $tab);
+        foreach (['INV-SYN-DECLINED', 'INV-SYN-REFUND', 'INV-SYN-VOIDING', '$333.00', '$444.00', '$555.00'] as $hidden) {
+            $this->assertStringNotContainsString($hidden, $tab);
+        }
+        $this->assertStringContainsString('Approved payments only; declined, voided and refunded transactions are not listed.', $tab);
+    }
 
     public function test_the_billing_tab_contains_no_write_form(): void
     {

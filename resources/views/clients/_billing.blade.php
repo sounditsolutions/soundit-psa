@@ -49,10 +49,7 @@
                     @if(count($con['rows']) === 0)
                         No active contracts
                     @else
-                        {{ $con['recurring_count'] }} {{ \Illuminate\Support\Str::plural('active contract', $con['recurring_count']) }} with recurring billing
-                        @if($con['unpriced_count'] > 0)
-                            ; {{ $con['unpriced_count'] }} could not be priced and {{ $con['unpriced_count'] === 1 ? 'is' : 'are' }} not included
-                        @endif
+                        {{ $con['recurring_count'] }} {{ \Illuminate\Support\Str::plural('active contract', $con['recurring_count']) }} with recurring billing{{ $con['unpriced_count'] > 0 ? '; '.$con['unpriced_count'].' recurring '.\Illuminate\Support\Str::plural('profile', $con['unpriced_count']).' could not be priced and '.($con['unpriced_count'] === 1 ? 'is' : 'are').' not included' : '' }}
                     @endif
                 </div>
             </div>
@@ -165,12 +162,15 @@
                                     <td><a href="{{ route('contracts.show', $c) }}">{{ $c->name }}</a></td>
                                     <td>{{ $c->type?->label() ?? '—' }}</td>
                                     <td class="text-end">
-                                        @if($row['failed'])
-                                            <span class="text-muted">Could not be priced</span>
-                                        @elseif($row['monthly'] === null)
-                                            <span class="text-muted">—</span>
-                                        @else
+                                        @if($row['monthly'] !== null)
                                             {{ $usd($row['monthly']) }}
+                                            @if($row['failed'] > 0)
+                                                <span class="small text-muted d-block">{{ $row['failed'] }} {{ \Illuminate\Support\Str::plural('profile', $row['failed']) }} could not be priced, not included</span>
+                                            @endif
+                                        @elseif($row['failed'] > 0)
+                                            <span class="text-muted">Could not be priced</span>
+                                        @else
+                                            <span class="text-muted">—</span>
                                         @endif
                                     </td>
                                     <td>
@@ -297,10 +297,11 @@
                                 <td class="text-end">{{ $p['amount'] !== null ? $usd($p['amount']) : '—' }}</td>
                             </tr>
                         @empty
-                            <tr><td colspan="3" class="text-muted">No payments recorded.</td></tr>
+                            <tr><td colspan="3" class="text-muted">No approved payments among the transactions read.</td></tr>
                         @endforelse
                     </tbody>
                 </table>
+                <p class="small text-muted mb-0 px-2 py-1">Approved payments only; declined, voided and refunded transactions are not listed.</p>
             </div>
         </div>
     @endif

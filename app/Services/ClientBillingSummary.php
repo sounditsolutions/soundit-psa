@@ -207,7 +207,9 @@ class ClientBillingSummary
 
         foreach ($contracts as $contract) {
             $monthly = null;
-            $failed = false;
+            // Per profile, as the dashboard MRR does: a profile that fails to preview is
+            // left out and counted, and the contract's other profiles still count.
+            $failed = 0;
             foreach ($contract->profiles as $profile) {
                 // previewInvoice() reads profile->contract->client; hand it the loaded models.
                 $profile->setRelation('contract', $contract->setRelation('client', $client));
@@ -220,17 +222,15 @@ class ClientBillingSummary
                     $amount = self::round2(bcdiv(bcmul($perCycle, $cyclesPerYear, 6), '12', 6));
                     $monthly = bcadd($monthly ?? '0.00', $amount, 2);
                 } catch (\Throwable $e) {
-                    $failed = true;
+                    $failed++;
                     Log::warning('[ClientBilling] Recurring profile preview failed', [
                         'profile_id' => $profile->id,
                         'exception' => $e::class,
                     ]);
                 }
             }
-            if ($failed) {
-                $unpriced++;
-                $monthly = null;
-            } elseif ($monthly !== null) {
+            $unpriced += $failed;
+            if ($monthly !== null) {
                 $monthlyTotal = bcadd($monthlyTotal, $monthly, 2);
                 $recurringCount++;
             }
@@ -279,7 +279,8 @@ class ClientBillingSummary
     }
 
     /**
-     * Payment methods and the last BENJIPAYS_PAYMENTS payments, through the
+     * Payment methods and the approved payments among the last
+     * BENJIPAYS_PAYMENTS transactions, through the
      * existing client and projection. Null when BenjiPays is not configured
      * or the client has no QuickBooks customer id (the view shows a
      * "not linked" line; no network call is made).
@@ -297,7 +298,8 @@ class ClientBillingSummary
             return null;
         }
 
-        $key = 'client-billing:benjipays:'.$client->id.':'.sha1($customerId);
+        // v2: entries cached before the approved-payment filter are not reused.
+        $key = 'client-billing:benjipays:v2:'.$client->id.':'.sha1($customerId);
         $cached = Cache::get($key);
         if (is_array($cached)) {
             return $cached;
@@ -313,7 +315,10 @@ class ClientBillingSummary
             $result = [
                 'ok' => true,
                 'methods' => $methods['rows'],
-                'payments' => $payments['rows'],
+                // Only approved payments are listed; a declined, voided, void-pending or
+                // refunded transaction is not a payment.
+                'payments' => array_values(array_filter($payments['rows'], fn (array $r) => $r['type'] === 'payment'
+                    && $r['approved'] === true && $r['status'] === 'approved')),
                 'read_at' => now('UTC')->toIso8601String(),
             ];
             Cache::put($key, $result, self::BENJIPAYS_CACHE_SECONDS);
