@@ -43,4 +43,9 @@ class SignableDocument extends Model
         return $this->status === 'countersigned'
             || ($this->status === 'signed' && ! $this->requires_countersign);
     }
+
+    public function isVoidable(): bool
+    {
+        return in_array($this->status, ['draft', 'sent', 'viewed', 'signed'], true) && ! $this->isFinal();
+    }
 }

@@ -15,7 +15,7 @@ Deploy your own instance of this PSA on a fresh VPS. This guide covers everythin
 | PDF storage | Private local disk under `signing/`; no public filesystem mapping. |
 | Rollback | Before first use only, revert the signing commits and roll back the three new migrations. After use, preserve signed evidence and obtain an explicit data-retention/rollback decision; do not drop populated tables. |
 
-Agreement terms in this slice are rate cards, not calculated bills. Inherited SKU volume pricing is excluded and deferred to a later slice.
+Agreement terms in this slice are rate cards, not calculated bills. Inherited SKU volume pricing is excluded and deferred to a later slice: Generate refuses a backup-storage line that has no tiers of its own while its SKU carries volume tiers.
 
 ## 1. Prerequisites
 

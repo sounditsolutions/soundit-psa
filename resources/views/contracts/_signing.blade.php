@@ -2,6 +2,9 @@
 <section class="card mb-3">
     <div class="card-header">Signing</div>
     <div class="card-body">
+        @if(session('signing_error'))
+            <div class="alert alert-danger" role="alert">{{ session('signing_error') }}</div>
+        @endif
         <p>Signatures only. No billing changes are applied.</p>
         <form method="post" action="{{ route('signing.generate', $contract) }}">
             @csrf
@@ -20,7 +23,7 @@
                 @if($document->isFinal())
                     <a href="{{ route('signing.download', [$contract, $document]) }}">Download signed PDF</a>
                 @endif
-                @foreach(['send' => $document->status === 'draft', 'countersign' => $document->status === 'signed' && $document->requires_countersign, 'void' => $document->status !== 'void'] as $action => $available)
+                @foreach(['send' => $document->status === 'draft', 'countersign' => $document->status === 'signed' && $document->requires_countersign, 'void' => $document->isVoidable()] as $action => $available)
                     @if($available)
                         <form class="d-inline" method="post" action="{{ route('signing.action', [$contract, $document, $action]) }}">@csrf<button class="btn btn-outline-primary">{{ ucfirst($action) }}</button></form>
                     @endif

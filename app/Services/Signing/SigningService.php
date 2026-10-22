@@ -5,6 +5,9 @@ namespace App\Services\Signing;
 use App\Models\AgreementTemplate;
 use App\Models\Contract;
 use App\Models\SignableDocument;
+use App\Models\Sku;
+use App\Support\PricingModelOverride;
+use App\Support\TieredPricing;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -33,7 +36,7 @@ class SigningService
                 );
             } catch (Throwable $error) {
                 $document->update(['token_hash' => null, 'token_expires_at' => null]);
-                throw new RuntimeException('signing_mail_failed');
+                throw new RuntimeException('signing_mail_failed', 0, $error);
             }
             $document->update(['status' => 'sent', 'sent_at' => now()]);
         });
@@ -123,6 +126,9 @@ class SigningService
         }
         DB::transaction(function () use ($document): void {
             $document = SignableDocument::query()->lockForUpdate()->findOrFail($document->id);
+            if (! $document->isVoidable()) {
+                throw new RuntimeException('signing_void_unavailable');
+            }
             $document->update(['status' => 'void', 'voided_at' => now(), 'token_hash' => null, 'token_expires_at' => null]);
         });
     }
@@ -144,15 +150,18 @@ class SigningService
                     throw new RuntimeException('signing_template_unavailable');
                 }
                 $linesVersion = $contract->lines()->max('version');
-                $lines = $contract->lines()->where('version', $linesVersion)->orderBy('sort_order')->orderBy('id')->get()->map(fn ($line) => $line->attributesToArray())->all();
-                if ($lines === []) {
+                $lines = $contract->lines()->where('version', $linesVersion)->orderBy('sort_order')->orderBy('id')->get();
+                if ($lines->isEmpty()) {
                     throw new RuntimeException('signing_lines_missing');
                 }
                 foreach ($lines as $line) {
-                    if (($line['unit_price'] ?? null) === null && empty($line['pricing_tiers'])) {
-                        throw new RuntimeException('signing_line_price_missing');
+                    $sku = $line->sku_id ? Sku::find($line->sku_id) : null;
+                    if (TieredPricing::normalize($line->pricing_tiers ?? []) === []
+                        && PricingModelOverride::volumeRateCardApplies($line->quantity_type, $sku)) {
+                        throw new RuntimeException('signing_line_price_inherited');
                     }
                 }
+                $lines = $lines->map(fn ($line) => $line->attributesToArray())->all();
                 $json = json_encode($lines, JSON_THROW_ON_ERROR);
                 $version = 1 + (int) SignableDocument::where('contract_id', $contract->id)->where('kind', 'agreement')->max('version');
                 $document = new SignableDocument([
@@ -166,7 +175,7 @@ class SigningService
                 ]);
                 $merged = $this->merge->merge($template->body, [
                     'client.name' => $contract->client->name, 'contract.name' => $contract->name,
-                    'contract.type' => $contract->type->value, 'today' => now()->toDateString(),
+                    'contract.type' => $contract->type->value, 'today' => now()->toAppTz()->toDateString(),
                     'signer.name' => $recipient['name'],
                 ], $document);
                 if ($merged['unknown_tokens'] !== []) {

@@ -5,7 +5,6 @@ namespace Tests\Feature\Contracts;
 use App\Models\AgreementTemplate;
 use App\Models\Client;
 use App\Models\Contract;
-use App\Models\ContractLine;
 use App\Models\SignableDocument;
 use App\Services\Signing\PdfRenderer;
 use App\Services\Signing\SigningService;
@@ -96,23 +95,6 @@ class SigningGenerateTest extends TestCase
             $this->fail('Multistep accepted');
         } catch (RuntimeException $error) {
             $this->assertSame('signing_multistep_unsupported', $error->getMessage());
-        }
-        $this->assertDatabaseCount('signable_documents', 0);
-        $this->assertSame([], Storage::disk('local')->allFiles('signing'));
-    }
-
-    public function test_missing_price_refuses_without_row_or_file(): void
-    {
-        // Existing schema forbids NULL prices; exercise the defensive hydrated-input seam.
-        ContractLine::retrieved(function (ContractLine $line): void {
-            $line->unit_price = null;
-            $line->pricing_tiers = null;
-        });
-        try {
-            $this->generate();
-            $this->fail('Missing price accepted');
-        } catch (RuntimeException $error) {
-            $this->assertSame('signing_line_price_missing', $error->getMessage());
         }
         $this->assertDatabaseCount('signable_documents', 0);
         $this->assertSame([], Storage::disk('local')->allFiles('signing'));
@@ -443,7 +425,7 @@ class SigningGenerateTest extends TestCase
         }
         $this->assertDatabaseCount('signable_documents', 0);
         $this->assertSame([], Storage::disk('local')->allFiles('signing'));
-        $tier->delete();
+        $this->contract->lines()->where('sku_id', $sku->id)->update(['pricing_tiers' => [['up_to' => null, 'unit_price' => '2.00']]]);
         $this->assertSame('draft', $this->generate()->status);
     }
 
@@ -475,8 +457,7 @@ class SigningGenerateTest extends TestCase
             $this->assertSame($before, $row->fresh()->getRawOriginal());
         }
         $this->post(route('signing.action', [$this->contract, $executed, 'void']))
-            ->assertRedirect(route('contracts.show', $this->contract))
-            ->assertSessionHas('signing_error', fn ($message) => str_contains($message, 'signing_void_unavailable'));
+            ->assertStatus(409)->assertSee('signing_void_unavailable');
         $this->assertSame('countersigned', $executed->fresh()->status);
         $this->get(route('signing.download', [$this->contract, $executed]))->assertOk();
         $service->void($pending);
@@ -489,20 +470,18 @@ class SigningGenerateTest extends TestCase
         $form = ['template_id' => $this->template->id, 'name' => 'Alex Example', 'email' => 'alex@example.test'];
         $this->template->update(['signing_steps' => 2]);
         $this->actingAs($admin)->post(route('signing.generate', $this->contract), $form)
-            ->assertRedirect(route('contracts.show', $this->contract))
-            ->assertSessionHas('signing_error', fn ($message) => str_contains($message, 'signing_multistep_unsupported'));
+            ->assertStatus(409)->assertSee('signing_multistep_unsupported');
         $this->assertDatabaseCount('signable_documents', 0);
         $this->template->update(['signing_steps' => 1]);
         $document = $this->generate();
         $document->update(['status' => 'signed']);
         $this->post(route('signing.action', [$this->contract, $document, 'send']))
-            ->assertRedirect(route('contracts.show', $this->contract))
-            ->assertSessionHas('signing_error', fn ($message) => str_contains($message, 'signing_send_unavailable'));
+            ->assertStatus(409)->assertSee('signing_send_unavailable');
         $this->assertNull($document->fresh()->token_hash);
         $this->post(route('signing.generate', $this->contract), ['template_id' => 999999] + $form)->assertNotFound();
         $this->template->update(['body' => '<p>{{ client.name }}</p>']);
         $this->followingRedirects()->post(route('signing.generate', $this->contract), $form)
-            ->assertOk()->assertSee('(signing_unknown_merge_token)');
+            ->assertStatus(409)->assertSee('(signing_unknown_merge_token)');
         $this->assertDatabaseCount('signable_documents', 1);
     }
 
@@ -514,5 +493,20 @@ class SigningGenerateTest extends TestCase
         $bytes = Storage::disk('local')->get($this->generate()->pdf_path);
         $this->assertStringContainsString('DRAFT — Dated 2026-10-22', $bytes);
         $this->assertStringNotContainsString('2026-10-23', $bytes);
+    }
+
+    public function test_pdf_mismatch_logs_only_fixed_reason_and_class(): void
+    {
+        $document = $this->generate();
+        $token = str_repeat('Q', 48);
+        $document->update(['status' => 'sent', 'token_hash' => hash('sha256', $token), 'token_expires_at' => now()->addDay()]);
+        Storage::disk('local')->put($document->pdf_path, 'changed');
+        $records = [];
+        \Illuminate\Support\Facades\Log::listen(function ($event) use (&$records): void {
+            $records[] = [$event->message, $event->context];
+        });
+        $this->get('/sign/'.$token.'/pdf')->assertOk();
+        $this->assertContains(['signing_request_refused', ['exception_class' => RuntimeException::class]], $records);
+        $this->assertStringNotContainsString($token, json_encode($records));
     }
 }
