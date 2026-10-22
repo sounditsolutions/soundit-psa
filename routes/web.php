@@ -172,6 +172,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/clients/{client}/tickets', [ClientController::class, 'tickets'])->name('clients.tickets');
     Route::get('/clients/{client}/people', [ClientController::class, 'people'])->name('clients.people');
     Route::get('/clients/{client}/licenses', [ClientController::class, 'licenses'])->name('clients.licenses');
+    Route::get('/clients/{client}/billing', [ClientController::class, 'billing'])->name('clients.billing');
     Route::get('/clients/{client}/weekly-report', [ClientReportController::class, 'show'])->name('clients.weekly-report');
     Route::post('/clients/{client}/weekly-report/email', [ClientReportController::class, 'email'])->name('clients.weekly-report.email');
 

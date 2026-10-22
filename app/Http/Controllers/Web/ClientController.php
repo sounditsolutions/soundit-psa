@@ -25,6 +25,7 @@ use App\Models\Ticket;
 use App\Models\User;
 use App\Services\ActivityStreamService;
 use App\Services\AssetService;
+use App\Services\ClientBillingSummary;
 use App\Services\ClientIntegrationService;
 use App\Services\ClientService;
 use App\Services\ContractResolver;
@@ -283,6 +284,35 @@ class ClientController extends Controller
             'licenseTypeId' => $licenseTypeId,
             'licenseVendor' => $vendor,
             'licenseWasteOnly' => $wasteOnly,
+        ]);
+    }
+
+    /**
+     * Read-only Billing tab (card iNjqGETC): invoices, outstanding and
+     * overdue, contracts and recurring, prepay and the BenjiPays read. The
+     * data is built only on this route, never on the other tabs.
+     */
+    public function billing(Client $client, ClientBillingSummary $summary)
+    {
+        $client->load([
+            'people' => fn ($q) => $q->active()
+                ->orderByDesc('is_primary')
+                ->orderBy('last_name')
+                ->orderBy('first_name'),
+            'siteNotesUpdatedBy',
+            'credentialsUpdatedBy',
+            'primaryTech',
+            'reseller',
+            'resellerChildren',
+        ]);
+        $client->loadCount('assets');
+
+        return view('clients.show', [
+            'client' => $client,
+            'assets' => collect(),
+            'integrations' => $this->integrationService->buildIntegrationsData($client),
+            'activeTab' => 'billing',
+            'billing' => $summary->build($client),
         ]);
     }
 
