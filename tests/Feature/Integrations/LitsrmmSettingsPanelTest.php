@@ -151,7 +151,11 @@ class LitsrmmSettingsPanelTest extends TestCase
      * normalised text, inline children included, equals the line. That covers
      * a <br> with whitespace beside it, and a <br> inserted inside the text
      * without replacing a character, since a <br> adds no text. Block children
-     * do not count: libxml closes an open <p> before a block child.
+     * in libxml's HTML4 element set (div, table, lists, headings, pre, form,
+     * blockquote) do not count: libxml closes an open <p> before them. HTML5
+     * elements (section, article, aside, nav, header, footer, main, figure,
+     * details) do not close it, so their text joins the <p> text and that <p>
+     * no longer equals the line.
      *
      * A copy whose bytes do not contain the line passes both copy checks if it
      * sits outside any <p>, or if its <p> text still differs once normalised.
