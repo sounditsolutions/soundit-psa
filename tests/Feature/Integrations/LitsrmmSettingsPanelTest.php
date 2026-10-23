@@ -139,17 +139,35 @@ class LitsrmmSettingsPanelTest extends TestCase
 
     /**
      * The pending line's exact text must appear once in the page, exactly one
-     * <p> must carry it once whitespace is normalised, and that <p> must be the
-     * element directly after the form-check div that holds the switch, inside
-     * the schedule form, with its trimmed text equal to the line. Moving it
-     * outside the form, above the switch, or below the "Off by default"
-     * form-text fails here. So does a second exact copy in any element, or a
-     * second <p> whose whitespace-normalised text (child elements included)
-     * equals the line, which covers a <br> with whitespace beside it. A copy that
-     * is not byte-exact passes the two copy checks if it sits outside any <p>, or
-     * if its <p> text still differs once normalised (joined by a non-breaking
-     * space, or broken by a <br> with no whitespace beside it); placed directly
-     * after the switch, it displaces the line and fails the position check.
+     * <p> must carry it once whitespace is normalised, and that <p> must be
+     * the element directly after the form-check div that holds the switch,
+     * inside the schedule form, with its trimmed text equal to the line.
+     * Moving it outside the form, above the switch, or below the "Off by
+     * default" form-text fails here.
+     *
+     * A second copy fails if its bytes contain the line anywhere, including a
+     * copy embedded verbatim inside longer text, because substr_count then
+     * finds two. It also fails if it is a second <p> whose whitespace-
+     * normalised text, inline children included, equals the line. That covers
+     * a <br> with whitespace beside it, and a <br> inserted inside the text
+     * without replacing a character, since a <br> adds no text. Block children
+     * in libxml's HTML4 element set (div, table, lists, headings, pre, form,
+     * blockquote) do not count: libxml closes an open <p> before them. HTML5
+     * elements (section, article, aside, nav, header, footer, main, figure,
+     * details) do not close it, so their text joins the <p> text. If they add
+     * non-whitespace text beyond the line, that <p> no longer equals the line;
+     * if they are empty or only wrap words of the line, it still equals the
+     * line and the copy fails.
+     *
+     * A copy whose bytes do not contain the line passes both copy checks if it
+     * sits outside any <p>, or if its <p> text still differs once normalised.
+     * Joining the words with a non-breaking space, or putting a <br> in place
+     * of the space between two words, does that. Such a copy that is an
+     * element and sits directly after the switch displaces the line and fails
+     * the position check. Such a copy that is not an element (a bare text node
+     * or a comment) and sits outside any <p> passes every check, even directly
+     * after the switch, because the position check looks only at elements; the
+     * view emits neither.
      */
     private function assertPendingLineSitsDirectlyUnderTheSwitch(string $html, string $text): void
     {
