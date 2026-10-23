@@ -36,8 +36,8 @@ class ContractC14Test extends TestCase
             }
             if ($counting && preg_match('/^select .* from [`"]clients[`"]/i', $query->sql)) {
                 $clientQueries++;
-                // Separate count that excludes controller eager loads: only reads while the real forEntry()
-                // call is on the stack (its own reads plus forClient() on the fallback arm).
+                // Separate count that excludes controller eager loads: only reads while a real forEntry() call
+                // is on the stack (in this fixture each call reaches forClient() on the fallback arm).
                 if ($spy->entryDepth > 0) {
                     $entryClientQueries++;
                 }
@@ -52,7 +52,7 @@ class ContractC14Test extends TestCase
         $oneEntryClients = $entryClientQueries;
         $this->assertGreaterThan(0, $one);
         $this->assertGreaterThan(0, $oneClients);
-        $this->assertGreaterThan(0, $oneEntryClients, 'H4-1: the forEntry() call, through forClient(), must select clients on the page');
+        $this->assertGreaterThan(0, $oneEntryClients, "H4-1: the page's forEntry() calls must select clients");
         $this->h4HeldNote($ticket, $user);
         $this->h4HeldNote($ticket, $user);
         $this->assertSame(3, $ticket->notes()->whereNotNull('contract_held_at')->count());
