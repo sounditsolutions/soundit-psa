@@ -154,8 +154,10 @@ class LitsrmmSettingsPanelTest extends TestCase
      * in libxml's HTML4 element set (div, table, lists, headings, pre, form,
      * blockquote) do not count: libxml closes an open <p> before them. HTML5
      * elements (section, article, aside, nav, header, footer, main, figure,
-     * details) do not close it, so their text joins the <p> text and that <p>
-     * no longer equals the line.
+     * details) do not close it, so their text joins the <p> text. If they add
+     * non-whitespace text beyond the line, that <p> no longer equals the line;
+     * if they are empty or only wrap words of the line, it still equals the
+     * line and the copy fails.
      *
      * A copy whose bytes do not contain the line passes both copy checks if it
      * sits outside any <p>, or if its <p> text still differs once normalised.
