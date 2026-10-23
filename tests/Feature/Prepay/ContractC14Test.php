@@ -25,16 +25,22 @@ class ContractC14Test extends TestCase
     public function test_h4_1_held_note_contract_queries_do_not_grow_per_badge(): void
     {
         [$ticket, $user] = $this->h4HeldFixture();
+        $spy = $this->h11ResolverSpy();
         $queries = 0;
         $clientQueries = 0;
+        $entryClientQueries = 0;
         $counting = false;
-        DB::listen(function ($query) use (&$queries, &$clientQueries, &$counting) {
+        DB::listen(function ($query) use (&$queries, &$clientQueries, &$entryClientQueries, &$counting, $spy) {
             if ($counting && preg_match('/^select .* from [`"]contracts[`"]/i', $query->sql)) {
                 $queries++;
             }
-            // forEntry() -> forClient() reads the client default from clients, not contracts.
             if ($counting && preg_match('/^select .* from [`"]clients[`"]/i', $query->sql)) {
                 $clientQueries++;
+                // Separate count that excludes controller eager loads: only reads while a real forEntry() call
+                // is on the stack (in this fixture each call reaches forClient() on the fallback arm).
+                if ($spy->entryDepth > 0) {
+                    $entryClientQueries++;
+                }
             }
         });
         $this->actingAs($user);
@@ -43,18 +49,22 @@ class ContractC14Test extends TestCase
         $counting = false;
         $one = $queries;
         $oneClients = $clientQueries;
+        $oneEntryClients = $entryClientQueries;
         $this->assertGreaterThan(0, $one);
         $this->assertGreaterThan(0, $oneClients);
+        $this->assertGreaterThan(0, $oneEntryClients, "H4-1: the page's forEntry() calls must select clients");
         $this->h4HeldNote($ticket, $user);
         $this->h4HeldNote($ticket, $user);
         $this->assertSame(3, $ticket->notes()->whereNotNull('contract_held_at')->count());
         $queries = 0;
         $clientQueries = 0;
+        $entryClientQueries = 0;
         $counting = true;
         $this->get(route('tickets.show', $ticket))->assertOk();
         $counting = false;
         $this->assertSame($one, $queries, 'H4-1: three held notes must select contracts exactly as often as one held note');
         $this->assertSame($oneClients, $clientQueries, 'H4-1: three held notes must select clients exactly as often as one held note');
+        $this->assertSame($oneEntryClients, $entryClientQueries, 'H4-1: three held notes must select clients inside forEntry() exactly as often as one held note');
     }
 
     public function test_h4_2_held_badge_text_pins_ambiguous_and_single_contract(): void
@@ -100,24 +110,34 @@ class ContractC14Test extends TestCase
         ]));
     }
 
-    public function test_h11_held_call_badge_reuses_the_page_resolution(): void
+    public function test_h11_call_badge_held_reason_does_not_call_for_entry_itself(): void
     {
         [$ticket, $user] = $this->h4HeldFixture();
         $ticket->notes()->update(['contract_held_at' => null]);
+        $spy = $this->h11ResolverSpy();
+        $this->actingAs($user);
+        $one = null;
         for ($i = 0; $i < 2; $i++) {
             PhoneCall::withoutEvents(fn () => PhoneCall::forceCreate([
                 'ticket_id' => $ticket->id, 'call_uuid' => 'synthetic-h11-badge-'.$i,
                 'direction' => 'inbound', 'from_number' => '+15555550142', 'status' => 'completed',
                 'is_billable' => true, 'duration' => 3600, 'started_at' => now(), 'contract_held_at' => now(),
             ]));
+            $spy->totalForEntry = 0;
+            $spy->heldReasonCalls = 0;
+            $html = $this->get(route('tickets.show', $ticket))->assertOk()->getContent();
+            $this->assertSame($i + 1, substr_count($html, 'Needs contract'), 'each held call must render its held badge');
+            $this->assertGreaterThan(0, $spy->totalForEntry, 'the resolver spy must observe the page');
+            $this->assertSame($i + 1, $spy->heldReasonCalls, 'the service spy must observe every held call badge');
+            $this->assertSame(0, $spy->fromHeldReason, 'PrepayService::heldReason must not call forEntry() itself');
+            if ($one !== null) {
+                $this->assertSame($one, $spy->totalForEntry, 'two held calls must resolve exactly as often as one');
+            }
+            $one = $spy->totalForEntry;
         }
-        $spy = $this->h11ResolverSpy();
-        $html = $this->actingAs($user)->get(route('tickets.show', $ticket))->assertOk()->getContent();
-        $this->assertSame(2, substr_count($html, 'Needs contract'), 'each held call must render its held badge');
-        $this->assertSame(0, $spy->fromHeldReason, 'the held call badge must pass the page resolution to heldReason: PrepayService::heldReason must not call forEntry() itself while the page renders');
     }
 
-    public function test_h11_held_log_reasons_reuse_the_callers_resolution(): void
+    public function test_h11_log_held_reason_does_not_call_for_entry_itself(): void
     {
         [$ticket, $user] = $this->h4HeldFixture();
         $note = TicketNote::withoutEvents(fn () => TicketNote::forceCreate([
@@ -129,24 +149,31 @@ class ContractC14Test extends TestCase
             'from_number' => '+15555550142', 'status' => 'completed', 'is_billable' => true,
             'duration' => 3600, 'started_at' => now(),
         ]));
-        $logs = new TestHandler;
-        Log::getLogger()->pushHandler($logs);
+        $logs = new TestHandler(Level::Debug);
+        $logger = Log::getLogger();
+        $channel = $logger->getName();
+        $logger->pushHandler($logs);
         $spy = $this->h11ResolverSpy();
         $service = app(\App\Services\PrepayService::class);
         $service->debitFromTicketNote($note);
         $service->debitFromPhoneCall($call);
         $this->assertSame(0, PrepayTransaction::count());
         foreach (['Ticket note', 'Phone call'] as $label) {
-            $this->assertCount(1, array_filter($logs->getRecords(), fn ($r) => $r->message === '[Prepay] '.$label.' debit held: needs contract'));
+            $records = array_values(array_filter($logs->getRecords(), fn ($r) => $r->message === '[Prepay] '.$label.' debit held: needs contract'));
+            $this->assertCount(1, $records);
+            $this->assertSame(Level::Info, $records[0]->level);
+            $this->assertSame($channel, $records[0]->channel);
         }
-        $this->assertSame(0, $spy->fromHeldReason, 'the note and call hold logs must pass their resolution to heldReason: PrepayService::heldReason must not call forEntry() itself');
+        $this->assertGreaterThan(0, $spy->totalForEntry, 'the resolver spy must observe the debit paths');
+        $this->assertSame(2, $spy->heldReasonCalls, 'the service spy must observe both hold reasons');
+        $this->assertSame(0, $spy->fromHeldReason, 'PrepayService::heldReason must not call forEntry() itself');
     }
 
     /**
-     * Binds a ContractResolver that counts the forEntry() calls whose immediate
-     * caller is PrepayService::heldReason(); a resolution routed through a
-     * closure, a helper or forClient() is not counted. It resolves exactly as
-     * the real one.
+     * Counts all observed forEntry() calls and, separately, calls immediately
+     * from PrepayService::heldReason(). Helpers/closures are not immediate callers.
+     * A delegating service spy counts heldReason invocations even when no resolver
+     * method runs. Both spies execute their real parent implementations.
      */
     private function h11ResolverSpy(): ContractResolver
     {
@@ -154,17 +181,41 @@ class ContractC14Test extends TestCase
         {
             public int $fromHeldReason = 0;
 
+            public int $totalForEntry = 0;
+
+            public int $heldReasonCalls = 0;
+
+            public int $entryDepth = 0;
+
             public function forEntry(Ticket $ticket, ?int $pickedContractId = null): ContractResolution
             {
+                $this->totalForEntry++;
                 $caller = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 2)[1] ?? [];
                 if (($caller['function'] ?? null) === 'heldReason' && ($caller['class'] ?? null) === \App\Services\PrepayService::class) {
                     $this->fromHeldReason++;
                 }
 
-                return parent::forEntry($ticket, $pickedContractId);
+                $this->entryDepth++;
+                try {
+                    return parent::forEntry($ticket, $pickedContractId);
+                } finally {
+                    $this->entryDepth--;
+                }
             }
         };
         $this->app->instance(ContractResolver::class, $spy);
+        $service = new class($spy) extends \App\Services\PrepayService
+        {
+            public function __construct(private ContractResolver $spy) {}
+
+            public function heldReason(TicketNote|PhoneCall $entry, Ticket $ticket, ?ContractResolution $resolution = null): string
+            {
+                $this->spy->heldReasonCalls++;
+
+                return parent::heldReason($entry, $ticket, $resolution);
+            }
+        };
+        $this->app->instance(\App\Services\PrepayService::class, $service);
 
         return $spy;
     }
@@ -404,66 +455,7 @@ class ContractC14Test extends TestCase
         ]);
         $contractWrites = 0;
         DB::listen(function ($query) use (&$contractWrites, $ticket) {
-            // Counts an UPDATE whose SQL starts update "tickets" set (double- or
-            // backtick-quoted, as the query builder emits it) and whose SET list writes
-            // "contract_id" = outside every parenthesis (contract_id in the WHERE or only inside
-            // a SET subquery does not count; raw SQL in another form and upserts are not seen),
-            // and whose WHERE can reach this ticket. The SET list ends at the first " where "
-            // outside every parenthesis, so a subquery SET value (its own where, "id" and
-            // bindings) stays in the SET list and never supplies the key.
-            // The key is the first top-level (outside every parenthesis), unqualified or
-            // tickets-qualified predicate of one of three shapes: "id" = ?,
-            // "id" in (?, ...) or "id" in (<digits>). Any other id predicate ("id" != ?,
-            // not in, >, in (select ...), a mixed list) is not a key and is skipped. The write
-            // counts when the key binds this ticket's id at its own placeholders (an int
-            // binding, or a string binding identical to the id's decimal text; a float, a
-            // bool or a padded string never matches, and other columns' bindings are not
-            // read) or lists it inline, or when the WHERE has no key at all. That last case
-            // counts as a bulk write, including one keyed only inside a subquery or group and
-            // Laravel's empty-whereIn "0 = 1". Another table's "id" (a whereHas subquery's
-            // "clients"."id") never supplies the key.
-            if (! preg_match('/^update [`"]tickets[`"] set (.*)$/is', $query->sql, $m)) {
-                return;
-            }
-            $outside = fn (string $sql, int $at) => substr_count(substr($sql, 0, $at), '(') === substr_count(substr($sql, 0, $at), ')');
-            $set = $m[1];
-            $where = '';
-            preg_match_all('/ where /i', $m[1], $splits, PREG_OFFSET_CAPTURE);
-            foreach ($splits[0] as $split) {
-                if ($outside($m[1], $split[1])) {
-                    $set = substr($m[1], 0, $split[1]);
-                    $where = substr($m[1], $split[1] + strlen(' where '));
-                    break;
-                }
-            }
-            preg_match_all('/[`"]contract_id[`"] = /i', $set, $writes, PREG_OFFSET_CAPTURE);
-            if (! array_filter($writes[0], fn ($w) => $outside($set, $w[1]))) {
-                return;
-            }
-            $key = null;
-            preg_match_all('/(?<![`"]\.)(?:[`"]tickets[`"]\.)?[`"]id[`"] (?:= \?|in \(([?, ]+|[0-9, ]+)\))/i', $where, $keys, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
-            foreach ($keys as $candidate) {
-                $before = substr($where, 0, $candidate[0][1]);
-                if (substr_count($before, '(') === substr_count($before, ')')) {
-                    $key = $candidate;
-                    break;
-                }
-            }
-            if ($key === null) {
-                $contractWrites++;
-
-                return;
-            }
-            if (isset($key[1]) && ctype_digit(str_replace([',', ' '], '', $key[1][0]))) {
-                $ids = array_map('trim', explode(',', $key[1][0]));
-            } else {
-                $first = substr_count($set, '?') + substr_count(substr($where, 0, $key[0][1]), '?');
-                $ids = array_map(fn ($b) => is_int($b) || is_string($b) ? (string) $b : null,
-                    array_slice($query->bindings, $first, substr_count($key[0][0], '?')));
-            }
-            if (in_array((string) $ticket->id, $ids, true)) {
-                $contractWrites++;
-            }
+            $contractWrites += (int) $this->h15WritesContract($query->sql, $query->bindings, (int) $ticket->id);
         });
         app(\App\Services\ContactIntake\StaffWorkflow::class)->act($row->id, $user, 'verify', 'Synthetic verification');
         $this->assertFalse($ticket->fresh()->isUnverifiedContactIntake());
@@ -473,6 +465,158 @@ class ContractC14Test extends TestCase
         $debit = PrepayTransaction::where('phone_call_id', $call->id)->sole();
         $this->assertSame($contract->id, $debit->contract_id);
         $this->assertNull($call->fresh()->contract_held_at);
+    }
+
+    /**
+     * Test detector, not a general SQL parser. Recognizes quoted/unquoted ticket
+     * updates and contract-writing upserts (conservatively counted as bulk).
+     * SQLite wraps LIMIT/join updates in a rowid SELECT; MySQL/MariaDB keep LIMIT
+     * on the UPDATE and put joins before SET. Only the known SQLite wrapper is
+     * unwrapped; other nested/grouped keys remain conservatively bulk writes.
+     * The first top-level ticket id = ?, IN placeholders or IN digits selects
+     * the relevant bindings; numeric equality includes floats/padded strings and
+     * Laravel's Connection::prepareBindings() bool-to-int conversion. Non-key
+     * predicates remain bulk, including empty whereIn. SET subqueries and other
+     * tables' ids never supply the key.
+     */
+    private function h15WritesContract(string $sql, array $bindings, int $ticketId): bool
+    {
+        $sql = trim(preg_replace('/\s+/', ' ', str_replace(['`', '"'], '', $sql)));
+        $outside = fn (string $text, int $at) => substr_count(substr($text, 0, $at), '(') === substr_count(substr($text, 0, $at), ')');
+        if (preg_match('/^insert into tickets\b.*? (?:on duplicate key update|on conflict\s*\([^)]*\) do update set) (.*)$/i', $sql, $upsert)) {
+            return (bool) preg_match('/(?:^|,\s*)(?:tickets\.)?contract_id\s*=/i', $upsert[1]);
+        }
+        if (! preg_match('/^update tickets\s+(?:(?:inner|left|right) join .*? )?set (.*)$/i', $sql, $update)) {
+            return false;
+        }
+        $set = $update[1];
+        $where = '';
+        $whereOffset = strlen($sql);
+        preg_match_all('/ where /i', $sql, $splits, PREG_OFFSET_CAPTURE);
+        foreach ($splits[0] as [$split, $offset]) {
+            if ($outside($sql, $offset)) {
+                $set = substr($update[1], 0, $offset - (strlen($sql) - strlen($update[1])));
+                $whereOffset = $offset + strlen($split);
+                $where = substr($sql, $whereOffset);
+                break;
+            }
+        }
+        preg_match_all('/(?<![\w.])(?:tickets\.)?contract_id\s*=/i', $set, $writes, PREG_OFFSET_CAPTURE);
+        if (! array_filter($writes[0], fn ($write) => $outside($set, $write[1]))) {
+            return false;
+        }
+        // SQLiteGrammar::compileUpdateWithJoinsOrLimit selects tickets.rowid.
+        if (preg_match('/^rowid in \(select tickets\.rowid from tickets\b.*\)$/i', $where)) {
+            $inner = substr($where, strlen('rowid in ('), -1);
+            preg_match_all('/ where /i', $inner, $splits, PREG_OFFSET_CAPTURE);
+            foreach ($splits[0] as [$split, $offset]) {
+                if ($outside($inner, $offset)) {
+                    $whereOffset += strlen('rowid in (') + $offset + strlen($split);
+                    $where = substr($inner, $offset + strlen($split));
+                    break;
+                }
+            }
+        }
+        preg_match_all('/(?<![\w.])(?:tickets\.)?id\s*(?:=\s*\?|in\s*\(([?, ]+|[0-9, ]+)\))/i', $where, $keys, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
+        foreach ($keys as $key) {
+            if (! $outside($where, $key[0][1])) {
+                continue;
+            }
+            if (isset($key[1]) && ctype_digit(str_replace([',', ' '], '', $key[1][0]))) {
+                $ids = array_map('trim', explode(',', $key[1][0]));
+            } else {
+                $first = substr_count(substr($sql, 0, $whereOffset + $key[0][1]), '?');
+                $ids = array_slice($bindings, $first, substr_count($key[0][0], '?'));
+            }
+
+            return (bool) array_filter($ids, fn ($id) => (is_numeric($id) || is_bool($id)) && (is_bool($id) ? (int) $id : $id) == $ticketId);
+        }
+
+        return true;
+    }
+
+    public function test_h15_counter_pins_both_driver_limit_and_join_shapes(): void
+    {
+        $connection = DB::connection();
+        foreach ([new \Illuminate\Database\Query\Grammars\SQLiteGrammar($connection), new \Illuminate\Database\Query\Grammars\MySqlGrammar($connection), new \Illuminate\Database\Query\Grammars\MariaDbGrammar($connection)] as $grammar) {
+            foreach ([false, true] as $join) {
+                foreach ([7, 8] as $id) {
+                    $query = new \Illuminate\Database\Query\Builder($connection, $grammar);
+                    $query->from('tickets')->where('tickets.id', $id);
+                    if ($join) {
+                        $query->join('clients', 'clients.id', '=', 'tickets.client_id');
+                    } else {
+                        $query->limit(1);
+                    }
+                    $sql = $grammar->compileUpdate(clone $query, ['contract_id' => 99]);
+                    $bindings = $grammar->prepareBindingsForUpdate($query->getRawBindings(), ['contract_id' => 99]);
+                    $this->assertSame($id === 7, $this->h15WritesContract($sql, $bindings, 7), get_class($grammar).': '.$sql);
+                }
+            }
+        }
+        foreach ([
+            'update "tickets" set "contract_id" = ? where "rowid" in (select "tickets"."rowid" from "tickets" where "tickets"."id" = ? limit 1)',
+            'update `tickets` set `contract_id` = ? where `tickets`.`id` = ? limit 1',
+            'update "tickets" set "contract_id" = ? where "rowid" in (select "tickets"."rowid" from "tickets" inner join "clients" on "clients"."id" = "tickets"."client_id" where "tickets"."id" = ?)',
+            'update `tickets` inner join `clients` on `clients`.`id` = `tickets`.`client_id` set `contract_id` = ? where `tickets`.`id` = ?',
+        ] as $sql) {
+            $this->assertTrue($this->h15WritesContract($sql, [99, 7], 7), $sql);
+            $this->assertFalse($this->h15WritesContract($sql, [99, 8], 7), $sql);
+        }
+    }
+
+    public function test_h15_counter_pins_numeric_id_bindings(): void
+    {
+        foreach ([7, 7.0, '07', '7 ', '7.0', '7e0'] as $id) {
+            $sql = 'update "tickets" set "contract_id" = ? where "tickets"."id" = ?';
+            $this->assertTrue($this->h15WritesContract($sql, [99, $id], 7));
+            $this->assertFalse($this->h15WritesContract($sql, [7, $id], 8));
+        }
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, true], 1));
+    }
+
+    public function test_h15_counter_pins_raw_updates_and_upserts(): void
+    {
+        foreach ([
+            'update tickets set contract_id = ? where id = ?',
+            "\n update tickets set contract_id=? where id=?",
+            'update "tickets" set "contract_id"=? where "id"=?',
+        ] as $sql) {
+            $this->assertTrue($this->h15WritesContract($sql, [99, 7], 7));
+            $this->assertFalse($this->h15WritesContract($sql, [7, 8], 7));
+        }
+        foreach ([
+            'insert into tickets (id, contract_id) values (?, ?) on duplicate key update contract_id = values(contract_id)',
+            'insert into "tickets" ("id", "contract_id") values (?, ?) on conflict ("id") do update set "contract_id" = "excluded"."contract_id"',
+        ] as $sql) {
+            $this->assertTrue($this->h15WritesContract($sql, [7, 99], 7));
+        }
+        $connection = DB::connection();
+        foreach ([new \Illuminate\Database\Query\Grammars\SQLiteGrammar($connection), new \Illuminate\Database\Query\Grammars\MySqlGrammar($connection), new \Illuminate\Database\Query\Grammars\MariaDbGrammar($connection)] as $grammar) {
+            $query = new \Illuminate\Database\Query\Builder($connection, $grammar);
+            $query->from('tickets');
+            $sql = $grammar->compileUpsert($query, [['contract_id' => 99, 'id' => 7]], ['id'], ['contract_id']);
+            $this->assertTrue($this->h15WritesContract($sql, [99, 7], 7), $sql);
+        }
+        foreach ([
+            ['update tickets set subject=? where contract_id=?', [7, 7]],
+            ['update clients set contract_id=? where id=?', [99, 7]],
+            ['insert into tickets (id, contract_id) values (?, ?) on duplicate key update subject=?', [7, 99, 'Synthetic']],
+            ['update tickets set subject=(select contract_id=? from tickets where id=?) where id=?', [99, 7, 7]],
+            ['update tickets set contract_id=(select id from contracts where id=?) where id=?', [7, 8]],
+        ] as [$sql, $bindings]) {
+            $this->assertFalse($this->h15WritesContract($sql, $bindings, 7), $sql);
+        }
+        foreach ([
+            ['update tickets set contract_id=?', [99]],
+            ['update tickets set contract_id=? where id in (?, ?)', [99, 8, 7]],
+            ['update tickets set contract_id=? where id in (8, 7)', [99]],
+            ['update tickets set contract_id=? where (id=?)', [99, 8]],
+            ['update tickets set contract_id=? where exists (select * from clients where clients.id=?)', [99, 8]],
+            ['update tickets set contract_id=? where 0 = 1', [99]],
+        ] as [$sql, $bindings]) {
+            $this->assertTrue($this->h15WritesContract($sql, $bindings, 7), $sql);
+        }
     }
 
     public function test_unverified_intake_logs_verification_hold_for_note_and_call(): void
