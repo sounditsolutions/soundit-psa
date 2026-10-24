@@ -639,6 +639,34 @@ class ContractC14Test extends TestCase
         }
     }
 
+    public function test_h17_r2_nested_not_preserves_the_top_level_ticket_key(): void
+    {
+        $connection = DB::connection();
+        foreach ([new \Illuminate\Database\Query\Grammars\SQLiteGrammar($connection), new \Illuminate\Database\Query\Grammars\MySqlGrammar($connection), new \Illuminate\Database\Query\Grammars\MariaDbGrammar($connection)] as $grammar) {
+            $query = new \Illuminate\Database\Query\Builder($connection, $grammar);
+            $query->from('tickets')->where('id', 8)->where(fn ($q) => $q->whereNot('client_id', 5));
+            $sql = $grammar->compileUpdate(clone $query, ['contract_id' => 99]);
+            $bindings = $grammar->prepareBindingsForUpdate($query->getRawBindings(), ['contract_id' => 99]);
+            $this->assertFalse($this->h15WritesContract($sql, $bindings, 7), get_class($grammar).': a nested NOT does not widen the top-level ticket key: '.$sql);
+        }
+    }
+
+    public function test_h17_r2_ticket_prefix_tables_are_not_ticket_writes(): void
+    {
+        $this->assertFalse($this->h15WritesContract('update tickets_archive set contract_id = ? where client_id = ?', [99, 5], 7));
+        $this->assertFalse($this->h15WritesContract('replace into tickets_history (id, contract_id) values (?, ?)', [7, 99], 7));
+    }
+
+    public function test_h17_r2_signed_and_exponent_leading_numbers(): void
+    {
+        foreach (['+8', '.8e1', '0.8e1'] as $id) {
+            $this->assertTrue($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, $id], 8), $id.' has leading numeric value 8');
+        }
+        foreach (['8e1', '-8'] as $id) {
+            $this->assertFalse($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, $id], 8), $id.' has a leading numeric value different from 8');
+        }
+    }
+
     public function test_h17_unparsed_alias_is_bulk(): void
     {
         $connection = DB::connection();
