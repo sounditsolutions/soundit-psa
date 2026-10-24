@@ -141,33 +141,45 @@ class LitsrmmSettingsPanelTest extends TestCase
      * The pending line's exact text must appear once in the page, exactly one
      * <p> must carry it once whitespace is normalised, and that <p> must be
      * the element directly after the form-check div that holds the switch,
-     * inside the schedule form, with its trimmed text equal to the line.
-     * Moving it outside the form, above the switch, or below the "Off by
-     * default" form-text fails here.
+     * with its trimmed text equal to the line. That div must be a direct
+     * child of the schedule form, so wrapping it in an element libxml keeps
+     * open around a div, such as another div, a span or a section, fails
+     * here. A <p> wrapper does not fail: libxml closes the <p> before the
+     * div, so the div is still a direct child of the form. Moving the line
+     * outside the form, above the switch, or below the "Off by default"
+     * form-text fails here.
      *
      * A second copy fails if its bytes contain the line anywhere, including a
      * copy embedded verbatim inside longer text, because substr_count then
      * finds two. It also fails if it is a second <p> whose whitespace-
      * normalised text, inline children included, equals the line. That covers
      * a <br> with whitespace beside it, and a <br> inserted inside the text
-     * without replacing a character, since a <br> adds no text. Block children
-     * in libxml's HTML4 element set (div, table, lists, headings, pre, form,
-     * blockquote) do not count: libxml closes an open <p> before them. HTML5
-     * elements (section, article, aside, nav, header, footer, main, figure,
-     * details) do not close it, so their text joins the <p> text. If they add
-     * non-whitespace text beyond the line, that <p> no longer equals the line;
-     * if they are empty or only wrap words of the line, it still equals the
-     * line and the copy fails.
+     * without replacing a character, since a <br> adds no text. libxml 2.9.14
+     * closes an open <p> before HTML4 block elements such as div, table,
+     * lists, headings, pre, form, blockquote, address, fieldset, center and
+     * hr, so their text does not join that <p>. It does not close it before
+     * noscript, noframes or the HTML5 elements section, article, aside, nav,
+     * header, footer, main, figure and details, so their text joins the <p>
+     * text. If they add non-whitespace text beyond the line, that <p> no
+     * longer equals the line; if they are empty or only wrap words of the
+     * line, it still equals the line and the copy fails.
      *
      * A copy whose bytes do not contain the line passes both copy checks if it
-     * sits outside any <p>, or if its <p> text still differs once normalised.
-     * Joining the words with a non-breaking space, or putting a <br> in place
-     * of the space between two words, does that. Such a copy that is an
-     * element and sits directly after the switch displaces the line and fails
-     * the position check. Such a copy that is not an element (a bare text node
-     * or a comment) and sits outside any <p> passes every check, even directly
-     * after the switch, because the position check looks only at elements; the
-     * view emits neither.
+     * sits outside any <p>, or in a <p> of its own whose text still differs
+     * once normalised. Joining the words with a non-breaking space, or putting
+     * a <br> in place of the space between two words, does that. Put inside
+     * the line's own <p> before or after the line, as text or as an element
+     * libxml leaves inside that <p>, the same copy changes the <p>'s text, so
+     * no <p> equals the line and the one-<p> check fails. Put between two
+     * characters of the line, any copy (text, element or comment) splits the
+     * line's bytes, so the first check, that the line appears once, fails.
+     * Such a copy that is an element and sits directly after the switch
+     * displaces the line and fails the position check. A comment adds no
+     * text to the <p> or position checks, so a comment copy anywhere else
+     * passes every check, the line's own <p> included. A bare text node copy
+     * outside any <p> passes every check, even directly after the switch,
+     * because the position check looks only at elements. The view emits
+     * neither.
      */
     private function assertPendingLineSitsDirectlyUnderTheSwitch(string $html, string $text): void
     {
@@ -183,6 +195,55 @@ class LitsrmmSettingsPanelTest extends TestCase
         $this->assertNotNull($next, 'an element must follow the switch inside the schedule form');
         $this->assertSame('p', $next->nodeName, 'the pending line must be the element directly after the switch');
         $this->assertSame($text, trim($next->textContent), 'the element directly after the switch must be the pending line');
+    }
+
+    /**
+     * Render the page with the pending line showing, so a control can edit
+     * the real markup rather than a hand-written copy of it.
+     */
+    private function pendingLinePage(): string
+    {
+        \Illuminate\Support\Facades\Http::preventStrayRequests();
+        Setting::setValue('litsrmm_base_url', '');
+        Setting::setValue('litsrmm_sync_schedule_enabled', '1');
+
+        return $this->actingAs($this->admin())->get(route('settings.integrations'))->assertOk()->getContent();
+    }
+
+    private function assertPendingLineHelperRefuses(string $html, string $expectedMessage, string $why): void
+    {
+        $text = 'Sync every 4 hours is still on. Scheduled sync will run once the integration is configured and enabled.';
+        try {
+            $this->assertPendingLineSitsDirectlyUnderTheSwitch($html, $text);
+        } catch (\PHPUnit\Framework\AssertionFailedError $e) {
+            $this->assertStringContainsString($expectedMessage, $e->getMessage(), $why);
+
+            return;
+        }
+        $this->fail('the helper accepted a page it must refuse: '.$why);
+    }
+
+    public function test_h18_a_copy_inside_the_lines_own_p_fails_the_one_p_check(): void
+    {
+        $text = 'Sync every 4 hours is still on. Scheduled sync will run once the integration is configured and enabled.';
+        $html = $this->pendingLinePage();
+        $this->assertSame(1, substr_count($html, $text.'</p>'), 'the rendered line must end its own <p> once');
+        $copy = str_replace('Sync every', 'Sync&nbsp;every', $text);
+        $html = str_replace($text.'</p>', $text.' <span>'.$copy.'</span></p>', $html);
+        $this->assertPendingLineHelperRefuses($html, 'exactly one <p> must have the pending line',
+            'a non-matching copy inside the line\'s own <p> makes that <p> stop equalling the line, so no <p> matches');
+    }
+
+    public function test_h18_a_switch_wrapped_inside_the_form_is_not_found(): void
+    {
+        $text = 'Sync every 4 hours is still on. Scheduled sync will run once the integration is configured and enabled.';
+        $html = $this->pendingLinePage();
+        $this->assertSame(1, substr_count($html, $text.'</p>'), 'the rendered line must end its own <p> once');
+        $html = preg_replace('#<div class="form-check form-switch">(?=\s*<input[^>]*id="litsrmm_sync_schedule")#', '<div class="mb-3"><div class="form-check form-switch">', $html, -1, $wrapped);
+        $this->assertSame(1, $wrapped, 'the rendered page must hold the schedule switch div once');
+        $html = str_replace($text.'</p>', $text.'</p></div>', $html);
+        $this->assertPendingLineHelperRefuses($html, 'the schedule form must hold the switch in a form-check div',
+            'the switch query takes the form-check div only as a direct child of the schedule form');
     }
 
     public static function l4CardStates(): array
