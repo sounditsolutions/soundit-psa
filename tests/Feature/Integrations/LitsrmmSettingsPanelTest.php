@@ -142,9 +142,12 @@ class LitsrmmSettingsPanelTest extends TestCase
      * <p> must carry it once whitespace is normalised, and that <p> must be
      * the element directly after the form-check div that holds the switch,
      * with its trimmed text equal to the line. That div must be a direct
-     * child of the schedule form, so wrapping it in another element inside
-     * the form fails here. Moving the line outside the form, above the
-     * switch, or below the "Off by default" form-text fails here too.
+     * child of the schedule form, so wrapping it in an element libxml keeps
+     * open around a div, such as another div, a span or a section, fails
+     * here. A <p> wrapper does not fail: libxml closes the <p> before the
+     * div, so the div is still a direct child of the form. Moving the line
+     * outside the form, above the switch, or below the "Off by default"
+     * form-text fails here.
      *
      * A second copy fails if its bytes contain the line anywhere, including a
      * copy embedded verbatim inside longer text, because substr_count then
@@ -165,15 +168,18 @@ class LitsrmmSettingsPanelTest extends TestCase
      * sits outside any <p>, or in a <p> of its own whose text still differs
      * once normalised. Joining the words with a non-breaking space, or putting
      * a <br> in place of the space between two words, does that. Put inside
-     * the line's own <p> as text, or as an element libxml leaves inside that
-     * <p>, the same copy changes the <p>'s text, so no <p> equals the line and
-     * the one-<p> check fails. Such a copy that is an element and sits
-     * directly after the switch displaces the line and fails the position
-     * check. A comment adds no text to the <p> or position checks, so such a
-     * comment copy passes every check wherever it sits, the line's own <p>
-     * included. A bare text node copy outside any <p> passes every check,
-     * even directly after the switch, because the position check looks only
-     * at elements. The view emits neither.
+     * the line's own <p> before or after the line, as text or as an element
+     * libxml leaves inside that <p>, the same copy changes the <p>'s text, so
+     * no <p> equals the line and the one-<p> check fails. Put between two
+     * characters of the line, any copy (text, element or comment) splits the
+     * line's bytes, so the first check, that the line appears once, fails.
+     * Such a copy that is an element and sits directly after the switch
+     * displaces the line and fails the position check. A comment adds no
+     * text to the <p> or position checks, so a comment copy anywhere else
+     * passes every check, the line's own <p> included. A bare text node copy
+     * outside any <p> passes every check, even directly after the switch,
+     * because the position check looks only at elements. The view emits
+     * neither.
      */
     private function assertPendingLineSitsDirectlyUnderTheSwitch(string $html, string $text): void
     {
