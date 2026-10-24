@@ -68,16 +68,30 @@ class LinkedIdsContractTest extends TestCase
         foreach (['synthetic_only_id', 'synthetic_deep_id', 'synthetic_other_id'] as $column) {
             $this->assertDoesNotMatchRegularExpression('/\\b'.preg_quote($column, '/').'\\b/', $list, "{$column} is mentioned only inside an aside, not listed");
         }
-        foreach (['id', 'client_id', 'site_id', 'asset_id', 'ticket_id'] as $column) {
-            $this->assertMatchesRegularExpression('/\\b'.preg_quote($column, '/').'\\b/', $list, "{$column} is listed at the top level, including after nested asides");
+        foreach (['id', 'client_id'] as $column) {
+            $this->assertMatchesRegularExpression('/\\b'.preg_quote($column, '/').'\\b/', $list, "{$column} is listed at the top level before every aside");
         }
-        $this->assertSame('id, client_id , site_id, asset_id , ticket_id', $list);
+        foreach (['site_id', 'asset_id', 'ticket_id'] as $column) {
+            $this->assertMatchesRegularExpression('/\\b'.preg_quote($column, '/').'\\b/', $list, "{$column} is listed at the top level after a nested aside");
+        }
+        $this->assertSame('id, client_id  , site_id, asset_id  , ticket_id', $list);
+
+        $list = self::linkedIdsList('linked_ids: every PSA, foreign-key and integration id on the device (id, client_id) followed by synthetic_trailing_id (outside the list)', 'device');
+        $this->assertDoesNotMatchRegularExpression('/\\bsynthetic_trailing_id\\b/', $list, 'the trailing clause is outside the list');
+        $this->assertSame('id, client_id', $list);
+
+        $list = self::linkedIdsList('linked_ids: every PSA, foreign-key and integration id on the device (client_id(see synthetic_x_id)site_id)', 'device');
+        foreach (['client_id', 'site_id'] as $column) {
+            $this->assertMatchesRegularExpression('/\\b'.preg_quote($column, '/').'\\b/', $list, "{$column} remains a separate listed column beside an aside");
+        }
+        $this->assertDoesNotMatchRegularExpression('/\\bsynthetic_x_id\\b/', $list);
+        $this->assertSame('client_id site_id', $list);
     }
 
     /**
      * The list's top-level text after "linked_ids: every PSA, foreign-key and
      * integration id on the <subject> (", with nested parenthesised asides
-     * removed, including their parentheses. A column named only inside an
+     * replaced by a space, including their parentheses. A column named only inside an
      * aside is mentioned, not listed (#7219). Balanced capture still ends at
      * the list's own closing parenthesis: an aside does not end it early
      * (#7206). get_asset also names merged_into_asset_id and tactical_asset_id
@@ -89,7 +103,7 @@ class LinkedIdsContractTest extends TestCase
         $found = preg_match('/linked_ids: every PSA, foreign-key and integration id on the '.$subject.' \\(((?:[^()]++|\\((?1)\\))*)\\)/', $description, $m);
         self::assertSame(1, $found, "the description must introduce linked_ids with a parenthesised list for the {$subject}");
 
-        return preg_replace('/\\((?:[^()]++|(?R))*\\)/', '', $m[1]);
+        return preg_replace('/\\((?:[^()]++|(?R))*\\)/', ' ', $m[1]);
     }
 
     /** The columns the contract governs, derived from the live schema. */
