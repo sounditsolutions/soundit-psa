@@ -526,7 +526,7 @@ class ContractC14Test extends TestCase
         if (array_filter($negations[0], fn ($match) => $outside($where, $match[1]))) {
             return true;
         }
-        preg_match_all('/ or /i', $where, $disjunctions, PREG_OFFSET_CAPTURE);
+        preg_match_all('/\bor\b/i', $where, $disjunctions, PREG_OFFSET_CAPTURE);
         if (array_filter($disjunctions[0], fn ($match) => $outside($where, $match[1]))) {
             return true;
         }
