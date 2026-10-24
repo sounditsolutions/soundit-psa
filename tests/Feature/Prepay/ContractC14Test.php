@@ -476,7 +476,7 @@ class ContractC14Test extends TestCase
      * on the UPDATE and put joins before SET. Only the known SQLite wrapper is
      * unwrapped; other nested/grouped keys remain conservatively bulk writes.
      * The first top-level ticket id = ?, IN placeholders or IN digits selects
-     * the relevant bindings unless the WHERE is negated or OR-joined, which counts as bulk;
+     * the relevant bindings unless the WHERE has any top-level NOT or OR (even on another column), which counts as bulk;
      * numeric equality includes floats/padded strings and
      * Laravel's Connection::prepareBindings() bool-to-int conversion. Non-key
      * predicates remain bulk, including empty whereIn. SET subqueries and other
@@ -637,6 +637,11 @@ class ContractC14Test extends TestCase
             $bindings = $grammar->prepareBindingsForUpdate($query->getRawBindings(), ['contract_id' => 99]);
             $this->assertFalse($this->h15WritesContract($sql, $bindings, 7), 'a nested OR does not widen the top-level ticket key: '.$sql);
         }
+    }
+
+    public function test_h17_r2_top_level_not_on_another_column_is_bulk(): void
+    {
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id = ? where id = ? and closed_at is not null', [99, 8], 7), 'any top-level NOT is conservatively bulk, even on another column');
     }
 
     public function test_h17_r2_nested_not_preserves_the_top_level_ticket_key(): void
