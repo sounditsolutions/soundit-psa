@@ -165,6 +165,7 @@ class ContractC14Test extends TestCase
             $this->assertSame($channel, $records[0]->channel);
         }
         $this->assertGreaterThan(0, $spy->totalForEntry, 'the resolver spy must observe the debit paths');
+        $this->assertSame(4, $spy->totalForEntry, 'the unstamped held note and call debit paths together make four forEntry calls');
         $this->assertSame(2, $spy->heldReasonCalls, 'the service spy must observe both hold reasons');
         $this->assertSame(0, $spy->fromHeldReason, 'PrepayService::heldReason must not call forEntry() itself');
     }
@@ -468,16 +469,20 @@ class ContractC14Test extends TestCase
     }
 
     /**
-     * Test detector, not a general SQL parser. Recognizes quoted/unquoted ticket
-     * updates and contract-writing upserts (conservatively counted as bulk).
+     * Test detector, not a general SQL parser. Parses known quoted/unquoted ticket
+     * updates; unparsed UPDATE tickets and REPLACE INTO tickets shapes count as
+     * bulk, as do contract-writing upserts. Plain inserts retain their non-write result.
      * SQLite wraps LIMIT/join updates in a rowid SELECT; MySQL/MariaDB keep LIMIT
      * on the UPDATE and put joins before SET. Only the known SQLite wrapper is
      * unwrapped; other nested/grouped keys remain conservatively bulk writes.
      * The first top-level ticket id = ?, IN placeholders or IN digits selects
-     * the relevant bindings; numeric equality includes floats/padded strings and
+     * the relevant bindings unless the WHERE has a top-level NOT or OR keyword in any case (even on another column), which counts as bulk; "top-level" counts parentheses naively, so string literals, MySQL '!' and text after the SQLite rowid wrapper are not parsed;
+     * numeric equality includes floats/padded strings and
      * Laravel's Connection::prepareBindings() bool-to-int conversion. Non-key
      * predicates remain bulk, including empty whereIn. SET subqueries and other
      * tables' ids never supply the key.
+     * MySQL/MariaDB cast a string's leading number when comparing it with an INT
+     * column, and SQLite does not; the detector follows the production drivers.
      */
     private function h15WritesContract(string $sql, array $bindings, int $ticketId): bool
     {
@@ -487,7 +492,7 @@ class ContractC14Test extends TestCase
             return (bool) preg_match('/(?:^|,\s*)(?:tickets\.)?contract_id\s*=/i', $upsert[1]);
         }
         if (! preg_match('/^update tickets\s+(?:(?:inner|left|right) join .*? )?set (.*)$/i', $sql, $update)) {
-            return false;
+            return (bool) preg_match('/^(?:update tickets|replace into tickets)\b/i', $sql);
         }
         $set = $update[1];
         $where = '';
@@ -517,6 +522,14 @@ class ContractC14Test extends TestCase
                 }
             }
         }
+        preg_match_all('/\bnot\b/i', $where, $negations, PREG_OFFSET_CAPTURE);
+        if (array_filter($negations[0], fn ($match) => $outside($where, $match[1]))) {
+            return true;
+        }
+        preg_match_all('/\bor\b/i', $where, $disjunctions, PREG_OFFSET_CAPTURE);
+        if (array_filter($disjunctions[0], fn ($match) => $outside($where, $match[1]))) {
+            return true;
+        }
         preg_match_all('/(?<![\w.])(?:tickets\.)?id\s*(?:=\s*\?|in\s*\(([?, ]+|[0-9, ]+)\))/i', $where, $keys, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
         foreach ($keys as $key) {
             if (! $outside($where, $key[0][1])) {
@@ -529,7 +542,14 @@ class ContractC14Test extends TestCase
                 $ids = array_slice($bindings, $first, substr_count($key[0][0], '?'));
             }
 
-            return (bool) array_filter($ids, fn ($id) => (is_numeric($id) || is_bool($id)) && (is_bool($id) ? (int) $id : $id) == $ticketId);
+            return (bool) array_filter($ids, function ($id) use ($ticketId) {
+                if (is_string($id)) {
+                    preg_match('/^\s*([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)/', $id, $number);
+                    $id = isset($number[1]) ? (float) $number[1] : 0;
+                }
+
+                return (is_int($id) || is_float($id) || is_bool($id)) && (is_bool($id) ? (int) $id : $id) == $ticketId;
+            });
         }
 
         return true;
@@ -565,6 +585,11 @@ class ContractC14Test extends TestCase
         }
     }
 
+    public function test_h17_leading_number_binding_counts_as_a_write(): void
+    {
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, '8abc'], 8), 'the production-driver leading number matches ticket 8');
+    }
+
     public function test_h15_counter_pins_numeric_id_bindings(): void
     {
         foreach ([7, 7.0, '07', '7 ', '7.0', '7e0'] as $id) {
@@ -573,6 +598,134 @@ class ContractC14Test extends TestCase
             $this->assertFalse($this->h15WritesContract($sql, [7, $id], 8));
         }
         $this->assertTrue($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, true], 1));
+        foreach (['8abc', ' 8 x'] as $id) {
+            $this->assertTrue($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, $id], 8));
+        }
+    }
+
+    public function test_h17_matching_contract_binding_does_not_hide_near_miss_key(): void
+    {
+        foreach (['8.5', 8.2, '9abc'] as $id) {
+            $this->assertFalse($this->h15WritesContract('update tickets set contract_id=? where id=?', [8, $id], 8), 'the key binding, not the matching contract binding, must match the ticket id');
+        }
+    }
+
+    public function test_h17_negated_and_disjunctive_keys_are_bulk(): void
+    {
+        $connection = DB::connection();
+        foreach ([new \Illuminate\Database\Query\Grammars\SQLiteGrammar($connection), new \Illuminate\Database\Query\Grammars\MySqlGrammar($connection), new \Illuminate\Database\Query\Grammars\MariaDbGrammar($connection)] as $grammar) {
+            foreach (['negated', 'qualified negated', 'disjunctive'] as $shape) {
+                foreach ([false, true] as $limit) {
+                    $query = new \Illuminate\Database\Query\Builder($connection, $grammar);
+                    $query->from('tickets');
+                    if ($shape === 'disjunctive') {
+                        $query->where('id', 8)->orWhere('client_id', 5);
+                    } else {
+                        $query->whereNot($shape === 'negated' ? 'id' : 'tickets.id', 8);
+                    }
+                    if ($limit) {
+                        $query->limit(1);
+                    }
+                    $sql = $grammar->compileUpdate(clone $query, ['contract_id' => 99]);
+                    $bindings = $grammar->prepareBindingsForUpdate($query->getRawBindings(), ['contract_id' => 99]);
+                    $this->assertTrue($this->h15WritesContract($sql, $bindings, 7), get_class($grammar).': '.$sql);
+                }
+            }
+            $query = new \Illuminate\Database\Query\Builder($connection, $grammar);
+            $query->from('tickets')->where('id', 8)->where(fn ($nested) => $nested->where('client_id', 5)->orWhere('client_id', 6));
+            $sql = $grammar->compileUpdate(clone $query, ['contract_id' => 99]);
+            $bindings = $grammar->prepareBindingsForUpdate($query->getRawBindings(), ['contract_id' => 99]);
+            $this->assertFalse($this->h15WritesContract($sql, $bindings, 7), 'a nested OR does not widen the top-level ticket key: '.$sql);
+        }
+    }
+
+    public function test_h17_r3_or_without_space_is_bulk(): void
+    {
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id = ? where id = ? or(status = ?)', [99, 9, 'x'], 8), 'any top-level OR is conservatively bulk');
+    }
+
+    public function test_h17_r3_signed_exponent_matches_ticket_id(): void
+    {
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, '80e-1'], 8));
+    }
+
+    public function test_h17_r3_uppercase_exponent_matches_ticket_id(): void
+    {
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, '0.8E1'], 8));
+    }
+
+    public function test_h17_r3_trailing_decimal_point_matches_ticket_id(): void
+    {
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, '8.e1'], 80));
+    }
+
+    public function test_h17_r3_number_after_non_numeric_prefix_is_not_a_write(): void
+    {
+        $this->assertFalse($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, 'x8'], 8));
+    }
+
+    public function test_h17_r2_top_level_not_on_another_column_is_bulk(): void
+    {
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id = ? where id = ? and closed_at is not null', [99, 8], 7), 'any top-level NOT is conservatively bulk, even on another column');
+    }
+
+    public function test_h17_r2_nested_not_preserves_the_top_level_ticket_key(): void
+    {
+        $connection = DB::connection();
+        foreach ([new \Illuminate\Database\Query\Grammars\SQLiteGrammar($connection), new \Illuminate\Database\Query\Grammars\MySqlGrammar($connection), new \Illuminate\Database\Query\Grammars\MariaDbGrammar($connection)] as $grammar) {
+            $query = new \Illuminate\Database\Query\Builder($connection, $grammar);
+            $query->from('tickets')->where('id', 8)->where(fn ($q) => $q->whereNot('client_id', 5));
+            $sql = $grammar->compileUpdate(clone $query, ['contract_id' => 99]);
+            $bindings = $grammar->prepareBindingsForUpdate($query->getRawBindings(), ['contract_id' => 99]);
+            $this->assertFalse($this->h15WritesContract($sql, $bindings, 7), get_class($grammar).': a nested NOT does not widen the top-level ticket key: '.$sql);
+        }
+    }
+
+    public function test_h17_r2_ticket_prefix_tables_are_not_ticket_writes(): void
+    {
+        $this->assertFalse($this->h15WritesContract('update tickets_archive set contract_id = ? where client_id = ?', [99, 5], 7));
+        $this->assertFalse($this->h15WritesContract('replace into tickets_history (id, contract_id) values (?, ?)', [7, 99], 7));
+    }
+
+    public function test_h17_r2_signed_and_exponent_leading_numbers(): void
+    {
+        foreach (['+8', '.8e1', '0.8e1'] as $id) {
+            $this->assertTrue($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, $id], 8), $id.' has leading numeric value 8');
+        }
+        foreach (['8e1', '-8'] as $id) {
+            $this->assertFalse($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, $id], 8), $id.' has a leading numeric value different from 8');
+        }
+    }
+
+    public function test_h17_unparsed_alias_is_bulk(): void
+    {
+        $connection = DB::connection();
+        foreach ([new \Illuminate\Database\Query\Grammars\SQLiteGrammar($connection), new \Illuminate\Database\Query\Grammars\MySqlGrammar($connection), new \Illuminate\Database\Query\Grammars\MariaDbGrammar($connection)] as $grammar) {
+            $query = new \Illuminate\Database\Query\Builder($connection, $grammar);
+            $query->from('tickets as t')->where('t.id', 8);
+            $sql = $grammar->compileUpdate(clone $query, ['contract_id' => 99]);
+            $bindings = $grammar->prepareBindingsForUpdate($query->getRawBindings(), ['contract_id' => 99]);
+            $this->assertTrue($this->h15WritesContract($sql, $bindings, 7), get_class($grammar).': '.$sql);
+        }
+    }
+
+    public function test_h17_unparsed_cross_join_is_bulk(): void
+    {
+        $connection = DB::connection();
+        foreach ([new \Illuminate\Database\Query\Grammars\MySqlGrammar($connection), new \Illuminate\Database\Query\Grammars\MariaDbGrammar($connection)] as $grammar) {
+            $query = new \Illuminate\Database\Query\Builder($connection, $grammar);
+            $query->from('tickets')->crossJoin('clients')->where('tickets.id', 8);
+            $sql = $grammar->compileUpdate(clone $query, ['contract_id' => 99]);
+            $bindings = $grammar->prepareBindingsForUpdate($query->getRawBindings(), ['contract_id' => 99]);
+            $this->assertTrue($this->h15WritesContract($sql, $bindings, 7), get_class($grammar).': '.$sql);
+        }
+    }
+
+    public function test_h17_replace_is_bulk_but_plain_insert_is_not(): void
+    {
+        $this->assertTrue($this->h15WritesContract('replace into tickets (id, contract_id) values (?, ?)', [8, 99], 7));
+        $this->assertFalse($this->h15WritesContract('insert into tickets (id, contract_id) values (?, ?)', [8, 99], 7));
+        $this->assertFalse($this->h15WritesContract('replace into clients (id, contract_id) values (?, ?)', [8, 99], 7));
     }
 
     public function test_h15_counter_pins_raw_updates_and_upserts(): void
@@ -703,5 +856,14 @@ class ContractC14Test extends TestCase
         $debit = PrepayTransaction::where('ticket_note_id', $freshNote->id)->sole();
         $this->assertSame($contract->id, $debit->contract_id);
         $this->assertEquals(-1, $debit->hours);
+    }
+
+    public function test_h17_r4_parse_and_case_controls(): void
+    {
+        foreach (['80e-01', '0.8e+1', '0.80e1', '.80e1', '  8'] as $id) {
+            $this->assertTrue($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, $id], 8), "leading number of '{$id}' must match the ticket id");
+        }
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id = ? where id = ? OR client_id = ?', [99, 9, 5], 8), 'uppercase top-level OR is conservatively bulk');
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id = ? where id = ? and closed_at is NOT null', [99, 9], 8), 'uppercase top-level NOT is conservatively bulk');
     }
 }
