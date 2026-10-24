@@ -606,7 +606,7 @@ class ContractC14Test extends TestCase
     public function test_h17_matching_contract_binding_does_not_hide_near_miss_key(): void
     {
         foreach (['8.5', 8.2, '9abc'] as $id) {
-            $this->assertFalse($this->h15WritesContract('update tickets set contract_id=? where id=?', [8, $id], 8), 'the key binding, not the matching contract binding, must match exactly');
+            $this->assertFalse($this->h15WritesContract('update tickets set contract_id=? where id=?', [8, $id], 8), 'the key binding, not the matching contract binding, must match the ticket id');
         }
     }
 
@@ -637,6 +637,26 @@ class ContractC14Test extends TestCase
             $bindings = $grammar->prepareBindingsForUpdate($query->getRawBindings(), ['contract_id' => 99]);
             $this->assertFalse($this->h15WritesContract($sql, $bindings, 7), 'a nested OR does not widen the top-level ticket key: '.$sql);
         }
+    }
+
+    public function test_h17_r3_signed_exponent_matches_ticket_id(): void
+    {
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, '80e-1'], 8));
+    }
+
+    public function test_h17_r3_uppercase_exponent_matches_ticket_id(): void
+    {
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, '0.8E1'], 8));
+    }
+
+    public function test_h17_r3_trailing_decimal_point_matches_ticket_id(): void
+    {
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, '8.e1'], 80));
+    }
+
+    public function test_h17_r3_number_after_non_numeric_prefix_is_not_a_write(): void
+    {
+        $this->assertFalse($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, 'x8'], 8));
     }
 
     public function test_h17_r2_top_level_not_on_another_column_is_bulk(): void
