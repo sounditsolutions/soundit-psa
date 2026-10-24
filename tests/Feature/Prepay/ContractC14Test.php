@@ -476,7 +476,7 @@ class ContractC14Test extends TestCase
      * on the UPDATE and put joins before SET. Only the known SQLite wrapper is
      * unwrapped; other nested/grouped keys remain conservatively bulk writes.
      * The first top-level ticket id = ?, IN placeholders or IN digits selects
-     * the relevant bindings unless the WHERE has any top-level NOT or OR (even on another column), which counts as bulk;
+     * the relevant bindings unless the WHERE has a top-level NOT or OR keyword in any case (even on another column), which counts as bulk; "top-level" counts parentheses naively, so string literals, MySQL '!' and text after the SQLite rowid wrapper are not parsed;
      * numeric equality includes floats/padded strings and
      * Laravel's Connection::prepareBindings() bool-to-int conversion. Non-key
      * predicates remain bulk, including empty whereIn. SET subqueries and other
@@ -856,5 +856,14 @@ class ContractC14Test extends TestCase
         $debit = PrepayTransaction::where('ticket_note_id', $freshNote->id)->sole();
         $this->assertSame($contract->id, $debit->contract_id);
         $this->assertEquals(-1, $debit->hours);
+    }
+
+    public function test_h17_r4_parse_and_case_controls(): void
+    {
+        foreach (['80e-01', '0.8e+1', '0.80e1', '.80e1', '  8'] as $id) {
+            $this->assertTrue($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, $id], 8), "leading number of '{$id}' must match the ticket id");
+        }
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id = ? where id = ? OR client_id = ?', [99, 9, 5], 8), 'uppercase top-level OR is conservatively bulk');
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id = ? where id = ? and closed_at is NOT null', [99, 9], 8), 'uppercase top-level NOT is conservatively bulk');
     }
 }
