@@ -639,6 +639,11 @@ class ContractC14Test extends TestCase
         }
     }
 
+    public function test_h17_r3_or_without_space_is_bulk(): void
+    {
+        $this->assertTrue($this->h15WritesContract('update tickets set contract_id = ? where id = ? or(status = ?)', [99, 9, 'x'], 8), 'any top-level OR is conservatively bulk');
+    }
+
     public function test_h17_r3_signed_exponent_matches_ticket_id(): void
     {
         $this->assertTrue($this->h15WritesContract('update tickets set contract_id=? where id=?', [99, '80e-1'], 8));
