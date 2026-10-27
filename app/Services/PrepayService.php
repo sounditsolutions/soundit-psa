@@ -963,7 +963,7 @@ class PrepayService
             $what = $isNote ? "note #{$locked->id}" : "phone call #{$locked->id}";
             $report['body'] = fn (float $h, string $drew = '', ?string $destination = null) => 'Moved '.$what.' time ('.number_format($h, 2).' h) from '
                 .($foreignStampId !== null ? "another client's contract" : ($from?->name ?? 'no contract')).' to '.($destination ?? $target->name).$drew.': '.$reason;
-            $report['hours'] = $hours > 0 ? $hours : ($isNote ? $locked->pricedMinutes() / 60 : ($locked->effectiveDurationSeconds() ?? 0) / 3600);
+            $report['hours'] = $hours > 0 ? $hours : ($isNote ? $locked->billedMinutes() / 60 : ($locked->billedSeconds() ?? 0) / 3600);
             $effect = $row ? '; credited '.number_format($hours, 2).'h back to '.$from->name
                 .($this->hoursPrepayOrNull($target)
                     ? ' and debited '.number_format($hours, 2).'h from '.$target->name

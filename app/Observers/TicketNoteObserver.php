@@ -58,7 +58,7 @@ class TicketNoteObserver
      */
     private function stampContract(TicketNote $note): void
     {
-        if ($note->contract_id !== null || $note->pricedMinutes() <= 0) {
+        if ($note->contract_id !== null || $note->billedMinutes() <= 0) {
             return;
         }
 
@@ -107,8 +107,7 @@ class TicketNoteObserver
 
     private function syncPrepayDebit(TicketNote $note): void
     {
-        // Priced minutes (#5067 r3): a zero-minute note carrying a time adjustment has a debit to sync.
-        if ($note->isUnverifiedContactIntake() || ($note->pricedMinutes() <= 0 && ! $note->wasChanged('time_minutes'))) {
+        if ($note->isUnverifiedContactIntake() || ($note->billedMinutes() <= 0 && ! $note->wasChanged('time_minutes') && ! $note->wasChanged('billable_minutes'))) {
             return;
         }
 
