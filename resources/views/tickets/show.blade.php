@@ -181,7 +181,10 @@
                                         </span>
                                     @endif
                                     {{-- A call's prepay debit can be held for contract ambiguity (card I3EvQKUV r2) or pending ticket verification (card VLyhWACq C10) --}}
-                                    @if($item->contract_held_at && $item->is_billable && $item->effectiveDurationSeconds())
+                                    @if($item->billable_minutes !== null)
+                                        <span class="badge bg-light text-dark">Billed {{ gmdate('H:i:s', $item->billedSeconds() ?? 0) }}</span>
+                                    @endif
+                                    @if($item->contract_held_at && $item->is_billable && $item->billedSeconds())
                                         <span class="badge bg-warning text-dark small" title="{{ "Not debited yet: this ticket's contract is not settled (the client has several active contracts and no default, or the ticket is waiting for verification)." }}">
                                             <i class="bi bi-exclamation-circle me-1"></i>{{ ucfirst(app(\App\Services\PrepayService::class)->heldReason($item, $ticket, $heldResolution)) }}
                                         </span>
@@ -387,7 +390,10 @@
                                             </span>
                                         @endif
                                         {{-- A held note can keep a stamp that no longer validates; it is not billed to it --}}
-                                        @if($note->contract_held_at && $note->is_billable && $note->time_minutes > 0)
+                                        @if($note->billable_minutes !== null)
+                                            <span class="badge bg-light text-dark">Billed {{ $note->billedMinutes() }}m</span>
+                                        @endif
+                                        @if($note->contract_held_at && $note->is_billable && $note->billedMinutes() > 0)
                                             <span class="badge bg-warning text-dark small" title="{{ "Not debited yet: this ticket's contract is not settled (the client has several active contracts and no default, or the ticket is waiting for verification). Verify the ticket, or edit the note to choose its contract." }}">
                                                 <i class="bi bi-exclamation-circle me-1"></i>{{ ucfirst(app(\App\Services\PrepayService::class)->heldReason($note, $ticket, $heldResolution)) }}
                                             </span>
@@ -497,6 +503,15 @@
                                             <input type="text" name="time" class="form-control form-control-sm"
                                                    value="{{ $item->formatted_time }}" placeholder="0h 15m" style="width: 100px;">
                                         </div>
+                                        <div class="col-auto">
+                                            <label class="form-label small" for="noteBill{{ $item->id }}">Bill</label>
+                                            <input id="noteBill{{ $item->id }}" name="billable_minutes" class="form-control form-control-sm" value="{{ $item->billable_minutes }}" placeholder="{{ $item->pricedMinutes() }}m" data-billing-input data-stored="{{ $item->billable_minutes }}">
+                                            <small>Actual {{ $item->pricedMinutes() }}m</small>
+                                        </div>
+                                        <div class="col-auto" data-billing-reason hidden>
+                                            <label class="form-label small" for="noteReason{{ $item->id }}">Reason for billing change</label>
+                                            <input id="noteReason{{ $item->id }}" name="reason" maxlength="800" class="form-control form-control-sm">
+                                        </div>
                                         <div class="col-auto d-flex align-items-end gap-3">
                                             <div class="form-check">
                                                 <input type="hidden" name="is_private" value="0">
@@ -526,7 +541,7 @@
                                 </div>
                                 <div class="modal-footer">
                                     <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-                                    <button type="submit" class="btn btn-sm btn-primary">Save</button>
+                                    <button type="submit" class="btn btn-sm btn-accent">Save</button>
                                 </div>
                             </div>
                         </form>
@@ -559,6 +574,15 @@
                                     <div class="mb-3">
                                         <label class="form-label small">Notes</label>
                                         <textarea name="notes" class="form-control form-control-sm" rows="4">{{ $item->notes }}</textarea>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label small" for="callBill{{ $item->id }}">Bill</label>
+                                        <input id="callBill{{ $item->id }}" name="billable_minutes" class="form-control form-control-sm" value="{{ $item->billable_minutes }}" placeholder="{{ gmdate('H:i:s', $item->effectiveDurationSeconds() ?? 0) }}" data-billing-input data-stored="{{ $item->billable_minutes }}">
+                                        <small>Actual {{ gmdate('H:i:s', $item->effectiveDurationSeconds() ?? 0) }}</small>
+                                    </div>
+                                    <div class="mb-3" data-billing-reason hidden>
+                                        <label class="form-label small" for="callReason{{ $item->id }}">Reason for billing change</label>
+                                        <input id="callReason{{ $item->id }}" name="reason" maxlength="800" class="form-control form-control-sm">
                                     </div>
                                     <div class="d-flex align-items-center gap-3">
                                         <div class="form-check">
@@ -1362,6 +1386,29 @@
 @endsection
 
 @push('scripts')
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('[data-billing-input]').forEach(input => {
+        const wrapper = input.form.querySelector('[data-billing-reason]');
+        const reason = wrapper.querySelector('input');
+        const normalize = value => {
+            value = value.trim();
+            if (value === '') return '';
+            if (/^\d+$/.test(value)) return String(Number(value));
+            const match = value.match(/^(?:(\d+)\s*h\s*)?(?:(\d+)\s*m)?$/i);
+            return match && (match[1] !== undefined || match[2] !== undefined)
+                ? String(Number(match[1] || 0) * 60 + Number(match[2] || 0)) : value;
+        };
+        const update = () => {
+            const changed = normalize(input.value) !== input.dataset.stored;
+            wrapper.hidden = !changed;
+            reason.required = changed;
+        };
+        input.addEventListener('input', update);
+        update();
+    });
+});
+</script>
 <script src="{{ asset('js/ticket-contract-change.js') }}?v={{ filemtime(public_path('js/ticket-contract-change.js')) }}"></script>
 <script src="{{ asset('js/ticket-actions.js') }}?v={{ filemtime(public_path('js/ticket-actions.js')) }}"></script>
 <script src="{{ asset('js/ticket-ai-chat.js') }}?v={{ filemtime(public_path('js/ticket-ai-chat.js')) }}"></script>

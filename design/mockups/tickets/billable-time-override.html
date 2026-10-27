@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mockup: billable time override on a ticket note and a phone call</title>
+<!-- tokens only, no CDN, synthetic data (G-13) -->
+<link rel="stylesheet" href="../_tokens.css">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--psa-colors-canvas); color: var(--psa-colors-ink);
+    font-family: var(--psa-typography-body-font-family); font-size: var(--psa-typography-body-font-size);
+    line-height: var(--psa-typography-body-line-height); }
+  main { padding: var(--psa-spacing-lg); display: grid; grid-template-columns: 1fr 1fr; gap: var(--psa-spacing-lg); max-width: 1180px; }
+  h2 { grid-column: 1 / -1; margin: 0; font-family: var(--psa-typography-display-font-family);
+    font-size: var(--psa-typography-display-font-size); font-weight: var(--psa-typography-display-font-weight);
+    color: var(--psa-colors-navy); text-transform: uppercase; letter-spacing: var(--psa-typography-display-letter-spacing); }
+  .cap { grid-column: 1 / -1; color: var(--psa-colors-muted-ink); margin: 0; }
+  .card { background: var(--psa-colors-surface); border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-md); overflow: hidden; }
+  .card-h { padding: var(--psa-spacing-sm) var(--psa-spacing-md); border-bottom: 1px solid var(--psa-colors-border);
+    font-family: var(--psa-typography-title-font-family); font-size: var(--psa-typography-title-font-size); font-weight: var(--psa-typography-title-font-weight); color: var(--psa-colors-navy); }
+  .card-b { padding: var(--psa-spacing-md); }
+  .card-f { padding: var(--psa-spacing-sm) var(--psa-spacing-md); border-top: 1px solid var(--psa-colors-border); display: flex; justify-content: flex-end; gap: var(--psa-spacing-sm); }
+  label { display: block; font-size: var(--psa-typography-label-font-size); font-weight: var(--psa-typography-label-font-weight); color: var(--psa-colors-muted-ink); margin-bottom: var(--psa-spacing-xs); }
+  .row { display: flex; gap: var(--psa-spacing-md); align-items: flex-end; flex-wrap: wrap; margin-bottom: var(--psa-spacing-md); }
+  input[type=text] { width: 110px; padding: 4px 8px; border: 1px solid var(--psa-colors-field-border); border-radius: var(--psa-rounded-sm); font: inherit; }
+  .ta { width: 100%; height: 64px; border: 1px solid var(--psa-colors-field-border); border-radius: var(--psa-rounded-sm); padding: 6px; color: var(--psa-colors-muted-ink); }
+  .chk { display: flex; gap: 6px; align-items: center; }
+  .hint { font-size: var(--psa-typography-label-font-size); color: var(--psa-colors-muted-ink); margin-top: var(--psa-spacing-xs); }
+  .actual { font-size: var(--psa-typography-label-font-size); color: var(--psa-colors-muted-ink); padding-bottom: 6px; }
+  .btn { padding: 4px 12px; border-radius: var(--psa-rounded-sm); border: 1px solid var(--psa-colors-border); background: var(--psa-colors-surface); color: var(--psa-colors-ink); font: inherit; }
+  .btn-primary { background: var(--psa-colors-signal-gold); border-color: var(--psa-colors-signal-gold); color: var(--psa-colors-navy-deep); font-weight: 600; }
+  .tl { grid-column: 1 / -1; }
+  .entry { display: flex; gap: var(--psa-spacing-sm); align-items: center; padding: var(--psa-spacing-sm) var(--psa-spacing-md); border-bottom: 1px solid var(--psa-colors-border); flex-wrap: wrap; }
+  .entry:last-child { border-bottom: 0; }
+  .who { font-weight: 600; }
+  .badge { font-size: var(--psa-typography-label-font-size); border-radius: var(--psa-rounded-pill); padding: 1px 8px; border: 1px solid var(--psa-colors-border); background: var(--psa-colors-canvas); }
+  .badge.bill { border-color: var(--psa-colors-info); color: var(--psa-colors-info); }
+  .badge.nobill { border-color: var(--psa-colors-neutral); color: var(--psa-colors-muted-ink); }
+  .reason input { width: 100%; }
+  .req { color: var(--psa-colors-danger, var(--psa-colors-navy)); }
+  .when { margin-left: auto; color: var(--psa-colors-muted-ink); font-size: var(--psa-typography-label-font-size); }
+</style>
+</head>
+<body>
+<main>
+  <h2>Billable time override</h2>
+  <p class="cap">Staff can bill a different amount from the time worked. Actual time is never changed. Blank means bill the actual time.</p>
+
+  <section class="card">
+    <div class="card-h">Edit note</div>
+    <div class="card-b">
+      <textarea class="ta">Replaced toner and reseated the tray on PRINTER-EXAMPLE-01.</textarea>
+      <div class="row" style="margin-top: var(--psa-spacing-md)">
+        <div><label>Time worked</label><input type="text" value="1h 30m"></div>
+        <div><label>Bill</label><input type="text" value="1h" placeholder="1h 30m"></div>
+        <div class="actual">Actual 1h 30m</div>
+      </div>
+      <div class="row reason"><div style="flex:1"><label>Reason for billing change <span class="req">(required)</span></label><input type="text" value="Toner swap took longer due to a jam; billing the agreed 1h."></div></div>
+      <div class="row">
+        <div class="chk"><input type="checkbox"> Private</div>
+        <div class="chk"><input type="checkbox" checked> Billable</div>
+        <div><label>Contract</label><select><option>Automatic</option></select></div>
+      </div>
+      <div class="hint">Leave Bill blank to bill the time worked. Enter 0 to bill nothing. Bill cannot be more than the time worked. A reason is required whenever Bill changes, including clearing it.</div>
+    </div>
+    <div class="card-f"><button class="btn">Cancel</button><button class="btn btn-primary">Save</button></div>
+  </section>
+
+  <section class="card">
+    <div class="card-h">Edit phone call</div>
+    <div class="card-b">
+      <textarea class="ta">Caller asked about a password reset for alex@example.test.</textarea>
+      <div class="row" style="margin-top: var(--psa-spacing-md)">
+        <div class="chk"><input type="checkbox" checked> Billable</div>
+        <div><label>Bill</label><input type="text" value="0" placeholder="12m"></div>
+        <div class="actual">Actual 11:42</div>
+      </div>
+      <div class="row reason"><div style="flex:1"><label>Reason for billing change <span class="req">(required)</span></label><input type="text" value="Courtesy follow-up call, not billed."></div></div>
+      <div class="hint">Leave Bill blank to bill the call length. Enter 0 to bill nothing. Bill cannot be more than the call length (12m here). A reason is required whenever Bill changes.</div>
+    </div>
+    <div class="card-f"><button class="btn">Cancel</button><button class="btn">Save</button></div>
+  </section>
+
+  <section class="card tl">
+    <div class="card-h">Timeline</div>
+    <div class="entry"><span class="who">Sam Tech</span><span class="badge">1h 30m</span><span class="badge bill">Billed 1h</span><span class="when">2 hours ago</span></div>
+    <div class="entry"><span class="who">Inbound call</span><span class="badge">11:42</span><span class="badge nobill">Billed 0m</span><span class="when">3 hours ago</span></div>
+    <div class="entry"><span class="who">Jo Tech</span><span class="badge">45m</span><span class="badge nobill">Billed 0m</span><span class="when">yesterday</span></div>
+  </section>
+</main>
+</body>
+</html>

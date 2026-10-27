@@ -252,7 +252,20 @@ class TicketNoteController extends Controller
             $attributes['noted_at'] = $notedAt;
         }
 
-        $note->update($attributes);
+        $bill = $this->parseBillInput($request->input('billable_minutes'));
+        \Illuminate\Support\Facades\DB::transaction(function () use ($note, $attributes, $bill, $request) {
+            $note = TicketNote::whereKey($note->id)->lockForUpdate()->firstOrFail();
+            $changed = $bill !== $note->billable_minutes;
+            if ($changed) {
+                $request->validate(['reason' => ['required', 'string', 'max:800']]);
+            }
+            $note->update($attributes);
+            if ($changed) {
+                app(\App\Services\BillableTimeService::class)->setNote(
+                    $note, $bill, $request->input('reason'), 'ui', $request->user(), $request->user()->name,
+                );
+            }
+        });
 
         // Re-link any attachments referenced in the body to this note
         app(\App\Services\AttachmentService::class)->linkAttachmentsFromBody(
@@ -264,6 +277,21 @@ class TicketNoteController extends Controller
 
         return redirect()->route('tickets.show', $ticket)
             ->with('success', 'Note updated.');
+    }
+
+    private function parseBillInput(mixed $input): ?int
+    {
+        if ($input === null || (is_string($input) && trim($input) === '')) {
+            return null;
+        }
+        if (! is_string($input) || ! preg_match('/^(?:\d+|\d+\s*h(?:\s*\d+\s*m)?|\d+\s*m)$/i', trim($input))) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['billable_minutes' => 'Enter a non-negative time, or leave Bill blank for actual time.']);
+        }
+        if (! preg_match('/[1-9]/', $input)) {
+            return 0;
+        }
+
+        return app(\App\Services\TicketService::class)->parseTimeInput($input);
     }
 
     public function destroy(Request $request, Ticket $ticket, TicketNote $note)
