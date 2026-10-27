@@ -469,9 +469,7 @@ class PrepayService
         $txn = DB::transaction(function () use ($note, &$alertContract, &$retry) {
             // Lock order: note -> existing prepay transaction -> contract.
             $lockedNote = TicketNote::withTrashed()->whereKey($note->id)->lockForUpdate()->first();
-            // Priced minutes include the note's time adjustment (#5067 r3): the zero check uses
-            // the same sum the debit is priced at.
-            if (! $lockedNote || $lockedNote->trashed() || ! $lockedNote->is_billable || $lockedNote->pricedMinutes() <= 0) {
+            if (! $lockedNote || $lockedNote->trashed() || ! $lockedNote->is_billable || $lockedNote->billedMinutes() <= 0) {
                 $this->reverseDebitForTicketNote($note);
 
                 return null;
@@ -484,7 +482,7 @@ class PrepayService
                 return null;
             }
 
-            $hours = round($note->pricedMinutes() / 60, 4);
+            $hours = round($note->billedMinutes() / 60, 4);
 
             // A missing-key locking read can gap-lock unrelated new notes on InnoDB.
             $existing = PrepayTransaction::where('ticket_note_id', $note->id)->first();
@@ -1271,7 +1269,7 @@ class PrepayService
             }
             $alertContract = $contract;
 
-            $durationSeconds = $call->effectiveDurationSeconds();
+            $durationSeconds = $call->billedSeconds();
             // Card 6ad7c912: a Voicemail call, or one whose stored duration is non-null and <= 0, never debits. Missed and null-duration calls are not gated.
             $neverDebits = $call->status === CallStatus::Voicemail
                 || ($call->duration !== null && (int) $call->duration <= 0);
