@@ -610,6 +610,10 @@ class CippStagedPasswordResetTest extends TestCase
      * @var array<string, array{partial: string, label_evidence: string}>
      */
     private const OWN_CARD_STAGED_TYPES = [
+        'stage_set_billable_time' => [
+            'partial' => 'time-entry-billing',
+            'label_evidence' => "StagedActionLabels::humanLabel('stage_set_billable_time')",
+        ],
         'stage_resolve_email_item' => [
             'partial' => 'email-resolutions',
             'label_evidence' => "StagedActionLabels::humanLabel('stage_resolve_email_item')",
@@ -643,6 +647,7 @@ class CippStagedPasswordResetTest extends TestCase
      * @var array<string, array{route: string, action: string}>
      */
     private const OWN_CARD_APPROVAL_ROUTES = [
+        'stage_set_billable_time' => ['route' => 'time-entry-billing.approve', 'action' => \App\Http\Controllers\Web\TimeEntryBillingController::class.'@approve'],
         'stage_resolve_email_item' => ['route' => 'email-resolutions.approve', 'action' => \App\Http\Controllers\Web\EmailResolutionController::class.'@approve'],
         'stage_resolve_phone_call' => ['route' => 'phone-call-resolutions.approve', 'action' => \App\Http\Controllers\Web\PhoneCallResolutionController::class.'@approve'],
         'stage_set_call_billable' => ['route' => 'phone-call-actions.approve', 'action' => \App\Http\Controllers\Web\PhoneCallActionController::class.'@approve'],

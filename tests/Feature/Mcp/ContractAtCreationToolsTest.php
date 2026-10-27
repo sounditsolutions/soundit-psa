@@ -668,6 +668,8 @@ class ContractAtCreationToolsTest extends TestCase
      */
     private function creatingSchemas(): array
     {
+        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+        // The sweep makes one HTTP call per staff definition and outgrows the production 120/min limit, which this test does not measure.
         $tools = [];
         // Use the live schema assembly, not the grant catalog's descriptions.
         $staff = array_merge(

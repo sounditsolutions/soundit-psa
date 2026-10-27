@@ -1787,6 +1787,8 @@ class McpToolRegistry
             self::createTicketFromCallTool(),
             self::setCallBillableTool(),
             self::setCallBillableTool(true),
+            self::setBillableTimeTool(),
+            self::setBillableTimeTool(true),
             self::moveTimeEntryContractTool(),
             self::moveTimeEntryContractTool(true),
             self::blockCallerTool(),
@@ -1795,6 +1797,25 @@ class McpToolRegistry
             self::allowCallerTool(true),
             self::markCallFollowedUpTool(),
             self::retryCallTranscriptionTool(),
+        ];
+    }
+
+    public static function setBillableTimeTool(bool $internal = false): array
+    {
+        return [
+            'name' => $internal ? 'stage_set_billable_time' : 'set_billable_time',
+            'description' => 'Set or clear billed minutes without changing actual time. Bare or staged grants hold for approval; only an explicit immediate grant executes. Overrides cannot exceed actual time. A reason is required.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'entry_type' => ['type' => 'string', 'enum' => ['note', 'call']],
+                    'entry_id' => ['type' => 'integer', 'minimum' => 1],
+                    'billable_minutes' => ['type' => ['integer', 'null'], 'minimum' => 0],
+                    'reason' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 800],
+                ],
+                'required' => ['entry_type', 'entry_id', 'billable_minutes', 'reason'],
+                'additionalProperties' => false,
+            ],
         ];
     }
 

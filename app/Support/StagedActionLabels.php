@@ -51,6 +51,7 @@ class StagedActionLabels
         'stage_resolve_phone_call' => 'Resolve phone call identity',
         'stage_set_call_billable' => 'Call billability change',
         'stage_move_time_entry_contract' => 'Time entry contract move',
+        'stage_set_billable_time' => 'Billable time change',
         'stage_block_caller' => 'Block caller',
         'stage_allow_caller' => 'Allow caller',
         'direct_close' => 'Closed directly',
