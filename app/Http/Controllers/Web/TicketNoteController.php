@@ -253,19 +253,19 @@ class TicketNoteController extends Controller
         }
 
         $bill = $this->parseBillInput($request->input('billable_minutes'));
-        \Illuminate\Support\Facades\DB::transaction(function () use ($note, $attributes, $bill, $request) {
-            $note = TicketNote::whereKey($note->id)->lockForUpdate()->firstOrFail();
-            $changed = $bill !== $note->billable_minutes;
-            if ($changed) {
-                $request->validate(['reason' => ['required', 'string', 'max:800']]);
-            }
-            $note->update($attributes);
-            if ($changed) {
-                app(\App\Services\BillableTimeService::class)->setNote(
-                    $note, $bill, $request->input('reason'), 'ui', $request->user(), $request->user()->name,
-                );
-            }
-        });
+        $changed = $bill !== $note->billable_minutes;
+        if ($changed) {
+            $request->validate(['reason' => ['required', 'string', 'max:800']]);
+            // Refused against the edited time before the edit is written: a refusal after it
+            // would leave the re-priced time, and any low-balance alert, behind.
+            app(\App\Services\BillableTimeService::class)->assertValid((clone $note)->fill($attributes), $bill, $request->input('reason'));
+        }
+        $note->update($attributes);
+        if ($changed) {
+            app(\App\Services\BillableTimeService::class)->setNote(
+                $note, $bill, $request->input('reason'), 'ui', $request->user(), $request->user()->name,
+            );
+        }
 
         // Re-link any attachments referenced in the body to this note
         app(\App\Services\AttachmentService::class)->linkAttachmentsFromBody(

@@ -157,6 +157,31 @@ class BillableTimeToolTest extends TestCase
         $this->assertSame(0, BillableTimeChange::count());
     }
 
+    public function test_kill_switch_refuses_immediate_staged_and_approval(): void
+    {
+        $note = $this->note();
+        $proposal = app(BillableTimeService::class)->propose($note, 30, 'Synthetic pending request', null, 'Synthetic agent');
+        \App\Models\Setting::setValue('technician_kill_switch', '1');
+        foreach (['set_billable_time:immediate', 'set_billable_time:staged'] as $grant) {
+            $response = $this->invoke([$grant], $note)->assertOk();
+            $this->assertTrue($response->json('result.isError'));
+            $this->assertStringContainsString('Technician kill-switch engaged.', json_encode($response->json()));
+        }
+        try {
+            app(BillableTimeService::class)->propose($note, 20, 'Synthetic request', null, 'Synthetic agent');
+            $this->fail('Expected kill-switch refusal');
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $this->assertSame(['Technician kill-switch engaged.'], $e->errors()['source']);
+        }
+        $this->actingAs(User::factory()->create(['role' => 'admin', 'is_active' => true]))
+            ->postJson(route('time-entry-billing.approve', $proposal))->assertStatus(422)
+            ->assertJsonPath('errors.source.0', 'Technician kill-switch engaged.');
+        $this->assertSame('pending', $proposal->fresh()->state);
+        $this->assertSame(1, TimeEntryBillingProposal::count());
+        $this->assertSame(0, BillableTimeChange::count());
+        $this->assertNull($note->fresh()->billable_minutes);
+    }
+
     public function test_transport_redaction_and_staged_approval_revalidation(): void
     {
         $messages = [];

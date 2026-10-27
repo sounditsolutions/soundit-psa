@@ -344,32 +344,33 @@ class CallController extends Controller
 
     public function updateNotes(Request $request, PhoneCall $call): RedirectResponse
     {
-        $bill = $this->parseBillInput($request->input('billable_minutes'));
-        \Illuminate\Support\Facades\DB::transaction(function () use ($call, $request, $bill) {
-            $call = PhoneCall::whereKey($call->id)->lockForUpdate()->firstOrFail();
-            $changed = $bill !== $call->billable_minutes;
-            if ($changed) {
-                $request->validate(['reason' => ['required', 'string', 'max:800']]);
-            }
-            $call->update([
-                'notes' => $request->input('notes'),
-                'summary_is_public' => $request->boolean('summary_is_public'),
-            ]);
+        $billSubmitted = $request->has('billable_minutes');
+        $bill = $billSubmitted ? $this->parseBillInput($request->input('billable_minutes')) : null;
+        // The call page saves notes without a Bill field; an absent field leaves any override as it is.
+        $changed = $billSubmitted && $bill !== $call->billable_minutes;
+        if ($changed) {
+            $request->validate(['reason' => ['required', 'string', 'max:800']]);
+            // Refused before anything is written, so a refusal leaves no partial save behind.
+            app(\App\Services\BillableTimeService::class)->assertValid($call, $bill, $request->input('reason'));
+        }
+        $call->update([
+            'notes' => $request->input('notes'),
+            'summary_is_public' => $request->boolean('summary_is_public'),
+        ]);
 
-            // Handle billability change if provided
-            if ($request->has('is_billable') && $call->ticket_id) {
-                $newBillable = $request->boolean('is_billable');
-                if ($call->is_billable !== $newBillable) {
-                    $this->phoneCallService->setBillable($call, $newBillable);
-                }
+        // Handle billability change if provided
+        if ($request->has('is_billable') && $call->ticket_id) {
+            $newBillable = $request->boolean('is_billable');
+            if ($call->is_billable !== $newBillable) {
+                $this->phoneCallService->setBillable($call, $newBillable);
             }
+        }
 
-            if ($changed) {
-                app(\App\Services\BillableTimeService::class)->setCall(
-                    $call, $bill, $request->input('reason'), 'ui', $request->user(), $request->user()->name,
-                );
-            }
-        });
+        if ($changed) {
+            app(\App\Services\BillableTimeService::class)->setCall(
+                $call, $bill, $request->input('reason'), 'ui', $request->user(), $request->user()->name,
+            );
+        }
 
         return redirect()->back()->with('success', 'Call updated.');
     }

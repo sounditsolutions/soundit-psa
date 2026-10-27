@@ -1231,8 +1231,9 @@ class PrepayService
             }
             // The stamp and hold marker are read and written only under the call lock,
             // as the note path does (#4922): a racing debit cannot re-mark a call that
-            // another debit has just ledgered.
-            foreach (['contract_id', 'contract_held_at'] as $key) {
+            // another debit has just ledgered. The Bill override is read here too, so a
+            // stale instance cannot re-price an overridden call at its full duration.
+            foreach (['contract_id', 'contract_held_at', 'billable_minutes'] as $key) {
                 $call->setAttribute($key, $locked->getAttribute($key));
                 $call->syncOriginalAttribute($key);
             }

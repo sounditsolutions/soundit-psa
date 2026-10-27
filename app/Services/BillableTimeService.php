@@ -7,6 +7,7 @@ use App\Models\PhoneCall;
 use App\Models\TicketNote;
 use App\Models\TimeEntryBillingProposal;
 use App\Models\User;
+use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -38,12 +39,21 @@ class BillableTimeService
         }
     }
 
+    /** Validates an override before a caller writes anything it would have to roll back. */
+    public function assertValid(TicketNote|PhoneCall $entry, ?int $minutes, ?string $reason): void
+    {
+        $this->validate($entry, $minutes, $reason, true);
+    }
+
     private function set(TicketNote|PhoneCall $entry, ?int $minutes, ?string $reason, string $source, ?User $actor, string $actorLabel): TicketNote|PhoneCall
     {
         return DB::transaction(function () use ($entry, $minutes, $reason, $source, $actor, $actorLabel) {
             $locked = $entry->newQuery()->whereKey($entry->getKey())->lockForUpdate()->firstOrFail();
             if (! in_array($source, ['ui', 'mcp'], true) || trim($actorLabel) === '' || mb_strlen($actorLabel) > 255) {
                 throw ValidationException::withMessages(['source' => 'A valid source and actor label are required.']);
+            }
+            if ($source === 'mcp' && TechnicianConfig::killSwitchEngaged()) {
+                throw ValidationException::withMessages(['source' => 'Technician kill-switch engaged.']);
             }
             $changed = $locked->billable_minutes !== $minutes;
             // An unchanged override may exceed actual after a later time edit.
@@ -74,6 +84,9 @@ class BillableTimeService
     {
         return DB::transaction(function () use ($entry, $minutes, $reason, $actor, $actorLabel) {
             $locked = $entry->newQuery()->whereKey($entry->getKey())->lockForUpdate()->firstOrFail();
+            if (TechnicianConfig::killSwitchEngaged()) {
+                throw ValidationException::withMessages(['source' => 'Technician kill-switch engaged.']);
+            }
             $this->validate($locked, $minutes, $reason, true);
 
             return TimeEntryBillingProposal::create([

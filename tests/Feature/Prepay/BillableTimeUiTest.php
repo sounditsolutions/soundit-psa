@@ -107,6 +107,40 @@ class BillableTimeUiTest extends TestCase
         $this->get(route('tickets.show', $note->ticket_id))->assertOk()->assertSee('Not debited yet:')->assertDontSee('Billed 30m');
     }
 
+    public function test_call_notes_only_save_keeps_override_without_reason(): void
+    {
+        $call = $this->entry(true);
+        $this->save($call, '30')->assertRedirect();
+        $count = BillableTimeChange::count();
+        $this->patchJson(route('calls.update-notes', $call), ['notes' => 'Synthetic notes only'])->assertRedirect();
+        $this->assertSame(30, $call->fresh()->billable_minutes);
+        $this->assertSame('Synthetic notes only', $call->fresh()->notes);
+        $this->assertSame($count, BillableTimeChange::count());
+    }
+
+    public function test_stale_call_instance_keeps_override_price(): void
+    {
+        $call = $this->entry(true);
+        app(\App\Services\BillableTimeService::class)->setCall($call->fresh(), 30, 'Synthetic billing change', 'ui', null, 'Synthetic staff');
+        app(PrepayService::class)->debitFromPhoneCall($call);
+        $this->assertEquals(-0.5, PrepayTransaction::where('phone_call_id', $call->id)->sole()->hours);
+    }
+
+    public function test_refused_note_override_writes_nothing_and_sends_no_alert(): void
+    {
+        $note = $this->entry(false);
+        \Illuminate\Support\Facades\DB::table('contracts')->where('id', $note->ticket->contract_id)->update(['prepay_alert_threshold' => 7.5]);
+        $messages = [];
+        \Illuminate\Support\Facades\Log::listen(function ($event) use (&$messages) {
+            $messages[] = $event->message;
+        });
+        $before = $note->fresh()->getAttributes();
+        $this->save($note, '200', ['time' => '150'])->assertUnprocessable()->assertJsonValidationErrors('billable_minutes');
+        $this->assertSame($before, $note->fresh()->getAttributes());
+        $this->assertEquals(-2.0, PrepayTransaction::where('ticket_note_id', $note->id)->sole()->hours);
+        $this->assertNotContains('[PrepayAlert] Balance below threshold', $messages);
+    }
+
     private function parsing(bool $call): void
     {
         $entry = $this->entry($call);

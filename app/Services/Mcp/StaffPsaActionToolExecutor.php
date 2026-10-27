@@ -193,6 +193,10 @@ class StaffPsaActionToolExecutor
     /** @return array<string, mixed> */
     private function setBillableTime(array $arguments, string $actorLabel, bool $staged): array
     {
+        // Agent billing writes stop with the technician kill-switch, as sibling agent actions do.
+        if (TechnicianConfig::killSwitchEngaged()) {
+            return ['error' => 'Technician kill-switch engaged.'];
+        }
         if (! in_array($arguments['entry_type'] ?? null, ['note', 'call'], true)
             || ! is_int($arguments['entry_id'] ?? null) || $arguments['entry_id'] < 1
             || ! array_key_exists('billable_minutes', $arguments)
