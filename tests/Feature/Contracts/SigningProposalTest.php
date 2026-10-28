@@ -167,11 +167,17 @@ class SigningProposalTest extends TestCase
             $records[] = [$event->level, $event->message, $event->context];
         });
         $documents = SignableDocument::all()->toJson();
+        $tokens = \Illuminate\Support\Facades\DB::table('signable_documents')->orderBy('id')->get(['id', 'token_hash', 'token_expires_at'])->toJson();
+        $proposalToken = \Illuminate\Support\Facades\DB::table('signable_documents')->where('id', $proposal->id)->value('token_hash');
+        $snapshots = \Illuminate\Support\Facades\DB::table('signing_snapshots')->orderBy('id')->get()->toJson();
         $files = Storage::disk('local')->allFiles();
         $response = $this->actingAs(\App\Models\User::factory()->create(['role' => 'admin']))
             ->post(route('signing.generate', $contract), ['template_id' => $agreementTemplate->id, 'recipient_name' => 'Alex Example', 'recipient_email' => 'alex@example.test']);
         $response->assertStatus(409);
         $this->assertSame("DRAFT — The accepted proposal's stored lines are missing or do not match their recorded hash. (signing_acceptance_integrity)", $response->getContent());
+        $this->assertSame($proposalToken, \Illuminate\Support\Facades\DB::table('signable_documents')->where('id', $proposal->id)->value('token_hash'));
+        $this->assertSame($tokens, \Illuminate\Support\Facades\DB::table('signable_documents')->orderBy('id')->get(['id', 'token_hash', 'token_expires_at'])->toJson());
+        $this->assertSame($snapshots, \Illuminate\Support\Facades\DB::table('signing_snapshots')->orderBy('id')->get()->toJson());
         $this->assertContains(['warning', 'signing_acceptance_integrity', ['exception_class' => \RuntimeException::class]], $records);
         $this->assertSame($documents, SignableDocument::all()->toJson());
         $this->assertDatabaseCount('signable_documents', 1);
