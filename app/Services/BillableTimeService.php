@@ -15,9 +15,10 @@ class BillableTimeService
 {
     public function __construct(private PrepayService $prepay) {}
 
-    public function setNote(TicketNote $note, ?int $minutes, ?string $reason, string $source, ?User $actor, string $actorLabel): TicketNote
+    /** @param  array<string, mixed>  $attributes  the same request's note edit, saved with the Bill in one write */
+    public function setNote(TicketNote $note, ?int $minutes, ?string $reason, string $source, ?User $actor, string $actorLabel, array $attributes = []): TicketNote
     {
-        return $this->set($note, $minutes, $reason, $source, $actor, $actorLabel);
+        return $this->set($note, $minutes, $reason, $source, $actor, $actorLabel, $attributes);
     }
 
     public function setCall(PhoneCall $call, ?int $minutes, ?string $reason, string $source, ?User $actor, string $actorLabel): PhoneCall
@@ -30,7 +31,10 @@ class BillableTimeService
         if ($entry instanceof TicketNote && $minutes !== null && (int) $entry->time_adjustment_minutes < 0) {
             throw ValidationException::withMessages(['billable_minutes' => 'Only part of this note was drawn from prepay in Halo; a billing override is not allowed.']);
         }
-        $cap = $entry instanceof TicketNote ? $entry->pricedMinutes() : (int) ceil(($entry->effectiveDurationSeconds() ?? 0) / 60);
+        // saving() zeroes an unverified intake note's time, so only its adjustment can be priced.
+        $cap = $entry instanceof TicketNote
+            ? ($entry->isUnverifiedContactIntake() ? (int) $entry->time_adjustment_minutes : $entry->pricedMinutes())
+            : (int) ceil(($entry->effectiveDurationSeconds() ?? 0) / 60);
         if ($minutes !== null && ($minutes < 0 || $minutes > max(0, $cap))) {
             throw ValidationException::withMessages(['billable_minutes' => 'Bill must be between zero and the actual time.']);
         }
@@ -45,9 +49,9 @@ class BillableTimeService
         $this->validate($entry, $minutes, $reason, true);
     }
 
-    private function set(TicketNote|PhoneCall $entry, ?int $minutes, ?string $reason, string $source, ?User $actor, string $actorLabel): TicketNote|PhoneCall
+    private function set(TicketNote|PhoneCall $entry, ?int $minutes, ?string $reason, string $source, ?User $actor, string $actorLabel, array $attributes = []): TicketNote|PhoneCall
     {
-        return DB::transaction(function () use ($entry, $minutes, $reason, $source, $actor, $actorLabel) {
+        return DB::transaction(function () use ($entry, $minutes, $reason, $source, $actor, $actorLabel, $attributes) {
             $locked = $entry->newQuery()->whereKey($entry->getKey())->lockForUpdate()->firstOrFail();
             if (! in_array($source, ['ui', 'mcp'], true) || trim($actorLabel) === '' || mb_strlen($actorLabel) > 255) {
                 throw ValidationException::withMessages(['source' => 'A valid source and actor label are required.']);
@@ -55,9 +59,15 @@ class BillableTimeService
             if ($source === 'mcp' && TechnicianConfig::killSwitchEngaged()) {
                 throw ValidationException::withMessages(['source' => 'Technician kill-switch engaged.']);
             }
+            // The same request's edit is filled first, so the cap is measured against it and one save prices both.
+            $locked->fill($attributes);
             $changed = $locked->billable_minutes !== $minutes;
             // An unchanged override may exceed actual after a later time edit.
             if (! $changed) {
+                if ($attributes !== []) {
+                    $locked->save();
+                }
+
                 return $locked;
             }
             $this->validate($locked, $minutes, $reason, true);

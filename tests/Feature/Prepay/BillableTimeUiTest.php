@@ -141,6 +141,60 @@ class BillableTimeUiTest extends TestCase
         $this->assertNotContains('[PrepayAlert] Balance below threshold', $messages);
     }
 
+    public function test_combined_note_edit_prices_once_without_interim_alert(): void
+    {
+        $note = $this->entry(false);
+        $id = PrepayTransaction::where('ticket_note_id', $note->id)->sole()->id;
+        \Illuminate\Support\Facades\DB::table('contracts')->where('id', $note->ticket->contract_id)->update(['prepay_alert_threshold' => 7.5]);
+        $messages = [];
+        \Illuminate\Support\Facades\Log::listen(function ($event) use (&$messages) {
+            $messages[] = $event->message;
+        });
+        $this->save($note, '60', ['time' => '150'])->assertRedirect();
+        $this->assertSame(150, $note->fresh()->time_minutes);
+        $this->assertSame(60, $note->fresh()->billable_minutes);
+        $row = PrepayTransaction::where('ticket_note_id', $note->id)->sole();
+        $this->assertSame($id, $row->id);
+        $this->assertEquals(-1.0, $row->hours);
+        $this->assertNotContains('[PrepayAlert] Balance below threshold', $messages);
+        // Positive control: clearing the Bill bills the full 150m, which reaches the threshold.
+        $this->save($note, '', ['time' => '150'])->assertRedirect();
+        $this->assertEquals(-2.5, PrepayTransaction::where('ticket_note_id', $note->id)->sole()->hours);
+        $this->assertContains('[PrepayAlert] Balance below threshold', $messages);
+    }
+
+    public function test_ticking_call_billable_with_bill_debits_billed_time_without_interim_alert(): void
+    {
+        $call = $this->entry(true);
+        $call->update(['is_billable' => false]);
+        app(PrepayService::class)->debitFromPhoneCall($call);
+        $this->assertSame(0, PrepayTransaction::where('phone_call_id', $call->id)->count());
+        \Illuminate\Support\Facades\DB::table('contracts')->where('id', $call->ticket->contract_id)->update(['prepay_alert_threshold' => 9]);
+        $messages = [];
+        \Illuminate\Support\Facades\Log::listen(function ($event) use (&$messages) {
+            $messages[] = $event->message;
+        });
+        $this->save($call, '5')->assertRedirect();
+        $this->assertTrue($call->fresh()->is_billable);
+        $this->assertSame(5, $call->fresh()->billable_minutes);
+        $this->assertEquals(-round(5 / 60, 4), PrepayTransaction::where('phone_call_id', $call->id)->sole()->hours);
+        $this->assertNotContains('[PrepayAlert] Balance below threshold', $messages);
+        // Positive control: clearing the Bill bills the full two hours, which crosses the threshold.
+        $this->save($call, '')->assertRedirect();
+        $this->assertEquals(-2.0, PrepayTransaction::where('phone_call_id', $call->id)->sole()->hours);
+        $this->assertContains('[PrepayAlert] Balance below threshold', $messages);
+    }
+
+    public function test_refused_bill_on_unverified_intake_note_saves_nothing(): void
+    {
+        $note = $this->entry(false);
+        $intake = TicketNote::forceCreate(['ticket_id' => $note->ticket_id, 'body' => 'Synthetic form', 'note_type' => 'note', 'contact_intake_origin' => true, 'contact_intake_verified_at' => null, 'noted_at' => now()]);
+        $before = $intake->fresh()->getAttributes();
+        $this->save($intake, '30', ['time' => '60'])->assertUnprocessable()->assertJsonValidationErrors('billable_minutes');
+        $this->assertSame($before, $intake->fresh()->getAttributes());
+        $this->assertSame(0, BillableTimeChange::count());
+    }
+
     private function parsing(bool $call): void
     {
         $entry = $this->entry($call);

@@ -358,18 +358,22 @@ class CallController extends Controller
             'summary_is_public' => $request->boolean('summary_is_public'),
         ]);
 
-        // Handle billability change if provided
-        if ($request->has('is_billable') && $call->ticket_id) {
-            $newBillable = $request->boolean('is_billable');
-            if ($call->is_billable !== $newBillable) {
-                $this->phoneCallService->setBillable($call, $newBillable);
-            }
+        // Handle billability change if provided. Unticking reverses before the Bill is set and
+        // ticking debits after it, so the call is never debited at a time this edit replaces.
+        $newBillable = $request->has('is_billable') && $call->ticket_id && $call->is_billable !== $request->boolean('is_billable')
+            ? $request->boolean('is_billable') : null;
+        if ($newBillable === false) {
+            $this->phoneCallService->setBillable($call, false);
         }
 
         if ($changed) {
             app(\App\Services\BillableTimeService::class)->setCall(
                 $call, $bill, $request->input('reason'), 'ui', $request->user(), $request->user()->name,
             );
+        }
+
+        if ($newBillable === true) {
+            $this->phoneCallService->setBillable($call, true);
         }
 
         return redirect()->back()->with('success', 'Call updated.');

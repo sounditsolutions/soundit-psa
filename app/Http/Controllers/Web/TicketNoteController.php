@@ -253,18 +253,15 @@ class TicketNoteController extends Controller
         }
 
         $bill = $this->parseBillInput($request->input('billable_minutes'));
-        $changed = $bill !== $note->billable_minutes;
-        if ($changed) {
+        if ($bill !== $note->billable_minutes) {
             $request->validate(['reason' => ['required', 'string', 'max:800']]);
-            // Refused against the edited time before the edit is written: a refusal after it
-            // would leave the re-priced time, and any low-balance alert, behind.
-            app(\App\Services\BillableTimeService::class)->assertValid((clone $note)->fill($attributes), $bill, $request->input('reason'));
-        }
-        $note->update($attributes);
-        if ($changed) {
+            // The edit and the Bill are saved in one locked write and priced once: a refusal writes
+            // nothing, and no interim debit at the edited full time can reach the low-balance alert.
             app(\App\Services\BillableTimeService::class)->setNote(
-                $note, $bill, $request->input('reason'), 'ui', $request->user(), $request->user()->name,
+                $note, $bill, $request->input('reason'), 'ui', $request->user(), $request->user()->name, $attributes,
             );
+        } else {
+            $note->update($attributes);
         }
 
         // Re-link any attachments referenced in the body to this note
