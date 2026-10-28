@@ -11,8 +11,11 @@
 #   1. php artisan test          — the full PHPUnit suite must pass without warnings.
 #      Serial by default; GC_VERIFY_PARALLEL=<N> opts into ParaTest with N
 #      processes (see stage 1). phpunit.xml's source attributes
-#      ignoreSuppressionOfWarnings and ignoreSuppressionOfPhpWarnings close
-#      the @-suppressed warnings gap on both paths (see stage 1's probe).
+#      ignoreSuppressionOfWarnings and ignoreSuppressionOfPhpWarnings make an
+#      @-suppressed warning that reaches PHPUnit's error handler count on both
+#      paths (see stage 1's probe). One raised after Laravel's HandleExceptions
+#      has installed its handler is dropped there and reaches neither belt in
+#      either mode (inferred from handleError, not measured).
 #      Serial remains the default and gate of record; parallel remains opt-in.
 #      Making parallel the default needs a separate Jeeves ruling.
 #      Enforced by TWO independent belts. Before #7271 (no ignoreSuppressionOf*
@@ -204,7 +207,7 @@ fi
 # parser are the same on both paths. Belt two is pinned against both ParaTest
 # summary labels in GcVerifySummaryWarningGateTest.
 #
-# SUPPRESSED-WARNING GAP CLOSED (#7271): phpunit.xml's <source> sets
+# SUPPRESSED-WARNING GAP NARROWED (#7271): phpunit.xml's <source> sets
 # ignoreSuppressionOfWarnings="true" and ignoreSuppressionOfPhpWarnings="true".
 # Forge's 2026-10-28 probe on fc61f643 with those attributes measured suppressed
 # E_USER_WARNING and PHP warnings: both artisan modes exited 1; serial reported
@@ -213,6 +216,9 @@ fi
 # GcVerifyParallelSuppressionTest exercises real PHPUnit and ParaTest through
 # this script using an artisan adapter and source attributes read from the repo.
 # Its "Warnings: N" summaries and nonzero gate exits pin both warning classes.
+# Not covered (inferred from HandleExceptions::handleError :71-78, not
+# measured): a warning @-suppressed after Laravel boots is dropped by Laravel's
+# handler before PHPUnit sees it, so neither belt sees it in either mode.
 # Serial remains the default and gate of record; GC_VERIFY_PARALLEL is opt-in.
 # Making parallel the default needs a separate Jeeves ruling.
 # Ruled by Jeeves on Trello card 6ab5736b (2026-10-19 03:26 PT): parallel is
