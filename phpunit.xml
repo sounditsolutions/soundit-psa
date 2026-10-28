@@ -12,7 +12,7 @@
             <directory>tests/Feature</directory>
         </testsuite>
     </testsuites>
-    <source>
+    <source ignoreSuppressionOfWarnings="true" ignoreSuppressionOfPhpWarnings="true">
         <include>
             <directory>app</directory>
         </include>
