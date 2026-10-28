@@ -155,6 +155,30 @@ class SigningProposalTest extends TestCase
         $this->assertSame($files, Storage::disk('local')->allFiles());
     }
 
+    public function test_missing_acceptance_snapshot_refuses_with_integrity_copy_and_no_writes(): void
+    {
+        [$contract, $proposalTemplate, $agreementTemplate] = $this->scenario();
+        $proposal = $this->generate($contract, $proposalTemplate);
+        $this->acceptProposal($proposal);
+        \Illuminate\Support\Facades\DB::table('signing_snapshots')->where('signable_document_id', $proposal->id)->where('role', 'acceptance')->delete();
+        $this->assertSame('accepted', $proposal->fresh()->status);
+        $records = [];
+        \Illuminate\Support\Facades\Log::listen(function ($event) use (&$records): void {
+            $records[] = [$event->level, $event->message, $event->context];
+        });
+        $documents = SignableDocument::all()->toJson();
+        $files = Storage::disk('local')->allFiles();
+        $response = $this->actingAs(\App\Models\User::factory()->create(['role' => 'admin']))
+            ->post(route('signing.generate', $contract), ['template_id' => $agreementTemplate->id, 'recipient_name' => 'Alex Example', 'recipient_email' => 'alex@example.test']);
+        $response->assertStatus(409);
+        $this->assertSame("DRAFT — The accepted proposal's stored lines are missing or do not match their recorded hash. (signing_acceptance_integrity)", $response->getContent());
+        $this->assertContains(['warning', 'signing_acceptance_integrity', ['exception_class' => \RuntimeException::class]], $records);
+        $this->assertSame($documents, SignableDocument::all()->toJson());
+        $this->assertDatabaseCount('signable_documents', 1);
+        $this->assertSame(0, SignableDocument::where('kind', 'agreement')->count());
+        $this->assertSame($files, Storage::disk('local')->allFiles());
+    }
+
     public function test_service_kind_cross_checks_refuse_without_spending_token_or_snapshot(): void
     {
         [$contract, $proposalTemplate, $agreementTemplate] = $this->scenario();

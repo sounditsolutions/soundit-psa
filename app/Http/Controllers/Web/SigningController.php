@@ -16,7 +16,7 @@ class SigningController extends Controller
     private const REFUSALS = [
         'signing_multistep_unsupported' => 'Only one-step and two-step templates are supported.',
         'signing_acceptance_missing' => 'The newest proposal has not been accepted.',
-        'signing_acceptance_integrity' => "The accepted proposal's stored lines do not match their recorded hash.",
+        'signing_acceptance_integrity' => "The accepted proposal's stored lines are missing or do not match their recorded hash.",
         'signing_kind_mismatch' => 'The document kind does not match this action.',
         'signing_template_kind_invalid' => 'The template kind is invalid.',
         'signing_template_type_invalid' => 'The contract type is invalid.',
