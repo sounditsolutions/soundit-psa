@@ -10,16 +10,24 @@
 # Gates:
 #   1. php artisan test          — the full PHPUnit suite must pass without warnings.
 #      Serial by default; GC_VERIFY_PARALLEL=<N> opts into ParaTest with N
-#      processes (see stage 1). The runner flag and the belt-two parser are
-#      the same on either path, but the summary belt two reads is not: under
-#      ParaTest it does not count @-suppressed warnings (belt one misses that
-#      class in both modes), so the parallel path does NOT cover the warning
-#      class belt two exists for (see stage 1, KNOWN GAP). Which belt trips
-#      under ParaTest has not been measured through this script (stage 1).
-#      Enforced by TWO independent belts, because --fail-on-warning alone was
-#      measured to be partial: it does not fail on the @-suppressed read at
-#      vendor/vlucas/phpdotenv/src/Store/File/Reader.php:73 that Laravel's error
-#      handler surfaces in the summary's `warnings` column. Belt one is
+#      processes (see stage 1). phpunit.xml's source attributes
+#      ignoreSuppressionOfWarnings and ignoreSuppressionOfPhpWarnings make an
+#      @-suppressed warning that reaches PHPUnit's error handler count on both
+#      paths (see stage 1's probe). One raised after Laravel's HandleExceptions
+#      has installed its handler is dropped there and reaches neither belt in
+#      either mode (inferred from handleError, not measured).
+#      Serial remains the default and gate of record; parallel remains opt-in.
+#      Making parallel the default needs a separate Jeeves ruling.
+#      Enforced by TWO independent belts. Before #7271 (no ignoreSuppressionOf*
+#      attributes), --fail-on-warning alone was measured to be partial: it did
+#      not fail on the @-suppressed read at
+#      vendor/vlucas/phpdotenv/src/Store/File/Reader.php:73 that PHPUnit's error
+#      handler received and Collision counted in the summary's `warnings`
+#      column. With
+#      ignoreSuppressionOfPhpWarnings set, PHPUnit's IssueFilter no longer drops
+#      that suppressed event, so serial belt one is expected to fail on it too
+#      (inferred from IssueFilter::shouldBeProcessed, not re-measured at this
+#      tip). Belt two is kept either way. Belt one is
 #      --fail-on-warning (PHPUnit's own exit policy); belt two parses the
 #      summary line and requires warnings == 0. An unrecognised summary is a
 #      FAIL, never a PASS — this gate fails closed on a format it cannot read.
@@ -197,34 +205,23 @@ fi
 # --processes=<N>` (ParaTest, a require-dev package). Unset, empty or 0 keeps
 # the serial argv and exit policy as they were, provided GC_VERIFY_JUNIT is
 # also unset (see below). The runner flag --fail-on-warning and the belt-two
-# parser are the same on both paths. Which belt trips under ParaTest is
-# not measured through this script. A planted test-triggered warning
-# (E_USER_WARNING), run with `php artisan test --parallel` directly (burner
-# tree, not through this script), surfaced as an error ("Errors: 1"). An
-# error makes the runner exit non-zero, which belt one fails on (inferred from
-# PHPUnit's exit-code rules; that run's exit code was not recorded). The
-# "Warnings: 1" ParaTest label was captured
-# separately, through a bypass adapter that called vendor/bin/paratest
-# directly (not artisan or Collision) with an earlier revision of this script.
-# It shows ParaTest's label, not which belt trips on the app path. Belt two is
-# pinned against both ParaTest summary labels in GcVerifySummaryWarningGateTest.
+# parser are the same on both paths. Belt two is pinned against both ParaTest
+# summary labels in GcVerifySummaryWarningGateTest.
 #
-# KNOWN GAP ON THE PARALLEL PATH (inferred from vendored source, not measured):
-# the parser is the same, but what it reads is not. Serially, belt two reads
-# Collision's summary. Its DefaultPrinter counts every warning event,
-# @-suppressed ones included, and that is the column the header's phpdotenv
-# read surfaced in. Under --parallel the summary is ParaTest's, built from
-# PHPUnit's TestResult. PHPUnit's Collector drops a warning event that
-# wasSuppressed() unless <source> sets ignoreSuppressionOf(Php)Warnings
-# (Runner\IssueFilter::shouldBeProcessed), and this repo's phpunit.xml sets
-# neither. So an @-suppressed warning that the serial gate FAILs on can reach
-# neither belt in parallel, and the run PASSes. The measured instance (the
-# no-.env phpdotenv read) is closed on both paths by the .env provisioning
-# above. The class is not closed. A parallel PASS does not stand in for a
-# serial one on that class, and serial stays the gate of record. The only
-# switch found in PHPUnit 11.5 is that phpunit.xml attribute (its CLI has no
-# suppression option). Setting it would also change what the serial run's
-# --fail-on-warning sees, so this change does not set it.
+# SUPPRESSED-WARNING GAP NARROWED (#7271): phpunit.xml's <source> sets
+# ignoreSuppressionOfWarnings="true" and ignoreSuppressionOfPhpWarnings="true".
+# Forge's 2026-10-28 probe on fc61f643 with those attributes measured suppressed
+# E_USER_WARNING and PHP warnings: both artisan modes exited 1; serial reported
+# "2 warnings", parallel "Tests: 2, Assertions: 2, Warnings: 2." Without the
+# attributes parallel exited 0 with "OK", while serial's summary caught them.
+# GcVerifyParallelSuppressionTest exercises real PHPUnit and ParaTest through
+# this script using an artisan adapter and source attributes read from the repo.
+# Its "Warnings: N" summaries and nonzero gate exits pin both warning classes.
+# Not covered (inferred from HandleExceptions::handleError :71-78, not
+# measured): a warning @-suppressed after Laravel boots is dropped by Laravel's
+# handler before PHPUnit sees it, so neither belt sees it in either mode.
+# Serial remains the default and gate of record; GC_VERIFY_PARALLEL is opt-in.
+# Making parallel the default needs a separate Jeeves ruling.
 # Ruled by Jeeves on Trello card 6ab5736b (2026-10-19 03:26 PT): parallel is
 # opt-in, serial stays the default, and --fail-on-warning and belt two are
 # kept. Forge's choices, not ruled text: the 1-99 range; any other value is a
