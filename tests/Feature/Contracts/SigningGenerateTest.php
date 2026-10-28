@@ -472,6 +472,42 @@ class SigningGenerateTest extends TestCase
         return ['bounded only' => [false], 'unbounded' => [true]];
     }
 
+    public function test_line_whose_own_tiers_normalize_away_renders_the_frozen_sku_card_at_both_layers(): void
+    {
+        $sku = \App\Models\Sku::create([
+            'name' => 'Example backup storage', 'sku_code' => 'EXAMPLE-BKP-EMPTY', 'unit_price' => '0', 'unit_cost' => '0',
+            'default_quantity_type' => \App\Enums\QuantityType::PerBackupStorageGb, 'is_taxable' => false, 'is_active' => true,
+        ]);
+        $expected = [['up_to_gb' => 500, 'unit_price' => '0.18'], ['up_to_gb' => 2000, 'unit_price' => '0.14']];
+        foreach ($expected as $tier) {
+            $sku->backupStorageTiers()->create($tier);
+        }
+        $invalid = [['up_to' => '', 'unit_price' => '']];
+        $this->contract->lines()->create([
+            'version' => 1, 'source' => 'example', 'sku_id' => $sku->id, 'description' => 'Example backup storage',
+            'quantity_type' => 'per_backup_storage_gb', 'unit_price' => '0.00', 'pricing_tiers' => $invalid, 'is_taxable' => false, 'sort_order' => 1,
+        ]);
+        $document = $this->generate()->fresh();
+        $this->assertSame($invalid, $document->rendered_lines[1]['pricing_tiers']);
+        $this->assertSame([], \App\Support\TieredPricing::normalize($document->rendered_lines[1]['pricing_tiers']));
+        $this->assertSame($expected, $document->rendered_lines[1]['sku_volume_tiers']);
+        $this->assertSame(hash('sha256', $document->getRawOriginal('rendered_lines')), $document->rendered_lines_sha256);
+        $unitDocument = new SignableDocument(['rendered_lines' => [[
+            'description' => 'Example frozen storage', 'quantity_type' => 'per_backup_storage_gb',
+            'unit_price' => '0.00', 'pricing_tiers' => $invalid, 'sku_volume_tiers' => $expected,
+        ]]]);
+        $unitHtml = app(TemplateMerge::class)->merge('{{lines_table}}', [], $unitDocument)['html'];
+        $html = app(TemplateMerge::class)->merge('{{lines_table}}', [], $document)['html'];
+        $stored = Storage::disk('local')->get($document->pdf_path);
+        $this->assertSame(0.14, $sku->priceForStorageGb(3000));
+        foreach ([$unitHtml, $html, $stored] as $rendered) {
+            $this->assertStringContainsString('DRAFT — Volume pricing, every GB at one rate:', $rendered);
+            $this->assertStringContainsString('DRAFT — up to 500 GB: 0.18', $rendered);
+            $this->assertStringContainsString('DRAFT — above that: '.number_format($sku->priceForStorageGb(3000), 2), $rendered);
+            $this->assertStringNotContainsString('DRAFT — Up to unlimited:', $rendered);
+        }
+    }
+
     public function test_void_refuses_final_and_void_rows_and_card_offers_it_only_on_pending_rows(): void
     {
         $service = app(SigningService::class);

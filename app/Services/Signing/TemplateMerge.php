@@ -4,6 +4,7 @@ namespace App\Services\Signing;
 
 use App\Enums\QuantityType;
 use App\Models\SignableDocument;
+use App\Support\TieredPricing;
 use HTMLPurifier;
 use HTMLPurifier_Config;
 
@@ -31,7 +32,7 @@ class TemplateMerge
             $basis = QuantityType::from($line['quantity_type']);
             $tiers = $line['pricing_tiers'] ?? [];
             $rate = (string) ($line['unit_price'] ?? '');
-            if ($tiers !== []) {
+            if (TieredPricing::normalize($tiers) !== []) {
                 $bands = [];
                 foreach ($tiers as $tier) {
                     $bands[] = __('signing.rate_card.'.(isset($tier['up_to']) ? 'band' : 'unlimited_band'), ['limit' => $tier['up_to'] ?? '', 'price' => $tier['unit_price']]);
