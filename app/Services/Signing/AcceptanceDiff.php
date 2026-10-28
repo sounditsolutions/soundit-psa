@@ -6,7 +6,7 @@ class AcceptanceDiff
 {
     private const COLUMNS = [
         'sku_id', 'description', 'quantity_type', 'fixed_quantity', 'unit_price',
-        'pricing_tiers', 'is_taxable', 'option_group', 'term',
+        'pricing_tiers', 'sku_volume_tiers', 'is_taxable', 'option_group', 'term',
     ];
 
     /**

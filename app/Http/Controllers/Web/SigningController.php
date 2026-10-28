@@ -26,7 +26,6 @@ class SigningController extends Controller
         'signing_template_proposal_invalid' => 'A proposal must use one step without countersign.',
         'signing_template_unavailable' => 'The template is not an active supported template for this contract type.',
         'signing_lines_missing' => 'The contract has no lines to show.',
-        'signing_line_price_inherited' => 'A backup storage line is priced by its SKU volume tiers, which signing documents cannot show yet.',
         'signing_unknown_merge_token' => 'The template contains a merge field that is not supported.',
         'signing_lines_table_missing' => 'The template does not include the {{lines_table}} rate card.',
         'signing_pdf_write_failed' => 'The PDF could not be stored.',

@@ -152,6 +152,20 @@ class SigningService
         });
     }
 
+    private function renderedLine(\App\Models\ContractLine $line): array
+    {
+        $attributes = $line->attributesToArray();
+        $sku = $line->sku_id ? Sku::find($line->sku_id) : null;
+        if (TieredPricing::normalize($line->pricing_tiers ?? []) === []
+            && PricingModelOverride::volumeRateCardApplies($line->quantity_type, $sku)) {
+            $attributes['sku_volume_tiers'] = $sku->backupStorageTiers->map(fn ($tier) => [
+                'up_to_gb' => $tier->up_to_gb, 'unit_price' => $tier->unit_price,
+            ])->all();
+        }
+
+        return $attributes;
+    }
+
     public function generate(Contract $contract, AgreementTemplate $template, array $recipient): SignableDocument
     {
         if (! config('signing.enabled')) {
@@ -181,7 +195,7 @@ class SigningService
                         \Illuminate\Support\Facades\Log::warning('signing_acceptance_integrity', ['exception_class' => RuntimeException::class]);
                         throw new RuntimeException('signing_acceptance_integrity');
                     }
-                    $diff = (new AcceptanceDiff)->compare($acceptance->lines, $lines->map(fn ($line) => $line->attributesToArray())->all());
+                    $diff = (new AcceptanceDiff)->compare($acceptance->lines, $lines->map(fn ($line) => $this->renderedLine($line))->all());
                     if ($diff !== []) {
                         throw new SigningAcceptanceStale($diff, $proposal, $acceptance);
                     }
@@ -190,15 +204,7 @@ class SigningService
                 if ($lines->isEmpty()) {
                     throw new RuntimeException('signing_lines_missing');
                 }
-                $renderedLines = $acceptance ? $acceptance->lines : $lines->map(fn ($line) => $line->attributesToArray())->all();
-                foreach ($renderedLines as $attributes) {
-                    $line = new \App\Models\ContractLine($attributes);
-                    $sku = $line->sku_id ? Sku::find($line->sku_id) : null;
-                    if (TieredPricing::normalize($line->pricing_tiers ?? []) === []
-                        && PricingModelOverride::volumeRateCardApplies($line->quantity_type, $sku)) {
-                        throw new RuntimeException('signing_line_price_inherited');
-                    }
-                }
+                $renderedLines = $acceptance ? $acceptance->lines : $lines->map(fn ($line) => $this->renderedLine($line))->all();
                 $lines = $renderedLines;
                 $json = json_encode($lines, JSON_THROW_ON_ERROR);
                 $version = 1 + (int) SignableDocument::where('contract_id', $contract->id)->where('kind', $template->kind)->max('version');

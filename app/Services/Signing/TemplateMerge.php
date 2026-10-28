@@ -4,6 +4,7 @@ namespace App\Services\Signing;
 
 use App\Enums\QuantityType;
 use App\Models\SignableDocument;
+use App\Support\TieredPricing;
 use HTMLPurifier;
 use HTMLPurifier_Config;
 
@@ -31,10 +32,21 @@ class TemplateMerge
             $basis = QuantityType::from($line['quantity_type']);
             $tiers = $line['pricing_tiers'] ?? [];
             $rate = (string) ($line['unit_price'] ?? '');
-            if ($tiers !== []) {
+            if (TieredPricing::normalize($tiers) !== []) {
                 $bands = [];
                 foreach ($tiers as $tier) {
                     $bands[] = __('signing.rate_card.'.(isset($tier['up_to']) ? 'band' : 'unlimited_band'), ['limit' => $tier['up_to'] ?? '', 'price' => $tier['unit_price']]);
+                }
+                $rate = implode('; ', $bands);
+            } elseif (! empty($line['sku_volume_tiers'])) {
+                $bands = [__('signing.rate_card.volume_heading')];
+                $hasUnlimited = false;
+                foreach ($line['sku_volume_tiers'] as $tier) {
+                    $hasUnlimited = $hasUnlimited || $tier['up_to_gb'] === null;
+                    $bands[] = __('signing.rate_card.'.($tier['up_to_gb'] === null ? 'volume_unlimited_band' : 'volume_band'), ['limit' => $tier['up_to_gb'], 'price' => $tier['unit_price']]);
+                }
+                if (! $hasUnlimited) {
+                    $bands[] = __('signing.rate_card.volume_unlimited_band', ['price' => $tier['unit_price']]);
                 }
                 $rate = implode('; ', $bands);
             }
