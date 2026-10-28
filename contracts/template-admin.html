@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Agreement templates — static review</title><link rel="stylesheet" href="../_tokens.css"><style>
+* { box-sizing: border-box; }
+body { margin:0; background:var(--psa-colors-canvas); color:var(--psa-colors-ink); font-family:var(--psa-typography-body-font-family); font-size:var(--psa-typography-body-font-size); line-height:var(--psa-typography-body-line-height); }
+header { background:var(--psa-colors-navy-deep); color:var(--psa-colors-surface); padding:var(--psa-spacing-md) var(--psa-spacing-lg); }
+main { max-width:1120px; margin:32px auto; padding:0 var(--psa-spacing-lg); }
+h1,h2,h3 { font-family:var(--psa-typography-headline-font-family); color:var(--psa-colors-navy); }
+h1 { font-size:var(--psa-typography-headline-font-size); margin:0 0 var(--psa-spacing-sm); }
+h2 { font-size:var(--psa-typography-display-font-size); margin:0; }
+h3 { font-size:var(--psa-typography-body-font-size); }
+p { max-width:72ch; }
+.muted { color:var(--psa-colors-muted-ink); }
+.card { background:var(--psa-colors-surface); border:1px solid var(--psa-colors-border); border-radius:var(--psa-rounded-md); overflow:hidden; margin-top:var(--psa-spacing-lg); }
+.bar { background:var(--psa-colors-navy); color:var(--psa-colors-surface); padding:var(--psa-spacing-md); font:600 var(--psa-typography-title-font-size) var(--psa-typography-title-font-family); letter-spacing:var(--psa-typography-title-letter-spacing); }
+.pad { padding:var(--psa-spacing-lg); }
+.row { display:flex; justify-content:space-between; align-items:center; gap:var(--psa-spacing-md); flex-wrap:wrap; }
+.notice { border:1px solid var(--psa-colors-border); border-radius:var(--psa-rounded-sm); padding:var(--psa-spacing-md); background:var(--psa-colors-canvas); }
+button,.button { display:inline-block; font:600 var(--psa-typography-label-font-size) var(--psa-typography-body-font-family); padding:10px var(--psa-spacing-md); border:1px solid var(--psa-colors-navy); border-radius:var(--psa-rounded-sm); background:var(--psa-colors-surface); color:var(--psa-colors-navy); text-decoration:none; }
+button:hover,.button:hover { background:var(--psa-colors-navy); color:var(--psa-colors-surface); }
+button:active,.button:active { background:var(--psa-colors-navy-light); color:var(--psa-colors-surface); }
+button:focus-visible,.button:focus-visible,input:focus-visible { outline:3px solid var(--psa-colors-navy-light); outline-offset:3px; }
+.primary { background:var(--psa-colors-signal-gold); color:var(--psa-colors-navy-deep); border-color:var(--psa-colors-signal-gold); }
+.primary:hover,.primary:active { background:var(--psa-colors-signal-gold-hover); color:var(--psa-colors-navy-deep); }
+button:disabled { color:var(--psa-colors-muted-ink); border-color:var(--psa-colors-border); background:var(--psa-colors-canvas); cursor:not-allowed; }
+table { width:100%; border-collapse:collapse; text-align:left; }
+th { background:var(--psa-colors-navy); color:var(--psa-colors-surface); font:600 var(--psa-typography-title-font-size) var(--psa-typography-title-font-family); }
+th,td { padding:var(--psa-spacing-md); border-bottom:1px solid var(--psa-colors-border); vertical-align:top; }
+.badge { display:inline-block; border:1px solid var(--psa-colors-field-border); border-radius:var(--psa-rounded-pill); padding:2px 10px; font-size:var(--psa-typography-label-font-size); white-space:nowrap; }
+.actions { display:flex; gap:var(--psa-spacing-sm); flex-wrap:wrap; }
+small { font-size:var(--psa-typography-label-font-size); }
+.public { max-width:900px; }
+.paper { padding:32px; border:1px solid var(--psa-colors-field-border); background:var(--psa-colors-surface); }
+label { display:block; color:var(--psa-colors-navy); font-weight:600; margin-bottom:var(--psa-spacing-sm); }
+input { width:100%; max-width:460px; padding:12px; font:inherit; border:1px solid var(--psa-colors-field-border); border-radius:var(--psa-rounded-sm); }
+footer { margin-top:var(--psa-spacing-lg); color:var(--psa-colors-muted-ink); }
+@media(max-width:700px) { main { margin:var(--psa-spacing-md) auto; } .table-wrap { overflow-x:auto; } .pad,.paper { padding:var(--psa-spacing-md); } }
+.crumb { color:var(--psa-colors-muted-ink); margin:0 0 var(--psa-spacing-sm); }
+.grid { display:grid; grid-template-columns: 1.1fr 1fr; gap:var(--psa-spacing-lg); align-items:start; }
+.field { margin-bottom:var(--psa-spacing-md); }
+.hint { color:var(--psa-colors-muted-ink); font-size:var(--psa-typography-label-font-size); margin:var(--psa-spacing-xs) 0 0; }
+select, textarea { width:100%; padding:10px 12px; font:inherit; border:1px solid var(--psa-colors-field-border); border-radius:var(--psa-rounded-sm); background:var(--psa-colors-surface); color:var(--psa-colors-ink); }
+textarea { min-height:150px; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:var(--psa-typography-label-font-size); }
+.radios { display:flex; gap:var(--psa-spacing-lg); }
+.radios label, .check label { display:inline; font-weight:400; color:var(--psa-colors-ink); }
+.readonly { background:var(--psa-colors-canvas); border:1px solid var(--psa-colors-border); border-radius:var(--psa-rounded-sm); padding:10px 12px; color:var(--psa-colors-muted-ink); }
+.ok { border-color:var(--psa-colors-success); color:var(--psa-colors-success); }
+.off { border-color:var(--psa-colors-neutral); color:var(--psa-colors-neutral); }
+.warn { border-color:var(--psa-colors-danger); color:var(--psa-colors-danger); }
+.chips code { display:inline-block; margin:2px 4px 2px 0; padding:1px 6px; border:1px solid var(--psa-colors-border); border-radius:var(--psa-rounded-sm); background:var(--psa-colors-canvas); font-size:var(--psa-typography-label-font-size); }
+.alert { border:1px solid var(--psa-colors-danger); border-radius:var(--psa-rounded-sm); padding:var(--psa-spacing-md); background:var(--psa-colors-surface); }
+.alert strong { color:var(--psa-colors-danger); }
+td.was { color:var(--psa-colors-muted-ink); text-decoration:line-through; }
+td.now { color:var(--psa-colors-navy); font-weight:600; }
+tr.removed td { color:var(--psa-colors-muted-ink); }
+.kv { display:grid; grid-template-columns: max-content 1fr; gap:4px var(--psa-spacing-lg); margin:0; }
+.kv dt { color:var(--psa-colors-muted-ink); } .kv dd { margin:0; }
+@media(max-width:900px) { .grid { grid-template-columns:1fr; } }
+</style></head><body>
+<header>Example IT · Operations desk</header>
+<main>
+<p class="crumb">Settings / Agreement templates</p>
+<div class="row"><h1>Agreement templates</h1><button type="button">New template</button></div>
+<div class="notice"><strong>Design review · not a live screen.</strong> This screen and its sidebar link are absent while signing.enabled is false. Admin only. Templates are never deleted; deactivate instead.</div>
+<section class="card" aria-labelledby="t-list"><div class="bar" id="t-list">TEMPLATES</div>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Contract type</th><th>Steps</th><th>Countersign</th><th>Status</th><th>Updated</th><th></th></tr></thead><tbody>
+<tr><td><strong>Example managed proposal</strong></td><td>Proposal</td><td>Managed Services</td><td>—</td><td>—</td><td><span class="badge ok">Active</span></td><td>Oct 27, 9:12 AM</td><td><button type="button">Edit</button></td></tr>
+<tr><td><strong>Example managed agreement</strong></td><td>Agreement</td><td>Managed Services</td><td>2 · two-step</td><td>Required</td><td><span class="badge ok">Active</span></td><td>Oct 27, 9:40 AM</td><td><button type="button">Edit</button></td></tr>
+<tr><td><strong>Example break/fix agreement</strong></td><td>Agreement</td><td>Break-Fix</td><td>1 · one-step</td><td>Not required</td><td><span class="badge off">Inactive</span></td><td>Oct 26, 4:05 PM</td><td><button type="button">Edit</button></td></tr>
+</tbody></table></div></section>
+
+<section class="card" aria-labelledby="t-edit"><div class="bar" id="t-edit">EDIT TEMPLATE · EXAMPLE MANAGED AGREEMENT</div>
+<div class="pad grid">
+<div>
+<div class="field"><label for="tn">Name</label><input id="tn" value="Example managed agreement"></div>
+<div class="field"><label>Kind</label><div class="radios"><span><input type="radio" id="k1" name="k" style="width:auto"> <label for="k1">Proposal (non-binding acceptance)</label></span><span><input type="radio" id="k2" name="k" checked style="width:auto"> <label for="k2">Agreement (binding signature)</label></span></div></div>
+<div class="field"><label for="ct">Contract type</label><select id="ct"><option>Managed Services</option><option>Break-Fix</option><option>Custom</option></select></div>
+<div class="field"><label for="st">Signing steps</label><select id="st"><option>2 · proposal acceptance, then this agreement</option><option>1 · this agreement only</option></select>
+<p class="hint">Managed Services is two-step: proposal acceptance, then the agreement. Selected for you when Managed Services is chosen.</p></div>
+<div class="field check"><input type="checkbox" id="cs" checked style="width:auto"> <label for="cs">Requires MSP countersignature</label></div>
+<div class="field"><label>Billing on signature</label><div class="readonly">Held: staff apply billing by hand. Not configurable in this release.</div></div>
+<div class="field"><label>On completion</label><div class="readonly">None. Not configurable in this release.</div></div>
+</div>
+<div>
+<div class="field"><label for="bd">Body</label><textarea id="bd">&lt;h1&gt;Managed services agreement&lt;/h1&gt;
+&lt;p&gt;Between Example IT and {{client.name}}, dated {{today}}.&lt;/p&gt;
+&lt;h2&gt;Services and pricing&lt;/h2&gt;
+{{lines_table}}
+&lt;p&gt;Signed for the client by {{signer.name}}.&lt;/p&gt;</textarea>
+<p class="hint">Allowed HTML: headings, paragraphs, lists, bold, italic, tables. Anything else is removed on save.</p></div>
+<div class="field chips"><label>Merge fields</label><code>{{client.name}}</code><code>{{contract.name}}</code><code>{{contract.type}}</code><code>{{today}}</code><code>{{signer.name}}</code><code>{{lines_table}}</code>
+<p class="hint">{{lines_table}} is required. Unknown fields are refused when you save.</p></div>
+<div class="alert" role="alert"><strong>Not saved.</strong> The body contains {{ client_name }}, which is not a merge field.</div>
+</div>
+</div>
+<div class="pad row" style="border-top:1px solid var(--psa-colors-border)"><span class="muted">Saving changes this template only. Documents already generated keep their frozen PDF and lines.</span><div class="actions"><button type="button">Deactivate</button><button type="button" class="primary">Save template</button></div></div>
+</section>
+<footer>Static mockup · all records are fictional · buttons are non-functional.</footer></main></body></html>
