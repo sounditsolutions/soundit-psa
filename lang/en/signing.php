@@ -1,0 +1,74 @@
+<?php
+
+// DRAFT client copy. Charlie approves before the first client send.
+return [
+    'agreement' => [
+        'title' => 'DRAFT — Review and sign',
+        'header' => 'DRAFT — Document signing',
+        'intro' => 'DRAFT — Review the document before entering your name.',
+        'document_bar' => 'DRAFT — DOCUMENT',
+        'pdf_label' => 'DRAFT — Agreement PDF',
+        'pdf_fallback' => 'DRAFT — Use the PDF link below if the document does not appear.',
+        'open_pdf' => 'DRAFT — Open PDF',
+        'name_label' => 'DRAFT — Full name',
+        'consent' => 'DRAFT — By selecting “Sign agreement”, I agree to the document shown above and intend my typed name to be my electronic signature.',
+        'button' => 'DRAFT — Sign agreement',
+    ],
+    'neutral' => [
+        'title' => 'DRAFT — Link unavailable',
+        'body' => 'DRAFT — This signing link cannot be used. Contact the sender if you need help.',
+    ],
+    'signed' => [
+        'title' => 'DRAFT — Signature recorded',
+        'body' => 'DRAFT — Your signature has been recorded. This link has now been used and will not open the document again. Contact the sender if you need a copy of the agreement.',
+    ],
+    'proposal' => [
+        'title' => 'DRAFT — Review your proposal',
+        'intro' => 'DRAFT — Review the selections and pricing below before entering your name.',
+        'document_bar' => 'DRAFT — PROPOSAL',
+        'pdf_label' => 'DRAFT — Proposal PDF',
+        'pdf_fallback' => 'DRAFT — Use the PDF link below if the proposal does not appear.',
+        'open_pdf' => 'DRAFT — Open PDF',
+        'name_label' => 'DRAFT — Full name',
+        'non_binding' => 'DRAFT — Accepting confirms the selections and pricing shown above. It is not a contract and starts no billing. The agreement follows separately for signature.',
+        'button' => 'DRAFT — Accept selections and pricing',
+    ],
+    'accepted' => [
+        'title' => 'DRAFT — Selections accepted',
+        'body' => 'DRAFT — Thank you. Your accepted selections and pricing have been recorded. The agreement will be sent to you separately for signature. This link has now been used.',
+    ],
+    'mail' => [
+        'agreement' => [
+            'subject' => 'DRAFT — Agreement ready for review',
+            'body' => "DRAFT — Review your agreement using this link:\n:url",
+        ],
+        'proposal' => [
+            'subject' => 'DRAFT — Proposal ready for review',
+            'body' => "DRAFT — Review your proposal using this link:\n:url",
+        ],
+    ],
+    'rate_card' => [
+        'description' => 'DRAFT — Description',
+        'basis' => 'DRAFT — Quantity basis',
+        'quantity' => 'DRAFT — Quantity',
+        'rate' => 'DRAFT — Rate',
+        'taxable' => 'DRAFT — Taxable',
+        'option_group' => 'DRAFT — Option group',
+        'term' => 'DRAFT — Term',
+        'band' => 'DRAFT — Up to :limit: :price',
+        'unlimited_band' => 'DRAFT — Up to unlimited: :price',
+        'variable' => 'DRAFT — variable',
+        'yes' => 'DRAFT — Yes',
+        'no' => 'DRAFT — No',
+        'fixed' => 'DRAFT — Fixed',
+        'per_workstation' => 'DRAFT — Per Workstation',
+        'per_server' => 'DRAFT — Per Server',
+        'per_workstation_and_server' => 'DRAFT — All Workstations + Servers',
+        'per_user' => 'DRAFT — Per User',
+        'per_license' => 'DRAFT — Per License (all)',
+        'per_license_type' => 'DRAFT — Per License Type',
+        'per_reseller_license_type' => 'DRAFT — Per Reseller License Type',
+        'overage' => 'DRAFT — Overage',
+        'per_backup_storage_gb' => 'DRAFT — Backup Storage (GB)',
+    ],
+];

@@ -11,6 +11,11 @@ class AgreementTemplate extends Model
 {
     protected $guarded = ['id'];
 
+    protected $attributes = [
+        'kind' => 'agreement', 'signing_steps' => 1, 'on_complete' => 'none',
+        'requires_countersign' => true, 'apply_billing_on_sign' => false, 'is_active' => false,
+    ];
+
     protected function casts(): array
     {
         return [
@@ -22,10 +27,25 @@ class AgreementTemplate extends Model
     protected static function booted(): void
     {
         static::saving(function (self $template): void {
-            if (! ContractType::tryFrom($template->contract_type) || $template->kind !== 'agreement') {
+            if (! in_array($template->kind, ['agreement', 'proposal'], true)) {
                 throw new InvalidArgumentException('signing_template_kind_invalid');
             }
-            $template->body = app(TemplateMerge::class)->purify($template->body);
+            if (! is_string($template->contract_type) || ! ContractType::tryFrom($template->contract_type)) {
+                throw new InvalidArgumentException('signing_template_type_invalid');
+            }
+            if (! in_array($template->signing_steps, [1, 2], true)) {
+                throw new InvalidArgumentException('signing_template_steps_invalid');
+            }
+            if (! in_array($template->on_complete, ['none', 'purchase_block'], true)) {
+                throw new InvalidArgumentException('signing_template_on_complete_invalid');
+            }
+            $template->body = app(TemplateMerge::class)->purify($template->body ?? '');
+            if (trim($template->body) === '') {
+                throw new InvalidArgumentException('signing_template_body_empty');
+            }
+            if ($template->kind === 'proposal' && ($template->signing_steps !== 1 || $template->requires_countersign)) {
+                throw new InvalidArgumentException('signing_template_proposal_invalid');
+            }
         });
     }
 }

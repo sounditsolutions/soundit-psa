@@ -30,8 +30,8 @@ class SigningService
             $url = url('/sign/'.$token);
             try {
                 app(\App\Services\EmailService::class)->sendNew(
-                    $document->recipient_email, 'DRAFT — Agreement ready for review',
-                    "DRAFT — Review your agreement using this link:\n".$url,
+                    $document->recipient_email, __('signing.mail.'.$document->kind.'.subject'),
+                    __('signing.mail.'.$document->kind.'.body', ['url' => $url]),
                     $document->recipient_name, redact: [$url, htmlspecialchars($url, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')],
                 );
             } catch (Throwable $error) {
@@ -84,12 +84,31 @@ class SigningService
     {
         DB::transaction(function () use ($token, $typedName, $shownHash, $ip, $userAgent): void {
             $document = $this->liveToken($token);
+            if ($document->kind !== 'agreement') {
+                throw new RuntimeException('signing_kind_mismatch');
+            }
             $this->bytes($document);
             if (! hash_equals($document->pdf_sha256, $shownHash) || trim($typedName) === '' || mb_strlen($typedName) > 255) {
                 throw new RuntimeException('signing_form_invalid');
             }
             $this->snapshot($document, 'client', $document->recipient_name, $document->recipient_email, $typedName, $ip, $userAgent);
             $document->update(['status' => 'signed', 'token_hash' => null, 'token_expires_at' => null]);
+        });
+    }
+
+    public function accept(string $token, string $typedName, string $shownHash, string $ip, string $userAgent): void
+    {
+        DB::transaction(function () use ($token, $typedName, $shownHash, $ip, $userAgent): void {
+            $document = $this->liveToken($token);
+            if ($document->kind !== 'proposal') {
+                throw new RuntimeException('signing_kind_mismatch');
+            }
+            $this->bytes($document);
+            if (! hash_equals($document->pdf_sha256, $shownHash) || trim($typedName) === '' || mb_strlen($typedName) > 255) {
+                throw new RuntimeException('signing_form_invalid');
+            }
+            $this->snapshot($document, 'acceptance', $document->recipient_name, $document->recipient_email, $typedName, $ip, $userAgent);
+            $document->update(['status' => 'accepted', 'token_hash' => null, 'token_expires_at' => null]);
         });
     }
 
@@ -110,7 +129,7 @@ class SigningService
         }
         DB::transaction(function () use ($document, $user, $ip, $agent): void {
             $document = SignableDocument::query()->lockForUpdate()->findOrFail($document->id);
-            if ($document->status !== 'signed' || ! $document->requires_countersign) {
+            if ($document->kind !== 'agreement' || $document->status !== 'signed' || ! $document->requires_countersign) {
                 throw new RuntimeException('signing_countersign_unavailable');
             }
             $this->bytes($document);
@@ -143,32 +162,52 @@ class SigningService
             return DB::transaction(function () use ($contract, $template, $recipient, &$path) {
                 $contract = Contract::query()->lockForUpdate()->findOrFail($contract->id);
                 $template = AgreementTemplate::query()->lockForUpdate()->findOrFail($template->id);
-                if ($template->signing_steps > 1) {
+                if (! in_array($template->signing_steps, [1, 2], true)) {
                     throw new RuntimeException('signing_multistep_unsupported');
                 }
-                if (! $template->is_active || $template->kind !== 'agreement' || $template->contract_type !== $contract->type->value) {
+                if (! $template->is_active || ! in_array($template->kind, ['agreement', 'proposal'], true) || $template->contract_type !== $contract->type->value) {
                     throw new RuntimeException('signing_template_unavailable');
                 }
                 $linesVersion = $contract->lines()->max('version');
                 $lines = $contract->lines()->where('version', $linesVersion)->orderBy('sort_order')->orderBy('id')->get();
+                $acceptance = null;
+                if ($template->kind === 'agreement' && $template->signing_steps === 2) {
+                    $proposal = SignableDocument::where('contract_id', $contract->id)->where('kind', 'proposal')->orderByDesc('version')->lockForUpdate()->first();
+                    if (! $proposal || $proposal->status !== 'accepted') {
+                        throw new RuntimeException('signing_acceptance_missing');
+                    }
+                    $acceptance = $proposal->snapshots()->where('role', 'acceptance')->first();
+                    if (! $acceptance || ! hash_equals($acceptance->lines_sha256, hash('sha256', $acceptance->getRawOriginal('lines')))) {
+                        \Illuminate\Support\Facades\Log::warning('signing_acceptance_integrity', ['exception_class' => RuntimeException::class]);
+                        throw new RuntimeException('signing_acceptance_integrity');
+                    }
+                    $diff = (new AcceptanceDiff)->compare($acceptance->lines, $lines->map(fn ($line) => $line->attributesToArray())->all());
+                    if ($diff !== []) {
+                        throw new SigningAcceptanceStale($diff, $proposal, $acceptance);
+                    }
+                    $linesVersion = $proposal->lines_version;
+                }
                 if ($lines->isEmpty()) {
                     throw new RuntimeException('signing_lines_missing');
                 }
-                foreach ($lines as $line) {
+                $renderedLines = $acceptance ? $acceptance->lines : $lines->map(fn ($line) => $line->attributesToArray())->all();
+                foreach ($renderedLines as $attributes) {
+                    $line = new \App\Models\ContractLine($attributes);
                     $sku = $line->sku_id ? Sku::find($line->sku_id) : null;
                     if (TieredPricing::normalize($line->pricing_tiers ?? []) === []
                         && PricingModelOverride::volumeRateCardApplies($line->quantity_type, $sku)) {
                         throw new RuntimeException('signing_line_price_inherited');
                     }
                 }
-                $lines = $lines->map(fn ($line) => $line->attributesToArray())->all();
+                $lines = $renderedLines;
                 $json = json_encode($lines, JSON_THROW_ON_ERROR);
-                $version = 1 + (int) SignableDocument::where('contract_id', $contract->id)->where('kind', 'agreement')->max('version');
+                $version = 1 + (int) SignableDocument::where('contract_id', $contract->id)->where('kind', $template->kind)->max('version');
                 $document = new SignableDocument([
                     'contract_id' => $contract->id, 'agreement_template_id' => $template->id,
-                    'kind' => 'agreement', 'version' => $version, 'lines_version' => $linesVersion,
+                    'kind' => $template->kind, 'version' => $version, 'lines_version' => $linesVersion,
+                    'accepted_snapshot_id' => $acceptance?->id,
                     'status' => 'draft', 'rendered_lines' => $lines,
-                    'rendered_lines_sha256' => hash('sha256', $json),
+                    'rendered_lines_sha256' => $acceptance ? $acceptance->lines_sha256 : hash('sha256', $json),
                     'requires_countersign' => $template->requires_countersign,
                     'recipient_name' => $recipient['name'], 'recipient_email' => $recipient['email'],
                     'created_by' => auth()->id(),
@@ -192,7 +231,7 @@ class SigningService
                     throw new RuntimeException('signing_pdf_write_failed');
                 }
                 $document->save();
-                SignableDocument::where('contract_id', $contract->id)->where('kind', 'agreement')
+                SignableDocument::where('contract_id', $contract->id)->where('kind', $template->kind)
                     ->where('id', '!=', $document->id)->lockForUpdate()->get()
                     ->filter(fn (SignableDocument $previous) => $previous->isVoidable())
                     ->each(fn (SignableDocument $previous) => $previous->update(['status' => 'void', 'voided_at' => now(), 'token_hash' => null, 'token_expires_at' => null]));

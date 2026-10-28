@@ -126,7 +126,6 @@ if (app()->environment('local')) {
     })->name('dev.login');
 }
 
-// Authenticated routes
 // Public signing routes run without session middleware: StartSession would store the token URL
 // as _previous.url. A cross-site form cannot post here without the 48-char token, so CSRF adds nothing.
 Route::match(['get', 'post'], '/sign/{token}', [\App\Http\Controllers\Web\SigningController::class, 'publicPage'])
@@ -136,8 +135,18 @@ Route::get('/sign/{token}/pdf', [\App\Http\Controllers\Web\SigningController::cl
     ->where('token', '[A-Za-z0-9]{48}')->middleware('throttle:30,1')->name('signing.pdf')
     ->withoutMiddleware([\Illuminate\Session\Middleware\StartSession::class, \Illuminate\View\Middleware\ShareErrorsFromSession::class, \Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class]);
 
+// Authenticated routes
 Route::middleware('auth')->group(function () {
     Route::middleware('admin')->group(function () {
+        Route::prefix('settings/agreement-templates')->name('settings.agreement-templates.')->controller(\App\Http\Controllers\Web\AgreementTemplateController::class)->group(function () {
+            Route::get('/', 'index')->name('index');
+            Route::get('/create', 'create')->name('create');
+            Route::post('/', 'store')->name('store');
+            Route::get('/{template}/edit', 'edit')->name('edit');
+            Route::patch('/{template}', 'update')->name('update');
+            Route::post('/{template}/activate', 'activate')->name('activate');
+            Route::post('/{template}/deactivate', 'deactivate')->name('deactivate');
+        });
         Route::post('/contracts/{contract}/signing/generate', [\App\Http\Controllers\Web\SigningController::class, 'generate'])->name('signing.generate');
         Route::post('/contracts/{contract}/signing/{document}/{action}', [\App\Http\Controllers\Web\SigningController::class, 'action'])
             ->where('action', 'send|void|countersign')->name('signing.action');

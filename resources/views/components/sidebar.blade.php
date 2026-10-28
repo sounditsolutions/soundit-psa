@@ -264,6 +264,14 @@
                 <i class="bi bi-braces sidebar-icon"></i>
                 <span class="sidebar-label">API Tokens</span>
             </a>
+            @if(config('signing.enabled') && auth()->user()->isAdmin())
+            <a href="{{ route('settings.agreement-templates.index') }}"
+               class="sidebar-link {{ request()->routeIs('settings.agreement-templates.*') ? 'active' : '' }}"
+               @if(request()->routeIs('settings.agreement-templates.*')) aria-current="page" @endif>
+                <i class="bi bi-file-earmark-text sidebar-icon"></i>
+                <span class="sidebar-label">Agreement templates</span>
+            </a>
+            @endif
             <a href="{{ route('settings.tooling-gaps.index') }}"
                class="sidebar-link {{ request()->routeIs('settings.tooling-gaps*') ? 'active' : '' }}"
                @if(request()->routeIs('settings.tooling-gaps*')) aria-current="page" @endif
