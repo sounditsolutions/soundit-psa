@@ -33,12 +33,11 @@ class TimeEntryContractMoveService
     public function entries(Ticket $ticket, ?int $toContractId = null): Collection
     {
         $notes = TicketNote::where('ticket_id', $ticket->id)->where('is_billable', true)
-            // Priced minutes (#5067 r3): time plus the note's time adjustment.
-            ->whereRaw('COALESCE(time_minutes, 0) + COALESCE(time_adjustment_minutes, 0) > 0')
-            ->with('author')->orderBy('noted_at')->orderBy('id')->get();
+            ->with('author')->orderBy('noted_at')->orderBy('id')->get()
+            ->filter(fn (TicketNote $note) => $note->billedMinutes() > 0);
         $calls = PhoneCall::where('ticket_id', $ticket->id)->where('is_billable', true)
             ->with('answeredBy')->orderBy('started_at')->orderBy('id')->get()
-            ->filter(fn (PhoneCall $c) => ($c->effectiveDurationSeconds() ?? 0) > 0);
+            ->filter(fn (PhoneCall $c) => ($c->billedSeconds() ?? 0) > 0);
 
         $noteRows = PrepayTransaction::whereIn('ticket_note_id', $notes->pluck('id'))->get()->keyBy('ticket_note_id');
         $callRows = PrepayTransaction::whereIn('phone_call_id', $calls->pluck('id'))->get()->keyBy('phone_call_id');
@@ -51,14 +50,14 @@ class TimeEntryContractMoveService
         foreach ($notes as $note) {
             $row = $noteRows->get($note->id);
             $rows->push($this->row('note', $note->id, mb_substr(trim(strip_tags((string) $note->body)), 0, 60), $note->noted_at ?? $note->created_at,
-                $note->author?->name, round($note->pricedMinutes() / 60, 2), $row, $note->contract_id, false, isset($pendingMoves['note:'.$note->id]), $toContractId,
+                $note->author?->name, round($note->billedMinutes() / 60, 2), $row, $note->contract_id, false, isset($pendingMoves['note:'.$note->id]), $toContractId,
                 $this->drawHoursIfMoved($note, $row), $ticket->client_id === null ? null : (int) $ticket->client_id));
         }
         foreach ($calls as $call) {
             $row = $callRows->get($call->id);
             $label = 'Phone call: '.($call->direction?->value ?? 'call');
             $rows->push($this->row('call', $call->id, $label, $call->started_at ?? $call->created_at,
-                $call->answeredBy?->name, round(($call->effectiveDurationSeconds() ?? 0) / 3600, 2), $row, $call->contract_id,
+                $call->answeredBy?->name, round(($call->billedSeconds() ?? 0) / 3600, 2), $row, $call->contract_id,
                 isset($pendingCalls[$call->id]), isset($pendingMoves['call:'.$call->id]), $toContractId, $this->drawHoursIfMoved($call, $row),
                 $ticket->client_id === null ? null : (int) $ticket->client_id));
         }
@@ -107,9 +106,9 @@ class TimeEntryContractMoveService
             return 0.0;
         }
         if ($entry instanceof TicketNote) {
-            return $entry->isUnverifiedContactIntake() || $entry->pricedMinutes() <= 0 ? 0.0 : round($entry->pricedMinutes() / 60, 4);
+            return $entry->isUnverifiedContactIntake() || $entry->billedMinutes() <= 0 ? 0.0 : round($entry->billedMinutes() / 60, 4);
         }
-        $seconds = $entry->effectiveDurationSeconds() ?? 0;
+        $seconds = $entry->billedSeconds() ?? 0;
 
         return $seconds > 0 ? round($seconds / 3600, 4) : 0.0;
     }
@@ -462,8 +461,8 @@ class TimeEntryContractMoveService
             if ($entry->note_type === \App\Enums\NoteType::System) {
                 return 'System notes cannot be moved.';
             }
-            if ($entry->pricedMinutes() <= 0) {
-                return 'This note has no positive priced minutes.';
+            if ($entry->billedMinutes() <= 0) {
+                return 'This note has no billed minutes to move.';
             }
             if (! $entry->is_billable) {
                 return 'This note is not billable.';

@@ -31,6 +31,7 @@ class TicketNote extends Model
         'who_type',
         'ai_authored',
         'is_billable',
+        'billable_minutes',
         'status_from',
         'status_to',
         'time_minutes',
@@ -55,6 +56,7 @@ class TicketNote extends Model
             'ai_authored' => 'boolean',
             'is_private' => 'boolean',
             'is_billable' => 'boolean',
+            'billable_minutes' => 'integer',
             'time_minutes' => 'integer',
             'time_adjustment_minutes' => 'integer',
             'noted_at' => 'datetime',
@@ -164,6 +166,13 @@ class TicketNote extends Model
     public function pricedMinutes(): int
     {
         return (int) $this->time_minutes + (int) $this->time_adjustment_minutes;
+    }
+
+    public function billedMinutes(): int
+    {
+        return $this->billable_minutes === null
+            ? $this->pricedMinutes()
+            : min($this->billable_minutes, $this->pricedMinutes());
     }
 
     public function getFormattedTimeAttribute(): ?string

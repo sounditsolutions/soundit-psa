@@ -434,6 +434,8 @@ class McpStaffController extends Controller
         // mode gate then holds a bare or :staged grant for cockpit approval.
         'set_call_billable',
         'stage_set_call_billable',
+        'set_billable_time',
+        'stage_set_billable_time',
         // Prepay move between contracts (card I3EvQKUV PR 2): routing only, same
         // held grant contract as set_call_billable.
         'move_time_entry_contract',
@@ -454,6 +456,8 @@ class McpStaffController extends Controller
      * carries it).
      */
     private const CALL_ACTION_ID_ONLY_AUDIT_TOOLS = [
+        'set_billable_time',
+        'stage_set_billable_time',
         'set_call_billable',
         'stage_set_call_billable',
         'block_caller',
@@ -1591,6 +1595,12 @@ class McpStaffController extends Controller
 
             return $response;
         } catch (\Throwable $e) {
+            if ($e instanceof \Illuminate\Validation\ValidationException && in_array($name, ['set_billable_time', 'stage_set_billable_time'], true)) {
+                $activity->finish(['error' => true]);
+                $this->audit('tools/call', $name, $auditArguments, 'error', 'Invalid billing parameters.', $start, $request);
+
+                return $this->error($id, -32602, 'Invalid billing parameters.');
+            }
             Log::warning('[MCP/staff] Tool execution failed', [
                 'tool' => $name,
                 'error' => $e->getMessage(),
@@ -1776,6 +1786,11 @@ class McpStaffController extends Controller
             $safe['reason_length'] = is_string($args['reason'] ?? null) ? mb_strlen($args['reason']) : 0;
 
             return $safe;
+        }
+
+        if (in_array($tool, ['set_billable_time', 'stage_set_billable_time'], true)) {
+            return ['entry_id' => is_int($args['entry_id'] ?? null) ? $args['entry_id'] : null,
+                'reason_length' => is_string($args['reason'] ?? null) ? mb_strlen($args['reason']) : 0];
         }
 
         if (in_array((string) $tool, self::CALL_ACTION_ID_ONLY_AUDIT_TOOLS, true)) {

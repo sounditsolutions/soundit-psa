@@ -469,9 +469,7 @@ class PrepayService
         $txn = DB::transaction(function () use ($note, &$alertContract, &$retry) {
             // Lock order: note -> existing prepay transaction -> contract.
             $lockedNote = TicketNote::withTrashed()->whereKey($note->id)->lockForUpdate()->first();
-            // Priced minutes include the note's time adjustment (#5067 r3): the zero check uses
-            // the same sum the debit is priced at.
-            if (! $lockedNote || $lockedNote->trashed() || ! $lockedNote->is_billable || $lockedNote->pricedMinutes() <= 0) {
+            if (! $lockedNote || $lockedNote->trashed() || ! $lockedNote->is_billable || $lockedNote->billedMinutes() <= 0) {
                 $this->reverseDebitForTicketNote($note);
 
                 return null;
@@ -484,7 +482,7 @@ class PrepayService
                 return null;
             }
 
-            $hours = round($note->pricedMinutes() / 60, 4);
+            $hours = round($note->billedMinutes() / 60, 4);
 
             // A missing-key locking read can gap-lock unrelated new notes on InnoDB.
             $existing = PrepayTransaction::where('ticket_note_id', $note->id)->first();
@@ -965,7 +963,7 @@ class PrepayService
             $what = $isNote ? "note #{$locked->id}" : "phone call #{$locked->id}";
             $report['body'] = fn (float $h, string $drew = '', ?string $destination = null) => 'Moved '.$what.' time ('.number_format($h, 2).' h) from '
                 .($foreignStampId !== null ? "another client's contract" : ($from?->name ?? 'no contract')).' to '.($destination ?? $target->name).$drew.': '.$reason;
-            $report['hours'] = $hours > 0 ? $hours : ($isNote ? $locked->pricedMinutes() / 60 : ($locked->effectiveDurationSeconds() ?? 0) / 3600);
+            $report['hours'] = $hours > 0 ? $hours : ($isNote ? $locked->billedMinutes() / 60 : ($locked->billedSeconds() ?? 0) / 3600);
             $effect = $row ? '; credited '.number_format($hours, 2).'h back to '.$from->name
                 .($this->hoursPrepayOrNull($target)
                     ? ' and debited '.number_format($hours, 2).'h from '.$target->name
@@ -1233,8 +1231,9 @@ class PrepayService
             }
             // The stamp and hold marker are read and written only under the call lock,
             // as the note path does (#4922): a racing debit cannot re-mark a call that
-            // another debit has just ledgered.
-            foreach (['contract_id', 'contract_held_at'] as $key) {
+            // another debit has just ledgered. The Bill override is read here too, so a
+            // stale instance cannot re-price an overridden call at its full duration.
+            foreach (['contract_id', 'contract_held_at', 'billable_minutes'] as $key) {
                 $call->setAttribute($key, $locked->getAttribute($key));
                 $call->syncOriginalAttribute($key);
             }
@@ -1271,7 +1270,7 @@ class PrepayService
             }
             $alertContract = $contract;
 
-            $durationSeconds = $call->effectiveDurationSeconds();
+            $durationSeconds = $call->billedSeconds();
             // Card 6ad7c912: a Voicemail call, or one whose stored duration is non-null and <= 0, never debits. Missed and null-duration calls are not gated.
             $neverDebits = $call->status === CallStatus::Voicemail
                 || ($call->duration !== null && (int) $call->duration <= 0);

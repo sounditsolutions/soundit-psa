@@ -854,6 +854,8 @@ Route::middleware('auth')->group(function () {
     Route::post('/cockpit/phone-call-resolutions/{proposal}/deny', [\App\Http\Controllers\Web\PhoneCallResolutionController::class, 'deny'])->name('phone-call-resolutions.deny')->middleware('throttle:30,1');
     Route::post('/cockpit/phone-call-actions/{proposal}/approve', [\App\Http\Controllers\Web\PhoneCallActionController::class, 'approve'])->name('phone-call-actions.approve')->middleware('throttle:30,1');
     Route::post('/cockpit/phone-call-actions/{proposal}/deny', [\App\Http\Controllers\Web\PhoneCallActionController::class, 'deny'])->name('phone-call-actions.deny')->middleware('throttle:30,1');
+    Route::post('/cockpit/time-entry-billing/{proposal}/approve', [\App\Http\Controllers\Web\TimeEntryBillingController::class, 'approve'])->name('time-entry-billing.approve')->middleware('throttle:30,1');
+    Route::post('/cockpit/time-entry-billing/{proposal}/deny', [\App\Http\Controllers\Web\TimeEntryBillingController::class, 'deny'])->name('time-entry-billing.deny')->middleware('throttle:30,1');
     Route::post('/cockpit/time-entry-moves/{proposal}/approve', [\App\Http\Controllers\Web\TicketContractChangeController::class, 'approve'])->name('time-entry-moves.approve')->middleware('throttle:30,1');
     Route::post('/cockpit/time-entry-moves/{proposal}/deny', [\App\Http\Controllers\Web\TicketContractChangeController::class, 'deny'])->name('time-entry-moves.deny')->middleware('throttle:30,1');
     Route::post('/cockpit/email-resolutions/{proposal}/approve', [\App\Http\Controllers\Web\EmailResolutionController::class, 'approve'])->name('email-resolutions.approve')->middleware('throttle:30,1');

@@ -344,20 +344,54 @@ class CallController extends Controller
 
     public function updateNotes(Request $request, PhoneCall $call): RedirectResponse
     {
+        $billSubmitted = $request->has('billable_minutes');
+        $bill = $billSubmitted ? $this->parseBillInput($request->input('billable_minutes')) : null;
+        // The call page saves notes without a Bill field; an absent field leaves any override as it is.
+        $changed = $billSubmitted && $bill !== $call->billable_minutes;
+        if ($changed) {
+            $request->validate(['reason' => ['required', 'string', 'max:800']]);
+            // Refused before anything is written, so a refusal leaves no partial save behind.
+            app(\App\Services\BillableTimeService::class)->assertValid($call, $bill, $request->input('reason'));
+        }
         $call->update([
             'notes' => $request->input('notes'),
             'summary_is_public' => $request->boolean('summary_is_public'),
         ]);
 
-        // Handle billability change if provided
-        if ($request->has('is_billable') && $call->ticket_id) {
-            $newBillable = $request->boolean('is_billable');
-            if ($call->is_billable !== $newBillable) {
-                $this->phoneCallService->setBillable($call, $newBillable);
-            }
+        // Handle billability change if provided. Unticking reverses before the Bill is set and
+        // ticking debits after it, so the call is never debited at a time this edit replaces.
+        $newBillable = $request->has('is_billable') && $call->ticket_id && $call->is_billable !== $request->boolean('is_billable')
+            ? $request->boolean('is_billable') : null;
+        if ($newBillable === false) {
+            $this->phoneCallService->setBillable($call, false);
+        }
+
+        if ($changed) {
+            app(\App\Services\BillableTimeService::class)->setCall(
+                $call, $bill, $request->input('reason'), 'ui', $request->user(), $request->user()->name,
+            );
+        }
+
+        if ($newBillable === true) {
+            $this->phoneCallService->setBillable($call, true);
         }
 
         return redirect()->back()->with('success', 'Call updated.');
+    }
+
+    private function parseBillInput(mixed $input): ?int
+    {
+        if ($input === null || (is_string($input) && trim($input) === '')) {
+            return null;
+        }
+        if (! is_string($input) || ! preg_match('/^(?:\d+|\d+\s*h(?:\s*\d+\s*m)?|\d+\s*m)$/i', trim($input))) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['billable_minutes' => 'Enter a non-negative time, or leave Bill blank for actual time.']);
+        }
+        if (! preg_match('/[1-9]/', $input)) {
+            return 0;
+        }
+
+        return app(\App\Services\TicketService::class)->parseTimeInput($input);
     }
 
     public function linkTicket(Request $request, PhoneCall $call)

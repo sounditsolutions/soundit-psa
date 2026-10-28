@@ -12,6 +12,16 @@ class McpToolRegistryTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_billable_time_registration_count(): void
+    {
+        $names = array_column(McpToolRegistry::intakeManageTools(), 'name');
+        $this->assertCount(21, $names);
+        $this->assertContains('set_billable_time', $names);
+        $this->assertContains('stage_set_billable_time', $names);
+        $this->assertContains('set_billable_time', McpToolRegistry::allToolNames());
+        $this->assertNotContains('stage_set_billable_time', McpToolRegistry::allToolNames());
+    }
+
     public function test_groups_are_ordered_and_classify_tools(): void
     {
         $groups = McpToolRegistry::groups();

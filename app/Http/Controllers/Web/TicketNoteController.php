@@ -252,7 +252,17 @@ class TicketNoteController extends Controller
             $attributes['noted_at'] = $notedAt;
         }
 
-        $note->update($attributes);
+        $bill = $this->parseBillInput($request->input('billable_minutes'));
+        if ($bill !== $note->billable_minutes) {
+            $request->validate(['reason' => ['required', 'string', 'max:800']]);
+            // The edit and the Bill are saved in one locked write and priced once: a refusal writes
+            // nothing, and no interim debit at the edited full time can reach the low-balance alert.
+            app(\App\Services\BillableTimeService::class)->setNote(
+                $note, $bill, $request->input('reason'), 'ui', $request->user(), $request->user()->name, $attributes,
+            );
+        } else {
+            $note->update($attributes);
+        }
 
         // Re-link any attachments referenced in the body to this note
         app(\App\Services\AttachmentService::class)->linkAttachmentsFromBody(
@@ -264,6 +274,21 @@ class TicketNoteController extends Controller
 
         return redirect()->route('tickets.show', $ticket)
             ->with('success', 'Note updated.');
+    }
+
+    private function parseBillInput(mixed $input): ?int
+    {
+        if ($input === null || (is_string($input) && trim($input) === '')) {
+            return null;
+        }
+        if (! is_string($input) || ! preg_match('/^(?:\d+|\d+\s*h(?:\s*\d+\s*m)?|\d+\s*m)$/i', trim($input))) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['billable_minutes' => 'Enter a non-negative time, or leave Bill blank for actual time.']);
+        }
+        if (! preg_match('/[1-9]/', $input)) {
+            return 0;
+        }
+
+        return app(\App\Services\TicketService::class)->parseTimeInput($input);
     }
 
     public function destroy(Request $request, Ticket $ticket, TicketNote $note)

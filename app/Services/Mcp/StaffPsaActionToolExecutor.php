@@ -168,6 +168,7 @@ class StaffPsaActionToolExecutor
             // same service methods the staff call page uses; the money-touching
             // and caller-silencing three ride the held-proposal lane, exactly as
             // resolve_phone_call does, so a bare grant cannot execute now.
+            'set_billable_time', 'stage_set_billable_time' => $this->setBillableTime($arguments, $actorLabel, $name === 'stage_set_billable_time'),
             'set_call_billable', 'stage_set_call_billable' => app(PhoneCallActionService::class)
                 ->execute(PhoneCallActionService::ACTION_BILLABLE, $arguments, $actorLabel, $name === 'stage_set_call_billable'),
             'move_time_entry_contract', 'stage_move_time_entry_contract' => app(\App\Services\TimeEntryContractMoveService::class)
@@ -190,6 +191,37 @@ class StaffPsaActionToolExecutor
     }
 
     /** @return array<string, mixed> */
+    private function setBillableTime(array $arguments, string $actorLabel, bool $staged): array
+    {
+        // Agent billing writes stop with the technician kill-switch, as sibling agent actions do.
+        if (TechnicianConfig::killSwitchEngaged()) {
+            return ['error' => 'Technician kill-switch engaged.'];
+        }
+        if (! in_array($arguments['entry_type'] ?? null, ['note', 'call'], true)
+            || ! is_int($arguments['entry_id'] ?? null) || $arguments['entry_id'] < 1
+            || ! array_key_exists('billable_minutes', $arguments)
+            || ($arguments['billable_minutes'] !== null && (! is_int($arguments['billable_minutes']) || $arguments['billable_minutes'] < 0))
+            || ! is_string($arguments['reason'] ?? null) || trim($arguments['reason']) === '' || mb_strlen($arguments['reason']) > 800) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['billable_minutes' => 'Invalid billing parameters.']);
+        }
+        $entry = $arguments['entry_type'] === 'note'
+            ? \App\Models\TicketNote::find($arguments['entry_id']) : \App\Models\PhoneCall::find($arguments['entry_id']);
+        if (! $entry) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['entry_id' => 'Entry not found.']);
+        }
+        $service = app(\App\Services\BillableTimeService::class);
+        if ($staged) {
+            $proposal = $service->propose($entry, $arguments['billable_minutes'], $arguments['reason'], null, $actorLabel);
+
+            return ['success' => true, 'staged' => true, 'proposal_id' => $proposal->id];
+        }
+        $entry instanceof \App\Models\TicketNote
+            ? $service->setNote($entry, $arguments['billable_minutes'], $arguments['reason'], 'mcp', null, $actorLabel)
+            : $service->setCall($entry, $arguments['billable_minutes'], $arguments['reason'], 'mcp', null, $actorLabel);
+
+        return ['success' => true, 'staged' => false, 'entry_id' => $entry->id];
+    }
+
     private function createTicket(array $arguments, int $clientId, string $actorLabel): array
     {
         if ($error = $this->guardDirectAction()) {
