@@ -94,7 +94,7 @@ class SigningGenerateTest extends TestCase
             $this->generate();
             $this->fail('Multistep accepted');
         } catch (RuntimeException $error) {
-            $this->assertSame('signing_multistep_unsupported', $error->getMessage());
+            $this->assertSame('signing_acceptance_missing', $error->getMessage());
         }
         $this->assertDatabaseCount('signable_documents', 0);
         $this->assertSame([], Storage::disk('local')->allFiles('signing'));
@@ -470,7 +470,7 @@ class SigningGenerateTest extends TestCase
         $form = ['template_id' => $this->template->id, 'recipient_name' => 'Alex Example', 'recipient_email' => 'alex@example.test'];
         $this->template->update(['signing_steps' => 2]);
         $this->actingAs($admin)->post(route('signing.generate', $this->contract), $form)
-            ->assertStatus(409)->assertSee('signing_multistep_unsupported');
+            ->assertStatus(409)->assertSee('signing_acceptance_missing');
         $this->assertDatabaseCount('signable_documents', 0);
         $this->template->update(['signing_steps' => 1]);
         $document = $this->generate();

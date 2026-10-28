@@ -26,7 +26,7 @@ class TemplateMerge
         foreach (['client.name', 'contract.name', 'contract.type', 'today', 'signer.name'] as $field) {
             $replacements['{{'.$field.'}}'] = htmlspecialchars((string) ($values[$field] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         }
-        $table = '<table><thead><tr><th>DRAFT — Description</th><th>DRAFT — Quantity basis</th><th>DRAFT — Quantity</th><th>DRAFT — Rate</th><th>DRAFT — Taxable</th><th>DRAFT — Option group</th><th>DRAFT — Term</th></tr></thead><tbody>';
+        $table = '<table><thead><tr><th>'.__('signing.rate_card.description').'</th><th>'.__('signing.rate_card.basis').'</th><th>'.__('signing.rate_card.quantity').'</th><th>'.__('signing.rate_card.rate').'</th><th>'.__('signing.rate_card.taxable').'</th><th>'.__('signing.rate_card.option_group').'</th><th>'.__('signing.rate_card.term').'</th></tr></thead><tbody>';
         foreach ($document->rendered_lines as $line) {
             $basis = QuantityType::from($line['quantity_type']);
             $tiers = $line['pricing_tiers'] ?? [];
@@ -34,14 +34,14 @@ class TemplateMerge
             if ($tiers !== []) {
                 $bands = [];
                 foreach ($tiers as $tier) {
-                    $bands[] = 'DRAFT — Up to '.($tier['up_to'] ?? 'unlimited').': '.$tier['unit_price'];
+                    $bands[] = __('signing.rate_card.'.(isset($tier['up_to']) ? 'band' : 'unlimited_band'), ['limit' => $tier['up_to'] ?? '', 'price' => $tier['unit_price']]);
                 }
                 $rate = implode('; ', $bands);
             }
             $cells = [
-                $line['description'], 'DRAFT — '.$basis->label(),
-                $basis === QuantityType::Fixed ? $line['fixed_quantity'] : 'DRAFT — variable',
-                $rate, 'DRAFT — '.(! empty($line['is_taxable']) ? 'Yes' : 'No'),
+                $line['description'], __('signing.rate_card.'.$basis->value),
+                $basis === QuantityType::Fixed ? $line['fixed_quantity'] : __('signing.rate_card.variable'),
+                $rate, __('signing.rate_card.'.(! empty($line['is_taxable']) ? 'yes' : 'no')),
                 $line['option_group'] ?? '', $line['term'] ?? '',
             ];
             $table .= '<tr>';

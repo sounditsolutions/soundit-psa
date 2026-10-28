@@ -9,11 +9,13 @@ Deploy your own instance of this PSA on a fresh VPS. This guide covers everythin
 | Setting / dependency | Requirement |
 |---|---|
 | dompdf/dompdf | Locked dependency, minimum 3.1.6; install through the normal Composer deployment step. |
-| `signing.enabled` | Defaults false (`SIGNING_ENABLED=false`). Keep disabled until the multi-step workflow and first-send approval are complete. No templates are seeded. |
+| `signing.enabled` | Defaults false (`SIGNING_ENABLED=false`). Keep disabled until Charlie approves the DRAFT client copy and the first send. Proposal acceptance and two-step agreements ship with it. No templates are seeded. |
+| Templates | Created by an admin at Settings → Agreement templates (visible only when signing is enabled). Nothing is seeded. A Managed Services agreement template should use two steps with countersign. |
+| Copy | Client-facing signing text lives in `lang/en/signing.php` and is marked DRAFT until approved. |
 | `signing.token_ttl_days` | Defaults 14 (`SIGNING_TOKEN_TTL_DAYS=14`). |
 | Font cache | Renderer creates `storage/app/private/signing-fonts` with mode 0700; application user needs write access. Default DejaVu Sans ships with dompdf. |
 | PDF storage | Private local disk under `signing/`; no public filesystem mapping. |
-| Rollback | Before first use only, revert the signing commits and roll back the three new migrations. After use, preserve signed evidence and obtain an explicit data-retention/rollback decision; do not drop populated tables. |
+| Rollback | Before first use, `migrate:rollback --step=1` removes the slice 2b `accepted_snapshot_id` column. Before first use only, revert the signing commits and roll back the three new migrations. After use, preserve signed evidence and obtain an explicit data-retention/rollback decision; do not drop populated tables. |
 
 Agreement terms in this slice are rate cards, not calculated bills. Inherited SKU volume pricing is excluded and deferred to a later slice: Generate refuses a backup-storage line that has no tiers of its own while its SKU carries volume tiers.
 

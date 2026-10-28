@@ -14,11 +14,19 @@ use Throwable;
 class SigningController extends Controller
 {
     private const REFUSALS = [
-        'signing_multistep_unsupported' => 'Multi-step templates cannot be generated yet.',
-        'signing_template_unavailable' => 'The template is not an active agreement template for this contract type.',
+        'signing_multistep_unsupported' => 'Only one-step and two-step templates are supported.',
+        'signing_acceptance_missing' => 'The newest proposal has not been accepted.',
+        'signing_acceptance_integrity' => "The accepted proposal's stored lines are missing or do not match their recorded hash.",
+        'signing_kind_mismatch' => 'The document kind does not match this action.',
+        'signing_template_kind_invalid' => 'The template kind is invalid.',
+        'signing_template_type_invalid' => 'The contract type is invalid.',
+        'signing_template_steps_invalid' => 'The signing steps are invalid.',
+        'signing_template_on_complete_invalid' => 'The completion action is invalid.',
+        'signing_template_body_empty' => 'The template body is empty.',
+        'signing_template_proposal_invalid' => 'A proposal must use one step without countersign.',
+        'signing_template_unavailable' => 'The template is not an active supported template for this contract type.',
         'signing_lines_missing' => 'The contract has no lines to show.',
-        'signing_line_price_missing' => 'A contract line has neither a unit price nor tiers.',
-        'signing_line_price_inherited' => 'A backup storage line is priced by its SKU volume tiers, which agreements cannot show yet.',
+        'signing_line_price_inherited' => 'A backup storage line is priced by its SKU volume tiers, which signing documents cannot show yet.',
         'signing_unknown_merge_token' => 'The template contains a merge field that is not supported.',
         'signing_lines_table_missing' => 'The template does not include the {{lines_table}} rate card.',
         'signing_pdf_write_failed' => 'The PDF could not be stored.',
@@ -34,14 +42,16 @@ class SigningController extends Controller
     {
         try {
             if ($request->isMethod('post')) {
-                $service->sign($token, (string) $request->input('typed_name'), (string) $request->input('pdf_sha256'), (string) $request->ip(), (string) $request->userAgent());
+                $proposal = SignableDocument::where('token_hash', hash('sha256', $token))->value('kind') === 'proposal';
+                $method = $proposal ? 'accept' : 'sign';
+                $service->{$method}($token, (string) $request->input('typed_name'), (string) $request->input('pdf_sha256'), (string) $request->ip(), (string) $request->userAgent());
 
-                return response()->view('signing.signed')->withHeaders($this->headers());
+                return response()->view($proposal ? 'signing.accepted' : 'signing.signed')->withHeaders($this->headers());
             }
             $document = $service->view($token);
             $service->bytes($document);
 
-            return response()->view('signing.public', ['token' => $token, 'hash' => $document->pdf_sha256])->withHeaders($this->headers());
+            return response()->view($document->kind === 'proposal' ? 'signing.accept' : 'signing.public', ['token' => $token, 'hash' => $document->pdf_sha256])->withHeaders($this->headers());
         } catch (Throwable $error) {
             \Illuminate\Support\Facades\Log::warning('signing_request_refused', ['exception_class' => $error::class]);
 
@@ -93,6 +103,13 @@ class SigningController extends Controller
         $data = $request->validate(['template_id' => 'required|integer', 'recipient_name' => 'required|string|max:255', 'recipient_email' => 'required|email|max:255']);
         try {
             $service->generate($contract, AgreementTemplate::findOrFail($data['template_id']), ['name' => $data['recipient_name'], 'email' => $data['recipient_email']]);
+        } catch (\App\Services\Signing\SigningAcceptanceStale $error) {
+            $proposalTemplate = AgreementTemplate::where('is_active', true)->where('kind', 'proposal')->where('contract_type', $contract->type->value)->orderBy('id')->first();
+
+            return response()->view('contracts.signing-diff', [
+                'contract' => $contract, 'diff' => $error, 'proposalTemplate' => $proposalTemplate,
+                'recipient' => $data,
+            ], 409)->withHeaders($this->headers());
         } catch (RuntimeException $error) {
             return $this->refused($contract, $error);
         }

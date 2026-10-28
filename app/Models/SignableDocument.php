@@ -27,7 +27,7 @@ class SignableDocument extends Model
     protected static function booted(): void
     {
         static::updating(function (self $document): void {
-            if ($document->isDirty(['rendered_lines', 'rendered_lines_sha256', 'requires_countersign', 'pdf_path', 'pdf_sha256'])) {
+            if ($document->isDirty(['rendered_lines', 'rendered_lines_sha256', 'requires_countersign', 'pdf_path', 'pdf_sha256', 'kind', 'accepted_snapshot_id'])) {
                 throw new LogicException('signing_document_evidence_immutable');
             }
         });
@@ -40,6 +40,10 @@ class SignableDocument extends Model
 
     public function isFinal(): bool
     {
+        if ($this->kind === 'proposal') {
+            return $this->status === 'accepted';
+        }
+
         return $this->status === 'countersigned'
             || ($this->status === 'signed' && ! $this->requires_countersign);
     }
