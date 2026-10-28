@@ -112,7 +112,7 @@ class ContractMoveC3aRefusalTest extends TestCase
     {
         $this->note->forceFill(['time_adjustment_minutes' => -30])->saveQuietly();
         $r = $this->move();
-        $this->assertSame('This note has no positive priced minutes.', $r['error'] ?? null);
+        $this->assertSame('This note has no billed minutes to move.', $r['error'] ?? null);
         $this->assertArrayNotHasKey('error_code', $r);
         $this->unchanged();
     }

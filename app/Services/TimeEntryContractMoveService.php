@@ -462,7 +462,7 @@ class TimeEntryContractMoveService
                 return 'System notes cannot be moved.';
             }
             if ($entry->billedMinutes() <= 0) {
-                return 'This note has no positive priced minutes.';
+                return 'This note has no billed minutes to move.';
             }
             if (! $entry->is_billable) {
                 return 'This note is not billable.';
