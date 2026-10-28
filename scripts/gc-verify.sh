@@ -21,8 +21,9 @@
 #      Enforced by TWO independent belts. Before #7271 (no ignoreSuppressionOf*
 #      attributes), --fail-on-warning alone was measured to be partial: it did
 #      not fail on the @-suppressed read at
-#      vendor/vlucas/phpdotenv/src/Store/File/Reader.php:73 that Laravel's error
-#      handler surfaces in the summary's `warnings` column. With
+#      vendor/vlucas/phpdotenv/src/Store/File/Reader.php:73 that PHPUnit's error
+#      handler received and Collision counted in the summary's `warnings`
+#      column. With
 #      ignoreSuppressionOfPhpWarnings set, PHPUnit's IssueFilter no longer drops
 #      that suppressed event, so serial belt one is expected to fail on it too
 #      (inferred from IssueFilter::shouldBeProcessed, not re-measured at this
