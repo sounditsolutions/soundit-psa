@@ -406,27 +406,70 @@ class SigningGenerateTest extends TestCase
         $this->assertSame([], Storage::disk('local')->allFiles('signing'));
     }
 
-    public function test_sku_volume_priced_backup_line_refuses_until_the_volume_card_is_gone(): void
+    #[\PHPUnit\Framework\Attributes\DataProvider('volumeCards')]
+    public function test_sku_volume_card_is_frozen_hashed_and_rendered_at_both_layers(bool $unlimited): void
     {
         $sku = \App\Models\Sku::create([
             'name' => 'Example backup storage', 'sku_code' => 'EXAMPLE-BKP', 'unit_price' => '0', 'unit_cost' => '0',
             'default_quantity_type' => \App\Enums\QuantityType::PerBackupStorageGb, 'is_taxable' => false, 'is_active' => true,
         ]);
-        $tier = \App\Models\BackupStorageTier::create(['sku_id' => $sku->id, 'up_to_gb' => 100, 'unit_price' => '1.00', 'sort_order' => 0]);
+        $expected = [['up_to_gb' => 500, 'unit_price' => '0.18'], ['up_to_gb' => 2000, 'unit_price' => '0.14']];
+        if ($unlimited) {
+            $expected[] = ['up_to_gb' => null, 'unit_price' => '0.10'];
+        }
+        foreach (array_reverse($expected) as $tier) {
+            $sku->backupStorageTiers()->create($tier);
+        }
         $this->contract->lines()->create([
             'version' => 1, 'source' => 'example', 'sku_id' => $sku->id, 'description' => 'Example backup storage',
             'quantity_type' => 'per_backup_storage_gb', 'unit_price' => '0.00', 'is_taxable' => false, 'sort_order' => 1,
         ]);
-        try {
-            $this->generate();
-            $this->fail('SKU volume pricing accepted');
-        } catch (RuntimeException $error) {
-            $this->assertSame('signing_line_price_inherited', $error->getMessage());
+        $document = $this->generate()->fresh();
+        $this->assertSame('draft', $document->status);
+        $this->assertDatabaseCount('signable_documents', 1);
+        $this->assertTrue(Storage::disk('local')->exists($document->pdf_path));
+        $this->assertSame($expected, $document->rendered_lines[1]['sku_volume_tiers']);
+        $this->assertArrayNotHasKey('sku_volume_tiers', $document->rendered_lines[0]);
+        $this->assertSame(hash('sha256', $document->getRawOriginal('rendered_lines')), $document->rendered_lines_sha256);
+        $html = app(TemplateMerge::class)->merge('{{lines_table}}', [], $document)['html'];
+        $stored = Storage::disk('local')->get($document->pdf_path);
+        $unitDocument = new SignableDocument(['rendered_lines' => [[
+            'description' => 'Example frozen storage', 'quantity_type' => 'per_backup_storage_gb',
+            'unit_price' => '0.00', 'sku_volume_tiers' => $expected,
+        ]]]);
+        $unitHtml = app(TemplateMerge::class)->merge('{{lines_table}}', [], $unitDocument)['html'];
+        foreach ([$unitHtml, $html, $stored] as $rendered) {
+            $this->assertStringContainsString('DRAFT — Volume pricing, every GB at one rate:', $rendered);
+            $this->assertSame(1, substr_count($rendered, 'DRAFT — above that:'));
+            foreach ([0, 500, 501, 2000, 2001, 3000, 1000000] as $gb) {
+                $selected = $expected[array_key_last($expected)];
+                foreach ($document->rendered_lines[1]['sku_volume_tiers'] as $tier) {
+                    if ($tier['up_to_gb'] === null || $gb <= $tier['up_to_gb']) {
+                        $selected = $tier;
+                        break;
+                    }
+                }
+                $this->assertSame($sku->priceForStorageGb($gb), (float) $selected['unit_price']);
+                $text = $gb > 2000
+                    ? 'DRAFT — above that: '.$selected['unit_price']
+                    : 'DRAFT — up to '.$selected['up_to_gb'].' GB: '.$selected['unit_price'];
+                $this->assertStringContainsString($text, $rendered);
+            }
         }
-        $this->assertDatabaseCount('signable_documents', 0);
-        $this->assertSame([], Storage::disk('local')->allFiles('signing'));
+        $sku->backupStorageTiers()->update(['unit_price' => '9.99']);
+        $this->assertSame($html, app(TemplateMerge::class)->merge('{{lines_table}}', [], $document->fresh())['html']);
+        $this->assertSame($stored, Storage::disk('local')->get($document->pdf_path));
         $this->contract->lines()->where('sku_id', $sku->id)->update(['pricing_tiers' => [['up_to' => null, 'unit_price' => '2.00']]]);
-        $this->assertSame('draft', $this->generate()->status);
+        $graduated = $this->generate()->fresh();
+        $this->assertSame('draft', $graduated->status);
+        $this->assertArrayNotHasKey('sku_volume_tiers', $graduated->rendered_lines[1]);
+        $this->assertStringContainsString('DRAFT — Up to unlimited: 2.00', Storage::disk('local')->get($graduated->pdf_path));
+        $this->assertStringNotContainsString('Volume pricing', Storage::disk('local')->get($graduated->pdf_path));
+    }
+
+    public static function volumeCards(): array
+    {
+        return ['bounded only' => [false], 'unbounded' => [true]];
     }
 
     public function test_void_refuses_final_and_void_rows_and_card_offers_it_only_on_pending_rows(): void

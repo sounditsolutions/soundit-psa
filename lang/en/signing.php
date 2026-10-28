@@ -48,6 +48,10 @@ return [
         ],
     ],
     'rate_card' => [
+        'volume_heading' => 'DRAFT — Volume pricing, every GB at one rate:',
+        'volume_band' => 'DRAFT — up to :limit GB: :price',
+        'volume_unlimited_band' => 'DRAFT — above that: :price',
+        'diff_sku_volume_tiers' => 'DRAFT — Product volume rate card',
         'description' => 'DRAFT — Description',
         'basis' => 'DRAFT — Quantity basis',
         'quantity' => 'DRAFT — Quantity',

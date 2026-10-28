@@ -160,7 +160,15 @@ class SigningProposalTest extends TestCase
         [$contract, $proposalTemplate, $agreementTemplate] = $this->scenario();
         $proposal = $this->generate($contract, $proposalTemplate);
         $this->acceptProposal($proposal);
+        [$otherContract, $otherProposalTemplate, $otherAgreementTemplate] = $this->scenario();
+        $otherProposal = $this->generate($otherContract, $otherProposalTemplate);
+        $this->acceptProposal($otherProposal);
+        $otherAgreement = $this->generate($otherContract, $otherAgreementTemplate);
+        $liveToken = str_repeat('W', 48);
+        $otherAgreement->update(['status' => 'sent', 'token_hash' => hash('sha256', $liveToken), 'token_expires_at' => now()->addDay()]);
         \Illuminate\Support\Facades\DB::table('signing_snapshots')->where('signable_document_id', $proposal->id)->where('role', 'acceptance')->delete();
+        $this->assertDatabaseCount('signing_snapshots', 1);
+        $this->assertNotNull($otherAgreement->fresh()->token_hash);
         $this->assertSame('accepted', $proposal->fresh()->status);
         $records = [];
         \Illuminate\Support\Facades\Log::listen(function ($event) use (&$records): void {
@@ -180,8 +188,9 @@ class SigningProposalTest extends TestCase
         $this->assertSame($snapshots, \Illuminate\Support\Facades\DB::table('signing_snapshots')->orderBy('id')->get()->toJson());
         $this->assertContains(['warning', 'signing_acceptance_integrity', ['exception_class' => \RuntimeException::class]], $records);
         $this->assertSame($documents, SignableDocument::all()->toJson());
-        $this->assertDatabaseCount('signable_documents', 1);
-        $this->assertSame(0, SignableDocument::where('kind', 'agreement')->count());
+        $this->assertDatabaseCount('signable_documents', 3);
+        $this->assertSame(0, SignableDocument::where('contract_id', $contract->id)->where('kind', 'agreement')->count());
+        $this->assertSame($otherAgreement->id, app(SigningService::class)->view($liveToken)->id);
         $this->assertSame($files, Storage::disk('local')->allFiles());
     }
 
@@ -329,23 +338,51 @@ class SigningProposalTest extends TestCase
         }
     }
 
-    public function test_b10_rechecks_new_sku_volume_card_on_snapshot_path(): void
+    #[\PHPUnit\Framework\Attributes\DataProvider('volumeChanges')]
+    public function test_b10_rechecks_sku_volume_card_on_snapshot_path(string $change): void
     {
         [$contract, $proposalTemplate, $agreementTemplate] = $this->scenario();
         $sku = \App\Models\Sku::create(['name' => 'Example backup', 'sku_code' => 'EXAMPLE-BACKUP', 'unit_price' => '1.00', 'unit_cost' => '0', 'default_quantity_type' => 'per_backup_storage_gb', 'is_taxable' => false, 'is_active' => true]);
         $contract->lines()->firstOrFail()->update(['sku_id' => $sku->id, 'quantity_type' => 'per_backup_storage_gb']);
-        $proposal = $this->generate($contract, $proposalTemplate);
-        $this->acceptProposal($proposal);
-        \App\Models\BackupStorageTier::create(['sku_id' => $sku->id, 'up_to_gb' => 100, 'unit_price' => '1.00', 'sort_order' => 0]);
-        $files = Storage::disk('local')->allFiles();
-        try {
-            $this->generate($contract, $agreementTemplate);
-            $this->fail('Inherited SKU volume accepted');
-        } catch (\RuntimeException $error) {
-            $this->assertSame('signing_line_price_inherited', $error->getMessage());
+        if ($change !== 'added') {
+            $sku->backupStorageTiers()->create(['up_to_gb' => 500, 'unit_price' => '0.18']);
+            $sku->backupStorageTiers()->create(['up_to_gb' => 2000, 'unit_price' => '0.14']);
         }
-        $this->assertDatabaseCount('signable_documents', 1);
+        $proposal = $this->generate($contract, $proposalTemplate)->fresh();
+        $this->acceptProposal($proposal);
+        $snapshot = $proposal->snapshots()->sole();
+        $this->assertSame($proposal->rendered_lines_sha256, $snapshot->lines_sha256);
+        $agreement = $this->generate($contract, $agreementTemplate)->fresh();
+        $this->assertSame(hash('sha256', $agreement->getRawOriginal('rendered_lines')), $agreement->rendered_lines_sha256);
+        $this->assertSame($snapshot->lines, $agreement->rendered_lines);
+        $liveToken = str_repeat('V', 48);
+        $agreement->update(['status' => 'sent', 'token_hash' => hash('sha256', $liveToken), 'token_expires_at' => now()->addDay()]);
+        $this->assertSame($agreement->id, app(SigningService::class)->view($liveToken)->id);
+        $this->assertDatabaseCount('signing_snapshots', 1);
+        $this->assertNotNull($agreement->fresh()->token_hash);
+        match ($change) {
+            'added' => $sku->backupStorageTiers()->create(['up_to_gb' => 500, 'unit_price' => '0.18']),
+            'price' => $sku->backupStorageTiers()->where('up_to_gb', 500)->update(['unit_price' => '0.19']),
+            'bound' => $sku->backupStorageTiers()->where('up_to_gb', 500)->update(['up_to_gb' => 501]),
+            'removed' => $sku->backupStorageTiers()->where('up_to_gb', 500)->delete(),
+        };
+        $documents = SignableDocument::all()->toJson();
+        $snapshots = \Illuminate\Support\Facades\DB::table('signing_snapshots')->get()->toJson();
+        $files = Storage::disk('local')->allFiles();
+        $response = $this->actingAs(\App\Models\User::factory()->create(['role' => 'admin']))
+            ->post(route('signing.generate', $contract), ['template_id' => $agreementTemplate->id, 'recipient_name' => 'Alex Example', 'recipient_email' => 'alex@example.test']);
+        $this->assertSame(hash('sha256', $liveToken), $agreement->fresh()->token_hash);
+        $response->assertStatus(409)->assertViewIs('contracts.signing-diff')->assertSee('sku_volume_tiers');
+        $this->assertSame($documents, SignableDocument::all()->toJson());
+        $this->assertSame($snapshots, \Illuminate\Support\Facades\DB::table('signing_snapshots')->get()->toJson());
+        $this->assertSame($agreement->id, app(SigningService::class)->view($liveToken)->id);
+        $this->assertDatabaseCount('signable_documents', 2);
         $this->assertSame($files, Storage::disk('local')->allFiles());
+    }
+
+    public static function volumeChanges(): array
+    {
+        return [['added'], ['price'], ['bound'], ['removed']];
     }
 
     public function test_full_proposal_and_agreement_lifecycle_never_writes_billing_or_contract_lines(): void

@@ -37,6 +37,17 @@ class TemplateMerge
                     $bands[] = __('signing.rate_card.'.(isset($tier['up_to']) ? 'band' : 'unlimited_band'), ['limit' => $tier['up_to'] ?? '', 'price' => $tier['unit_price']]);
                 }
                 $rate = implode('; ', $bands);
+            } elseif (! empty($line['sku_volume_tiers'])) {
+                $bands = [__('signing.rate_card.volume_heading')];
+                $hasUnlimited = false;
+                foreach ($line['sku_volume_tiers'] as $tier) {
+                    $hasUnlimited = $hasUnlimited || $tier['up_to_gb'] === null;
+                    $bands[] = __('signing.rate_card.'.($tier['up_to_gb'] === null ? 'volume_unlimited_band' : 'volume_band'), ['limit' => $tier['up_to_gb'], 'price' => $tier['unit_price']]);
+                }
+                if (! $hasUnlimited) {
+                    $bands[] = __('signing.rate_card.volume_unlimited_band', ['price' => $tier['unit_price']]);
+                }
+                $rate = implode('; ', $bands);
             }
             $cells = [
                 $line['description'], __('signing.rate_card.'.$basis->value),
