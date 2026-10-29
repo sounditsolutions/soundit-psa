@@ -277,7 +277,7 @@ class LitsrmmSettingsPanelTest extends TestCase
         $this->assertSame(1, substr_count($text, 'Scheduled'));
         $html = str_replace($text, str_replace('Scheduled', 'S'.substr($text, 1).'cheduled', $text), $this->pendingLinePage());
         $this->assertSame(1, substr_count($html, $text));
-        $this->assertPendingLineHelperRefuses($html, 'exactly one <p> must have the pending line', 'a straddling copy changes the paragraph text');
+        $this->assertPendingLineHelperRefuses($html, 'exactly one <p> must have the pending line as its whole whitespace-normalised text', 'a straddling copy changes the paragraph text', exact: true);
     }
 
     public function test_h18_a_copy_inside_the_lines_own_p_fails_the_one_p_check(): void
