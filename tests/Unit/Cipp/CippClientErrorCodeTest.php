@@ -22,11 +22,15 @@ class CippClientErrorCodeTest extends TestCase
 {
     private array $history = [];
 
+    private array $records = [];
+
     protected function setUp(): void
     {
         parent::setUp();
         Http::preventStrayRequests();
-        Log::spy();
+        Log::listen(function (\Illuminate\Log\Events\MessageLogged $record): void {
+            $this->records[] = [$record->level, $record->message];
+        });
     }
 
     public static function bodies(): array
@@ -42,6 +46,8 @@ class CippClientErrorCodeTest extends TestCase
             'empty' => [500, '', null],
             'sixteen digits' => [500, 'AADSTS1234567890123456', 'AADSTS1234567890123456'],
             'seventeen digits' => [500, 'AADSTS12345678901234567', null],
+            'overlong then valid' => [500, 'AADSTS12345678901234567 AADSTS700016', null],
+            'valid then overlong' => [500, 'AADSTS700016 AADSTS12345678901234567', 'AADSTS700016'],
             'near bound' => [500, str_repeat('x', 64988).' AADSTS700003 ', 'AADSTS700003'],
             'no code' => [500, 'invalid_grant'.$detail, null],
             'beyond truncation' => [500, str_repeat('padding ', 100).'invalid_grant:AADSTS700003'.$detail, 'AADSTS700003'],
@@ -95,7 +101,7 @@ class CippClientErrorCodeTest extends TestCase
         $this->assertCount(2, $this->history);
         $this->assertSame('Bearer synthetic-old', $this->history[0]['request']->getHeaderLine('Authorization'));
         $this->assertSame('Bearer synthetic-new', $this->history[1]['request']->getHeaderLine('Authorization'));
-        Log::shouldNotHaveReceived('error');
+        $this->assertSame([['info', '[CippClient] 401 received, refreshing token and retrying']], $this->records);
     }
 
     public function test_429_retries_to_success(): void
@@ -104,19 +110,12 @@ class CippClientErrorCodeTest extends TestCase
         $this->assertSame([], $client->get('api/ListUsers'));
         $this->assertCount(3, $this->history);
         $this->assertSame([1, 1], $client->pauses);
-        Log::shouldHaveReceived('info')->twice()->with('[CippClient] Rate limited on api/ListUsers, retrying in 1s');
-        Log::shouldNotHaveReceived('error');
+        $this->assertSame(array_fill(0, 2, ['info', '[CippClient] Rate limited on api/ListUsers, retrying in 1s']), $this->records);
     }
 
-    private function assertFailureLog(string $expected, bool $retry = false): void
+    private function assertFailureLog(string $expected, array $preceding = []): void
     {
-        Log::shouldHaveReceived('error')->once()->with('[CippClient] GET api/ListUsers failed: '.$expected);
-        foreach (['emergency', 'alert', 'critical', 'warning', 'notice', 'debug', 'log', 'write'] as $level) {
-            Log::shouldNotHaveReceived($level);
-        }
-        if (! $retry) {
-            Log::shouldNotHaveReceived('info');
-        }
+        $this->assertSame([...$preceding, ['error', '[CippClient] GET api/ListUsers failed: '.$expected]], $this->records);
     }
 
     public static function errnos(): array
@@ -139,6 +138,9 @@ class CippClientErrorCodeTest extends TestCase
     {
         return [
             'read throws' => ['throw', null],
+            'mid-body throws and restores' => ['mid-throw', null],
+            'no-progress restores' => ['mid-stall', null],
+            'first read no-progress restores' => ['first-stall', null],
             'partial prefix then throws' => ['partial', null],
             'partial valid code then throws' => ['partial-code', null],
             'short early' => ['short', 'AADSTS700003'],
@@ -148,6 +150,7 @@ class CippClientErrorCodeTest extends TestCase
             'consumed' => ['consumed', 'AADSTS700003'],
             'nonseekable' => ['nonseekable', 'AADSTS700003'],
             'rewind throws' => ['rewind', null],
+            'only post-read rewind throws' => ['post-rewind', null],
         ];
     }
 
@@ -164,7 +167,9 @@ class CippClientErrorCodeTest extends TestCase
         {
             use \GuzzleHttp\Psr7\StreamDecoratorTrait;
 
-            private int $reads = 0;
+            public int $reads = 0;
+
+            public int $rewinds = 0;
 
             public function __construct(private \Psr\Http\Message\StreamInterface $stream, private string $mode) {}
 
@@ -175,15 +180,40 @@ class CippClientErrorCodeTest extends TestCase
 
             public function rewind(): void
             {
-                if (in_array($this->mode, ['nonseekable', 'rewind'], true)) {
+                $this->rewinds++;
+                if (in_array($this->mode, ['nonseekable', 'rewind'], true) || ($this->mode === 'post-rewind' && $this->rewinds === 2)) {
                     throw new \RuntimeException('synthetic rewind failure');
                 }
                 $this->stream->rewind();
             }
 
+            public function getContents(): string
+            {
+                return $this->stream->getContents();
+            }
+
             public function read(int $length): string
             {
                 $this->reads++;
+                if (in_array($this->mode, ['mid-throw', 'mid-stall', 'first-stall'], true)) {
+                    if ($this->reads > 3) {
+                        throw new \RuntimeException('synthetic bounded read guard');
+                    }
+                    if ($this->mode === 'first-stall') {
+                        // A stream may advance internally without delivering any bytes.
+                        $this->stream->read(1);
+
+                        return '';
+                    }
+                    if ($this->reads === 1) {
+                        return $this->stream->read(40);
+                    }
+                    if ($this->mode === 'mid-throw') {
+                        throw new \RuntimeException('synthetic mid-body failure');
+                    }
+
+                    return '';
+                }
                 if ($this->mode === 'throw' || (str_starts_with($this->mode, 'partial') && $this->reads > 1)) {
                     throw new \RuntimeException('synthetic read failure');
                 }
@@ -204,13 +234,22 @@ class CippClientErrorCodeTest extends TestCase
             $body->getContents();
         }
         // Queue an exception directly so Guzzle's message summarizer does not consume the test stream.
-        $raw = new \GuzzleHttp\Exception\ServerException('synthetic upstream failure', new Request('GET', 'https://cipp.example.test/'), new Response(500, [], $body));
+        $raw = new \GuzzleHttp\Exception\ServerException('synthetic upstream failure', new Request('GET', 'https://cipp.example.test/'), new Response(500, [], $body), null, $mode === 'post-rewind' ? ['errno' => 28] : []);
         $exception = $this->failure($this->client([$raw]));
+        if ($mode === 'post-rewind') {
+            $this->assertSame(2, $body->rewinds);
+            $this->assertTrue($body->eof());
+        }
         $expected = 'CIPP API error: 500 ServerException'.($code === null ? '' : " ({$code})");
         $this->assertSame($expected, $exception->getMessage());
         $this->assertSame($raw, $exception->getPrevious());
         $this->assertSame(500, $exception->getCode());
         $this->assertFailureLog($expected);
+        if (in_array($mode, ['mid-throw', 'mid-stall', 'first-stall'], true)) {
+            $this->assertSame($mode === 'first-stall' ? 1 : 2, $body->reads);
+            $this->assertSame(0, $body->tell());
+            $this->assertSame($text, $body->getContents());
+        }
         if (in_array($mode, ['short', 'short-late', 'short-exact', 'consumed'], true)) {
             $this->assertSame($text, $body->getContents());
         }
@@ -241,10 +280,17 @@ class CippClientErrorCodeTest extends TestCase
         $this->assertSame($status, $exception->getPrevious()->getCode());
         $this->assertCount(3, $this->history);
         $this->assertSame($status === 429 ? [1, 1] : [], $client->pauses);
-        Log::shouldHaveReceived('info')->twice()->with($status === 401
+        $retry = $status === 401
             ? '[CippClient] 401 received, refreshing token and retrying'
-            : '[CippClient] Rate limited on api/ListUsers, retrying in 1s');
-        $this->assertFailureLog($expected, true);
+            : '[CippClient] Rate limited on api/ListUsers, retrying in 1s';
+        $this->assertFailureLog($expected, array_fill(0, 2, ['info', $retry]));
+    }
+
+    public function test_failure_helper_preserves_its_own_assertion(): void
+    {
+        $this->expectException(\PHPUnit\Framework\AssertionFailedError::class);
+        $this->expectExceptionMessage('Expected a CIPP exception');
+        $this->failure($this->client([new Response(200, [], '[]')]));
     }
 
     private function failure(CippClient $client): CippClientException
@@ -254,6 +300,8 @@ class CippClientErrorCodeTest extends TestCase
             $this->fail('Expected a CIPP exception');
         } catch (CippClientException $e) {
             return $e;
+        } catch (\PHPUnit\Framework\AssertionFailedError $e) {
+            throw $e;
         } catch (\RuntimeException $e) {
             $this->fail('Expected CippClientException, got '.$e::class);
         }
