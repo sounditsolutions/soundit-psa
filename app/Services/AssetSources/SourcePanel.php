@@ -151,7 +151,6 @@ class SourcePanel
     {
         $state = AssetSources::state($asset, $source);
         $linked = $state === AssetSources::STATE_LINKED;
-        $off = $state === AssetSources::STATE_OFF;
         $syncedAt = AssetSources::syncedAt($asset, $source);
         $history = AssetSourceSync::with('user:id,name')
             ->where('asset_id', $asset->id)
@@ -170,8 +169,9 @@ class SourcePanel
             'open_in' => $linked ? self::openIn($asset, $source) : null,
             'chips' => self::chips($asset, $source, $state, $syncedAt),
             'attention' => AssetSources::attention($asset, $source),
-            // A linked asset keeps its stored details even when the source is not configured.
-            'details' => ($off || AssetSources::isLinked($asset, $source)) ? self::details($asset, $source) : [],
+            // Details only for a linked asset, whatever the state (OFF and not configured included):
+            // an unlinked source has no device of its own to describe.
+            'details' => AssetSources::isLinked($asset, $source) ? self::details($asset, $source) : [],
             'footer' => self::footer($asset, $source, $state, $syncedAt, $history->first()),
             'history' => $history,
             'sync_now' => $linked && in_array($source, self::SYNC_NOW_READY, true),
@@ -228,7 +228,8 @@ class SourcePanel
                     'note' => 'no sync recorded',
                 ]);
 
-        if (isset(self::LAST_CONTACT[$source]) && $state !== AssetSources::STATE_NOT_LINKED && $state !== AssetSources::STATE_NOT_CONFIGURED) {
+        // Last contact belongs to the linked device; an unlinked source (OFF included) has none.
+        if (isset(self::LAST_CONTACT[$source]) && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
             [$column, $wording] = self::LAST_CONTACT[$source];
             $value = self::raw($asset, $source, $column);
             $note = $wording;

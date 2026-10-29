@@ -60,7 +60,7 @@
                     <div class="pt-3" data-panel-section="attention">
                         <div class="text-uppercase small fw-semibold mb-2">Needs attention</div>
                         @if($p['state'] === 'off')
-                            <p class="text-muted small mb-0">{{ $p['label'] }} is switched off for this PSA, so nothing is read from it and no attention count is shown. The values shown are the last known ones.</p>
+                            <p class="text-muted small mb-0">{{ $p['label'] }} is switched off for this PSA, so nothing is read from it and no attention count is shown.{{ $p['linked'] ? ' The values shown are the last known ones.' : '' }}</p>
                         @elseif(count($p['attention']) === 0)
                             @if($p['state'] === 'not_configured' && $p['linked'])
                                 <p class="text-muted small mb-0">This source isn't configured, so these details are the last data stored.</p>

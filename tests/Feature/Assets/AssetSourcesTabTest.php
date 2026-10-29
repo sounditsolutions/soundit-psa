@@ -316,6 +316,25 @@ class AssetSourcesTabTest extends TestCase
         $this->assertStringNotContainsString('data-attention-marker', $this->railEntry($this->show($this->assetLinkedEverywhere(['needs_reboot' => true]))->getContent(), 'ninja'));
     }
 
+    public function test_off_source_that_is_not_linked_shows_no_details_last_contact_or_last_known_values(): void
+    {
+        // r3 diff:6. Ninja is configured and switched off by default; this asset was never
+        // linked to it. No device details, no Last contact chip (the shared columns are
+        // another RMM's) and no "last known" claim; the panel says the asset is not linked.
+        $this->configureAllSources();
+        Http::fake([]);
+        $panel = $this->panel($this->show($this->assetLinkedEverywhere(['ninja_id' => null, 'ninja_synced_at' => null]))->getContent(), 'ninja');
+
+        $this->assertStringContainsString('data-state="off"', $panel);
+        $this->assertStringContainsString('Switched off in Settings; not being updated', $panel);
+        $this->assertStringContainsString('No device details: this asset is not linked to Ninja.', $panel);
+        $this->assertStringNotContainsString('data-detail-column', $panel);
+        $this->assertStringNotContainsString('Not reported by Ninja', $panel);
+        $this->assertStringNotContainsString('Last contact', $panel);
+        $this->assertStringNotContainsString('last known', $panel);
+        Http::assertNothingSent();
+    }
+
     public function test_states_not_linked_and_not_configured_render_explicitly(): void
     {
         Setting::setEncrypted('controld_api_key', 'synthetic-controld-key');
