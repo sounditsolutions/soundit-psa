@@ -128,7 +128,7 @@
             </div>
             <div class="card-body">
                 <p class="text-muted small mb-3">
-                    Your company name and logo, shown to clients in the portal, portal emails and document signing.
+                    Your company name appears in signing emails and pages. Your logo is used for portal branding.
                 </p>
 
                 <form method="POST" action="{{ route('settings.general.update') }}">

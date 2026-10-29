@@ -488,11 +488,14 @@ class SigningProposalTest extends TestCase
         foreach (['invoices', 'invoice_lines', 'prepay_transactions', 'recurring_invoice_profiles', 'recurring_invoice_profile_lines', 'contracts', 'contract_lines'] as $table) {
             $before[$table] = $db::table($table)->get()->toJson();
         }
+        \App\Models\Setting::setValue('portal_company_name', 'Northwind MSP');
         $token = null;
-        $this->mock(\App\Services\EmailService::class)->shouldReceive('sendNew')->twice()->andReturnUsing(function ($to, $subject, $body, $name, $cc = null, $userId = null, $redact = []) use (&$token) {
+        $subjects = [];
+        $this->mock(\App\Services\EmailService::class)->shouldReceive('sendNew')->twice()->andReturnUsing(function ($to, $subject, $body, $name, $cc = null, $userId = null, $redact = []) use (&$token, &$subjects) {
             preg_match('~/sign/([A-Za-z0-9]{48})~', $body, $matches);
             $token = $matches[1];
-            $this->assertStringEndsWith(' ready for review', $subject);
+            $this->assertSame(count($subjects) === 0 ? 'Proposal from Northwind MSP ready for review' : 'Agreement from Northwind MSP ready for review', $subject);
+            $subjects[] = $subject;
             $this->assertNotEmpty($redact);
 
             return new \App\Models\Email;
@@ -504,6 +507,7 @@ class SigningProposalTest extends TestCase
         $agreement = $this->generate($contract, $agreementTemplate);
         $service->send($agreement);
         $service->sign($token, 'Alex Example', $agreement->pdf_sha256, '127.0.0.1', 'Example');
+        $this->assertSame(['Proposal from Northwind MSP ready for review', 'Agreement from Northwind MSP ready for review'], $subjects);
         $admin = \App\Models\User::factory()->create(['role' => 'admin']);
         $service->countersign($agreement, $admin, '127.0.0.1', 'Example');
         foreach ($before as $table => $rows) {

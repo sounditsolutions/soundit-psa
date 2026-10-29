@@ -2,21 +2,28 @@
 
 namespace Tests\Feature\Contracts;
 
+use App\Models\Setting;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class SigningCopyTest extends TestCase
 {
-    public function test_public_views_render_byte_identically_to_base(): void
+    use RefreshDatabase;
+
+    public function test_public_views_render_byte_identically_to_branding_fixtures(): void
     {
+        Http::fake();
         Http::preventStrayRequests();
+        Setting::setValue('portal_company_name', 'Northwind MSP');
         $data = ['token' => str_repeat('A', 48), 'hash' => str_repeat('b', 64)];
         $base = <<<'BASE'
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Review and sign</title>@include('signing._style')</head>
 <body>
 <header>Document signing</header>
+<div class="sign-pad">Northwind MSP</div>
 <main>
     <h1>Review and sign</h1>
     <p>Review the document before entering your name.</p>
@@ -42,13 +49,13 @@ BASE;
         $base = <<<'BASE'
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Link unavailable</title>@include('signing._style')</head>
-<body><header>Document signing</header><main><section class="sign-card"><div class="sign-pad"><h1>Link unavailable</h1><p>This signing link cannot be used. Contact the sender if you need help.</p></div></section></main></body></html>
+<body><header>Document signing</header><div class="sign-pad">Northwind MSP</div><main><section class="sign-card"><div class="sign-pad"><h1>Link unavailable</h1><p>This signing link cannot be used. Contact the sender if you need help.</p></div></section></main></body></html>
 BASE;
         $this->assertSame(Blade::render($base."\n", $data), view('signing.neutral', $data)->render());
         $base = <<<'BASE'
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Signature recorded</title>@include('signing._style')</head>
-<body><header>Document signing</header><main><section class="sign-card"><div class="sign-pad"><h1>Signature recorded</h1><p>Your signature has been recorded. This link has now been used and will not open the document again. Contact the sender if you need a copy of the agreement.</p></div></section></main></body></html>
+<body><header>Document signing</header><div class="sign-pad">Northwind MSP</div><main><section class="sign-card"><div class="sign-pad"><h1>Signature recorded</h1><p>Your signature has been recorded. This link has now been used and will not open the document again. Contact the sender if you need a copy of the agreement.</p></div></section></main></body></html>
 BASE;
         $this->assertSame(Blade::render($base."\n", $data), view('signing.signed', $data)->render());
     }

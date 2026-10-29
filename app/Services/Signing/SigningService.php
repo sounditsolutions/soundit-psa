@@ -44,14 +44,13 @@ class SigningService
     }
 
     /**
-     * The MSP name the signing mail names as its sender (#7762, white-label). It is the
-     * Branding company name (PortalConfig::companyName()). A stored '' is returned as-is
-     * by Setting::getValue (the Client Portal save used to write ''), so only here a
-     * blank name falls back to the app name; other PortalConfig consumers are unchanged.
+     * The MSP name for signing mail and pages: the Branding company name, trimmed.
+     * Empty and whitespace-only names fall back to the app name here;
+     * other PortalConfig consumers are unchanged.
      */
     public static function senderName(): string
     {
-        $name = PortalConfig::companyName();
+        $name = trim(PortalConfig::companyName());
 
         return $name !== '' ? $name : (string) config('app.name');
     }

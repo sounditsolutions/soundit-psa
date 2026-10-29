@@ -2,6 +2,7 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ __('signing.proposal.title') }}</title>@include('signing._style')</head>
 <body>
 <header>{{ __('signing.agreement.header') }}</header>
+<div class="sign-pad">{{ \App\Services\Signing\SigningService::senderName() }}</div>
 <main>
 <h1>{{ __('signing.proposal.title') }}</h1>
 <p>{{ __('signing.proposal.intro') }}</p>
