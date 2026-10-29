@@ -29,7 +29,7 @@ class CippClientErrorCodeTest extends TestCase
         parent::setUp();
         Http::preventStrayRequests();
         Log::listen(function (\Illuminate\Log\Events\MessageLogged $record): void {
-            $this->records[] = [$record->level, $record->message];
+            $this->records[] = [$record->level, $record->message, $record->context];
         });
     }
 
@@ -101,7 +101,7 @@ class CippClientErrorCodeTest extends TestCase
         $this->assertCount(2, $this->history);
         $this->assertSame('Bearer synthetic-old', $this->history[0]['request']->getHeaderLine('Authorization'));
         $this->assertSame('Bearer synthetic-new', $this->history[1]['request']->getHeaderLine('Authorization'));
-        $this->assertSame([['info', '[CippClient] 401 received, refreshing token and retrying']], $this->records);
+        $this->assertSame([['info', '[CippClient] 401 received, refreshing token and retrying', []]], $this->records);
     }
 
     public function test_429_retries_to_success(): void
@@ -110,12 +110,12 @@ class CippClientErrorCodeTest extends TestCase
         $this->assertSame([], $client->get('api/ListUsers'));
         $this->assertCount(3, $this->history);
         $this->assertSame([1, 1], $client->pauses);
-        $this->assertSame(array_fill(0, 2, ['info', '[CippClient] Rate limited on api/ListUsers, retrying in 1s']), $this->records);
+        $this->assertSame(array_fill(0, 2, ['info', '[CippClient] Rate limited on api/ListUsers, retrying in 1s', []]), $this->records);
     }
 
     private function assertFailureLog(string $expected, array $preceding = []): void
     {
-        $this->assertSame([...$preceding, ['error', '[CippClient] GET api/ListUsers failed: '.$expected]], $this->records);
+        $this->assertSame([...$preceding, ['error', '[CippClient] GET api/ListUsers failed: '.$expected, []]], $this->records);
     }
 
     public static function errnos(): array
@@ -283,7 +283,7 @@ class CippClientErrorCodeTest extends TestCase
         $retry = $status === 401
             ? '[CippClient] 401 received, refreshing token and retrying'
             : '[CippClient] Rate limited on api/ListUsers, retrying in 1s';
-        $this->assertFailureLog($expected, array_fill(0, 2, ['info', $retry]));
+        $this->assertFailureLog($expected, array_fill(0, 2, ['info', $retry, []]));
     }
 
     public function test_failure_helper_preserves_its_own_assertion(): void

@@ -27,7 +27,7 @@ class CippClientTokenErrorTest extends TestCase
         parent::setUp();
         Http::preventStrayRequests();
         Log::listen(function (\Illuminate\Log\Events\MessageLogged $record): void {
-            $this->records[] = [$record->level, $record->message];
+            $this->records[] = [$record->level, $record->message, $record->context];
         });
     }
 
@@ -82,6 +82,6 @@ class CippClientTokenErrorTest extends TestCase
                 $this->assertSame($body, $exception->getPrevious()->getResponse()->getBody()->getContents());
             }
         }
-        $this->assertSame([['error', '[CippClient] Token request failed: '.$detail]], $this->records);
+        $this->assertSame([['error', '[CippClient] Token request failed: '.$detail, []]], $this->records);
     }
 }
