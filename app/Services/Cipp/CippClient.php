@@ -357,8 +357,23 @@ class CippClient
                     continue;
                 }
 
-                Log::error("[CippClient] {$method} {$endpoint} failed: {$e->getMessage()}");
-                throw new CippClientException("CIPP API error: {$e->getMessage()}", $code, $e);
+                $class = class_basename($e);
+                $message = "CIPP API error: {$code} {$class}";
+                if (method_exists($e, 'getResponse') && $e->getResponse()) {
+                    $body = $e->getResponse()->getBody();
+                    if ($body->isSeekable()) {
+                        $body->rewind();
+                    }
+                    // Read one byte past the 64 KB bound so a code cut by it is dropped, not shortened
+                    $prefix = $body->read(65537);
+                    if (preg_match('/\bAADSTS\d{4,}\b/', $prefix, $match, PREG_OFFSET_CAPTURE)
+                        && $match[0][1] + strlen($match[0][0]) <= 65536) {
+                        $message .= " ({$match[0][0]})";
+                    }
+                }
+
+                Log::error("[CippClient] {$method} {$endpoint} failed: {$message}");
+                throw new CippClientException($message, $code, $e);
             }
         }
 
