@@ -79,12 +79,7 @@ class SigningPageBrandingTest extends TestCase
         $this->assertStringNotContainsString('DRAFT', $page->getContent());
     }
 
-    public static function openPages(): array
-    {
-        return ['public' => ['public'], 'accept' => ['accept']];
-    }
-
-    #[DataProvider('openPages')]
+    #[DataProvider('pages')]
     public function test_signing_page_escapes_the_msp_name(string $view): void
     {
         Setting::setValue('portal_company_name', '<script>alert(1)</script>');
