@@ -266,6 +266,11 @@ class CippClient
         return array_is_list($data) ? $data : null;
     }
 
+    protected function tokenClient(): Client
+    {
+        return new Client(['timeout' => 15]);
+    }
+
     /**
      * Get an OAuth2 access token via client_credentials flow.
      * Token is cached in Laravel Cache with a 55-minute TTL (tokens last 60 min).
@@ -285,7 +290,7 @@ class CippClient
         $tokenUrl = "https://login.microsoftonline.com/{$tenantId}/oauth2/v2.0/token";
 
         try {
-            $tokenClient = new Client(['timeout' => 15]);
+            $tokenClient = $this->tokenClient();
             $response = $tokenClient->post($tokenUrl, [
                 'form_params' => [
                     'grant_type' => 'client_credentials',
@@ -295,8 +300,9 @@ class CippClient
                 ],
             ]);
         } catch (GuzzleException $e) {
-            Log::error("[CippClient] Token request failed: {$e->getMessage()}");
-            throw new CippClientException("CIPP OAuth token request failed: {$e->getMessage()}", $e->getCode(), $e);
+            $detail = self::failureDetail($e);
+            Log::error("[CippClient] Token request failed: {$detail}");
+            throw new CippClientException("CIPP OAuth token request failed: {$detail}", $e->getCode(), $e);
         }
 
         $data = json_decode((string) $response->getBody(), true);
@@ -311,6 +317,51 @@ class CippClient
         $this->cache->put(self::TOKEN_CACHE_KEY, $token, max(60, $expiresIn - 300));
 
         return $token;
+    }
+
+    protected function pause(int $seconds): void
+    {
+        sleep($seconds);
+    }
+
+    private static function failureDetail(GuzzleException $e): string
+    {
+        $detail = $e->getCode().' '.class_basename($e);
+        $bound = 65536;
+        if (method_exists($e, 'getResponse') && $e->getResponse()) {
+            $prefix = '';
+            try {
+                $body = $e->getResponse()->getBody();
+                if ($body->isSeekable()) {
+                    $body->rewind();
+                }
+                // Read one byte past the bound to reject a code cut by it.
+                while (strlen($prefix) < $bound + 1 && ! $body->eof()) {
+                    $chunk = $body->read($bound + 1 - strlen($prefix));
+                    if ($chunk === '') {
+                        throw new \RuntimeException('Stream made no progress');
+                    }
+                    $prefix .= $chunk;
+                }
+                if ($body->isSeekable()) {
+                    $body->rewind();
+                }
+            } catch (\Throwable) {
+                return $detail;
+            }
+            if (preg_match('/\bAADSTS\d{4,16}\b/', $prefix, $match, PREG_OFFSET_CAPTURE)
+                && $match[0][1] + strlen($match[0][0]) <= $bound) {
+                $detail .= " ({$match[0][0]})";
+            }
+        }
+        if (method_exists($e, 'getHandlerContext')) {
+            $context = $e->getHandlerContext();
+            if (is_int($context['errno'] ?? null) && $context['errno'] !== 0) {
+                $detail .= " (curl {$context['errno']})";
+            }
+        }
+
+        return $detail;
     }
 
     /**
@@ -352,25 +403,12 @@ class CippClient
                         $retryAfter = (int) ($e->getResponse()->getHeaderLine('Retry-After') ?: $retryAfter);
                     }
                     Log::info("[CippClient] Rate limited on {$endpoint}, retrying in {$retryAfter}s");
-                    sleep($retryAfter);
+                    $this->pause($retryAfter);
 
                     continue;
                 }
 
-                $class = class_basename($e);
-                $message = "CIPP API error: {$code} {$class}";
-                if (method_exists($e, 'getResponse') && $e->getResponse()) {
-                    $body = $e->getResponse()->getBody();
-                    if ($body->isSeekable()) {
-                        $body->rewind();
-                    }
-                    // Read one byte past the 64 KB bound so a code cut by it is dropped, not shortened
-                    $prefix = $body->read(65537);
-                    if (preg_match('/\bAADSTS\d{4,}\b/', $prefix, $match, PREG_OFFSET_CAPTURE)
-                        && $match[0][1] + strlen($match[0][0]) <= 65536) {
-                        $message .= " ({$match[0][0]})";
-                    }
-                }
+                $message = 'CIPP API error: '.self::failureDetail($e);
 
                 Log::error("[CippClient] {$method} {$endpoint} failed: {$message}");
                 throw new CippClientException($message, $code, $e);
