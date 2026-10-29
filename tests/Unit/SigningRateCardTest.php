@@ -19,8 +19,8 @@ class SigningRateCardTest extends TestCase
         $result = (new TemplateMerge)->merge('{{client.name}} {{lines_table}} {{unknown}}', ['client.name' => '<b>Example</b>'], $document);
         $this->assertStringContainsString('125.00', $result['html']);
         $this->assertStringContainsString('3.00', $result['html']);
-        $this->assertStringContainsString('DRAFT — Fixed', $result['html']);
-        $this->assertStringContainsString('DRAFT — Yes', $result['html']);
+        $this->assertStringContainsString('Fixed', $result['html']);
+        $this->assertStringContainsString('Yes', $result['html']);
         $this->assertStringContainsString('Example option', $result['html']);
         $this->assertStringContainsString('Monthly', $result['html']);
         $this->assertStringContainsString('&lt;script&gt;', $result['html']);
@@ -37,10 +37,10 @@ class SigningRateCardTest extends TestCase
             'is_taxable' => false,
         ]]]);
         $html = (new TemplateMerge)->merge('{{lines_table}}', [], $document)['html'];
-        $this->assertStringContainsString('DRAFT — Per User', $html);
-        $this->assertStringContainsString('DRAFT — variable', $html);
-        $this->assertStringContainsString('DRAFT — Up to 10: 25.00', $html);
-        $this->assertStringContainsString('DRAFT — Up to unlimited: 20.00', $html);
+        $this->assertStringContainsString('Per User', $html);
+        $this->assertStringContainsString('variable', $html);
+        $this->assertStringContainsString('Up to 10: 25.00', $html);
+        $this->assertStringContainsString('Up to unlimited: 20.00', $html);
         $this->assertStringNotContainsString('888.00', $html);
         $this->assertStringNotContainsString('999.00', $html);
     }

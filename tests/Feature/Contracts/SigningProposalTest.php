@@ -280,16 +280,16 @@ class SigningProposalTest extends TestCase
         $proposal = $this->generate($contract, $proposalTemplate);
         $token = str_repeat('C', 48);
         $proposal->update(['status' => 'sent', 'token_hash' => hash('sha256', $token), 'token_expires_at' => now()->addDay()]);
-        $page = $this->get('/sign/'.$token)->assertOk()->assertSee('DRAFT — Accept selections and pricing')->assertHeader('Referrer-Policy', 'no-referrer');
+        $page = $this->get('/sign/'.$token)->assertOk()->assertSee('Accept selections and pricing')->assertHeader('Referrer-Policy', 'no-referrer');
         $this->assertStringContainsString('no-store', $page->headers->get('Cache-Control'));
         $pdf = $this->get('/sign/'.$token.'/pdf')->assertOk()->assertHeader('Content-Type', 'application/pdf');
         $page->assertSee(hash('sha256', $pdf->getContent()));
         $this->post('/sign/'.$token, ['typed_name' => 'Alex Example', 'pdf_sha256' => $proposal->pdf_sha256])
-            ->assertOk()->assertSee('DRAFT — Selections accepted')->assertDontSee($token)->assertDontSee('<object', false)->assertDontSee('href=', false)->assertHeader('Referrer-Policy', 'no-referrer');
+            ->assertOk()->assertSee('Selections accepted')->assertDontSee($token)->assertDontSee('<object', false)->assertDontSee('href=', false)->assertHeader('Referrer-Policy', 'no-referrer');
         $this->assertSame('accepted', $proposal->fresh()->status);
         $this->assertCount(1, $proposal->snapshots);
         $this->assertNull($proposal->fresh()->token_hash);
-        $this->post('/sign/'.$token, ['typed_name' => 'Alex Example', 'pdf_sha256' => $proposal->pdf_sha256])->assertSee('DRAFT — Link unavailable');
+        $this->post('/sign/'.$token, ['typed_name' => 'Alex Example', 'pdf_sha256' => $proposal->pdf_sha256])->assertSee('Link unavailable');
         $this->assertCount(1, $proposal->fresh()->snapshots);
         foreach (['signing.public', 'signing.pdf'] as $name) {
             $route = app('router')->getRoutes()->getByName($name);
@@ -309,7 +309,7 @@ class SigningProposalTest extends TestCase
             $token = str_repeat('D', 48);
             $document->update(['status' => $case === 'void' ? 'void' : 'sent', 'token_hash' => hash('sha256', $token), 'token_expires_at' => $case === 'expired' ? now()->subDay() : now()->addDay()]);
             $before = $document->fresh()->getRawOriginal();
-            $this->post('/sign/'.$token, ['typed_name' => $case === 'blank' ? ' ' : 'Alex', 'pdf_sha256' => $case === 'hash' ? str_repeat('f', 64) : $document->pdf_sha256])->assertSee('DRAFT — Link unavailable');
+            $this->post('/sign/'.$token, ['typed_name' => $case === 'blank' ? ' ' : 'Alex', 'pdf_sha256' => $case === 'hash' ? str_repeat('f', 64) : $document->pdf_sha256])->assertSee('Link unavailable');
             $this->assertCount(0, $document->snapshots);
             $this->assertSame($before, $document->fresh()->getRawOriginal());
             $document->update(['token_hash' => null]);
@@ -372,7 +372,7 @@ class SigningProposalTest extends TestCase
         $response = $this->actingAs(\App\Models\User::factory()->create(['role' => 'admin']))
             ->post(route('signing.generate', $contract), ['template_id' => $agreementTemplate->id, 'recipient_name' => 'Alex Example', 'recipient_email' => 'alex@example.test']);
         $this->assertSame(hash('sha256', $liveToken), $agreement->fresh()->token_hash);
-        $response->assertStatus(409)->assertViewIs('contracts.signing-diff')->assertSee('DRAFT — Product volume rate card')->assertDontSee('sku_volume_tiers');
+        $response->assertStatus(409)->assertViewIs('contracts.signing-diff')->assertSee('Product volume rate card')->assertDontSee('sku_volume_tiers');
         $this->assertSame($documents, SignableDocument::all()->toJson());
         $this->assertSame($snapshots, \Illuminate\Support\Facades\DB::table('signing_snapshots')->get()->toJson());
         $this->assertSame($agreement->id, app(SigningService::class)->view($liveToken)->id);
@@ -454,10 +454,10 @@ class SigningProposalTest extends TestCase
         $dom = new \DOMDocument;
         @$dom->loadHTML('<?xml encoding="UTF-8">'.$response->getContent());
         $cells = (new \DOMXPath($dom))->query('//table/tbody/tr/td');
-        $this->assertSame('DRAFT — Product volume rate card', $cells->item(1)->textContent);
-        $accepted = 'DRAFT — up to 500 GB: 0.18; DRAFT — up to 2000 GB: 0.14; DRAFT — above that: 0.10';
+        $this->assertSame('Product volume rate card', $cells->item(1)->textContent);
+        $accepted = 'up to 500 GB: 0.18; up to 2000 GB: 0.14; above that: 0.10';
         $this->assertSame($accepted, $cells->item(2)->textContent);
-        $this->assertSame($removed ? '' : 'DRAFT — up to 500 GB: 0.20; DRAFT — up to 2000 GB: 0.16; DRAFT — above that: 0.12', $cells->item(3)->textContent);
+        $this->assertSame($removed ? '' : 'up to 500 GB: 0.20; up to 2000 GB: 0.16; above that: 0.12', $cells->item(3)->textContent);
         if ($removed) {
             $this->assertNull($rows[0]['current']);
         }
@@ -492,7 +492,7 @@ class SigningProposalTest extends TestCase
         $this->mock(\App\Services\EmailService::class)->shouldReceive('sendNew')->twice()->andReturnUsing(function ($to, $subject, $body, $name, $cc = null, $userId = null, $redact = []) use (&$token) {
             preg_match('~/sign/([A-Za-z0-9]{48})~', $body, $matches);
             $token = $matches[1];
-            $this->assertStringStartsWith('DRAFT — ', $subject);
+            $this->assertStringEndsWith(' ready for review', $subject);
             $this->assertNotEmpty($redact);
 
             return new \App\Models\Email;

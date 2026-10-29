@@ -6,6 +6,7 @@ use App\Models\AgreementTemplate;
 use App\Models\Contract;
 use App\Models\SignableDocument;
 use App\Models\Sku;
+use App\Support\PortalConfig;
 use App\Support\PricingModelOverride;
 use App\Support\TieredPricing;
 use Illuminate\Support\Facades\DB;
@@ -30,7 +31,7 @@ class SigningService
             $url = url('/sign/'.$token);
             try {
                 app(\App\Services\EmailService::class)->sendNew(
-                    $document->recipient_email, __('signing.mail.'.$document->kind.'.subject'),
+                    $document->recipient_email, __('signing.mail.'.$document->kind.'.subject', ['company' => self::senderName()]),
                     __('signing.mail.'.$document->kind.'.body', ['url' => $url]),
                     $document->recipient_name, redact: [$url, htmlspecialchars($url, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')],
                 );
@@ -40,6 +41,19 @@ class SigningService
             }
             $document->update(['status' => 'sent', 'sent_at' => now()]);
         });
+    }
+
+    /**
+     * The MSP name the signing mail names as its sender (#7762, white-label). It is the
+     * Branding company name (PortalConfig::companyName()). A stored '' is returned as-is
+     * by Setting::getValue (the Client Portal save used to write ''), so only here a
+     * blank name falls back to the app name; other PortalConfig consumers are unchanged.
+     */
+    public static function senderName(): string
+    {
+        $name = PortalConfig::companyName();
+
+        return $name !== '' ? $name : (string) config('app.name');
     }
 
     private function liveToken(string $token): SignableDocument

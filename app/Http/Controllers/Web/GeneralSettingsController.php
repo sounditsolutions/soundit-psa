@@ -28,6 +28,8 @@ class GeneralSettingsController extends Controller
 
         return view('settings.general', [
             'appTimezone' => Setting::getValue('app_timezone', 'UTC'),
+            'brandingCompanyName' => (string) Setting::getValue('portal_company_name', ''),
+            'brandingLogoUrl' => (string) Setting::getValue('portal_logo_url', ''),
             'invoicePrefix' => config('billing.invoice_prefix', 'INV'),
             'invoiceNextNumber' => Setting::getValue('billing_invoice_next_number', ''),
             'billingSkipZero' => (bool) Setting::getValue('billing_skip_zero_invoices', false),
@@ -39,6 +41,10 @@ class GeneralSettingsController extends Controller
 
     public function update(Request $request)
     {
+        if ($request->input('section') === 'branding') {
+            return $this->updateBranding($request);
+        }
+
         $validated = $request->validate([
             'app_timezone' => ['required', 'string', 'timezone'],
         ]);
@@ -47,6 +53,26 @@ class GeneralSettingsController extends Controller
 
         return redirect()->route('settings.general')
             ->with('success', 'General settings saved.');
+    }
+
+    /**
+     * General Settings > Branding (#7762): the MSP's company name and logo. Same keys the
+     * Client Portal tab used to edit (portal_company_name / portal_logo_url), so no data
+     * move; validation copied from IntegrationsController::updatePortal. Posted to
+     * settings.general.update with section=branding, so it carries that route's permission.
+     */
+    private function updateBranding(Request $request)
+    {
+        $validated = $request->validate([
+            'portal_company_name' => 'nullable|string|max:100',
+            'portal_logo_url' => 'nullable|url|max:500',
+        ]);
+
+        Setting::setValue('portal_company_name', $validated['portal_company_name'] ?? '');
+        Setting::setValue('portal_logo_url', $validated['portal_logo_url'] ?? '');
+
+        return redirect()->route('settings.general')
+            ->with('success', 'Branding saved.');
     }
 
     public function updateBillingNumbering(Request $request)

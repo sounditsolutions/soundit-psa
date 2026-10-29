@@ -3771,8 +3771,6 @@ class IntegrationsController extends Controller
             'portal_enabled' => 'nullable|in:0,1',
             'portal_shop_enabled' => 'nullable|in:0,1',
             'portal_chatbot_enabled' => 'nullable|in:0,1',
-            'portal_company_name' => 'nullable|string|max:100',
-            'portal_logo_url' => 'nullable|url|max:500',
             'portal_billing_url' => 'nullable|url|max:500',
             'portal_billing_label' => 'nullable|string|max:100',
             'portal_order_url' => 'nullable|string|max:500',
@@ -3781,8 +3779,8 @@ class IntegrationsController extends Controller
         Setting::setValue('portal_enabled', $validated['portal_enabled'] ?? '0');
         Setting::setValue('portal_shop_enabled', $validated['portal_shop_enabled'] ?? '0');
         Setting::setValue('portal_chatbot_enabled', $validated['portal_chatbot_enabled'] ?? '0');
-        Setting::setValue('portal_company_name', $validated['portal_company_name'] ?? '');
-        Setting::setValue('portal_logo_url', $validated['portal_logo_url'] ?? '');
+        // portal_company_name / portal_logo_url moved to General Settings > Branding (#7762).
+        // This form no longer posts them, so it must not write them (it would blank them).
         Setting::setValue('portal_billing_url', $validated['portal_billing_url'] ?? '');
         Setting::setValue('portal_billing_label', $validated['portal_billing_label'] ?? '');
         Setting::setValue('portal_order_url', $validated['portal_order_url'] ?? '');
