@@ -46,6 +46,8 @@ class CippClientErrorCodeTest extends TestCase
             'long error' => [500, json_encode(['error' => str_repeat('hostile ', 1000)]), null],
             'first only' => [500, 'AADSTS700003 AADSTS900001'.$detail, 'AADSTS700003'],
             'outside bound' => [500, str_repeat('x', 65536).' AADSTS700003', null],
+            'straddles bound' => [500, str_repeat('x', 65525).' AADSTS700003'.$detail, null],
+            'ends at bound' => [500, str_repeat('x', 65523).' AADSTS700003'.$detail, 'AADSTS700003'],
             'invalid code boundaries' => [500, 'xAADSTS700003 AADSTS123 AADSTS700003x', null],
         ];
     }

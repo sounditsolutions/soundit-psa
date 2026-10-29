@@ -364,9 +364,11 @@ class CippClient
                     if ($body->isSeekable()) {
                         $body->rewind();
                     }
-                    $prefix = $body->read(65536);
-                    if (preg_match('/\bAADSTS\d{4,}\b/', $prefix, $match)) {
-                        $message .= " ({$match[0]})";
+                    // Read one byte past the 64 KB bound so a code cut by it is dropped, not shortened
+                    $prefix = $body->read(65537);
+                    if (preg_match('/\bAADSTS\d{4,}\b/', $prefix, $match, PREG_OFFSET_CAPTURE)
+                        && $match[0][1] + strlen($match[0][0]) <= 65536) {
+                        $message .= " ({$match[0][0]})";
                     }
                 }
 
