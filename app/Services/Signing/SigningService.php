@@ -191,7 +191,8 @@ class SigningService
                         throw new RuntimeException('signing_acceptance_missing');
                     }
                     $acceptance = $proposal->snapshots()->where('role', 'acceptance')->first();
-                    if (! $acceptance || ! hash_equals($acceptance->lines_sha256, hash('sha256', $acceptance->getRawOriginal('lines')))) {
+                    if (! $acceptance || ! hash_equals($acceptance->lines_sha256, hash('sha256', $acceptance->getRawOriginal('lines')))
+                        || ! is_string($proposal->rendered_lines_sha256) || ! hash_equals($proposal->rendered_lines_sha256, $acceptance->lines_sha256)) {
                         \Illuminate\Support\Facades\Log::warning('signing_acceptance_integrity', ['exception_class' => RuntimeException::class]);
                         throw new RuntimeException('signing_acceptance_integrity');
                     }

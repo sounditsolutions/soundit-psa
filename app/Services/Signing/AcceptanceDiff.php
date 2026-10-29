@@ -2,6 +2,8 @@
 
 namespace App\Services\Signing;
 
+use Illuminate\Support\Facades\Lang;
+
 class AcceptanceDiff
 {
     private const COLUMNS = [
@@ -9,9 +11,27 @@ class AcceptanceDiff
         'pricing_tiers', 'sku_volume_tiers', 'is_taxable', 'option_group', 'term',
     ];
 
+    public static function displayField(string $field): string
+    {
+        $key = 'signing.rate_card.diff_'.$field;
+
+        return Lang::has($key) ? __($key) : $field;
+    }
+
+    public static function displayValue(string $field, mixed $value): string|false
+    {
+        if ($field === 'sku_volume_tiers') {
+            return is_array($value) && $value !== [] ? TemplateMerge::volumeBands($value) : '';
+        }
+
+        return json_encode($value, JSON_UNESCAPED_UNICODE);
+    }
+
     /**
-     * Inputs are ordered attributesToArray representations, not database rows.
-     * Pricing tiers retain their values, types and key order without normalization.
+     * Accepted lines are the acceptance snapshot's stored lines. Current lines are
+     * SigningService::renderedLine() output: attributesToArray() plus synthesized
+     * sku_volume_tiers from the live SKU card when it applies.
+     * pricing_tiers and sku_volume_tiers are compared without normalization.
      *
      * @return array<int, array{line:int,field:string,accepted:mixed,current:mixed}>
      */

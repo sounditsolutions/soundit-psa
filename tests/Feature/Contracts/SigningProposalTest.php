@@ -228,7 +228,7 @@ class SigningProposalTest extends TestCase
         $files = Storage::disk('local')->allFiles();
         $this->actingAs(\App\Models\User::factory()->create(['role' => 'admin']))
             ->post(route('signing.generate', $contract), ['template_id' => $agreementTemplate->id, 'recipient_name' => 'Alex Example', 'recipient_email' => 'alex@example.test'])
-            ->assertStatus(409)->assertViewIs('contracts.signing-diff')->assertSee($field);
+            ->assertStatus(409)->assertViewIs('contracts.signing-diff')->assertSee('<td>'.$field.'</td>', false);
         $this->assertDatabaseCount('signable_documents', 1);
         $this->assertSame($files, Storage::disk('local')->allFiles());
     }
@@ -372,12 +372,101 @@ class SigningProposalTest extends TestCase
         $response = $this->actingAs(\App\Models\User::factory()->create(['role' => 'admin']))
             ->post(route('signing.generate', $contract), ['template_id' => $agreementTemplate->id, 'recipient_name' => 'Alex Example', 'recipient_email' => 'alex@example.test']);
         $this->assertSame(hash('sha256', $liveToken), $agreement->fresh()->token_hash);
-        $response->assertStatus(409)->assertViewIs('contracts.signing-diff')->assertSee('sku_volume_tiers');
+        $response->assertStatus(409)->assertViewIs('contracts.signing-diff')->assertSee('DRAFT — Product volume rate card')->assertDontSee('sku_volume_tiers');
         $this->assertSame($documents, SignableDocument::all()->toJson());
         $this->assertSame($snapshots, \Illuminate\Support\Facades\DB::table('signing_snapshots')->get()->toJson());
         $this->assertSame($agreement->id, app(SigningService::class)->view($liveToken)->id);
         $this->assertDatabaseCount('signable_documents', 2);
         $this->assertSame($files, Storage::disk('local')->allFiles());
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('proposalHashes')]
+    public function test_proposal_hash_anchor(?string $hash, bool $passes): void
+    {
+        [$contract, $proposalTemplate, $agreementTemplate] = $this->scenario();
+        $proposal = $this->generate($contract, $proposalTemplate);
+        $this->acceptProposal($proposal);
+        if (! $passes && $hash === null) {
+            // The current schema is NOT NULL. Model a legacy null at hydration,
+            // without changing the schema or bypassing the generate query.
+            \Illuminate\Support\Facades\Event::listen('eloquent.retrieved: '.SignableDocument::class, function (SignableDocument $document) use ($proposal): void {
+                if ($document->id === $proposal->id) {
+                    $document->rendered_lines_sha256 = null;
+                }
+            });
+        } elseif (! $passes) {
+            \Illuminate\Support\Facades\DB::table('signable_documents')->where('id', $proposal->id)->update(['rendered_lines_sha256' => $hash]);
+        }
+        $records = [];
+        \Illuminate\Support\Facades\Log::listen(function ($event) use (&$records): void {
+            $records[] = [$event->level, $event->message, $event->context];
+        });
+        $files = Storage::disk('local')->allFiles();
+        if ($passes) {
+            $agreement = $this->generate($contract, $agreementTemplate);
+            $this->assertSame($proposal->rendered_lines_sha256, $agreement->rendered_lines_sha256);
+            $this->assertDatabaseCount('signable_documents', 2);
+            $this->assertSame([], $records);
+        } else {
+            try {
+                $this->generate($contract, $agreementTemplate);
+                $this->fail('Unanchored acceptance generated');
+            } catch (\RuntimeException $error) {
+                $this->assertSame('signing_acceptance_integrity', $error->getMessage());
+            }
+            $this->assertSame([['warning', 'signing_acceptance_integrity', ['exception_class' => \RuntimeException::class]]], $records);
+            $this->assertDoesNotMatchRegularExpression('/[a-f0-9]{64}/i', json_encode($records));
+            $this->assertDatabaseCount('signable_documents', 1);
+            $this->assertSame($files, Storage::disk('local')->allFiles());
+        }
+    }
+
+    public static function proposalHashes(): array
+    {
+        return ['matching' => [null, true], 'tampered' => [str_repeat('f', 64), false], 'null' => [null, false]];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('diffCards')]
+    public function test_volume_diff_exact_cells_and_removed_card(bool $removed): void
+    {
+        [$contract, $proposalTemplate, $agreementTemplate] = $this->scenario();
+        $sku = \App\Models\Sku::create(['name' => 'Example storage', 'sku_code' => 'EXAMPLE-CELLS', 'unit_price' => '0', 'unit_cost' => '0', 'default_quantity_type' => 'per_backup_storage_gb']);
+        $contract->lines()->firstOrFail()->update(['sku_id' => $sku->id, 'quantity_type' => 'per_backup_storage_gb']);
+        foreach ([[500, '0.18'], [2000, '0.14'], [null, '0.10']] as [$bound, $price]) {
+            $sku->backupStorageTiers()->create(['up_to_gb' => $bound, 'unit_price' => $price]);
+        }
+        $proposal = $this->generate($contract, $proposalTemplate);
+        $this->acceptProposal($proposal);
+        if ($removed) {
+            $sku->backupStorageTiers()->delete();
+            $this->assertSame(0, $sku->backupStorageTiers()->count());
+        } else {
+            foreach ([[500, '0.20'], [2000, '0.16'], [null, '0.12']] as [$bound, $price]) {
+                $sku->backupStorageTiers()->where('up_to_gb', $bound)->update(['unit_price' => $price]);
+            }
+        }
+        $response = $this->actingAs(\App\Models\User::factory()->create(['role' => 'admin']))
+            ->post(route('signing.generate', $contract), ['template_id' => $agreementTemplate->id, 'recipient_name' => 'Alex Example', 'recipient_email' => 'alex@example.test']);
+        $response->assertStatus(409)->assertViewIs('contracts.signing-diff')->assertDontSee('sku_volume_tiers');
+        $rows = $response->viewData('diff')->rows;
+        $this->assertCount(1, $rows);
+        $this->assertSame('sku_volume_tiers', $rows[0]['field']);
+        $dom = new \DOMDocument;
+        @$dom->loadHTML('<?xml encoding="UTF-8">'.$response->getContent());
+        $cells = (new \DOMXPath($dom))->query('//table/tbody/tr/td');
+        $this->assertSame('DRAFT — Product volume rate card', $cells->item(1)->textContent);
+        $accepted = 'DRAFT — up to 500 GB: 0.18; DRAFT — up to 2000 GB: 0.14; DRAFT — above that: 0.10';
+        $this->assertSame($accepted, $cells->item(2)->textContent);
+        $this->assertSame($removed ? '' : 'DRAFT — up to 500 GB: 0.20; DRAFT — up to 2000 GB: 0.16; DRAFT — above that: 0.12', $cells->item(3)->textContent);
+        if ($removed) {
+            $this->assertNull($rows[0]['current']);
+        }
+        $this->assertSame(\App\Services\Signing\TemplateMerge::volumeBands($rows[0]['accepted']), $cells->item(2)->textContent);
+    }
+
+    public static function diffCards(): array
+    {
+        return ['changed' => [false], 'all removed' => [true]];
     }
 
     public static function volumeChanges(): array

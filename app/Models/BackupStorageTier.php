@@ -23,6 +23,19 @@ class BackupStorageTier extends Model
         ];
     }
 
+    /** Bounds ascending, null last, then id; id-less snapshots retain their order. */
+    public static function compareRateCard(self|array $a, self|array $b): int
+    {
+        $left = $a['up_to_gb'];
+        $right = $b['up_to_gb'];
+        $bounds = ($left === null) <=> ($right === null);
+        if ($bounds === 0) {
+            $bounds = $left <=> $right;
+        }
+
+        return $bounds ?: (($a['id'] ?? 0) <=> ($b['id'] ?? 0));
+    }
+
     // ── Relations ──
 
     public function sku(): BelongsTo
