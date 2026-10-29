@@ -50,7 +50,7 @@ trait AssetSourcesFixtures
         $asset = Asset::factory()->create(array_merge([
             'client_id' => $client->id,
             'hostname' => 'DESK-EXAMPLE-01',
-            'autoelevate_computer_id' => 'ae-synthetic-'.$n,
+            'autoelevate_computer_id' => sprintf('00000000-0000-4000-8000-%012d', $n),
             'autoelevate_elevation_mode' => 'live',
             'autoelevate_last_checked_in_at' => now()->subMinutes(5),
             'autoelevate_synced_at' => now()->subMinutes(30),

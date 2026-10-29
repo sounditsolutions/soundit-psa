@@ -70,7 +70,7 @@ class AssetSourcesTabTest extends TestCase
     public function test_rail_leaves_out_an_unconfigured_unlinked_source_and_keeps_a_linked_one(): void
     {
         // Nothing configured; the asset carries only an AutoElevate link.
-        $asset = Asset::factory()->create(['autoelevate_computer_id' => 'ae-synthetic-2']);
+        $asset = Asset::factory()->create(['autoelevate_computer_id' => '00000000-0000-4000-8000-000000000999']);
         $html = $this->show($asset)->getContent();
 
         preg_match_all('/data-source-rail="([a-z0-9]+)"/', $html, $m);
