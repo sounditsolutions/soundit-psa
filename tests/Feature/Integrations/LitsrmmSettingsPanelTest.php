@@ -175,10 +175,12 @@ class LitsrmmSettingsPanelTest extends TestCase
      * characters of the line, a copy (text, element or comment) that does not
      * itself restore the line's bytes splits them, so the first check, that
      * the line appears once, fails.
-     * Such a copy that is an element and sits directly after the switch
-     * displaces the line and fails the position check. A comment adds no
-     * text to the <p> or position checks, so a comment copy anywhere else
-     * passes every check, the line's own <p> included. A bare text node copy
+     * A copy whose bytes do not contain the line, if it is an element and
+     * sits directly after the switch, displaces the line and fails the
+     * position check. A comment adds no text to the <p> or position checks.
+     * A comment copy between two characters is refused by the count with
+     * comments replaced by a space. Elsewhere, a comment copy whose bytes
+     * do not contain the line passes every check, the line's own <p> included. A bare text node copy
      * outside any <p> passes every check, even directly after the switch,
      * because the position check looks only at elements. The view emits
      * neither.
@@ -186,6 +188,7 @@ class LitsrmmSettingsPanelTest extends TestCase
     private function assertPendingLineSitsDirectlyUnderTheSwitch(string $html, string $text): void
     {
         $this->assertSame(1, substr_count($html, $text), 'the exact pending line text must appear exactly once in the page');
+        $this->assertSame(1, substr_count(preg_replace('/<!--.*?-->/s', ' ', $html), $text), 'the exact pending line text must appear exactly once in the page with every HTML comment replaced by a single space');
         $document = new \DOMDocument;
         @$document->loadHTML($html);
         $xpath = new \DOMXPath($document);
@@ -223,6 +226,37 @@ class LitsrmmSettingsPanelTest extends TestCase
             return;
         }
         $this->fail('the helper accepted a page it must refuse: '.$why);
+    }
+
+    public function test_h7721_a_comment_copy_between_characters_4_and_5_fails_the_spaced_count(): void
+    {
+        $text = 'Sync every 4 hours is still on. Scheduled sync will run once the integration is configured and enabled.';
+        $html = str_replace($text, substr($text, 0, 4).'<!--'.$text.'-->'.substr($text, 4), $this->pendingLinePage());
+        $this->assertPendingLineHelperRefuses($html, 'appear exactly once', 'a comment copy must not hide a split line at character 4');
+    }
+
+    public function test_h7721_a_comment_copy_between_characters_102_and_103_fails_the_spaced_count(): void
+    {
+        $text = 'Sync every 4 hours is still on. Scheduled sync will run once the integration is configured and enabled.';
+        $html = str_replace($text, substr($text, 0, 102).'<!--'.$text.'-->'.substr($text, 102), $this->pendingLinePage());
+        $this->assertPendingLineHelperRefuses($html, 'appear exactly once', 'a comment copy must not hide a split line at character 102');
+    }
+
+    public function test_h7721_a_clean_page_with_a_comment_elsewhere_passes(): void
+    {
+        $text = 'Sync every 4 hours is still on. Scheduled sync will run once the integration is configured and enabled.';
+        $html = preg_replace('#(<form[^>]*action="'.preg_quote(route('settings.integrations.litsrmm.schedule'), '#').'"[^>]*>.*?</form>)#s', '$1<!-- note -->', $this->pendingLinePage(), -1, $count);
+        $this->assertSame(1, $count);
+        $this->assertPendingLineSitsDirectlyUnderTheSwitch($html, $text);
+    }
+
+    public function test_h18_a_copy_that_restores_the_line_between_two_of_its_characters_fails_the_one_p_check(): void
+    {
+        $text = 'Sync every 4 hours is still on. Scheduled sync will run once the integration is configured and enabled.';
+        $this->assertSame(1, substr_count($text, 'Scheduled'));
+        $html = str_replace($text, str_replace('Scheduled', 'S'.substr($text, 1).'cheduled', $text), $this->pendingLinePage());
+        $this->assertSame(1, substr_count($html, $text));
+        $this->assertPendingLineHelperRefuses($html, 'exactly one <p> must have the pending line', 'a straddling copy changes the paragraph text');
     }
 
     public function test_h18_a_copy_inside_the_lines_own_p_fails_the_one_p_check(): void
