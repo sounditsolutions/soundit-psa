@@ -102,6 +102,18 @@ class AssetSourcesTabTest extends TestCase
         $this->assertStringContainsString('data-attention-marker="1"', $this->railEntry($html, 'autoelevate'));
     }
 
+    public function test_m365_signatures_up_to_date_defender_status_is_healthy_and_has_no_defender_item(): void
+    {
+        // M-r1c.1: the marker shares AssetHealthService::defenderLooksBad, which treats
+        // 'SignaturesUpToDate' as healthy (AssetHealthServiceTest pins the same value).
+        $this->configureAllSources();
+        Http::fake([]);
+        $html = $this->show($this->assetLinkedEverywhere(['m365_defender_status' => 'SignaturesUpToDate']))->getContent();
+        $this->assertStringNotContainsString('data-attention-item="defender"', $this->panel($html, 'm365'));
+        $this->assertStringNotContainsString('data-attention-marker', $this->railEntry($html, 'm365'));
+        Http::assertNothingSent();
+    }
+
     public function test_m365_clean_or_null_defender_status_has_no_defender_item(): void
     {
         $this->configureAllSources();
@@ -161,6 +173,53 @@ class AssetSourcesTabTest extends TestCase
         $this->assertStringContainsString('data-state="not_linked"', $panel);
         $this->assertStringContainsString('data-attention-marker="1"', $this->railEntry($html, 'autoelevate'));
         Http::assertNothingSent();
+    }
+
+    public function test_autoelevate_link_row_marks_the_rail_but_does_not_pick_the_default(): void
+    {
+        // M-r1c.2 (Jeeves A1): an unmapped client's AutoElevate link row still marks the
+        // rail, but the default opens on the first source with a non-link item (Tactical).
+        $this->configureAllSources();
+        Http::fake([]);
+        $asset = $this->assetLinkedEverywhere(['autoelevate_computer_id' => null], ['checks_failing' => 2]);
+        $this->assertNull($asset->client->autoelevate_company_id, 'fixture: the client has no AutoElevate mapping');
+        $html = $this->show($asset)->getContent();
+
+        $this->assertStringContainsString('data-default-source="tactical"', $html);
+        $this->assertStringContainsString('data-attention-marker="1"', $this->railEntry($html, 'autoelevate'));
+        $this->assertStringContainsString('Link state: not_mapped', $this->panel($html, 'autoelevate'));
+        $this->assertStringContainsString('data-attention-item="checks"', $this->panel($html, 'tactical'));
+        Http::assertNothingSent();
+    }
+
+    public function test_linked_but_not_configured_source_says_its_details_are_the_last_data_stored(): void
+    {
+        // M-r1c.3: Jeeves's exact sentence, for linked + not configured only.
+        $asset = Asset::factory()->create(['autoelevate_computer_id' => '00000000-0000-4000-8000-000000000998']);
+        $panel = $this->panel($this->show($asset)->getContent(), 'autoelevate');
+
+        $this->assertStringContainsString('data-state="not_configured"', $panel);
+        $this->assertStringContainsString("This source isn't configured, so these details are the last data stored.", $panel);
+        $this->assertStringNotContainsString('Nothing in the stored data for this source needs a look.', $panel);
+
+        // A linked, configured source with no attention keeps today's sentence.
+        $this->configureAllSources();
+        $tactical = $this->panel($this->show($this->assetLinkedEverywhere())->getContent(), 'tactical');
+        $this->assertStringContainsString('Nothing in the stored data for this source needs a look.', $tactical);
+        $this->assertStringNotContainsString("This source isn't configured", $tactical);
+    }
+
+    public function test_default_arm_footer_shows_the_synced_time_without_scheduled(): void
+    {
+        // M-r1c.4: the default footer arm claims nothing about how the sync ran.
+        $this->configureAllSources();
+        $html = $this->show($this->assetLinkedEverywhere())->getContent();
+
+        foreach (['tactical', 'litsrmm'] as $source) {
+            $this->assertSame(1, preg_match('/data-footer-text>([^<]*)</', $this->panel($html, $source), $m), $source);
+            $this->assertMatchesRegularExpression('/^Synced \d+ \w+ ago · /', $m[1], $source);
+            $this->assertStringNotContainsString('scheduled', $m[1], $source);
+        }
     }
 
     public function test_offline_agent_with_no_other_issue_renders_marker_1(): void

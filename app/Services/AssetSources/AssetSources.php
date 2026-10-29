@@ -3,6 +3,7 @@
 namespace App\Services\AssetSources;
 
 use App\Models\Asset;
+use App\Services\AssetHealthService;
 use App\Services\AutoElevate\AutoElevateAssetSyncService;
 use App\Support\AutoElevateConfig;
 use App\Support\CippConfig;
@@ -61,14 +62,6 @@ class AssetSources
 
     /** Sources with no sync stamp of their own (syncedAt() is null by design, not "never"). */
     public const UNATTRIBUTED_SYNC_SOURCES = ['comet', 'servosity'];
-
-    /**
-     * Case-insensitive clean markers: app/Services/Cipp/CippDeviceSyncService.php:223-224
-     * stores Graph antiVirusStatus raw; tests/Feature/Assets/AssetHealthServiceTest.php:148
-     * uses 'Running' as healthy. Graph windowsProtectionState's deviceState enum
-     * includes 'clean' (https://learn.microsoft.com/en-us/graph/api/resources/intune-devices-windowsprotectionstate?view=graph-rest-1.0).
-     */
-    public const M365_DEFENDER_CLEAN_STATUSES = ['running', 'clean'];
 
     public const INFERRED_WORDING = 'most likely written by the newest sync';
 
@@ -170,7 +163,11 @@ class AssetSources
      * The rail: every source linked on this asset OR configured in Settings, in
      * the fixed order. A never-configured, unlinked vendor is left out.
      *
-     * @return list<array{source: string, label: string, state: string, attention: int, synced_at: ?CarbonInterface}>
+     * `attention` is the rail marker count (every attention item). `default_attention`
+     * is the same count without AutoElevate link-state items (key 'link'): a link row
+     * marks the rail but never picks the default selection.
+     *
+     * @return list<array{source: string, label: string, state: string, attention: int, default_attention: int, synced_at: ?CarbonInterface}>
      */
     public static function rail(Asset $asset): array
     {
@@ -179,11 +176,13 @@ class AssetSources
             if (! self::isLinked($asset, $source) && ! self::isConfigured($source)) {
                 continue;
             }
+            $items = self::attention($asset, $source);
             $rail[] = [
                 'source' => $source,
                 'label' => self::label($source),
                 'state' => self::state($asset, $source),
-                'attention' => count(self::attention($asset, $source)),
+                'attention' => count($items),
+                'default_attention' => count(array_filter($items, fn ($i) => $i['key'] !== 'link')),
                 'synced_at' => self::syncedAt($asset, $source),
             ];
         }
@@ -199,13 +198,14 @@ class AssetSources
 
     /**
      * Default selection (design-r3 §1): the first source in rail order with an
-     * attention count; else the most recently synced; else the first entry.
+     * attention count not counting link-state items (default_attention); else the
+     * most recently synced; else the first entry.
      * A #tab-sources/<source> deep link overrides this in the browser.
      */
     public static function defaultSource(array $rail): ?string
     {
         foreach ($rail as $r) {
-            if ($r['attention'] > 0) {
+            if ($r['default_attention'] > 0) {
                 return $r['source'];
             }
         }
@@ -350,7 +350,8 @@ class AssetSources
                 'evidence' => 'Intune compliance state '.($asset->m365_compliance_state ?? 'not reported')];
         }
         $defender = $asset->m365_defender_status;
-        if ($defender !== null && ! in_array(strtolower(trim($defender)), self::M365_DEFENDER_CLEAN_STATUSES, true)) {
+        // The same deny-list predicate the health score uses (one shared reader).
+        if ($defender !== null && AssetHealthService::defenderLooksBad($defender)) {
             $items[] = ['key' => 'defender', 'title' => 'Defender: '.$defender,
                 'evidence' => 'Defender AV status reported by Intune'];
         }

@@ -62,7 +62,11 @@
                         @if($p['state'] === 'off')
                             <p class="text-muted small mb-0">{{ $p['label'] }} is switched off for this PSA, so nothing is read from it and no attention count is shown. The values shown are the last known ones.</p>
                         @elseif(count($p['attention']) === 0)
-                            <p class="text-muted small mb-0">Nothing in the stored data for this source needs a look.</p>
+                            @if($p['state'] === 'not_configured' && $p['linked'])
+                                <p class="text-muted small mb-0">This source isn't configured, so these details are the last data stored.</p>
+                            @else
+                                <p class="text-muted small mb-0">Nothing in the stored data for this source needs a look.</p>
+                            @endif
                         @else
                             @foreach($p['attention'] as $item)
                                 <div class="border rounded p-2 mb-2" data-attention-item="{{ $item['key'] }}">

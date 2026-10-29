@@ -165,6 +165,8 @@ class SourcePanel
             'source' => $source,
             'label' => AssetSources::label($source),
             'state' => $state,
+            // Carries the asset's link, whatever the state (a not-configured source can still be linked).
+            'linked' => AssetSources::isLinked($asset, $source),
             'open_in' => $linked ? self::openIn($asset, $source) : null,
             'chips' => self::chips($asset, $source, $state, $syncedAt),
             'attention' => AssetSources::attention($asset, $source),
@@ -321,7 +323,7 @@ class SourcePanel
             $source === 'screenconnect' => 'Updated by ScreenConnect events; last event '
                 .($asset->screenconnect_last_seen_at ? $asset->screenconnect_last_seen_at->diffForHumans() : 'not recorded'),
             in_array($source, self::NO_SINGLE_ASSET_READ, true) => $synced.' · updated by its scheduled sync; this source cannot be read for one asset',
-            default => $synced.' · scheduled',
+            default => $synced,
         };
 
         $outcome = null;
