@@ -149,8 +149,9 @@ class LitsrmmSettingsPanelTest extends TestCase
      * outside the form, above the switch, or below the "Off by default"
      * form-text fails here.
      *
-     * A second copy fails if its bytes contain the line anywhere, including a
-     * copy embedded verbatim inside longer text, because substr_count then
+     * A second copy beside the line (not between two of its characters)
+     * fails if its bytes contain the line anywhere, including a copy
+     * embedded verbatim inside longer text, because substr_count then
      * finds two. It also fails if it is a second <p> whose whitespace-
      * normalised text, inline children included, equals the line. That covers
      * a <br> with whitespace beside it, and a <br> inserted inside the text
@@ -171,8 +172,9 @@ class LitsrmmSettingsPanelTest extends TestCase
      * the line's own <p> before or after the line, as text or as an element
      * libxml leaves inside that <p>, the same copy changes the <p>'s text, so
      * no <p> equals the line and the one-<p> check fails. Put between two
-     * characters of the line, any copy (text, element or comment) splits the
-     * line's bytes, so the first check, that the line appears once, fails.
+     * characters of the line, a copy (text, element or comment) that does not
+     * itself restore the line's bytes splits them, so the first check, that
+     * the line appears once, fails.
      * Such a copy that is an element and sits directly after the switch
      * displaces the line and fails the position check. A comment adds no
      * text to the <p> or position checks, so a comment copy anywhere else
@@ -232,6 +234,17 @@ class LitsrmmSettingsPanelTest extends TestCase
         $html = str_replace($text.'</p>', $text.' <span>'.$copy.'</span></p>', $html);
         $this->assertPendingLineHelperRefuses($html, 'exactly one <p> must have the pending line',
             'a non-matching copy inside the line\'s own <p> makes that <p> stop equalling the line, so no <p> matches');
+    }
+
+    public function test_h18_a_copy_between_two_characters_without_restoring_the_line_fails_the_first_check(): void
+    {
+        $text = 'Sync every 4 hours is still on. Scheduled sync will run once the integration is configured and enabled.';
+        $html = $this->pendingLinePage();
+        $this->assertSame(1, substr_count($html, $text.'</p>'), 'the rendered line must end its own <p> once');
+        $copy = '<span>'.str_replace('Sync every', 'Sync&nbsp;every', $text).'</span>';
+        $html = str_replace($text.'</p>', substr($text, 0, -1).$copy.'.</p>', $html);
+        $this->assertPendingLineHelperRefuses($html, 'the exact pending line text must appear exactly once',
+            'a copy between two characters without restoring the line fails the first check');
     }
 
     public function test_h18_a_switch_wrapped_inside_the_form_is_not_found(): void
