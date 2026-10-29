@@ -99,7 +99,8 @@ class CarbonMcpOAuthController extends Controller
         try {
             $result = $catalog->sync();
         } catch (\Throwable $e) {
-            // CarbonMcpException text is PSA-authored (status / code / class only);
+            // CarbonMcpException text is PSA-authored (status, code or class, and on a
+            // catalogue collision the Carbon tool names; never results or client data);
             // anything else is reported by class, never by its message.
             $reason = $e instanceof CarbonMcpException ? $e->getMessage() : class_basename($e);
             Log::warning('[Carbon MCP OAuth] Catalogue sync after connect failed', ['error' => $reason]);
@@ -108,8 +109,17 @@ class CarbonMcpOAuthController extends Controller
                 ->with('warning', "Carbon connected, but loading the Carbon tools failed ({$reason}). Click Sync tools now to try again.");
         }
 
+        if ($result->active === 0) {
+            Log::warning('[Carbon MCP OAuth] Catalogue sync after connect loaded no tools', ['seen' => $result->seen]);
+
+            return redirect()->route('settings.integrations')
+                ->with('warning', 'Carbon connected, but Carbon listed no tools. Click Sync tools now to try again.');
+        }
+
+        $n = $result->active;
+
         return redirect()->route('settings.integrations')
-            ->with('success', "Carbon connected. {$result->active} tools loaded.");
+            ->with('success', "Carbon connected. {$n} ".Str::plural('tool', $n).' loaded.');
     }
 
     /**
