@@ -1,0 +1,247 @@
+<?php
+
+namespace Tests\Feature\Assets;
+
+use App\Enums\AlertSeverity;
+use App\Enums\AlertSource;
+use App\Enums\AlertStatus;
+use App\Models\Alert;
+use App\Models\Asset;
+use App\Models\AssetSourceSync;
+use App\Models\Setting;
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Testing\TestResponse;
+use Tests\TestCase;
+
+/**
+ * Asset Sources S0: the Sources tab frame, rail and generic panel template
+ * (design/mockups/assets/design-r3.md §§1-2). Synthetic data only.
+ */
+class AssetSourcesTabTest extends TestCase
+{
+    use AssetSourcesFixtures;
+    use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // G-5: no vendor may be reached from these renders. No catch-all fake.
+        Http::preventStrayRequests();
+    }
+
+    private function show(Asset $asset): TestResponse
+    {
+        return $this->actingAs(User::factory()->tech()->create())->get(route('assets.show', $asset))->assertOk();
+    }
+
+    /** The HTML of one source's panel, cut at the next panel. */
+    private function panel(string $html, string $source): string
+    {
+        $start = strpos($html, 'data-source-panel="'.$source.'"');
+        $this->assertNotFalse($start, "panel {$source} is rendered");
+        $next = strpos($html, 'data-source-panel="', $start + 20);
+        $end = $next === false ? strpos($html, '</script>', $start) : $next;
+
+        return substr($html, $start, $end - $start);
+    }
+
+    private function railEntry(string $html, string $source): string
+    {
+        $start = strpos($html, 'data-source-rail="'.$source.'"');
+        $this->assertNotFalse($start, "rail entry {$source} is rendered");
+
+        return substr($html, $start, strpos($html, '</a>', $start) - $start);
+    }
+
+    public function test_rail_lists_sources_in_fixed_order_and_tab_counts_linked_only(): void
+    {
+        $this->configureAllSources();
+        $html = $this->show($this->assetLinkedEverywhere())->getContent();
+
+        preg_match_all('/data-source-rail="([a-z0-9]+)"/', $html, $m);
+        $this->assertSame(\App\Services\AssetSources\AssetSources::ORDER, $m[1]);
+        // Ninja is configured but switched off by default: shown as OFF, not counted.
+        $this->assertStringContainsString('data-state="off"', $this->railEntry($html, 'ninja'));
+        $this->assertMatchesRegularExpression('/data-sources-count>\(10\)</', $html);
+    }
+
+    public function test_rail_leaves_out_an_unconfigured_unlinked_source_and_keeps_a_linked_one(): void
+    {
+        // Nothing configured; the asset carries only an AutoElevate link.
+        $asset = Asset::factory()->create(['autoelevate_computer_id' => 'ae-synthetic-2']);
+        $html = $this->show($asset)->getContent();
+
+        preg_match_all('/data-source-rail="([a-z0-9]+)"/', $html, $m);
+        $this->assertSame(['autoelevate'], $m[1]);
+        $this->assertStringContainsString('data-state="not_configured"', $this->railEntry($html, 'autoelevate'));
+        $this->assertMatchesRegularExpression('/data-sources-count>\(0\)</', $html);
+    }
+
+    public function test_rendering_sources_with_every_source_linked_makes_zero_http_calls(): void
+    {
+        // M0.10. preventStrayRequests (setUp) turns any Http-facade call into an exception.
+        $this->configureAllSources();
+        Http::fake([]);
+        $asset = $this->assetLinkedEverywhere(
+            ['autoelevate_elevation_mode' => 'audit', 'needs_reboot' => true],
+            ['checks_failing' => 2, 'needs_reboot' => true],
+        );
+
+        $html = $this->show($asset)->getContent();
+
+        Http::assertNothingSent();
+        $this->assertStringContainsString('data-attention-marker="2"', $this->railEntry($html, 'tactical'));
+        $this->assertStringContainsString('data-attention-marker="1"', $this->railEntry($html, 'autoelevate'));
+    }
+
+    public function test_offline_agent_with_no_other_issue_renders_marker_1(): void
+    {
+        // M1T.9 (Jeeves 22:1xZ fix 1): agent offline/overdue counts toward the Tactical marker.
+        $this->configureAllSources();
+        $html = $this->show($this->assetLinkedEverywhere([], ['status' => 'offline']))->getContent();
+
+        $this->assertStringContainsString('data-attention-marker="1"', $this->railEntry($html, 'tactical'));
+        $this->assertStringContainsString('data-attention-item="agent"', $this->panel($html, 'tactical'));
+    }
+
+    public function test_tactical_marker_counts_its_own_open_alerts_only(): void
+    {
+        $this->configureAllSources();
+        $asset = $this->assetLinkedEverywhere();
+        foreach ([AlertSource::Tactical, AlertSource::Ninja] as $src) {
+            Alert::create([
+                'asset_id' => $asset->id, 'source' => $src, 'severity' => AlertSeverity::Error,
+                'status' => AlertStatus::Active, 'title' => 'Disk space C: below 10%', 'fired_at' => now()->subMinutes(40),
+                'source_alert_id' => 'synthetic-'.$src->value,
+            ]);
+        }
+        $html = $this->show($asset)->getContent();
+
+        $this->assertStringContainsString('data-attention-marker="1"', $this->railEntry($html, 'tactical'));
+    }
+
+    public function test_default_selection_is_first_source_with_attention_else_most_recently_synced(): void
+    {
+        $this->configureAllSources();
+        $clean = $this->assetLinkedEverywhere();
+        // No attention anywhere: Tactical has the newest synced_at (1 min ago).
+        $this->assertStringContainsString('data-default-source="tactical"', $this->show($clean)->getContent());
+
+        $html = $this->show($this->assetLinkedEverywhere(['autoelevate_elevation_mode' => 'audit', 'autoelevate_synced_at' => now()->subDays(3)]))->getContent();
+        $this->assertStringContainsString('data-default-source="autoelevate"', $html);
+        $this->assertStringContainsString("'#tab-sources/' + a.dataset.sourceRail", $html, 'the deep-link handler is rendered');
+    }
+
+    public function test_panel_order_is_header_health_attention_activity_details_footer(): void
+    {
+        // M0.8.
+        $this->configureAllSources();
+        $html = $this->show($this->assetLinkedEverywhere())->getContent();
+
+        foreach (['tactical', 'ninja', 'servosity'] as $source) {
+            preg_match_all('/data-panel-section="([a-z]+)"/', $this->panel($html, $source), $m);
+            $this->assertSame(['header', 'health', 'attention', 'activity', 'details', 'footer'], $m[1], $source);
+        }
+    }
+
+    public function test_every_snapshot_chip_carries_its_age(): void
+    {
+        // M0.9.
+        $this->configureAllSources();
+        $html = $this->show($this->assetLinkedEverywhere())->getContent();
+
+        $count = preg_match_all('/data-chip-kind="snapshot">(.*?)data-chip-note>([^<]*)</s', $html, $m);
+        $this->assertGreaterThanOrEqual(9, $count, 'one snapshot chip per synced source');
+        foreach ($m[2] as $note) {
+            $this->assertMatchesRegularExpression('/^as of \d+ \w+ ago/', trim($note));
+        }
+    }
+
+    public function test_no_open_in_element_for_autoelevate_controld_zorus_m365(): void
+    {
+        // M0.11.
+        $this->configureAllSources();
+        Setting::setValue('tactical_web_url', 'https://tactical.example.test');
+        $html = $this->show($this->assetLinkedEverywhere(['level_url' => 'https://level.example.test/device/1']))->getContent();
+
+        foreach (['autoelevate', 'controld', 'zorus', 'm365', 'litsrmm', 'servosity', 'comet'] as $source) {
+            $panel = $this->panel($html, $source);
+            $this->assertStringNotContainsString('data-open-in', $panel, $source);
+            $this->assertStringNotContainsString('N/A', $panel, $source);
+        }
+        // Positive control: the builders that exist do render.
+        $this->assertStringContainsString('Open Tactical dashboard', $this->panel($html, 'tactical'));
+        $this->assertStringContainsString('Open in Level', $this->panel($html, 'level'));
+        $this->assertStringContainsString('Open in ScreenConnect', $this->panel($html, 'screenconnect'));
+    }
+
+    public function test_off_panel_labels_stale_values_not_being_updated(): void
+    {
+        // M0.7. Ninja is configured and switched off by default.
+        $this->configureAllSources();
+        $panel = $this->panel($this->show($this->assetLinkedEverywhere())->getContent(), 'ninja');
+
+        $this->assertStringContainsString('data-state="off"', $panel);
+        $this->assertStringContainsString('Switched off in Settings; not being updated', $panel);
+        $this->assertMatchesRegularExpression('/as of \d+ \w+ ago; last known, not updated/', $panel);
+        $this->assertStringNotContainsString('data-sync-now', $panel);
+        $this->assertStringNotContainsString('data-attention-marker', $this->railEntry($this->show($this->assetLinkedEverywhere(['needs_reboot' => true]))->getContent(), 'ninja'));
+    }
+
+    public function test_states_not_linked_and_not_configured_render_explicitly(): void
+    {
+        Setting::setEncrypted('controld_api_key', 'synthetic-controld-key');
+        $asset = Asset::factory()->create(['zorus_endpoint_id' => 'zorus-synthetic-9']);
+        $html = $this->show($asset)->getContent();
+
+        $this->assertStringContainsString('This asset is not linked to Control D', $this->panel($html, 'controld'));
+        $this->assertStringContainsString('data-state-badge="not_linked"', $this->panel($html, 'controld'));
+        $this->assertStringContainsString('Not configured in Settings', $this->panel($html, 'zorus'));
+        $this->assertStringContainsString('data-state-badge="not_configured"', $this->panel($html, 'zorus'));
+    }
+
+    public function test_device_details_show_label_column_not_reported_and_unrecognised(): void
+    {
+        $this->configureAllSources();
+        $panel = $this->panel($this->show($this->assetLinkedEverywhere(['autoelevate_elevation_mode' => 'turbo']))->getContent(), 'autoelevate');
+
+        $this->assertStringContainsString('<details', $panel);
+        $this->assertStringNotContainsString('<details class="border rounded p-2 mt-3" data-panel-section="details" open', $panel);
+        $this->assertStringContainsString('<code class="text-muted small">autoelevate_elevation_mode</code>', $panel);
+        $this->assertStringContainsString('Unrecognised: turbo', $panel);
+        $this->assertStringContainsString('Not reported by AutoElevate', $panel);
+    }
+
+    public function test_shared_rmm_columns_carry_the_inferred_wording(): void
+    {
+        $this->configureAllSources();
+        $panel = $this->panel($this->show($this->assetLinkedEverywhere(['needs_reboot' => true]))->getContent(), 'litsrmm');
+
+        $this->assertStringContainsString('data-attention-item="reboot"', $panel);
+        $this->assertStringContainsString('most likely written by the newest sync', $panel);
+    }
+
+    public function test_footer_history_lists_the_last_five_audit_rows_and_no_source_offers_sync_now(): void
+    {
+        $this->configureAllSources();
+        $asset = $this->assetLinkedEverywhere();
+        $user = User::factory()->create(['name' => 'Alex Example']);
+        foreach (range(1, 7) as $i) {
+            AssetSourceSync::create([
+                'asset_id' => $asset->id, 'source' => 'tactical', 'user_id' => $user->id, 'outcome' => 'refused',
+                'reason' => $i === 7 ? 'vendor_cooling_down' : 'recently_synced', 'retry_after_s' => 10,
+                'started_at' => now()->subMinutes(10 - $i), 'duration_ms' => 1,
+            ]);
+        }
+        $html = $this->show($asset)->getContent();
+        $panel = $this->panel($html, 'tactical');
+
+        $this->assertSame(5, substr_count($panel, 'data-history-row'));
+        $this->assertStringContainsString('Sync now by Alex Example', $panel);
+        $this->assertStringContainsString('RATE LIMITED', $panel);
+        $this->assertStringContainsString('This vendor asked us to slow down; no request was sent.', $panel);
+        $this->assertStringNotContainsString('data-sync-now', $html, 'no source returns ok in S0, so no button');
+    }
+}

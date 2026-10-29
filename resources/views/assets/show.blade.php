@@ -197,6 +197,19 @@
         @endif
     </li>
     @endif
+    {{-- Sources (n): n counts LINKED sources only (Asset Sources S0). --}}
+    @php
+        $sourcesRail = \App\Services\AssetSources\AssetSources::rail($asset);
+        $sourcesDefault = \App\Services\AssetSources\AssetSources::defaultSource($sourcesRail);
+        $sourcesLinked = \App\Services\AssetSources\AssetSources::linkedCount($sourcesRail);
+    @endphp
+    <li class="nav-item">
+        @if(($activeTab ?? '') === 'tickets')
+            <a class="nav-link" href="{{ route('assets.show', $asset) }}#tab-sources">Sources <span class="text-muted" data-sources-count>({{ $sourcesLinked }})</span></a>
+        @else
+            <a class="nav-link" data-bs-toggle="tab" href="#tab-sources">Sources <span class="text-muted" data-sources-count>({{ $sourcesLinked }})</span></a>
+        @endif
+    </li>
 </ul>
 
 <div class="tab-content border border-top-0 rounded-bottom bg-white">
@@ -2596,6 +2609,16 @@
         @else
             <p class="text-muted">Backup data is only available for NinjaRMM-linked devices.</p>
         @endif
+    </div>
+
+    {{-- ==================== TAB 9: SOURCES ==================== --}}
+    <div class="tab-pane fade p-3" id="tab-sources">
+        @include('assets.partials.sources', [
+            'asset' => $asset,
+            'sourcesRail' => $sourcesRail,
+            'sourcesDefault' => $sourcesDefault,
+            'sourcesPanels' => array_map(fn ($r) => \App\Services\AssetSources\SourcePanel::build($asset, $r['source']), $sourcesRail),
+        ])
     </div>
 
 </div>{{-- end tab-content --}}

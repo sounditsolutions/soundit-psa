@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Asset sources r3: read refused or failed (mockup c)</title>
+<link rel="stylesheet" href="../_tokens.css">
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--psa-colors-canvas); color: var(--psa-colors-ink); font-family: var(--psa-typography-body-font-family); font-size: 0.875rem; line-height: var(--psa-typography-body-line-height); }
+.shell { display: grid; grid-template-columns: var(--psa-spacing-sidebar) 1fr; min-height: 100vh; }
+.sidebar { background: var(--psa-colors-navy-deep); color: rgba(255,255,255,0.75); padding: var(--psa-spacing-md) 0; }
+.sidebar .brand { font-family: var(--psa-typography-display-font-family); font-weight: 800; color: var(--psa-colors-surface); padding: 0 var(--psa-spacing-md) var(--psa-spacing-md); letter-spacing: 0.5px; }
+.sidebar .group { font-family: var(--psa-typography-title-font-family); font-weight: 700; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 1.5px; color: rgba(255,255,255,0.35); padding: var(--psa-spacing-md) var(--psa-spacing-md) var(--psa-spacing-xs); }
+.sidebar a { display: block; padding: 6px var(--psa-spacing-md); color: rgba(255,255,255,0.75); text-decoration: none; font-weight: 500; border-left: 3px solid transparent; }
+.sidebar a.active { color: var(--psa-colors-signal-gold); border-left-color: var(--psa-colors-signal-gold); background: rgba(254,209,54,0.12); }
+.main { padding: var(--psa-spacing-lg); }
+.back { color: var(--psa-colors-muted-ink); text-decoration: none; font-size: 0.85rem; }
+.titlebar { display: flex; justify-content: space-between; align-items: center; margin: var(--psa-spacing-sm) 0 var(--psa-spacing-md); }
+.section-title { font-family: var(--psa-typography-display-font-family); font-weight: 800; font-size: 1.35rem; color: var(--psa-colors-navy); text-transform: uppercase; letter-spacing: 0.5px; margin: 0; position: relative; padding-bottom: 6px; }
+.section-title::after { content: ""; position: absolute; left: 0; bottom: 0; width: 60px; height: 3px; background: var(--psa-colors-signal-gold); }
+.sub { color: var(--psa-colors-muted-ink); font-size: 0.8rem; }
+.badge { display: inline-block; border-radius: var(--psa-rounded-pill); padding: 2px var(--psa-spacing-sm); font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap; }
+.b-success { background: var(--psa-colors-success); color: var(--psa-colors-surface); }
+.b-neutral { background: var(--psa-colors-neutral); color: var(--psa-colors-surface); }
+.b-warning { background: var(--psa-colors-warning); color: var(--psa-colors-navy-deep); }
+.b-danger { background: var(--psa-colors-danger); color: var(--psa-colors-surface); }
+.b-outline { background: var(--psa-colors-surface); color: var(--psa-colors-neutral); border: 1px solid var(--psa-colors-field-border); }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--psa-colors-border); }
+.tabs a { padding: var(--psa-spacing-sm) var(--psa-spacing-md); color: var(--psa-colors-navy); text-decoration: none; border: 1px solid transparent; border-bottom: none; border-radius: var(--psa-rounded-sm) var(--psa-rounded-sm) 0 0; font-weight: 500; }
+.tabs a.active { background: var(--psa-colors-surface); border-color: var(--psa-colors-border); color: var(--psa-colors-ink); font-weight: 600; margin-bottom: -1px; }
+.tabs a .count { color: var(--psa-colors-muted-ink); font-weight: 400; }
+.tabpane { background: var(--psa-colors-surface); border: 1px solid var(--psa-colors-border); border-top: none; border-radius: 0 0 var(--psa-rounded-md) var(--psa-rounded-md); padding: var(--psa-spacing-md); display: grid; grid-template-columns: 230px 1fr; gap: var(--psa-spacing-md); }
+.rail { border-right: 1px solid var(--psa-colors-border); padding-right: var(--psa-spacing-md); }
+.rail .label { font-family: var(--psa-typography-title-font-family); font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--psa-colors-muted-ink); margin: 0 0 var(--psa-spacing-sm); }
+.rail a { display: flex; justify-content: space-between; align-items: center; gap: var(--psa-spacing-sm); padding: 7px var(--psa-spacing-sm); border-radius: var(--psa-rounded-sm); color: var(--psa-colors-ink); text-decoration: none; margin-bottom: 2px; border: 1px solid transparent; }
+.rail a.sel { background: var(--psa-colors-canvas); border-color: var(--psa-colors-border); color: var(--psa-colors-navy); font-weight: 600; }
+.rail .hint { color: var(--psa-colors-muted-ink); font-size: 0.75rem; margin-top: var(--psa-spacing-md); }
+.card { border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-md); overflow: hidden; background: var(--psa-colors-surface); margin-bottom: var(--psa-spacing-md); }
+.card-header { background: var(--psa-colors-navy); color: var(--psa-colors-surface); font-family: var(--psa-typography-title-font-family); font-size: var(--psa-typography-title-font-size); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; padding: 10px var(--psa-spacing-md); display: flex; justify-content: space-between; align-items: center; }
+.card-header .ico { color: var(--psa-colors-signal-gold); margin-right: 6px; }
+.card-body { padding: var(--psa-spacing-md); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--psa-spacing-md); }
+h3 { font-family: var(--psa-typography-title-font-family); font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--psa-colors-navy); margin: 0 0 var(--psa-spacing-sm); }
+table.kv { width: 100%; border-collapse: collapse; }
+table.kv th { text-align: left; font-weight: 600; color: var(--psa-colors-muted-ink); width: 46%; padding: 5px 0; vertical-align: top; }
+table.kv td { padding: 5px 0; vertical-align: top; }
+table.kv tr + tr th, table.kv tr + tr td { border-top: 1px solid var(--psa-colors-border); }
+.col { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.7rem; color: var(--psa-colors-muted-ink); font-weight: 400; display: block; overflow-wrap: anywhere; padding-right: 8px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; }
+.muted { color: var(--psa-colors-muted-ink); }
+.stale td { color: var(--psa-colors-muted-ink); }
+.syncbar { display: flex; align-items: center; justify-content: space-between; gap: var(--psa-spacing-md); border-top: 1px solid var(--psa-colors-border); padding-top: var(--psa-spacing-md); margin-top: var(--psa-spacing-sm); }
+.btn { display: inline-block; font: inherit; font-weight: 600; padding: 6px 14px; border-radius: var(--psa-rounded-sm); border: 1px solid var(--psa-colors-navy); background: var(--psa-colors-surface); color: var(--psa-colors-navy); }
+.btn:disabled { color: var(--psa-colors-muted-ink); border-color: var(--psa-colors-field-border); background: var(--psa-colors-canvas); }
+.note { border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-sm); padding: 10px var(--psa-spacing-md); background: var(--psa-colors-canvas); margin-bottom: var(--psa-spacing-md); }
+.note.warn { border-color: var(--psa-colors-warning); background: rgba(255,193,7,0.10); }
+.note.off { border-color: var(--psa-colors-field-border); }
+.note strong { color: var(--psa-colors-navy-deep); }
+.annot { margin-top: var(--psa-spacing-md); font-size: 0.75rem; color: var(--psa-colors-muted-ink); border-top: 1px dashed var(--psa-colors-field-border); padding-top: var(--psa-spacing-sm); }
+
+/* r3 additions: telemetry-first panel */
+.rail a .rr { display: inline-flex; gap: 4px; align-items: center; }
+.att { display: inline-block; min-width: 18px; text-align: center; border-radius: var(--psa-rounded-pill); padding: 1px 6px; font-size: 0.7rem; font-weight: 700; background: var(--psa-colors-danger); color: var(--psa-colors-surface); }
+.att.w { background: var(--psa-colors-warning); color: var(--psa-colors-navy-deep); }
+.hdr-right { display: inline-flex; gap: 10px; align-items: center; }
+.openlink { color: var(--psa-colors-surface); text-decoration: underline; text-transform: none; font-family: var(--psa-typography-body-font-family); font-weight: 500; font-size: 0.8rem; letter-spacing: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px 18px; padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--psa-colors-border); }
+.chip { display: inline-flex; flex-direction: column; min-width: 92px; }
+.chip .k { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--psa-colors-muted-ink); }
+.chip .v { font-weight: 600; color: var(--psa-colors-ink); }
+.chip .a { font-size: 0.72rem; color: var(--psa-colors-muted-ink); }
+.t-ok { color: var(--psa-colors-success); }
+.t-bad { color: var(--psa-colors-danger); }
+.t-warn { color: #8a5a00; }
+.t-unk { color: var(--psa-colors-muted-ink); }
+.sec { margin-bottom: 14px; }
+.att-row { border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-sm); padding: 8px 12px; margin-bottom: 8px; }
+.att-row .top { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.att-row .ttl { font-weight: 600; color: var(--psa-colors-ink); }
+.att-row pre { margin: 6px 0 0; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; color: var(--psa-colors-muted-ink); background: var(--psa-colors-canvas); border-radius: 4px; padding: 6px 8px; }
+table.list { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+table.list th { text-align: left; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--psa-colors-muted-ink); padding: 4px 6px; border-bottom: 1px solid var(--psa-colors-border); }
+table.list td { padding: 5px 6px; border-bottom: 1px solid var(--psa-colors-border); vertical-align: top; }
+.disclose { border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-sm); padding: 8px 12px; color: var(--psa-colors-navy); font-weight: 600; margin-bottom: 4px; }
+.disclose .muted { font-weight: 400; }
+.footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; border-top: 1px solid var(--psa-colors-border); margin-top: 12px; padding-top: 8px; font-size: 0.78rem; color: var(--psa-colors-muted-ink); }
+.footer .btn { padding: 3px 10px; font-size: 0.78rem; }
+.footer a { color: var(--psa-colors-navy); }
+.statehead { font-family: var(--psa-typography-title-font-family); font-weight: 700; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; color: var(--psa-colors-navy); margin: 22px 0 8px; }
+.ticketctx { border: 1px solid var(--psa-colors-border); background: var(--psa-colors-surface); border-radius: var(--psa-rounded-sm); padding: 8px 12px; margin: 6px 0 10px; font-size: 0.82rem; }
+.card-body a, .ticketctx a { color: var(--psa-colors-navy); }
+.footer .btn { white-space: nowrap; flex-shrink: 0; }
+
+</style>
+</head>
+<body>
+<div class="shell">
+<nav class="sidebar">
+  <div class="brand">SOUND PSA</div>
+  <div class="group">Service</div>
+  <a href="#">Tickets</a><a href="#">Clients</a><a href="#" class="active">Assets</a>
+  <div class="group">Billing</div>
+  <a href="#">Contracts</a><a href="#">Invoices</a>
+</nav>
+<main class="main">
+  <a class="back" href="#">&larr; Back to Example Dental Co.</a>
+  <div class="titlebar">
+    <div><h1 class="section-title">DESK-EXAMPLE-01</h1><div class="sub">Windows Workstation &middot; Example Dental Co.</div></div>
+    <div><span class="badge b-success">Online</span> <button class="btn" type="button">Edit</button></div>
+  </div>
+  
+  <div class="statehead">c1 &middot; AutoElevate answered 429</div><div class="tabs"><a href="#">Overview</a><a href="#">Network</a><a href="#">Storage</a><a href="#">Software</a><a href="#">Patches</a><a href="#">Security</a><a href="#">Alerts &amp; Tickets</a><a href="#">Backup</a><a href="#" class="active">Sources <span class="count">(4)</span></a></div><section class="tabpane"><aside class="rail" aria-label="Sources for this asset"><p class="label">Data sources</p><a href="#" class="sel"><span>AutoElevate</span><span class="rr"><span class="badge b-success">Linked</span></span></a><a href="#"><span>LITSRMM</span><span class="rr"><span class="badge b-success">Linked</span></span></a><a href="#"><span>Tactical</span><span class="rr"><span class="badge b-success">Linked</span></span></a><a href="#"><span>Level</span><span class="rr"><span class="badge b-outline">Not linked</span></span></a><a href="#"><span>Ninja</span><span class="rr"><span class="badge b-neutral">Off</span></span></a><a href="#"><span>Control D</span><span class="rr"><span class="badge b-success">Linked</span></span></a><a href="#"><span>M365 (CIPP)</span><span class="rr"><span class="badge b-outline">Not linked</span></span></a><a href="#"><span>ScreenConnect</span><span class="rr"><span class="badge b-neutral">Off</span></span></a><p class="hint">A number beside a source counts stored items that need a look (failing checks, reboot, audit mode...). It is computed from stored data; opening the tab calls no vendor.</p></aside><div><div class="card"><div class="card-header"><span><span class="ico">&#9679;</span>AutoElevate &mdash; privilege elevation</span><span class="hdr-right"><span class="badge b-success">Linked</span></span></div><div class="card-body"><div class="chips"><span class="chip"><span class="k">Elevation mode</span><span class="v "><span class="badge b-outline">Live</span></span><span class="a">as of 1 h ago</span></span><span class="chip"><span class="k">Last check-in</span><span class="v ">1 h 5 min ago</span><span class="a">AutoElevate's own claim</span></span><span class="chip"><span class="k">Link</span><span class="v ">Linked</span></span></div><div class="sec"><h3>Needs attention</h3><p class="muted" style="margin:0">Nothing from AutoElevate needs attention (values from the last successful sync, 1 hour ago).</p></div><div class="disclose">&#9656; Device details <span class="muted">&middot; computer id <span class="mono">111111synthAA-0000-4000-8000-000000000001</span>, mapped through the client's AutoElevate company, agent version: not reported by AutoElevate</span></div><div class="footer"><span><span class="badge b-warning">Rate limited</span> AutoElevate is rate-limiting requests; nothing was changed. Last good sync 1 h ago (8:00 AM PDT, scheduled). PSA will not ask again until 9:21 AM PDT. &middot; <a href="#">History</a></span><button class="btn" type="button" disabled>Try again in 42 s</button></div><div class="annot">Mockup (c1): vendor 429 shown in the footer strip; telemetry stays on its last snapshot with its age. Synthetic data only.</div></div></div></div></section><div class="statehead">c2 &middot; Tactical agent unreachable</div><div class="tabs"><a href="#">Overview</a><a href="#">Network</a><a href="#">Storage</a><a href="#">Software</a><a href="#">Patches</a><a href="#">Security</a><a href="#">Alerts &amp; Tickets</a><a href="#">Backup</a><a href="#" class="active">Sources <span class="count">(4)</span></a></div><section class="tabpane"><aside class="rail" aria-label="Sources for this asset"><p class="label">Data sources</p><a href="#"><span>AutoElevate</span><span class="rr"><span class="badge b-success">Linked</span></span></a><a href="#"><span>LITSRMM</span><span class="rr"><span class="badge b-success">Linked</span></span></a><a href="#" class="sel"><span>Tactical</span><span class="rr"><span class="att" title="Agent offline">1</span><span class="badge b-success">Linked</span></span></a><a href="#"><span>Level</span><span class="rr"><span class="badge b-outline">Not linked</span></span></a><a href="#"><span>Ninja</span><span class="rr"><span class="badge b-neutral">Off</span></span></a><a href="#"><span>Control D</span><span class="rr"><span class="badge b-success">Linked</span></span></a><a href="#"><span>M365 (CIPP)</span><span class="rr"><span class="badge b-outline">Not linked</span></span></a><a href="#"><span>ScreenConnect</span><span class="rr"><span class="badge b-neutral">Off</span></span></a><p class="hint">A number beside a source counts stored items that need a look (failing checks, reboot, audit mode...). It is computed from stored data; opening the tab calls no vendor.</p></aside><div><div class="card"><div class="card-header"><span><span class="ico">&#9679;</span>Tactical RMM</span><span class="hdr-right"><a class="openlink" href="#">Open Tactical dashboard &#8599;</a><span class="badge b-success">Linked</span></span></div><div class="card-body"><div class="chips"><span class="chip"><span class="k">Agent</span><span class="v t-bad">Offline</span><span class="a">as of 3 h ago</span></span><span class="chip"><span class="k">Last contact</span><span class="v ">3 h ago</span><span class="a">Tactical last seen</span></span><span class="chip"><span class="k">Last user</span><span class="v ">EXAMPLE\jdoe</span><span class="a">as of 3 h ago</span></span><span class="chip"><span class="k">Checks</span><span class="v t-warn">6 checks, coverage unknown</span><span class="a">snapshot 3 h ago; live read failed</span></span><span class="chip"><span class="k">Reboot</span><span class="v ">Not needed</span><span class="a">as of 3 h ago</span></span><span class="chip"><span class="k">Updates</span><span class="v t-unk">Patched as of last sync</span><span class="a">as of 3 h ago</span></span></div><div class="sec"><h3>Needs attention</h3><div class="att-row"><div class="top"><span class="ttl t-bad">Agent offline for 3 hours</span><span class="muted">Tactical last seen 6:20 AM PDT</span></div></div><div class="att-row"><div class="top"><span class="ttl t-warn">Could not read the check results live</span><span class="muted">9:20 AM PDT</span></div><div class="muted">Showing the counts from the last sync. A stale snapshot never reads as all passing.</div></div></div><div class="disclose">&#9656; Device details <span class="muted">&middot; agent id, OS 10.0.19045, CPU, RAM 16 GB, disk, IPs, serial, agent version 2.9.0 (each with its column name)</span></div><div class="footer"><span><span class="badge b-danger">Failed</span> Could not reach the agent at 9:20 AM PDT (Sync now by Alex Example); showing the last sync, 3 h ago (6:20 AM PDT, scheduled) &middot; <a href="#">History</a></span><button class="btn" type="button" title="Reads this agent from Tactical. Changes nothing at Tactical.">Sync now</button></div><div class="annot">Mockup (c2): degraded Tactical read. The snapshot is kept and each chip says how old it is. Synthetic data only.</div></div></div></div></section>
+</main>
+</div>
+</body>
+</html>
