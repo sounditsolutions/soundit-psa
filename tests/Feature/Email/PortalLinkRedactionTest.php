@@ -86,6 +86,7 @@ class PortalLinkRedactionTest extends TestCase
         $token = basename(parse_url($url, PHP_URL_PATH));
         $this->assertNotEmpty($token);
         $this->assertTrue(Password::broker('portal')->tokenExists($person->fresh(), $token), 'the invite link carries the live broker token');
+        $this->assertSame(url(route('portal.password.reset', ['token' => $token, 'email' => $person->email], false)), $url);
         $this->assertLinkRedacted($url, $token);
     }
 
@@ -122,6 +123,6 @@ class PortalLinkRedactionTest extends TestCase
             $this->assertStringNotContainsString($key.'=', $email->body_html);
             $this->assertStringNotContainsString(rawurlencode($value), $email->body_html);
         }
-        $this->assertStringNotContainsString($token, $email->toJson());
+        $this->assertStringNotContainsString($token, $email->makeVisible('body_html')->toJson());
     }
 }
