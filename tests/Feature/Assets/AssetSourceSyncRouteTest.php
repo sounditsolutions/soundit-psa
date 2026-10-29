@@ -38,6 +38,15 @@ class AssetSourceSyncRouteTest extends TestCase
             ->postJson(route('assets.sources.sync', [$asset, $source]));
     }
 
+    public function test_no_single_asset_read_returns_the_exact_source_neutral_sentence(): void
+    {
+        $this->configureAllSources();
+        $this->sync($this->assetLinkedEverywhere(), 'screenconnect')->assertOk()
+            ->assertJsonPath('reason', 'no_single_asset_read')
+            ->assertJsonPath('message', "Sync now can't read this source for a single asset. Its data arrives with the source's own updates.");
+        Http::assertNothingSent();
+    }
+
     public function test_off_source_refuses_with_switched_off_and_makes_zero_http_calls(): void
     {
         // M0.1. Ninja is configured and switched off (its default).

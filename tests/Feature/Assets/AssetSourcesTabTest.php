@@ -8,8 +8,10 @@ use App\Enums\AlertStatus;
 use App\Models\Alert;
 use App\Models\Asset;
 use App\Models\AssetSourceSync;
+use App\Models\Client;
 use App\Models\Setting;
 use App\Models\User;
+use App\Services\AutoElevate\AutoElevateAssetSyncService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Testing\TestResponse;
@@ -98,6 +100,67 @@ class AssetSourcesTabTest extends TestCase
         Http::assertNothingSent();
         $this->assertStringContainsString('data-attention-marker="2"', $this->railEntry($html, 'tactical'));
         $this->assertStringContainsString('data-attention-marker="1"', $this->railEntry($html, 'autoelevate'));
+    }
+
+    public function test_m365_clean_or_null_defender_status_has_no_defender_item(): void
+    {
+        $this->configureAllSources();
+        Http::fake([]);
+        foreach (['Running', 'clean', ' CLEAN ', null] as $status) {
+            $html = $this->show($this->assetLinkedEverywhere(['m365_defender_status' => $status]))->getContent();
+            $this->assertStringNotContainsString('data-attention-item="defender"', $this->panel($html, 'm365'));
+            $this->assertStringNotContainsString('data-attention-marker', $this->railEntry($html, 'm365'));
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_m365_disabled_defender_shows_raw_value_alongside_compliance(): void
+    {
+        $this->configureAllSources();
+        Http::fake([]);
+        $html = $this->show($this->assetLinkedEverywhere([
+            'm365_defender_status' => 'Disabled', 'm365_is_compliant' => false,
+        ]))->getContent();
+        $panel = $this->panel($html, 'm365');
+        $this->assertStringContainsString('data-attention-item="defender"', $panel);
+        $this->assertStringContainsString('Defender: Disabled', $panel);
+        $this->assertStringContainsString('Defender AV status reported by Intune', $panel);
+        $this->assertStringContainsString('data-attention-item="compliance"', $panel);
+        $this->assertStringContainsString('data-attention-marker="2"', $this->railEntry($html, 'm365'));
+        Http::assertNothingSent();
+    }
+
+    public function test_autoelevate_not_mapped_link_state_reaches_panel_and_rail(): void
+    {
+        Setting::setEncrypted('autoelevate_api_key', 'synthetic-ae-key');
+        Http::fake([]);
+        $client = Client::factory()->create(['autoelevate_company_id' => null]);
+        $asset = Asset::factory()->create(['client_id' => $client->id, 'autoelevate_computer_id' => null]);
+        $html = $this->show($asset)->getContent();
+        $panel = $this->panel($html, 'autoelevate');
+        $this->assertStringContainsString('data-attention-item="link"', $panel);
+        $this->assertStringContainsString('Link state: not_mapped', $panel);
+        $this->assertStringContainsString('data-state="not_linked"', $panel);
+        $this->assertStringContainsString('data-attention-marker="1"', $this->railEntry($html, 'autoelevate'));
+        Http::assertNothingSent();
+    }
+
+    public function test_autoelevate_read_failed_link_state_reaches_panel_and_rail(): void
+    {
+        Setting::setEncrypted('autoelevate_api_key', 'synthetic-ae-key');
+        Http::fake([]);
+        $company = '00000000-0000-4000-8000-000000000123';
+        $client = Client::factory()->create(['autoelevate_company_id' => $company]);
+        $asset = Asset::factory()->create(['client_id' => $client->id, 'autoelevate_computer_id' => null]);
+        AutoElevateAssetSyncService::recordClientOutcome($client->id, $company, false, 'http_503');
+        $html = $this->show($asset)->getContent();
+        $panel = $this->panel($html, 'autoelevate');
+        $this->assertStringContainsString('data-attention-item="link"', $panel);
+        $this->assertStringContainsString('Link state: read_failed', $panel);
+        $this->assertStringContainsString('http_503', $panel);
+        $this->assertStringContainsString('data-state="not_linked"', $panel);
+        $this->assertStringContainsString('data-attention-marker="1"', $this->railEntry($html, 'autoelevate'));
+        Http::assertNothingSent();
     }
 
     public function test_offline_agent_with_no_other_issue_renders_marker_1(): void

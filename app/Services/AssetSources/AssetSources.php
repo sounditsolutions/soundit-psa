@@ -3,6 +3,7 @@
 namespace App\Services\AssetSources;
 
 use App\Models\Asset;
+use App\Services\AutoElevate\AutoElevateAssetSyncService;
 use App\Support\AutoElevateConfig;
 use App\Support\CippConfig;
 use App\Support\CometConfig;
@@ -60,6 +61,14 @@ class AssetSources
 
     /** Sources with no sync stamp of their own (syncedAt() is null by design, not "never"). */
     public const UNATTRIBUTED_SYNC_SOURCES = ['comet', 'servosity'];
+
+    /**
+     * Case-insensitive clean markers: app/Services/Cipp/CippDeviceSyncService.php:223-224
+     * stores Graph antiVirusStatus raw; tests/Feature/Assets/AssetHealthServiceTest.php:148
+     * uses 'Running' as healthy. Graph windowsProtectionState's deviceState enum
+     * includes 'clean' (https://learn.microsoft.com/en-us/graph/api/resources/intune-devices-windowsprotectionstate?view=graph-rest-1.0).
+     */
+    public const M365_DEFENDER_CLEAN_STATUSES = ['running', 'clean'];
 
     public const INFERRED_WORDING = 'most likely written by the newest sync';
 
@@ -230,14 +239,15 @@ class AssetSources
     }
 
     /**
-     * Stored items a technician should look at, for a LINKED source only (design-r3
-     * §1 marker table). Each item: ['key', 'title', 'evidence'].
+     * Stored items a technician should look at (design-r3 §1 marker table).
+     * Sources must be LINKED except AutoElevate, which also reports link state.
+     * Each item: ['key', 'title', 'evidence'].
      *
      * @return list<array{key: string, title: string, evidence: string}>
      */
     public static function attention(Asset $asset, string $source): array
     {
-        if (self::state($asset, $source) !== self::STATE_LINKED) {
+        if ($source !== 'autoelevate' && self::state($asset, $source) !== self::STATE_LINKED) {
             return [];
         }
 
@@ -284,16 +294,26 @@ class AssetSources
     /** @return list<array{key: string, title: string, evidence: string}> */
     private static function autoElevateAttention(Asset $asset): array
     {
+        $items = [];
+        $link = AutoElevateAssetSyncService::assetLinkState($asset);
+        if ($link['state'] !== 'linked') {
+            $items[] = ['key' => 'link', 'title' => 'Link state: '.$link['state'],
+                'evidence' => $link['reason'] ?? 'Stored AutoElevate link state'];
+        }
+        // Keep elevation-mode markers restricted to linked, configured panels.
+        if (self::state($asset, 'autoelevate') !== self::STATE_LINKED) {
+            return $items;
+        }
         $mode = $asset->autoelevate_elevation_mode;
         if ($mode === 'audit') {
-            return [['key' => 'mode', 'title' => 'Audit mode',
-                'evidence' => 'elevation requests are only logged on this machine, not enforced']];
+            $items[] = ['key' => 'mode', 'title' => 'Audit mode',
+                'evidence' => 'elevation requests are only logged on this machine, not enforced'];
         }
         if ($mode !== null && ! in_array($mode, \App\Services\AutoElevate\AutoElevateReadService::ELEVATION_MODES, true)) {
-            return [['key' => 'mode', 'title' => 'Unrecognised: '.$mode, 'evidence' => 'elevation mode reported by AutoElevate']];
+            $items[] = ['key' => 'mode', 'title' => 'Unrecognised: '.$mode, 'evidence' => 'elevation mode reported by AutoElevate'];
         }
 
-        return [];
+        return $items;
     }
 
     /** @return list<array{key: string, title: string, evidence: string}> */
@@ -324,12 +344,18 @@ class AssetSources
     /** @return list<array{key: string, title: string, evidence: string}> */
     private static function m365Attention(Asset $asset): array
     {
+        $items = [];
         if ($asset->m365_is_compliant === false) {
-            return [['key' => 'compliance', 'title' => 'Not compliant',
-                'evidence' => 'Intune compliance state '.($asset->m365_compliance_state ?? 'not reported')]];
+            $items[] = ['key' => 'compliance', 'title' => 'Not compliant',
+                'evidence' => 'Intune compliance state '.($asset->m365_compliance_state ?? 'not reported')];
+        }
+        $defender = $asset->m365_defender_status;
+        if ($defender !== null && ! in_array(strtolower(trim($defender)), self::M365_DEFENDER_CLEAN_STATUSES, true)) {
+            $items[] = ['key' => 'defender', 'title' => 'Defender: '.$defender,
+                'evidence' => 'Defender AV status reported by Intune'];
         }
 
-        return [];
+        return $items;
     }
 
     /** @return list<array{key: string, title: string, evidence: string}> */
