@@ -76,6 +76,8 @@ class PortalManagementController extends Controller
                 "Welcome to the {$companyName} Portal",
                 $body,
                 $person->full_name,
+                redact: [$url, e($url)],
+                redactLabel: '[portal link]',
             );
         } catch (\Throwable $e) {
             return back()->with('error', 'Portal enabled, but the invite email failed to send: '.$e->getMessage());

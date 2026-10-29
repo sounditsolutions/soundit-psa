@@ -193,6 +193,8 @@ class PortalAuthController extends Controller
                         "Verify your {$companyName} Portal access",
                         $body,
                         $person->full_name,
+                        redact: [$url, e($url)],
+                        redactLabel: '[portal link]',
                     );
                 } catch (\Throwable $e) {
                     Log::warning('[Portal] Access verification email failed', [

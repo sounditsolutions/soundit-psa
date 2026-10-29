@@ -235,6 +235,8 @@ class Person extends Authenticatable
             "Reset Your {$companyName} Portal Password",
             $body,
             $this->full_name,
+            redact: [$url, e($url)],
+            redactLabel: '[portal link]',
         );
     }
 
