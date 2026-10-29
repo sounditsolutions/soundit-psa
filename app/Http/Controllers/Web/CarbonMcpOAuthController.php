@@ -4,7 +4,9 @@ namespace App\Http\Controllers\Web;
 
 use App\Http\Controllers\Controller;
 use App\Services\Carbon\CarbonMcpAuthException;
+use App\Services\Carbon\CarbonMcpCatalogSyncService;
 use App\Services\Carbon\CarbonMcpConnector;
+use App\Services\Carbon\CarbonMcpException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -45,7 +47,7 @@ class CarbonMcpOAuthController extends Controller
         return redirect(CarbonMcpConnector::authorizeUrl($metadata, $clientId, $callback, $state, $verifier));
     }
 
-    public function callback(Request $request, CarbonMcpConnector $connector)
+    public function callback(Request $request, CarbonMcpConnector $connector, CarbonMcpCatalogSyncService $catalog)
     {
         $expectedState = session()->pull(self::STATE_KEY);
         $verifier = session()->pull(self::VERIFIER_KEY);
@@ -90,8 +92,24 @@ class CarbonMcpOAuthController extends Controller
 
         Log::info('[Carbon MCP OAuth] Connected', ['user_id' => $request->user()?->id]);
 
+        // Load the tool catalogue now, in this request, so the tools are grantable the
+        // moment the admin lands back on Settings (Charlie, card PEYvh4NL 2026-10-29).
+        // Same request rather than a job: the redirect then reports the real outcome.
+        // A failed sync leaves the connection standing; Sync tools now is the retry.
+        try {
+            $result = $catalog->sync();
+        } catch (\Throwable $e) {
+            // CarbonMcpException text is PSA-authored (status / code / class only);
+            // anything else is reported by class, never by its message.
+            $reason = $e instanceof CarbonMcpException ? $e->getMessage() : class_basename($e);
+            Log::warning('[Carbon MCP OAuth] Catalogue sync after connect failed', ['error' => $reason]);
+
+            return redirect()->route('settings.integrations')
+                ->with('warning', "Carbon connected, but loading the Carbon tools failed ({$reason}). Click Sync tools now to try again.");
+        }
+
         return redirect()->route('settings.integrations')
-            ->with('success', 'Carbon connected. Run Sync tools now to load the Carbon tool catalogue.');
+            ->with('success', "Carbon connected. {$result->active} tools loaded.");
     }
 
     /**

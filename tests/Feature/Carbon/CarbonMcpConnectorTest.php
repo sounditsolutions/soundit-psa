@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Carbon;
 
+use App\Models\CarbonMcpTool;
 use App\Models\Setting;
 use App\Models\User;
 use App\Services\Carbon\CarbonMcpAuthException;
@@ -160,7 +161,7 @@ class CarbonMcpConnectorTest extends TestCase
             'refresh_token' => self::REFRESH,
             'expires_in' => 3600,
             'scope' => 'mcp:read mcp:products:write mcp:orders:draft mcp:companies:write mcp:customers:write',
-        ], 200)]);
+        ], 200)] + $this->mcpFake());
         $admin = User::factory()->admin()->create(['name' => 'Alex Example']);
         $verifier = str_repeat('a', 64);
 
@@ -168,7 +169,7 @@ class CarbonMcpConnectorTest extends TestCase
             ->withSession(['carbon_mcp_oauth_state' => 'st-1', 'carbon_mcp_oauth_verifier' => $verifier])
             ->get(route('auth.carbon-mcp.callback', ['state' => 'st-1', 'code' => self::CODE]))
             ->assertRedirect(route('settings.integrations'))
-            ->assertSessionHas('success');
+            ->assertSessionHas('success', 'Carbon connected. 6 tools loaded.');
 
         Http::assertSent(fn (HttpRequest $r): bool => $r->url() === 'https://api.carbonsys.com/token'
             && $r['grant_type'] === 'authorization_code'
@@ -185,6 +186,63 @@ class CarbonMcpConnectorTest extends TestCase
         $this->assertSame(self::REFRESH, Setting::getEncrypted(CarbonMcpConnector::REFRESH_TOKEN_SETTING));
         $this->assertStringNotContainsString(self::REFRESH, (string) DB::table('settings')->where('key', CarbonMcpConnector::REFRESH_TOKEN_SETTING)->value('value'));
         $this->assertNoSecretInLogs();
+    }
+
+    public function test_connect_loads_the_tool_catalogue_in_the_same_request(): void
+    {
+        $this->seedConnected();
+        Setting::where('key', CarbonMcpConnector::REFRESH_TOKEN_SETTING)->delete();
+        Http::fake($this->exchangeFake() + $this->mcpFake());
+        $this->assertSame(0, CarbonMcpTool::count());
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->withSession(['carbon_mcp_oauth_state' => 'st-1', 'carbon_mcp_oauth_verifier' => str_repeat('a', 64)])
+            ->get(route('auth.carbon-mcp.callback', ['state' => 'st-1', 'code' => self::CODE]))
+            ->assertRedirect(route('settings.integrations'))
+            ->assertSessionHas('success', 'Carbon connected. 6 tools loaded.')
+            ->assertSessionMissing('warning');
+
+        $this->assertSame(6, CarbonMcpTool::where('active', true)->count());
+        $this->assertNotNull(app(CarbonMcpConnector::class)->status()['last_sync_at']);
+        Http::assertSent(fn (HttpRequest $r): bool => $r->url() === 'https://api.carbonsys.com/mcp'
+            && ($r->data()['method'] ?? null) === 'tools/list');
+        $this->assertNoSecretInLogs();
+    }
+
+    public function test_a_failed_catalogue_load_on_connect_keeps_the_connection_and_says_to_sync(): void
+    {
+        $this->seedConnected();
+        Setting::where('key', CarbonMcpConnector::REFRESH_TOKEN_SETTING)->delete();
+        $this->carbonMcpDown = 503;
+        Http::fake($this->exchangeFake() + $this->mcpFake());
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->withSession(['carbon_mcp_oauth_state' => 'st-1', 'carbon_mcp_oauth_verifier' => str_repeat('a', 64)])
+            ->get(route('auth.carbon-mcp.callback', ['state' => 'st-1', 'code' => self::CODE]))
+            ->assertRedirect(route('settings.integrations'))
+            ->assertSessionHas('warning', 'Carbon connected, but loading the Carbon tools failed (Carbon MCP initialize failed: HTTP 503). Click Sync tools now to try again.')
+            ->assertSessionMissing('success')
+            ->assertSessionMissing('error');
+
+        $this->assertTrue(app(CarbonMcpConnector::class)->isConnected());
+        $this->assertSame(self::REFRESH, Setting::getEncrypted(CarbonMcpConnector::REFRESH_TOKEN_SETTING));
+        $this->assertSame(0, CarbonMcpTool::count());
+        $this->assertNull(app(CarbonMcpConnector::class)->status()['last_sync_at']);
+        $this->assertTrue(collect($this->logs)->contains(fn (array $l): bool => $l['message'] === '[Carbon MCP OAuth] Catalogue sync after connect failed'
+            && $l['context'] === ['error' => 'Carbon MCP initialize failed: HTTP 503']));
+        $this->assertStringNotContainsString(self::CUSTOMER_CANARY, (string) json_encode($this->logs));
+        $this->assertNoSecretInLogs();
+    }
+
+    /** The token endpoint answering the authorization-code exchange. */
+    private function exchangeFake(): array
+    {
+        return ['https://api.carbonsys.com/token' => Http::response([
+            'access_token' => self::ACCESS,
+            'refresh_token' => self::REFRESH,
+            'expires_in' => 3600,
+            'scope' => 'mcp:read mcp:products:write mcp:orders:draft mcp:companies:write mcp:customers:write',
+        ], 200)];
     }
 
     public function test_a_refused_code_exchange_reports_the_error_code_only(): void
