@@ -476,7 +476,7 @@ class ContractC14Test extends TestCase
      * on the UPDATE and put joins before SET. Only the known SQLite wrapper is
      * unwrapped; other nested/grouped keys remain conservatively bulk writes.
      * The first top-level ticket id = ?, IN placeholders or IN digits selects
-     * the relevant bindings unless the WHERE has a top-level NOT or OR keyword in any case (even on another column), which counts as bulk; "top-level" counts parentheses naively, so string literals, MySQL '!' and text after the SQLite rowid wrapper are not parsed;
+     * the relevant bindings unless the WHERE has a top-level NOT or OR keyword in any case (even on another column, or written flush against a quoted identifier), which counts as bulk; quotes are stripped to a space and spaces around a dot are dropped before the scan; "top-level" counts parentheses naively, so string literals, comments, MySQL '!' and text after the SQLite rowid wrapper are not parsed;
      * numeric equality includes floats/padded strings and
      * Laravel's Connection::prepareBindings() bool-to-int conversion. Non-key
      * predicates remain bulk, including empty whereIn. SET subqueries and other
@@ -486,7 +486,7 @@ class ContractC14Test extends TestCase
      */
     private function h15WritesContract(string $sql, array $bindings, int $ticketId): bool
     {
-        $sql = trim(preg_replace('/\s+/', ' ', str_replace(['`', '"'], '', $sql)));
+        $sql = trim(preg_replace('/\s*\.\s*/', '.', preg_replace('/\s+/', ' ', str_replace(['`', '"'], ' ', $sql))));
         $outside = fn (string $text, int $at) => substr_count(substr($text, 0, $at), '(') === substr_count(substr($text, 0, $at), ')');
         if (preg_match('/^insert into tickets\b.*? (?:on duplicate key update|on conflict\s*\([^)]*\) do update set) (.*)$/i', $sql, $upsert)) {
             return (bool) preg_match('/(?:^|,\s*)(?:tickets\.)?contract_id\s*=/i', $upsert[1]);
@@ -553,6 +553,16 @@ class ContractC14Test extends TestCase
         }
 
         return true;
+    }
+
+    public function test_h15_detector_counts_flush_or_not_and_spaced_dot_as_bulk(): void
+    {
+        foreach (['`', '"'] as $q) {
+            $this->assertTrue($this->h15WritesContract("update {$q}tickets{$q} set {$q}contract_id{$q} = ? where {$q}id{$q} = ? or{$q}client_id{$q} = ?", [99, 9, 5], 8), 'a top-level OR flush against a quoted identifier is bulk');
+            $this->assertTrue($this->h15WritesContract("update {$q}tickets{$q} set {$q}contract_id{$q} = ? where {$q}id{$q} = ? and not{$q}closed_at{$q} is null", [99, 9], 8), 'a top-level NOT flush against a quoted identifier is bulk');
+        }
+        $this->assertTrue($this->h15WritesContract('update `tickets` set `contract_id` = ? where `id` = ? OR`client_id` = ?', [99, 9, 5], 8), 'uppercase flush OR is bulk');
+        $this->assertTrue($this->h15WritesContract('update `tickets` inner join `clients` on `clients`.`id` = `tickets`.`client_id` set `contract_id` = ? where `clients` . `id` = ?', [99, 7], 8), "another table's id never supplies the key, even with spaces around the dot");
     }
 
     public function test_h15_counter_pins_both_driver_limit_and_join_shapes(): void
