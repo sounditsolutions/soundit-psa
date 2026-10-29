@@ -20,11 +20,15 @@ use Tests\TestCase;
 
 class CippClientTokenErrorTest extends TestCase
 {
+    private array $records = [];
+
     protected function setUp(): void
     {
         parent::setUp();
         Http::preventStrayRequests();
-        Log::spy();
+        Log::listen(function (\Illuminate\Log\Events\MessageLogged $record): void {
+            $this->records[] = [$record->level, $record->message, $record->context];
+        });
     }
 
     public static function failures(): array
@@ -78,9 +82,6 @@ class CippClientTokenErrorTest extends TestCase
                 $this->assertSame($body, $exception->getPrevious()->getResponse()->getBody()->getContents());
             }
         }
-        Log::shouldHaveReceived('error')->once()->with('[CippClient] Token request failed: '.$detail);
-        foreach (['emergency', 'alert', 'critical', 'warning', 'notice', 'info', 'debug', 'log', 'write'] as $level) {
-            Log::shouldNotHaveReceived($level);
-        }
+        $this->assertSame([['error', '[CippClient] Token request failed: '.$detail, []]], $this->records);
     }
 }

@@ -330,6 +330,7 @@ class CippClient
         $bound = 65536;
         if (method_exists($e, 'getResponse') && $e->getResponse()) {
             $prefix = '';
+            $rewindFailed = false;
             try {
                 $body = $e->getResponse()->getBody();
                 if ($body->isSeekable()) {
@@ -347,14 +348,24 @@ class CippClient
                     }
                     $prefix .= $chunk;
                 }
-                if ($body->isSeekable()) {
-                    $body->rewind();
-                }
             } catch (\Throwable) {
                 return $detail;
+            } finally {
+                try {
+                    if (isset($body) && $body->isSeekable()) {
+                        $body->rewind();
+                    }
+                } catch (\Throwable) {
+                    $rewindFailed = true;
+                }
             }
-            if (preg_match('/\bAADSTS\d{4,16}\b/', $prefix, $match, PREG_OFFSET_CAPTURE)
-                && $match[0][1] + strlen($match[0][0]) <= $bound) {
+            if ($rewindFailed) {
+                return $detail;
+            }
+            if (preg_match('/\bAADSTS\d+/', $prefix, $match, PREG_OFFSET_CAPTURE)
+                && strlen($match[0][0]) >= 10 && strlen($match[0][0]) <= 22
+                && $match[0][1] + strlen($match[0][0]) <= $bound
+                && ! preg_match('/\w/', $prefix[$match[0][1] + strlen($match[0][0])] ?? '')) {
                 $detail .= " ({$match[0][0]})";
             }
         }
