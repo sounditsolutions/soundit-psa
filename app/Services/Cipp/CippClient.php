@@ -357,8 +357,21 @@ class CippClient
                     continue;
                 }
 
-                Log::error("[CippClient] {$method} {$endpoint} failed: {$e->getMessage()}");
-                throw new CippClientException("CIPP API error: {$e->getMessage()}", $code, $e);
+                $class = class_basename($e);
+                $message = "CIPP API error: {$code} {$class}";
+                if (method_exists($e, 'getResponse') && $e->getResponse()) {
+                    $body = $e->getResponse()->getBody();
+                    if ($body->isSeekable()) {
+                        $body->rewind();
+                    }
+                    $prefix = $body->read(65536);
+                    if (preg_match('/\bAADSTS\d{4,}\b/', $prefix, $match)) {
+                        $message .= " ({$match[0]})";
+                    }
+                }
+
+                Log::error("[CippClient] {$method} {$endpoint} failed: {$message}");
+                throw new CippClientException($message, $code, $e);
             }
         }
 
