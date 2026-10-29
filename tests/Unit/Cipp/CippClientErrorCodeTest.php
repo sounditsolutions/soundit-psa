@@ -143,6 +143,8 @@ class CippClientErrorCodeTest extends TestCase
             'partial valid code then throws' => ['partial-code', null],
             'short early' => ['short', 'AADSTS700003'],
             'short near bound' => ['short-late', 'AADSTS700003'],
+            'short ends on chunk boundary' => ['short-exact', 'AADSTS700003'],
+            'partial code then stalls' => ['stall', null],
             'consumed' => ['consumed', 'AADSTS700003'],
             'nonseekable' => ['nonseekable', 'AADSTS700003'],
             'rewind throws' => ['rewind', null],
@@ -152,7 +154,12 @@ class CippClientErrorCodeTest extends TestCase
     #[DataProvider('streamCases')]
     public function test_stream_safety(string $mode, ?string $code): void
     {
-        $text = str_repeat('x', $mode === 'short-late' ? 64988 : 20).' AADSTS700003 description-canary';
+        // short-exact: 17 + 32 = 49 bytes, a multiple of the 7-byte short read.
+        $text = str_repeat('x', match ($mode) {
+            'short-late' => 64988,
+            'short-exact' => 17,
+            default => 20,
+        }).' AADSTS700003 description-canary';
         $body = new class(\GuzzleHttp\Psr7\Utils::streamFor($text), $mode) implements \Psr\Http\Message\StreamInterface
         {
             use \GuzzleHttp\Psr7\StreamDecoratorTrait;
@@ -186,6 +193,9 @@ class CippClientErrorCodeTest extends TestCase
                 if ($this->mode === 'partial-code') {
                     return 'AADSTS700003 ';
                 }
+                if ($this->mode === 'stall') {
+                    return $this->reads === 1 ? 'AADSTS7000' : '';
+                }
 
                 return $this->stream->read(min($length, 7));
             }
@@ -201,7 +211,7 @@ class CippClientErrorCodeTest extends TestCase
         $this->assertSame($raw, $exception->getPrevious());
         $this->assertSame(500, $exception->getCode());
         $this->assertFailureLog($expected);
-        if (in_array($mode, ['short', 'short-late', 'consumed'], true)) {
+        if (in_array($mode, ['short', 'short-late', 'short-exact', 'consumed'], true)) {
             $this->assertSame($text, $body->getContents());
         }
     }

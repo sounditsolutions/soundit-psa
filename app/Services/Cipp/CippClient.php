@@ -339,7 +339,11 @@ class CippClient
                 while (strlen($prefix) < $bound + 1 && ! $body->eof()) {
                     $chunk = $body->read($bound + 1 - strlen($prefix));
                     if ($chunk === '') {
-                        throw new \RuntimeException('Stream made no progress');
+                        // A body that ends on a read boundary reports EOF only after this empty read.
+                        if (! $body->eof()) {
+                            throw new \RuntimeException('Stream made no progress');
+                        }
+                        break;
                     }
                     $prefix .= $chunk;
                 }
