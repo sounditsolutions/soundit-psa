@@ -69,12 +69,12 @@ class Sku extends Model
 
     /**
      * Backup-storage volume-pricing tiers. Ordered as a rate card:
-     * bounded tiers ascending by GB, the unbounded (null) tier last.
+     * bounded tiers ascending by GB, null last, then id ascending.
      */
     public function backupStorageTiers(): HasMany
     {
         return $this->hasMany(BackupStorageTier::class)
-            ->orderByRaw('up_to_gb IS NULL, up_to_gb ASC');
+            ->orderByRaw('up_to_gb IS NULL, up_to_gb ASC, id ASC');
     }
 
     public function invoiceLines(): HasMany
@@ -155,16 +155,7 @@ class Sku extends Model
         // Defensive re-sort in case the collection arrived unordered (e.g.
         // hydrated without the relation's orderBy): bounded ascending, the
         // unbounded tier last.
-        $sorted = $tiers->sort(function (BackupStorageTier $a, BackupStorageTier $b) {
-            if ($a->up_to_gb === null) {
-                return 1;
-            }
-            if ($b->up_to_gb === null) {
-                return -1;
-            }
-
-            return $a->up_to_gb <=> $b->up_to_gb;
-        })->values();
+        $sorted = $tiers->sort([BackupStorageTier::class, 'compareRateCard'])->values();
 
         foreach ($sorted as $tier) {
             if ($tier->up_to_gb === null || $gb <= $tier->up_to_gb) {

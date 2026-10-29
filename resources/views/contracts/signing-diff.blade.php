@@ -6,7 +6,7 @@
 <p>Generate a new proposal and obtain fresh acceptance before generating this agreement.</p>
 <table class="table"><thead><tr><th>Line</th><th>Field</th><th>Accepted</th><th>Current</th></tr></thead><tbody>
 @foreach($diff->rows as $row)
-<tr><td>{{ $row['line'] }}</td><td>{{ $row['field'] }}</td><td>{{ json_encode($row['accepted'], JSON_UNESCAPED_UNICODE) }}</td><td>{{ json_encode($row['current'], JSON_UNESCAPED_UNICODE) }}</td></tr>
+<tr><td>{{ $row['line'] }}</td><td>{{ \App\Services\Signing\AcceptanceDiff::displayField($row['field']) }}</td><td>{{ \App\Services\Signing\AcceptanceDiff::displayValue($row['field'], $row['accepted']) }}</td><td>{{ \App\Services\Signing\AcceptanceDiff::displayValue($row['field'], $row['current']) }}</td></tr>
 @endforeach
 </tbody></table>
 @if($proposalTemplate)
