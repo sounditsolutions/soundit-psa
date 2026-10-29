@@ -77,6 +77,10 @@ class AssetSourcesTabTest extends TestCase
         $this->assertSame(['autoelevate'], $m[1]);
         $this->assertStringContainsString('data-state="not_configured"', $this->railEntry($html, 'autoelevate'));
         $this->assertMatchesRegularExpression('/data-sources-count>\(0\)</', $html);
+        // A linked but unconfigured source keeps its stored details and never claims "not linked".
+        $panel = $this->panel($html, 'autoelevate');
+        $this->assertStringNotContainsString('not linked to AutoElevate', $panel);
+        $this->assertStringContainsString('data-detail-column="autoelevate_computer_id"', $panel);
     }
 
     public function test_rendering_sources_with_every_source_linked_makes_zero_http_calls(): void
@@ -243,5 +247,20 @@ class AssetSourcesTabTest extends TestCase
         $this->assertStringContainsString('RATE LIMITED', $panel);
         $this->assertStringContainsString('This vendor asked us to slow down; no request was sent.', $panel);
         $this->assertStringNotContainsString('data-sync-now', $html, 'no source returns ok in S0, so no button');
+    }
+
+    public function test_comet_and_servosity_do_not_claim_never_synced(): void
+    {
+        // Their sync stamp is not attributable to the source, so the panel must not say "Never".
+        $this->configureAllSources();
+        $html = $this->show($this->assetLinkedEverywhere())->getContent();
+
+        foreach (['comet', 'servosity'] as $source) {
+            $panel = $this->panel($html, $source);
+            $this->assertStringNotContainsString('fw-semibold">Never<', $panel, $source);
+            $this->assertStringNotContainsString('no sync recorded', $panel, $source);
+            $this->assertStringNotContainsString('No sync recorded', $panel, $source);
+            $this->assertStringContainsString('Sync time not tracked for this source', $panel, $source);
+        }
     }
 }

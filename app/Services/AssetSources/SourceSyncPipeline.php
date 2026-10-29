@@ -47,7 +47,7 @@ class SourceSyncPipeline
         'not_linked' => 'This asset is not linked to this source.',
         'client_not_mapped' => "This asset's client is not mapped to this source.",
         'user_throttled' => 'You have made too many Sync now requests in the last minute.',
-        'recently_synced' => 'This source was synced for this asset moments ago.',
+        'recently_synced' => 'Sync now was already tried for this source on this asset moments ago.',
         'vendor_cooling_down' => 'This vendor asked us to slow down; no request was sent.',
         'vendor_429' => 'The vendor is rate-limiting requests.',
         'not_found_at_vendor' => 'The vendor did not return this device; the link is kept.',

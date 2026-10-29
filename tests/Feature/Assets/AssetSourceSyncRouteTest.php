@@ -93,7 +93,7 @@ class AssetSourceSyncRouteTest extends TestCase
         $r = $this->sync($asset, 'tactical')->assertJson([
             'outcome' => 'refused', 'reason' => 'recently_synced',
             'previous' => ['outcome' => 'refused', 'reason' => 'no_single_asset_read'],
-        ]);
+        ])->assertJsonPath('message', 'Sync now was already tried for this source on this asset moments ago.');
         $this->assertGreaterThan(0, $r->json('retry_after_s'));
         $this->assertLessThanOrEqual(SourceSyncPipeline::ASSET_SOURCE_COOLDOWN_S, $r->json('retry_after_s'));
 

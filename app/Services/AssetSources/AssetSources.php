@@ -58,6 +58,9 @@ class AssetSources
     /** Sources that write the shared assets RMM columns (provenance is inferred, Q-4 A). */
     public const SHARED_COLUMN_SOURCES = ['litsrmm', 'ninja', 'level'];
 
+    /** Sources with no sync stamp of their own (syncedAt() is null by design, not "never"). */
+    public const UNATTRIBUTED_SYNC_SOURCES = ['comet', 'servosity'];
+
     public const INFERRED_WORDING = 'most likely written by the newest sync';
 
     public const STATE_LINKED = 'linked';

@@ -168,7 +168,8 @@ class SourcePanel
             'open_in' => $linked ? self::openIn($asset, $source) : null,
             'chips' => self::chips($asset, $source, $state, $syncedAt),
             'attention' => AssetSources::attention($asset, $source),
-            'details' => ($linked || $off) ? self::details($asset, $source) : [],
+            // A linked asset keeps its stored details even when the source is not configured.
+            'details' => ($off || AssetSources::isLinked($asset, $source)) ? self::details($asset, $source) : [],
             'footer' => self::footer($asset, $source, $state, $syncedAt, $history->first()),
             'history' => $history,
             'sync_now' => $linked && in_array($source, self::SYNC_NOW_READY, true),
@@ -211,12 +212,19 @@ class SourcePanel
                 'kind' => self::KIND_SNAPSHOT,
                 'note' => self::asOf($syncedAt),
             ]
-            : [
-                'label' => 'Last synced',
-                'value' => 'Never',
-                'kind' => 'none',
-                'note' => 'no sync recorded',
-            ];
+            : (in_array($source, AssetSources::UNATTRIBUTED_SYNC_SOURCES, true)
+                ? [
+                    'label' => 'Last synced',
+                    'value' => 'Not tracked',
+                    'kind' => 'none',
+                    'note' => 'no sync stamp of its own is stored',
+                ]
+                : [
+                    'label' => 'Last synced',
+                    'value' => 'Never',
+                    'kind' => 'none',
+                    'note' => 'no sync recorded',
+                ]);
 
         if (isset(self::LAST_CONTACT[$source]) && $state !== AssetSources::STATE_NOT_LINKED && $state !== AssetSources::STATE_NOT_CONFIGURED) {
             [$column, $wording] = self::LAST_CONTACT[$source];
@@ -304,7 +312,7 @@ class SourcePanel
         $vendor = AssetSources::label($source);
         $synced = $syncedAt
             ? 'Synced '.$syncedAt->diffForHumans().' · '.$syncedAt->toAppTz()->format('M j, Y g:i A T')
-            : 'No sync recorded';
+            : (in_array($source, AssetSources::UNATTRIBUTED_SYNC_SOURCES, true) ? 'Sync time not tracked for this source' : 'No sync recorded');
 
         $text = match (true) {
             $state === AssetSources::STATE_NOT_CONFIGURED => 'Not configured in Settings',
