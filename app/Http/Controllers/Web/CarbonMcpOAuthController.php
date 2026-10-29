@@ -112,8 +112,13 @@ class CarbonMcpOAuthController extends Controller
         if ($result->active === 0) {
             Log::warning('[Carbon MCP OAuth] Catalogue sync after connect loaded no tools', ['seen' => $result->seen]);
 
+            // seen > 0 means Carbon did list tools and the sync skipped every one of them.
+            $message = $result->seen === 0
+                ? 'Carbon connected, but Carbon listed no tools. Click Sync tools now to try again.'
+                : "Carbon connected, but no tools were loaded from the {$result->seen} ".Str::plural('tool', $result->seen).' Carbon listed.';
+
             return redirect()->route('settings.integrations')
-                ->with('warning', 'Carbon connected, but Carbon listed no tools. Click Sync tools now to try again.');
+                ->with('warning', $message);
         }
 
         $n = $result->active;

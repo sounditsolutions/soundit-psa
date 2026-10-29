@@ -253,7 +253,37 @@ class CarbonMcpConnectorTest extends TestCase
         $this->assertSame(self::REFRESH, Setting::getEncrypted(CarbonMcpConnector::REFRESH_TOKEN_SETTING));
         $this->assertSame(0, CarbonMcpTool::where('active', true)->count());
         $this->assertTrue(collect($this->logs)->contains(fn (array $l): bool => $l['level'] === 'warning'
-            && $l['message'] === '[Carbon MCP OAuth] Catalogue sync after connect loaded no tools'));
+            && $l['message'] === '[Carbon MCP OAuth] Catalogue sync after connect loaded no tools'
+            && $l['context'] === ['seen' => 0]));
+        $this->assertNoSecretInLogs();
+    }
+
+    public function test_connect_when_carbon_lists_only_unloadable_tools_does_not_say_carbon_listed_none(): void
+    {
+        // Carbon lists two tools whose names have no letters or digits: the sync skips
+        // both, so seen = 2 and active = 0 (synthetic names).
+        $this->seedConnected();
+        Setting::where('key', CarbonMcpConnector::REFRESH_TOKEN_SETTING)->delete();
+        $page = self::fixtureJson('tools-list-page-1.json')['result']['tools'];
+        Http::fake($this->exchangeFake() + $this->singlePageMcpFake([
+            array_merge($page[0], ['name' => '---']),
+            array_merge($page[0], ['name' => '+++']),
+        ]));
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->withSession(['carbon_mcp_oauth_state' => 'st-1', 'carbon_mcp_oauth_verifier' => str_repeat('a', 64)])
+            ->get(route('auth.carbon-mcp.callback', ['state' => 'st-1', 'code' => self::CODE]))
+            ->assertRedirect(route('settings.integrations'))
+            ->assertSessionHas('warning', 'Carbon connected, but no tools were loaded from the 2 tools Carbon listed.')
+            ->assertSessionMissing('success')
+            ->assertSessionMissing('error');
+
+        $this->assertTrue(app(CarbonMcpConnector::class)->isConnected());
+        $this->assertSame(self::REFRESH, Setting::getEncrypted(CarbonMcpConnector::REFRESH_TOKEN_SETTING));
+        $this->assertSame(0, CarbonMcpTool::where('active', true)->count());
+        $this->assertTrue(collect($this->logs)->contains(fn (array $l): bool => $l['level'] === 'warning'
+            && $l['message'] === '[Carbon MCP OAuth] Catalogue sync after connect loaded no tools'
+            && $l['context'] === ['seen' => 2]));
         $this->assertNoSecretInLogs();
     }
 
