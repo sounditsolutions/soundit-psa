@@ -18,6 +18,7 @@ use Illuminate\Cache\Repository;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\URL;
 use Tests\TestCase;
 
@@ -84,6 +85,7 @@ class PortalLinkRedactionTest extends TestCase
         $url = $matches[0];
         $token = basename(parse_url($url, PHP_URL_PATH));
         $this->assertNotEmpty($token);
+        $this->assertTrue(Password::broker('portal')->tokenExists($person->fresh(), $token), 'the invite link carries the live broker token');
         $this->assertLinkRedacted($url, $token);
     }
 
