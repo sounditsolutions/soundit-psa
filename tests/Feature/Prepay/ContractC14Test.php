@@ -476,7 +476,7 @@ class ContractC14Test extends TestCase
      * on the UPDATE and put joins before SET. Only the known SQLite wrapper is
      * unwrapped; other nested/grouped keys remain conservatively bulk writes.
      * The first top-level ticket id = ?, IN placeholders or IN digits selects
-     * the relevant bindings unless the WHERE has a top-level NOT or OR keyword in any case (even on another column, or written flush against a quoted identifier), which counts as bulk; quotes are stripped to a space and spaces around a dot are dropped before the scan; "top-level" counts parentheses naively, so string literals, comments, MySQL '!' and text after the SQLite rowid wrapper are not parsed;
+     * the relevant bindings unless the WHERE has a top-level NOT or OR keyword in any case (even on another column, or written flush against a quoted identifier), which counts as bulk; backticks and double quotes are stripped to a space and spaces around a dot are dropped before the scan; "top-level" counts parentheses naively, so string literals, comments, MySQL '!' and text after the SQLite rowid wrapper are not parsed;
      * numeric equality includes floats/padded strings and
      * Laravel's Connection::prepareBindings() bool-to-int conversion. Non-key
      * predicates remain bulk, including empty whereIn. SET subqueries and other

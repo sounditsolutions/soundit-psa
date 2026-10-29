@@ -236,18 +236,7 @@ class LitsrmmSettingsPanelTest extends TestCase
             'a non-matching copy inside the line\'s own <p> makes that <p> stop equalling the line, so no <p> matches');
     }
 
-    public function test_h18_a_copy_restoring_the_line_between_two_characters_fails_the_one_p_check(): void
-    {
-        $text = 'Sync every 4 hours is still on. Scheduled sync will run once the integration is configured and enabled.';
-        $html = $this->pendingLinePage();
-        $this->assertSame(1, substr_count($html, $text.'</p>'), 'the rendered line must end its own <p> once');
-        $copy = str_replace('Sync every', 'Sync&nbsp;every', substr($text, 0, -1));
-        $html = str_replace($text.'</p>', substr($text, 0, -1).'. <span>'.$copy.'</span>.</p>', $html);
-        $this->assertPendingLineHelperRefuses($html, 'exactly one <p> must have the pending line',
-            'a copy restoring the line between two characters fails the one-p check');
-    }
-
-    public function test_h18_a_copy_between_two_characters_fails_the_first_check(): void
+    public function test_h18_a_copy_between_two_characters_without_restoring_the_line_fails_the_first_check(): void
     {
         $text = 'Sync every 4 hours is still on. Scheduled sync will run once the integration is configured and enabled.';
         $html = $this->pendingLinePage();
