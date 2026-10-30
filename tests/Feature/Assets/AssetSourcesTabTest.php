@@ -18,8 +18,9 @@ use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 /**
- * Asset Sources S0: the Sources tab frame, rail and generic panel template
- * (design/mockups/assets/design-r3.md §§1-2). Synthetic data only.
+ * Asset Sources S0/S1: the Sources tab frame, rail and generic panel template
+ * (design/mockups/assets/design-r3.md §§1-2), with S1's Sync now on Tactical.
+ * Synthetic data only.
  */
 class AssetSourcesTabTest extends TestCase
 {
@@ -368,7 +369,7 @@ class AssetSourcesTabTest extends TestCase
         $this->assertStringContainsString('most likely written by the newest sync', $panel);
     }
 
-    public function test_footer_history_lists_the_last_five_audit_rows_and_no_source_offers_sync_now(): void
+    public function test_footer_history_lists_the_last_five_audit_rows(): void
     {
         $this->configureAllSources();
         $asset = $this->assetLinkedEverywhere();
@@ -387,7 +388,24 @@ class AssetSourcesTabTest extends TestCase
         $this->assertStringContainsString('Sync now by Alex Example', $panel);
         $this->assertStringContainsString('RATE LIMITED', $panel);
         $this->assertStringContainsString('This vendor asked us to slow down; no request was sent.', $panel);
-        $this->assertStringNotContainsString('data-sync-now', $html, 'no source returns ok in S0, so no button');
+    }
+
+    public function test_sync_now_button_appears_on_the_tactical_panel_only(): void
+    {
+        // Tactical is the only source whose Sync now read is wired (S1).
+        $this->configureAllSources();
+        Setting::setValue('ninja_enabled', '1');
+        $html = $this->show($this->assetLinkedEverywhere())->getContent();
+
+        $tactical = $this->panel($html, 'tactical');
+        $this->assertStringContainsString('data-sync-now="tactical"', $tactical);
+        $this->assertStringContainsString(e("Reads this computer's record from Tactical and updates its details here. If actions were queued while it was offline, this can start them."), $tactical);
+        foreach (\App\Services\AssetSources\AssetSources::ORDER as $source) {
+            if ($source !== 'tactical') {
+                $this->assertStringNotContainsString('data-sync-now', $this->panel($html, $source), $source);
+            }
+        }
+        $this->assertSame(1, substr_count($html, 'data-sync-now='));
     }
 
     public function test_comet_and_servosity_do_not_claim_never_synced(): void

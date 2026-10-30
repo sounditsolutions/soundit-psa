@@ -59,6 +59,17 @@
 
                     <div class="pt-3" data-panel-section="attention">
                         <div class="text-uppercase small fw-semibold mb-2">Needs attention</div>
+                        @if($p['checks_live'])
+                            {{-- The failing-check list leads the Tactical panel. It is the existing
+                                 device-data read (TacticalPanelData::checks: stdout redacted and
+                                 clipped server-side), fired when this panel is opened, never on
+                                 page render. It is not Sync now and is not counted by its limiter. --}}
+                            <div class="border rounded p-2 mb-2" data-tactical-checks
+                                 data-checks-url="{{ route('assets.deviceData', ['asset' => $asset, 'section' => 'checks', 'source' => 'tactical']) }}">
+                                <div class="fw-semibold small mb-1">Failing checks <span class="text-muted fw-normal">(read from Tactical when this panel is opened)</span></div>
+                                <div class="small text-muted" data-tactical-checks-body>Not read yet.</div>
+                            </div>
+                        @endif
                         @if($p['state'] === 'off')
                             <p class="text-muted small mb-0">{{ $p['label'] }} is switched off for this PSA, so nothing is read from it and no attention count is shown.{{ $p['linked'] ? ' The values shown are the last known ones.' : '' }}</p>
                         @elseif(count($p['attention']) === 0)
@@ -72,16 +83,26 @@
                                 <div class="border rounded p-2 mb-2" data-attention-item="{{ $item['key'] }}">
                                     <strong>{{ $item['title'] }}</strong>
                                     <span class="text-muted small ms-2">{{ $item['evidence'] }}</span>
+                                    @if($p['source'] === 'tactical' && $item['key'] === 'updates')
+                                        <a href="#tab-patches" class="small ms-2" data-show-tab="#tab-patches">View in Patches</a>
+                                    @endif
                                 </div>
                             @endforeach
+                            @if($p['all_alerts'])
+                                <a href="#tab-alerts" class="small" data-show-tab="#tab-alerts" data-all-alerts>All {{ $p['all_alerts'] }} alerts</a>
+                            @endif
                         @endif
                     </div>
 
                     <div class="pt-3" data-panel-section="activity">
                         <div class="text-uppercase small fw-semibold mb-2">Recent activity</div>
+                        @if($p['activity'] !== null)
+                            @include('assets.partials.sources-tactical-activity', ['activity' => $p['activity']])
+                        @else
                         <p class="text-muted small mb-0">
                             @if($p['state'] === 'off') None while the integration is off. @else No recent activity is shown for this source here. @endif
                         </p>
+                        @endif
                     </div>
 
                     @if(count($p['details']))
@@ -95,7 +116,7 @@
                                         {{ $row['label'] }} <code class="text-muted small">{{ $row['column'] }}</code>
                                         @if($row['shared'])<span class="small text-muted">(shared; {{ \App\Services\AssetSources\AssetSources::INFERRED_WORDING }})</span>@endif
                                     </th>
-                                    <td>{{ $row['value'] }}</td>
+                                    <td>{{ $row['value'] }}@if($row['note'] ?? null) <span class="text-warning-emphasis small" title="Differs from the Device Identity OS. Verify which source is current before trusting either value.">{{ $row['note'] }}</span>@endif</td>
                                 </tr>
                             @endforeach
                             </tbody>
@@ -126,8 +147,12 @@
                             @endif
                         </span>
                         @if($p['sync_now'])
-                            <button type="button" class="btn btn-outline-primary btn-sm" data-sync-now="{{ $p['source'] }}"
-                                    data-url="{{ route('assets.sources.sync', [$asset, $p['source']]) }}">Sync now</button>
+                            <span class="d-flex align-items-center gap-2">
+                                <span class="small" data-sync-now-result aria-live="polite"></span>
+                                <button type="button" class="btn btn-outline-primary btn-sm" data-sync-now="{{ $p['source'] }}"
+                                        data-url="{{ route('assets.sources.sync', [$asset, $p['source']]) }}"
+                                        title="{{ $p['sync_now_description'] }}" aria-description="{{ $p['sync_now_description'] }}">Sync now</button>
+                            </span>
                         @endif
                     </div>
                 </div>
@@ -141,6 +166,35 @@
 document.addEventListener('DOMContentLoaded', function () {
     var root = document.getElementById('sources-root');
     if (!root) return;
+    var sourcesPane = document.getElementById('tab-sources');
+    function paneShown() { return sourcesPane && sourcesPane.classList.contains('active'); }
+    // The Tactical failing-check list: the existing device-data read, fired when the
+    // Tactical panel is OPENED (Sources tab shown and Tactical selected), never on page
+    // render, and at most once per page view. Rendered by the existing Tactical checks
+    // renderer, which escapes the (server-redacted, clipped) stdout.
+    function loadChecks(panel) {
+        var box = panel && panel.querySelector('[data-tactical-checks]');
+        if (!box || box.dataset.loaded) return;
+        box.dataset.loaded = '1';
+        var body = box.querySelector('[data-tactical-checks-body]');
+        body.textContent = 'Reading checks from Tactical…';
+        fetch(box.dataset.checksUrl, { headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.ok ? r.json() : Promise.reject(r); })
+            .then(function (d) {
+                if (d.error) { body.className = 'small text-warning-emphasis'; body.textContent = d.error + ' The chips above show the last sync.'; return; }
+                body.className = 'small';
+                body.innerHTML = window.renderTacticalSection ? window.renderTacticalSection('checks', d) : '';
+            })
+            .catch(function () {
+                body.className = 'small text-warning-emphasis';
+                body.textContent = 'Could not read checks from Tactical. The chips above show the last sync.';
+                delete box.dataset.loaded;
+            });
+    }
+    function opened() {
+        var panel = root.querySelector('[data-source-panel]:not(.d-none)');
+        if (panel && paneShown()) loadChecks(panel);
+    }
     function select(source) {
         var panel = root.querySelector('[data-source-panel="' + source + '"]');
         if (!panel) return false;
@@ -150,8 +204,45 @@ document.addEventListener('DOMContentLoaded', function () {
             a.classList.toggle('active', on);
             a.setAttribute('aria-selected', on ? 'true' : 'false');
         });
+        opened();
         return true;
     }
+    var sourcesTab = document.querySelector('a[href="#tab-sources"][data-bs-toggle="tab"]');
+    if (sourcesTab) sourcesTab.addEventListener('shown.bs.tab', opened);
+    function showTab(href) {
+        var nav = document.querySelector('a[href="' + href + '"][data-bs-toggle="tab"]');
+        if (nav && window.bootstrap) { window.bootstrap.Tab.getOrCreateInstance(nav).show(); }
+    }
+    // Links from a panel to a topic tab, and from the Overview Tactical card to this panel.
+    document.querySelectorAll('[data-show-tab]').forEach(function (a) {
+        a.addEventListener('click', function (e) { e.preventDefault(); showTab(a.dataset.showTab); });
+    });
+    document.querySelectorAll('[data-open-sources]').forEach(function (a) {
+        a.addEventListener('click', function (e) {
+            e.preventDefault();
+            showTab('#tab-sources');
+            select(a.dataset.openSources);
+            history.replaceState(null, '', '#tab-sources/' + a.dataset.openSources);
+        });
+    });
+    // Sync now: the shared pipeline route. The reply's fixed sentence is shown as text.
+    root.querySelectorAll('[data-sync-now]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var out = btn.parentNode.querySelector('[data-sync-now-result]');
+            btn.disabled = true;
+            fetch(btn.dataset.url, { method: 'POST', headers: {
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+            } })
+                .then(function (r) { return r.json().catch(function () { return { outcome: 'refused', message: 'Too many requests; try again in a minute.' }; }); })
+                .then(function (d) {
+                    if (out) out.textContent = (d.outcome === 'ok' ? 'Synced just now. ' : '') + (d.outcome === 'ok' ? 'Reload to see the new values.' : (d.message || ''));
+                    var wait = d.retry_after_s || 0;
+                    setTimeout(function () { btn.disabled = false; }, Math.max(1, wait) * 1000);
+                })
+                .catch(function () { if (out) out.textContent = 'Request failed.'; btn.disabled = false; });
+        });
+    });
     root.querySelectorAll('[data-source-rail]').forEach(function (a) {
         a.addEventListener('click', function (e) {
             e.preventDefault();

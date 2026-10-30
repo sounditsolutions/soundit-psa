@@ -1187,40 +1187,47 @@ class AssetController extends Controller
 
     /**
      * Refresh-now: an in-place AJAX refresh of the Tactical device status +
-     * freshness (P4 amendment J). It calls TacticalDeviceSyncService::syncDeviceDetail
-     * (getAgent → status/last_seen/ram_gb/os_version + checks summary), NOT the
-     * action bus — it is a READ that mutates only the local snapshot, so it is
-     * NOT audited and NOT confirm-gated. It does NOT reuse refresh()'s redirect
-     * path or quickLook()'s 60s cache (a cached refresh-now would serve stale data).
+     * freshness (P4 amendment J). Asset Sources S1 re-points it at the shared
+     * Sync now pipeline (SourceSyncPipeline, source tactical), so the Overview
+     * button and the Sources panel's Sync now are one mechanism: the same
+     * per-user limiter, asset+source window, vendor cooldown and one
+     * asset_source_syncs audit row per attempt (refusals included). The read is
+     * still TacticalDeviceSyncService::syncDeviceDetail (getAgent), NOT the
+     * action bus: it mutates only the local snapshot, so it writes no
+     * tactical_action_logs row and is not confirm-gated.
      *
      * Returns {status, freshAsOf, degraded, message} for the in-place JS update.
      * A live failure (offline agent / Tactical unreachable) is a NORMAL outcome:
      * 200 with degraded:true and the prior snapshot left intact — never a 500.
-     * POST + CSRF + the same auth as the page (the web group).
+     * A pipeline refusal (limiter, window, cooldown) is a 429 {error, reason,
+     * retry_after_s}. POST + CSRF + the same auth as the page (the web group).
      */
-    public function refreshTactical(Asset $asset, \App\Services\Tactical\TacticalDeviceSyncService $sync)
+    public function refreshTactical(Request $request, Asset $asset, \App\Services\AssetSources\SourceSyncPipeline $pipeline)
     {
-        if (! \App\Support\TacticalConfig::isEnabled()) {
-            return response()->json(['error' => 'Tactical RMM is disabled or not configured.'], 422);
-        }
+        $asset->load(['tacticalAsset', 'client']);
+        $reply = $pipeline->run($asset, 'tactical', $request->user());
+        $ta = $asset->tacticalAsset;
 
-        $asset->load('tacticalAsset');
-
-        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
-            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
-        }
-
-        $result = $sync->syncDeviceDetail($asset);
-
-        return response()->json([
-            'status' => $result->status,
-            'status_label' => $result->status ? ucfirst($result->status) : null,
-            'freshAsOf' => $result->freshAsOf?->diffForHumans(),
-            'degraded' => ! $result->ok,
-            'message' => $result->ok
-                ? 'Refreshed just now.'
-                : ($result->message ?? 'Could not reach the agent — showing last sync.'),
-        ]);
+        return match ($reply['outcome']) {
+            'ok', 'failed' => response()->json([
+                'status' => $ta?->status,
+                'status_label' => $ta?->status ? ucfirst($ta->status) : null,
+                'freshAsOf' => $ta?->synced_at?->diffForHumans(),
+                'degraded' => $reply['outcome'] !== 'ok',
+                'message' => $reply['outcome'] === 'ok'
+                    ? 'Refreshed just now.'
+                    : 'Could not reach the agent — showing the last sync.',
+            ]),
+            default => match ($reply['reason']) {
+                'not_configured', 'switched_off' => response()->json(['error' => 'Tactical RMM is disabled or not configured.'], 422),
+                'not_linked' => response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422),
+                default => response()->json([
+                    'error' => \App\Services\AssetSources\SourceSyncPipeline::sentence($reply['reason']),
+                    'reason' => $reply['reason'],
+                    'retry_after_s' => $reply['retry_after_s'] ?? null,
+                ], 429),
+            },
+        };
     }
 
     /**

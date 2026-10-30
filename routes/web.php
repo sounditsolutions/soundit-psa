@@ -689,7 +689,10 @@ Route::middleware('auth')->group(function () {
     Route::post('/assets/{asset}/tactical/reboot', [AssetController::class, 'rebootTacticalAgent'])->name('assets.reboot-tactical');
     Route::post('/assets/{asset}/tactical/recover', [AssetController::class, 'recoverTacticalAgent'])->name('assets.recover-tactical');
     Route::post('/assets/{asset}/tactical/maintenance', [AssetController::class, 'setTacticalMaintenance'])->name('assets.maintenance-tactical');
-    Route::post('/assets/{asset}/tactical/refresh', [AssetController::class, 'refreshTactical'])->name('assets.tactical-refresh');
+    // Asset Sources S1: refresh-now runs the shared Sync now pipeline, so it shares the
+    // sync route's request throttle bucket (prefix source-sync, keyed per user).
+    Route::post('/assets/{asset}/tactical/refresh', [AssetController::class, 'refreshTactical'])
+        ->middleware('throttle:30,1,source-sync')->name('assets.tactical-refresh');
     Route::post('/assets/{asset}/tactical/command', [AssetController::class, 'runTacticalCommand'])->name('assets.run-tactical-command');
     Route::post('/assets/{asset}/tactical/shutdown', [AssetController::class, 'shutdownTacticalAgent'])->name('assets.shutdown-tactical');
     Route::post('/assets/{asset}/tactical/meshcentral', [AssetController::class, 'openTacticalMeshCentral'])
@@ -702,6 +705,10 @@ Route::middleware('auth')->group(function () {
     Route::get('/assets/{asset}/device-data/{section}', [AssetController::class, 'deviceData'])->name('assets.deviceData');
     Route::post('/assets/{asset}/sources/{source}/sync', \App\Http\Controllers\Web\AssetSourceSyncController::class)
         ->whereIn('source', \App\Services\AssetSources\AssetSources::ORDER)
+        // 30 requests per user per minute (the meshcentral precedent), answered 429 before
+        // the pipeline runs, so refusals cannot grow the append-only audit table without limit.
+        // The prefix gives Sync now its own bucket instead of sharing other throttle:N,1 routes'.
+        ->middleware('throttle:30,1,source-sync')
         ->name('assets.sources.sync');
 
     // Assets (per-client)
