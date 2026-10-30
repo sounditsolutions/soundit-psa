@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>General Settings: Branding, and the Client Portal panel linking to it</title>
+<link rel="stylesheet" href="../_tokens.css">
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--psa-colors-canvas); color: var(--psa-colors-ink); font-family: var(--psa-typography-body-font-family); font-size: var(--psa-typography-body-font-size); line-height: var(--psa-typography-body-line-height); }
+main { padding: var(--psa-spacing-lg); max-width: 760px; }
+h2 { font-family: var(--psa-typography-title-font-family); color: var(--psa-colors-navy); margin: 0 0 var(--psa-spacing-md); }
+.card { background: var(--psa-colors-surface); border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-md); overflow: hidden; margin-bottom: var(--psa-spacing-lg); }
+.card-header { background: var(--psa-colors-navy); color: var(--psa-colors-surface); font-family: var(--psa-typography-title-font-family); font-size: var(--psa-typography-title-font-size); font-weight: var(--psa-typography-title-font-weight); padding: var(--psa-spacing-md); }
+.card-body { padding: var(--psa-spacing-md); }
+.muted { color: var(--psa-colors-muted-ink); }
+.small { font-size: var(--psa-typography-label-font-size); }
+.field { margin-bottom: var(--psa-spacing-md); }
+label { display: block; font-weight: var(--psa-typography-label-font-weight); color: var(--psa-colors-navy); margin-bottom: var(--psa-spacing-xs); }
+input[type=text], input[type=url] { width: 100%; padding: var(--psa-spacing-sm); border: 1px solid var(--psa-colors-field-border); border-radius: var(--psa-rounded-sm); font: inherit; color: var(--psa-colors-ink); background: var(--psa-colors-surface); }
+input:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--psa-colors-navy-light); outline-offset: 2px; }
+input[type=checkbox] { accent-color: var(--psa-colors-navy); }
+.hint { margin-top: var(--psa-spacing-xs); }
+button { padding: var(--psa-spacing-xs) var(--psa-spacing-md); border-radius: var(--psa-rounded-sm); font: inherit; border: 1px solid var(--psa-colors-navy); background: var(--psa-colors-navy); color: var(--psa-colors-surface); }
+button.key { background: var(--psa-colors-signal-gold); border-color: var(--psa-colors-signal-gold); color: var(--psa-colors-navy-deep); font-weight: 600; }
+a { color: var(--psa-colors-navy); font-weight: 600; }
+.toggle { margin-bottom: var(--psa-spacing-sm); }
+.moved { border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-sm); padding: var(--psa-spacing-sm) var(--psa-spacing-md); background: var(--psa-colors-canvas); margin: var(--psa-spacing-md) 0; }
+hr { border: 0; border-top: 1px solid var(--psa-colors-border); margin: var(--psa-spacing-md) 0; }
+.caption { font-family: var(--psa-typography-title-font-family); color: var(--psa-colors-muted-ink); margin: 0 0 var(--psa-spacing-sm); }
+</style>
+</head>
+<body>
+<main>
+<p class="caption">Settings &gt; General &gt; Branding (new section)</p>
+<h2>General Settings</h2>
+<article class="card">
+<header class="card-header">Branding</header>
+<div class="card-body">
+<p class="muted small">Your company name appears in signing emails and pages. Your logo is used for portal branding.</p>
+<div class="field"><label for="company">Company name</label>
+<input id="company" type="text" value="Northwind MSP">
+<div class="hint muted small">Defaults to the app name if blank.</div></div>
+<div class="field"><label for="logo">Logo URL</label>
+<input id="logo" type="url" value="https://example.test/northwind-logo.png">
+<div class="hint muted small">Full URL to your company logo. Displayed in the portal navbar.</div></div>
+<button type="button" class="key">Save Branding</button>
+</div>
+</article>
+
+<p class="caption">Settings &gt; Integrations &gt; Client Portal (company name and logo fields removed)</p>
+<article class="card">
+<header class="card-header">Client Portal</header>
+<div class="card-body">
+<div class="toggle"><label><input type="checkbox" checked> Enable Client Portal</label></div>
+<div class="toggle"><label><input type="checkbox"> Enable Product Shop</label></div>
+<div class="toggle"><label><input type="checkbox"> Enable AI Chatbot</label></div>
+<p class="moved small">Company name and logo are set in <a href="#">General Settings › Branding</a>.</p>
+<hr>
+<label for="billing">Billing Portal URL</label>
+<input id="billing" type="url" value="https://billing.example.test/northwind">
+<div class="hint muted small" style="margin-bottom: var(--psa-spacing-md)">External billing portal link. Shown as a nav item in the portal.</div>
+<button type="button">Save Portal Settings</button>
+</div>
+</article>
+</main>
+</body>
+</html>

@@ -1126,7 +1126,7 @@ Passes every tool Carbon Systems' Carbon Connect MCP server publishes (product s
 
 1. Settings > Integrations > **Carbon Connect (MCP)** > **Connect Carbon** (admin only). PSA reads Carbon's OAuth metadata from `https://api.carbonsys.com/mcp`, registers itself once with Carbon (dynamic client registration; the client id and the encrypted client secret are stored as `carbon_mcp_client_id` / `carbon_mcp_client_secret`), then sends you to Carbon to sign in. The flow is authorization code + PKCE (S256) and requests all five Carbon scopes: `mcp:read mcp:products:write mcp:orders:draft mcp:companies:write mcp:customers:write`.
 2. Sign in with the Carbon Connect account PSA should act as. The refresh token is stored encrypted (`carbon_mcp_refresh_token`) and refreshed silently; a rotated token is saved. The card shows who connected, when, the granted scopes and the access-token expiry. If a refresh fails, the card shows **Refresh failed** with the error code: the last refresh failed and PSA retries it on the next Carbon call, so a passing outage clears itself; if it keeps failing, an admin reconnects.
-3. Click **Sync tools now**, or run `php artisan carbon:sync-mcp-catalog`. Every tool Carbon advertises is added or updated, and a tool Carbon stops advertising is deactivated. A tool whose `readOnlyHint` annotation is `true` is a read; anything else (no annotations, `readOnlyHint` false or missing) is a sensitive write, exactly as for CIPP's catalogue. The catalogue also syncs daily at 06:07.
+3. The tool catalogue loads as part of the sign-in: back on Settings the message says how many Carbon tools were loaded. If loading fails, the sign-in is kept and the message says so; click **Sync tools now** (or run `php artisan carbon:sync-mcp-catalog`) to retry, and use the same button whenever Carbon adds or removes tools. Every tool Carbon advertises is added or updated, and a tool Carbon stops advertising is deactivated. A tool whose `readOnlyHint` annotation is `true` is a read; anything else (no annotations, `readOnlyHint` false or missing) is a sensitive write, exactly as for CIPP's catalogue. The catalogue also syncs daily at 06:07.
 4. Turn on **Offer Carbon tools on MCP**. It cannot be turned on before a sign-in. While it is off, or Carbon is signed out, no token can list or call a `carbon_*` tool and the daily sync is skipped.
 5. Grant tools per token on Settings > MCP tokens, under the **Carbon Connect** card (reads in its Read tier, everything else under **Write & draft**). Carbon tools are explicit-grant-only: the legacy full-surface token never gets them. There is no further approval step; the grant is the decision.
 6. Every call writes one staff MCP audit row with the tool name, outcome and duration. Its arguments are recorded as names only (`argument_keys`), and Carbon's results and error text are never written to the audit log or the application log.
@@ -1967,14 +1967,14 @@ A self-service portal where your clients can view tickets, invoices, devices, an
 
 **Setup:**
 
-1. Settings > Integrations > Client Portal
-2. Enable **Client Portal**
-3. Set your **Company Name** (shown in portal header, emails, and login page)
-4. Optionally set a **Logo URL** for portal branding
+1. Settings > General > Branding: set your **Company Name** (shown in portal header, emails, and login page)
+2. Optionally set a **Logo URL** there for portal branding
+3. Settings > Integrations > Client Portal
+4. Enable **Client Portal**
 5. Optionally set **Billing Portal URL** and **Label** (for MSPs using external billing like BenjiPays)
 6. Optionally set **Prepaid Order URL** (supports `{client_id}` placeholder, shown as "Purchase Prepaid Time" link)
 7. Optionally enable **Product Shop** to let clients order hardware/services from a catalog (see below)
-7. Optionally enable the **AI Chatbot** — adds an "Ask AI" assistant to the portal that answers each client's questions about their own tickets, invoices, devices, and service agreements. It is read-only (it cannot create or change anything) and strictly scoped to the logged-in contact's client. Requires the AI Provider to be configured for **Claude (Anthropic)** (Section 9 > AI Provider) — the tool loop is Anthropic-only. Off by default (`portal_chatbot_enabled` setting).
+8. Optionally enable the **AI Chatbot** — adds an "Ask AI" assistant to the portal that answers each client's questions about their own tickets, invoices, devices, and service agreements. It is read-only (it cannot create or change anything) and strictly scoped to the logged-in contact's client. Requires the AI Provider to be configured for **Claude (Anthropic)** (Section 9 > AI Provider) — the tool loop is Anthropic-only. Off by default (`portal_chatbot_enabled` setting).
 
 **Creating portal users:**
 

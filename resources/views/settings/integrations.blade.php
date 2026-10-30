@@ -5310,19 +5310,9 @@
                         </div>
                     </div>
 
-                    <div class="mb-3">
-                        <label class="form-label">Company Name</label>
-                        <input type="text" name="portal_company_name" class="form-control" placeholder="Your Company"
-                               value="{{ App\Models\Setting::getValue('portal_company_name', '') }}">
-                        <div class="form-text">Displayed in the portal header and emails. Defaults to app name if blank.</div>
-                    </div>
-
-                    <div class="mb-3">
-                        <label class="form-label">Logo URL</label>
-                        <input type="url" name="portal_logo_url" class="form-control" placeholder="https://..."
-                               value="{{ App\Models\Setting::getValue('portal_logo_url', '') }}">
-                        <div class="form-text">Full URL to your company logo. Displayed in the portal navbar.</div>
-                    </div>
+                    <p class="small mb-3">
+                        Company name and logo are set in <a href="{{ route('settings.general') }}#branding">General Settings › Branding</a>.
+                    </p>
 
                     <hr>
                     <h6>External Billing Links <span class="text-muted small fw-normal">(optional)</span></h6>
