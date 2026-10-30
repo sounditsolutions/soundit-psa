@@ -24,9 +24,10 @@ use Tests\TestCase;
 
 /**
  * Asset Sources: POST /assets/{asset}/sources/{source}/sync, steps 1-10
- * (design.md Item 3). S1 wires Tactical's existing single-agent read; every
- * other source is still unwired, refuses with no_single_asset_read and calls no
- * vendor. Generic limiter/cooldown/audit controls run against unwired sources.
+ * (design.md Item 3). S1 wires Tactical's existing single-agent read and S2
+ * AutoElevate's GET-one (AssetSourcesAutoElevateTest); every other source is
+ * still unwired, refuses with no_single_asset_read and calls no vendor. Generic
+ * limiter/cooldown/audit controls run against unwired sources.
  * Synthetic data only.
  */
 class AssetSourceSyncRouteTest extends TestCase
@@ -120,7 +121,7 @@ class AssetSourceSyncRouteTest extends TestCase
         $this->configureAllSources();
         $asset = $this->assetLinkedEverywhere();
         $user = User::factory()->tech()->create();
-        foreach (['autoelevate', 'litsrmm', 'comet', 'level', 'controld', 'zorus'] as $source) {
+        foreach (['screenconnect', 'litsrmm', 'comet', 'level', 'controld', 'zorus'] as $source) {
             $this->sync($asset, $source, $user)->assertJsonPath('reason', 'no_single_asset_read');
         }
 
@@ -153,14 +154,14 @@ class AssetSourceSyncRouteTest extends TestCase
         // M0.3.
         $this->configureAllSources();
         $asset = $this->assetLinkedEverywhere();
-        Cache::put(SourceSyncPipeline::vendorCooldownKey('autoelevate'), now()->getTimestamp() + 42, 60);
+        Cache::put(SourceSyncPipeline::vendorCooldownKey('litsrmm'), now()->getTimestamp() + 42, 60);
 
-        $this->sync($asset, 'autoelevate')->assertJson([
+        $this->sync($asset, 'litsrmm')->assertJson([
             'outcome' => 'refused', 'reason' => 'vendor_cooling_down', 'retry_after_s' => 42,
         ]);
         $this->assertSame(42, AssetSourceSync::latest('id')->first()->retry_after_s);
         // The cooldown is per vendor: another source on the same asset is not cooled.
-        $this->sync($asset, 'litsrmm')->assertJsonPath('reason', 'no_single_asset_read');
+        $this->sync($asset, 'controld')->assertJsonPath('reason', 'no_single_asset_read');
         Http::assertNothingSent();
     }
 
@@ -182,25 +183,34 @@ class AssetSourceSyncRouteTest extends TestCase
         $this->assertGreaterThanOrEqual(0, $row->duration_ms);
     }
 
-    public function test_only_tactical_can_return_ok_in_s1(): void
+    public function test_only_tactical_and_autoelevate_can_return_ok_in_s2(): void
     {
-        // M-s1: wiring a second source to the pipeline read turns this red.
+        // M-s2: wiring a third source to the pipeline read turns this red.
         $this->configureAllSources();
         Setting::setValue('ninja_enabled', '1'); // so Ninja reaches the read step like the others
         $history = $this->bindTactical([$this->agentResponse()]);
+        $company = '00000000-0000-4000-8000-00000000c0a1';
         foreach (AssetSources::ORDER as $source) {
             $asset = $this->assetLinkedEverywhere();
+            $asset->client->update(['autoelevate_company_id' => $company]);
+            if ($source === 'autoelevate') {
+                Http::fake(['https://partner-api.autoelevate.com/api/v1/computers/'.$asset->autoelevate_computer_id => Http::response([
+                    'id' => $asset->autoelevate_computer_id, 'machineName' => 'DESK-EXAMPLE-01', 'operatingSystem' => null,
+                    'locationId' => '00000000-0000-4000-8000-0000000010c1', 'companyId' => $company, 'elevationMode' => 'live',
+                    'lastCheckedInAt' => 1716900000000, 'createdAt' => 1716900000000, 'updatedAt' => 1716900000000,
+                ], 200)]);
+            }
             $r = $this->sync($asset, $source);
-            if ($source === 'tactical') {
+            if (in_array($source, ['tactical', 'autoelevate'], true)) {
                 $r->assertJsonPath('outcome', 'ok')->assertJsonPath('reason', 'ok');
             } else {
                 $r->assertJson(['outcome' => 'refused', 'reason' => 'no_single_asset_read'], $source);
             }
         }
-        $this->assertSame(['tactical'], AssetSourceSync::where('outcome', '!=', 'refused')->pluck('source')->all());
+        $this->assertEqualsCanonicalizing(['tactical', 'autoelevate'], AssetSourceSync::where('outcome', '!=', 'refused')->pluck('source')->all());
         $this->assertSame(count(AssetSources::ORDER), AssetSourceSync::count());
         $this->assertCount(1, $history, 'one Tactical getAgent read, nothing else');
-        Http::assertNothingSent();
+        Http::assertSentCount(1); // the one AutoElevate GET-one, nothing else
     }
 
     public function test_tactical_sync_now_reads_the_existing_single_agent_read_and_writes_this_asset_only(): void

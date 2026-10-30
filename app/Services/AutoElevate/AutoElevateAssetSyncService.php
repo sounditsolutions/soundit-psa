@@ -4,6 +4,10 @@ namespace App\Services\AutoElevate;
 
 use App\Models\Asset;
 use App\Models\Client;
+use App\Services\AssetSources\SourceSyncPipeline;
+use Illuminate\Console\Scheduling\CacheEventMutex;
+use Illuminate\Console\Scheduling\Event as ScheduleEvent;
+use Illuminate\Console\Scheduling\EventMutex;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -53,7 +57,51 @@ class AutoElevateAssetSyncService
     /** Run deadline, checked before each client read. */
     public const MAX_RUN_SECONDS = 1800;
 
+    /**
+     * The hourly schedule's own withoutOverlapping mutex name (routes/console.php sets it with
+     * createMutexNameUsing). Named here so the asset page's Sync now can ask whether the
+     * scheduled run holds it (runInProgress) without inventing a second lock (Q-2 B, M1.10).
+     */
+    public const RUN_MUTEX = 'framework/schedule-autoelevate-sync-assets';
+
+    /** The schedule's overlap lock lifetime in minutes (withoutOverlapping(55)). */
+    public const RUN_MUTEX_MINUTES = 55;
+
     public function __construct(private readonly AutoElevateReadService $reads) {}
+
+    /**
+     * Is the scheduled hourly run holding its withoutOverlapping mutex right now? Asked of the
+     * scheduler's own EventMutex (the same resolution Schedule uses: a bound EventMutex, else
+     * CacheEventMutex) under the event's own name, RUN_MUTEX. A run started by hand with
+     * `php artisan autoelevate:sync-assets` takes no scheduler mutex, so it is not seen here.
+     */
+    public static function runInProgress(): bool
+    {
+        $mutex = app()->bound(EventMutex::class) ? app(EventMutex::class) : app(CacheEventMutex::class);
+        $event = new ScheduleEvent($mutex, 'autoelevate:sync-assets');
+        $event->createMutexNameUsing(self::RUN_MUTEX);
+        $event->expiresAt = self::RUN_MUTEX_MINUTES;
+
+        return $mutex->exists($event);
+    }
+
+    /**
+     * Start (or extend) the shared AutoElevate vendor cooldown that Sync now reads
+     * (SourceSyncPipeline::vendorCooldownKey). Written by every 429 that ends a read, from
+     * Sync now and from the scheduled run alike; an earlier, longer cooldown is never shortened.
+     */
+    public static function startVendorCooldown(int $seconds): void
+    {
+        $key = SourceSyncPipeline::vendorCooldownKey('autoelevate');
+        $until = max((int) Cache::get($key, 0), now()->getTimestamp() + $seconds);
+        Cache::put($key, $until, max(1, $until - now()->getTimestamp()));
+    }
+
+    /** Seconds left on the shared AutoElevate vendor cooldown; 0 when none is live. */
+    public static function vendorCooldownRemaining(): int
+    {
+        return max(0, (int) Cache::get(SourceSyncPipeline::vendorCooldownKey('autoelevate'), 0) - now()->getTimestamp());
+    }
 
     /**
      * Hostname match key: trimmed, lowercased, first DNS label (so "WS-01.corp.local" and
@@ -190,6 +238,10 @@ class AutoElevateAssetSyncService
                 Log::warning('[AutoElevateAssetSync] read failed', ['client_id' => $client->id, 'reason' => $e->reason]);
                 $report->recordFailure($client->id, $e->reason);
                 self::recordClientOutcome($client->id, $client->autoelevate_company_id, false, $e->reason);
+                if ($e->reason === 'http_429') {
+                    // Shared budget, both ways (M1.6): a 429 that ends this read cools Sync now too.
+                    self::startVendorCooldown($e->retryAfterS ?? AutoElevateClient::COOLDOWN_FALLBACK_SECONDS);
+                }
                 $consecutive429 = $e->reason === 'http_429' ? $consecutive429 + 1 : 0;
 
                 continue;

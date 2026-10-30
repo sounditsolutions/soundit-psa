@@ -91,11 +91,13 @@ class AutoElevateScheduleTest extends TestCase
 
     /**
      * The no-when() ruling rests on the event always running: with no API key
-     * configured it must still pass its filters, carry no when() filter and no
-     * environment limit. Its one reject is the overlap lock's own mutex check
-     * (added by withoutOverlapping), and nothing else.
+     * configured it must still pass its filters, and carry no environment limit.
+     * Its one when() filter is the autoelevate_enabled switch (Q-5 A), which a
+     * missing key does not close (switch at its default, no key: filters pass).
+     * Its one reject is the overlap lock's own mutex check (added by
+     * withoutOverlapping), and nothing else.
      */
-    public function test_the_event_has_no_filter_and_passes_its_filters(): void
+    public function test_the_events_only_filter_is_the_switch_and_a_missing_key_still_passes(): void
     {
         $this->assertFalse(\App\Support\AutoElevateConfig::isConfigured());
 
@@ -103,7 +105,8 @@ class AutoElevateScheduleTest extends TestCase
         $filters = (new \ReflectionProperty($event, 'filters'))->getValue($event);
         $rejects = (new \ReflectionProperty($event, 'rejects'))->getValue($event);
 
-        $this->assertSame([], $filters);
+        $this->assertCount(1, $filters);
+        $this->assertSame('framework/schedule-autoelevate-sync-assets', $event->mutexName());
         $this->assertCount(1, $rejects);
         $this->assertSame([], $event->environments);
         $this->assertTrue($event->runsInEnvironment($this->app->environment()));

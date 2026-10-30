@@ -103,14 +103,14 @@ class AssetSources
     }
 
     /**
-     * The source's on/off switch. AutoElevate has none yet (its switch ships with
-     * its panel, Q-5 A) and Comet's switch IS "configured" (CometConfig::isEnabled),
-     * so both answer true here and are governed by isConfigured() alone.
+     * The source's on/off switch. AutoElevate's is autoelevate_enabled (Q-5 A, default
+     * on). Comet's switch IS "configured" (CometConfig::isEnabled), so it is governed
+     * by isConfigured() alone.
      */
     public static function isSwitchedOn(string $source): bool
     {
         return match ($source) {
-            'autoelevate' => true,
+            'autoelevate' => AutoElevateConfig::isSwitchedOn(),
             'litsrmm' => LitsrmmConfig::isEnabled(),
             'tactical' => TacticalConfig::isEnabled(),
             'level' => LevelConfig::isEnabled(),

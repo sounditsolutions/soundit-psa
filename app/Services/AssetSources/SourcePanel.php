@@ -40,6 +40,7 @@ class SourcePanel
     /** The Sync now button's title and accessible description, per wired source (design-r3 §2.3). */
     public const SYNC_NOW_DESCRIPTION = [
         'tactical' => "Reads this computer's record from Tactical and updates its details here. If actions were queued while it was offline, this can start them.",
+        'autoelevate' => "Reads this computer's record from AutoElevate. Changes nothing at AutoElevate.",
     ];
 
     /** Open Tactical alerts listed in the panel before the "all N alerts" link (design-r3 §4). */
@@ -408,8 +409,55 @@ class SourcePanel
         if ($source === 'tactical' && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
             $chips = array_merge($chips, self::tacticalChips($asset, $syncedAt, $off));
         }
+        if ($source === 'autoelevate' && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
+            $chips = self::autoElevateChips($asset, $chips, $syncedAt, $off);
+        }
 
         return $chips;
+    }
+
+    /**
+     * The AutoElevate health strip (design-r3 §2.2): elevation mode, "AutoElevate last
+     * check-in" (the vendor's own claim, never "online") and link state.
+     *
+     * As-of ages follow what wrote them. Every AutoElevate writer stamps
+     * autoelevate_synced_at together with BOTH the mode and the check-in (the hourly
+     * link write and Sync now; the hourly clear nulls the link, so no chip is shown), so
+     * only those two chips carry "as of <synced_at>". The link chip shows no age: the
+     * link state comes from the link column and the hourly run's recorded outcome,
+     * neither of which has a stored time of its own.
+     *
+     * @param  list<array<string, mixed>>  $chips  the shared chips (Last synced, Last contact)
+     */
+    private static function autoElevateChips(Asset $asset, array $chips, ?CarbonInterface $syncedAt, bool $off): array
+    {
+        $age = $syncedAt ? self::asOf($syncedAt) : 'no sync recorded';
+        foreach ($chips as $i => $chip) {
+            if ($chip['label'] === 'Last contact') {
+                $chips[$i]['note'] .= $syncedAt ? ', '.$age : '';
+            }
+        }
+
+        $mode = $asset->autoelevate_elevation_mode;
+        $modeValue = match (true) {
+            $mode === null => 'No mode reported',
+            ! in_array($mode, self::ENUMS['autoelevate_elevation_mode'], true) => 'Unrecognised: '.$mode,
+            $mode === 'audit' => 'AUDIT',
+            default => $mode,
+        };
+        $link = \App\Services\AutoElevate\AutoElevateAssetSyncService::assetLinkState($asset);
+        $linkNote = $link['state'] === 'linked' ? '' : $link['state'].($link['reason'] ? ' ('.$link['reason'].')' : '');
+
+        $modeChip = ['label' => 'Elevation mode', 'value' => $modeValue, 'key' => 'mode',
+            'kind' => $syncedAt ? self::KIND_SNAPSHOT : 'none', 'note' => $age];
+        if ($off && $syncedAt) {
+            $modeChip['note'] .= '; last known, not updated';
+        }
+        $linkChip = ['label' => 'Link', 'value' => $link['state'] === 'linked' ? 'Linked' : 'Not linked',
+            'key' => 'link', 'kind' => 'none', 'note' => $linkNote];
+
+        // Fixed order (design-r3 §2.1): state, last contact, then the source's own signals.
+        return [...$chips, $modeChip, $linkChip];
     }
 
     public static function asOf(CarbonInterface $at): string

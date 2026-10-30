@@ -3,7 +3,11 @@
      Timestamps arrive as epoch milliseconds and are rendered in the app display timezone
      (C-14 toAppTz; Pacific in production) with the zone abbreviation shown. --}}
 <div id="autoelevate-panel" data-state="{{ $state }}" @if($reason) data-reason="{{ $reason }}" @endif>
-@if($state === 'not_mapped')
+@if($state === 'switched_off')
+    <div class="alert alert-secondary small mb-0" role="status">
+        <i class="bi bi-toggle-off me-1"></i>{{ \App\Services\AssetSources\SourceSyncPipeline::sentence('switched_off') }}
+    </div>
+@elseif($state === 'not_mapped')
     <div class="alert alert-secondary small mb-0" role="status">
         <i class="bi bi-link-45deg me-1"></i>
         <strong>Not mapped.</strong> This client is not linked to an AutoElevate company, so no computers were requested.

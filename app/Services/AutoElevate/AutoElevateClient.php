@@ -115,7 +115,8 @@ class AutoElevateClient
         }
 
         if ($response->status() !== 200) {
-            throw new AutoElevateReadException('http_'.$response->status());
+            throw new AutoElevateReadException('http_'.$response->status(), retryAfterS: $response->status() === 429
+                ? self::cooldownSeconds($response->header('Retry-After')) : null);
         }
 
         $body = json_decode($response->body(), true);
@@ -135,6 +136,67 @@ class AutoElevateClient
         }
 
         return ['items' => $body['items'], 'totalCount' => $body['totalCount']];
+    }
+
+    /**
+     * One item read (`GET <path>`, e.g. /api/v1/computers/{id}): exactly ONE request, never a
+     * retry or a sleep, in any process. Its only caller is the asset page's Sync now, which
+     * runs inside a web request (the getPage() web rule, applied unconditionally).
+     *
+     * Errors are classified like getPage(): transport → `transport`; any non-200 →
+     * `http_<status>` (a 429 also carries cooldownSeconds() of its Retry-After); a body that
+     * is not a JSON object → `body_drift`. Never chains or logs vendor text (C-56).
+     *
+     * @return array<string, mixed>
+     *
+     * @throws AutoElevateReadException
+     */
+    public function getOne(string $path): array
+    {
+        $key = $this->storedKey();
+        if ($key === null) {
+            throw new AutoElevateReadException('configuration');
+        }
+
+        try {
+            $response = $this->pending($key)->get($path);
+        } catch (\Throwable) {
+            // Never chain: a transport exception may quote the request, including the key.
+            throw new AutoElevateReadException('transport');
+        }
+
+        if ($response->status() !== 200) {
+            throw new AutoElevateReadException('http_'.$response->status(), retryAfterS: $response->status() === 429
+                ? self::cooldownSeconds($response->header('Retry-After')) : null);
+        }
+
+        $body = json_decode($response->body(), true);
+        if (! is_array($body) || array_is_list($body)) {
+            throw new AutoElevateReadException('body_drift');
+        }
+
+        return $body;
+    }
+
+    /** Retry-After window used for the shared vendor cooldown: a plain integer 0..300, otherwise 60 (Q-2 B). */
+    public const COOLDOWN_CAP_SECONDS = 300;
+
+    public const COOLDOWN_FALLBACK_SECONDS = 60;
+
+    /**
+     * The shared vendor cooldown a 429 starts (design.md Item 3 step 8): the vendor's
+     * Retry-After when it is a plain integer from 0 to COOLDOWN_CAP_SECONDS, otherwise
+     * COOLDOWN_FALLBACK_SECONDS. Only this integer is ever read from the response.
+     */
+    public static function cooldownSeconds(string $retryAfter): int
+    {
+        $retryAfter = trim($retryAfter);
+        if ($retryAfter !== '' && strlen($retryAfter) <= 3 && ctype_digit($retryAfter)
+            && (int) $retryAfter <= self::COOLDOWN_CAP_SECONDS) {
+            return (int) $retryAfter;
+        }
+
+        return self::COOLDOWN_FALLBACK_SECONDS;
     }
 
     /**
