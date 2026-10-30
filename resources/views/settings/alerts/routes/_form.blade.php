@@ -38,6 +38,7 @@
                     <label class="form-check-label" for="{{ $id }}">
                         <code>{{ $type['key'] }}</code>
                         <span class="text-muted small d-block">{{ $type['label'] }}</span>
+                        @if(! empty($type['description']))<span class="text-muted small d-block" data-type-description>{{ $type['description'] }}</span>@endif
                     </label>
                 </div>
             @endforeach

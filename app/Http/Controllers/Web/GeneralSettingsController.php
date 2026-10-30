@@ -2,11 +2,14 @@
 
 namespace App\Http\Controllers\Web;
 
+use App\Enums\UserRole;
 use App\Http\Controllers\Controller;
 use App\Models\Asset;
 use App\Models\Setting;
+use App\Models\User;
 use App\Support\WikiConfig;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class GeneralSettingsController extends Controller
 {
@@ -36,6 +39,8 @@ class GeneralSettingsController extends Controller
             'allAssetTypes' => $allAssetTypes,
             'workstationTypes' => $workstationTypes,
             'serverTypes' => $serverTypes,
+            'contactIntakeOwnerId' => (string) Setting::getValue('contact_intake_owner_id', ''),
+            'contactIntakeStaff' => self::contactIntakeStaff()->get(['id', 'name', 'role']),
         ]);
     }
 
@@ -43,6 +48,9 @@ class GeneralSettingsController extends Controller
     {
         if ($request->input('section') === 'branding') {
             return $this->updateBranding($request);
+        }
+        if ($request->input('section') === 'contact_intake') {
+            return $this->updateContactIntake($request);
         }
 
         $validated = $request->validate([
@@ -73,6 +81,33 @@ class GeneralSettingsController extends Controller
 
         return redirect()->route('settings.general')
             ->with('success', 'Branding saved.');
+    }
+
+    /** Active Admin and Tech staff: the same set StaffWorkflow::authorize admits (card JyBDeHPz). */
+    private static function contactIntakeStaff(): \Illuminate\Database\Eloquent\Builder
+    {
+        return User::query()->where('is_active', true)
+            ->whereIn('role', [UserRole::Admin->value, UserRole::Tech->value])->orderBy('name');
+    }
+
+    /**
+     * Settings > General > Contact intake (card JyBDeHPz): writes contact_intake_owner_id, the
+     * default assignee of new web form tickets and the fallback alert recipient. Blank stores
+     * '' so ContactIntakeConfig::ownerId() keeps its existing default.
+     */
+    private function updateContactIntake(Request $request)
+    {
+        $validated = $request->validate([
+            'contact_intake_owner_id' => ['nullable', 'integer',
+                Rule::exists('users', 'id')->where('is_active', true)
+                    ->whereIn('role', [UserRole::Admin->value, UserRole::Tech->value])],
+        ]);
+
+        Setting::setValue('contact_intake_owner_id', isset($validated['contact_intake_owner_id'])
+            ? (string) $validated['contact_intake_owner_id'] : '');
+
+        return redirect()->route('settings.general')
+            ->with('success', 'General settings saved.');
     }
 
     public function updateBillingNumbering(Request $request)

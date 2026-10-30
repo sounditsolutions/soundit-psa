@@ -35,10 +35,14 @@ final class ContactIntakeDrain extends Command
                 // moved to the staff exception queue instead of being retried forever and
                 // starving newer submissions.
                 ContactSubmission::whereKey($id)->where('state', 'pending')->increment('attempts');
-                ContactSubmission::whereKey($id)->where('state', 'pending')
+                $quarantined = ContactSubmission::whereKey($id)->where('state', 'pending')
                     ->where('attempts', '>=', self::MAX_ATTEMPTS)
                     ->update(['state' => 'quarantined', 'exception_reason' => 'processing_failed']);
-                IntakeNotifications::record(ContactSubmission::findOrFail($id), 'processing_failed');
+                // Alert only when THIS failure moved the row to the review queue; earlier
+                // attempts leave it pending, which the processing_failed email would misstate.
+                if ($quarantined > 0) {
+                    IntakeNotifications::record(ContactSubmission::findOrFail($id), 'processing_failed');
+                }
                 $failed = true;
             }
         }

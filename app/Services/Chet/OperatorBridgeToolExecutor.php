@@ -525,6 +525,13 @@ class OperatorBridgeToolExecutor
                 $signal['watch'] = $payload['watch'];
             }
 
+            // intake.webform_* rows (card JyBDeHPz) carry ticket_id, age_seconds and review_url.
+            foreach (['ticket_id', 'age_seconds', 'review_url'] as $key) {
+                if (array_key_exists($key, $payload)) {
+                    $signal[$key] = $payload[$key];
+                }
+            }
+
             return $signal;
         })->all();
 

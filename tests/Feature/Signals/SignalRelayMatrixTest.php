@@ -122,7 +122,7 @@ class SignalRelayMatrixTest extends TestCase
         $this->assertSame([], array_values($route->event_filter['nudge_types'] ?? []));
     }
 
-    public function test_matrix_read_surfaces_all_20_types_tokens_cells_and_poll_signals_guard(): void
+    public function test_matrix_read_surfaces_all_22_types_tokens_cells_and_poll_signals_guard(): void
     {
         // 'Chet' (poll_signals) and 'NoPoll' (no poll_signals) are minted in setUp.
         $this->matrix()->setRelay('Chet', 'ticket.created', true);
@@ -131,8 +131,9 @@ class SignalRelayMatrixTest extends TestCase
         $grid = $this->matrix()->matrix();
 
         // 19 since asset.watch_fired (card K3VEcxtw), surfaced like system.test;
-        // 20 since mesh.allow_rule_unresolved (#5160).
-        $this->assertCount(20, $grid['types']);
+        // 20 since mesh.allow_rule_unresolved (#5160); 22 since the two
+        // intake.webform_* types (card JyBDeHPz).
+        $this->assertCount(22, $grid['types']);
         $typeKeys = array_column($grid['types'], 'key');
         $this->assertContains('ticket.created', $typeKeys);
         $this->assertContains('system.test', $typeKeys); // surfaced even though not routable

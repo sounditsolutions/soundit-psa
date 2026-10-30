@@ -4,11 +4,13 @@ namespace App\Http\Controllers\Web;
 
 use App\Http\Controllers\Controller;
 use App\Models\ContactSubmission;
+use App\Models\TicketNote;
 use App\Services\Ai\AiClient;
 use App\Services\ContactIntake\IntakeReconciliation;
 use App\Services\ContactIntake\StaffWorkflow;
 use App\Services\Technician\TechnicianBudget;
 use App\Support\AiConfig;
+use App\Support\PortalConfig;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -18,10 +20,29 @@ final class ContactIntakeController extends Controller
     {
         $staff->authorize($request->user());
 
-        return view('contact-intake.index', ['rows' => ContactSubmission::latest('id')->paginate(50),
+        $rows = ContactSubmission::latest('id')->paginate(50);
+        // The row's own form note carries its verification; trashed notes still count (StaffWorkflow verify).
+        $verified = TicketNote::withTrashed()->whereIn('id', $rows->pluck('ticket_note_id')->filter()->all())
+            ->pluck('contact_intake_verified_at', 'id');
+
+        return view('contact-intake.index', ['rows' => $rows,
+            'nextSteps' => $rows->mapWithKeys(fn (ContactSubmission $row) => [$row->id => self::nextStep(
+                $row, $row->ticket_note_id !== null && $verified->get($row->ticket_note_id) !== null)])->all(),
+            'companyName' => PortalConfig::companyName(),
             'reconciliation' => $reconciliation->measure(),
             'counts' => ContactSubmission::selectRaw('state, COUNT(*) AS total')->groupBy('state')->pluck('total', 'state'),
             'oldest' => ContactSubmission::whereIn('state', ['pending', 'quarantined'])->min('created_at')]);
+    }
+
+    /** Card JyBDeHPz: derived from state, the note's verification and exception_reason; no schema. */
+    public static function nextStep(ContactSubmission $row, bool $verified): string
+    {
+        return match ($row->state) {
+            'pending', 'processing' => 'None (processing)',
+            'processed' => $verified ? 'Verified' : 'Verify',
+            'quarantined' => $row->exception_reason === 'processing_failed' ? 'Replay' : 'Resolve or approve',
+            default => 'None',
+        };
     }
 
     public function show(Request $request, int $id, StaffWorkflow $staff)

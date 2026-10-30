@@ -47,6 +47,20 @@ class SignalEventTypes
                 'core' => false,
                 'routable' => true,
             ],
+            // Card JyBDeHPz: contact-intake web form. Metadata only (submission id, ticket id,
+            // age, review link); the visitor's text never rides the signal (Q2 A).
+            'intake.webform_received' => [
+                'label' => 'Web form inquiry received',
+                'description' => 'Sent when a web form inquiry is added to a ticket (new or existing), before anyone verifies it. Carries only the submission id, ticket id, age and review link.',
+                'core' => false,
+                'routable' => true,
+            ],
+            'intake.webform_verified' => [
+                'label' => 'Web form inquiry verified',
+                'description' => 'Sent when a staff member verifies a web form inquiry and its ticket becomes visible to automation.',
+                'core' => false,
+                'routable' => true,
+            ],
             'agent.flag_attention' => [
                 'label' => 'Agent flagged for attention',
                 'core' => true,
