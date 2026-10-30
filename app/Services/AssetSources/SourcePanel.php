@@ -292,12 +292,24 @@ class SourcePanel
      * The checks chip keeps the psa-0pb9m snapshot rules verbatim: a stored count is a
      * snapshot, which carries no passing evidence, so it can never read "all passing";
      * unknown is never green; zero checks reads "unmonitored".
+     *
+     * Only Agent status takes "as of <synced_at>". synced_at is stamped by three
+     * writers, and status is the one field all three write: the list sync, the
+     * not-seen sweep (status + synced_at only) and the detail read / Sync now
+     * (status + synced_at always; last_seen_at, needs_reboot and checks only when the
+     * payload carries them; last_user and has_patches_pending never). So after a
+     * sweep or a detail read, synced_at is not the age of last user, checks, reboot
+     * or updates, and no column stores when each of those was last written. Those
+     * chips show no age instead of a false one.
      */
     private static function tacticalChips(Asset $asset, ?CarbonInterface $syncedAt, bool $off): array
     {
         $ta = $asset->tacticalAsset;
         $kind = $syncedAt ? self::KIND_SNAPSHOT : 'none';
         $note = $syncedAt ? self::asOf($syncedAt) : 'no sync recorded';
+        // A stored value with no truthful age: no "as of", and still marked as not
+        // being updated when the source is switched off.
+        $ageless = ['kind' => 'none', 'note' => $syncedAt ? ($off ? 'last known, not updated' : '') : 'no sync recorded'];
         $failing = $ta->checks_failing;
         $total = $ta->checks_total;
 
@@ -319,10 +331,10 @@ class SourcePanel
 
         $chips = [
             ['label' => 'Agent status', 'value' => $statusValue, 'kind' => $kind, 'note' => $note],
-            ['label' => 'Last user', 'value' => filled($ta->last_user) ? (string) $ta->last_user : 'Not reported by Tactical', 'kind' => $kind, 'note' => $note],
-            ['label' => 'Checks', 'value' => $checks, 'kind' => $kind, 'note' => $note, 'key' => 'checks'],
-            ['label' => 'Reboot', 'value' => $yesNo($ta->needs_reboot, 'Reboot needed', 'Not needed'), 'kind' => $kind, 'note' => $note, 'key' => 'reboot'],
-            ['label' => 'Updates', 'value' => $yesNo($ta->has_patches_pending, 'Updates pending', 'None pending'), 'kind' => $kind, 'note' => $note, 'key' => 'updates'],
+            ['label' => 'Last user', 'value' => filled($ta->last_user) ? (string) $ta->last_user : 'Not reported by Tactical'] + $ageless,
+            ['label' => 'Checks', 'value' => $checks, 'key' => 'checks'] + $ageless,
+            ['label' => 'Reboot', 'value' => $yesNo($ta->needs_reboot, 'Reboot needed', 'Not needed'), 'key' => 'reboot'] + $ageless,
+            ['label' => 'Updates', 'value' => $yesNo($ta->has_patches_pending, 'Updates pending', 'None pending'), 'key' => 'updates'] + $ageless,
             ['label' => 'Open Tactical alerts', 'value' => (string) $alerts, 'kind' => 'psa', 'note' => 'open in this PSA now', 'key' => 'alerts'],
         ];
         if ($off) {

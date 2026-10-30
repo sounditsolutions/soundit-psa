@@ -28,7 +28,9 @@ use Illuminate\Support\Facades\RateLimiter;
  *                          (SweepQueuedActionsForAgent::dispatchIfQueued), which starts
  *                          TechnicianRuns queued while the agent was offline.
  *                          A degraded read leaves the snapshot (synced_at included) as it
- *                          was and is answered failed/transport. Every other source that
+ *                          was and is answered failed, with the reason taken from the
+ *                          vendor's HTTP status (failureReason) or transport when no
+ *                          response came back. Every other source that
  *                          passes 1-6 is refused with no_single_asset_read and makes no
  *                          vendor call
  *   10. audit              one append-only asset_source_syncs row per attempt, refusals included
@@ -85,6 +87,20 @@ class SourceSyncPipeline
         return self::SENTENCES[$reason] ?? 'Unrecognised: '.$reason;
     }
 
+    /**
+     * The reason for a failed vendor read that carried an HTTP status: the vendor
+     * was reached and refused, so it is never transport. 404 and 429 have their own
+     * reasons; any other status is http_NNN, which sentence() renders.
+     */
+    public static function failureReason(int $httpStatus): string
+    {
+        return match ($httpStatus) {
+            404 => 'not_found_at_vendor',
+            429 => 'vendor_429',
+            default => 'http_'.$httpStatus,
+        };
+    }
+
     public static function userKey(int $userId): string
     {
         return 'source-sync:user:'.$userId;
@@ -109,6 +125,9 @@ class SourceSyncPipeline
         $t0 = hrtime(true);
 
         $reply = $this->decide($asset, $source, $user);
+        // The vendor's status goes on the audit row only; the reply shape stays closed.
+        $httpStatus = $reply['http_status'] ?? null;
+        unset($reply['http_status']);
 
         AssetSourceSync::create([
             'asset_id' => $asset->id,
@@ -116,7 +135,7 @@ class SourceSyncPipeline
             'user_id' => $user->id,
             'outcome' => $reply['outcome'],
             'reason' => $reply['reason'],
-            'http_status' => null,
+            'http_status' => $httpStatus,
             'retry_after_s' => $reply['retry_after_s'] ?? null,
             'started_at' => $startedAt,
             'duration_ms' => (int) intdiv(hrtime(true) - $t0, 1_000_000),
@@ -194,7 +213,9 @@ class SourceSyncPipeline
     /**
      * Tactical: the existing single-agent detail read (no new vendor read, Q-9 A).
      * syncDeviceDetail never throws on a vendor failure; it answers degraded and leaves
-     * the snapshot untouched, which is reported as failed/transport (M3.2).
+     * the snapshot untouched (M3.2). The failure is classified by the HTTP status the
+     * read carried back: with one, failureReason() (Tactical answered and refused);
+     * without one, transport (no response came back, so the vendor was not reached).
      */
     private function readTactical(Asset $asset): array
     {
@@ -203,8 +224,10 @@ class SourceSyncPipeline
         $result = $this->tacticalSync->syncDeviceDetail($asset);
 
         if (! $result->ok) {
-            return ['outcome' => 'failed', 'reason' => 'transport', 'synced_at' => $ta->synced_at?->toIso8601String(),
-                'changed' => [], 'this_read' => []];
+            return ['outcome' => 'failed',
+                'reason' => $result->httpStatus !== null ? self::failureReason($result->httpStatus) : 'transport',
+                'synced_at' => $ta->synced_at?->toIso8601String(),
+                'changed' => [], 'this_read' => [], 'http_status' => $result->httpStatus];
         }
 
         $changed = [];

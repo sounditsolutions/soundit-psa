@@ -76,6 +76,13 @@ class AssetSourcesTacticalPanelTest extends TestCase
         return trim(html_entity_decode($m[1]));
     }
 
+    private function chipNote(string $panel, string $label): string
+    {
+        $this->assertSame(1, preg_match('/>'.preg_quote($label, '/').'<\/div>\s*<div class="fw-semibold">[^<]*<\/div>\s*<div class="small text-muted" data-chip-note>([^<]*)</', $panel, $m), "chip note {$label}");
+
+        return trim(html_entity_decode($m[1]));
+    }
+
     private function alert(Asset $asset, AlertSource $source, string $title, int $minutesAgo = 40): Alert
     {
         return Alert::create([
@@ -138,8 +145,11 @@ class AssetSourcesTacticalPanelTest extends TestCase
         $this->assertSame('EXAMPLE\\alex', $this->chip($panel, 'Last user'));
         $this->assertSame('Updates pending', $this->chip($panel, 'Updates'));
         $this->assertSame('0', $this->chip($panel, 'Open Tactical alerts'));
-        foreach (['Agent status', 'Last user', 'Checks', 'Reboot', 'Updates'] as $label) {
-            $this->assertMatchesRegularExpression('/>'.preg_quote($label, '/').'<\/div>\s*<div class="fw-semibold">[^<]*<\/div>\s*<div class="small text-muted" data-chip-note>as of 2 minutes ago</', $panel, $label);
+        // S1-fix (Jeeves 2026-10-30): only Agent status is written by every read that
+        // stamps synced_at, so only it carries that age. The rest have no truthful age.
+        $this->assertSame('as of 2 minutes ago', $this->chipNote($panel, 'Agent status'));
+        foreach (['Last user', 'Checks', 'Reboot', 'Updates'] as $label) {
+            $this->assertStringNotContainsString('as of', $this->chipNote($panel, $label), $label);
         }
     }
 

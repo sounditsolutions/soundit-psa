@@ -1214,9 +1214,13 @@ class AssetController extends Controller
                 'status_label' => $ta?->status ? ucfirst($ta->status) : null,
                 'freshAsOf' => $ta?->synced_at?->diffForHumans(),
                 'degraded' => $reply['outcome'] !== 'ok',
-                'message' => $reply['outcome'] === 'ok'
-                    ? 'Refreshed just now.'
-                    : 'Could not reach the agent — showing the last sync.',
+                // A failed read that reached Tactical (404, 429, other HTTP status)
+                // says what Tactical answered; only transport says "could not reach".
+                'message' => match (true) {
+                    $reply['outcome'] === 'ok' => 'Refreshed just now.',
+                    $reply['reason'] === 'transport' => 'Could not reach the agent — showing the last sync.',
+                    default => \App\Services\AssetSources\SourceSyncPipeline::sentence($reply['reason']),
+                },
             ]),
             default => match ($reply['reason']) {
                 'not_configured', 'switched_off' => response()->json(['error' => 'Tactical RMM is disabled or not configured.'], 422),
