@@ -542,7 +542,7 @@ class SourcePanel
             $outcome = [
                 'badge' => match ($last->reason) {
                     'ok' => 'OK',
-                    'vendor_429', 'vendor_cooling_down', 'user_throttled', 'recently_synced' => 'RATE LIMITED',
+                    'vendor_429', 'vendor_cooling_down', 'interactive_ceiling', 'user_throttled', 'recently_synced' => 'RATE LIMITED',
                     default => $last->outcome === 'failed' ? 'FAILED' : 'REFUSED',
                 },
                 'sentence' => SourceSyncPipeline::sentence($last->reason),

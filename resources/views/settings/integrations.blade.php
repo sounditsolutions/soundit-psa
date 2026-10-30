@@ -554,7 +554,7 @@
                     </p>
                 @endif
 
-                @if($autoelevateConfigured)
+                @if($autoelevateConfigured && auth()->user()?->isAdmin())
                 <div class="border-top pt-3 mt-3">
                     <form method="POST" action="{{ route('settings.integrations.toggle') }}">
                         @csrf

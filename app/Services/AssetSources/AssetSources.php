@@ -240,7 +240,8 @@ class AssetSources
 
     /**
      * Stored items a technician should look at (design-r3 §1 marker table).
-     * Sources must be LINKED except AutoElevate, which also reports link state.
+     * Sources must be LINKED except AutoElevate, which also reports link state
+     * unless it is switched off (OFF means OFF: no attention count at all).
      * Each item: ['key', 'title', 'evidence'].
      *
      * @return list<array{key: string, title: string, evidence: string}>
@@ -248,6 +249,9 @@ class AssetSources
     public static function attention(Asset $asset, string $source): array
     {
         if ($source !== 'autoelevate' && self::state($asset, $source) !== self::STATE_LINKED) {
+            return [];
+        }
+        if ($source === 'autoelevate' && self::state($asset, $source) === self::STATE_OFF) {
             return [];
         }
 

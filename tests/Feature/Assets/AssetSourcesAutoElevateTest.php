@@ -7,6 +7,7 @@ use App\Models\AssetSourceSync;
 use App\Models\Client;
 use App\Models\Setting;
 use App\Models\User;
+use App\Services\AssetSources\AssetSources;
 use App\Services\AssetSources\SourceSyncPipeline;
 use App\Services\AutoElevate\AutoElevateAssetSyncService;
 use Illuminate\Console\Scheduling\Event as ScheduleEvent;
@@ -330,8 +331,13 @@ class AssetSourcesAutoElevateTest extends TestCase
         foreach (array_slice($assets, 0, SourceSyncPipeline::AUTOELEVATE_PER_MINUTE) as $asset) {
             $this->sync($asset)->assertJsonPath('outcome', 'ok'); // a fresh user each time
         }
-        $r = $this->sync(end($assets))->assertJson(['outcome' => 'refused', 'reason' => 'vendor_cooling_down']);
+        // This PSA's own ceiling, not a vendor answer: never "the vendor asked us to slow down".
+        $r = $this->sync(end($assets))->assertJson(['outcome' => 'refused', 'reason' => 'interactive_ceiling',
+            'message' => "Sync now has reached this PSA's per-minute limit for this vendor; no request was sent."]);
         $this->assertGreaterThan(0, $r->json('retry_after_s'));
+        $this->assertStringNotContainsString('asked us to slow down', $r->json('message'));
+        $this->assertSame('interactive_ceiling', AssetSourceSync::latest('id')->first()->reason);
+        $this->assertNull(Cache::get(SourceSyncPipeline::vendorCooldownKey('autoelevate')), 'no vendor cooldown was started');
 
         Http::assertSentCount(SourceSyncPipeline::AUTOELEVATE_PER_MINUTE);
     }
@@ -459,6 +465,30 @@ class AssetSourcesAutoElevateTest extends TestCase
 
         $this->actingAs($admin)->post(route('settings.integrations.toggle'), ['integration' => 'autoelevate', 'enabled' => '1']);
         $this->assertSame('1', Setting::getValue('autoelevate_enabled'));
+    }
+
+    public function test_a_non_admin_can_neither_see_nor_flip_the_autoelevate_switch(): void
+    {
+        // Like the key, test and mapping controls, the switch is admin-only.
+        $tech = User::factory()->tech()->create();
+        $this->actingAs($tech)->get(route('settings.integrations'))->assertDontSee('id="autoelevate_enabled"', false);
+
+        $this->actingAs($tech)->post(route('settings.integrations.toggle'), ['integration' => 'autoelevate'])->assertForbidden();
+        $this->assertTrue(\App\Support\AutoElevateConfig::isSwitchedOn(), 'still on');
+    }
+
+    public function test_switched_off_unlinked_asset_has_no_rail_attention_count(): void
+    {
+        // OFF means OFF: the panel says no attention count is shown, so the rail shows none.
+        $client = Client::factory()->create(['autoelevate_company_id' => self::COMPANY]);
+        $asset = $this->linkedAsset($client, ['autoelevate_computer_id' => null]);
+        $entry = fn () => collect(AssetSources::rail($asset->refresh()))->firstWhere('source', 'autoelevate');
+        $this->assertSame(1, $entry()['attention'], 'switched on: the link-state item is counted');
+
+        Setting::setValue('autoelevate_enabled', '0');
+        $this->assertSame([AssetSources::STATE_OFF, 0], [$entry()['state'], $entry()['attention']]);
+        $this->assertSame([], AssetSources::attention($asset, 'autoelevate'));
+        $this->assertStringContainsString('no attention count is shown', $this->aePanel($this->page($asset)));
     }
 
     // --- the panel (design-r3 §2.2 AutoElevate row; mockup a2) ------------------------------

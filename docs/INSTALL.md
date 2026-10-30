@@ -1314,7 +1314,7 @@ migrate is skipped; the read-only computers panel on the client page degrades qu
    already mapped, or that is inactive, is not treated as ambiguous and can still auto-map.
    Review what it filled before saving.
 6. Open any mapped client to see its AutoElevate computers panel
-7. **Integration enabled** (setting `autoelevate_enabled`, default `1`; shown once a key is stored) switches AutoElevate off everywhere: the hourly `autoelevate:sync-assets` schedule is not started, the command skips if run by hand, the client panel and the asset page's Sync now make no AutoElevate call. Sync now and the hourly run share a vendor cooldown: after a 429 from either, the other reads nothing until it ends.
+7. **Integration enabled** (setting `autoelevate_enabled`, default `1`; admin-only, shown once a key is stored) switches AutoElevate off everywhere: the hourly `autoelevate:sync-assets` schedule is not started, the command skips if run by hand, the client panel and the asset page's Sync now make no AutoElevate call. Sync now and the hourly run share a vendor cooldown: after a 429 from either, the other reads nothing until it ends.
 
 **Notes:**
 - One client holds at most one company, and mapping is saved clear-then-apply over the

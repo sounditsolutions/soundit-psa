@@ -683,9 +683,10 @@ class IntegrationsController extends Controller
         ]);
 
         // Carbon Connect MCP publishes tools that write at Carbon on grant, so its
-        // switch is admin-only (Jeeves's ruling ctx:14 A, card PEYvh4NL). The other
-        // integrations' switches are unchanged here; parity is a separate ticket.
-        if ($request->input('integration') === 'carbon_mcp' && ! $request->user()?->isAdmin()) {
+        // switch is admin-only (Jeeves's ruling ctx:14 A, card PEYvh4NL). AutoElevate's switch
+        // is admin-only like its key, test and mapping controls. The other integrations'
+        // switches are unchanged here; parity is a separate ticket.
+        if (in_array($request->input('integration'), ['carbon_mcp', 'autoelevate'], true) && ! $request->user()?->isAdmin()) {
             abort(403, 'Administrator access required.');
         }
 

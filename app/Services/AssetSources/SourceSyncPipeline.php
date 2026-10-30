@@ -38,7 +38,7 @@ use Illuminate\Support\Facades\RateLimiter;
  *                          AutoElevate (S2) first refuses, with no request, while the hourly
  *                          autoelevate:sync-assets run holds its withoutOverlapping mutex
  *                          (run_in_progress, M1.10), then past an app-wide ceiling of
- *                          AUTOELEVATE_PER_MINUTE interactive reads (vendor_cooling_down,
+ *                          AUTOELEVATE_PER_MINUTE interactive reads (interactive_ceiling,
  *                          M1.8). It then makes ONE GET /api/v1/computers/{id}, proved
  *                          against the asset client's autoelevate_company_id
  *                          (AutoElevateReadService::computer), and writes only this asset's
@@ -79,12 +79,15 @@ class SourceSyncPipeline
 
     public const ASSET_SOURCE_COOLDOWN_S = 30;
 
-    /** Closed reason vocabulary (design.md "Reply shape and reason vocabulary"), plus no_single_asset_read. */
+    /**
+     * Closed reason vocabulary (design.md "Reply shape and reason vocabulary"), plus no_single_asset_read
+     * and interactive_ceiling (this PSA's own AutoElevate ceiling; no vendor answer is implied).
+     */
     public const REASONS = [
         'ok', 'switched_off', 'not_configured', 'not_linked', 'client_not_mapped',
         'user_throttled', 'recently_synced', 'vendor_cooling_down', 'vendor_429',
         'not_found_at_vendor', 'other_client', 'run_in_progress', 'transport', 'drift',
-        'no_single_asset_read',
+        'no_single_asset_read', 'interactive_ceiling',
     ];
 
     /** The fixed sentence the UI shows for each reason (never "ok" for a refusal). */
@@ -97,6 +100,7 @@ class SourceSyncPipeline
         'user_throttled' => 'You have made too many Sync now requests in the last minute.',
         'recently_synced' => 'Sync now was already tried for this source on this asset moments ago.',
         'vendor_cooling_down' => 'This vendor asked us to slow down; no request was sent.',
+        'interactive_ceiling' => "Sync now has reached this PSA's per-minute limit for this vendor; no request was sent.",
         'vendor_429' => 'The vendor is rate-limiting requests.',
         'not_found_at_vendor' => 'The vendor did not return this device; the link is kept.',
         'other_client' => "The vendor's device belongs to a different client; nothing was written.",
@@ -230,7 +234,8 @@ class SourceSyncPipeline
             }
             // M1.8: the app-wide interactive ceiling, counted only for a request about to be sent.
             if (RateLimiter::tooManyAttempts(self::AUTOELEVATE_CEILING_KEY, self::AUTOELEVATE_PER_MINUTE)) {
-                return self::refused('vendor_cooling_down', max(1, RateLimiter::availableIn(self::AUTOELEVATE_CEILING_KEY)));
+                // This PSA's own limit, not a vendor 429: never reported as vendor_cooling_down.
+                return self::refused('interactive_ceiling', max(1, RateLimiter::availableIn(self::AUTOELEVATE_CEILING_KEY)));
             }
             RateLimiter::hit(self::AUTOELEVATE_CEILING_KEY, 60);
         }
