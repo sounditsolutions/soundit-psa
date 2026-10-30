@@ -4,7 +4,9 @@ namespace App\Services\AssetSources;
 
 use App\Models\Asset;
 use App\Models\AssetSourceSync;
+use App\Models\TacticalActionLog;
 use App\Services\AutoElevate\AutoElevateReadService;
+use App\Services\Tactical\TacticalFieldMap;
 use App\Support\ScreenConnectConfig;
 use App\Support\TacticalConfig;
 use Carbon\CarbonInterface;
@@ -30,10 +32,21 @@ class SourcePanel
     public const NO_SINGLE_ASSET_READ = ['zorus', 'm365', 'servosity'];
 
     /**
-     * Sources whose Sync now read is wired. Empty in S0: no source returns ok yet,
-     * so no Sync now button renders; each source joins with its own slice.
+     * Sources whose Sync now read is wired (SourceSyncPipeline::WIRED). Only these
+     * render a Sync now button; each source joins with its own slice.
      */
-    public const SYNC_NOW_READY = [];
+    public const SYNC_NOW_READY = SourceSyncPipeline::WIRED;
+
+    /** The Sync now button's title and accessible description, per wired source (design-r3 §2.3). */
+    public const SYNC_NOW_DESCRIPTION = [
+        'tactical' => "Reads this computer's record from Tactical. Changes nothing at Tactical.",
+    ];
+
+    /** Open Tactical alerts listed in the panel before the "all N alerts" link (design-r3 §4). */
+    public const ALERTS_SHOWN = 3;
+
+    /** Tactical actions listed under Recent activity (newest first, design-r3 §2.2). */
+    public const RECENT_ACTIONS_SHOWN = 10;
 
     /**
      * Stored device-detail columns per source: [column => human label]. Enum
@@ -62,6 +75,14 @@ class SourcePanel
             'checks_total' => 'Checks total',
             'needs_reboot' => 'Needs reboot',
             'has_patches_pending' => 'Updates pending',
+            // Moved from the Overview Tactical card's details table (design-r3 §4 A).
+            'public_ip' => 'Public IP',
+            'local_ips' => 'Local IPs',
+            'make_model' => 'Make/Model',
+            'cpu' => 'CPU',
+            'ram_gb' => 'RAM (GB)',
+            'disk_summary' => 'Disk',
+            'serial_number' => 'Serial number',
             'synced_at' => 'Synced',
         ],
         'level' => [
@@ -160,6 +181,20 @@ class SourcePanel
             ->limit(5)
             ->get();
 
+        $attention = AssetSources::attention($asset, $source);
+        $moreAlerts = null;
+        if ($source === 'tactical') {
+            // Top 3 open Tactical alerts in the panel; the rest behind "all N alerts" (the marker still counts all).
+            $alerts = array_values(array_filter($attention, fn ($i) => $i['key'] === 'alert'));
+            if (count($alerts) > self::ALERTS_SHOWN) {
+                $moreAlerts = count($alerts);
+                $kept = 0;
+                $attention = array_values(array_filter($attention, function ($i) use (&$kept) {
+                    return $i['key'] !== 'alert' || ++$kept <= self::ALERTS_SHOWN;
+                }));
+            }
+        }
+
         return [
             'source' => $source,
             'label' => AssetSources::label($source),
@@ -168,17 +203,27 @@ class SourcePanel
             'linked' => AssetSources::isLinked($asset, $source),
             'open_in' => $linked ? self::openIn($asset, $source) : null,
             'chips' => self::chips($asset, $source, $state, $syncedAt),
-            'attention' => AssetSources::attention($asset, $source),
+            'attention' => $attention,
+            'all_alerts' => $moreAlerts,
+            // Tactical: the failing-check list is read when the panel is opened (never on render).
+            'checks_live' => $source === 'tactical' && $linked && filled($asset->tacticalAsset?->agent_id),
+            // Local PSA history (no vendor call), so it shows whenever the asset is linked.
+            'activity' => $source === 'tactical' && AssetSources::isLinked($asset, $source) ? self::tacticalActivity($asset) : null,
             // Details only for a linked asset, whatever the state (OFF and not configured included):
             // an unlinked source has no device of its own to describe.
             'details' => AssetSources::isLinked($asset, $source) ? self::details($asset, $source) : [],
             'footer' => self::footer($asset, $source, $state, $syncedAt, $history->first()),
             'history' => $history,
             'sync_now' => $linked && in_array($source, self::SYNC_NOW_READY, true),
+            'sync_now_description' => self::SYNC_NOW_DESCRIPTION[$source] ?? null,
         ];
     }
 
-    /** "Open in" only where a builder exists today; never a greyed or N/A element. */
+    /**
+     * "Open in" only where a builder exists today; never a greyed or N/A element.
+     * Every URL, stored or built, must be absolute http(s) with a host: a
+     * javascript:, data:, scheme-relative or other value renders no link.
+     */
     public static function openIn(Asset $asset, string $source): ?array
     {
         $url = match ($source) {
@@ -188,6 +233,7 @@ class SourcePanel
             'tactical' => TacticalConfig::webUrl() ? rtrim(TacticalConfig::webUrl(), '/') : null,
             default => null,
         };
+        $url = self::httpUrlOrNull($url);
         if ($url === null) {
             return null;
         }
@@ -196,6 +242,98 @@ class SourcePanel
             'url' => $url,
             'label' => $source === 'tactical' ? 'Open Tactical dashboard' : 'Open in '.AssetSources::label($source),
         ];
+    }
+
+    /** The URL itself when its scheme is http or https and it names a host; otherwise null. */
+    public static function httpUrlOrNull(?string $url): ?string
+    {
+        if ($url === null) {
+            return null;
+        }
+        $url = trim($url);
+        $parts = parse_url($url);
+        if (! is_array($parts) || ! isset($parts['scheme'], $parts['host']) || $parts['host'] === '') {
+            return null;
+        }
+
+        return in_array(strtolower($parts['scheme']), ['http', 'https'], true) ? $url : null;
+    }
+
+    /**
+     * Recent Tactical actions (local action log, already redacted at write), newest
+     * first, ticket-linked. No vendor call.
+     *
+     * @return array{total: int, rows: list<array{action: string, actor: string, result_status: string, ticket_id: ?int, when: ?CarbonInterface}>}
+     */
+    private static function tacticalActivity(Asset $asset): array
+    {
+        $rows = TacticalActionLog::where('asset_id', $asset->id)
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->limit(self::RECENT_ACTIONS_SHOWN)
+            ->get()
+            ->map(fn (TacticalActionLog $log) => [
+                'action' => (string) $log->action_key,
+                'actor' => (string) $log->actor_label,
+                'result_status' => (string) $log->result_status,
+                'ticket_id' => $log->ticket_id,
+                'when' => $log->created_at,
+            ])
+            ->all();
+
+        return ['total' => TacticalActionLog::where('asset_id', $asset->id)->count(), 'rows' => $rows];
+    }
+
+    /**
+     * The Tactical health strip after the shared chips (design-r3 §2.2): status, last
+     * user, checks, reboot, updates and open Tactical alerts. Every chip here comes
+     * from tactical_assets (never the shared assets columns) or the PSA's own alerts.
+     *
+     * The checks chip keeps the psa-0pb9m snapshot rules verbatim: a stored count is a
+     * snapshot, which carries no passing evidence, so it can never read "all passing";
+     * unknown is never green; zero checks reads "unmonitored".
+     */
+    private static function tacticalChips(Asset $asset, ?CarbonInterface $syncedAt, bool $off): array
+    {
+        $ta = $asset->tacticalAsset;
+        $kind = $syncedAt ? self::KIND_SNAPSHOT : 'none';
+        $note = $syncedAt ? self::asOf($syncedAt) : 'no sync recorded';
+        $failing = $ta->checks_failing;
+        $total = $ta->checks_total;
+
+        $checks = match (true) {
+            $failing === null => 'checks unknown — health not verified',
+            $total === 0 => 'no checks — unmonitored',
+            TacticalFieldMap::checksCoverage($total, $failing, null) === TacticalFieldMap::COVERAGE_UNVERIFIED => $failing >= $total
+                ? "all checks failing — monitoring unverified ({$failing} of {$total})"
+                : "no check passing — monitoring unverified ({$failing} failing of {$total})",
+            $failing > 0 => "monitoring coverage unknown — {$failing} of {$total} checks failing",
+            default => "{$total} checks — coverage unknown",
+        };
+
+        $status = $ta->status;
+        $statusValue = $status === null ? 'Not reported by Tactical'
+            : (in_array($status, self::ENUMS['status'], true) ? ucfirst($status) : 'Unrecognised: '.$status);
+        $alerts = $asset->activeAlerts->filter(fn ($a) => $a->source?->value === 'tactical')->count();
+        $yesNo = fn (?bool $v, string $yes, string $no) => $v === null ? 'Not reported by Tactical' : ($v ? $yes : $no);
+
+        $chips = [
+            ['label' => 'Agent status', 'value' => $statusValue, 'kind' => $kind, 'note' => $note],
+            ['label' => 'Last user', 'value' => filled($ta->last_user) ? (string) $ta->last_user : 'Not reported by Tactical', 'kind' => $kind, 'note' => $note],
+            ['label' => 'Checks', 'value' => $checks, 'kind' => $kind, 'note' => $note, 'key' => 'checks'],
+            ['label' => 'Reboot', 'value' => $yesNo($ta->needs_reboot, 'Reboot needed', 'Not needed'), 'kind' => $kind, 'note' => $note, 'key' => 'reboot'],
+            ['label' => 'Updates', 'value' => $yesNo($ta->has_patches_pending, 'Updates pending', 'None pending'), 'kind' => $kind, 'note' => $note, 'key' => 'updates'],
+            ['label' => 'Open Tactical alerts', 'value' => (string) $alerts, 'kind' => 'psa', 'note' => 'open in this PSA now', 'key' => 'alerts'],
+        ];
+        if ($off) {
+            foreach ($chips as $i => $chip) {
+                if ($chip['kind'] === self::KIND_SNAPSHOT) {
+                    $chips[$i]['note'] .= '; last known, not updated';
+                }
+            }
+        }
+
+        return $chips;
     }
 
     private static function chips(Asset $asset, string $source, string $state, ?CarbonInterface $syncedAt): array
@@ -255,6 +393,10 @@ class SourcePanel
             }
         }
 
+        if ($source === 'tactical' && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
+            $chips = array_merge($chips, self::tacticalChips($asset, $syncedAt, $off));
+        }
+
         return $chips;
     }
 
@@ -294,6 +436,14 @@ class SourcePanel
     private static function detailRow(Asset $asset, string $source, string $column, string $label, string $vendor, bool $shared): array
     {
         $raw = self::raw($asset, $source, $column);
+        if (is_array($raw)) {
+            $raw = $raw === [] ? null : implode(', ', array_map('strval', $raw));
+        }
+        $note = null;
+        if ($source === 'tactical' && $column === 'os' && $asset->hasTacticalOsConflict()) {
+            // psa-sp30: the conflict flag moved with the Overview details table.
+            $note = 'Device record: '.$asset->os;
+        }
         if ($raw === null || $raw === '') {
             $value = 'Not reported by '.$vendor;
         } elseif ($raw instanceof CarbonInterface) {
@@ -306,7 +456,7 @@ class SourcePanel
             $value = (string) $raw;
         }
 
-        return ['label' => $label, 'column' => $column, 'value' => $value, 'shared' => $shared];
+        return ['label' => $label, 'column' => $column, 'value' => $value, 'shared' => $shared, 'note' => $note];
     }
 
     /** The one-line footer strip (design-r3 §2.3). */

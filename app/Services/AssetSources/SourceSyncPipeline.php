@@ -5,6 +5,7 @@ namespace App\Services\AssetSources;
 use App\Models\Asset;
 use App\Models\AssetSourceSync;
 use App\Models\User;
+use App\Services\Tactical\TacticalDeviceSyncService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\RateLimiter;
 
@@ -18,15 +19,27 @@ use Illuminate\Support\Facades\RateLimiter;
  *   4. per-user limit      6 per user per minute across sources -> user_throttled
  *   5. per asset+source    30 s, app-wide -> recently_synced (+ the first attempt's result)
  *   6. vendor cooldown     read of source-sync:vendor:<source>:cooldown-until -> vendor_cooling_down
- *   7-9. the read + write  NOT BUILT in this slice: no source has its single-asset read
- *                          wired yet, so an attempt that passes 1-6 is refused with
- *                          no_single_asset_read and makes no vendor call
+ *   7-9. the read + write  only for a source in WIRED. Tactical (S1) reads the EXISTING
+ *                          single-agent read, TacticalDeviceSyncService::syncDeviceDetail
+ *                          (getAgent), which writes this asset's tactical_assets row only.
+ *                          A degraded read leaves the snapshot (synced_at included) as it
+ *                          was and is answered failed/transport. Every other source that
+ *                          passes 1-6 is refused with no_single_asset_read and makes no
+ *                          vendor call
  *   10. audit              one append-only asset_source_syncs row per attempt, refusals included
  *
- * No path in this class performs HTTP. No reason is ever "ok" here.
+ * The route also carries throttle:30,1 (keyed per user, prefix source-sync), which answers
+ * 429 before this class runs, so refusals cannot grow the audit table without limit.
  */
 class SourceSyncPipeline
 {
+    /** Sources whose single-asset read is wired; each joins with its own slice. */
+    public const WIRED = ['tactical'];
+
+    public function __construct(
+        private readonly TacticalDeviceSyncService $tacticalSync,
+    ) {}
+
     public const USER_LIMIT_PER_MINUTE = 6;
 
     public const ASSET_SOURCE_COOLDOWN_S = 30;
@@ -118,7 +131,9 @@ class SourceSyncPipeline
         }
 
         // 3. Link (Q-6 B: linked assets only; link/unlink stays with the scheduled sync).
-        if (! AssetSources::isLinked($asset, $source)) {
+        // A Tactical row with no agent id has nothing to read (the old refresh refused it too).
+        if (! AssetSources::isLinked($asset, $source)
+            || ($source === 'tactical' && blank($asset->tacticalAsset?->agent_id))) {
             if ($source === 'autoelevate' && blank($asset->client?->autoelevate_company_id)) {
                 return self::refused('client_not_mapped');
             }
@@ -150,8 +165,10 @@ class SourceSyncPipeline
             return self::refused('vendor_cooling_down', $remaining);
         }
 
-        // 7-9 are not built in this slice: no vendor call is made.
-        $reply = self::refused('no_single_asset_read');
+        // 7-9. The read, for a wired source only; every other source makes no vendor call.
+        $reply = in_array($source, self::WIRED, true)
+            ? $this->read($asset, $source)
+            : self::refused('no_single_asset_read');
         Cache::put($assetKey, [
             'until' => now()->getTimestamp() + self::ASSET_SOURCE_COOLDOWN_S,
             'outcome' => $reply['outcome'],
@@ -159,6 +176,44 @@ class SourceSyncPipeline
         ], self::ASSET_SOURCE_COOLDOWN_S);
 
         return $reply;
+    }
+
+    /** The wired single-asset reads. */
+    private function read(Asset $asset, string $source): array
+    {
+        return match ($source) {
+            'tactical' => $this->readTactical($asset),
+        };
+    }
+
+    /**
+     * Tactical: the existing single-agent detail read (no new vendor read, Q-9 A).
+     * syncDeviceDetail never throws on a vendor failure; it answers degraded and leaves
+     * the snapshot untouched, which is reported as failed/transport (M3.2).
+     */
+    private function readTactical(Asset $asset): array
+    {
+        $ta = $asset->tacticalAsset;
+        $before = $ta->getAttributes();
+        $result = $this->tacticalSync->syncDeviceDetail($asset);
+
+        if (! $result->ok) {
+            return ['outcome' => 'failed', 'reason' => 'transport', 'synced_at' => $ta->synced_at?->toIso8601String(),
+                'changed' => [], 'this_read' => []];
+        }
+
+        $changed = [];
+        foreach ($ta->getAttributes() as $column => $value) {
+            if ($column === 'updated_at') {
+                continue;
+            }
+            if (! array_key_exists($column, $before) || (string) $before[$column] !== (string) $value) {
+                $changed[] = $column;
+            }
+        }
+
+        return ['outcome' => 'ok', 'reason' => 'ok', 'synced_at' => $ta->synced_at?->toIso8601String(),
+            'changed' => $changed, 'this_read' => ['status' => $result->status]];
     }
 
     private static function refused(string $reason, ?int $retryAfter = null): array

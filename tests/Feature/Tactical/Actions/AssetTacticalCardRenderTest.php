@@ -314,7 +314,8 @@ class AssetTacticalCardRenderTest extends TestCase
         $resp->assertOk()
             ->assertSeeText('monitoring coverage unknown')
             ->assertSeeText('1 of 8 checks failing')
-            ->assertSeeText('open Checks for the live per-check result');
+            // Q-8 A: the Checks tab retired; the card points at the Sources tab's Tactical panel.
+            ->assertSeeText('open Sources for the live per-check result');
     }
 
     public function test_partial_failing_with_passing_residue_still_states_coverage_unknown(): void
@@ -393,23 +394,30 @@ class AssetTacticalCardRenderTest extends TestCase
     // ── Page-top device-data tabs serve every RMM-linked asset (psa-ymw8) ───────
     //    The prominent Network/Storage/Software/Patches tabs render for Ninja/Level
     //    AND Tactical assets. A Tactical-only asset routes them to its Tactical data
-    //    (source=tactical) and gets an extra Checks tab. A no-RMM asset still hides
-    //    them. (Reverses #36, which buried Tactical data in a collapsed accordion.)
+    //    (source=tactical). Its Checks tab retired into the Sources tab's Tactical
+    //    panel (Asset Sources S1, Q-8 A). A no-RMM asset still hides them.
+    //    (Reverses #36, which buried Tactical data in a collapsed accordion.)
 
     public function test_tactical_only_asset_shows_the_device_data_tabs_routed_to_tactical(): void
     {
         $user = User::factory()->create();
         $asset = $this->linkedAsset('online'); // Tactical-linked, no ninja_id/level_id
+        // Tactical configured, so its Sources panel (the retired tab's new home) is live.
+        \App\Models\Setting::setValue('tactical_api_url', 'https://tactical.example.test');
+        \App\Models\Setting::setEncrypted('tactical_api_key', 'synthetic-tactical-key');
 
         $resp = $this->actingAs($user)->get(route('assets.show', $asset));
 
         $resp->assertOk()
-            // The same prominent page-top tabs render, plus a Tactical-only Checks tab.
+            // The same prominent page-top tabs render. The Checks tab retired (Q-8 A,
+            // M1T.7): its failing-check list now leads the Sources tab's Tactical panel.
             ->assertSee('data-ajax-section="network"', false)
             ->assertSee('data-ajax-section="storage"', false)
             ->assertSee('data-ajax-section="software"', false)
             ->assertSee('data-ajax-section="patches"', false)
-            ->assertSee('data-ajax-section="checks"', false)
+            ->assertDontSee('data-ajax-section="checks"', false)
+            ->assertDontSee('id="tab-checks"', false)
+            ->assertSee('data-checks-url="'.route('assets.deviceData', ['asset' => $asset, 'section' => 'checks', 'source' => 'tactical']).'"', false)
             // The renderer that backs those tabs for a Tactical-only asset is defined.
             ->assertSee('window.renderTacticalSection', false);
     }

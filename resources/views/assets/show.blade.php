@@ -161,16 +161,9 @@
             <a class="nav-link" data-bs-toggle="tab" href="#tab-patches" data-ajax-section="patches">Patches</a>
         @endif
     </li>
-    {{-- Checks: Tactical-only (Ninja/Level have no "checks" concept). psa-ymw8. --}}
-    @if($asset->tacticalAsset && !$asset->ninja_id && !$asset->level_id)
-    <li class="nav-item">
-        @if(($activeTab ?? '') === 'tickets')
-            <a class="nav-link" href="{{ route('assets.show', $asset) }}#tab-checks">Checks</a>
-        @else
-            <a class="nav-link" data-bs-toggle="tab" href="#tab-checks" data-ajax-section="checks">Checks</a>
-        @endif
-    </li>
-    @endif
+    {{-- The Tactical-only Checks tab retired into the Sources tab's Tactical panel
+         (Asset Sources S1, Q-8 A): the failing-check list leads that panel, for
+         dual-linked assets too. --}}
     @endif
     <li class="nav-item">
         @if(($activeTab ?? '') === 'tickets')
@@ -597,7 +590,7 @@
                                  passing check has been PROVEN — the independent
                                  coverage fact comes first, or "1 of 8 failing" reads
                                  as a normal monitored-but-unhealthy rollup. --}}
-                            <span class="text-warning-emphasis" title="Some checks are failing, and whether any other check actually passes is unknown (the snapshot carries no passing evidence) — open Checks for the live per-check result"><i class="bi bi-question-circle me-1"></i>monitoring coverage unknown — <span class="text-danger fw-semibold">{{ $insight->checksFailing }} of {{ $insight->checksTotal }} checks failing</span>; open Checks for the live per-check result</span>
+                            <span class="text-warning-emphasis" title="Some checks are failing, and whether any other check actually passes is unknown (the snapshot carries no passing evidence) — open Sources for the live per-check result"><i class="bi bi-question-circle me-1"></i>monitoring coverage unknown — <span class="text-danger fw-semibold">{{ $insight->checksFailing }} of {{ $insight->checksTotal }} checks failing</span>; open <a href="#tab-sources/tactical" data-open-sources="tactical">Sources</a> for the live per-check result</span>
                         @elseif($insight->checksFailing > 0)
                             {{-- A known failing count with VERIFIED coverage (an
                                  explicit pass exists — live-derived insight only;
@@ -605,7 +598,7 @@
                                  monitored-but-unhealthy rollup is honest here. --}}
                             <span class="text-danger fw-semibold">{{ $insight->checksFailing }} of {{ $insight->checksTotal }} checks failing</span>
                         @elseif($insight->checksCoverage() === \App\Services\Tactical\TacticalFieldMap::COVERAGE_UNKNOWN)
-                            <span class="text-warning-emphasis" title="Checks exist but whether any passes is unknown (snapshot has no passing count) — re-sync or open the checks panel"><i class="bi bi-question-circle me-1"></i>{{ $insight->checksTotal }} checks — coverage unknown</span>
+                            <span class="text-warning-emphasis" title="Checks exist but whether any passes is unknown (snapshot has no passing count) — re-sync or open Sources"><i class="bi bi-question-circle me-1"></i>{{ $insight->checksTotal }} checks — coverage unknown</span>
                         @elseif($insight->checksKnownClean() && !$insight->stale)
                             <span class="text-success">checks: all {{ $insight->checksTotal }} passing</span>
                         @elseif($insight->checksKnownClean())
@@ -670,106 +663,12 @@
                     </div>
                 </div>
                 <div id="tacticalMaintenanceResult" class="small mb-2" style="display:none;"></div>
-                <table class="table table-borderless table-sm mb-0">
-                    <tbody>
-                        @if($ta->agent_version)
-                        <tr>
-                            <td class="text-muted" style="width:40%">Agent Version</td>
-                            <td>{{ $ta->agent_version }}</td>
-                        </tr>
-                        @endif
-                        @if($ta->last_seen_at)
-                        <tr>
-                            <td class="text-muted">Last Seen</td>
-                            <td>{{ $ta->last_seen_at->diffForHumans() }}</td>
-                        </tr>
-                        @endif
-                        <tr>
-                            <td class="text-muted">Needs Reboot</td>
-                            <td>
-                                @if($ta->needs_reboot)
-                                    <span class="badge bg-warning text-dark"><i class="bi bi-exclamation-triangle me-1"></i>Yes</span>
-                                @else
-                                    <span class="text-success">No</span>
-                                @endif
-                            </td>
-                        </tr>
-                        <tr>
-                            <td class="text-muted">Patches Pending</td>
-                            <td>
-                                @if($ta->has_patches_pending)
-                                    <span class="badge bg-warning text-dark"><i class="bi bi-exclamation-triangle me-1"></i>Yes</span>
-                                @else
-                                    <span class="text-success">No</span>
-                                @endif
-                            </td>
-                        </tr>
-                        @if($ta->os)
-                        <tr>
-                            <td class="text-muted">OS</td>
-                            <td>
-                                {{ $ta->os }}
-                                @if($asset->hasTacticalOsConflict())
-                                    {{-- psa-sp30: mirror the Device Identity conflict flag
-                                         so the disagreement is visible from either card. --}}
-                                    <span class="text-warning-emphasis small d-inline-flex align-items-center ms-1"
-                                          title="Differs from the Device Identity OS. Verify which source is current before trusting either value.">
-                                        <i class="bi bi-exclamation-triangle-fill me-1"></i>Device record: {{ $asset->os }}
-                                    </span>
-                                @endif
-                            </td>
-                        </tr>
-                        @endif
-                        @if($ta->public_ip)
-                        <tr>
-                            <td class="text-muted">Public IP</td>
-                            <td>{{ $ta->public_ip }}</td>
-                        </tr>
-                        @endif
-                        @if(is_array($ta->local_ips) && count($ta->local_ips) > 0)
-                        <tr>
-                            <td class="text-muted">Local IPs</td>
-                            <td>{{ implode(', ', $ta->local_ips) }}</td>
-                        </tr>
-                        @endif
-                        @if($ta->make_model)
-                        <tr>
-                            <td class="text-muted">Make/Model</td>
-                            <td>{{ $ta->make_model }}</td>
-                        </tr>
-                        @endif
-                        @if($ta->cpu)
-                        <tr>
-                            <td class="text-muted">CPU</td>
-                            <td>{{ $ta->cpu }}</td>
-                        </tr>
-                        @endif
-                        @if($ta->ram_gb)
-                        <tr>
-                            <td class="text-muted">RAM</td>
-                            <td>{{ $ta->ram_gb }} GB</td>
-                        </tr>
-                        @endif
-                        @if($ta->disk_summary)
-                        <tr>
-                            <td class="text-muted">Disk</td>
-                            <td>{{ $ta->disk_summary }}</td>
-                        </tr>
-                        @endif
-                        @if($ta->serial_number)
-                        <tr>
-                            <td class="text-muted">Serial Number</td>
-                            <td>{{ $ta->serial_number }}</td>
-                        </tr>
-                        @endif
-                        @if($ta->synced_at)
-                        <tr>
-                            <td class="text-muted">Synced</td>
-                            <td class="text-muted small">{{ $ta->synced_at->diffForHumans() }}</td>
-                        </tr>
-                        @endif
-                    </tbody>
-                </table>
+                {{-- Asset Sources S1 (design-r3 §4 A): the details table moved to the Sources
+                     tab's Tactical panel (Device details); this card keeps its health line,
+                     refresh, maintenance toggle and the dashboard link. --}}
+                <div class="small">
+                    <a href="#tab-sources/tactical" data-open-sources="tactical">Recent actions ({{ $tacticalActionTotal ?? 0 }}) · View in Sources</a>
+                </div>
 
                 {{-- psa-ymw8: the under-card Tactical telemetry accordion
                      (Checks/Patches/Software/Network/Storage) was removed — the
@@ -792,77 +691,8 @@
         </div>
         @endif
 
-        {{-- Recent Tactical actions — ITIL change history (P4 amendment K). NOT a
-             flat activity log: each row ties an endpoint change to the incident it
-             was performed under (ticket link), distinguishes outcomes (succeeded /
-             no-op / error / blocked), caps at 10 newest-first, and renders from the
-             already-redacted action-log rows (no re-leak). Co-located under the
-             Tactical region. --}}
-        @if($asset->tacticalAsset && $tacticalInsight)
-        @php
-            $recentActions = $tacticalInsight->recentActions;
-            $actionTotal = $tacticalActionTotal ?? count($recentActions);
-            // ok→success, offline→warning (no-op), error→danger, rejected/denied/
-            // blocked→secondary. Reuses the statusBadgeClass colour vocabulary.
-            $outcomeBadge = function (string $status): array {
-                return match ($status) {
-                    'ok' => ['bg-success', 'succeeded'],
-                    'offline' => ['bg-warning text-dark', 'no-op (agent unreachable)'],
-                    'outcome_unknown' => ['bg-warning text-dark', 'outcome unknown (may have run)'],
-                    'error' => ['bg-danger', 'error'],
-                    'rejected', 'denied', 'blocked' => ['bg-secondary', $status],
-                    default => ['bg-secondary', $status],
-                };
-            };
-            $actionLabel = function (string $key): string {
-                return \Illuminate\Support\Str::of($key)
-                    ->after('tactical.')
-                    ->replace('_', ' ')
-                    ->title()
-                    ->toString();
-            };
-        @endphp
-        <div class="card shadow-sm card-static mb-3" id="tactical-recent-actions">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-clock-history me-2"></i>Recent Tactical actions</span>
-                @if($actionTotal > count($recentActions))
-                    <span class="badge bg-light text-dark" title="There are more actions than shown">
-                        {{ count($recentActions) }} most recent of {{ $actionTotal }}
-                    </span>
-                @endif
-            </div>
-            <div class="card-body p-0">
-                @if(empty($recentActions))
-                    <div class="text-muted small p-3"><i class="bi bi-info-circle me-1"></i>No recent Tactical actions for this device.</div>
-                @else
-                <ul class="list-group list-group-flush">
-                    @foreach($recentActions as $row)
-                    @php
-                        [$badgeClass, $outcomeText] = $outcomeBadge($row['result_status']);
-                        $when = $row['when'] ? \Illuminate\Support\Carbon::parse($row['when']) : null;
-                    @endphp
-                    <li class="list-group-item py-2 small">
-                        <div class="d-flex justify-content-between align-items-start gap-2">
-                            <div>
-                                <span class="fw-semibold">{{ $actionLabel($row['action']) }}</span>
-                                <span class="text-muted">· {{ $row['actor'] }}</span>
-                                @if(! empty($row['ticket_id']))
-                                    · under
-                                    <a href="{{ route('tickets.show', $row['ticket_id']) }}" class="text-decoration-none">#{{ $row['ticket_id'] }}</a>
-                                @endif
-                                @if($when)
-                                    <span class="text-muted">· <span title="{{ $when->toAppTz()->format('Y-m-d H:i T') }}">{{ $when->diffForHumans() }}</span></span>
-                                @endif
-                            </div>
-                            <span class="badge {{ $badgeClass }} flex-shrink-0">{{ $outcomeText }}</span>
-                        </div>
-                    </li>
-                    @endforeach
-                </ul>
-                @endif
-            </div>
-        </div>
-        @endif
+        {{-- Recent Tactical actions (P4 amendment K) moved to the Sources tab's Tactical
+             panel, Recent activity (Asset Sources S1, design-r3 §4 A). --}}
 
         {{-- Tactical Script Runner + Actions --}}
         {{-- M4: render WHENEVER Tactical-linked. The daily snapshot status is
@@ -1285,7 +1115,7 @@
 
     </div>
 
-    {{-- TABS 2-6 (Network/Storage/Software/Patches/Checks). Panes render for any
+    {{-- TABS 2-5 (Network/Storage/Software/Patches). Panes render for any
          RMM-linked asset; the AJAX handler routes a Tactical-only asset to its
          Tactical data (source=tactical). Same gate as the nav tabs above. psa-ymw8. --}}
     @if($asset->ninja_id || $asset->level_id || $asset->tacticalAsset)
@@ -1308,13 +1138,6 @@
     <div class="tab-pane fade" id="tab-patches">
         <div class="d-flex justify-content-center py-5"><div class="spinner-border text-primary" role="status"></div></div>
     </div>
-
-    {{-- ============= TAB 6: CHECKS (AJAX, Tactical-only) ============= --}}
-    @if($asset->tacticalAsset && !$asset->ninja_id && !$asset->level_id)
-    <div class="tab-pane fade" id="tab-checks">
-        <div class="d-flex justify-content-center py-5"><div class="spinner-border text-primary" role="status"></div></div>
-    </div>
-    @endif
     @endif
 
     {{-- ==================== TAB 6: SECURITY ==================== --}}
