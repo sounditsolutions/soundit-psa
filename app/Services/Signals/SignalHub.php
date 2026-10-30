@@ -24,6 +24,9 @@ class SignalHub
         'last_seen',
         'age_seconds',
         'observed_by',
+        // intake.webform_received / intake.webform_verified (card JyBDeHPz): metadata only.
+        'ticket_id',
+        'review_url',
     ];
 
     public function __construct(

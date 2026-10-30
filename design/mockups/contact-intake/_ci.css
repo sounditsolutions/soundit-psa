@@ -1,0 +1,23 @@
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--psa-colors-canvas); color: var(--psa-colors-ink); font-family: var(--psa-typography-body-font-family); font-size: var(--psa-typography-body-font-size); line-height: var(--psa-typography-body-line-height); }
+main { padding: var(--psa-spacing-lg); max-width: 980px; }
+h1, h2 { font-family: var(--psa-typography-title-font-family); color: var(--psa-colors-navy); margin: 0 0 var(--psa-spacing-md); }
+.card { background: var(--psa-colors-surface); border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-md); overflow: hidden; margin-bottom: var(--psa-spacing-lg); }
+.card-header { background: var(--psa-colors-navy); color: var(--psa-colors-surface); font-family: var(--psa-typography-title-font-family); font-weight: var(--psa-typography-title-font-weight); padding: var(--psa-spacing-sm) var(--psa-spacing-md); }
+.card-body { padding: var(--psa-spacing-md); }
+.muted { color: var(--psa-colors-muted-ink); }
+.small { font-size: var(--psa-typography-label-font-size); }
+.caption { font-family: var(--psa-typography-title-font-family); color: var(--psa-colors-muted-ink); margin: 0 0 var(--psa-spacing-sm); }
+.new { outline: 2px dashed var(--psa-colors-signal-gold); outline-offset: 3px; }
+table { width: 100%; border-collapse: collapse; }
+th { background: var(--psa-colors-navy); color: var(--psa-colors-surface); text-align: left; padding: var(--psa-spacing-xs) var(--psa-spacing-sm); }
+td { border-bottom: 1px solid var(--psa-colors-border); padding: var(--psa-spacing-xs) var(--psa-spacing-sm); }
+.badge { display: inline-block; padding: 0 var(--psa-spacing-sm); border-radius: var(--psa-rounded-sm); background: var(--psa-colors-slate-chrome); color: var(--psa-colors-surface); font-size: var(--psa-typography-label-font-size); }
+dl.actions dt { font-weight: 600; color: var(--psa-colors-navy); margin-top: var(--psa-spacing-sm); }
+dl.actions dd { margin: 0; }
+label { display: block; font-weight: var(--psa-typography-label-font-weight); color: var(--psa-colors-navy); margin: var(--psa-spacing-sm) 0 var(--psa-spacing-xs); }
+select, input, textarea { width: 100%; padding: var(--psa-spacing-xs) var(--psa-spacing-sm); border: 1px solid var(--psa-colors-field-border); border-radius: var(--psa-rounded-sm); font: inherit; background: var(--psa-colors-surface); }
+button { margin-top: var(--psa-spacing-sm); padding: var(--psa-spacing-xs) var(--psa-spacing-md); border-radius: var(--psa-rounded-sm); font: inherit; border: 1px solid var(--psa-colors-navy); background: var(--psa-colors-navy); color: var(--psa-colors-surface); }
+a { color: var(--psa-colors-navy); font-weight: 600; }
+pre.mail { white-space: pre-wrap; font-family: var(--psa-typography-body-font-family); margin: 0; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--psa-spacing-md); }

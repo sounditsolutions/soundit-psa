@@ -748,6 +748,7 @@ class AlertsHubController extends Controller
             $groups[$prefix][] = [
                 'key' => $key,
                 'label' => $definition['label'],
+                'description' => $definition['description'] ?? null,
             ];
         }
 

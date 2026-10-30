@@ -65,7 +65,8 @@ class StaffWorkflowTest extends TestCase
 
     public function test_owner_internal_outbox_is_durable_and_flag_off_preserves_it(): void
     {
-        Bus::fake();
+        // Card JyBDeHPz: the ruled intake.webform_received signal routes for real; every other job stays faked.
+        Bus::fake()->except(\App\Jobs\RouteSignalEvent::class);
         $owner = User::factory()->create(['name' => 'Chet']);
         $row = app(SubmissionProcessor::class)->process($this->accept()->id);
         $this->assertSame($owner->id, Ticket::findOrFail($row->ticket_id)->assignee_id);

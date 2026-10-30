@@ -45,9 +45,14 @@ class McpSink
 
     /**
      * Context keys an asset.watch_fired inbox row carries to its owner (card
-     * K3VEcxtw). Every other type keeps the reference-only payload unchanged.
+     * K3VEcxtw).
      */
     private const ASSET_WATCH_CONTEXT_KEYS = ['watch_id', 'state', 'last_seen', 'age_seconds', 'observed_by'];
+
+    /** Context keys a contact-intake web form row carries (card JyBDeHPz); metadata only. */
+    private const WEBFORM_TYPES = ['intake.webform_received', 'intake.webform_verified'];
+
+    private const WEBFORM_CONTEXT_KEYS = ['ticket_id', 'age_seconds', 'review_url'];
 
     private function payload(SignalEvent $event): array
     {
@@ -64,6 +69,11 @@ class McpSink
         if ($event->type_key === 'asset.watch_fired') {
             $context = is_array($event->context) ? $event->context : [];
             $payload['watch'] = array_intersect_key($context, array_flip(self::ASSET_WATCH_CONTEXT_KEYS));
+        }
+
+        if (in_array($event->type_key, self::WEBFORM_TYPES, true)) {
+            $context = is_array($event->context) ? $event->context : [];
+            $payload += array_intersect_key($context, array_flip(self::WEBFORM_CONTEXT_KEYS));
         }
 
         return $payload;

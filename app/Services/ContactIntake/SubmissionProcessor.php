@@ -106,6 +106,7 @@ final class SubmissionProcessor
                 // the REPEATABLE READ snapshot.
                 'ticket_watermark' => $createsTicket ? (int) ContactSubmission::lockForUpdate()->max('id') : null]);
             IntakeNotifications::record($row, 'processed');
+            IntakeSignals::emitAfterCommit($row->id, IntakeSignals::RECEIVED);
 
             return $row->fresh();
         }, 3);

@@ -164,6 +164,40 @@
             </div>
         </div>
 
+        {{-- Contact intake (card JyBDeHPz; mockup design/mockups/contact-intake/settings-and-alerts.html); admins only --}}
+        @if($contactIntakeEditable)
+        <div class="card card-static shadow-sm mt-4" id="contact-intake">
+            <div class="card-header">
+                <i class="bi bi-envelope-paper me-2"></i>Contact intake
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ route('settings.general.update') }}">
+                    @csrf
+                    <input type="hidden" name="section" value="contact_intake">
+
+                    <div class="mb-3">
+                        <label for="contact_intake_owner_id" class="form-label">Web form alerts go to</label>
+                        <select id="contact_intake_owner_id" name="contact_intake_owner_id" aria-describedby="contact_intake_owner_help"
+                                class="form-select @error('contact_intake_owner_id') is-invalid @enderror">
+                            <option value="">Default (the active staff user named Chet)</option>
+                            @foreach($contactIntakeStaff as $staffUser)
+                                <option value="{{ $staffUser->id }}" @selected((string) old('contact_intake_owner_id', $contactIntakeOwnerId) === (string) $staffUser->id)>{{ $staffUser->name }} ({{ $staffUser->role->value }})</option>
+                            @endforeach
+                        </select>
+                        @error('contact_intake_owner_id')
+                            <div class="invalid-feedback">{{ $message }}</div>
+                        @enderror
+                        <div id="contact_intake_owner_help" class="form-text">New web form tickets are assigned to this person. They also get the alert email for any web form inquiry whose ticket has no assignee. Only active admin and tech staff can be chosen.</div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-check-lg me-1"></i>Save Contact Intake
+                    </button>
+                </form>
+            </div>
+        </div>
+        @endif
+
         {{-- Invoice Numbering --}}
         <div class="card card-static shadow-sm mt-4">
             <div class="card-header">

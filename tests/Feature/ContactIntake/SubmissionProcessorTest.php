@@ -37,7 +37,8 @@ class SubmissionProcessorTest extends TestCase
 
     public function test_later_submission_reuses_the_sole_open_form_ticket(): void
     {
-        Bus::fake();
+        // Card JyBDeHPz: the ruled intake.webform_received signal routes for real; every other job stays faked.
+        Bus::fake()->except(\App\Jobs\RouteSignalEvent::class);
         $processor = app(SubmissionProcessor::class);
         $one = $processor->process($this->accept()->id);
         $two = $processor->process($this->accept()->id);

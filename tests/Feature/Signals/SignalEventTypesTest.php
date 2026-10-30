@@ -20,6 +20,8 @@ class SignalEventTypesTest extends TestCase
             'intake.call_received',
             'intake.email_unresolved',
             'intake.call_transcribed',
+            'intake.webform_received',
+            'intake.webform_verified',
             'agent.flag_attention',
             'operator.message',
             'agent.proposal_held',

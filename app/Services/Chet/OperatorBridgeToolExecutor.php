@@ -520,9 +520,16 @@ class OperatorBridgeToolExecutor
             ];
 
             // asset.watch_fired rows (card K3VEcxtw) carry the observation behind
-            // the fire; other rows are unchanged.
+            // the fire.
             if (isset($payload['watch']) && is_array($payload['watch'])) {
                 $signal['watch'] = $payload['watch'];
+            }
+
+            // intake.webform_* rows (card JyBDeHPz) carry ticket_id, age_seconds and review_url.
+            foreach (['ticket_id', 'age_seconds', 'review_url'] as $key) {
+                if (array_key_exists($key, $payload)) {
+                    $signal[$key] = $payload[$key];
+                }
             }
 
             return $signal;

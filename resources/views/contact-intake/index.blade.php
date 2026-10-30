@@ -3,6 +3,16 @@
 @section('content')
 <h1 class="section-title">Contact intake</h1>
 <p>Unverified claimed-sender inquiries. Matching and replay do not verify identity.</p>
+{{-- Card JyBDeHPz; mockup design/mockups/contact-intake/queue.html --}}
+<div class="card card-static shadow-sm mb-3" data-intake-guide>
+<div class="card-header">How this queue works</div>
+<div class="card-body">
+<p>Every inquiry from the {{ $companyName }} website contact form arrives here first. Until a staff member verifies it, its new ticket or note stays hidden from AI agents, automation and the client portal.</p>
+<p class="mb-0"><strong>Pending:</strong> waiting to be processed. This usually happens within a minute; nothing to do.<br>
+<strong>Processed:</strong> it is now a new ticket, or a note on an existing ticket. Open it, check the sender is genuine, then mark it verified.<br>
+<strong>Quarantined:</strong> it needs a staff decision; the reason is on its review page. Open it and resolve it to a client, approve it as a new prospect, replay it, or keep it on hold.</p>
+</div>
+</div>
 <p>Oldest pending or quarantined: {{ $oldest ? \Illuminate\Support\Carbon::parse($oldest)->toAppTz()->format('Y-m-d H:i T') : 'None' }}</p>
 @foreach($counts as $state => $total)<span class="badge bg-secondary">{{ $state }}: {{ $total }}</span> @endforeach
 @php($rec = $reconciliation)
@@ -15,9 +25,9 @@ Accepted {{ $rec['accepted'] ?? 'unknown (counter row missing)' }}; pending + pr
 @if($rec['processing'] > 0)<br>{{ $rec['processing'] }} row(s) committed in processing; the processor only sets that state inside its own transaction.@endif
 </div>
 @endif
-<table class="table mt-3"><thead class="thead-brand"><tr><th>Receipt</th><th>State</th><th>Ticket</th><th>Received</th></tr></thead><tbody>
+<table class="table mt-3"><thead class="thead-brand"><tr><th>Receipt</th><th>State</th><th>Ticket</th><th>Received</th><th>Next step</th></tr></thead><tbody>
 @foreach($rows as $row)
-<tr><td><a href="{{ route('contact-intake.show', $row->id) }}">{{ $row->receipt }}</a></td><td>{{ $row->state }}</td><td>{{ $row->ticket_id ?? 'None' }}</td><td>{{ $row->created_at->toAppTz()->format('Y-m-d H:i T') }}</td></tr>
+<tr><td><a href="{{ route('contact-intake.show', $row->id) }}">{{ $row->receipt }}</a></td><td>{{ $row->state }}</td><td>{{ $row->ticket_id ?? 'None' }}</td><td>{{ $row->created_at->toAppTz()->format('Y-m-d H:i T') }}</td><td data-next-step>{{ $nextSteps[$row->id] }}</td></tr>
 @endforeach
 </tbody></table>{{ $rows->links() }}
 @endsection

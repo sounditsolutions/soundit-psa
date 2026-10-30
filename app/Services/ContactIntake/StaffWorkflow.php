@@ -37,17 +37,19 @@ final class StaffWorkflow
                     if ($personId) {
                         Person::where('client_id', $client->id)->where('is_active', true)->findOrFail($personId);
                     }
-                    $row->update(['state' => 'pending', 'resolved_client_id' => $client->id,
-                        'resolved_person_id' => $personId, 'approve_new_prospect' => false, 'exception_reason' => null]);
+                    // A staff release restarts the failure count, so the processing_failed alert's
+                    // "failed to process N times" counts only failures since this release (r1 context:2).
+                    $row->forceFill(['state' => 'pending', 'resolved_client_id' => $client->id, 'attempts' => 0,
+                        'resolved_person_id' => $personId, 'approve_new_prospect' => false, 'exception_reason' => null])->save();
                     break;
                 case 'approve_prospect':
                     abort_unless($row->state === 'quarantined', 409);
-                    $row->update(['state' => 'pending', 'approve_new_prospect' => true,
-                        'resolved_client_id' => null, 'resolved_person_id' => null, 'exception_reason' => null]);
+                    $row->forceFill(['state' => 'pending', 'approve_new_prospect' => true, 'attempts' => 0,
+                        'resolved_client_id' => null, 'resolved_person_id' => null, 'exception_reason' => null])->save();
                     break;
                 case 'replay':
                     abort_unless(in_array($row->state, ['pending', 'quarantined'], true), 409);
-                    $row->update(['state' => 'pending', 'exception_reason' => null]);
+                    $row->forceFill(['state' => 'pending', 'exception_reason' => null, 'attempts' => 0])->save();
                     break;
                 case 'verify':
                     abort_unless($row->state === 'processed', 409);
@@ -66,6 +68,7 @@ final class StaffWorkflow
                     if ($ticket->isUnverifiedContactIntake() && ! $ticket->notes()->where('contact_intake_origin', true)
                         ->whereNull('contact_intake_verified_at')->exists()) {
                         $ticket->forceFill(['contact_intake_verified_at' => now()])->saveQuietly();
+                        IntakeSignals::emitAfterCommit($row->id, IntakeSignals::VERIFIED);
                         // Card I3EvQKUV PR 3: a contact-intake ticket gets its contract (and that
                         // contract's SLA) only now that staff verified it.
                         $outcome = app(\App\Services\TicketService::class)->assignContractAtVerification($ticket);

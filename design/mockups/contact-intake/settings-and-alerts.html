@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="../_tokens.css"><link rel="stylesheet" href="_ci.css"><title>Settings General: Contact intake alerts card; Alerts Hub new event types</title></head><body><main>
+<p class="caption">Settings &gt; General (new card)</p>
+<article class="card new" style="max-width:640px"><header class="card-header">Contact intake</header><div class="card-body">
+<label>Web form alerts go to</label>
+<select><option>Default (the active staff user named Chet)</option><option>Alex Example (admin)</option><option>Sam Sample (tech)</option></select>
+<div class="muted small" style="margin-top: var(--psa-spacing-xs)">New web form tickets are assigned to this person. They also get the alert email for any web form inquiry whose ticket has no assignee. Only active admin and tech staff can be chosen.</div>
+<button type="button">Save Contact Intake</button></div></article>
+<p class="caption">Settings &gt; Alerts Hub &gt; route event types (two new types, routable; delivered to any route set to all event types or subscribed to them, unless the route also filters by category, priority or client, which these events don't carry)</p>
+<article class="card new" style="max-width:640px"><div class="card-body">
+<p><code>intake.webform_received</code>: <strong>Web form inquiry received</strong><br><span class="muted small">Sent when a web form inquiry is added to a ticket (new or existing), before anyone verifies it. Carries only the submission id, ticket id, age and review link.</span></p>
+<p><code>intake.webform_verified</code>: <strong>Web form inquiry verified</strong><br><span class="muted small">Sent when a staff member verifies a web form inquiry and its ticket becomes visible to automation.</span></p>
+</div></article>
+</main></body></html>

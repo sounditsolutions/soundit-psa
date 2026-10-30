@@ -1,0 +1,24 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="../_tokens.css"><link rel="stylesheet" href="_ci.css"><title>Review contact inquiry with the what-each-action-does panel</title></head><body><main>
+<p class="caption">/contact-intake/{id} (new: the "What each action does" panel and the reason hint)</p>
+<h1>Review contact inquiry</h1>
+<p><a href="#">Contact intake queue</a></p>
+<p>State: <strong>processed</strong>. Receipt: 8f2c1d7e-0000-4000-8000-000000000017. Reason: None.</p>
+<p>All visitor fields are claimed, not verified. Releasing quarantine or matching a client does not verify identity.</p>
+<p><a href="#">Ticket #1042</a></p>
+<div class="grid">
+<article class="card"><header class="card-header">Staff action</header><div class="card-body">
+<label>Staff action</label><select><option>Mark this submission verified (audited)</option></select>
+<label>Client ID (resolve only)</label><input>
+<label>Person ID (optional; must belong to selected client)</label><input>
+<label>Audit reason / verification evidence</label><textarea rows="3"></textarea>
+<div class="muted small new">Say what you checked, for example "Called the client back on the number in their record". This is saved in the audit log.</div>
+<button type="button">Record staff action</button></div></article>
+<article class="card new"><header class="card-header">What each action does</header><div class="card-body"><dl class="actions">
+<dt>Mark this submission verified</dt><dd>Use when you have confirmed the sender is genuine, for example by contacting them through details already on file. Once every web form inquiry on the ticket is verified, the ticket becomes visible to AI agents, automation and the client portal, and its contract is assigned (or you're asked to choose one). Processed inquiries only.</dd>
+<dt>Resolve exception to selected client</dt><dd>The sender belongs to the client whose ID you enter. The inquiry is processed again under that client. This does not verify it.</dd>
+<dt>Approve prospect for exception</dt><dd>The sender is a new organization. A prospect is created when the inquiry is processed again. This does not verify it.</dd>
+<dt>Quarantine pending item</dt><dd>Holds a pending inquiry so nothing is created until you resolve or approve it.</dd>
+<dt>Replay</dt><dd>Processes the inquiry again, for example after a failure. This does not verify it.</dd>
+</dl></div></article>
+</div>
+</main></body></html>

@@ -222,8 +222,9 @@ class IntakeR2CoreTest extends TestCase
         $this->assertNotNull($sentAt());
         [$to, $subject, $body] = $calls[1];
         $this->assertSame($owner->email, $to);
-        $this->assertStringContainsString('quarantined', $subject);
-        $this->assertStringContainsString('quarantined', $body);
+        // Card JyBDeHPz: the plain-English quarantined alert replaced the two-line event email.
+        $this->assertSame('Web form inquiry needs a client match', $subject);
+        $this->assertStringContainsString('could not be matched to a client automatically', $body);
         $this->assertStringContainsString(route('contact-intake.show', $row->id), $body);
         $this->assertStringNotContainsString('SYNTHETIC_UNTRUSTED_TEXT', $subject.$body);
         $this->assertSame(0, $drain());
