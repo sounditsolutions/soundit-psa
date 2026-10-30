@@ -730,10 +730,15 @@ class ControlDOnboardPlanTest extends TestCase
     /** The code never appears in script arguments, audit rows, logs, the proposal, the result or the run. */
     public function test_the_code_is_absent_from_args_audit_logs_proposal_and_result(): void
     {
+        $this->travelTo(now()->startOfSecond());
         $logs = $this->captureLogs();
         $f = $this->fixture();
         $staged = $this->stage($f['client'], $f['ticket'], 'all');
         $this->controlD($this->orgAndCodeResponses());
+        // #6605 pin: cross a real second boundary between building the mocked read-back
+        // (ts_exp from now()) and approval. Without the frozen clock above this goes red
+        // deterministically ('executed_with_fault'); with it, now() cannot move.
+        time_sleep_until(floor(microtime(true)) + 1.05);
         $result = $this->approve($staged['run_id']);
         $this->assertSame('executed', $result->status, (string) $result->message);
         // Positive controls: the code IS what was written to the field, and the logger is captured.
