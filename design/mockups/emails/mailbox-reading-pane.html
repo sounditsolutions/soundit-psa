@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Support mailbox: reading pane and toolbar</title>
+<link rel="stylesheet" href="../_tokens.css"><link rel="stylesheet" href="_mb.css"></head>
+<body><main><p class="caption">Emails &gt; Inbox with a message open. Proposed: reading pane on the right, actions in one toolbar.</p>
+<div class="shell pane"><nav class="rail" aria-label="Mail folders"><button class="compose" type="button">Compose</button>
+<a href="#" class="on" aria-current="page"><span>Inbox</span><span class="cnt hot">7</span></a>
+<a href="#" class=""><span>Filed</span><span class="cnt">1,284</span></a>
+<a href="#" class=""><span>Archive</span><span class="cnt">412</span></a>
+<a href="#" class=""><span>Sent</span><span class="cnt">2,031</span></a>
+<a href="#" class=""><span>All mail</span><span class="cnt">3,734</span></a>
+<div class="sep"></div><a href="#"><span>Inbox: no client</span><span class="cnt">2</span></a>
+<p class="note">Inbox: no client = Inbox messages with no client set. All names, counts and messages here are sample data; folder names are Charlie's call.</p></nav>
+<section class="list"><div class="head"><span class="grow">Inbox</span><input type="search" placeholder="Search mail"></div><div class="row unread cur"><input type="checkbox" aria-label="Select"><div><div class="from">Alex Example</div><div class="subj">Printer on 2nd floor offline again</div><div class="snip">The front desk printer shows offline since this morning; we ...</div><div class="chips"><span class="chip">Example Dental Co.</span></div></div><div class="when">09:42</div></div>
+<div class="row unread"><input type="checkbox" aria-label="Select"><div><div class="from">Sam Sample</div><div class="subj">Re: New hire laptop for Monday</div><div class="snip">Thanks, can we also add the shared calendar for the new star...</div><div class="chips"><span class="chip">Sample Logistics LLC</span></div></div><div class="when">09:17</div></div>
+<div class="row"><input type="checkbox" aria-label="Select"><div><div class="from">billing@vendor.example</div><div class="subj">Your invoice INV-0000 is ready</div><div class="snip">This is an automated notice. Your monthly statement is avail...</div><div class="chips"><span class="chip none">No client</span></div></div><div class="when">08:55</div></div>
+<div class="row unread"><input type="checkbox" aria-label="Select"><div><div class="from">Jordan Test</div><div class="subj">Can't log in to email on phone</div><div class="snip">After the password change yesterday the phone keeps asking f...</div><div class="chips"><span class="chip">Example Dental Co.</span></div></div><div class="when">08:31</div></div>
+<div class="row"><input type="checkbox" aria-label="Select"><div><div class="from">Riley Placeholder</div><div class="subj">VPN slow from home</div><div class="snip">Since Tuesday the VPN drops every 20 minutes or so. Not urge...</div><div class="chips"><span class="chip">Test Accounting Group</span></div></div><div class="when">Yesterday</div></div>
+<div class="row"><input type="checkbox" aria-label="Select"><div><div class="from">Casey Demo</div><div class="subj">Quote request: 3 monitors</div><div class="snip">Could you send a quote for three 27-inch monitors and arms f...</div><div class="chips"><span class="chip">Sample Logistics LLC</span></div></div><div class="when">Yesterday</div></div>
+<div class="row"><input type="checkbox" aria-label="Select"><div><div class="from">noreply@alerts.example</div><div class="subj">Weekly report</div><div class="snip">Your weekly summary is attached. No action needed....</div><div class="chips"><span class="chip none">No client</span></div></div><div class="when">Mon</div></div></section>
+<section class="reader">
+<div class="bar"><button class="primary" type="button">Create ticket</button><button type="button">Add to ticket</button><button type="button">Reply</button><button type="button">Archive</button><button type="button">Mark unread</button></div>
+<div class="meta"><h2>Printer on 2nd floor offline again</h2>
+<div><strong>Alex Example</strong> &lt;alex@example.test&gt; to helpdesk@example.test</div>
+<div class="chips"><span class="chip">Example Dental Co.</span><span class="chip">Contact: Alex Example</span><span class="cnt">Today 09:42</span></div></div>
+<div class="picker"><input value="printer" aria-label="Find a ticket"><div><strong>T-10421</strong> Printer offline (Example Dental Co.) - open, 2 days</div><div><strong>T-10415</strong> New toner cartridge (Example Dental Co.) - open, 5 days</div></div>
+<div class="body"><p>Hi,</p><p>The front desk printer shows offline since this morning; we restarted it twice and it still will not print. Can someone take a look?</p><p>Thanks,<br>Alex</p></div>
+<div class="qa">Add to ticket opens this picker, which lists open tickets only: the email's client first, then all others. It links the email exactly as the existing Link to ticket action does today.</div>
+</section></div>
+</main></body></html>

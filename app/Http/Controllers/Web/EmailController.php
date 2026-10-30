@@ -34,21 +34,22 @@ class EmailController extends Controller
     {
         $filters = $request->only(['search', 'is_read', 'date_from', 'date_to', 'client_id', 'no_client', 'preset', 'direction']);
 
-        // Default to needs_attention preset when no query params
+        // Default to the Inbox folder when no query params
         if (! $request->hasAny(['preset', 'search', 'is_read', 'date_from', 'date_to', 'client_id', 'no_client', 'direction'])) {
-            $filters['preset'] = 'needs_attention';
+            $filters['preset'] = 'inbox';
         }
 
         $emails = $this->emailService->getEmailList($filters);
-
-        $needsAttentionCount = Email::needsAttention()->count();
-        $noClientCount = Email::inbound()->noClient()->notDismissed()->noTicket()->count();
+        $folderCounts = $this->emailService->folderCounts();
 
         return view('emails.index', [
             'emails' => $emails,
             'filters' => $filters,
-            'needsAttentionCount' => $needsAttentionCount,
-            'noClientCount' => $noClientCount,
+            'folder' => $this->emailService->resolveFolder($filters['preset'] ?? null),
+            'folderCounts' => $folderCounts,
+            'defaultWindow' => $this->emailService->appliesDefaultWindow($filters),
+            'needsAttentionCount' => $folderCounts['inbox'],
+            'noClientCount' => $folderCounts['no_client'],
             // active(), not operational(): email intake filters must surface prospect conversations.
             'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
         ]);
@@ -57,25 +58,27 @@ class EmailController extends Controller
     public function dismiss(Email $email)
     {
         $this->emailService->dismissEmail($email, auth()->id());
+        $this->emailService->forgetFolderCounts();
 
         if (request()->expectsJson()) {
             return response()->json(['success' => true]);
         }
 
-        return redirect()->back()->with('success', 'Email dismissed.');
+        return redirect()->back()->with('success', 'Email archived.');
     }
 
     public function undismiss(Email $email)
     {
         $this->emailService->undismissEmail($email);
+        $this->emailService->forgetFolderCounts();
 
-        return redirect()->back()->with('success', 'Email restored to attention queue.');
+        return redirect()->back()->with('success', 'Email moved out of Archive.');
     }
 
     public function emailBulkAction(Request $request)
     {
         $request->validate([
-            'action' => ['required', 'string', 'in:dismiss,link_ticket'],
+            'action' => ['required', 'string', 'in:dismiss,link_ticket,mark_read,mark_unread'],
             'email_ids' => ['required', 'array', 'min:1'],
             'email_ids.*' => ['required', 'integer', 'exists:emails,id'],
             'ticket_id' => ['required_if:action,link_ticket', 'nullable', 'integer', 'exists:tickets,id'],
@@ -86,24 +89,41 @@ class EmailController extends Controller
 
         if ($action === 'dismiss') {
             $affected = $this->emailService->bulkDismiss($emailIds, auth()->id());
-            $message = "{$affected} email(s) dismissed.";
+            $message = "{$affected} email(s) archived.";
+        } elseif ($action === 'mark_read' || $action === 'mark_unread') {
+            $affected = $this->emailService->bulkSetRead($emailIds, $action === 'mark_read');
+            $message = "{$affected} email(s) marked ".($action === 'mark_read' ? 'read.' : 'unread.');
         } else {
             $affected = $this->emailService->bulkLinkToTicket($emailIds, (int) $request->input('ticket_id'));
             $ticket = Ticket::find($request->input('ticket_id'));
             $message = "{$affected} email(s) linked to {$ticket->display_id}.";
         }
 
-        return redirect()->route('emails.index')
+        $this->emailService->forgetFolderCounts();
+
+        // Return to the folder the action was taken from.
+        $back = $this->paneReturnTo($request);
+
+        return ($back ? redirect($back) : redirect()->route('emails.index'))
             ->with('success', $message);
     }
 
-    public function show(Email $email)
+    public function show(Request $request, Email $email)
     {
         $email->load(['client', 'person', 'user', 'ticket', 'ticket.categoryNode.parent.parent']);
 
         // Mark as read
         if (! $email->is_read) {
             $email->update(['is_read' => true]);
+        }
+
+        // Reading pane (/emails at desktop width): the same email, the same read
+        // marking above, rendered as a fragment without the layout.
+        if ($request->boolean('pane')) {
+            return view('emails._pane', [
+                'email' => $email,
+                'returnTo' => $this->paneReturnTo($request) ?? route('emails.index', [], false),
+            ]);
         }
 
         // Fetch open local tickets for this client (for manual link list)
@@ -144,6 +164,17 @@ class EmailController extends Controller
             'clients' => $clients,
             'suggestedClientId' => $suggestedClientId,
         ]);
+    }
+
+    /**
+     * The /emails folder URL an action returns to. Only a relative /emails path
+     * is accepted, so return_to can never send the browser off-site.
+     */
+    private function paneReturnTo(Request $request): ?string
+    {
+        $back = (string) $request->input('return_to', '');
+
+        return preg_match('#^/emails(?:[/?]|$)#', $back) === 1 ? $back : null;
     }
 
     public function reply(Request $request, Email $email)
@@ -245,12 +276,16 @@ class EmailController extends Controller
 
         $ticket = Ticket::findOrFail($validated['ticket_id']);
         $this->emailService->linkEmailToTicket($email, $ticket);
+        $this->emailService->forgetFolderCounts();
 
-        return redirect()->route('emails.show', $email)
+        // From the reading pane: back to the folder; otherwise the show page as before.
+        $back = $this->paneReturnTo($request);
+
+        return ($back ? redirect($back) : redirect()->route('emails.show', $email))
             ->with('success', 'Email linked to ticket '.$ticket->display_id.'.');
     }
 
-    public function unlinkTicket(Email $email)
+    public function unlinkTicket(Request $request, Email $email)
     {
         if ($email->ticket_id === null) {
             return redirect()->route('emails.show', $email)
@@ -258,8 +293,11 @@ class EmailController extends Controller
         }
 
         $email->update(['ticket_id' => null]);
+        $this->emailService->forgetFolderCounts();
 
-        return redirect()->route('emails.show', $email)
+        $back = $this->paneReturnTo($request);
+
+        return ($back ? redirect($back) : redirect()->route('emails.show', $email))
             ->with('success', 'Email unlinked from ticket.');
     }
 
@@ -426,6 +464,7 @@ class EmailController extends Controller
             Email::where('from_address', $email->from_address)
                 ->whereNull('person_id')
                 ->update(['person_id' => $person->id, 'client_id' => $clientId]);
+            DB::afterCommit(fn () => $this->emailService->forgetFolderCounts());
 
             return $person;
         });
@@ -466,6 +505,7 @@ class EmailController extends Controller
                     'person_id' => $person->id,
                     'client_id' => $person->client_id,
                 ]);
+            DB::afterCommit(fn () => $this->emailService->forgetFolderCounts());
 
             // Optionally save sender address as an additional email for future matching
             if ($request->boolean('save_email')) {
