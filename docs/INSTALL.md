@@ -15,7 +15,7 @@ Deploy your own instance of this PSA on a fresh VPS. This guide covers everythin
 | `signing.token_ttl_days` | Defaults 14 (`SIGNING_TOKEN_TTL_DAYS=14`). |
 | Font cache | Renderer creates `storage/app/private/signing-fonts` with mode 0700; application user needs write access. Default DejaVu Sans ships with dompdf. |
 | PDF storage | Private local disk under `signing/`; no public filesystem mapping. |
-| Rollback | Before first use, `php artisan migrate:rollback --path=database/migrations/2026_10_28_000001_add_accepted_snapshot_to_signable_documents.php` removes the slice 2b `accepted_snapshot_id` column. Before first use only, revert the signing commits and roll back the three new migrations. After use, preserve signed evidence and obtain an explicit data-retention/rollback decision; do not drop populated tables. |
+| Rollback | Before first use, find the batch number of `2026_10_28_000001_add_accepted_snapshot_to_signable_documents` in `php artisan migrate:status`. Then `php artisan migrate:rollback --path=database/migrations/2026_10_28_000001_add_accepted_snapshot_to_signable_documents.php --batch=<that batch>` removes the slice 2b `accepted_snapshot_id` column. Without `--batch`, the command only looks at the newest batch, so it removes nothing once a later deploy has run migrations. Before first use only, revert the signing commits and roll back the three new migrations. After use, preserve signed evidence and obtain an explicit data-retention/rollback decision; do not drop populated tables. |
 
 Agreement terms in this slice are rate cards, not calculated bills. Inherited SKU volume pricing is excluded and deferred to a later slice: Generate refuses a backup-storage line that has no tiers of its own while its SKU carries volume tiers.
 
