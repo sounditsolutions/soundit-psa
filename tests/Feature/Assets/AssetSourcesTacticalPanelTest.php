@@ -174,9 +174,9 @@ class AssetSourcesTacticalPanelTest extends TestCase
         $url = html_entity_decode($m[1]);
         $this->assertSame(route('assets.deviceData', ['asset' => $asset, 'section' => 'checks', 'source' => 'tactical']), $url);
 
-        $secret = 'db password = '.'Synth'.'Pass'.'w0rd!';
+        $credentialLine = 'db password = '.'Synth'.'Pass'.'w0rd!';
         $this->bindTactical([new PsrResponse(200, [], json_encode([
-            ['name' => 'Backup Job', 'check_result' => ['status' => 'failing', 'retcode' => 2, 'stdout' => $secret.' '.str_repeat('x', 500)]],
+            ['name' => 'Backup Job', 'check_result' => ['status' => 'failing', 'retcode' => 2, 'stdout' => $credentialLine.' '.str_repeat('x', 500)]],
         ]))]);
         $r = $this->actingAs(User::factory()->tech()->create())->getJson($url)->assertOk();
 

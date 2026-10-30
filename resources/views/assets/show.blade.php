@@ -3391,11 +3391,16 @@ function renderPatches(data) {
         })
         .then(function(r) { return r.json().then(function(d) { d._status = r.status; return d; }); })
         .then(function(data) {
-            if (data.error) {
+            // A pipeline refusal carries {error}. The route's request throttle answers 429
+            // before the controller runs, with Laravel's {message} only. Neither is a refresh.
+            if (data.error || data._status >= 400) {
                 if (resultEl) {
                     resultEl.style.display = '';
                     resultEl.className = 'small mb-2 text-danger';
-                    resultEl.textContent = data.error;
+                    resultEl.textContent = data.error
+                        || (data._status === 429
+                            ? 'Too many refresh requests in the last minute; nothing was read. Try again shortly.'
+                            : 'Refresh failed.');
                 }
                 return;
             }
