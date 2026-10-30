@@ -203,6 +203,45 @@ class IntakeAlertsTest extends TestCase
         $this->assertNoVisitorText($subject.$body, 'the processing_failed email');
     }
 
+    /** r1 context:2: Replay restarts the count, so a second processing_failed alert again means 5 failures. */
+    public function test_replayed_row_fails_five_more_times_before_a_second_processing_failed_alert(): void
+    {
+        $owner = $this->owner();
+        $row = $this->accept();
+        DB::table('contact_intake_identities')->where('identity_hash', DB::table('contact_submissions')
+            ->where('id', $row->id)->value('identity_hash'))->delete();
+        for ($attempt = 1; $attempt <= 5; $attempt++) {
+            $this->artisan('contact-intake:drain');
+        }
+        $this->assertSame('processing_failed', $row->fresh()->exception_reason);
+        app(StaffWorkflow::class)->act($row->id, $owner, 'replay', 'Synthetic replay after a failure');
+        $this->assertSame(0, (int) $row->fresh()->attempts);
+        for ($attempt = 1; $attempt <= 4; $attempt++) {
+            $this->sent = [];
+            $this->artisan('contact-intake:drain');
+            $this->assertSame('pending', $row->fresh()->state, "attempt {$attempt} after the replay leaves the row pending");
+            $this->assertSame([], $this->sent, "attempt {$attempt} after the replay sends no alert");
+        }
+        $this->sent = [];
+        $this->artisan('contact-intake:drain');
+        $this->assertSame('quarantined', $row->fresh()->state);
+        $this->assertCount(1, $this->sent);
+        $this->assertSame('Web form inquiry could not be processed', $this->sent[0][1]);
+    }
+
+    /** r1 context:2: every staff release restarts the count, including increments from successful claims. */
+    public function test_staff_release_restarts_the_failure_count(): void
+    {
+        $staff = User::factory()->admin()->create(['is_active' => true]);
+        $client = Client::factory()->create(['is_active' => true]);
+        foreach (['replay' => null, 'resolve_client' => $client->id, 'approve_prospect' => null] as $action => $clientId) {
+            $row = $this->accept();
+            $row->forceFill(['state' => 'quarantined', 'exception_reason' => 'company_only', 'attempts' => 4])->save();
+            app(StaffWorkflow::class)->act($row->id, $staff, $action, 'Synthetic release', $clientId);
+            $this->assertSame(0, (int) $row->fresh()->attempts, "{$action} restarts the failure count");
+        }
+    }
+
     /** An enabled MCP route subscribed to both web form types, delivering to the 'chet' inbox. */
     private function webformRoute(): SignalDestination
     {
@@ -342,6 +381,21 @@ class IntakeAlertsTest extends TestCase
         }
     }
 
+    /** r1 context:1: only an admin can see or set the contact intake owner. */
+    public function test_owner_picker_is_admin_only(): void
+    {
+        $tech = User::factory()->tech()->create(['is_active' => true, 'name' => 'Synthetic Tech']);
+        Setting::setValue('contact_intake_owner_id', '');
+        $users = ['tech' => $tech, 'billing' => User::factory()->billing()->create(['is_active' => true]),
+            'contractor' => User::factory()->contractor()->create(['is_active' => true])];
+        foreach ($users as $what => $user) {
+            $this->actingAs($user);
+            $this->saveOwner($tech->id)->assertForbidden();
+            $this->assertSame('', Setting::getValue('contact_intake_owner_id'), "{$what} cannot set the owner");
+            $this->get(route('settings.general'))->assertDontSee('Web form alerts go to')->assertDontSee('Synthetic Tech (tech)');
+        }
+    }
+
     public function test_settings_card_lists_only_active_admin_and_tech_with_the_approved_help(): void
     {
         $admin = User::factory()->admin()->create(['is_active' => true, 'name' => 'Synthetic Admin']);
@@ -370,7 +424,10 @@ class IntakeAlertsTest extends TestCase
         $held->update(['state' => 'quarantined', 'exception_reason' => 'staff_hold']);
         $page = $this->actingAs($staff)->get(route('contact-intake.index'))->assertOk();
         $page->assertSee('How this queue works')
-            ->assertSee('Every inquiry from the Northwind MSP website contact form arrives here first. Its ticket stays hidden from AI agents, automation and the client portal until a staff member verifies it.')
+            ->assertSee('Every inquiry from the Northwind MSP website contact form arrives here first.')
+            ->assertSee('Open it, check the sender is genuine, then mark it verified.')
+            // r1 diff:2: both claims are false for a follow-up note on an existing, possibly visible, ticket.
+            ->assertDontSee('stays hidden')->assertDontSee('a ticket was created')
             ->assertSee('waiting to be processed. This usually happens within a minute; nothing to do.')
             ->assertSee('it needs a staff decision; the reason is on its review page. Open it and resolve it to a client, approve it as a new prospect, replay it, or keep it on hold.')
             ->assertSee('Next step');

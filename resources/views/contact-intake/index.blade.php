@@ -7,9 +7,9 @@
 <div class="card card-static shadow-sm mb-3" data-intake-guide>
 <div class="card-header">How this queue works</div>
 <div class="card-body">
-<p>Every inquiry from the {{ $companyName }} website contact form arrives here first. Its ticket stays hidden from AI agents, automation and the client portal until a staff member verifies it.</p>
+<p>Every inquiry from the {{ $companyName }} website contact form arrives here first.</p>
 <p class="mb-0"><strong>Pending:</strong> waiting to be processed. This usually happens within a minute; nothing to do.<br>
-<strong>Processed:</strong> a ticket was created. Open it, check the sender is genuine, then mark it verified.<br>
+<strong>Processed:</strong> Open it, check the sender is genuine, then mark it verified.<br>
 <strong>Quarantined:</strong> it needs a staff decision; the reason is on its review page. Open it and resolve it to a client, approve it as a new prospect, replay it, or keep it on hold.</p>
 </div>
 </div>

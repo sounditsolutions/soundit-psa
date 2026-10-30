@@ -40,7 +40,9 @@ class GeneralSettingsController extends Controller
             'workstationTypes' => $workstationTypes,
             'serverTypes' => $serverTypes,
             'contactIntakeOwnerId' => (string) Setting::getValue('contact_intake_owner_id', ''),
-            'contactIntakeStaff' => self::contactIntakeStaff()->get(['id', 'name', 'role']),
+            'contactIntakeEditable' => self::canEditContactIntake(request()->user()),
+            'contactIntakeStaff' => self::canEditContactIntake(request()->user())
+                ? self::contactIntakeStaff()->get(['id', 'name', 'role']) : collect(),
         ]);
     }
 
@@ -83,6 +85,12 @@ class GeneralSettingsController extends Controller
             ->with('success', 'Branding saved.');
     }
 
+    /** The contact intake owner routes every new web form ticket and fallback alert: admins only (r1 context:1). */
+    private static function canEditContactIntake(?User $user): bool
+    {
+        return $user?->role === UserRole::Admin;
+    }
+
     /** Active Admin and Tech staff: the same set StaffWorkflow::authorize admits (card JyBDeHPz). */
     private static function contactIntakeStaff(): \Illuminate\Database\Eloquent\Builder
     {
@@ -97,6 +105,7 @@ class GeneralSettingsController extends Controller
      */
     private function updateContactIntake(Request $request)
     {
+        abort_unless(self::canEditContactIntake($request->user()), 403);
         $validated = $request->validate([
             'contact_intake_owner_id' => ['nullable', 'integer',
                 Rule::exists('users', 'id')->where('is_active', true)

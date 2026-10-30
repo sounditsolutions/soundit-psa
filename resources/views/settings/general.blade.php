@@ -164,7 +164,8 @@
             </div>
         </div>
 
-        {{-- Contact intake (card JyBDeHPz; mockup design/mockups/contact-intake/settings-and-alerts.html) --}}
+        {{-- Contact intake (card JyBDeHPz; mockup design/mockups/contact-intake/settings-and-alerts.html); admins only --}}
+        @if($contactIntakeEditable)
         <div class="card card-static shadow-sm mt-4" id="contact-intake">
             <div class="card-header">
                 <i class="bi bi-envelope-paper me-2"></i>Contact intake
@@ -195,6 +196,7 @@
                 </form>
             </div>
         </div>
+        @endif
 
         {{-- Invoice Numbering --}}
         <div class="card card-static shadow-sm mt-4">
