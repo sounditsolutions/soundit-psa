@@ -12,7 +12,7 @@ use Illuminate\Support\Facades\Cache;
 
 /**
  * Read-only AutoElevate panel on the client page (stage 2). Returns the panel partial for
- * one client in exactly one of four states, each named explicitly so a blank table can
+ * one client in exactly one of five states, each named explicitly so a blank table can
  * never be mistaken for "no machines" (C-56):
  *
  *   switched_off — the integration is switched off in Settings (autoelevate_enabled=0, Q-5 A);

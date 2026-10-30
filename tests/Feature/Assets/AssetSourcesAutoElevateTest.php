@@ -129,7 +129,9 @@ class AssetSourcesAutoElevateTest extends TestCase
         Http::assertSent(fn (HttpRequest $req) => $req->method() === 'GET'
             && $req->url() === self::BASE.'/api/v1/computers/'.$asset->autoelevate_computer_id
             && $req->hasHeader('X-Acknowledgment', 'i-understand-this-is-beta-and-may-change'));
+        $linkBefore = $asset->autoelevate_computer_id;
         $asset->refresh();
+        $this->assertSame($linkBefore, $asset->autoelevate_computer_id, 'Sync now never writes the link id');
         $this->assertSame('audit', $asset->autoelevate_elevation_mode);
         $this->assertSame('2024-05-28T12:40:00+00:00', $asset->autoelevate_last_checked_in_at->toIso8601String());
         $this->assertTrue($asset->autoelevate_synced_at->greaterThan(now()->subMinute()));

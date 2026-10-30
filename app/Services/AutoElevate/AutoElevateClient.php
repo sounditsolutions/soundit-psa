@@ -11,7 +11,8 @@ use Illuminate\Support\Sleep;
  * Read-only Partner API client. Stage 1: a status-only connection check. Stage 2 adds
  * `getPage()`, a single validated list-page read used by AutoElevateReadService, which
  * retries a vendor 429 a bounded number of times before failing, outside web requests only
- * (see MAX_ATTEMPTS).
+ * (see MAX_ATTEMPTS). Asset Sources S2 adds `getOne()`, one item read in exactly one request
+ * (GET /api/v1/computers/{id}, documented in the same OpenAPI, re-read 2026-10-30).
  * Never retains company data or vendor errors; never writes at the vendor.
  *
  * Vendor contract: AutoElevate Partner API (Beta) 1.0.0 OpenAPI

@@ -1,4 +1,4 @@
-{{-- AutoElevate computers panel (stage 2, read-only). Exactly one of four explicit states;
+{{-- AutoElevate computers panel (stage 2, read-only). Exactly one of five explicit states;
      the empty states each say WHY, so a blank table never reads as "no machines" (C-56).
      Timestamps arrive as epoch milliseconds and are rendered in the app display timezone
      (C-14 toAppTz; Pacific in production) with the zone abbreviation shown. --}}
