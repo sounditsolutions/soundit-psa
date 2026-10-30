@@ -14,7 +14,7 @@
         'filed' => 'Inbound mail linked to a ticket. Opening a message offers Open ticket and Unlink; the ticket is where work happens.',
         'archive' => 'Archived mail. Unarchive puts a message back where it was.',
         'sent' => 'Mail sent from the PSA.',
-        'all' => 'Every message, inbound and sent, in the date range set.',
+        'all' => 'Every message, inbound and sent. Without a search or date, the last 7 days.',
         'inbound' => 'Every inbound message.',
     ];
     $returnTo = '/' . ltrim(request()->getRequestUri(), '/');
