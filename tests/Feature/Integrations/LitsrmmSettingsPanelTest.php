@@ -167,10 +167,11 @@ class LitsrmmSettingsPanelTest extends TestCase
      *
      * A copy whose bytes do not contain the line passes the raw and one-<p>
      * copy checks if it sits outside any <p>, or in a <p> of its own whose text
-     * still differs once normalised. A copy with Sync<!-- -->every outside
-     * any <p> is refused by the count with comments replaced by a space.
+     * still differs once normalised.
      * Joining the words with a non-breaking space, or putting a <br> in place
-     * of the space between two words, passes all three copy checks. Put inside
+     * of the space between two words, passes all three copy checks.
+     * A copy with Sync<!-- -->every outside any <p> is refused by the count
+     * with comments replaced by a space. Put inside
      * the line's own <p> before or after the line, as text or as an element
      * libxml leaves inside that <p>, the same copy changes the <p>'s text, so
      * no <p> equals the line and the one-<p> check fails. Put between two
@@ -180,9 +181,12 @@ class LitsrmmSettingsPanelTest extends TestCase
      * A copy whose bytes do not contain the line and whose text differs from
      * the line once normalised, if it is an element and sits directly after
      * the switch, displaces the line and fails the position check.
+     * A copy that holds the line once its comments are replaced by a space
+     * is refused earlier, by that count.
      * A comment adds no text to the <p> or position checks. A comment copy
-     * between two characters, whose bytes contain the line, is refused by
-     * the count with comments replaced by a space. A comment copy that splits
+     * between two characters that holds the line once is refused by the count
+     * with comments replaced by a space; one that holds it more than once is
+     * refused by the raw count first. A comment copy that splits
      * the line without restoring its bytes is refused by the raw count.
      * Elsewhere, a comment copy whose bytes do not contain the line passes
      * every check, the line's own <p> included. A bare text node copy
@@ -193,7 +197,7 @@ class LitsrmmSettingsPanelTest extends TestCase
     private function assertPendingLineSitsDirectlyUnderTheSwitch(string $html, string $text): void
     {
         $this->assertSame(1, substr_count($html, $text), 'the exact pending line text must appear exactly once in the page');
-        $this->assertSame(1, substr_count(preg_replace('/<!--.*?-->/s', ' ', $html), $text), 'the exact pending line text must appear exactly once in the page with every HTML comment replaced by a single space');
+        $this->assertSame(1, substr_count(preg_replace('/<!--.*?--!?>/s', ' ', $html), $text), 'the exact pending line text must appear exactly once in the page with every HTML comment replaced by a single space');
         $document = new \DOMDocument;
         @$document->loadHTML($html);
         $xpath = new \DOMXPath($document);
@@ -235,6 +239,31 @@ class LitsrmmSettingsPanelTest extends TestCase
             return;
         }
         $this->fail('the helper accepted a page it must refuse: '.$why);
+    }
+
+    public function test_h7757_a_comment_copy_closed_by_bang_gt_between_characters_4_and_5_fails_the_spaced_count(): void
+    {
+        $text = 'Sync every 4 hours is still on. Scheduled sync will run once the integration is configured and enabled.';
+        $html = str_replace($text, substr($text, 0, 4).'<!--'.$text.'--!>'.substr($text, 4), $this->pendingLinePage());
+        $this->assertSame(1, substr_count($html, $text));
+        $this->assertPendingLineHelperRefuses($html, 'the exact pending line text must appear exactly once in the page with every HTML comment replaced by a single space', 'a bang-closed comment copy must not hide a split line at character 4', exact: true);
+    }
+
+    public function test_h7759_a_page_with_two_comments_around_the_line_passes(): void
+    {
+        $text = 'Sync every 4 hours is still on. Scheduled sync will run once the integration is configured and enabled.';
+        $html = preg_replace('#(<form[^>]*action="'.preg_quote(route('settings.integrations.litsrmm.schedule'), '#').'"[^>]*>.*?</form>)#s', '<!-- a -->$1<!-- b -->', $this->pendingLinePage(), -1, $count);
+        $this->assertSame(1, $count);
+        $this->assertSame(1, preg_match('/<!-- a -->.*'.preg_quote($text, '/').'.*<!-- b -->/s', $html));
+        $this->assertPendingLineSitsDirectlyUnderTheSwitch($html, $text);
+    }
+
+    public function test_h7755_a_line_split_by_an_empty_comment_fails_the_raw_count(): void
+    {
+        $text = 'Sync every 4 hours is still on. Scheduled sync will run once the integration is configured and enabled.';
+        $html = str_replace($text, substr($text, 0, 4).'<!-- -->'.substr($text, 4), $this->pendingLinePage());
+        $this->assertSame(0, substr_count($html, $text));
+        $this->assertPendingLineHelperRefuses($html, 'the exact pending line text must appear exactly once in the page', 'a split line with no raw copy must fail the raw count itself', exact: true);
     }
 
     public function test_h7721_a_comment_copy_after_the_schedule_form_fails_the_raw_count(): void
