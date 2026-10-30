@@ -175,7 +175,10 @@ class IntakeAlertsTest extends TestCase
     {
         $this->owner();
         $row = $this->accept();
-        DB::table('contact_submissions')->where('id', $row->id)->update(['payload' => 'not-decryptable']);
+        // The payload stays intact (it carries the marker), so the alert is proved free of visitor
+        // text. Without its identity lock row the processor's firstOrFail() throws on every attempt.
+        DB::table('contact_intake_identities')->where('identity_hash', DB::table('contact_submissions')
+            ->where('id', $row->id)->value('identity_hash'))->delete();
         $failed = fn () => DB::table('contact_intake_notifications')->where('contact_submission_id', $row->id)
             ->where('event', 'processing_failed')->count();
         // Literal attempts, not the constant: the control must fail on BEHAVIOUR.
