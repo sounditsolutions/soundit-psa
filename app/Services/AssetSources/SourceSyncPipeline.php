@@ -5,6 +5,10 @@ namespace App\Services\AssetSources;
 use App\Models\Asset;
 use App\Models\AssetSourceSync;
 use App\Models\User;
+use App\Services\AutoElevate\AutoElevateAssetSyncService;
+use App\Services\AutoElevate\AutoElevateClient;
+use App\Services\AutoElevate\AutoElevateReadException;
+use App\Services\AutoElevate\AutoElevateReadService;
 use App\Services\Tactical\TacticalDeviceSyncService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\RateLimiter;
@@ -30,7 +34,19 @@ use Illuminate\Support\Facades\RateLimiter;
  *                          A degraded read leaves the snapshot (synced_at included) as it
  *                          was and is answered failed, with the reason taken from the
  *                          vendor's HTTP status (failureReason) or transport when no
- *                          response came back. Every other source that
+ *                          response came back.
+ *                          AutoElevate (S2) first refuses, with no request, while the hourly
+ *                          autoelevate:sync-assets run holds its withoutOverlapping mutex
+ *                          (run_in_progress, M1.10), then past an app-wide ceiling of
+ *                          AUTOELEVATE_PER_MINUTE interactive reads (interactive_ceiling,
+ *                          M1.8). It then makes ONE GET /api/v1/computers/{id}, proved
+ *                          against the asset client's autoelevate_company_id
+ *                          (AutoElevateReadService::computer), and writes only this asset's
+ *                          elevation mode, last check-in and autoelevate_synced_at. It never
+ *                          writes the link, never calls recordClientOutcome, writes nothing
+ *                          at AutoElevate, and leaves the snapshot untouched on any failure.
+ *                          A 429 starts the shared vendor cooldown, which the hourly run
+ *                          also honours. Every other source that
  *                          passes 1-6 is refused with no_single_asset_read and makes no
  *                          vendor call
  *   10. audit              one append-only asset_source_syncs row per attempt, refusals included
@@ -41,22 +57,37 @@ use Illuminate\Support\Facades\RateLimiter;
 class SourceSyncPipeline
 {
     /** Sources whose single-asset read is wired; each joins with its own slice. */
-    public const WIRED = ['tactical'];
+    public const WIRED = ['tactical', 'autoelevate'];
+
+    /**
+     * AutoElevate's app-wide interactive ceiling (Q-2 B): the vendor allows 20 reads a minute
+     * per route and the hourly run uses the same budget, so Sync now may spend at most this many.
+     */
+    public const AUTOELEVATE_PER_MINUTE = 8;
+
+    public const AUTOELEVATE_CEILING_KEY = 'source-sync:vendor:autoelevate:interactive';
+
+    /** The AutoElevate columns a Sync now writes, on this asset only. Never the link. */
+    public const AUTOELEVATE_WRITES = ['autoelevate_elevation_mode', 'autoelevate_last_checked_in_at', 'autoelevate_synced_at'];
 
     public function __construct(
         private readonly TacticalDeviceSyncService $tacticalSync,
+        private readonly AutoElevateReadService $autoElevateReads,
     ) {}
 
     public const USER_LIMIT_PER_MINUTE = 6;
 
     public const ASSET_SOURCE_COOLDOWN_S = 30;
 
-    /** Closed reason vocabulary (design.md "Reply shape and reason vocabulary"), plus no_single_asset_read. */
+    /**
+     * Closed reason vocabulary (design.md "Reply shape and reason vocabulary"), plus no_single_asset_read
+     * and interactive_ceiling (this PSA's own AutoElevate ceiling; no vendor answer is implied).
+     */
     public const REASONS = [
         'ok', 'switched_off', 'not_configured', 'not_linked', 'client_not_mapped',
         'user_throttled', 'recently_synced', 'vendor_cooling_down', 'vendor_429',
         'not_found_at_vendor', 'other_client', 'run_in_progress', 'transport', 'drift',
-        'no_single_asset_read',
+        'no_single_asset_read', 'interactive_ceiling',
     ];
 
     /** The fixed sentence the UI shows for each reason (never "ok" for a refusal). */
@@ -69,6 +100,7 @@ class SourceSyncPipeline
         'user_throttled' => 'You have made too many Sync now requests in the last minute.',
         'recently_synced' => 'Sync now was already tried for this source on this asset moments ago.',
         'vendor_cooling_down' => 'This vendor asked us to slow down; no request was sent.',
+        'interactive_ceiling' => "Sync now has reached this PSA's per-minute limit for this vendor; no request was sent.",
         'vendor_429' => 'The vendor is rate-limiting requests.',
         'not_found_at_vendor' => 'The vendor did not return this device; the link is kept.',
         'other_client' => "The vendor's device belongs to a different client; nothing was written.",
@@ -157,12 +189,18 @@ class SourceSyncPipeline
         // 3. Link (Q-6 B: linked assets only; link/unlink stays with the scheduled sync).
         // A Tactical row with no agent id has nothing to read (the old refresh refused it too).
         if (! AssetSources::isLinked($asset, $source)
-            || ($source === 'tactical' && blank($asset->tacticalAsset?->agent_id))) {
+            || ($source === 'tactical' && blank($asset->tacticalAsset?->agent_id))
+            || ($source === 'autoelevate' && ! self::isUuid((string) $asset->autoelevate_computer_id))) {
             if ($source === 'autoelevate' && blank($asset->client?->autoelevate_company_id)) {
                 return self::refused('client_not_mapped');
             }
 
             return self::refused('not_linked');
+        }
+        // A linked AutoElevate asset whose client has no (usable) company mapping cannot be
+        // scope-proven, so it is refused before any request.
+        if ($source === 'autoelevate' && ! self::isUuid((string) $asset->client?->autoelevate_company_id)) {
+            return self::refused('client_not_mapped');
         }
 
         // 4. Per-user limit, across all sources.
@@ -189,6 +227,19 @@ class SourceSyncPipeline
             return self::refused('vendor_cooling_down', $remaining);
         }
 
+        if ($source === 'autoelevate') {
+            // M1.10: the hourly run is reading the same route; never overlap it.
+            if (AutoElevateAssetSyncService::runInProgress()) {
+                return self::refused('run_in_progress');
+            }
+            // M1.8: the app-wide interactive ceiling, counted only for a request about to be sent.
+            if (RateLimiter::tooManyAttempts(self::AUTOELEVATE_CEILING_KEY, self::AUTOELEVATE_PER_MINUTE)) {
+                // This PSA's own limit, not a vendor 429: never reported as vendor_cooling_down.
+                return self::refused('interactive_ceiling', max(1, RateLimiter::availableIn(self::AUTOELEVATE_CEILING_KEY)));
+            }
+            RateLimiter::hit(self::AUTOELEVATE_CEILING_KEY, 60);
+        }
+
         // 7-9. The read, for a wired source only; every other source makes no vendor call.
         $reply = in_array($source, self::WIRED, true)
             ? $this->read($asset, $source)
@@ -207,7 +258,79 @@ class SourceSyncPipeline
     {
         return match ($source) {
             'tactical' => $this->readTactical($asset),
+            'autoelevate' => $this->readAutoElevate($asset),
         };
+    }
+
+    /**
+     * AutoElevate: one GET /api/v1/computers/{id}, scope-proven against the asset client's
+     * company. ok writes this asset's mode, check-in and synced_at only. Every failure leaves
+     * the snapshot (synced_at included) as it was and writes nothing:
+     *   404 not_found_at_vendor (the link is kept; the vendor's 404 is ambiguous),
+     *   429 vendor_429 + retry_after_s and the shared vendor cooldown,
+     *   other status http_NNN, no response transport, a row of another company other_client,
+     *   any other shape drift.
+     */
+    private function readAutoElevate(Asset $asset): array
+    {
+        $failed = function (string $reason, ?int $status = null, ?int $retryAfter = null) use ($asset): array {
+            $reply = ['outcome' => 'failed', 'reason' => $reason];
+            if ($retryAfter !== null) {
+                $reply['retry_after_s'] = $retryAfter;
+            }
+
+            return $reply + ['synced_at' => $asset->autoelevate_synced_at?->toIso8601String(),
+                'changed' => [], 'this_read' => [], 'http_status' => $status];
+        };
+
+        try {
+            $row = $this->autoElevateReads->computer($asset->autoelevate_computer_id, $asset->client->autoelevate_company_id);
+        } catch (AutoElevateReadException $e) {
+            if (preg_match('/^http_(\d{3})$/', $e->reason, $m)) {
+                $status = (int) $m[1];
+                if ($status === 429) {
+                    $wait = $e->retryAfterS ?? AutoElevateClient::COOLDOWN_FALLBACK_SECONDS;
+                    AutoElevateAssetSyncService::startVendorCooldown($wait);
+
+                    return $failed('vendor_429', 429, $wait);
+                }
+
+                return $failed(self::failureReason($status), $status);
+            }
+
+            return match ($e->reason) {
+                'transport' => $failed('transport'),
+                'other_company' => $failed('other_client'),
+                'configuration' => self::refused('not_configured'),
+                default => $failed('drift'),
+            };
+        }
+
+        $before = $asset->only(self::AUTOELEVATE_WRITES);
+        $asset->forceFill([
+            'autoelevate_elevation_mode' => $row['elevation_mode'],
+            'autoelevate_last_checked_in_at' => $row['last_checked_in_at'],
+            'autoelevate_synced_at' => now(),
+        ])->save();
+        $after = $asset->only(self::AUTOELEVATE_WRITES);
+
+        $changed = [];
+        foreach (self::AUTOELEVATE_WRITES as $column) {
+            if ((string) $before[$column] !== (string) $after[$column]) {
+                $changed[] = $column;
+            }
+        }
+
+        return ['outcome' => 'ok', 'reason' => 'ok', 'synced_at' => $asset->autoelevate_synced_at?->toIso8601String(),
+            'changed' => $changed, 'this_read' => [
+                'elevation_mode' => $row['elevation_mode'],
+                'last_checked_in_at' => $row['last_checked_in_at']?->toIso8601String(),
+            ]];
+    }
+
+    private static function isUuid(string $value): bool
+    {
+        return (bool) preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $value);
     }
 
     /**

@@ -141,6 +141,7 @@ class IntegrationsController extends Controller
         $stripeAutoPush = Setting::getValue('stripe_auto_push_invoices') === '1';
 
         $autoelevateConfigured = AutoElevateConfig::isConfigured();
+        $autoelevateEnabled = AutoElevateConfig::isSwitchedOn();
         $autoelevateLastVerifiedAt = $fmtTs(Setting::getValue('autoelevate_last_verified_at'));
         $autoelevateLastOutcome = Setting::getValue('autoelevate_last_verification_outcome');
 
@@ -616,6 +617,7 @@ class IntegrationsController extends Controller
             'qboNonrecurringTermId', 'qboSalesTerms', 'qboSalesTermsError',
             'stripeConfigured', 'stripeMode', 'stripeConnected', 'stripeAutoPush', 'stripeEnabled',
             'autoelevateConfigured',
+            'autoelevateEnabled',
             'autoelevateLastVerifiedAt',
             'autoelevateLastOutcome',
             'benjipaysConfigured',
@@ -673,7 +675,7 @@ class IntegrationsController extends Controller
     {
         $allowed = [
             'ninja', 'level', 'mesh', 'cipp', 'cipp_mcp', 'cipp_contact_sync', 'cipp_device_sync', 'cipp_mcp_catalog_sync', 'carbon_mcp', 'huntress', 'unifi', 'powerdmarc', 'servosity', 'controld', 'controld_onboarding', 'zorus', 'appriver', 'printix',
-            'plivo', 'graph', 'stripe', 't2t', 'ai', 'screenconnect', 'tactical', 'litsrmm',
+            'plivo', 'graph', 'stripe', 't2t', 'ai', 'screenconnect', 'tactical', 'litsrmm', 'autoelevate',
         ];
 
         $request->validate([
@@ -681,9 +683,10 @@ class IntegrationsController extends Controller
         ]);
 
         // Carbon Connect MCP publishes tools that write at Carbon on grant, so its
-        // switch is admin-only (Jeeves's ruling ctx:14 A, card PEYvh4NL). The other
-        // integrations' switches are unchanged here; parity is a separate ticket.
-        if ($request->input('integration') === 'carbon_mcp' && ! $request->user()?->isAdmin()) {
+        // switch is admin-only (Jeeves's ruling ctx:14 A, card PEYvh4NL). AutoElevate's switch
+        // is admin-only like its key, test and mapping controls. The other integrations'
+        // switches are unchanged here; parity is a separate ticket.
+        if (in_array($request->input('integration'), ['carbon_mcp', 'autoelevate'], true) && ! $request->user()?->isAdmin()) {
             abort(403, 'Administrator access required.');
         }
 
@@ -728,6 +731,7 @@ class IntegrationsController extends Controller
         $message = match ($label) {
             'controld_onboarding' => "Control D client onboarding {$state}.",
             'carbon_mcp' => "Carbon Connect MCP {$state}.",
+            'autoelevate' => "AutoElevate integration {$state}.",
             default => ucfirst($label)." integration {$state}.",
         };
 

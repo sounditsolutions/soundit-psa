@@ -18,8 +18,9 @@ use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 /**
- * Asset Sources S0/S1: the Sources tab frame, rail and generic panel template
- * (design/mockups/assets/design-r3.md §§1-2), with S1's Sync now on Tactical.
+ * Asset Sources S0/S1/S2: the Sources tab frame, rail and generic panel template
+ * (design/mockups/assets/design-r3.md §§1-2), with Sync now on Tactical (S1) and
+ * AutoElevate (S2).
  * Synthetic data only.
  */
 class AssetSourcesTabTest extends TestCase
@@ -390,9 +391,9 @@ class AssetSourcesTabTest extends TestCase
         $this->assertStringContainsString('This vendor asked us to slow down; no request was sent.', $panel);
     }
 
-    public function test_sync_now_button_appears_on_the_tactical_panel_only(): void
+    public function test_sync_now_button_appears_on_the_tactical_and_autoelevate_panels_only(): void
     {
-        // Tactical is the only source whose Sync now read is wired (S1).
+        // Tactical (S1) and AutoElevate (S2) are the only sources whose Sync now read is wired.
         $this->configureAllSources();
         Setting::setValue('ninja_enabled', '1');
         $html = $this->show($this->assetLinkedEverywhere())->getContent();
@@ -400,12 +401,15 @@ class AssetSourcesTabTest extends TestCase
         $tactical = $this->panel($html, 'tactical');
         $this->assertStringContainsString('data-sync-now="tactical"', $tactical);
         $this->assertStringContainsString(e("Reads this computer's record from Tactical and updates its details here. If actions were queued while it was offline, this can start them."), $tactical);
+        $autoelevate = $this->panel($html, 'autoelevate');
+        $this->assertStringContainsString('data-sync-now="autoelevate"', $autoelevate);
+        $this->assertStringContainsString(e("Reads this computer's record from AutoElevate. Changes nothing at AutoElevate."), $autoelevate);
         foreach (\App\Services\AssetSources\AssetSources::ORDER as $source) {
-            if ($source !== 'tactical') {
+            if (! in_array($source, ['tactical', 'autoelevate'], true)) {
                 $this->assertStringNotContainsString('data-sync-now', $this->panel($html, $source), $source);
             }
         }
-        $this->assertSame(1, substr_count($html, 'data-sync-now='));
+        $this->assertSame(2, substr_count($html, 'data-sync-now='));
     }
 
     public function test_comet_and_servosity_do_not_claim_never_synced(): void

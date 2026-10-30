@@ -1358,13 +1358,17 @@
         </div>
         @endif
 
-        {{-- Privilege elevation (AutoElevate, stage 3a) — beside Control D. Shown whenever
-             AutoElevate is configured (so an unlinked asset states WHY) or the asset is linked. --}}
+        {{-- Privilege elevation (AutoElevate). The card and its five states moved to the Sources
+             AutoElevate panel (design-r3 §4); Security keeps one summary row, shown only for the
+             security fact that matters here: a linked machine in audit mode. --}}
         @php
-            $autoelevateBlock = $asset->autoelevate_computer_id || \App\Support\AutoElevateConfig::isConfigured();
+            $autoelevateBlock = filled($asset->autoelevate_computer_id) && $asset->autoelevate_elevation_mode === 'audit';
         @endphp
         @if($autoelevateBlock)
-            @include('assets.partials.autoelevate', ['asset' => $asset])
+            <p class="mb-3" data-autoelevate-summary>
+                <i class="bi bi-shield-lock me-1"></i>Privilege elevation: <span class="badge bg-warning text-dark">AUDIT</span>
+                · AutoElevate · <a href="#tab-sources/autoelevate" data-open-sources="autoelevate">View source</a>
+            </p>
         @endif
 
         {{-- DNS Security (Zorus) --}}
@@ -1581,7 +1585,7 @@
         </div>
         @endif
 
-        @if(!$asset->m365_device_id && !$asset->controld_device_id && $controldDevices === null && !$asset->zorus_endpoint_id && $zorusEndpoints === null && !$asset->screenconnect_session_id && !$autoelevateBlock)
+        @if(!$asset->m365_device_id && !$asset->controld_device_id && $controldDevices === null && !$asset->zorus_endpoint_id && $zorusEndpoints === null && !$asset->screenconnect_session_id && blank($asset->autoelevate_computer_id))
             <p class="text-muted">No security integrations linked to this asset.</p>
         @endif
     </div>

@@ -95,6 +95,50 @@ class AutoElevateReadService
     }
 
     /**
+     * One computer by id: GET /api/v1/computers/{id} ("Get a single computer", Partner API
+     * 1.0.0 OpenAPI, re-read 2026-10-30). Its 200 body is the same Computer schema the list
+     * returns, so it is proven through the same normalizeComputer(), INCLUDING the scope proof:
+     * a row whose companyId is not $expectedCompanyId is `row_drift` and nothing is returned.
+     * The vendor's 404 is deliberately ambiguous (missing, deleted or another MSP's), so the
+     * caller must not read it as "gone". One request, never retried (AutoElevateClient::getOne).
+     *
+     * @return array{id: string, machine_name: ?string, os_name: ?string, os_version: ?string,
+     *               elevation_mode: ?string, elevation_mode_known: bool, last_checked_in_at: ?CarbonImmutable}
+     *
+     * @throws AutoElevateReadException
+     */
+    public function computer(string $computerId, string $expectedCompanyId): array
+    {
+        if (! $this->isUuid($computerId)) {
+            throw new AutoElevateReadException('invalid_computer_id');
+        }
+        if (! $this->isUuid($expectedCompanyId)) {
+            throw new AutoElevateReadException('invalid_company_id');
+        }
+
+        $item = $this->client->getOne('/api/v1/computers/'.strtolower($computerId));
+        try {
+            $row = $this->normalizeComputer($item, $expectedCompanyId);
+        } catch (AutoElevateReadException $e) {
+            // normalizeComputer() is the ONLY scope proof. When it refused a row whose companyId
+            // is a well-formed uuid of ANOTHER company, name that case (`other_company`) so the
+            // caller can say "another client's device" instead of "unrecognised shape".
+            $rowCompany = $item['companyId'] ?? null;
+            if ($e->reason === 'row_drift' && is_string($rowCompany) && $this->isUuid($rowCompany)
+                && strcasecmp($rowCompany, $expectedCompanyId) !== 0) {
+                throw new AutoElevateReadException('other_company');
+            }
+            throw $e;
+        }
+        // The vendor must answer for the computer that was asked for.
+        if ($row['id'] !== strtolower($computerId)) {
+            throw new AutoElevateReadException('row_drift');
+        }
+
+        return $row;
+    }
+
+    /**
      * One documented Computer row → display row. Every consumed field is type-proven;
      * a wrong type is drift for the whole read (never filtered into apparent truth).
      *

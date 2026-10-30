@@ -12,9 +12,11 @@ use Illuminate\Support\Facades\Cache;
 
 /**
  * Read-only AutoElevate panel on the client page (stage 2). Returns the panel partial for
- * one client in exactly one of four states, each named explicitly so a blank table can
+ * one client in exactly one of five states, each named explicitly so a blank table can
  * never be mistaken for "no machines" (C-56):
  *
+ *   switched_off — the integration is switched off in Settings (autoelevate_enabled=0, Q-5 A);
+ *                  no vendor call is made and nothing cached is shown
  *   not_mapped   — the client has no autoelevate_company_id (no vendor call is made)
  *   empty        — mapped; the vendor answered and returned zero computers
  *   failed       — mapped; the read was degraded (configuration/transport/status/drift/paging)
@@ -40,6 +42,11 @@ class ClientAutoElevateController extends Controller
      */
     public static function panelData(Client $client, AutoElevateReadService $reads): array
     {
+        // OFF means OFF: no vendor call and no cached list while the switch is off.
+        if (! AutoElevateConfig::isSwitchedOn()) {
+            return ['state' => 'switched_off', 'reason' => null, 'computers' => [], 'client' => $client];
+        }
+
         $companyId = $client->autoelevate_company_id;
         if ($companyId === null || $companyId === '') {
             return ['state' => 'not_mapped', 'reason' => null, 'computers' => [], 'client' => $client];

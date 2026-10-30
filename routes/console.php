@@ -73,10 +73,17 @@ Schedule::command('litsrmm:sync-devices')
 // hour's. A failed run (non-zero exit, including a run while the API key is
 // not configured) logs one fixed line here; its output is not appended to a
 // file, so on the no-key path that line is the only trace.
+// Switched off in Settings (autoelevate_enabled=0, default 1) the run is not
+// started at all (Q-5 A). The overlap lock carries a fixed name
+// (AutoElevateAssetSyncService::RUN_MUTEX) so the asset page's Sync now can
+// see that this run holds it and refuse with run_in_progress. A live vendor
+// cooldown (a 429 from Sync now or an earlier run) makes the run read nothing.
 Schedule::command('autoelevate:sync-assets')
     ->hourly()
-    ->withoutOverlapping(55)
+    ->createMutexNameUsing(\App\Services\AutoElevate\AutoElevateAssetSyncService::RUN_MUTEX)
+    ->withoutOverlapping(\App\Services\AutoElevate\AutoElevateAssetSyncService::RUN_MUTEX_MINUTES)
     ->runInBackground()
+    ->when(fn () => \App\Support\AutoElevateConfig::isSwitchedOn())
     ->onFailure(fn () => \Illuminate\Support\Facades\Log::error('[AutoElevateSyncAssets] scheduled run failed'));
 
 // Mesh license sync — daily

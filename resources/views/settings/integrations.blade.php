@@ -553,6 +553,20 @@
                         @endswitch
                     </p>
                 @endif
+
+                @if($autoelevateConfigured && auth()->user()?->isAdmin())
+                <div class="border-top pt-3 mt-3">
+                    <form method="POST" action="{{ route('settings.integrations.toggle') }}">
+                        @csrf
+                        <input type="hidden" name="integration" value="autoelevate">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="enabled" value="1"
+                                   id="autoelevate_enabled" {{ $autoelevateEnabled ? 'checked' : '' }} onchange="this.form.submit()">
+                            <label class="form-check-label" for="autoelevate_enabled">Integration enabled</label>
+                        </div>
+                    </form>
+                </div>
+                @endif
             </div>
         </div>
 

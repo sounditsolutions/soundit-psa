@@ -15,7 +15,8 @@ use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
- * Stage 3a asset-page block and the stage 2 client panel's "Linked asset" column.
+ * Stage 3a asset-page states (since S2 in the Sources AutoElevate panel, design-r3 §4)
+ * and the stage 2 client panel's "Linked asset" column.
  * The asset page makes NO vendor call (Http::fake + assertNothingSent); every empty state
  * names its reason (C-56); times render in Pacific with the zone shown (C-14).
  */
@@ -147,7 +148,8 @@ class AssetAutoElevateBlockTest extends TestCase
         Setting::where('key', 'autoelevate_api_key')->delete();
         $asset = Asset::factory()->create();
 
-        $this->block($asset)->assertDontSee('autoelevate-asset-card', false);
+        $this->block($asset)->assertDontSee('data-source-panel="autoelevate"', false)
+            ->assertDontSee('autoelevate-asset-state', false);
     }
 
     // --- client panel: linked asset column ------------------------------------------------

@@ -19,8 +19,25 @@ class AutoElevateSyncAssets extends Command
 
     public function handle(AutoElevateAssetSyncService $service): int
     {
+        // OFF means OFF (Q-5 A): no read, no link change, no clear.
+        if (! AutoElevateConfig::isSwitchedOn()) {
+            $this->warn('AutoElevate integration is switched off (set autoelevate_enabled=1 to re-enable). Skipping.');
+
+            return self::SUCCESS;
+        }
+
         if (! AutoElevateConfig::isConfigured()) {
             $this->error('AutoElevate is not configured. Add the API key in Settings → Integrations.');
+
+            return self::FAILURE;
+        }
+
+        // Shared vendor budget (M1.6): a live cooldown, started by a 429 to Sync now or to an
+        // earlier run, means this run reads nothing. It exits FAILURE, so the scheduled run's
+        // fixed failure line is logged, as for any run that leaves clients unread.
+        $cooldown = AutoElevateAssetSyncService::vendorCooldownRemaining();
+        if ($cooldown > 0) {
+            $this->error("AutoElevate asked us to slow down; its cooldown ends in {$cooldown} s. Nothing was read and no asset link was changed.");
 
             return self::FAILURE;
         }

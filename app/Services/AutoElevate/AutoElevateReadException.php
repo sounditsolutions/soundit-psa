@@ -9,7 +9,11 @@ namespace App\Services\AutoElevate;
  */
 class AutoElevateReadException extends \RuntimeException
 {
-    public function __construct(public readonly string $reason, ?\Throwable $previous = null)
+    /**
+     * @param  ?int  $retryAfterS  for an http_429 only: the shared vendor cooldown in seconds
+     *                             (AutoElevateClient::cooldownSeconds of the vendor's Retry-After)
+     */
+    public function __construct(public readonly string $reason, ?\Throwable $previous = null, public readonly ?int $retryAfterS = null)
     {
         parent::__construct("AutoElevate read failed: {$reason}", 0, $previous);
     }

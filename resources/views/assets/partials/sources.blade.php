@@ -81,8 +81,12 @@
                         @else
                             @foreach($p['attention'] as $item)
                                 <div class="border rounded p-2 mb-2" data-attention-item="{{ $item['key'] }}">
+                                    @if($p['source'] === 'autoelevate')
+                                        @include('assets.partials.autoelevate', ['asset' => $asset, 'item' => $item])
+                                    @else
                                     <strong>{{ $item['title'] }}</strong>
                                     <span class="text-muted small ms-2">{{ $item['evidence'] }}</span>
+                                    @endif
                                     @if($p['source'] === 'tactical' && $item['key'] === 'updates')
                                         <a href="#tab-patches" class="small ms-2" data-show-tab="#tab-patches">View in Patches</a>
                                     @endif
