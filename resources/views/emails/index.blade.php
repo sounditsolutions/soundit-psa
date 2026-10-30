@@ -192,7 +192,7 @@
                     <div class="mb-text">
                         <span class="mb-subj">{{ Str::limit($email->subject, 100) }}</span>
                         @if($email->body_preview)
-                            <span class="mb-snip">- {{ Str::limit($email->body_preview, 140) }}</span>
+                            <span class="mb-snip"><span class="mb-dash">- </span>{{ Str::limit($email->body_preview, 140) }}</span>
                         @endif
                         @if($email->ticket)
                             <div class="mb-chips"><span class="mb-chip tkt"><x-ticket-badge :ticket="$email->ticket" /></span></div>
@@ -250,7 +250,7 @@
 <style>
 /* Mailbox (ROXZP7e5) - tokens per DESIGN.md; mockup design/mockups/emails/_mb.css */
 .mb-shell { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 16px; align-items: start; }
-.mb-shell.has-pane { grid-template-columns: 210px minmax(0, 480px) minmax(0, 1fr); }
+.mb-shell.has-pane { grid-template-columns: 210px minmax(0, 340px) minmax(0, 1fr); }
 .mb-rail, .mb-list, .mb-reader { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; }
 .mb-rail a { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; padding: 8px 16px; color: var(--text-body, #374151); text-decoration: none; border-left: 3px solid transparent; }
 .mb-rail a:hover { background: #f8fafc; }
@@ -277,7 +277,7 @@
 .mb-row:hover { background: #f8fafc; }
 .mb-row.sel { background: #eef3fb; }
 .mb-row.cur { background: #f8fafc; box-shadow: inset 3px 0 0 var(--primary, #1a365d); }
-.mb-row .mb-open { color: inherit; text-decoration: none; overflow-wrap: anywhere; }
+.mb-row .mb-open { display: block; color: inherit; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mb-row.unread .mb-from, .mb-row.unread .mb-subj { font-weight: 700; color: var(--primary-dark, #0f2440); }
 .mb-snip { color: var(--text-muted, #6b7280); }
 .mb-when { text-align: right; color: var(--text-muted, #6b7280); font-size: 12px; white-space: nowrap; }
@@ -291,7 +291,8 @@
 .mb-shell.has-pane .mb-row .mb-from { grid-column: 2; }
 .mb-shell.has-pane .mb-row .mb-text { grid-column: 2; grid-row: 2; }
 .mb-shell.has-pane .mb-row .mb-when { grid-column: 3; grid-row: 1; }
-.mb-shell.has-pane .mb-row .mb-snip { display: block; }
+.mb-shell.has-pane .mb-row .mb-snip { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.mb-shell.has-pane .mb-row .mb-dash { display: none; }
 .mb-toolbar { display: flex; gap: 8px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid #e5e7eb; }
 .mb-meta { padding: 16px; border-bottom: 1px solid #e5e7eb; }
 .mb-meta h2 { font-family: Montserrat, sans-serif; font-size: 1.1rem; color: var(--primary, #1a365d); margin: 0 0 4px; }
