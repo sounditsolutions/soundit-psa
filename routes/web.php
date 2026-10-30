@@ -700,6 +700,9 @@ Route::middleware('auth')->group(function () {
     Route::get('/assets/{asset}/tickets', [AssetController::class, 'tickets'])->name('assets.tickets');
     Route::get('/assets/{asset}/quick-look', [AssetController::class, 'quickLook'])->name('assets.quickLook');
     Route::get('/assets/{asset}/device-data/{section}', [AssetController::class, 'deviceData'])->name('assets.deviceData');
+    Route::post('/assets/{asset}/sources/{source}/sync', \App\Http\Controllers\Web\AssetSourceSyncController::class)
+        ->whereIn('source', \App\Services\AssetSources\AssetSources::ORDER)
+        ->name('assets.sources.sync');
 
     // Assets (per-client)
     Route::get('/clients/{client}/assets', [ClientController::class, 'assetList'])->name('clients.assets');

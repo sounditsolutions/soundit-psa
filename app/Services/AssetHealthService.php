@@ -461,7 +461,7 @@ class AssetHealthService
         }
 
         if ($asset->m365_defender_status !== null
-            && $this->defenderLooksBad($asset->m365_defender_status)) {
+            && self::defenderLooksBad($asset->m365_defender_status)) {
             $points -= self::PENALTY_DEFENDER;
             $notes[] = 'Defender: '.$asset->m365_defender_status;
             $status = $status === 'bad' ? 'bad' : 'warn';
@@ -554,7 +554,11 @@ class AssetHealthService
 
     // ────────────────────────────────────────────────────────────────────
 
-    private function defenderLooksBad(string $status): bool
+    /**
+     * The one Defender deny-list predicate: the health score and the asset
+     * Sources tab's M365 marker both call this, so the two readers agree.
+     */
+    public static function defenderLooksBad(string $status): bool
     {
         $s = strtolower(trim($status));
 
