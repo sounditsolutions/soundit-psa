@@ -424,10 +424,10 @@ class IntakeAlertsTest extends TestCase
         $held->update(['state' => 'quarantined', 'exception_reason' => 'staff_hold']);
         $page = $this->actingAs($staff)->get(route('contact-intake.index'))->assertOk();
         $page->assertSee('How this queue works')
-            ->assertSee('Every inquiry from the Northwind MSP website contact form arrives here first.')
-            ->assertSee('Open it, check the sender is genuine, then mark it verified.')
-            // r1 diff:2: both claims are false for a follow-up note on an existing, possibly visible, ticket.
-            ->assertDontSee('stays hidden')->assertDontSee('a ticket was created')
+            ->assertSee('Every inquiry from the Northwind MSP website contact form arrives here first. Until a staff member verifies it, its new ticket or note stays hidden from AI agents, automation and the client portal.')
+            ->assertSee('it is now a new ticket, or a note on an existing ticket. Open it, check the sender is genuine, then mark it verified.')
+            // r1 diff:2: the r0 claims were false for a follow-up note on an existing, possibly visible, ticket.
+            ->assertDontSee('Its ticket stays hidden')->assertDontSee('a ticket was created')
             ->assertSee('waiting to be processed. This usually happens within a minute; nothing to do.')
             ->assertSee('it needs a staff decision; the reason is on its review page. Open it and resolve it to a client, approve it as a new prospect, replay it, or keep it on hold.')
             ->assertSee('Next step');
