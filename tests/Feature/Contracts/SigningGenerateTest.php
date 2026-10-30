@@ -180,7 +180,7 @@ class SigningGenerateTest extends TestCase
         foreach (['send', 'void', 'countersign'] as $action) {
             $this->post(route('signing.action', [$this->contract, $document, $action]))->assertNotFound();
         }
-        $this->get('/sign/'.str_repeat('A', 48))->assertOk()->assertSee('DRAFT — Link unavailable');
+        $this->get('/sign/'.str_repeat('A', 48))->assertOk()->assertSee('Link unavailable');
     }
 
     public function test_expiry_void_replay_and_pdf_changes_refuse_without_snapshot(): void
@@ -206,8 +206,8 @@ class SigningGenerateTest extends TestCase
         $token = str_repeat('R', 48);
         $document->update(['status' => 'sent', 'token_hash' => hash('sha256', $token), 'token_expires_at' => now()->addDay()]);
         $form = ['typed_name' => 'Alex', 'pdf_sha256' => $document->pdf_sha256];
-        $this->post('/sign/'.$token, $form)->assertOk()->assertSee('DRAFT — Signature recorded')->assertDontSee('Link unavailable');
-        $this->post('/sign/'.$token, $form)->assertOk()->assertSee('DRAFT — Link unavailable')->assertDontSee('Signature recorded');
+        $this->post('/sign/'.$token, $form)->assertOk()->assertSee('Signature recorded')->assertDontSee('Link unavailable');
+        $this->post('/sign/'.$token, $form)->assertOk()->assertSee('Link unavailable')->assertDontSee('Signature recorded');
         $this->assertCount(1, $document->snapshots);
         $this->assertNull($document->fresh()->token_hash);
     }
@@ -439,8 +439,8 @@ class SigningGenerateTest extends TestCase
         ]]]);
         $unitHtml = app(TemplateMerge::class)->merge('{{lines_table}}', [], $unitDocument)['html'];
         foreach ([$unitHtml, $html, $stored] as $rendered) {
-            $this->assertStringContainsString('DRAFT — Volume pricing, every GB at one rate:', $rendered);
-            $this->assertSame(1, substr_count($rendered, 'DRAFT — above that:'));
+            $this->assertStringContainsString('Volume pricing, every GB at one rate:', $rendered);
+            $this->assertSame(1, substr_count($rendered, 'above that:'));
             foreach ([0, 500, 501, 2000, 2001, 3000, 1000000] as $gb) {
                 $selected = $expected[array_key_last($expected)];
                 foreach ($document->rendered_lines[1]['sku_volume_tiers'] as $tier) {
@@ -451,8 +451,8 @@ class SigningGenerateTest extends TestCase
                 }
                 $this->assertSame($sku->priceForStorageGb($gb), (float) $selected['unit_price']);
                 $text = $gb > 2000
-                    ? 'DRAFT — above that: '.$selected['unit_price']
-                    : 'DRAFT — up to '.$selected['up_to_gb'].' GB: '.$selected['unit_price'];
+                    ? 'above that: '.$selected['unit_price']
+                    : 'up to '.$selected['up_to_gb'].' GB: '.$selected['unit_price'];
                 $this->assertStringContainsString($text, $rendered);
             }
         }
@@ -463,7 +463,7 @@ class SigningGenerateTest extends TestCase
         $graduated = $this->generate()->fresh();
         $this->assertSame('draft', $graduated->status);
         $this->assertArrayNotHasKey('sku_volume_tiers', $graduated->rendered_lines[1]);
-        $this->assertStringContainsString('DRAFT — Up to unlimited: 2.00', Storage::disk('local')->get($graduated->pdf_path));
+        $this->assertStringContainsString('Up to unlimited: 2.00', Storage::disk('local')->get($graduated->pdf_path));
         $this->assertStringNotContainsString('Volume pricing', Storage::disk('local')->get($graduated->pdf_path));
     }
 
@@ -501,10 +501,10 @@ class SigningGenerateTest extends TestCase
         $stored = Storage::disk('local')->get($document->pdf_path);
         $this->assertSame(0.14, $sku->priceForStorageGb(3000));
         foreach ([$unitHtml, $html, $stored] as $rendered) {
-            $this->assertStringContainsString('DRAFT — Volume pricing, every GB at one rate:', $rendered);
-            $this->assertStringContainsString('DRAFT — up to 500 GB: 0.18', $rendered);
-            $this->assertStringContainsString('DRAFT — above that: '.number_format($sku->priceForStorageGb(3000), 2), $rendered);
-            $this->assertStringNotContainsString('DRAFT — Up to unlimited:', $rendered);
+            $this->assertStringContainsString('Volume pricing, every GB at one rate:', $rendered);
+            $this->assertStringContainsString('up to 500 GB: 0.18', $rendered);
+            $this->assertStringContainsString('above that: '.number_format($sku->priceForStorageGb(3000), 2), $rendered);
+            $this->assertStringNotContainsString('Up to unlimited:', $rendered);
         }
     }
 
@@ -646,13 +646,13 @@ class SigningGenerateTest extends TestCase
         $show = route('contracts.show', $this->contract);
         $this->actingAs($admin)->get($show)->assertOk();
         $this->assertSame($show, session()->previousUrl(), 'Session URL detector positive control');
-        $this->get('/sign/'.$token)->assertOk()->assertSee('DRAFT — Review and sign');
+        $this->get('/sign/'.$token)->assertOk()->assertSee('Review and sign');
         $this->get('/sign/'.$token.'/pdf')->assertOk();
-        $this->get('/sign/'.str_repeat('Z', 48))->assertOk()->assertSee('DRAFT — Link unavailable');
+        $this->get('/sign/'.str_repeat('Z', 48))->assertOk()->assertSee('Link unavailable');
         $this->assertSame($show, session()->previousUrl());
         $this->assertStringNotContainsString($token, json_encode(session()->all()));
         $this->post('/sign/'.$token, ['typed_name' => 'Alex Example', 'pdf_sha256' => $document->pdf_sha256])
-            ->assertOk()->assertSee('DRAFT — Signature recorded');
+            ->assertOk()->assertSee('Signature recorded');
         $this->assertStringNotContainsString($token, json_encode(session()->all()));
         foreach (['signing.public', 'signing.pdf'] as $name) {
             $middleware = app('router')->gatherRouteMiddleware(app('router')->getRoutes()->getByName($name));

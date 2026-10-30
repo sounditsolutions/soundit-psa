@@ -121,6 +121,49 @@
                 </form>
             </div>
         </div>
+        {{-- Branding (#7762; mockup design/mockups/settings/general-branding.html) --}}
+        <div class="card card-static shadow-sm mt-4" id="branding">
+            <div class="card-header">
+                <i class="bi bi-building me-2"></i>Branding
+            </div>
+            <div class="card-body">
+                <p class="text-muted small mb-3">
+                    Your company name appears in signing emails and pages. Your logo is used for portal branding.
+                </p>
+
+                <form method="POST" action="{{ route('settings.general.update') }}">
+                    @csrf
+                    <input type="hidden" name="section" value="branding">
+
+                    <div class="mb-3">
+                        <label for="portal_company_name" class="form-label">Company name</label>
+                        <input type="text" id="portal_company_name" name="portal_company_name" maxlength="100"
+                               class="form-control @error('portal_company_name') is-invalid @enderror" placeholder="Your Company"
+                               value="{{ old('portal_company_name', $brandingCompanyName) }}">
+                        @error('portal_company_name')
+                            <div class="invalid-feedback">{{ $message }}</div>
+                        @enderror
+                        <div class="form-text">Defaults to the app name if blank.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="portal_logo_url" class="form-label">Logo URL</label>
+                        <input type="url" id="portal_logo_url" name="portal_logo_url" maxlength="500"
+                               class="form-control @error('portal_logo_url') is-invalid @enderror" placeholder="https://..."
+                               value="{{ old('portal_logo_url', $brandingLogoUrl) }}">
+                        @error('portal_logo_url')
+                            <div class="invalid-feedback">{{ $message }}</div>
+                        @enderror
+                        <div class="form-text">Full URL to your company logo. Displayed in the portal navbar.</div>
+                    </div>
+
+                    <button type="submit" class="btn btn-accent">
+                        <i class="bi bi-check-lg me-1"></i>Save Branding
+                    </button>
+                </form>
+            </div>
+        </div>
+
         {{-- Invoice Numbering --}}
         <div class="card card-static shadow-sm mt-4">
             <div class="card-header">

@@ -1967,14 +1967,14 @@ A self-service portal where your clients can view tickets, invoices, devices, an
 
 **Setup:**
 
-1. Settings > Integrations > Client Portal
-2. Enable **Client Portal**
-3. Set your **Company Name** (shown in portal header, emails, and login page)
-4. Optionally set a **Logo URL** for portal branding
+1. Settings > General > Branding: set your **Company Name** (shown in portal header, emails, and login page)
+2. Optionally set a **Logo URL** there for portal branding
+3. Settings > Integrations > Client Portal
+4. Enable **Client Portal**
 5. Optionally set **Billing Portal URL** and **Label** (for MSPs using external billing like BenjiPays)
 6. Optionally set **Prepaid Order URL** (supports `{client_id}` placeholder, shown as "Purchase Prepaid Time" link)
 7. Optionally enable **Product Shop** to let clients order hardware/services from a catalog (see below)
-7. Optionally enable the **AI Chatbot** — adds an "Ask AI" assistant to the portal that answers each client's questions about their own tickets, invoices, devices, and service agreements. It is read-only (it cannot create or change anything) and strictly scoped to the logged-in contact's client. Requires the AI Provider to be configured for **Claude (Anthropic)** (Section 9 > AI Provider) — the tool loop is Anthropic-only. Off by default (`portal_chatbot_enabled` setting).
+8. Optionally enable the **AI Chatbot** — adds an "Ask AI" assistant to the portal that answers each client's questions about their own tickets, invoices, devices, and service agreements. It is read-only (it cannot create or change anything) and strictly scoped to the logged-in contact's client. Requires the AI Provider to be configured for **Claude (Anthropic)** (Section 9 > AI Provider) — the tool loop is Anthropic-only. Off by default (`portal_chatbot_enabled` setting).
 
 **Creating portal users:**
 

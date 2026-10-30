@@ -41,8 +41,8 @@ class SigningVolumeOrderTest extends TestCase
         if ($unlimited) {
             $tiers[] = ['up_to_gb' => null, 'unit_price' => '0.10'];
         }
-        $bands = 'DRAFT — up to 500 GB: 0.18; DRAFT — up to 2000 GB: 0.14; DRAFT — above that: '.($unlimited ? '0.10' : '0.14');
-        $this->assertSame(htmlspecialchars('DRAFT — Volume pricing, every GB at one rate: '.$bands, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'), $this->rateCell($tiers));
+        $bands = 'up to 500 GB: 0.18; up to 2000 GB: 0.14; above that: '.($unlimited ? '0.10' : '0.14');
+        $this->assertSame(htmlspecialchars('Volume pricing, every GB at one rate: '.$bands, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'), $this->rateCell($tiers));
         $this->assertSame($bands, TemplateMerge::volumeBands($tiers));
         $this->assertSame($bands, AcceptanceDiff::displayValue('sku_volume_tiers', $tiers));
     }
@@ -64,7 +64,7 @@ class SigningVolumeOrderTest extends TestCase
         $sku->setRelation('backupStorageTiers', $loaded);
         $this->assertSame(0.18, $sku->priceForStorageGb(400));
         $this->assertSame(0.10, $sku->priceForStorageGb(600));
-        $expected = 'DRAFT — Volume pricing, every GB at one rate: DRAFT — up to 500 GB: 0.18; DRAFT — up to 500 GB: 0.20; DRAFT — above that: 0.10; DRAFT — above that: 0.05';
+        $expected = 'Volume pricing, every GB at one rate: up to 500 GB: 0.18; up to 500 GB: 0.20; above that: 0.10; above that: 0.05';
         $rendered = $this->rateCell($loaded->toArray());
         $this->assertSame($expected, $rendered);
         preg_match('/up to 500 GB: ([0-9.]+)/', $rendered, $first);
@@ -83,7 +83,7 @@ class SigningVolumeOrderTest extends TestCase
     public function test_display_helpers_keep_fallback_json_and_empty_cells(): void
     {
         $this->assertSame('unit_price', AcceptanceDiff::displayField('unit_price'));
-        $this->assertSame('DRAFT — Product volume rate card', AcceptanceDiff::displayField('sku_volume_tiers'));
+        $this->assertSame('Product volume rate card', AcceptanceDiff::displayField('sku_volume_tiers'));
         foreach ([null, []] as $value) {
             $this->assertSame('', AcceptanceDiff::displayValue('sku_volume_tiers', $value));
         }
@@ -91,7 +91,7 @@ class SigningVolumeOrderTest extends TestCase
             $this->assertSame(json_encode($value, JSON_UNESCAPED_UNICODE), AcceptanceDiff::displayValue('unit_price', $value));
         }
         $tiers = [['up_to_gb' => 500, 'unit_price' => '0.20'], ['up_to_gb' => 500, 'unit_price' => '0.18']];
-        $this->assertSame('DRAFT — up to 500 GB: 0.20; DRAFT — up to 500 GB: 0.18; DRAFT — above that: 0.18', TemplateMerge::volumeBands($tiers));
+        $this->assertSame('up to 500 GB: 0.20; up to 500 GB: 0.18; above that: 0.18', TemplateMerge::volumeBands($tiers));
         $this->assertSame('', TemplateMerge::volumeBands([]));
     }
 }
