@@ -76,6 +76,13 @@ class AssetSourcesTacticalPanelTest extends TestCase
         return trim(html_entity_decode($m[1]));
     }
 
+    private function chipNote(string $panel, string $label): string
+    {
+        $this->assertSame(1, preg_match('/>'.preg_quote($label, '/').'<\/div>\s*<div class="fw-semibold">[^<]*<\/div>\s*<div class="small text-muted" data-chip-note>([^<]*)</', $panel, $m), "chip note {$label}");
+
+        return trim(html_entity_decode($m[1]));
+    }
+
     private function alert(Asset $asset, AlertSource $source, string $title, int $minutesAgo = 40): Alert
     {
         return Alert::create([
@@ -127,19 +134,38 @@ class AssetSourcesTacticalPanelTest extends TestCase
         $this->assertSame('all checks failing — monitoring unverified (1 of 1)', $this->chip($all, 'Checks'));
     }
 
-    public function test_tactical_health_strip_chips_carry_their_as_of_age(): void
+    public function test_tactical_health_strip_only_agent_status_carries_the_as_of_age(): void
     {
         $this->configureAllSources();
         $panel = $this->panel($this->show($this->assetLinkedEverywhere([], [
             'last_user' => 'EXAMPLE\\alex', 'has_patches_pending' => true, 'synced_at' => now()->subMinutes(2),
         ]))->getContent(), 'tactical');
+        $ageless = ['Last user', 'Checks', 'Reboot', 'Updates'];
 
         $this->assertSame('Online', $this->chip($panel, 'Agent status'));
         $this->assertSame('EXAMPLE\\alex', $this->chip($panel, 'Last user'));
         $this->assertSame('Updates pending', $this->chip($panel, 'Updates'));
         $this->assertSame('0', $this->chip($panel, 'Open Tactical alerts'));
-        foreach (['Agent status', 'Last user', 'Checks', 'Reboot', 'Updates'] as $label) {
-            $this->assertMatchesRegularExpression('/>'.preg_quote($label, '/').'<\/div>\s*<div class="fw-semibold">[^<]*<\/div>\s*<div class="small text-muted" data-chip-note>as of 2 minutes ago</', $panel, $label);
+        // S1-fix (Jeeves 2026-10-30): only Agent status is written by every read that
+        // stamps synced_at, so only it carries that age. The rest have no truthful age.
+        $this->assertSame('as of 2 minutes ago', $this->chipNote($panel, 'Agent status'));
+        foreach ($ageless as $label) {
+            $this->assertStringNotContainsString('as of', $this->chipNote($panel, $label), $label);
+            $this->assertSame('', $this->chipNote($panel, $label), "{$label} (on)");
+        }
+
+        // Switched off: the stored value is still marked as not being updated.
+        Setting::setValue('tactical_enabled', '0');
+        $off = $this->panel($this->show($this->assetLinkedEverywhere([], ['synced_at' => now()->subMinutes(2)]))->getContent(), 'tactical');
+        foreach ($ageless as $label) {
+            $this->assertSame('last known, not updated', $this->chipNote($off, $label), "{$label} (off)");
+        }
+
+        // Never synced: no snapshot, so the chip says so.
+        Setting::setValue('tactical_enabled', '1');
+        $never = $this->panel($this->show($this->assetLinkedEverywhere([], ['synced_at' => null]))->getContent(), 'tactical');
+        foreach ($ageless as $label) {
+            $this->assertSame('no sync recorded', $this->chipNote($never, $label), "{$label} (never synced)");
         }
     }
 

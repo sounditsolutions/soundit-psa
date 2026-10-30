@@ -9,6 +9,7 @@ use App\Models\Client;
 use App\Models\TacticalAsset;
 use App\Models\TechnicianRun;
 use App\Services\Assets\AssetWatchEvaluator;
+use App\Services\AssetSources\SourceSyncPipeline;
 use App\Services\SyncResult;
 use Carbon\Carbon;
 use Illuminate\Database\QueryException;
@@ -111,10 +112,21 @@ class TacticalDeviceSyncService
                 'status_code' => $e->statusCode(),
             ]);
 
+            // A 4xx/5xx status means Tactical WAS reached and refused (401, 404, 429,
+            // 5xx), so "could not reach" would be false: the message is the fixed
+            // Sync now sentence for that status. A failure with no response, or one
+            // that still carries a 2xx/3xx (Guzzle raises RequestException with the
+            // headers already received when the transfer breaks mid-body), is not a
+            // refusal and keeps the could-not-reach text.
+            $httpStatus = $e->statusCode() !== null && $e->statusCode() >= 400 ? $e->statusCode() : null;
+
             return DetailSyncResult::degraded(
-                'Could not reach the agent — showing the last sync.',
+                $httpStatus !== null
+                    ? SourceSyncPipeline::sentence(SourceSyncPipeline::failureReason($httpStatus))
+                    : 'Could not reach the agent — showing the last sync.',
                 status: $ta->status,
                 freshAsOf: $ta->synced_at,
+                httpStatus: $httpStatus,
             );
         }
 
@@ -494,8 +506,9 @@ class TacticalDeviceSyncService
      *
      *  - syncDeviceDetail()'s catch returns DetailSyncResult::degraded() to the
      *    refresh-now JSON and does not route through here. It leaks nothing
-     *    today because that message is a constant — a property of the current
-     *    string, NOT of this helper. Routing it is ticketed.
+     *    today because that message is one of a fixed set of sentences chosen
+     *    by the HTTP status code alone — a property of those strings, NOT of
+     *    this helper. Routing it is ticketed.
      *  - The log surface is NOT closed for the SSRF pin.
      *    TacticalClient::resolveAndPin() writes the host, and on the
      *    private-address path the resolved IP, to that same unrotated log
