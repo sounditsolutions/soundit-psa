@@ -8,6 +8,7 @@ use App\Services\Tactical\TacticalClient;
 use App\Services\Tactical\TacticalDeviceSyncService;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Request as PsrRequest;
@@ -97,6 +98,10 @@ class AssetSourcesS1FixTest extends TestCase
     {
         return [
             'transport' => [new ConnectException('unreachable', new PsrRequest('GET', 'agents/x/')), 'transport', null,
+                'Could not reach the vendor.', 'Could not reach the agent — showing the last sync.'],
+            // The transfer broke after a 200's headers arrived (e.g. a mid-body reset):
+            // Guzzle raises RequestException carrying that 200. Not a refusal.
+            'transport after a 2xx' => [new RequestException('recv failure', new PsrRequest('GET', 'agents/x/'), new PsrResponse(200)), 'transport', null,
                 'Could not reach the vendor.', 'Could not reach the agent — showing the last sync.'],
             'http 404' => [new PsrResponse(404), 'not_found_at_vendor', 404,
                 'The vendor did not return this device; the link is kept.', 'The vendor did not return this device; the link is kept.'],

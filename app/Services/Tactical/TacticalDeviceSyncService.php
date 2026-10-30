@@ -112,11 +112,13 @@ class TacticalDeviceSyncService
                 'status_code' => $e->statusCode(),
             ]);
 
-            // An HTTP status means Tactical WAS reached and refused (401, 404, 429,
+            // A 4xx/5xx status means Tactical WAS reached and refused (401, 404, 429,
             // 5xx), so "could not reach" would be false: the message is the fixed
-            // Sync now sentence for that status. Only a failure with no response
-            // keeps the could-not-reach text.
-            $httpStatus = $e->statusCode();
+            // Sync now sentence for that status. A failure with no response, or one
+            // that still carries a 2xx/3xx (Guzzle raises RequestException with the
+            // headers already received when the transfer breaks mid-body), is not a
+            // refusal and keeps the could-not-reach text.
+            $httpStatus = $e->statusCode() !== null && $e->statusCode() >= 400 ? $e->statusCode() : null;
 
             return DetailSyncResult::degraded(
                 $httpStatus !== null
