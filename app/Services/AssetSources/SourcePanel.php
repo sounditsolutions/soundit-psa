@@ -39,7 +39,7 @@ class SourcePanel
 
     /** The Sync now button's title and accessible description, per wired source (design-r3 §2.3). */
     public const SYNC_NOW_DESCRIPTION = [
-        'tactical' => "Reads this computer's record from Tactical. Changes nothing at Tactical.",
+        'tactical' => "Reads this computer's record from Tactical and updates its details here. If actions were queued while it was offline, this can start them.",
     ];
 
     /** Open Tactical alerts listed in the panel before the "all N alerts" link (design-r3 §4). */

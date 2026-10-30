@@ -399,7 +399,7 @@ class AssetSourcesTabTest extends TestCase
 
         $tactical = $this->panel($html, 'tactical');
         $this->assertStringContainsString('data-sync-now="tactical"', $tactical);
-        $this->assertStringContainsString(e("Reads this computer's record from Tactical. Changes nothing at Tactical."), $tactical);
+        $this->assertStringContainsString(e("Reads this computer's record from Tactical and updates its details here. If actions were queued while it was offline, this can start them."), $tactical);
         foreach (\App\Services\AssetSources\AssetSources::ORDER as $source) {
             if ($source !== 'tactical') {
                 $this->assertStringNotContainsString('data-sync-now', $this->panel($html, $source), $source);

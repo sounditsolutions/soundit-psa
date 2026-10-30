@@ -21,7 +21,12 @@ use Illuminate\Support\Facades\RateLimiter;
  *   6. vendor cooldown     read of source-sync:vendor:<source>:cooldown-until -> vendor_cooling_down
  *   7-9. the read + write  only for a source in WIRED. Tactical (S1) reads the EXISTING
  *                          single-agent read, TacticalDeviceSyncService::syncDeviceDetail
- *                          (getAgent), which writes this asset's tactical_assets row only.
+ *                          (getAgent). It writes this asset's tactical_assets row and asset
+ *                          fields (incl. assets.last_boot_at), and when the read finds the
+ *                          agent back online after being offline it may dispatch the
+ *                          queued-offline sweep
+ *                          (SweepQueuedActionsForAgent::dispatchIfQueued), which starts
+ *                          TechnicianRuns queued while the agent was offline.
  *                          A degraded read leaves the snapshot (synced_at included) as it
  *                          was and is answered failed/transport. Every other source that
  *                          passes 1-6 is refused with no_single_asset_read and makes no
