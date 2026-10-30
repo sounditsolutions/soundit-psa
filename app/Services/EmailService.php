@@ -1914,6 +1914,7 @@ PROMPT;
             // ID-bound write, not a second open-ended sender query: a new arrival
             // between selection and update cannot be swept into this approval.
             Email::whereIn('id', $ids)->whereNull('client_id')->update(['client_id' => $clientId]);
+            DB::afterCommit(fn () => $this->forgetFolderCounts());
 
             return $ids;
         });

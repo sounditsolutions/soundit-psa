@@ -55,7 +55,7 @@
         <a href="{{ route('emails.index', ['preset' => 'inbox', 'no_client' => 1]) }}" class="{{ $folder === 'inbox' && $hasNoClient ? 'on' : '' }}" @if($folder === 'inbox' && $hasNoClient) aria-current="page" @endif>
             <span>Inbox: no client</span><span class="mb-cnt" data-folder-count="no_client">{{ number_format($folderCounts['no_client']) }}</span>
         </a>
-        <p class="mb-note">Counts use the same queries as the list and the MCP email tools. Inbox: no client = Inbox messages with no client set.</p>
+        <p class="mb-note">Inbox: no client = Inbox messages with no client set.</p>
     </nav>
 
     {{-- Mailbox list --}}

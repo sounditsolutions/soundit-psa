@@ -3,11 +3,14 @@
 namespace App\Models;
 
 use App\Enums\EmailDirection;
+use App\Services\EmailService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 class Email extends Model
 {
@@ -38,6 +41,21 @@ class Email extends Model
     ];
 
     protected $hidden = ['body_html'];
+
+    /** Columns the /emails folder scopes read; a change to one can move the email between folders. */
+    private const FOLDER_FIELDS = ['direction', 'ticket_id', 'dismissed_at', 'client_id', 'received_at'];
+
+    protected static function booted(): void
+    {
+        // Drop the cached folder-rail counts (EmailService::folderCounts) once a write that
+        // can move mail between folders commits, so the next /emails load recounts.
+        static::saved(function (Email $email) {
+            if ($email->wasRecentlyCreated || $email->wasChanged(self::FOLDER_FIELDS)) {
+                DB::afterCommit(fn () => Cache::forget(EmailService::FOLDER_COUNTS_CACHE_KEY));
+            }
+        });
+        static::deleted(fn () => DB::afterCommit(fn () => Cache::forget(EmailService::FOLDER_COUNTS_CACHE_KEY)));
+    }
 
     protected function casts(): array
     {

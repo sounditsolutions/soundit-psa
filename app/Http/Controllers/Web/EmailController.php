@@ -464,6 +464,7 @@ class EmailController extends Controller
             Email::where('from_address', $email->from_address)
                 ->whereNull('person_id')
                 ->update(['person_id' => $person->id, 'client_id' => $clientId]);
+            DB::afterCommit(fn () => $this->emailService->forgetFolderCounts());
 
             return $person;
         });
@@ -504,6 +505,7 @@ class EmailController extends Controller
                     'person_id' => $person->id,
                     'client_id' => $person->client_id,
                 ]);
+            DB::afterCommit(fn () => $this->emailService->forgetFolderCounts());
 
             // Optionally save sender address as an additional email for future matching
             if ($request->boolean('save_email')) {

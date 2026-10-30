@@ -256,7 +256,8 @@ class MailboxFoldersTest extends TestCase
             ->assertSee('3 messages.')
             ->assertSee('Archive and Create ticket remove a message from Inbox; it then appears in Archive or Filed.')
             ->assertSee('No client')
-            ->assertDontSee('Dismiss');
+            ->assertDontSee('Dismiss')
+            ->assertDontSee('the MCP email tools');
     }
 
     public function test_bulk_mark_read_and_mark_unread(): void
@@ -376,5 +377,42 @@ class MailboxFoldersTest extends TestCase
             ->assertOk()
             ->assertSee('/api/tickets/search?open=1&q=', false)
             ->assertSee('client_first', false);
+    }
+
+    public function test_create_ticket_from_an_inbox_email_refreshes_the_rail_counts(): void
+    {
+        $e = $this->mail('to_ticket');
+        $this->assertSame(1, $this->counts()['inbox']);
+        $this->assertSame(0, $this->counts()['filed']);
+
+        $this->actingAs($this->user)->post(route('emails.store-ticket', $e), [
+            'client_id' => $this->client->id, 'subject' => 'Synthetic mailbox ticket',
+            'type' => 'incident', 'priority' => 'p3', 'contract_id' => '',
+        ])->assertSessionHasNoErrors()->assertRedirect();
+
+        $this->assertNotNull($e->fresh()->ticket_id);
+        $counts = $this->counts();
+        $this->assertSame(0, $counts['inbox']);
+        $this->assertSame(1, $counts['filed']);
+    }
+
+    public function test_writes_outside_the_mailbox_controller_refresh_the_rail_counts(): void
+    {
+        $service = app(EmailService::class);
+        $first = $this->mail('first', ['client_id' => null]);
+        $this->assertSame(1, $this->counts()['no_client']);
+
+        // New inbound mail (intake and Graph sync create rows through Eloquent).
+        $this->mail('arrived');
+        $this->assertSame(2, $this->counts()['inbox']);
+
+        // Archive through the service method the MCP dismiss_email_item tool calls.
+        $service->dismissEmail($this->rows['arrived'], $this->user->id);
+        $this->assertSame(1, $this->counts()['inbox']);
+        $this->assertSame(1, $this->counts()['archive']);
+
+        // Sender-wide client resolution (a query-builder write).
+        $service->linkSenderClient($first, $this->client->id);
+        $this->assertSame(0, $this->counts()['no_client']);
     }
 }
