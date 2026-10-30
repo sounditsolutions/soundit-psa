@@ -45,7 +45,7 @@ class McpSink
 
     /**
      * Context keys an asset.watch_fired inbox row carries to its owner (card
-     * K3VEcxtw). Every other type keeps the reference-only payload unchanged.
+     * K3VEcxtw).
      */
     private const ASSET_WATCH_CONTEXT_KEYS = ['watch_id', 'state', 'last_seen', 'age_seconds', 'observed_by'];
 
