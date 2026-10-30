@@ -125,7 +125,7 @@
 
         {{-- Reply Form --}}
         @if($email->direction->value === 'inbound')
-        <div class="card card-static shadow-sm mt-3">
+        <div class="card card-static shadow-sm mt-3" id="reply">
             <div class="card-header" role="button" data-bs-toggle="collapse" data-bs-target="#replyForm" aria-expanded="false">
                 <i class="bi bi-reply me-2"></i>Reply
             </div>
@@ -396,6 +396,29 @@
                     </form>
                 @endif
                 <hr class="my-2">
+                @if($email->dismissed_at)
+                    <form method="POST" action="{{ route('emails.undismiss', $email) }}">
+                        @csrf
+                        <button type="submit" class="btn btn-outline-secondary btn-sm w-100 mb-2">
+                            <i class="bi bi-archive me-1"></i>Unarchive
+                        </button>
+                    </form>
+                @else
+                    <form method="POST" action="{{ route('emails.dismiss', $email) }}">
+                        @csrf
+                        <button type="submit" class="btn btn-outline-secondary btn-sm w-100 mb-2">
+                            <i class="bi bi-archive me-1"></i>Archive
+                        </button>
+                    </form>
+                @endif
+                <form method="POST" action="{{ route('emails.bulk-action') }}">
+                    @csrf
+                    <input type="hidden" name="action" value="mark_unread">
+                    <input type="hidden" name="email_ids[]" value="{{ $email->id }}">
+                    <button type="submit" class="btn btn-outline-secondary btn-sm w-100 mb-2">
+                        <i class="bi bi-envelope me-1"></i>Mark unread
+                    </button>
+                </form>
                 <button class="btn btn-outline-secondary btn-sm w-100" onclick="navigator.clipboard.writeText('{{ $email->from_address }}').then(() => { this.innerHTML = '<i class=\'bi bi-check-lg me-1\'></i>Copied!'; setTimeout(() => { this.innerHTML = '<i class=\'bi bi-clipboard me-1\'></i>Copy Sender Address'; }, 2000); })">
                     <i class="bi bi-clipboard me-1"></i>Copy Sender Address
                 </button>
@@ -439,6 +462,11 @@
 @push('scripts')
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    // Reply from the /emails reading pane links here with #reply: open the form.
+    if (window.location.hash === '#reply' && document.getElementById('replyForm')) {
+        document.getElementById('replyForm').classList.add('show');
+    }
+
     const reassignBtn = document.getElementById('emailReassignBtn');
     const reassignPanel = document.getElementById('emailReassignPanel');
     const reassignCancel = document.getElementById('emailReassignCancel');

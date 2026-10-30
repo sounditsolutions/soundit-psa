@@ -355,11 +355,20 @@ class TicketController extends Controller
             $query->search($request->input('q'));
         }
 
+        // Mailbox "Add to ticket" picker: open tickets only, the email's client first.
+        if ($request->boolean('open')) {
+            $query->open();
+        }
+
+        if ($request->filled('client_first')) {
+            $query->orderByRaw('CASE WHEN client_id = ? THEN 0 ELSE 1 END', [(int) $request->input('client_first')]);
+        }
+
         // category_id is the categoryNode FK — selected so categoryFields()
         // resolves; ancestor chain eager-loaded so pathString() never N+1s.
         $tickets = $query
             ->withCount(['notes', 'phoneCalls', 'assets'])
-            ->with('categoryNode.parent.parent')
+            ->with(['categoryNode.parent.parent', 'client:id,name'])
             ->orderBy('updated_at', 'desc')
             ->limit(15)
             ->get(['id', 'subject', 'status', 'priority', 'client_id', 'category_id']);
@@ -375,6 +384,7 @@ class TicketController extends Controller
             'display_id' => $t->display_id,
             'subject' => $t->subject,
             'status' => $t->status->label(),
+            'client_name' => $t->client?->name,
             'priority' => $t->priority->label(),
             'priority_class' => $t->priority->badgeClass(),
             'notes_count' => $t->notes_count,

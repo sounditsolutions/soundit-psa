@@ -33,6 +33,7 @@ use App\Support\AgentConfig;
 use App\Support\AiConfig;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -2172,6 +2173,95 @@ PROMPT;
         return $email;
     }
 
+    /** Cache key and TTL (seconds) for the /emails folder-rail counts. */
+    public const FOLDER_COUNTS_CACHE_KEY = 'emails:folder_counts';
+
+    public const FOLDER_COUNTS_TTL = 30;
+
+    /**
+     * The mailbox folders, keyed by the `preset` query value. The pre-mailbox
+     * preset names stay working as aliases (old links, saved defaults).
+     */
+    public const FOLDER_ALIASES = [
+        'inbox' => 'inbox',
+        'needs_attention' => 'inbox',
+        'filed' => 'filed',
+        'archive' => 'archive',
+        'dismissed' => 'archive',
+        'sent' => 'sent',
+        'outbound' => 'sent',
+        'all' => 'all',
+        'inbound' => 'inbound',
+    ];
+
+    /** Resolve a `preset` query value (new name or legacy alias) to its folder, or null. */
+    public function resolveFolder(?string $preset): ?string
+    {
+        return self::FOLDER_ALIASES[$preset ?? ''] ?? null;
+    }
+
+    /**
+     * Whether the list applies the 7-day default window: the All mail folder (or
+     * no folder and no direction) with no date and no search set.
+     */
+    public function appliesDefaultWindow(array $filters): bool
+    {
+        $raw = $filters['preset'] ?? null;
+        $folder = $this->resolveFolder($raw);
+
+        if (! ($folder === 'all' || (! $raw && empty($filters['direction'])))) {
+            return false;
+        }
+
+        return empty($filters['date_from']) && empty($filters['date_to']) && empty($filters['search']);
+    }
+
+    /**
+     * Folder-rail counts in one grouped query, cached briefly like the sidebar
+     * badge. Each CASE mirrors the list scope of the same folder in
+     * getEmailList(); the feature tests hold count == list total per folder.
+     * all = the All mail default window (last 7 days).
+     *
+     * @return array{inbox: int, filed: int, archive: int, sent: int, all: int, no_client: int}
+     */
+    public function folderCounts(): array
+    {
+        return Cache::remember(self::FOLDER_COUNTS_CACHE_KEY, self::FOLDER_COUNTS_TTL, function () {
+            $in = EmailDirection::Inbound->value;
+            $out = EmailDirection::Outbound->value;
+
+            $row = Email::query()->toBase()->selectRaw(
+                'SUM(CASE WHEN direction = ? AND ticket_id IS NULL AND dismissed_at IS NULL THEN 1 ELSE 0 END) AS inbox,'
+                .' SUM(CASE WHEN direction = ? AND ticket_id IS NOT NULL THEN 1 ELSE 0 END) AS filed,'
+                .' SUM(CASE WHEN dismissed_at IS NOT NULL THEN 1 ELSE 0 END) AS archive,'
+                .' SUM(CASE WHEN direction = ? THEN 1 ELSE 0 END) AS sent,'
+                .' SUM(CASE WHEN received_at >= ? THEN 1 ELSE 0 END) AS all_recent,'
+                .' SUM(CASE WHEN direction = ? AND ticket_id IS NULL AND dismissed_at IS NULL AND client_id IS NULL THEN 1 ELSE 0 END) AS no_client',
+                [$in, $in, $out, now()->subDays(7), $in]
+            )->first();
+
+            return [
+                'inbox' => (int) ($row->inbox ?? 0),
+                'filed' => (int) ($row->filed ?? 0),
+                'archive' => (int) ($row->archive ?? 0),
+                'sent' => (int) ($row->sent ?? 0),
+                'all' => (int) ($row->all_recent ?? 0),
+                'no_client' => (int) ($row->no_client ?? 0),
+            ];
+        });
+    }
+
+    public function forgetFolderCounts(): void
+    {
+        Cache::forget(self::FOLDER_COUNTS_CACHE_KEY);
+    }
+
+    /** Set is_read on the given emails (bulk Mark read / Mark unread). */
+    public function bulkSetRead(array $emailIds, bool $read): int
+    {
+        return Email::whereIn('id', $emailIds)->update(['is_read' => $read]);
+    }
+
     /**
      * Get a filtered, paginated list of emails.
      */
@@ -2180,21 +2270,23 @@ PROMPT;
         $query = Email::with(['client', 'person', 'user', 'ticket' => fn ($q) => $q->select('id', 'halo_id', 'subject', 'category_id'), 'ticket.categoryNode.parent.parent'])
             ->orderByDesc('received_at');
 
-        $preset = $filters['preset'] ?? null;
+        $preset = $this->resolveFolder($filters['preset'] ?? null);
 
-        // Preset-based filtering
-        if ($preset === 'needs_attention') {
+        // Folder scopes (legacy preset names arrive here already aliased)
+        if ($preset === 'inbox') {
             $query->needsAttention();
+        } elseif ($preset === 'filed') {
+            $query->inbound()->whereNotNull('ticket_id');
         } elseif ($preset === 'inbound') {
             $query->inbound();
-        } elseif ($preset === 'outbound') {
+        } elseif ($preset === 'sent') {
             $query->where('direction', EmailDirection::Outbound);
-        } elseif ($preset === 'dismissed') {
+        } elseif ($preset === 'archive') {
             $query->whereNotNull('dismissed_at');
         }
 
         // Direction filter (when not using a preset)
-        if (! $preset && ! empty($filters['direction'])) {
+        if (empty($filters['preset']) && ! empty($filters['direction'])) {
             $query->where('direction', $filters['direction']);
         }
 
@@ -2222,11 +2314,9 @@ PROMPT;
             $query->noClient();
         }
 
-        // Default to last 7 days only for "all" view with no date/search filters
-        if ($preset === 'all' || (! $preset && empty($filters['direction']))) {
-            if (empty($filters['date_from']) && empty($filters['date_to']) && empty($filters['search'])) {
-                $query->where('received_at', '>=', now()->subDays(7));
-            }
+        // Default to last 7 days only for the All mail view with no date/search filters
+        if ($this->appliesDefaultWindow($filters)) {
+            $query->where('received_at', '>=', now()->subDays(7));
         }
 
         return $query->paginate(50)->withQueryString();
