@@ -174,6 +174,7 @@ class AssetSourcesTacticalPanelTest extends TestCase
         $url = html_entity_decode($m[1]);
         $this->assertSame(route('assets.deviceData', ['asset' => $asset, 'section' => 'checks', 'source' => 'tactical']), $url);
 
+        // Synthetic credential assembled from fragments: no literal credential assignment sits in source.
         $credentialLine = 'db password = '.'Synth'.'Pass'.'w0rd!';
         $this->bindTactical([new PsrResponse(200, [], json_encode([
             ['name' => 'Backup Job', 'check_result' => ['status' => 'failing', 'retcode' => 2, 'stdout' => $credentialLine.' '.str_repeat('x', 500)]],
