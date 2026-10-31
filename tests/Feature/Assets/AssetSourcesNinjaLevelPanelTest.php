@@ -424,6 +424,42 @@ class AssetSourcesNinjaLevelPanelTest extends TestCase
         $this->assertSame($before, $asset->refresh()->getAttributes());
     }
 
+    public function test_switched_off_refuses_at_the_switch_step_before_the_limiter_and_window(): void
+    {
+        // M4.1 (pipeline half): AssetSources::isSwitchedOn reads NinjaConfig / LevelConfig::isEnabled().
+        // Every call is switched_off: never user_throttled or recently_synced, which a missing switch
+        // step would reach once the client's own refusal had opened the 30 s window.
+        $asset = $this->linked(ninjaOn: false);
+        Setting::setValue('level_enabled', '0');
+        $user = User::factory()->tech()->create();
+
+        foreach (['ninja', 'level'] as $source) {
+            foreach (range(1, SourceSyncPipeline::USER_LIMIT_PER_MINUTE + 1) as $i) {
+                $this->actingAs($user)->postJson(route('assets.sources.sync', [$asset, $source]))
+                    ->assertJson(['outcome' => 'refused', 'reason' => 'switched_off'], "{$source} call {$i}");
+            }
+        }
+        $this->assertCount(0, $this->ninjaRequests);
+        $this->assertCount(0, $this->levelRequests);
+    }
+
+    public function test_the_default_device_read_still_retries_a_429_for_the_scheduled_and_webhook_callers(): void
+    {
+        // Positive control for the opt-in: without singleAttempt the clients behave as before
+        // (Retry-After 0, so the existing back-off sleeps 0 s).
+        $this->configureAllSources();
+        Setting::setValue('ninja_enabled', '1');
+        $this->ninjaQueue->append(new PsrResponse(429, ['Retry-After' => '0'], '{}'));
+        $this->ninjaQueue->append(new PsrResponse(200, [], json_encode(['id' => 5])));
+        $this->levelQueue->append(new PsrResponse(429, ['Retry-After' => '0'], '{}'));
+        $this->levelQueue->append(new PsrResponse(200, [], json_encode(['id' => 'level-5', 'online' => true])));
+
+        $this->assertSame(5, app(NinjaClient::class)->getDevice(5)['id']);
+        $this->assertSame('level-5', app(LevelClient::class)->getDevice('level-5')['id']);
+        $this->assertCount(2, $this->ninjaRequests);
+        $this->assertCount(2, $this->levelRequests);
+    }
+
     public function test_switched_off_the_client_transport_refuses_the_read_itself(): void
     {
         // M4.1, second gate: even past the pipeline's switch step, the client refuses with no request.
