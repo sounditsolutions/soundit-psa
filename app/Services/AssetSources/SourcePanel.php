@@ -53,8 +53,8 @@ class SourcePanel
     public const COMET_POSTURE = [
         'last_backup_succeeded' => 'Last backup succeeded',
         'last_backup_failed' => 'Last backup failed',
-        'last_backup_running' => 'Last backup running',
-        'last_backup_unknown' => 'Last backup unknown',
+        'last_backup_running' => 'Backup in progress',
+        'last_backup_unknown' => 'Last backup result unknown',
         'no_backup_jobs_observed' => 'No backup jobs observed',
         'unavailable' => 'Unavailable',
     ];

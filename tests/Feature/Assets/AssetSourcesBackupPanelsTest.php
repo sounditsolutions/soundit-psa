@@ -173,8 +173,8 @@ class AssetSourcesBackupPanelsTest extends TestCase
         $cases = [
             'Last backup succeeded' => \Comet\Def::JOB_STATUS_STOP_SUCCESS,
             'Last backup failed' => \Comet\Def::JOB_STATUS_FAILED_ERROR,
-            'Last backup running' => \Comet\Def::JOB_STATUS_RUNNING_ACTIVE,
-            'Last backup unknown' => 4999,
+            'Backup in progress' => \Comet\Def::JOB_STATUS_RUNNING_ACTIVE,
+            'Last backup result unknown' => 4999,
             'No backup jobs observed' => null,
         ];
         foreach ($cases as $label => $status) {
@@ -189,7 +189,7 @@ class AssetSourcesBackupPanelsTest extends TestCase
             $this->assertStringNotContainsString('All clear', $panel, $label);
         }
         $this->assertSame(array_values(SourcePanel::COMET_POSTURE), [
-            'Last backup succeeded', 'Last backup failed', 'Last backup running', 'Last backup unknown', 'No backup jobs observed', 'Unavailable',
+            'Last backup succeeded', 'Last backup failed', 'Backup in progress', 'Last backup result unknown', 'No backup jobs observed', 'Unavailable',
         ]);
         $this->assertCount(5, $this->cometCalls);
     }
