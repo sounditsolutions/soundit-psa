@@ -13,7 +13,8 @@ use Carbon\CarbonInterface;
 
 /**
  * The generic panel template's data for one source (design-r3 §2.1), built from
- * stored columns and the asset_source_syncs audit only. No vendor call.
+ * stored columns and the asset_source_syncs audit, plus the asset page's own Comet
+ * job read when it is passed in. No vendor call of its own.
  *
  * Every chip carries its kind (design-r3 §2.4):
  *   snapshot     "as of <age>", from a stored column or the source's synced_at

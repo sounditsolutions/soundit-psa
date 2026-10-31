@@ -1,6 +1,7 @@
 {{-- Sources tab (design/mockups/assets/design-r3.md §§1-2).
      Rail + one generic panel per source, rendered from STORED columns and the
-     asset_source_syncs audit only: no vendor call is made to render this tab.
+     asset_source_syncs audit, plus the asset page's own Comet job read when it is
+     passed in: this tab makes no vendor call of its own.
      Panel order is fixed: header, health strip, needs attention, recent activity,
      device details (collapsed), footer strip. --}}
 <div class="row g-3" id="sources-root" data-default-source="{{ $sourcesDefault }}">
