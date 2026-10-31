@@ -254,7 +254,8 @@ class AssetSourcesSecurityPanelsTest extends TestCase
     public static function statusAnswers(): array
     {
         return [
-            '404' => [404, 'not_found_at_vendor'],
+            // The per-org list: a 404 says nothing about this device (the S1-fix class).
+            '404' => [404, 'http_404'],
             '401' => [401, 'http_401'],
             '503' => [503, 'http_503'],
         ];
@@ -299,6 +300,44 @@ class AssetSourcesSecurityPanelsTest extends TestCase
         Cache::flush();
         $this->sync($asset)->assertJsonPath('reason', 'drift');
         $this->assertSame(4, AssetSourceSync::where('reason', 'drift')->count());
+    }
+
+    public function test_a_row_value_the_asset_columns_cannot_store_is_drift_and_nothing_is_written(): void
+    {
+        // Signed tinyint statuses, string(100) profile, string(20) version and a TIMESTAMP last
+        // fetch: SQLite stores each of these, MariaDB strict mode refuses them.
+        $this->configureAllSources();
+        $asset = $this->cdAsset(['controld_synced_at' => now()->subDay()]);
+        $before = $asset->only(SourceSyncPipeline::CONTROLD_WRITES);
+        $unstorable = [
+            'status word' => ['status' => 'active'],
+            'status 128' => ['status' => 128],
+            'agent status exponent' => ['ctrld' => ['status' => '1e2']],
+            'profile 101' => ['profile' => ['name' => str_repeat('p', 101)]],
+            'version 25' => ['ctrld' => ['version' => '1.3.9-beta+build.20261031']],
+            'last fetch past 2038' => ['ctrld' => ['last_fetch' => 4102444800]],
+            'last fetch 1e20' => ['ctrld' => ['last_fetch' => 1e20]],
+            'last fetch 1e400' => ['ctrld' => ['last_fetch' => '1e400']],
+            'last fetch 1e9' => ['ctrld' => ['last_fetch' => '1e9']],
+            'last fetch 0' => ['ctrld' => ['last_fetch' => 0]],
+        ];
+        foreach ($unstorable as $label => $override) {
+            $this->controldQueue->append($this->devicesResponse([$this->device($asset->controld_device_id, $override)]));
+            Cache::flush();
+            $r = $this->sync($asset)->assertOk();
+            $this->assertSame(['failed', 'drift', []], [$r->json('outcome'), $r->json('reason'), $r->json('changed')], $label);
+            $this->assertEquals($before, $asset->refresh()->only(SourceSyncPipeline::CONTROLD_WRITES), $label);
+        }
+        $this->assertSame(count($unstorable), AssetSourceSync::where('reason', 'drift')->count());
+        $this->assertCount(count($unstorable), $this->controld);
+
+        // The limits themselves are storable: the guard refuses no more than the columns do.
+        $this->controldQueue->append($this->devicesResponse([$this->device($asset->controld_device_id, [
+            'status' => 127, 'profile' => ['name' => str_repeat('p', 100)],
+            'ctrld' => ['status' => '-128', 'version' => str_repeat('9', 20), 'last_fetch' => '1790000000'],
+        ])]));
+        Cache::flush();
+        $this->sync($asset)->assertJson(['outcome' => 'ok', 'reason' => 'ok']);
     }
 
     public function test_a_429_is_vendor_429_with_retry_after_and_writes_the_controld_cooldown(): void
@@ -503,6 +542,26 @@ class AssetSourcesSecurityPanelsTest extends TestCase
         $this->assertStringNotContainsString('data-sync-now', $panel);
         // The rail marker counts nothing for ScreenConnect (design-r3 §1).
         $this->assertStringNotContainsString('data-attention-marker', $this->railEntryOf($this->show($asset)->getContent(), 'screenconnect'));
+    }
+
+    public function test_the_m365_card_fields_and_stale_warning_moved_from_security_are_in_the_panel(): void
+    {
+        // Attack E: nothing the Security card showed is lost. The stale warning is panel-only.
+        $this->configureAllSources();
+        $fields = ['m365_enrollment_type' => 'windowsAzureADJoin', 'm365_os_version' => '10.0.26100.1000',
+            'm365_device_owner_type' => 'company', 'm365_defender_version' => '4.18.24090.11'];
+        $staleHtml = $this->show($this->assetLinkedEverywhere($fields + ['m365_synced_at' => now()->subDays(3)]))->getContent();
+        $panel = $this->panel($staleHtml, 'm365');
+        foreach ($fields as $column => $value) {
+            $this->assertMatchesRegularExpression('/data-detail-column="'.$column.'">.*?<td>'.preg_quote($value, '/').'/s', $panel, $column);
+        }
+        $this->assertStringContainsString('data-attention-item="stale"', $panel);
+        $this->assertStringContainsString('Data may be stale (synced 3 days ago)', $panel);
+
+        $freshHtml = $this->show($this->assetLinkedEverywhere($fields + ['m365_synced_at' => now()->subDay()]))->getContent();
+        $this->assertStringNotContainsString('data-attention-item="stale"', $this->panel($freshHtml, 'm365'));
+        $marker = fn (string $html) => preg_match('/data-attention-marker="(\d+)"/', $this->railEntryOf($html, 'm365'), $m) ? $m[1] : null;
+        $this->assertSame($marker($freshHtml), $marker($staleHtml), 'the rail marker counts no stale item');
     }
 
     private function railEntryOf(string $html, string $source): string

@@ -61,7 +61,10 @@ use Illuminate\Support\Facades\RateLimiter;
  *                          never runs the device sync's stale-clear branch, so no other asset
  *                          of the client is touched, and it writes nothing at Control D.
  *                          A device absent from the list is not_found_at_vendor (link kept,
- *                          nothing written). A 429 starts the Control D vendor cooldown.
+ *                          nothing written); any other status from the list GET but 429,
+ *                          404 included, is http_NNN, and a row value the asset's Control D
+ *                          columns cannot store is drift (nothing written). A 429 starts the
+ *                          Control D vendor cooldown.
  *                          Every other source that
  *                          passes 1-6 is refused with no_single_asset_read and makes no
  *                          vendor call
@@ -302,9 +305,11 @@ class SourceSyncPipeline
      * ok writes that row through updateAssetFromDevice; the device sync's stale-clear branch
      * (syncDevicesForClient) is never called, so no other asset is written. Every failure
      * leaves the snapshot (synced_at included) as it was:
-     *   a vendor answer with a status: failureReason() (404, 429 + the Control D cooldown, http_NNN),
+     *   a vendor answer with a status: vendor_429 + the Control D cooldown, otherwise http_NNN (a 404
+     *   too: the list is per organization, so it says nothing about this device),
      *   no response: transport,
-     *   a row list or a matching row that is not the shape updateAssetFromDevice reads: drift,
+     *   a row list or a matching row that is not the shape updateAssetFromDevice reads, or that
+     *   holds a value the asset's Control D columns cannot store: drift,
      *   no row with this PK: not_found_at_vendor (the link is kept; unlinking stays with the
      *   daily sync and the Security tab).
      * The ControlDClientException message embeds vendor text (C-56), so it is never read here:
@@ -338,7 +343,9 @@ class SourceSyncPipeline
                     return $failed('vendor_429', 429, $wait);
                 }
 
-                return $failed(self::failureReason($status), $status);
+                // The list is per organization, so a 404 says nothing about this device: it is
+                // http_404, never not_found_at_vendor.
+                return $failed($status === 404 ? 'http_404' : self::failureReason($status), $status);
             }
 
             // No response came back (connect failure, timeout): the vendor was not reached.
@@ -389,27 +396,38 @@ class SourceSyncPipeline
     }
 
     /**
-     * Only what updateAssetFromDevice cannot store is drift: profile or ctrld that is not an
-     * object, a name/status/version that is not a scalar, or a last_fetch that is not a
-     * number. Each may be absent or null. The value types are not narrowed further, so a
-     * shape the daily sync already stores is never refused here.
+     * A matching row is written only when every value fits its asset column, so
+     * updateAssetFromDevice cannot fail on it (MariaDB strict mode refuses what SQLite
+     * stores). Anything else is drift and nothing is written. Each value may be absent or null:
+     *   profile, ctrld: an object;
+     *   status, ctrld.status (signed tinyint): a bool, or an integer -128..127 given as a
+     *   number or a plain decimal string;
+     *   profile.name (string 100), ctrld.version (string 20): a scalar of at most that many
+     *   characters;
+     *   ctrld.last_fetch (TIMESTAMP): a number or a digit string kept a day inside the
+     *   1970..2038 range, whatever the connection's time zone (Carbon misreads any other string).
      */
     private static function isControlDDeviceShape(array $device): bool
     {
-        $scalarOrNull = fn ($v) => $v === null || is_scalar($v);
         $profile = $device['profile'] ?? null;
         $ctrld = $device['ctrld'] ?? null;
-        if (! $scalarOrNull($device['status'] ?? null)
-            || ($profile !== null && ! is_array($profile))
-            || ($ctrld !== null && ! is_array($ctrld))) {
+        if (($profile !== null && ! is_array($profile)) || ($ctrld !== null && ! is_array($ctrld))) {
             return false;
         }
+        $tinyint = fn ($v) => $v === null || is_bool($v)
+            || ((is_int($v) || (is_string($v) && preg_match('/\A-?\d{1,3}\z/', $v) === 1)) && (int) $v >= -128 && (int) $v <= 127);
+        $chars = fn ($v, int $max) => $v === null || (is_scalar($v) && mb_strlen((string) $v) <= $max);
         $lastFetch = $ctrld['last_fetch'] ?? null;
+        if (is_string($lastFetch) && preg_match('/\A\d{1,10}\z/', $lastFetch) === 1) {
+            $lastFetch = (int) $lastFetch;
+        }
 
-        return $scalarOrNull($profile['name'] ?? null)
-            && $scalarOrNull($ctrld['status'] ?? null)
-            && $scalarOrNull($ctrld['version'] ?? null)
-            && ($lastFetch === null || is_int($lastFetch) || is_float($lastFetch) || (is_string($lastFetch) && is_numeric($lastFetch)));
+        return $tinyint($device['status'] ?? null)
+            && $tinyint($ctrld['status'] ?? null)
+            && $chars($profile['name'] ?? null, 100)
+            && $chars($ctrld['version'] ?? null, 20)
+            && ($lastFetch === null || ((is_int($lastFetch) || is_float($lastFetch))
+                && $lastFetch >= 86400 && $lastFetch <= 2147483647 - 86400));
     }
 
     /** Retry-After as a plain integer 0..RETRY_AFTER_CAP_S, otherwise RETRY_AFTER_FALLBACK_S. */

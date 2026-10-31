@@ -129,7 +129,11 @@ class SourcePanel
             'm365_device_id' => 'Device id',
             'm365_compliance_state' => 'Compliance state',
             'm365_is_compliant' => 'Compliant',
+            'm365_enrollment_type' => 'Enrollment',
+            'm365_os_version' => 'OS version',
+            'm365_device_owner_type' => 'Ownership',
             'm365_defender_status' => 'Defender status',
+            'm365_defender_version' => 'Defender version',
             'm365_last_scan_at' => 'Last scan',
             'm365_last_sync_at' => 'Intune last sync',
             'm365_synced_at' => 'Synced',
@@ -195,6 +199,12 @@ class SourcePanel
             // nothing for ScreenConnect (design-r3 §1).
             $attention[] = ['key' => 'events', 'title' => 'No events received since '.$asset->screenconnect_synced_at->diffForHumans(),
                 'evidence' => 'Updated by ScreenConnect events'];
+        }
+        if ($source === 'm365' && $linked && $asset->m365_synced_at?->lt(now()->subDays(2))) {
+            // The Security card's 2-day stale warning, moved here and shown in the panel only:
+            // the rail marker never counted it.
+            $attention[] = ['key' => 'stale', 'title' => 'Data may be stale (synced '.$asset->m365_synced_at->diffForHumans().')',
+                'evidence' => 'updated by its scheduled sync'];
         }
         $moreAlerts = null;
         if ($source === 'tactical') {
