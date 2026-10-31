@@ -1161,7 +1161,7 @@
         @if($asset->controld_device_id)
             <div class="d-flex align-items-center gap-2 mb-3">
                 <p class="mb-0" data-security-summary="controld">
-                    <i class="bi bi-shield-lock me-1"></i>DNS Security: Agent {{ $asset->controld_agent_status === null ? 'Not reported by Control D' : ((string) $asset->controld_agent_status === '1' ? 'Connected' : 'Disconnected') }}
+                    <i class="bi bi-shield-lock me-1"></i>DNS Security: Agent {{ $asset->controld_agent_status === null ? 'status not reported by Control D' : ((string) $asset->controld_agent_status === '1' ? 'Connected' : 'Disconnected') }}
                     · Control D · <a href="#tab-sources/controld" data-open-sources="controld">View source</a>
                 </p>
                 <form method="POST" action="{{ route('assets.controld.unlink', $asset) }}" class="d-inline">
@@ -1226,7 +1226,7 @@
         @if($asset->zorus_endpoint_id)
             <div class="d-flex align-items-center gap-2 mb-3">
                 <p class="mb-0" data-security-summary="zorus">
-                    <i class="bi bi-shield-check me-1"></i>DNS Security: Filtering {{ $asset->zorus_filtering_enabled === null ? 'Not reported by Zorus' : ($asset->zorus_filtering_enabled ? 'Enabled' : 'Disabled') }}
+                    <i class="bi bi-shield-check me-1"></i>DNS Security: Filtering {{ $asset->zorus_filtering_enabled === null ? 'status not reported by Zorus' : ($asset->zorus_filtering_enabled ? 'Enabled' : 'Disabled') }}
                     · Zorus · <a href="#tab-sources/zorus" data-open-sources="zorus">View source</a>
                 </p>
                 <form method="POST" action="{{ route('assets.zorus.unlink', $asset) }}" class="d-inline"

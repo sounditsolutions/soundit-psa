@@ -567,6 +567,20 @@ class AssetSourcesSecurityPanelsTest extends TestCase
         $this->assertSame(4, preg_match_all('/data-security-summary="[a-z0-9]+"/', $sec));
     }
 
+    public function test_dns_security_summary_rows_say_status_not_reported_when_the_vendor_value_is_null(): void
+    {
+        // Jeeves copy ruling 6ae5b59d: "Agent Not reported..." read as if the agent were missing.
+        $this->configureAllSources();
+        $sec = $this->security($this->show($this->cdAsset([
+            'controld_agent_status' => null, 'zorus_filtering_enabled' => null,
+        ]))->getContent());
+
+        $this->assertMatchesRegularExpression('/DNS Security: Agent status not reported by Control D\s*· Control D · <a href="#tab-sources\/controld"/', $sec);
+        $this->assertMatchesRegularExpression('/DNS Security: Filtering status not reported by Zorus\s*· Zorus · <a href="#tab-sources\/zorus"/', $sec);
+        $this->assertStringNotContainsString('Agent Not reported', $sec);
+        $this->assertStringNotContainsString('Filtering Not reported', $sec);
+    }
+
     public function test_the_moved_cards_leave_security_and_their_content_is_in_the_panels(): void
     {
         $this->configureAllSources();
