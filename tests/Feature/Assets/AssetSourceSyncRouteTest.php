@@ -24,8 +24,9 @@ use Tests\TestCase;
 
 /**
  * Asset Sources: POST /assets/{asset}/sources/{source}/sync, steps 1-10
- * (design.md Item 3). S1 wires Tactical's existing single-agent read and S2
- * AutoElevate's GET-one (AssetSourcesAutoElevateTest); every other source is
+ * (design.md Item 3). S1 wires Tactical's existing single-agent read, S2
+ * AutoElevate's GET-one (AssetSourcesAutoElevateTest) and S3 Control D's per-org
+ * device read (AssetSourcesSecurityPanelsTest); every other source is
  * still unwired, refuses with no_single_asset_read and calls no vendor. Generic
  * limiter/cooldown/audit controls run against unwired sources.
  * Synthetic data only.
@@ -121,7 +122,7 @@ class AssetSourceSyncRouteTest extends TestCase
         $this->configureAllSources();
         $asset = $this->assetLinkedEverywhere();
         $user = User::factory()->tech()->create();
-        foreach (['screenconnect', 'litsrmm', 'comet', 'level', 'controld', 'zorus'] as $source) {
+        foreach (['screenconnect', 'litsrmm', 'comet', 'level', 'servosity', 'zorus'] as $source) {
             $this->sync($asset, $source, $user)->assertJsonPath('reason', 'no_single_asset_read');
         }
 
@@ -161,7 +162,7 @@ class AssetSourceSyncRouteTest extends TestCase
         ]);
         $this->assertSame(42, AssetSourceSync::latest('id')->first()->retry_after_s);
         // The cooldown is per vendor: another source on the same asset is not cooled.
-        $this->sync($asset, 'controld')->assertJsonPath('reason', 'no_single_asset_read');
+        $this->sync($asset, 'zorus')->assertJsonPath('reason', 'no_single_asset_read');
         Http::assertNothingSent();
     }
 
@@ -183,16 +184,26 @@ class AssetSourceSyncRouteTest extends TestCase
         $this->assertGreaterThanOrEqual(0, $row->duration_ms);
     }
 
-    public function test_only_tactical_and_autoelevate_can_return_ok_in_s2(): void
+    public function test_only_tactical_autoelevate_and_controld_can_return_ok_in_s3(): void
     {
-        // M-s2: wiring a third source to the pipeline read turns this red.
+        // M-s3: wiring a fourth source to the pipeline read turns this red.
         $this->configureAllSources();
         Setting::setValue('ninja_enabled', '1'); // so Ninja reaches the read step like the others
         $history = $this->bindTactical([$this->agentResponse()]);
         $company = '00000000-0000-4000-8000-00000000c0a1';
+        $controld = new \ArrayObject;
+        $queue = new MockHandler([]);
+        $cdStack = HandlerStack::create($queue);
+        $cdStack->push(Middleware::history($controld));
+        $this->app->bind(\App\Services\ControlD\ControlDClient::class, fn ($app, array $p) => new \App\Services\ControlD\ControlDClient(($p['config'] ?? []) + ['handler' => $cdStack]));
         foreach (AssetSources::ORDER as $source) {
             $asset = $this->assetLinkedEverywhere();
-            $asset->client->update(['autoelevate_company_id' => $company]);
+            $asset->client->update(['autoelevate_company_id' => $company, 'controld_org_id' => 'synthetic-org-'.$source]);
+            if ($source === 'controld') {
+                $queue->append(new PsrResponse(200, [], json_encode(['body' => ['devices' => [
+                    ['PK' => $asset->controld_device_id, 'name' => 'DESK-EXAMPLE-01', 'status' => 1, 'profile' => ['name' => 'Synthetic profile'], 'ctrld' => ['status' => 1]],
+                ]]])));
+            }
             if ($source === 'autoelevate') {
                 Http::fake(['https://partner-api.autoelevate.com/api/v1/computers/'.$asset->autoelevate_computer_id => Http::response([
                     'id' => $asset->autoelevate_computer_id, 'machineName' => 'DESK-EXAMPLE-01', 'operatingSystem' => null,
@@ -201,15 +212,16 @@ class AssetSourceSyncRouteTest extends TestCase
                 ], 200)]);
             }
             $r = $this->sync($asset, $source);
-            if (in_array($source, ['tactical', 'autoelevate'], true)) {
+            if (in_array($source, ['tactical', 'autoelevate', 'controld'], true)) {
                 $r->assertJsonPath('outcome', 'ok')->assertJsonPath('reason', 'ok');
             } else {
                 $r->assertJson(['outcome' => 'refused', 'reason' => 'no_single_asset_read'], $source);
             }
         }
-        $this->assertEqualsCanonicalizing(['tactical', 'autoelevate'], AssetSourceSync::where('outcome', '!=', 'refused')->pluck('source')->all());
+        $this->assertEqualsCanonicalizing(['tactical', 'autoelevate', 'controld'], AssetSourceSync::where('outcome', '!=', 'refused')->pluck('source')->all());
         $this->assertSame(count(AssetSources::ORDER), AssetSourceSync::count());
         $this->assertCount(1, $history, 'one Tactical getAgent read, nothing else');
+        $this->assertCount(1, $controld, 'one Control D devices read, nothing else');
         Http::assertSentCount(1); // the one AutoElevate GET-one, nothing else
     }
 

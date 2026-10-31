@@ -41,7 +41,14 @@ class SourcePanel
     public const SYNC_NOW_DESCRIPTION = [
         'tactical' => "Reads this computer's record from Tactical and updates its details here. If actions were queued while it was offline, this can start them.",
         'autoelevate' => "Reads this computer's record from AutoElevate. Changes nothing at AutoElevate.",
+        'controld' => "Reads this client's device list from Control D and updates this computer only. Changes nothing at Control D.",
     ];
+
+    /** ScreenConnect session events listed under Recent activity (newest first, design-r3 §2.2). */
+    public const SC_EVENTS_SHOWN = 10;
+
+    /** The existing ScreenConnect rule: no event for this many days needs a look. */
+    public const SC_SILENT_DAYS = 7;
 
     /** Open Tactical alerts listed in the panel before the "all N alerts" link (design-r3 §4). */
     public const ALERTS_SHOWN = 3;
@@ -183,6 +190,12 @@ class SourcePanel
             ->get();
 
         $attention = AssetSources::attention($asset, $source);
+        if ($source === 'screenconnect' && $linked && $asset->screenconnect_synced_at?->lt(now()->subDays(self::SC_SILENT_DAYS))) {
+            // The existing ScreenConnect rule, shown in the panel only: the rail marker counts
+            // nothing for ScreenConnect (design-r3 §1).
+            $attention[] = ['key' => 'events', 'title' => 'No events received since '.$asset->screenconnect_synced_at->diffForHumans(),
+                'evidence' => 'Updated by ScreenConnect events'];
+        }
         $moreAlerts = null;
         if ($source === 'tactical') {
             // Top 3 open Tactical alerts in the panel; the rest behind "all N alerts" (the marker still counts all).
@@ -210,6 +223,11 @@ class SourcePanel
             'checks_live' => $source === 'tactical' && $linked && filled($asset->tacticalAsset?->agent_id),
             // Local PSA history (no vendor call), so it shows whenever the asset is linked.
             'activity' => $source === 'tactical' && AssetSources::isLinked($asset, $source) ? self::tacticalActivity($asset) : null,
+            // ScreenConnect: the stored session events (written by its webhook), no vendor call.
+            'sc_events' => $source === 'screenconnect' && AssetSources::isLinked($asset, $source) ? self::screenConnectEvents($asset) : null,
+            // Control D: the existing DNS activity read, offered as a button only; nothing is
+            // read until it is clicked (M3S.1). The route refuses while switched off.
+            'dns_activity' => $source === 'controld' && $linked && \App\Support\ControlDConfig::isAnalyticsConfigured(),
             // Details only for a linked asset, whatever the state (OFF and not configured included):
             // an unlinked source has no device of its own to describe.
             'details' => AssetSources::isLinked($asset, $source) ? self::details($asset, $source) : [],
@@ -412,8 +430,150 @@ class SourcePanel
         if ($source === 'autoelevate' && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
             $chips = self::autoElevateChips($asset, $chips, $syncedAt, $off);
         }
+        if (in_array($source, ['controld', 'zorus', 'm365', 'screenconnect'], true)
+            && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
+            $own = match ($source) {
+                'controld' => self::controlDChips($asset, $syncedAt),
+                'zorus' => self::zorusChips($asset, $syncedAt),
+                'm365' => self::m365Chips($asset, $syncedAt),
+                'screenconnect' => self::screenConnectChips($asset),
+            };
+            foreach ($own as $i => $chip) {
+                if ($off && $chip['kind'] === self::KIND_SNAPSHOT) {
+                    $own[$i]['note'] .= '; '.$stale;
+                } elseif ($off && $chip['kind'] === 'none' && $chip['note'] === '') {
+                    $own[$i]['note'] = $stale;
+                }
+            }
+            $chips = array_merge($chips, $own);
+        }
 
         return $chips;
+    }
+
+    /**
+     * A chip whose value was written together with the source's synced_at by every writer
+     * of that column: "as of <synced_at>". With no synced_at there is no snapshot age.
+     */
+    private static function syncedChip(string $label, string $value, string $key, ?CarbonInterface $syncedAt): array
+    {
+        return ['label' => $label, 'value' => $value, 'key' => $key,
+            'kind' => $syncedAt ? self::KIND_SNAPSHOT : 'none', 'note' => $syncedAt ? self::asOf($syncedAt) : 'no sync recorded'];
+    }
+
+    /** A stored value no stored time can truthfully date: no "as of". */
+    private static function agelessChip(string $label, string $value, string $key): array
+    {
+        return ['label' => $label, 'value' => $value, 'key' => $key, 'kind' => 'none', 'note' => ''];
+    }
+
+    /**
+     * Control D (design-r3 §2.2): device status, agent status, profile; last fetch is the
+     * shared Last contact chip. Every Control D writer (the daily sync's
+     * updateAssetFromDevice, its stale clear, link, unlink, and Sync now) writes all three
+     * columns together with controld_synced_at, so each carries "as of <synced_at>".
+     */
+    private static function controlDChips(Asset $asset, ?CarbonInterface $syncedAt): array
+    {
+        $nr = 'Not reported by Control D';
+        // The moved Security card's words: 0 Pending, 1 Active, 2/3 (documented) Disabled.
+        $raw = $asset->controld_status;
+        $status = $raw === null ? $nr : match ((string) $raw) {
+            '0' => 'Pending',
+            '1' => 'Active',
+            '2', '3' => 'Disabled',
+            default => 'Unrecognised: '.$raw,
+        };
+        $agentRaw = $asset->controld_agent_status;
+        $agent = $agentRaw === null ? $nr : ((string) $agentRaw === '1' ? 'Connected' : 'Disconnected');
+
+        return [
+            self::syncedChip('Device status', $status, 'device', $syncedAt),
+            self::syncedChip('Agent status', $agent, 'agent', $syncedAt),
+            self::syncedChip('Profile', filled($asset->controld_profile_name) ? (string) $asset->controld_profile_name : $nr, 'profile', $syncedAt),
+        ];
+    }
+
+    /**
+     * Zorus (design-r3 §2.2): agent state, filtering, CyberSight, group; last seen is the
+     * shared Last contact chip. Every Zorus writer (updateAssetFromEndpoint, the stale clear,
+     * unlink) writes these columns together with zorus_synced_at.
+     */
+    private static function zorusChips(Asset $asset, ?CarbonInterface $syncedAt): array
+    {
+        $nr = 'Not reported by Zorus';
+        $onOff = fn (?bool $v) => $v === null ? $nr : ($v ? 'Enabled' : 'Disabled');
+
+        return [
+            self::syncedChip('Agent state', filled($asset->zorus_agent_state) ? (string) $asset->zorus_agent_state : $nr, 'agent', $syncedAt),
+            self::syncedChip('Filtering', $onOff($asset->zorus_filtering_enabled), 'filtering', $syncedAt),
+            self::syncedChip('CyberSight', $onOff($asset->zorus_cybersight_enabled), 'cybersight', $syncedAt),
+            self::syncedChip('Group', filled($asset->zorus_group_name) ? (string) $asset->zorus_group_name : $nr, 'group', $syncedAt),
+        ];
+    }
+
+    /**
+     * M365 / CIPP (design-r3 §2.2): compliance, Defender AV status (raw), last scan; Intune
+     * last sync is the shared Last contact chip.
+     *
+     * Compliance is written with m365_synced_at by every CIPP writer, so it carries "as of
+     * <synced_at>". A null m365_is_compliant is Unknown, never Compliant (M3S.4). Defender
+     * status and last scan are written only when the read carried Defender data
+     * (CippDeviceSyncService::updateAssetFromDevice), so synced_at is not their age: those
+     * chips show no "as of".
+     */
+    private static function m365Chips(Asset $asset, ?CarbonInterface $syncedAt): array
+    {
+        $nr = 'Not reported by M365 (CIPP)';
+        $compliant = $asset->m365_is_compliant;
+        $compliance = match (true) {
+            $compliant === true => 'Compliant',
+            $compliant === false => $asset->m365_compliance_label ?? 'Non-Compliant',
+            default => 'Unknown',
+        };
+        $scan = $asset->m365_last_scan_at;
+
+        return [
+            self::syncedChip('Compliance', $compliance, 'compliance', $syncedAt),
+            self::agelessChip('Defender', filled($asset->m365_defender_status) ? (string) $asset->m365_defender_status : $nr, 'defender'),
+            self::agelessChip('Last scan', $scan instanceof CarbonInterface ? $scan->diffForHumans() : $nr, 'scan'),
+        ];
+    }
+
+    /**
+     * ScreenConnect (design-r3 §2.2): online/offline and version. The online flag is written
+     * only together with screenconnect_last_seen_at (a Connected or Disconnected event), so
+     * the chip always shows that event's age beside it (psa-wedk, M6.2); a flag with no
+     * event time is shown as Unknown. The version is written only when an event carries it,
+     * so it shows no "as of".
+     */
+    private static function screenConnectChips(Asset $asset): array
+    {
+        $online = $asset->screenconnect_online;
+        $at = $asset->screenconnect_last_seen_at;
+        $onlineChip = $online === null || ! $at instanceof CarbonInterface
+            ? ['label' => 'Online', 'value' => 'Unknown', 'key' => 'online', 'kind' => 'none', 'note' => 'last event not recorded']
+            : ['label' => 'Online', 'value' => $online ? 'Online' : 'Offline', 'key' => 'online',
+                'kind' => self::KIND_SNAPSHOT, 'note' => self::asOf($at)];
+
+        return [
+            $onlineChip,
+            self::agelessChip('Client version', filled($asset->screenconnect_client_version) ? (string) $asset->screenconnect_client_version : 'Not reported by ScreenConnect', 'version'),
+        ];
+    }
+
+    /**
+     * The last SC_EVENTS_SHOWN stored session events (written by the ScreenConnect webhook),
+     * newest first. No vendor call.
+     *
+     * @return \Illuminate\Support\Collection<int, \App\Models\ScreenConnectEvent>
+     */
+    private static function screenConnectEvents(Asset $asset): \Illuminate\Support\Collection
+    {
+        return \App\Models\ScreenConnectEvent::where('asset_id', $asset->id)
+            ->orderByDesc('event_time')
+            ->limit(self::SC_EVENTS_SHOWN)
+            ->get();
     }
 
     /**

@@ -9,7 +9,12 @@ use App\Services\AutoElevate\AutoElevateAssetSyncService;
 use App\Services\AutoElevate\AutoElevateClient;
 use App\Services\AutoElevate\AutoElevateReadException;
 use App\Services\AutoElevate\AutoElevateReadService;
+use App\Services\ControlD\ControlDClient;
+use App\Services\ControlD\ControlDClientException;
+use App\Services\ControlD\ControlDDeviceSyncService;
 use App\Services\Tactical\TacticalDeviceSyncService;
+use App\Support\ControlDConfig;
+use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\RateLimiter;
 
@@ -46,7 +51,18 @@ use Illuminate\Support\Facades\RateLimiter;
  *                          writes the link, never calls recordClientOutcome, writes nothing
  *                          at AutoElevate, and leaves the snapshot untouched on any failure.
  *                          A 429 starts the shared vendor cooldown, which the hourly run
- *                          also honours. Every other source that
+ *                          also honours.
+ *                          Control D (S3) refuses a linked asset whose client has no
+ *                          controld_org_id (client_not_mapped) before any request. It then
+ *                          makes the one per-org read the code has, ControlDClient::getDevices
+ *                          (GET devices for the client's sub-organization), picks the row whose
+ *                          PK is this asset's controld_device_id, and writes it to THIS asset
+ *                          only through ControlDDeviceSyncService::updateAssetFromDevice. It
+ *                          never runs the device sync's stale-clear branch, so no other asset
+ *                          of the client is touched, and it writes nothing at Control D.
+ *                          A device absent from the list is not_found_at_vendor (link kept,
+ *                          nothing written). A 429 starts the Control D vendor cooldown.
+ *                          Every other source that
  *                          passes 1-6 is refused with no_single_asset_read and makes no
  *                          vendor call
  *   10. audit              one append-only asset_source_syncs row per attempt, refusals included
@@ -57,7 +73,18 @@ use Illuminate\Support\Facades\RateLimiter;
 class SourceSyncPipeline
 {
     /** Sources whose single-asset read is wired; each joins with its own slice. */
-    public const WIRED = ['tactical', 'autoelevate'];
+    public const WIRED = ['tactical', 'autoelevate', 'controld'];
+
+    /** Retry-After bounds for a vendor 429 this pipeline reads itself (Q-2 B). */
+    public const RETRY_AFTER_CAP_S = 300;
+
+    public const RETRY_AFTER_FALLBACK_S = 60;
+
+    /** The Control D columns a Sync now may write (updateAssetFromDevice), on this asset only. */
+    public const CONTROLD_WRITES = [
+        'controld_device_id', 'controld_profile_name', 'controld_status', 'controld_agent_status',
+        'controld_agent_version', 'controld_last_seen_at', 'controld_synced_at',
+    ];
 
     /**
      * AutoElevate's app-wide interactive ceiling (Q-2 B): the vendor allows 20 reads a minute
@@ -202,6 +229,11 @@ class SourceSyncPipeline
         if ($source === 'autoelevate' && ! self::isUuid((string) $asset->client?->autoelevate_company_id)) {
             return self::refused('client_not_mapped');
         }
+        // Control D's only read is per sub-organization: without the client's org there is
+        // nothing to read, so it is refused before any request.
+        if ($source === 'controld' && blank($asset->client?->controld_org_id)) {
+            return self::refused('client_not_mapped');
+        }
 
         // 4. Per-user limit, across all sources.
         $userKey = self::userKey($user->id);
@@ -259,7 +291,145 @@ class SourceSyncPipeline
         return match ($source) {
             'tactical' => $this->readTactical($asset),
             'autoelevate' => $this->readAutoElevate($asset),
+            'controld' => $this->readControlD($asset),
         };
+    }
+
+    /**
+     * Control D: the one per-org GET that ControlDClient::getDevices makes (GET devices with the
+     * client's X-Force-Org-Id), read through ControlDClient::getForOrg so its envelope can be
+     * checked, then THIS asset's row only.
+     * ok writes that row through updateAssetFromDevice; the device sync's stale-clear branch
+     * (syncDevicesForClient) is never called, so no other asset is written. Every failure
+     * leaves the snapshot (synced_at included) as it was:
+     *   a vendor answer with a status: failureReason() (404, 429 + the Control D cooldown, http_NNN),
+     *   no response: transport,
+     *   a row list or a matching row that is not the shape updateAssetFromDevice reads: drift,
+     *   no row with this PK: not_found_at_vendor (the link is kept; unlinking stays with the
+     *   daily sync and the Security tab).
+     * The ControlDClientException message embeds vendor text (C-56), so it is never read here:
+     * only the HTTP status and Retry-After of the response it carries.
+     */
+    private function readControlD(Asset $asset): array
+    {
+        $failed = function (string $reason, ?int $status = null, ?int $retryAfter = null) use ($asset): array {
+            $reply = ['outcome' => 'failed', 'reason' => $reason];
+            if ($retryAfter !== null) {
+                $reply['retry_after_s'] = $retryAfter;
+            }
+
+            return $reply + ['synced_at' => $asset->controld_synced_at?->toIso8601String(),
+                'changed' => [], 'this_read' => [], 'http_status' => $status];
+        };
+
+        $vendor = app()->make(ControlDClient::class, ['config' => ['api_key' => ControlDConfig::get('api_key')]]);
+        try {
+            // The same GET getDevices() makes (getForOrg('devices', org)), read through its
+            // envelope so a body without body.devices is drift, never "device not found".
+            $response = $vendor->getForOrg('devices', (string) $asset->client->controld_org_id);
+        } catch (ControlDClientException $e) {
+            $previous = $e->getPrevious();
+            if ($previous instanceof RequestException && $previous->getResponse() !== null) {
+                $status = $previous->getResponse()->getStatusCode();
+                if ($status === 429) {
+                    $wait = self::retryAfterSeconds($previous->getResponse()->getHeaderLine('Retry-After'));
+                    self::startVendorCooldown('controld', $wait);
+
+                    return $failed('vendor_429', 429, $wait);
+                }
+
+                return $failed(self::failureReason($status), $status);
+            }
+
+            // No response came back (connect failure, timeout): the vendor was not reached.
+            return $failed('transport');
+        } catch (\TypeError) {
+            // A JSON body that is not an object or list (getForOrg's array return type).
+            return $failed('drift');
+        }
+
+        $devices = $response['body']['devices'] ?? null;
+        if (! is_array($devices) || ! array_is_list($devices)) {
+            return $failed('drift');
+        }
+        $device = null;
+        foreach ($devices as $row) {
+            if (! is_array($row)) {
+                return $failed('drift');
+            }
+            if (($row['PK'] ?? null) === $asset->controld_device_id) {
+                $device = $row;
+                break;
+            }
+        }
+        if ($device === null) {
+            return $failed('not_found_at_vendor');
+        }
+        if (! self::isControlDDeviceShape($device)) {
+            return $failed('drift');
+        }
+
+        $before = $asset->only(self::CONTROLD_WRITES);
+        (new ControlDDeviceSyncService($vendor))->updateAssetFromDevice($asset, $device);
+        $asset->refresh();
+        $after = $asset->only(self::CONTROLD_WRITES);
+
+        $changed = [];
+        foreach (self::CONTROLD_WRITES as $column) {
+            if ((string) $before[$column] !== (string) $after[$column]) {
+                $changed[] = $column;
+            }
+        }
+
+        return ['outcome' => 'ok', 'reason' => 'ok', 'synced_at' => $asset->controld_synced_at?->toIso8601String(),
+            'changed' => $changed, 'this_read' => [
+                'status' => $asset->controld_status,
+                'agent_status' => $asset->controld_agent_status,
+            ]];
+    }
+
+    /**
+     * Only what updateAssetFromDevice cannot store is drift: profile or ctrld that is not an
+     * object, a name/status/version that is not a scalar, or a last_fetch that is not a
+     * number. Each may be absent or null. The value types are not narrowed further, so a
+     * shape the daily sync already stores is never refused here.
+     */
+    private static function isControlDDeviceShape(array $device): bool
+    {
+        $scalarOrNull = fn ($v) => $v === null || is_scalar($v);
+        $profile = $device['profile'] ?? null;
+        $ctrld = $device['ctrld'] ?? null;
+        if (! $scalarOrNull($device['status'] ?? null)
+            || ($profile !== null && ! is_array($profile))
+            || ($ctrld !== null && ! is_array($ctrld))) {
+            return false;
+        }
+        $lastFetch = $ctrld['last_fetch'] ?? null;
+
+        return $scalarOrNull($profile['name'] ?? null)
+            && $scalarOrNull($ctrld['status'] ?? null)
+            && $scalarOrNull($ctrld['version'] ?? null)
+            && ($lastFetch === null || is_int($lastFetch) || is_float($lastFetch) || (is_string($lastFetch) && is_numeric($lastFetch)));
+    }
+
+    /** Retry-After as a plain integer 0..RETRY_AFTER_CAP_S, otherwise RETRY_AFTER_FALLBACK_S. */
+    public static function retryAfterSeconds(string $retryAfter): int
+    {
+        $retryAfter = trim($retryAfter);
+        if ($retryAfter !== '' && strlen($retryAfter) <= 3 && ctype_digit($retryAfter)
+            && (int) $retryAfter <= self::RETRY_AFTER_CAP_S) {
+            return (int) $retryAfter;
+        }
+
+        return self::RETRY_AFTER_FALLBACK_S;
+    }
+
+    /** Start (or keep the longer of) a source's vendor cooldown, read by step 6. */
+    private static function startVendorCooldown(string $source, int $seconds): void
+    {
+        $key = self::vendorCooldownKey($source);
+        $until = max((int) Cache::get($key, 0), now()->getTimestamp() + $seconds);
+        Cache::put($key, $until, max(1, $until - now()->getTimestamp()));
     }
 
     /**

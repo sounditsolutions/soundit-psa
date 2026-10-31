@@ -102,6 +102,10 @@
                         <div class="text-uppercase small fw-semibold mb-2">Recent activity</div>
                         @if($p['activity'] !== null)
                             @include('assets.partials.sources-tactical-activity', ['activity' => $p['activity']])
+                        @elseif($p['dns_activity'])
+                            @include('assets.partials.sources-controld-activity', ['asset' => $asset])
+                        @elseif($p['sc_events'] !== null && $p['sc_events']->isNotEmpty())
+                            @include('assets.partials.sources-screenconnect-activity', ['events' => $p['sc_events']])
                         @else
                         <p class="text-muted small mb-0">
                             @if($p['state'] === 'off') None while the integration is off. @else No recent activity is shown for this source here. @endif
