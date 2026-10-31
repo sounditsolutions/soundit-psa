@@ -2165,7 +2165,8 @@
             'asset' => $asset,
             'sourcesRail' => $sourcesRail,
             'sourcesDefault' => $sourcesDefault,
-            'sourcesPanels' => array_map(fn ($r) => \App\Services\AssetSources\SourcePanel::build($asset, $r['source']), $sourcesRail),
+            // Comet's panel reuses this page's one job read ($cometJobData); it never reads Comet itself.
+            'sourcesPanels' => array_map(fn ($r) => \App\Services\AssetSources\SourcePanel::build($asset, $r['source'], $cometJobData ?? null), $sourcesRail),
         ])
     </div>
 

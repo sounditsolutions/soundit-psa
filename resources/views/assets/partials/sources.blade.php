@@ -1,6 +1,7 @@
 {{-- Sources tab (design/mockups/assets/design-r3.md §§1-2).
      Rail + one generic panel per source, rendered from STORED columns and the
-     asset_source_syncs audit only: no vendor call is made to render this tab.
+     asset_source_syncs audit, plus the asset page's own Comet job read when it is
+     passed in: no vendor call is made to render this tab.
      Panel order is fixed: header, health strip, needs attention, recent activity,
      device details (collapsed), footer strip. --}}
 <div class="row g-3" id="sources-root" data-default-source="{{ $sourcesDefault }}">
@@ -106,6 +107,17 @@
                             @include('assets.partials.sources-controld-activity', ['asset' => $asset])
                         @elseif($p['sc_events'] !== null && $p['sc_events']->isNotEmpty())
                             @include('assets.partials.sources-screenconnect-activity', ['events' => $p['sc_events']])
+                        @elseif($p['backup_jobs_link'])
+                            {{-- Comet: the job table stays on the Backup tab (design-r3 §4); linked, not copied. --}}
+                            <p class="small mb-0" data-comet-jobs-link>Recent Backup Jobs ·
+                                @if(($activeTab ?? '') === 'tickets')
+                                    <a href="{{ route('assets.show', $asset) }}#tab-backup">View in Backup</a>
+                                @else
+                                    <a href="#tab-backup" data-show-tab="#tab-backup">View in Backup</a>
+                                @endif
+                            </p>
+                        @elseif($p['no_outcome_note'])
+                            <p class="text-muted small mb-0" data-no-outcome>{{ $p['no_outcome_note'] }}</p>
                         @else
                         <p class="text-muted small mb-0">
                             @if($p['state'] === 'off') None while the integration is off. @else No recent activity is shown for this source here. @endif

@@ -23,8 +23,9 @@ use Carbon\CarbonInterface;
  * state, and what their STORED data says needs a look (design-r3 §1).
  *
  * Everything here reads local columns and Settings only. No method makes a
- * vendor call: the rail, its attention markers and every panel render from the
- * database (design-r3 §1 "computed from stored columns only").
+ * vendor call: the rail and its attention markers render from the database
+ * (design-r3 §1 "computed from stored columns only"), and every panel from the
+ * database plus the asset page's own Comet job read when it is passed in.
  */
 class AssetSources
 {
