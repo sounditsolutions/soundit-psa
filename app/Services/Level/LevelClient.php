@@ -152,15 +152,20 @@ class LevelClient
 
     /**
      * Fetch a single device by ID with all hardware includes.
+     *
+     * $singleAttempt (Asset Sources Sync now, opt-in): the GET is sent once and a
+     * 429 is thrown at once with no sleep; the thrown exception chains the Guzzle
+     * exception, so the caller can read the status and Retry-After. Every other
+     * caller keeps the default of up to three sleeps on 429.
      */
-    public function getDevice(string $deviceId): array
+    public function getDevice(string $deviceId, bool $singleAttempt = false): array
     {
-        return $this->get("/v2/devices/{$deviceId}", [
+        return $this->request('GET', "/v2/devices/{$deviceId}", ['query' => [
             'include_cpus' => 'true',
             'include_memory' => 'true',
             'include_disks' => 'true',
             'include_network_interfaces' => 'true',
-        ]);
+        ]], $singleAttempt);
     }
 
     /**
@@ -263,7 +268,7 @@ class LevelClient
     /**
      * Execute an authenticated request with rate-limit backoff on 429.
      */
-    private function request(string $method, string $endpoint, array $options = []): array
+    private function request(string $method, string $endpoint, array $options = [], bool $singleAttempt = false): array
     {
         // THE SWITCH-OFF CHOKE POINT (card YouDehkS): every Level call in this
         // class goes through request(), so OFF is refused here before any
@@ -283,7 +288,8 @@ class LevelClient
             'Accept' => 'application/json',
         ]);
 
-        $maxRetries = 3;
+        // Single attempt: no retry and no sleep (see getDevice()).
+        $maxRetries = $singleAttempt ? 0 : 3;
 
         for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
             try {
@@ -358,6 +364,7 @@ class LevelClient
             "Level API error: {$method} {$endpoint} returned {$statusCode}",
             $statusCode,
             $responseBody,
+            $e,
         );
     }
 }

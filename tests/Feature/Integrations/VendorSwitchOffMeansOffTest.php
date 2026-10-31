@@ -431,101 +431,138 @@ class VendorSwitchOffMeansOffTest extends TestCase
     }
 
     // ---------------------------------------------------------------
-    // Refresh
+    // Sync now (nfuBmADp S6: replaces the removed Overview "Refresh from RMM")
     // ---------------------------------------------------------------
 
-    public function test_refresh_ninja_asset_redirects_with_switched_off_error_and_no_request(): void
+    private function syncNow(Asset $asset, string $source)
+    {
+        return $this->actingAs(User::factory()->create())
+            ->postJson(route('assets.sources.sync', [$asset, $source]))->assertOk();
+    }
+
+    /** A stack that answers the OAuth POST with a token and any other request with $device. */
+    private function deviceStack(string $vendor, array $device): HandlerStack
+    {
+        $stack = HandlerStack::create(function (RequestInterface $request) use ($device) {
+            $body = str_contains((string) $request->getUri(), 'oauth/token')
+                ? json_encode(['access_token' => 'fixture-access', 'expires_in' => 3600])
+                : json_encode($device);
+
+            return new FulfilledPromise(new Response(200, ['Content-Type' => 'application/json'], $body));
+        });
+        $stack->push(Middleware::history($this->history[$vendor]));
+
+        return $stack;
+    }
+
+    /** Rebind both RMM clients to recording stacks that answer this asset's device. */
+    private function bindDevices(Asset $asset): void
+    {
+        $this->app->instance(NinjaClient::class, new NinjaClient([
+            'base_url' => 'https://ninja.test', 'client_id' => 'fixture-client-id', 'client_secret' => 'fixture-client-value',
+            'handler' => $this->deviceStack('ninja', ['id' => (int) $asset->ninja_id, 'lastContact' => now()->getTimestamp()]),
+        ], app('cache')->store()));
+        $this->app->instance(LevelClient::class, new LevelClient([
+            'api_key' => 'fixture-level-key', 'base_url' => 'https://level.test',
+            'handler' => $this->deviceStack('level', ['id' => (string) $asset->level_id, 'online' => true]),
+        ]));
+    }
+
+    public function test_assets_refresh_route_no_longer_exists(): void
+    {
+        // M4.4: the Overview "Refresh from RMM" form and its route are removed.
+        $this->configureAll();
+        $this->switch('ninja', true);
+        $this->switch('level', true);
+        $this->assertFalse(\Illuminate\Support\Facades\Route::has('assets.refresh'));
+        $asset = Asset::factory()->create(['ninja_id' => 4242, 'level_id' => 'fixture-level-device']);
+
+        $this->actingAs(User::factory()->create())->post('/assets/'.$asset->id.'/refresh')->assertNotFound();
+
+        $this->assertCount(0, $this->history['ninja']);
+        $this->assertCount(0, $this->history['level']);
+    }
+
+    public function test_sync_now_ninja_is_switched_off_with_no_request(): void
     {
         $this->configureAll();
         $this->switch('ninja', false);
         $asset = $this->ninjaAsset();
 
-        $this->actingAs(User::factory()->create())
-            ->post(route('assets.refresh', $asset))
-            ->assertRedirect(route('assets.show', $asset))
-            ->assertSessionHas('error', 'NinjaRMM is switched off, so it was not refreshed.')
-            ->assertSessionMissing('success');
+        $this->syncNow($asset, 'ninja')
+            ->assertJson(['outcome' => 'refused', 'reason' => 'switched_off'])
+            ->assertJsonPath('message', 'Switched off in Settings; not being updated.');
 
         $this->assertCount(0, $this->history['ninja']);
     }
 
-    public function test_refresh_level_asset_redirects_with_switched_off_error_and_no_request(): void
+    public function test_sync_now_level_is_switched_off_with_no_request(): void
     {
         $this->configureAll();
         $this->switch('level', false);
         $asset = Asset::factory()->create(['level_id' => 'fixture-level-device']);
 
-        $this->actingAs(User::factory()->create())
-            ->post(route('assets.refresh', $asset))
-            ->assertRedirect(route('assets.show', $asset))
-            ->assertSessionHas('error', 'Level is switched off, so it was not refreshed.')
-            ->assertSessionMissing('success');
+        $this->syncNow($asset, 'level')
+            ->assertJson(['outcome' => 'refused', 'reason' => 'switched_off'])
+            ->assertJsonPath('message', 'Switched off in Settings; not being updated.');
 
         $this->assertCount(0, $this->history['level']);
     }
 
-    public function test_refresh_with_ninja_off_still_refreshes_level_when_level_is_on(): void
+    public function test_sync_now_with_ninja_off_still_syncs_level_when_level_is_on(): void
     {
         $this->configureAll();
         $this->switch('ninja', false);
         $this->switch('level', true);
         $asset = Asset::factory()->create(['ninja_id' => 4242, 'level_id' => 'fixture-level-device']);
+        $this->bindDevices($asset);
 
-        $this->actingAs(User::factory()->create())
-            ->post(route('assets.refresh', $asset))
-            ->assertRedirect(route('assets.show', $asset))
-            ->assertSessionHas('success', 'Device data refreshed from Level.')
-            ->assertSessionHas('error', 'NinjaRMM is switched off, so it was not refreshed.');
+        $this->syncNow($asset, 'ninja')->assertJson(['outcome' => 'refused', 'reason' => 'switched_off']);
+        $this->syncNow($asset, 'level')->assertJson(['outcome' => 'ok', 'reason' => 'ok']);
 
         $this->assertCount(0, $this->history['ninja']);
         $this->assertCount(1, $this->history['level']);
     }
 
-    public function test_refresh_with_level_off_still_refreshes_ninja_when_ninja_is_on(): void
+    public function test_sync_now_with_level_off_still_syncs_ninja_when_ninja_is_on(): void
     {
         $this->configureAll();
         $this->switch('ninja', true);
         $this->switch('level', false);
         $asset = Asset::factory()->create(['ninja_id' => 4242, 'level_id' => 'fixture-level-device']);
+        $this->bindDevices($asset);
 
-        $this->actingAs(User::factory()->create())
-            ->post(route('assets.refresh', $asset))
-            ->assertRedirect(route('assets.show', $asset))
-            ->assertSessionHas('success', 'Device data refreshed from NinjaRMM.')
-            ->assertSessionHas('error', 'Level is switched off, so it was not refreshed.');
+        $this->syncNow($asset, 'ninja')->assertJson(['outcome' => 'ok', 'reason' => 'ok']);
+        $this->syncNow($asset, 'level')->assertJson(['outcome' => 'refused', 'reason' => 'switched_off']);
 
         $this->assertGreaterThan(0, count($this->history['ninja']));
         $this->assertCount(0, $this->history['level']);
     }
 
-    public function test_refresh_with_both_rmms_off_names_both_and_makes_no_request(): void
+    public function test_sync_now_with_both_rmms_off_refuses_both_and_makes_no_request(): void
     {
         $this->configureAll();
         $this->switch('ninja', false);
         $this->switch('level', false);
         $asset = Asset::factory()->create(['ninja_id' => 4242, 'level_id' => 'fixture-level-device']);
 
-        $this->actingAs(User::factory()->create())
-            ->post(route('assets.refresh', $asset))
-            ->assertRedirect(route('assets.show', $asset))
-            ->assertSessionHas('error', 'NinjaRMM and Level are switched off, so they were not refreshed.')
-            ->assertSessionMissing('success');
+        $this->syncNow($asset, 'ninja')->assertJson(['outcome' => 'refused', 'reason' => 'switched_off']);
+        $this->syncNow($asset, 'level')->assertJson(['outcome' => 'refused', 'reason' => 'switched_off']);
 
         $this->assertCount(0, $this->history['ninja']);
         $this->assertCount(0, $this->history['level']);
     }
 
-    public function test_refresh_positive_control_calls_both_rmms_when_switched_on(): void
+    public function test_sync_now_positive_control_calls_both_rmms_when_switched_on(): void
     {
         $this->configureAll();
         $this->switch('ninja', true);
         $this->switch('level', true);
         $asset = Asset::factory()->create(['ninja_id' => 4242, 'level_id' => 'fixture-level-device']);
+        $this->bindDevices($asset);
 
-        $this->actingAs(User::factory()->create())
-            ->post(route('assets.refresh', $asset))
-            ->assertRedirect(route('assets.show', $asset))
-            ->assertSessionMissing('error');
+        $this->syncNow($asset, 'ninja')->assertJson(['outcome' => 'ok', 'reason' => 'ok']);
+        $this->syncNow($asset, 'level')->assertJson(['outcome' => 'ok', 'reason' => 'ok']);
 
         $this->assertGreaterThan(0, count($this->history['ninja']));
         $this->assertCount(1, $this->history['level']);

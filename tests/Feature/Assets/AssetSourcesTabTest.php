@@ -391,9 +391,9 @@ class AssetSourcesTabTest extends TestCase
         $this->assertStringContainsString('This vendor asked us to slow down; no request was sent.', $panel);
     }
 
-    public function test_sync_now_button_appears_on_the_tactical_autoelevate_controld_and_litsrmm_panels_only(): void
+    public function test_sync_now_button_appears_on_the_tactical_autoelevate_controld_litsrmm_ninja_and_level_panels_only(): void
     {
-        // Tactical (S1), AutoElevate (S2), Control D (S3) and LITSRMM (S5) are the only sources whose Sync now read is wired.
+        // Tactical (S1), AutoElevate (S2), Control D (S3), LITSRMM (S5), Ninja and Level (S6) are the only sources whose Sync now read is wired.
         $this->configureAllSources();
         Setting::setValue('ninja_enabled', '1');
         $html = $this->show($this->assetLinkedEverywhere())->getContent();
@@ -410,12 +410,18 @@ class AssetSourcesTabTest extends TestCase
         $litsrmm = $this->panel($html, 'litsrmm');
         $this->assertStringContainsString('data-sync-now="litsrmm"', $litsrmm);
         $this->assertStringContainsString(e("Reads this computer's record from LITSRMM and updates its details here. Changes nothing at LITSRMM."), $litsrmm);
+        $ninja = $this->panel($html, 'ninja');
+        $this->assertStringContainsString('data-sync-now="ninja"', $ninja);
+        $this->assertStringContainsString(e("Reads this computer's record from Ninja and updates its details here. Changes nothing at Ninja."), $ninja);
+        $level = $this->panel($html, 'level');
+        $this->assertStringContainsString('data-sync-now="level"', $level);
+        $this->assertStringContainsString(e("Reads this computer's record from Level and updates its details here. Changes nothing at Level."), $level);
         foreach (\App\Services\AssetSources\AssetSources::ORDER as $source) {
-            if (! in_array($source, ['tactical', 'autoelevate', 'controld', 'litsrmm'], true)) {
+            if (! in_array($source, ['tactical', 'autoelevate', 'controld', 'litsrmm', 'ninja', 'level'], true)) {
                 $this->assertStringNotContainsString('data-sync-now', $this->panel($html, $source), $source);
             }
         }
-        $this->assertSame(4, substr_count($html, 'data-sync-now='));
+        $this->assertSame(6, substr_count($html, 'data-sync-now='));
     }
 
     public function test_comet_and_servosity_do_not_claim_never_synced(): void

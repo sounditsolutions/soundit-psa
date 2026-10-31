@@ -495,17 +495,6 @@
                         </tr>
                     </tbody>
                 </table>
-
-                @if($asset->ninja_id || $asset->level_id)
-                <div class="mt-3 pt-3 border-top">
-                    <form method="POST" action="{{ route('assets.refresh', $asset) }}">
-                        @csrf
-                        <button type="submit" class="btn btn-outline-primary btn-sm">
-                            <i class="bi bi-arrow-clockwise me-1"></i>Refresh from RMM
-                        </button>
-                    </form>
-                </div>
-                @endif
             </div>
         </div>
         {{-- Tactical RMM --}}
