@@ -18,8 +18,9 @@ use Carbon\CarbonInterface;
  *
  * Every chip carries its kind (design-r3 §2.4):
  *   snapshot     "as of <age>", from a stored column or the source's synced_at
- *   live         "just now", from a read made for this page view (S4: the Comet job
- *                read the asset page already makes, passed in; never a second read)
+ *   live         "just now" or "read from Comet <age>", from a read made for this
+ *                page view (S4: the Comet job read the asset page already makes,
+ *                passed in; never a second read)
  *   vendor_claim the vendor's own statement, e.g. "AutoElevate last check-in"
  */
 class SourcePanel
@@ -509,7 +510,8 @@ class SourcePanel
      *
      * - No read on this page (null): no posture is claimed.
      * - A read that could not happen or failed: the posture is Unavailable with the Backup
-     *   tab's reason copy, and no success/failure chips, so it never reads as "no jobs" (M5.3).
+     *   tab's reason copy for a missing username or an unreachable server, and no
+     *   success/failure chips, so it never reads as "no jobs" (M5.3).
      *   A failed read wrote nothing, so it carries no age.
      *
      * @return list<array<string, mixed>>
