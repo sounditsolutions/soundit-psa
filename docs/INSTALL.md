@@ -410,8 +410,10 @@ These commands execute automatically based on their schedule:
 | `zorus:sync-devices` | Daily at 05:20 | Sync DNS endpoint data from Zorus to local assets (only if switched on (`zorus_enabled=1`, the default) + configured + clients mapped) |
 | `contracts:evaluate-rules` | Daily at 05:15 | Evaluate contract assignment rules (reconciliation) |
 | `ninja:sync-backup` | Daily at 05:30 | Sync backup storage usage and license counts from NinjaRMM (only if `ninja_enabled=1` and orgs mapped) |
+| `screenconnect:count-licenses` | Daily at 05:30 | Count ScreenConnect Access agents per client for license quantities (only if switched on (`screenconnect_enabled=1`; the default is `0`) + configured) |
 | `comet:sync-backup` | Daily at 05:40 | Sync backup storage usage and license counts from Comet Backup (only if configured + orgs mapped) |
-| `servosity:sync-licenses` | Daily at 05:45 | Sync backup license counts from Servosity (only if configured + clients mapped) |
+| `servosity:sync-licenses` | Daily at 05:45 | Sync backup license counts from Servosity (only if switched on (`servosity_enabled=1`, the default) + configured + clients mapped) |
+| `servosity:provision-backups` | Hourly | Provision DR backup accounts for assets awaiting Servosity One registration (only if switched on (`servosity_enabled=1`, the default) + configured + an asset has Servosity backup enabled and no DR backup id yet) |
 | `appriver:sync-licenses` | Daily at 05:50 | Sync M365 subscription seat counts from AppRiver (only if connected + clients mapped). If AppRiver was connected but its login has dropped, the run is logged under `[AppRiverSync]` and raises (or refreshes) one Alerts Hub alert instead of skipping silently |
 | `cipp:sync-contacts` | Daily at 05:55 | Sync M365 users as contacts + mailbox/MFA enrichment from CIPP (only if contact sync enabled + tenants mapped) |
 | `cipp:sync-devices` | Daily at 05:59 | Sync Intune devices + Defender state to assets from CIPP (only if device sync enabled + tenants mapped) |
@@ -658,6 +660,8 @@ All other integrations are configured through the **Settings > Integrations** pa
 > **The switches also stop the asset page, Refresh and Test Connection** (card YouDehkS). With NinjaRMM, Level or Zorus switched off, that vendor's API client refuses every call before it reaches the network, whichever page or job asked. With `ninja_enabled=0` the asset page shows the asset's stored data only (no live Ninja detail or backup jobs), and its Ninja network, storage, software and patch tabs say NinjaRMM is switched off. **Refresh** on an asset skips a switched-off RMM and says so; if the asset is also linked to an RMM that is on, that one still refreshes. Control D is checked where it is called instead: with `controld_enabled=0` the asset page lists no Control D devices to link, linking a device is refused, the asset's DNS activity view is refused, the organization mapping page and the Sync buttons are refused, the client page lists no Control D organizations, the AI triage Control D tools refuse, and its `controld:sync-*` commands skip. With `zorus_enabled=0` the asset page lists no Zorus endpoints and linking one is refused. While their switch is off, the scheduler does not start the `level:sync-devices`, `controld:sync-*` and `zorus:sync-*` commands, and a run by hand skips with a warning. **Test Connection** for NinjaRMM, Level, Control D and Zorus reports that the integration is switched off instead of testing it.
 >
 > A tool withdrawn this way reports as `unavailable_config` on the staff MCP `list_tool_surface` catalog — the same bucket as a genuinely unconfigured integration. If a tool you expect is missing, check the integration's switch **before** checking its credentials.
+>
+> **Upgrading:** `screenconnect_enabled` defaults to `0`; an install that counts ScreenConnect licenses without ever saving the switch stops counting after this upgrade; set it to `1` in Settings > Integrations to keep the daily count.
 
 ### NinjaRMM
 
@@ -1923,7 +1927,7 @@ Webhook-based integration for real-time device status, activity audit, and remot
 6. Enable the integration toggle
 
 **Scheduled commands:**
-- `screenconnect:count-licenses` — daily at 05:30, counts Access agents per client
+- `screenconnect:count-licenses` — daily at 05:30, counts Access agents per client (only while ScreenConnect is switched on, `screenconnect_enabled=1`, and configured)
 
 **MCP tools** (read-only, and **ungranted by default** — grant them per token under
 Settings > MCP Tokens). Both answer from the local webhook-fed snapshot; no live
