@@ -12,6 +12,7 @@ use App\Services\AutoElevate\AutoElevateReadService;
 use App\Services\ControlD\ControlDClient;
 use App\Services\ControlD\ControlDClientException;
 use App\Services\ControlD\ControlDDeviceSyncService;
+use App\Services\Litsrmm\LitsrmmAssetSyncService;
 use App\Services\Tactical\TacticalDeviceSyncService;
 use App\Support\ControlDConfig;
 use GuzzleHttp\Exception\RequestException;
@@ -65,6 +66,19 @@ use Illuminate\Support\Facades\RateLimiter;
  *                          404 included, is http_NNN, and a row value the asset's Control D
  *                          columns cannot store is drift (nothing written). A 429 starts the
  *                          Control D vendor cooldown.
+ *                          LITSRMM (S5) refuses a linked asset whose client has no
+ *                          litsrmm_client_id (client_not_mapped) before any request, and
+ *                          refuses with run_in_progress while the per-client run's lock
+ *                          (litsrmm-asset-sync) is held. Otherwise it takes that lock and
+ *                          makes ONE GET /v1/devices/{id}
+ *                          (LitsrmmAssetSyncService::syncDeviceDetail). A device of another
+ *                          LITSRMM client is other_client and a device the vendor reports
+ *                          retired is not_found_at_vendor, both with nothing written. ok
+ *                          writes only this asset's hostname, online flag, OS, last user,
+ *                          last seen, hardware columns and litsrmm_synced_at. It never
+ *                          creates, retires, un-retires or unlinks an asset, never writes
+ *                          its serial, and writes nothing at LITSRMM. A 429 starts the
+ *                          LITSRMM vendor cooldown.
  *                          Every other source that
  *                          passes 1-6 is refused with no_single_asset_read and makes no
  *                          vendor call
@@ -76,7 +90,7 @@ use Illuminate\Support\Facades\RateLimiter;
 class SourceSyncPipeline
 {
     /** Sources whose single-asset read is wired; each joins with its own slice. */
-    public const WIRED = ['tactical', 'autoelevate', 'controld'];
+    public const WIRED = ['tactical', 'autoelevate', 'controld', 'litsrmm'];
 
     /** Retry-After bounds for a vendor 429 this pipeline reads itself (Q-2 B). */
     public const RETRY_AFTER_CAP_S = 300;
@@ -103,6 +117,7 @@ class SourceSyncPipeline
     public function __construct(
         private readonly TacticalDeviceSyncService $tacticalSync,
         private readonly AutoElevateReadService $autoElevateReads,
+        private readonly LitsrmmAssetSyncService $litsrmmSync,
     ) {}
 
     public const USER_LIMIT_PER_MINUTE = 6;
@@ -237,6 +252,10 @@ class SourceSyncPipeline
         if ($source === 'controld' && blank($asset->client?->controld_org_id)) {
             return self::refused('client_not_mapped');
         }
+        // LITSRMM: a device can only be scope-proven against the client's own LITSRMM client.
+        if ($source === 'litsrmm' && blank($asset->client?->litsrmm_client_id)) {
+            return self::refused('client_not_mapped');
+        }
 
         // 4. Per-user limit, across all sources.
         $userKey = self::userKey($user->id);
@@ -279,6 +298,11 @@ class SourceSyncPipeline
         $reply = in_array($source, self::WIRED, true)
             ? $this->read($asset, $source)
             : self::refused('no_single_asset_read');
+        // A read refused because a run holds the source's lock read nothing, so it opens no
+        // 30 s window, as AutoElevate's run_in_progress refusal above opens none.
+        if ($reply['reason'] === 'run_in_progress') {
+            return $reply;
+        }
         Cache::put($assetKey, [
             'until' => now()->getTimestamp() + self::ASSET_SOURCE_COOLDOWN_S,
             'outcome' => $reply['outcome'],
@@ -295,7 +319,41 @@ class SourceSyncPipeline
             'tactical' => $this->readTactical($asset),
             'autoelevate' => $this->readAutoElevate($asset),
             'controld' => $this->readControlD($asset),
+            'litsrmm' => $this->readLitsrmm($asset),
         };
+    }
+
+    /**
+     * LITSRMM: LitsrmmAssetSyncService::syncDeviceDetail, ONE GET /v1/devices/{id}
+     * (the detail read the per-client run already makes), taken under the run lock
+     * (litsrmm-asset-sync), so it is refused with run_in_progress and no request while
+     * the run, or another Sync now, holds it. ok writes THIS asset's LITSRMM list facts,
+     * hardware columns and litsrmm_synced_at only. Every failure leaves the snapshot
+     * (synced_at included) as it was; a 429 starts the LITSRMM vendor cooldown with the
+     * vendor's Retry-After, or the 60 s fallback when it sends none (Q-2 B).
+     */
+    private function readLitsrmm(Asset $asset): array
+    {
+        $result = $this->litsrmmSync->syncDeviceDetail($asset);
+        $reason = $result['reason'];
+        if (in_array($reason, ['run_in_progress', 'client_not_mapped', 'switched_off', 'not_configured'], true)) {
+            return self::refused($reason);
+        }
+        if ($reason !== 'ok') {
+            if ($reason === 'vendor_429') {
+                self::startVendorCooldown('litsrmm', $result['retry_after_s']);
+            }
+            $reply = ['outcome' => 'failed', 'reason' => $reason];
+            if ($result['retry_after_s'] !== null) {
+                $reply['retry_after_s'] = $result['retry_after_s'];
+            }
+
+            return $reply + ['synced_at' => $asset->litsrmm_synced_at?->toIso8601String(),
+                'changed' => [], 'this_read' => [], 'http_status' => $result['http_status']];
+        }
+
+        return ['outcome' => 'ok', 'reason' => 'ok', 'synced_at' => $asset->litsrmm_synced_at?->toIso8601String(),
+            'changed' => $result['changed'], 'this_read' => ['availability' => $result['device']->availabilityState]];
     }
 
     /**

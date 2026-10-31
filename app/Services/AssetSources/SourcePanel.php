@@ -45,6 +45,7 @@ class SourcePanel
         'tactical' => "Reads this computer's record from Tactical and updates its details here. If actions were queued while it was offline, this can start them.",
         'autoelevate' => "Reads this computer's record from AutoElevate. Changes nothing at AutoElevate.",
         'controld' => "Reads this client's device list from Control D and updates this computer only. Changes nothing at Control D.",
+        'litsrmm' => "Reads this computer's record from LITSRMM and updates its details here. Changes nothing at LITSRMM.",
     ];
 
     /**
@@ -479,6 +480,9 @@ class SourcePanel
         if ($source === 'comet' && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
             $chips = array_merge($chips, self::cometChips($cometJobData));
         }
+        if ($source === 'litsrmm' && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
+            $chips = array_merge($chips, self::litsrmmChips($asset, $syncedAt, $off));
+        }
         if (in_array($source, ['controld', 'zorus', 'm365', 'screenconnect', 'servosity'], true)
             && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
             $own = match ($source) {
@@ -545,6 +549,41 @@ class SourcePanel
             ['label' => 'Backup posture', 'value' => self::COMET_POSTURE[$jobState] ?? 'Unrecognised: '.$jobState, 'key' => 'posture'] + $live,
             ['label' => 'Last success', 'value' => $when($data['last_success'] ?? null), 'key' => 'success'] + $live,
             ['label' => 'Last failure', 'value' => $when($data['last_failure'] ?? null), 'key' => 'failure'] + $live,
+        ];
+    }
+
+    /**
+     * LITSRMM (design-r3 §2.2): online, last user, OS/build, last boot; last seen is the
+     * shared Last contact chip. Every one of these is a SHARED assets column that LITSRMM,
+     * Ninja, Level and others may write, so each note carries the inferred wording (Q-4 A,
+     * M5L.1), never a statement that LITSRMM wrote the value.
+     *
+     * As-of ages follow what wrote them (S1-fix). Both LITSRMM writers (the per-client run's
+     * write() and Sync now's syncDeviceDetail()) write rmm_online with litsrmm_synced_at on
+     * every write, so only Online takes "as of <litsrmm_synced_at>". os, last_user and
+     * last_seen_at are written only when the vendor's list carries them, and last_boot_at
+     * only when the inventory does, so litsrmm_synced_at is not their age: those chips
+     * show no "as of".
+     */
+    private static function litsrmmChips(Asset $asset, ?CarbonInterface $syncedAt, bool $off): array
+    {
+        $nr = 'Not reported by LITSRMM';
+        $inferred = AssetSources::INFERRED_WORDING;
+        $stale = $off ? 'last known, not updated; ' : '';
+        $online = $asset->rmm_online;
+        $boot = $asset->last_boot_at;
+        $ageless = fn (string $label, string $value, string $key) => ['label' => $label, 'value' => $value, 'key' => $key,
+            'kind' => 'none', 'note' => $stale.$inferred];
+
+        $onlineAge = $syncedAt
+            ? ['kind' => self::KIND_SNAPSHOT, 'note' => self::asOf($syncedAt).'; '.$stale.$inferred]
+            : ['kind' => 'none', 'note' => $stale.$inferred];
+
+        return [
+            ['label' => 'Online', 'value' => $online === null ? $nr : ($online ? 'Online' : 'Offline'), 'key' => 'online'] + $onlineAge,
+            $ageless('Last user', filled($asset->last_user) ? (string) $asset->last_user : $nr, 'last_user'),
+            $ageless('OS', filled($asset->os) ? (string) $asset->os : $nr, 'os'),
+            $ageless('Last boot', $boot instanceof CarbonInterface ? $boot->toAppTz()->format('M j, Y g:i A T') : $nr, 'last_boot'),
         ];
     }
 
