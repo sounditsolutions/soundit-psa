@@ -699,8 +699,9 @@ class McpStaffController extends Controller
 
         if (in_array($name, ['resolve_phone_call', 'stage_resolve_phone_call'], true)
             && (! is_int($arguments['client_id'] ?? null) || $arguments['client_id'] < 1
-                || (array_key_exists('staged', $arguments) && ! is_bool($arguments['staged'])))) {
-            return $this->error($id, -32602, 'Caller resolution requires a positive integer client_id and boolean staged when supplied.');
+                || (array_key_exists('staged', $arguments) && ! is_bool($arguments['staged']))
+                || (array_key_exists('replace_confirmed', $arguments) && ! is_bool($arguments['replace_confirmed'])))) {
+            return $this->error($id, -32602, 'Caller resolution requires a positive integer client_id and boolean staged and replace_confirmed when supplied.');
         }
 
         // Unified staged/immediate boundary. Retired stage_* names remain
@@ -1777,7 +1778,7 @@ class McpStaffController extends Controller
         }
 
         if (in_array($tool, ['resolve_phone_call', 'stage_resolve_phone_call'], true)) {
-            $safe = [];
+            $safe = ['replace_confirmed' => ($args['replace_confirmed'] ?? false) === true];
             foreach (['phone_call_id', 'client_id', 'contact_id'] as $key) {
                 if (is_int($args[$key] ?? null)) {
                     $safe[$key] = $args[$key];
