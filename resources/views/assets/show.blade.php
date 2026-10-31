@@ -1143,184 +1143,35 @@
     {{-- ==================== TAB 6: SECURITY ==================== --}}
     <div class="tab-pane fade p-3" id="tab-security">
 
+        {{-- Security keeps one summary row per security source, deep-linked to its Sources panel,
+             plus the Control D / Zorus link and unlink forms and MFA (design-r3 §4 A, Q-8 A).
+             The M365, Control D (with DNS Activity), Zorus and ScreenConnect cards moved to the
+             Sources panels. --}}
+
         {{-- M365 / Intune --}}
         @if($asset->m365_device_id)
-        <div class="card shadow-sm mb-3">
-            <div class="card-header"><i class="bi bi-microsoft me-2"></i>M365 / Intune</div>
-            <div class="card-body">
-                @if($asset->m365_synced_at?->lt(now()->subDays(2)))
-                    <div class="alert alert-warning py-1 px-2 small mb-2">
-                        <i class="bi bi-exclamation-triangle me-1"></i>Data may be stale (synced {{ $asset->m365_synced_at->diffForHumans() }})
-                    </div>
-                @endif
-                <table class="table table-borderless mb-0">
-                    <tbody>
-                        <tr>
-                            <th class="text-muted" style="width: 140px;">Compliance</th>
-                            <td>
-                                @if($asset->m365_is_compliant === true)
-                                    <span class="badge bg-success">Compliant</span>
-                                @elseif($asset->m365_compliance_state)
-                                    <span class="badge bg-danger">{{ $asset->m365_compliance_label }}</span>
-                                @else
-                                    <span class="text-muted">-</span>
-                                @endif
-                            </td>
-                        </tr>
-                        @if($asset->m365_enrollment_type)
-                        <tr>
-                            <th class="text-muted">Enrollment</th>
-                            <td>{{ $asset->m365_enrollment_type }}</td>
-                        </tr>
-                        @endif
-                        @if($asset->m365_os_version)
-                        <tr>
-                            <th class="text-muted">OS Version</th>
-                            <td>{{ $asset->m365_os_version }}</td>
-                        </tr>
-                        @endif
-                        @if($asset->m365_device_owner_type)
-                        <tr>
-                            <th class="text-muted">Ownership</th>
-                            <td>{{ ucfirst($asset->m365_device_owner_type) }}</td>
-                        </tr>
-                        @endif
-                        @if($asset->m365_defender_status)
-                        <tr>
-                            <th class="text-muted">Defender</th>
-                            <td>
-                                {{ $asset->m365_defender_status }}
-                                @if($asset->m365_defender_version)
-                                    <span class="text-muted ms-1 small">{{ $asset->m365_defender_version }}</span>
-                                @endif
-                            </td>
-                        </tr>
-                        @endif
-                        @if($asset->m365_last_scan_at)
-                        <tr>
-                            <th class="text-muted">Last Scan</th>
-                            <td>{{ $asset->m365_last_scan_at->diffForHumans() }}</td>
-                        </tr>
-                        @endif
-                        @if($asset->m365_last_sync_at)
-                        <tr>
-                            <th class="text-muted">Last Intune Sync</th>
-                            <td>{{ $asset->m365_last_sync_at->diffForHumans() }}</td>
-                        </tr>
-                        @endif
-                        @if($asset->m365_synced_at)
-                        <tr>
-                            <th class="text-muted">Data as of</th>
-                            <td class="text-muted small">{{ $asset->m365_synced_at->diffForHumans() }}</td>
-                        </tr>
-                        @endif
-                    </tbody>
-                </table>
-            </div>
-        </div>
+            <p class="mb-3" data-security-summary="m365">
+                <i class="bi bi-microsoft me-1"></i>Intune: {{ $asset->m365_is_compliant === true ? 'Compliant' : ($asset->m365_is_compliant === false ? 'Not compliant' : 'Unknown') }}
+                @if(filled($asset->m365_defender_status)) · Defender: {{ $asset->m365_defender_status }}@endif
+                · <a href="#tab-sources/m365" data-open-sources="m365">View source</a>
+            </p>
         @endif
 
-        {{-- DNS Security (Control D) --}}
+        {{-- DNS Security (Control D): summary row + unlink, or the link form --}}
         @if($asset->controld_device_id)
-        <div class="card shadow-sm mb-3">
-            <div class="card-header"><i class="bi bi-shield-lock me-2"></i>DNS Security (Control D)</div>
-            <div class="card-body">
-                <table class="table table-borderless mb-0">
-                    <tbody>
-                        <tr>
-                            <th class="text-muted" style="width: 140px;">Profile</th>
-                            <td>{{ $asset->controld_profile_name ?: '-' }}</td>
-                        </tr>
-                        <tr>
-                            <th class="text-muted">Device Status</th>
-                            <td>
-                                @if($asset->controld_status === 1)
-                                    <span class="badge bg-success">Active</span>
-                                @elseif($asset->controld_status === 0)
-                                    <span class="badge bg-warning text-dark">Pending</span>
-                                @elseif($asset->controld_status !== null)
-                                    <span class="badge bg-danger">Disabled</span>
-                                @else
-                                    <span class="text-muted">-</span>
-                                @endif
-                            </td>
-                        </tr>
-                        <tr>
-                            <th class="text-muted">Agent</th>
-                            <td>
-                                @if($asset->controld_agent_status === 1)
-                                    <span class="badge bg-success">Connected</span>
-                                @elseif($asset->controld_agent_status !== null)
-                                    <span class="badge bg-danger">Disconnected</span>
-                                @else
-                                    <span class="text-muted">-</span>
-                                @endif
-                                @if($asset->controld_agent_version)
-                                    <span class="text-muted ms-1">{{ $asset->controld_agent_version }}</span>
-                                @endif
-                            </td>
-                        </tr>
-                        <tr>
-                            <th class="text-muted">Agent Last Seen</th>
-                            <td>
-                                @if($asset->controld_last_seen_at)
-                                    {{ $asset->controld_last_seen_at->diffForHumans() }}
-                                @else
-                                    <span class="text-muted">-</span>
-                                @endif
-                            </td>
-                        </tr>
-                        <tr>
-                            <th class="text-muted">Synced</th>
-                            <td>
-                                @if($asset->controld_synced_at)
-                                    {{ $asset->controld_synced_at->diffForHumans() }}
-                                @else
-                                    <span class="text-muted">Never</span>
-                                @endif
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-                <div class="mt-3 pt-3 border-top">
-                    <form method="POST" action="{{ route('assets.controld.unlink', $asset) }}" class="d-inline">
-                        @csrf
-                        <button type="submit" class="btn btn-outline-secondary btn-sm"
-                                onclick="return confirm('Remove Control D link from this asset?')">
-                            <i class="bi bi-x-circle me-1"></i>Unlink
-                        </button>
-                    </form>
-                    @if(\App\Support\ControlDConfig::isAnalyticsConfigured())
-                        <button type="button" class="btn btn-outline-primary btn-sm ms-2" id="btnDnsActivity" onclick="loadDnsActivity(1)">
-                            <i class="bi bi-activity me-1"></i>View DNS Activity
-                        </button>
-                    @endif
-                </div>
+            <div class="d-flex align-items-center gap-2 mb-3">
+                <p class="mb-0" data-security-summary="controld">
+                    <i class="bi bi-shield-lock me-1"></i>DNS Security: Agent {{ $asset->controld_agent_status === null ? 'status not reported by Control D' : ((string) $asset->controld_agent_status === '1' ? 'Connected' : 'Disconnected') }}
+                    · Control D · <a href="#tab-sources/controld" data-open-sources="controld">View source</a>
+                </p>
+                <form method="POST" action="{{ route('assets.controld.unlink', $asset) }}" class="d-inline">
+                    @csrf
+                    <button type="submit" class="btn btn-outline-secondary btn-sm"
+                            onclick="return confirm('Remove Control D link from this asset?')">
+                        <i class="bi bi-x-circle me-1"></i>Unlink
+                    </button>
+                </form>
             </div>
-        </div>
-
-        {{-- DNS Activity Log (loaded via AJAX) --}}
-        @if(\App\Support\ControlDConfig::isAnalyticsConfigured())
-        <div id="dnsActivityContainer" style="display: none;">
-            <div class="card shadow-sm mb-3">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <span><i class="bi bi-activity me-2"></i>DNS Activity</span>
-                    <div class="btn-group btn-group-sm" id="dnsTimeRange">
-                        <button type="button" class="btn btn-outline-secondary active" data-hours="1">1h</button>
-                        <button type="button" class="btn btn-outline-secondary" data-hours="4">4h</button>
-                        <button type="button" class="btn btn-outline-secondary" data-hours="24">24h</button>
-                    </div>
-                </div>
-                <div class="card-body p-0" id="dnsActivityBody">
-                    <div class="text-center py-4">
-                        <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
-                        <span class="text-muted ms-2">Loading DNS activity...</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-        @endif
-
         @elseif($controldDevices !== null)
         <div class="card shadow-sm mb-3">
             <div class="card-header"><i class="bi bi-shield-lock me-2"></i>DNS Security (Control D)</div>
@@ -1371,61 +1222,13 @@
             </p>
         @endif
 
-        {{-- DNS Security (Zorus) --}}
+        {{-- DNS Security (Zorus): summary row + unlink, or the link form --}}
         @if($asset->zorus_endpoint_id)
-        <div class="card shadow-sm mb-3">
-            <div class="card-header"><i class="bi bi-shield-check me-2"></i>DNS Security (Zorus)</div>
-            <div class="card-body">
-                <table class="table table-sm table-borderless mb-0">
-                    <tbody>
-                        @if($asset->zorus_group_name)
-                        <tr><td class="text-muted" style="width:40%">Group</td><td>{{ $asset->zorus_group_name }}</td></tr>
-                        @endif
-                        <tr>
-                            <td class="text-muted">Filtering</td>
-                            <td>
-                                @if($asset->zorus_filtering_enabled)
-                                    <span class="badge bg-success">Enabled</span>
-                                @else
-                                    <span class="badge bg-secondary">Disabled</span>
-                                @endif
-                            </td>
-                        </tr>
-                        <tr>
-                            <td class="text-muted">CyberSight</td>
-                            <td>
-                                @if($asset->zorus_cybersight_enabled)
-                                    <span class="badge bg-success">Enabled</span>
-                                @else
-                                    <span class="badge bg-secondary">Disabled</span>
-                                @endif
-                            </td>
-                        </tr>
-                        @if($asset->zorus_agent_version)
-                        <tr><td class="text-muted">Agent Version</td><td>{{ $asset->zorus_agent_version }}</td></tr>
-                        @endif
-                        @if($asset->zorus_agent_state)
-                        <tr>
-                            <td class="text-muted">Agent State</td>
-                            <td>
-                                @if($asset->zorus_agent_state === 'Online')
-                                    <span class="badge bg-success">{{ $asset->zorus_agent_state }}</span>
-                                @else
-                                    <span class="badge bg-warning text-dark">{{ $asset->zorus_agent_state }}</span>
-                                @endif
-                            </td>
-                        </tr>
-                        @endif
-                        @if($asset->zorus_last_seen_at)
-                        <tr><td class="text-muted">Last Seen</td><td>{{ $asset->zorus_last_seen_at->toAppTz()->format('Y-m-d H:i T') }}</td></tr>
-                        @endif
-                        @if($asset->zorus_synced_at)
-                        <tr><td class="text-muted">Synced</td><td>{{ $asset->zorus_synced_at->toAppTz()->format('Y-m-d H:i T') }}</td></tr>
-                        @endif
-                    </tbody>
-                </table>
-            </div>
-            <div class="card-footer text-end">
+            <div class="d-flex align-items-center gap-2 mb-3">
+                <p class="mb-0" data-security-summary="zorus">
+                    <i class="bi bi-shield-check me-1"></i>DNS Security: Filtering {{ $asset->zorus_filtering_enabled === null ? 'status not reported by Zorus' : ($asset->zorus_filtering_enabled ? 'Enabled' : 'Disabled') }}
+                    · Zorus · <a href="#tab-sources/zorus" data-open-sources="zorus">View source</a>
+                </p>
                 <form method="POST" action="{{ route('assets.zorus.unlink', $asset) }}" class="d-inline"
                       onsubmit="return confirm('Remove the Zorus link from this asset?')">
                     @csrf
@@ -1434,8 +1237,6 @@
                     </button>
                 </form>
             </div>
-        </div>
-
         @elseif($zorusEndpoints !== null)
         <div class="card shadow-sm mb-3">
             <div class="card-header"><i class="bi bi-shield-check me-2"></i>DNS Security (Zorus)</div>
@@ -1472,90 +1273,10 @@
 
         {{-- ScreenConnect --}}
         @if($asset->screenconnect_session_id)
-        <div class="card shadow-sm mb-3">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <div><i class="bi bi-display me-2"></i>ScreenConnect</div>
-                @if($asset->screenconnect_online)
-                    <span class="badge bg-success">Online</span>
-                @elseif($asset->screenconnect_online === false)
-                    <span class="badge bg-secondary">Offline</span>
-                @else
-                    <span class="badge bg-light text-dark">Unknown</span>
-                @endif
-            </div>
-            <div class="card-body">
-                @if($asset->screenconnect_synced_at?->lt(now()->subDays(7)))
-                    <div class="alert alert-warning py-1 px-2 small mb-2">
-                        <i class="bi bi-exclamation-triangle me-1"></i>
-                        No events received since {{ $asset->screenconnect_synced_at->diffForHumans() }}
-                    </div>
-                @endif
-                <table class="table table-borderless table-sm mb-0">
-                    <tbody>
-                        <tr>
-                            <th class="text-muted" style="width: 140px;">Session ID</th>
-                            <td class="font-monospace small">{{ Str::limit($asset->screenconnect_session_id, 20) }}</td>
-                        </tr>
-                        @if($asset->screenconnect_client_version)
-                        <tr>
-                            <th class="text-muted">Agent Version</th>
-                            <td>{{ $asset->screenconnect_client_version }}</td>
-                        </tr>
-                        @endif
-                        <tr>
-                            <th class="text-muted">Last Seen</th>
-                            <td>{{ $asset->screenconnect_last_seen_at?->diffForHumans() ?? '-' }}</td>
-                        </tr>
-                        <tr>
-                            <th class="text-muted">Last Synced</th>
-                            <td>{{ $asset->screenconnect_synced_at?->diffForHumans() ?? '-' }}</td>
-                        </tr>
-                    </tbody>
-                </table>
-
-                @php
-                    $scUrl = \App\Support\ScreenConnectConfig::sessionUrl($asset->screenconnect_session_id);
-                    $recentScEvents = \App\Models\ScreenConnectEvent::where('asset_id', $asset->id)
-                        ->orderByDesc('event_time')
-                        ->limit(10)
-                        ->get();
-                @endphp
-
-                @if($scUrl)
-                <div class="mt-2 pt-2 border-top">
-                    <a href="{{ $scUrl }}" target="_blank" class="btn btn-outline-primary btn-sm">
-                        <i class="bi bi-box-arrow-up-right me-1"></i>Open in ScreenConnect
-                    </a>
-                </div>
-                @endif
-
-                @if($recentScEvents->isNotEmpty())
-                <div class="mt-3 pt-3 border-top">
-                    <h6 class="small fw-bold mb-2">Recent Activity</h6>
-                    <div class="small" style="max-height: 200px; overflow-y: auto;">
-                        @foreach($recentScEvents as $evt)
-                            <div class="d-flex justify-content-between py-1 {{ !$loop->last ? 'border-bottom' : '' }}">
-                                <div>
-                                    <span class="badge bg-light text-dark">{{ $evt->event_type }}</span>
-                                    @if($evt->host)
-                                        <span class="text-muted">by {{ $evt->host }}</span>
-                                    @endif
-                                    @if($evt->data)
-                                        <div class="text-muted text-truncate" style="max-width: 300px;"
-                                             title="{{ $evt->data }}">{{ $evt->data }}</div>
-                                    @endif
-                                </div>
-                                <span class="text-muted text-nowrap ms-2"
-                                      title="{{ $evt->event_time?->toAppTz()->format('Y-m-d H:i T') }}">
-                                    {{ $evt->event_time?->diffForHumans() }}
-                                </span>
-                            </div>
-                        @endforeach
-                    </div>
-                </div>
-                @endif
-            </div>
-        </div>
+            <p class="mb-3" data-security-summary="screenconnect">
+                <i class="bi bi-display me-1"></i>ScreenConnect: {{ $asset->screenconnect_online === null || ! $asset->screenconnect_last_seen_at ? 'Unknown' : ($asset->screenconnect_online ? 'Online' : 'Offline') }}@if($asset->screenconnect_online !== null && $asset->screenconnect_last_seen_at), last event {{ $asset->screenconnect_last_seen_at->diffForHumans() }}@endif
+                · <a href="#tab-sources/screenconnect" data-open-sources="screenconnect">View source</a>
+            </p>
         @endif
 
         {{-- MFA Status from resolved person --}}
@@ -2575,68 +2296,6 @@
         if (direction) direction.style.display = 'none';
     });
 })();
-</script>
-@endif
-
-{{-- Control D DNS Activity JS --}}
-@if($asset->controld_device_id && \App\Support\ControlDConfig::isAnalyticsConfigured())
-<script>
-function loadDnsActivity(hours) {
-    var container = document.getElementById('dnsActivityContainer');
-    var body = document.getElementById('dnsActivityBody');
-    container.style.display = '';
-
-    // Update active button
-    document.querySelectorAll('#dnsTimeRange button').forEach(function(btn) {
-        btn.classList.toggle('active', parseInt(btn.dataset.hours) === hours);
-    });
-
-    body.innerHTML = '<div class="text-center py-4"><div class="spinner-border spinner-border-sm text-muted" role="status"></div><span class="text-muted ms-2">Loading DNS activity...</span></div>';
-
-    fetch('{{ route("assets.controld.activity", $asset) }}?hours=' + hours, {
-        headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-    })
-    .then(function(r) {
-        if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Request failed'); });
-        return r.json();
-    })
-    .then(function(queries) {
-        if (!queries.length) {
-            body.innerHTML = '<div class="text-center py-4 text-muted">No DNS queries found in the last ' + hours + ' hour' + (hours > 1 ? 's' : '') + '.</div>';
-            return;
-        }
-        var html = '<div class="table-responsive"><table class="table table-sm table-hover mb-0">';
-        html += '<thead class="table-light"><tr><th>Time</th><th>Domain</th><th>Action</th><th>Trigger</th><th>Type</th></tr></thead><tbody>';
-        queries.forEach(function(q) {
-            var badge = 'secondary';
-            var label = q.action || 'unknown';
-            if (q.action === 'allowed') badge = 'success';
-            else if (q.action === 'blocked') badge = 'danger';
-            else if (q.action === 'nxdomain') badge = 'warning';
-
-            var time = q.timestamp ? new Date(q.timestamp * 1000).toLocaleTimeString() : '-';
-            html += '<tr>';
-            html += '<td class="text-nowrap small">' + time + '</td>';
-            html += '<td class="small text-break" style="max-width: 400px;">' + (q.domain || '-') + '</td>';
-            html += '<td><span class="badge bg-' + badge + '">' + label + '</span></td>';
-            html += '<td class="small text-muted">' + (q.trigger || '-') + '</td>';
-            html += '<td class="small text-muted">' + (q.type || '-') + '</td>';
-            html += '</tr>';
-        });
-        html += '</tbody></table></div>';
-        if (queries.length >= 100) {
-            html += '<div class="text-center py-2 text-muted small">Showing first 100 queries</div>';
-        }
-        body.innerHTML = html;
-    })
-    .catch(function(err) {
-        body.innerHTML = '<div class="text-center py-4 text-danger"><i class="bi bi-exclamation-triangle me-1"></i>' + err.message + '</div>';
-    });
-}
-
-document.querySelectorAll('#dnsTimeRange button').forEach(function(btn) {
-    btn.addEventListener('click', function() { loadDnsActivity(parseInt(this.dataset.hours)); });
-});
 </script>
 @endif
 
