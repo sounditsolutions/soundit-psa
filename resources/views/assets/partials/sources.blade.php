@@ -24,7 +24,7 @@
                 </a>
             @endforeach
         </div>
-        <p class="text-muted small mt-3 mb-0">A number beside a source counts stored items that need a look. It is computed from stored data; opening this tab calls no vendor.</p>
+        <p class="text-muted small mt-3 mb-0">A number beside a source counts stored items that need a look. It is computed from stored data, so showing it calls no vendor.</p>
     </div>
     <div class="col-md-9">
         @forelse($sourcesPanels as $p)
