@@ -6,6 +6,9 @@
             <span class="badge bg-info">{{ \App\Support\StagedActionLabels::humanLabel('stage_resolve_phone_call') }}</span>
             <strong>Call #{{ $proposal->phone_call_id }}</strong>
             → Client #{{ $proposal->client_id }}, contact #{{ $proposal->payload['contact_id'] ?? '?' }}
+            @if($proposal->payload['replace_confirmed'] ?? false)
+                <p class="mb-1">Replaces contact #{{ $proposal->payload['replaces_person_id'] ?? '?' }} at the same client.</p>
+            @endif
             <p class="mb-1">Ticket association is preserved. Approval revalidates identity and ownership.</p>
             <p>{{ $proposal->payload['reason'] ?? '' }}</p>
             <small>Proposed by {{ $proposal->drafted_by }}</small>

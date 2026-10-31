@@ -21,7 +21,8 @@ class PhoneCallResolutionService
         if (TechnicianConfig::killSwitchEngaged()) {
             return ['error' => 'Technician kill-switch engaged.'];
         }
-        if (array_diff(array_keys($arguments), ['phone_call_id', 'contact_id', 'reason']) !== []
+        if (array_diff(array_keys($arguments), ['phone_call_id', 'contact_id', 'reason', 'replace_confirmed']) !== []
+            || (array_key_exists('replace_confirmed', $arguments) && ! is_bool($arguments['replace_confirmed']))
             || ! is_int($arguments['phone_call_id'] ?? null) || $arguments['phone_call_id'] < 1
             || ! is_int($arguments['contact_id'] ?? null) || $arguments['contact_id'] < 1
             || $clientId < 1 || ! is_string($arguments['reason'] ?? null)
@@ -30,12 +31,18 @@ class PhoneCallResolutionService
         }
         $payload = ['phone_call_id' => $arguments['phone_call_id'], 'client_id' => $clientId,
             'contact_id' => $arguments['contact_id'], 'reason' => trim($arguments['reason'])];
+        if ($arguments['replace_confirmed'] ?? false) {
+            $payload['replace_confirmed'] = true;
+        }
 
         return DB::transaction(function () use ($payload, $actor, $staged): array {
             try {
                 $call = $this->validatedCall($payload);
             } catch (\DomainException $e) {
                 return ['error' => $e->getMessage()];
+            }
+            if ($payload['replace_confirmed'] ?? false) {
+                $payload['replaces_person_id'] = $call->person_id;
             }
             if (! $staged) {
                 return $this->apply($call, $payload, $actor);
@@ -130,6 +137,14 @@ class PhoneCallResolutionService
                 throw new \DomainException('Linked ticket missing or ticket-client mismatch.');
             }
         }
+        if ($payload['replace_confirmed'] ?? false) {
+            if ($call->client_id === null || $call->client_id !== $client->id
+                || $call->person_id === null || $call->person_id === $person->id) {
+                throw new \DomainException('replace_confirmed changes only a different existing contact at the call\'s own client; use resolve_phone_call without it for unresolved calls.');
+            }
+
+            return $call;
+        }
         $identical = $call->client_id === $client->id && $call->person_id === $person->id;
         if (! $identical && ($call->person_confirmed
             || ($call->client_id !== null && $call->client_id !== $client->id)
@@ -202,7 +217,9 @@ class PhoneCallResolutionService
             'approver_user_id' => $approver, 'action_type' => 'resolve_phone_call', 'tier' => 'approve',
             'result_status' => $status, 'ticket_id' => $call->ticket_id, 'client_id' => $payload['client_id'],
             'content_hash' => $this->hash($payload), 'correlation_id' => (string) Str::uuid(),
-            'summary' => 'Phone call #'.$call->id.' client #'.$payload['client_id'].' contact #'.$payload['contact_id'].': '.$payload['reason'],
+            'summary' => 'Phone call #'.$call->id.' client #'.$payload['client_id'].' contact #'
+                .(($payload['replace_confirmed'] ?? false) ? $payload['replaces_person_id'].' -> #'.$payload['contact_id'].' (replace_confirmed)' : $payload['contact_id'])
+                .': '.$payload['reason'],
         ]);
     }
 

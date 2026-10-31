@@ -1964,13 +1964,14 @@ class McpToolRegistry
     {
         return [
             'name' => $internal ? 'stage_resolve_phone_call' : 'resolve_phone_call',
-            'description' => 'Resolve one existing phone call to an existing active client/contact, even when already ticket-linked. contact_id is stored as person_id. Preserves the ticket and billing; rejects mismatched ownership or replacing a different resolved identity. Exact repeats are safe. Default-ungranted including legacy tokens. Bare or :staged grants hold for cockpit approval; only explicit :immediate permits immediate execution. Staged proposals revalidate current identity and ownership at approval. Read back both IDs with get_phone_call.',
+            'description' => 'Resolve one existing phone call to an existing active client/contact, even when already ticket-linked. contact_id is stored as person_id. Preserves the ticket and billing; rejects mismatched ownership. Without replace_confirmed, rejects replacing a different resolved identity and exact repeats are safe. replace_confirmed=true corrects a different existing contact at the call\'s own client (same client only, never unresolved calls). Default-ungranted including legacy tokens. Bare or :staged grants hold for cockpit approval; only explicit :immediate permits immediate execution. Staged proposals revalidate current identity and ownership at approval. Read back both IDs with get_phone_call.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
                     'phone_call_id' => ['type' => 'integer', 'minimum' => 1],
                     'client_id' => ['type' => 'integer', 'minimum' => 1],
                     'contact_id' => ['type' => 'integer', 'minimum' => 1],
+                    'replace_confirmed' => ['type' => 'boolean', 'default' => false],
                     'reason' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 800],
                 ],
                 'required' => ['phone_call_id', 'client_id', 'contact_id', 'reason'],
