@@ -27,7 +27,7 @@ class PhoneCallResolutionService
             || ! is_int($arguments['contact_id'] ?? null) || $arguments['contact_id'] < 1
             || $clientId < 1 || ! is_string($arguments['reason'] ?? null)
             || trim($arguments['reason']) === '' || mb_strlen($arguments['reason']) > 800) {
-            return ['error' => 'Positive integer phone_call_id, client_id, contact_id and a reason (1–800 characters) are required; no other arguments.'];
+            return ['error' => 'Positive integer phone_call_id, client_id, contact_id and a reason (1–800 characters) are required; replace_confirmed is the only optional argument and must be boolean.'];
         }
         $payload = ['phone_call_id' => $arguments['phone_call_id'], 'client_id' => $clientId,
             'contact_id' => $arguments['contact_id'], 'reason' => trim($arguments['reason'])];

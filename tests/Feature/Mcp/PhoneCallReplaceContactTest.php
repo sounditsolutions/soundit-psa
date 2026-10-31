@@ -259,13 +259,26 @@ class PhoneCallReplaceContactTest extends TestCase
             $this->assertSame(-32602, $response->json('error.code'));
             $this->assertSame('Caller resolution requires a positive integer client_id and boolean staged and replace_confirmed when supplied.', $response->json('error.message'));
         }
+        $message = 'Positive integer phone_call_id, client_id, contact_id and a reason (1–800 characters) are required; replace_confirmed is the only optional argument and must be boolean.';
         $response = $this->callTool($args + ['unexpected' => true]);
         $this->assertTrue($response->json('result.isError'));
         $serviceArgs = $args;
         unset($serviceArgs['client_id']);
-        $this->assertArrayHasKey('error', app(PhoneCallResolutionService::class)->execute(array_replace($serviceArgs, ['replace_confirmed' => 'true']), $args['client_id'], 'synthetic', false));
+        $service = app(PhoneCallResolutionService::class);
+        $this->assertSame(['error' => $message], $service->execute(array_replace($serviceArgs, ['replace_confirmed' => 'true']), $args['client_id'], 'synthetic', false));
+        $this->assertSame(['error' => $message], $service->execute($serviceArgs + ['unexpected' => true], $args['client_id'], 'synthetic', false));
         $this->assertSame($before, $call->fresh()->getAttributes());
         $this->assertDatabaseCount('technician_action_logs', 0);
+    }
+
+    public function test_unconfirmed_same_client_call_is_replaceable_under_the_flag(): void
+    {
+        [$call, $old, $new, $ticket, $args] = $this->fixture();
+        $call->forceFill(['person_confirmed' => false])->save();
+        $this->decoded($this->callTool($args));
+        $this->assertSame($new->id, $call->fresh()->person_id);
+        $this->assertTrue($call->fresh()->person_confirmed);
+        $this->assertSame("Phone call #{$call->id} client #{$ticket->client_id} contact #{$old->id} -> #{$new->id} (replace_confirmed): Synthetic correction", TechnicianActionLog::sole()->summary);
     }
 
     public function test_cockpit_replacement_line_is_escaped_and_absent_for_ordinary_proposals(): void
