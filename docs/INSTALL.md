@@ -659,9 +659,9 @@ All other integrations are configured through the **Settings > Integrations** pa
 >
 > **The switches also stop the asset page, Refresh and Test Connection** (card YouDehkS). With NinjaRMM, Level or Zorus switched off, that vendor's API client refuses every call before it reaches the network, whichever page or job asked. With `ninja_enabled=0` the asset page shows the asset's stored data only (no live Ninja detail or backup jobs), and its Ninja network, storage, software and patch tabs say NinjaRMM is switched off. **Refresh** on an asset skips a switched-off RMM and says so; if the asset is also linked to an RMM that is on, that one still refreshes. Control D is checked where it is called instead: with `controld_enabled=0` the asset page lists no Control D devices to link, linking a device is refused, the asset's DNS activity view is refused, the organization mapping page and the Sync buttons are refused, the client page lists no Control D organizations, the AI triage Control D tools refuse, and its `controld:sync-*` commands skip. With `zorus_enabled=0` the asset page lists no Zorus endpoints and linking one is refused. While their switch is off, the scheduler does not start the `level:sync-devices`, `controld:sync-*` and `zorus:sync-*` commands, and a run by hand skips with a warning. **Test Connection** for NinjaRMM, Level, Control D and Zorus reports that the integration is switched off instead of testing it.
 >
-> **Upgrading:** `screenconnect_enabled` defaults to `0`; an install that counts ScreenConnect licenses without ever saving the switch stops counting after this upgrade; set it to `1` in Settings > Integrations to keep the daily count
->
 > A tool withdrawn this way reports as `unavailable_config` on the staff MCP `list_tool_surface` catalog — the same bucket as a genuinely unconfigured integration. If a tool you expect is missing, check the integration's switch **before** checking its credentials.
+>
+> **Upgrading:** `screenconnect_enabled` defaults to `0`; an install that counts ScreenConnect licenses without ever saving the switch stops counting after this upgrade; set it to `1` in Settings > Integrations to keep the daily count.
 
 ### NinjaRMM
 

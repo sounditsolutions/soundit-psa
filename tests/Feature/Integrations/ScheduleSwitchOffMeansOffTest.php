@@ -15,11 +15,12 @@ use Tests\TestCase;
 /**
  * #7926: switching ScreenConnect or Servosity off stops the scheduler starting
  * their commands, as OFF=OFF (card YouDehkS) already does for Level, Control D
- * and Zorus. Each switched-off case has a switched-on positive control on the
- * same schedule with every other condition met, so the filter cannot pass or
- * fail vacuously. The switch is checked before the config, as for Control D
- * and Zorus: a switched-off schedule never reads its credentials, so a
- * Servosity token that no longer decrypts cannot break schedule:run.
+ * and Zorus. Each switched-off case in the scheduledCommands pair has a
+ * switched-on positive control on the same schedule with every other condition
+ * met, so the filter cannot pass or fail vacuously. The switch is checked
+ * before the config, as for Control D and Zorus: a switched-off schedule never
+ * reads its credentials, so a Servosity token that no longer decrypts cannot
+ * break schedule:run.
  *
  * Synthetic data only (G-13): fixture keys, .test hosts.
  */
