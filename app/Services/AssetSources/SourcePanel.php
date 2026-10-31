@@ -17,7 +17,8 @@ use Carbon\CarbonInterface;
  *
  * Every chip carries its kind (design-r3 §2.4):
  *   snapshot     "as of <age>", from a stored column or the source's synced_at
- *   live         "just now", from a read made while the panel is open (none in S0)
+ *   live         "just now", from a read made for this page view (S4: the Comet job
+ *                read the asset page already makes, passed in; never a second read)
  *   vendor_claim the vendor's own statement, e.g. "AutoElevate last check-in"
  */
 class SourcePanel
@@ -43,6 +44,23 @@ class SourcePanel
         'autoelevate' => "Reads this computer's record from AutoElevate. Changes nothing at AutoElevate.",
         'controld' => "Reads this client's device list from Control D and updates this computer only. Changes nothing at Control D.",
     ];
+
+    /**
+     * Comet backup posture labels, built from CometJobService::derivePosture's vocabulary
+     * (job_state) verbatim. Never "OK" (M4B.1): only last_backup_succeeded means the
+     * newest backup worked, and the read working is not the backup working.
+     */
+    public const COMET_POSTURE = [
+        'last_backup_succeeded' => 'Last backup succeeded',
+        'last_backup_failed' => 'Last backup failed',
+        'last_backup_running' => 'Last backup running',
+        'last_backup_unknown' => 'Last backup unknown',
+        'no_backup_jobs_observed' => 'No backup jobs observed',
+        'unavailable' => 'Unavailable',
+    ];
+
+    /** Servosity's Recent activity line: no run outcome is ever read or claimed (M4B.3). */
+    public const SERVOSITY_NO_OUTCOME = "Job outcome is not available from Servosity's API.";
 
     /** ScreenConnect session events listed under Recent activity (newest first, design-r3 §2.2). */
     public const SC_EVENTS_SHOWN = 10;
@@ -180,7 +198,13 @@ class SourcePanel
         'level' => ['last_seen_at', 'last seen'],
     ];
 
-    public static function build(Asset $asset, string $source): array
+    /**
+     * @param  ?array  $cometJobData  the asset page's own Comet job read for this render
+     *                                (AssetController::show, CometJobService::getRecentJobs), or
+     *                                null when this page made none (the tickets route). The
+     *                                panel never reads Comet itself (M4B.2).
+     */
+    public static function build(Asset $asset, string $source, ?array $cometJobData = null): array
     {
         $state = AssetSources::state($asset, $source);
         $linked = $state === AssetSources::STATE_LINKED;
@@ -206,6 +230,12 @@ class SourcePanel
             $attention[] = ['key' => 'stale', 'title' => 'Data may be stale (synced '.$asset->m365_synced_at->diffForHumans().')',
                 'evidence' => 'updated by its scheduled sync'];
         }
+        if ($source === 'comet' && $linked && ($cometJobData['job_state'] ?? null) === 'last_backup_failed') {
+            // Panel-only, like the ScreenConnect rule above: the rail marker counts stored
+            // Comet alerts only (design-r3 §1), never this page view's live posture.
+            array_unshift($attention, ['key' => 'backup', 'title' => self::COMET_POSTURE['last_backup_failed'],
+                'evidence' => 'reported by Comet']);
+        }
         $moreAlerts = null;
         if ($source === 'tactical') {
             // Top 3 open Tactical alerts in the panel; the rest behind "all N alerts" (the marker still counts all).
@@ -226,7 +256,7 @@ class SourcePanel
             // Carries the asset's link, whatever the state (a not-configured source can still be linked).
             'linked' => AssetSources::isLinked($asset, $source),
             'open_in' => $linked ? self::openIn($asset, $source) : null,
-            'chips' => self::chips($asset, $source, $state, $syncedAt),
+            'chips' => self::chips($asset, $source, $state, $syncedAt, $cometJobData),
             'attention' => $attention,
             'all_alerts' => $moreAlerts,
             // Tactical: the failing-check list is read when the panel is opened (never on render).
@@ -235,6 +265,10 @@ class SourcePanel
             'activity' => $source === 'tactical' && AssetSources::isLinked($asset, $source) ? self::tacticalActivity($asset) : null,
             // ScreenConnect: the stored session events (written by its webhook), no vendor call.
             'sc_events' => $source === 'screenconnect' && AssetSources::isLinked($asset, $source) ? self::screenConnectEvents($asset) : null,
+            // Comet: a link to the Backup tab's job table (design-r3 §4); the table is not copied.
+            'backup_jobs_link' => $source === 'comet' && $linked,
+            // Servosity: no run outcome is read, so none is shown (M4B.3).
+            'no_outcome_note' => $source === 'servosity' && $linked ? self::SERVOSITY_NO_OUTCOME : null,
             // Control D: the existing DNS activity read, offered as a button only; nothing is
             // read until it is clicked (M3S.1). The route refuses while switched off.
             'dns_activity' => $source === 'controld' && $linked && \App\Support\ControlDConfig::isAnalyticsConfigured(),
@@ -377,7 +411,7 @@ class SourcePanel
         return $chips;
     }
 
-    private static function chips(Asset $asset, string $source, string $state, ?CarbonInterface $syncedAt): array
+    private static function chips(Asset $asset, string $source, string $state, ?CarbonInterface $syncedAt, ?array $cometJobData = null): array
     {
         $off = $state === AssetSources::STATE_OFF;
         $stale = 'last known, not updated';
@@ -440,13 +474,18 @@ class SourcePanel
         if ($source === 'autoelevate' && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
             $chips = self::autoElevateChips($asset, $chips, $syncedAt, $off);
         }
-        if (in_array($source, ['controld', 'zorus', 'm365', 'screenconnect'], true)
+        if ($source === 'comet' && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
+            $chips = array_merge($chips, self::cometChips($cometJobData));
+        }
+        if (in_array($source, ['controld', 'zorus', 'm365', 'screenconnect', 'servosity'], true)
             && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
             $own = match ($source) {
                 'controld' => self::controlDChips($asset, $syncedAt),
                 'zorus' => self::zorusChips($asset, $syncedAt),
                 'm365' => self::m365Chips($asset, $syncedAt),
                 'screenconnect' => self::screenConnectChips($asset),
+                // Servosity stores no sync stamp, so its one flag carries no age.
+                'servosity' => [self::agelessChip('Backup enabled', $asset->servosity_backup_enabled ? 'Yes' : 'No', 'enabled')],
             };
             foreach ($own as $i => $chip) {
                 if ($off && $chip['kind'] === self::KIND_SNAPSHOT) {
@@ -459,6 +498,51 @@ class SourcePanel
         }
 
         return $chips;
+    }
+
+    /**
+     * Comet (design-r3 §2.2): backup posture, last success, last failure, all from the asset
+     * page's own job read for this render (kind live). Their age is that read's
+     * jobs_checked_at, never backup_synced_at, which the daily storage sync and Ninja backup
+     * share and which dates none of these values.
+     *
+     * - No read on this page (null): no posture is claimed.
+     * - A read that could not happen or failed: the posture is Unavailable with the Backup
+     *   tab's reason copy, and no success/failure chips, so it never reads as "no jobs" (M5.3).
+     *   A failed read wrote nothing, so it carries no age.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function cometChips(?array $data): array
+    {
+        if ($data === null) {
+            return [['label' => 'Backup posture', 'value' => 'Not read on this page', 'key' => 'posture', 'kind' => 'none', 'note' => '']];
+        }
+        $jobState = (string) ($data['job_state'] ?? 'unavailable');
+        if ($jobState === 'unavailable' || ($data['state'] ?? null) === 'unavailable') {
+            $note = match ($data['unavailable_reason'] ?? null) {
+                // The Backup tab's wording (show.blade.php, Recent Backup Jobs, unavailable arm).
+                'no_synced_username' => 'Job history cannot be looked up — this asset has no synced Comet username. ',
+                'lookup_failed' => 'Backup job history unavailable — the Comet server could not be reached. ',
+                default => '',
+            }.'Backup state is unknown, not passing.';
+
+            return [['label' => 'Backup posture', 'value' => self::COMET_POSTURE['unavailable'], 'key' => 'posture', 'kind' => 'none', 'note' => $note]];
+        }
+
+        $checked = filled($data['jobs_checked_at'] ?? null) ? \Illuminate\Support\Carbon::parse($data['jobs_checked_at']) : null;
+        $live = $checked
+            ? ['kind' => self::KIND_LIVE, 'note' => 'read from Comet '.($checked->diffInSeconds(now(), true) < 60 ? 'just now' : $checked->diffForHumans())]
+            : ['kind' => 'none', 'note' => ''];
+        $when = fn (?array $job) => filled($job['started'] ?? null)
+            ? \Illuminate\Support\Carbon::parse($job['started'])->toAppTz()->format('M j, Y g:i A T')
+            : 'Not reported by Comet';
+
+        return [
+            ['label' => 'Backup posture', 'value' => self::COMET_POSTURE[$jobState] ?? 'Unrecognised: '.$jobState, 'key' => 'posture'] + $live,
+            ['label' => 'Last success', 'value' => $when($data['last_success'] ?? null), 'key' => 'success'] + $live,
+            ['label' => 'Last failure', 'value' => $when($data['last_failure'] ?? null), 'key' => 'failure'] + $live,
+        ];
     }
 
     /**

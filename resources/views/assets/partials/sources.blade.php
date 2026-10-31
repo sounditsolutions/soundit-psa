@@ -106,6 +106,17 @@
                             @include('assets.partials.sources-controld-activity', ['asset' => $asset])
                         @elseif($p['sc_events'] !== null && $p['sc_events']->isNotEmpty())
                             @include('assets.partials.sources-screenconnect-activity', ['events' => $p['sc_events']])
+                        @elseif($p['backup_jobs_link'])
+                            {{-- Comet: the job table stays on the Backup tab (design-r3 §4); linked, not copied. --}}
+                            <p class="small mb-0" data-comet-jobs-link>Recent Backup Jobs ·
+                                @if(($activeTab ?? '') === 'tickets')
+                                    <a href="{{ route('assets.show', $asset) }}#tab-backup">View in Backup</a>
+                                @else
+                                    <a href="#tab-backup" data-show-tab="#tab-backup">View in Backup</a>
+                                @endif
+                            </p>
+                        @elseif($p['no_outcome_note'])
+                            <p class="text-muted small mb-0" data-no-outcome>{{ $p['no_outcome_note'] }}</p>
                         @else
                         <p class="text-muted small mb-0">
                             @if($p['state'] === 'off') None while the integration is off. @else No recent activity is shown for this source here. @endif
