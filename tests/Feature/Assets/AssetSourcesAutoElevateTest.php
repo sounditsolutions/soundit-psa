@@ -351,7 +351,7 @@ class AssetSourcesAutoElevateTest extends TestCase
         $this->assertTrue($event->mutex->create($event), 'the scheduler takes the run mutex');
 
         $this->sync($asset)->assertJson(['outcome' => 'refused', 'reason' => 'run_in_progress',
-            'message' => 'A scheduled sync for this source is running; try again when it finishes.']);
+            'message' => 'A sync for this source is running; try again when it finishes.']);
         Http::assertNothingSent();
 
         // Released: the next Sync now reads.

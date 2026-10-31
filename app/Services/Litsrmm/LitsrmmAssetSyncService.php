@@ -439,6 +439,162 @@ class LitsrmmAssetSyncService
     // A holder killed before finally (a fatal, a timeout or a killed worker) blocks every entry point until the lock expires, up to 3600 s; the way out, only once no sync is running, is Cache::lock('litsrmm-asset-sync')->forceRelease().
     private const SYNC_LOCK_TTL = 3600;
 
+    /** The run lock's name, shared by sync() and syncDeviceDetail(). */
+    public const RUN_LOCK = 'litsrmm-asset-sync';
+
+    /**
+     * How long syncDeviceDetail() may hold the run lock, at least: past the
+     * client's request timeout (30 s by default; the TTL grows with a longer
+     * one), so a web process killed mid-read frees it within minutes, never
+     * the full run's hour.
+     */
+    private const SINGLE_READ_LOCK_TTL = 120;
+
+    /** The columns syncDeviceDetail() may write, on its one asset only. */
+    public const DEVICE_DETAIL_WRITES = [
+        'hostname', 'rmm_online', 'os', 'last_user', 'last_seen_at',
+        'cpu', 'ram_gb', 'disk_summary', 'ip_address', 'last_boot_at', 'needs_reboot',
+        'litsrmm_synced_at',
+    ];
+
+    /**
+     * Asset Sources "Sync now" (nfuBmADp S5): ONE `GET /v1/devices/{id}`
+     * (LitsrmmClient::getDevice, the detail read the per-client run already
+     * makes) for this asset's linked device, with no retry and no sleep.
+     *
+     * It takes the run lock (RUN_LOCK) for the read and the write, and
+     * releases it in finally. While a run, or another Sync now, holds it the
+     * answer is run_in_progress and nothing is read. A run that starts during
+     * the read is refused by its own lock check, as it is today.
+     *
+     * ok writes THIS asset only: the list facts write() writes (hostname,
+     * rmm_online, os with its build, last_user unless NOBODY_SIGNED_IN,
+     * last_seen_at; listFacts()), LitsrmmHardware::columns() from the
+     * inventory, and litsrmm_synced_at. It never creates, retires or
+     * un-retires an asset, never writes serial_number, asset_type,
+     * litsrmm_device_id, is_active or litsrmm_retired_at, never releases a
+     * link and never touches seats. The save is an ordinary model save, as
+     * write()'s is, so the asset's observers run as they do after a run:
+     * when last_user changes, AssetObserver links that user to the asset
+     * (AssetUserAssignmentService::assignForAsset).
+     *
+     * Every other answer writes nothing (synced_at included):
+     *   client_not_mapped  the asset's client has no litsrmm_client_id;
+     *   other_client       the device's clientId is not that client's;
+     *   retired_at_vendor  a device the vendor reports retired (both states);
+     *                      the scheduled run decides what that means for the asset;
+     *   drift              an id getDevice() refuses, a body without its
+     *                      inventory or about another device, a row that breaks
+     *                      the contract, a half-retired device or a retiredAt
+     *                      on a device that is not retired (shapes the vendor
+     *                      has not described), or an inventory category
+     *                      LitsrmmHardware reads as malformed;
+     *   failureReason(status) for an HTTP status (404 not_found_at_vendor,
+     *                      the link kept; 429 vendor_429 with retry_after_s
+     *                      from Retry-After; any other http_NNN);
+     *   transport          no response came back;
+     *   switched_off / not_configured  the client refused before any request.
+     * The exception's message is never read (C-56): only its HTTP status and
+     * the response it chains.
+     *
+     * @return array{reason: string, http_status: ?int, retry_after_s: ?int, changed: list<string>, device: ?LitsrmmDevice}
+     */
+    public function syncDeviceDetail(Asset $asset): array
+    {
+        $answer = fn (string $reason, ?int $status = null, ?int $retryAfter = null, array $changed = [], ?LitsrmmDevice $device = null) => [
+            'reason' => $reason, 'http_status' => $status, 'retry_after_s' => $retryAfter, 'changed' => $changed, 'device' => $device,
+        ];
+
+        $mapped = (string) $asset->client?->litsrmm_client_id;
+        if ($mapped === '') {
+            return $answer('client_not_mapped');
+        }
+
+        $ttl = max(self::SINGLE_READ_LOCK_TTL, (int) config('services.litsrmm.request_timeout', 30) + 60);
+        $lock = \Illuminate\Support\Facades\Cache::lock(self::RUN_LOCK, $ttl);
+        if (! $lock->get()) {
+            return $answer('run_in_progress');
+        }
+
+        try {
+            try {
+                $read = $this->litsrmm->getDevice((string) $asset->litsrmm_device_id);
+            } catch (LitsrmmClientException $e) {
+                $status = self::failure($e)['status'] ?? null;
+                if ($status !== null) {
+                    $reason = \App\Services\AssetSources\SourceSyncPipeline::failureReason($status);
+                    $retryAfter = null;
+                    if ($status === 429) {
+                        $response = self::chainedResponse($e);
+                        $retryAfter = \App\Services\AssetSources\SourceSyncPipeline::retryAfterSeconds(
+                            $response?->getHeaderLine('Retry-After') ?? ''
+                        );
+                    }
+
+                    return $answer($reason, $status, $retryAfter);
+                }
+                if ($e->getPrevious() instanceof \GuzzleHttp\Exception\GuzzleException) {
+                    return $answer('transport');
+                }
+                if (! \App\Support\LitsrmmConfig::isEnabled()) {
+                    return $answer('switched_off');
+                }
+                if (! \App\Support\LitsrmmConfig::isConfigured()) {
+                    return $answer('not_configured');
+                }
+                try {
+                    // A base URL the client refuses to send the key to: nothing was sent.
+                    LitsrmmClient::assertTransportIsSafe((string) \App\Support\LitsrmmConfig::get('base_url'));
+                } catch (LitsrmmClientException) {
+                    return $answer('not_configured');
+                }
+
+                return $answer('drift');
+            }
+
+            $device = $read['device'];
+            if (strtolower($device->clientId) !== strtolower($mapped)) {
+                return $answer('other_client');
+            }
+            if ($device->isRetired()) {
+                return $answer('retired_at_vendor', device: $device);
+            }
+            if ($device->hasSplitRetiredState() || $device->retiredAt !== null) {
+                return $answer('drift', device: $device);
+            }
+            $hardware = LitsrmmHardware::fromInventory($read['inventory']);
+            if ($hardware->malformed !== []) {
+                return $answer('drift', device: $device);
+            }
+
+            $data = array_merge(self::listFacts($device), $hardware->columns(), ['litsrmm_synced_at' => now()]);
+            $asset->forceFill($data);
+            // getDirty() compares through the casts, so null and false differ on a boolean column.
+            $changed = array_values(array_intersect(self::DEVICE_DETAIL_WRITES, array_keys($asset->getDirty())));
+            $asset->save();
+
+            return $answer('ok', changed: $changed, device: $device);
+        } finally {
+            try {
+                $lock->release();
+            } catch (\Throwable $e) {
+                Log::warning('[LitsrmmAssetSync] single-asset read lock release failed', ['error' => class_basename($e)]);
+            }
+        }
+    }
+
+    /** The HTTP response a LitsrmmClientException chains, through deviceReadRefusal()'s rewrap. */
+    private static function chainedResponse(\Throwable $e): ?\Psr\Http\Message\ResponseInterface
+    {
+        for ($cause = $e; $cause !== null; $cause = $cause->getPrevious()) {
+            if ($cause instanceof \GuzzleHttp\Exception\RequestException && $cause->getResponse() !== null) {
+                return $cause->getResponse();
+            }
+        }
+
+        return null;
+    }
+
     /** @param list<string> $acceptShortRead */
     private function syncLocked(?Client $only, array $acceptShortRead): SyncResult
     {
@@ -1431,28 +1587,10 @@ class LitsrmmAssetSyncService
 
     private function write(Client $client, ?Asset $asset, LitsrmmDevice $device, ?LitsrmmHardware $hardware, SyncResult $result, bool $serialShared): Asset
     {
-        $data = [
+        $data = array_merge([
             'litsrmm_device_id' => $device->id,
             'litsrmm_synced_at' => now(),
-            'hostname' => $device->hostname,
-            'rmm_online' => $device->availabilityState === 'online',
-        ];
-
-        // Null on the list means the vendor's agent is not there to say, not
-        // that the machine has no OS or user: keep what the asset knows.
-        // The build is what tells 22H2 from 23H2 and Windows 10 from 11, and a
-        // Level-fed asset carried it, so a migrated asset keeps it.
-        if ($device->osName !== null) {
-            $data['os'] = $device->osBuild !== null && $device->osBuild !== ''
-                ? "{$device->osName} (build {$device->osBuild})"
-                : $device->osName;
-        }
-        if ($device->lastUser !== null && $device->lastUser !== self::NOBODY_SIGNED_IN) {
-            $data['last_user'] = $device->lastUser;
-        }
-        if ($device->lastSeen !== null) {
-            $data['last_seen_at'] = Carbon::instance($device->lastSeen);
-        }
+        ], self::listFacts($device));
 
         // Never write a placeholder or overwrite a real serial. Write the device's serial to a new asset, or in place of a stored value that is not a serial identity, unless another device of this client that this read lists and that is not retired (retired meaning both of its states read retired, so a half-retired device, which syncClient() skips, still counts) shares its identity, or another asset of this client that is not soft-deleted already carries a serial with the same identity.
         $serial = $device->matchableSerial();
@@ -1497,6 +1635,39 @@ class LitsrmmAssetSyncService
             'asset_type' => self::assetType($device->osName),
             'is_active' => true,
         ]));
+    }
+
+    /**
+     * The device's list facts as asset columns, the rules write() and
+     * syncDeviceDetail() share: hostname and rmm_online always; os, last_user
+     * and last_seen_at only when the list carries them.
+     *
+     * @return array<string, mixed>
+     */
+    private static function listFacts(LitsrmmDevice $device): array
+    {
+        $data = [
+            'hostname' => $device->hostname,
+            'rmm_online' => $device->availabilityState === 'online',
+        ];
+
+        // Null on the list means the vendor's agent is not there to say, not
+        // that the machine has no OS or user: keep what the asset knows.
+        // The build is what tells 22H2 from 23H2 and Windows 10 from 11, and a
+        // Level-fed asset carried it, so a migrated asset keeps it.
+        if ($device->osName !== null) {
+            $data['os'] = $device->osBuild !== null && $device->osBuild !== ''
+                ? "{$device->osName} (build {$device->osBuild})"
+                : $device->osName;
+        }
+        if ($device->lastUser !== null && $device->lastUser !== self::NOBODY_SIGNED_IN) {
+            $data['last_user'] = $device->lastUser;
+        }
+        if ($device->lastSeen !== null) {
+            $data['last_seen_at'] = Carbon::instance($device->lastSeen);
+        }
+
+        return $data;
     }
 
     /**

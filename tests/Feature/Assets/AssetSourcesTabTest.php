@@ -391,9 +391,9 @@ class AssetSourcesTabTest extends TestCase
         $this->assertStringContainsString('This vendor asked us to slow down; no request was sent.', $panel);
     }
 
-    public function test_sync_now_button_appears_on_the_tactical_autoelevate_and_controld_panels_only(): void
+    public function test_sync_now_button_appears_on_the_tactical_autoelevate_controld_and_litsrmm_panels_only(): void
     {
-        // Tactical (S1), AutoElevate (S2) and Control D (S3) are the only sources whose Sync now read is wired.
+        // Tactical (S1), AutoElevate (S2), Control D (S3) and LITSRMM (S5) are the only sources whose Sync now read is wired.
         $this->configureAllSources();
         Setting::setValue('ninja_enabled', '1');
         $html = $this->show($this->assetLinkedEverywhere())->getContent();
@@ -407,12 +407,15 @@ class AssetSourcesTabTest extends TestCase
         $controld = $this->panel($html, 'controld');
         $this->assertStringContainsString('data-sync-now="controld"', $controld);
         $this->assertStringContainsString(e("Reads this client's device list from Control D and updates this computer only. Changes nothing at Control D."), $controld);
+        $litsrmm = $this->panel($html, 'litsrmm');
+        $this->assertStringContainsString('data-sync-now="litsrmm"', $litsrmm);
+        $this->assertStringContainsString(e("Reads this computer's record from LITSRMM and updates its details here. Changes nothing at LITSRMM."), $litsrmm);
         foreach (\App\Services\AssetSources\AssetSources::ORDER as $source) {
-            if (! in_array($source, ['tactical', 'autoelevate', 'controld'], true)) {
+            if (! in_array($source, ['tactical', 'autoelevate', 'controld', 'litsrmm'], true)) {
                 $this->assertStringNotContainsString('data-sync-now', $this->panel($html, $source), $source);
             }
         }
-        $this->assertSame(3, substr_count($html, 'data-sync-now='));
+        $this->assertSame(4, substr_count($html, 'data-sync-now='));
     }
 
     public function test_comet_and_servosity_do_not_claim_never_synced(): void
