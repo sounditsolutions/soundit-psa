@@ -156,6 +156,9 @@ class AssetSourcesBackupPanelsTest extends TestCase
         $this->configureAllSources();
         $asset = $this->cometAsset();
         $this->cometScript[] = [$this->job($asset, \Comet\Def::JOB_STATUS_STOP_SUCCESS, 6)];
+        // A spare answer, so a second read would render rather than throw: the count below is
+        // what catches it.
+        $this->cometScript[] = [$this->job($asset, \Comet\Def::JOB_STATUS_STOP_SUCCESS, 6)];
 
         $panel = $this->panel($this->show($asset)->getContent(), 'comet');
 
