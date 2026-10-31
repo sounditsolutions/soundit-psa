@@ -181,16 +181,14 @@ Schedule::command('zorus:sync-devices')
         && \App\Support\ZorusConfig::isConfigured()
         && \App\Models\Client::whereNotNull('zorus_customer_id')->exists());
 
-// ScreenConnect license counting — daily (only if configured + not switched off).
-// Only an explicit screenconnect_enabled=0 stops it. ScreenConnectConfig::isEnabled()
-// reads a never-saved switch as off (default '0'), but a configured install that
-// never saved the toggle has always been counted, and the counts feed billing (#7926).
+// ScreenConnect license counting — daily (only if switched on + configured).
+// The switch is checked first, as for Control D and Zorus (#7926).
 Schedule::command('screenconnect:count-licenses')
     ->dailyAt('05:30')
     ->withoutOverlapping()
     ->runInBackground()
-    ->when(fn () => \App\Support\ScreenConnectConfig::isConfigured()
-        && \App\Models\Setting::getValue('screenconnect_enabled') !== '0');
+    ->when(fn () => \App\Support\ScreenConnectConfig::isEnabled()
+        && \App\Support\ScreenConnectConfig::isConfigured());
 
 // Tactical RMM alert reconciliation — catch missed resolved webhooks
 Schedule::command('tactical:reconcile-alerts')
@@ -273,8 +271,8 @@ Schedule::command('servosity:sync-licenses')
     ->dailyAt('05:45')
     ->withoutOverlapping()
     ->runInBackground()
-    ->when(fn () => \App\Support\ServosityConfig::isConfigured()
-        && \App\Support\ServosityConfig::isEnabled()
+    ->when(fn () => \App\Support\ServosityConfig::isEnabled()
+        && \App\Support\ServosityConfig::isConfigured()
         && \App\Models\Client::whereNotNull('servosity_company_id')->exists());
 
 // Servosity backup provisioning — hourly (only if switched on + configured + assets waiting)
@@ -282,8 +280,8 @@ Schedule::command('servosity:provision-backups')
     ->hourly()
     ->withoutOverlapping()
     ->runInBackground()
-    ->when(fn () => \App\Support\ServosityConfig::isConfigured()
-        && \App\Support\ServosityConfig::isEnabled()
+    ->when(fn () => \App\Support\ServosityConfig::isEnabled()
+        && \App\Support\ServosityConfig::isConfigured()
         && \App\Models\Asset::where('servosity_backup_enabled', true)
             ->whereNull('servosity_dr_backup_id')->exists());
 
