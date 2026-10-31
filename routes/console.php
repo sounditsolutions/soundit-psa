@@ -181,12 +181,13 @@ Schedule::command('zorus:sync-devices')
         && \App\Support\ZorusConfig::isConfigured()
         && \App\Models\Client::whereNotNull('zorus_customer_id')->exists());
 
-// ScreenConnect license counting — daily (only if configured)
+// ScreenConnect license counting — daily (only if switched on + configured)
 Schedule::command('screenconnect:count-licenses')
     ->dailyAt('05:30')
     ->withoutOverlapping()
     ->runInBackground()
-    ->when(fn () => \App\Support\ScreenConnectConfig::isConfigured());
+    ->when(fn () => \App\Support\ScreenConnectConfig::isConfigured()
+        && \App\Support\ScreenConnectConfig::isEnabled());
 
 // Tactical RMM alert reconciliation — catch missed resolved webhooks
 Schedule::command('tactical:reconcile-alerts')
@@ -264,19 +265,22 @@ Schedule::command('comet:sync-backup')
     ->when(fn () => \App\Support\CometConfig::isConfigured()
         && \App\Models\Client::whereNotNull('comet_group_id')->exists());
 
-// Servosity backup license sync — daily (only if configured + clients mapped)
+// Servosity backup license sync — daily (only if switched on + configured + clients mapped)
 Schedule::command('servosity:sync-licenses')
     ->dailyAt('05:45')
     ->withoutOverlapping()
     ->runInBackground()
     ->when(fn () => \App\Support\ServosityConfig::isConfigured()
+        && \App\Support\ServosityConfig::isEnabled()
         && \App\Models\Client::whereNotNull('servosity_company_id')->exists());
 
+// Servosity backup provisioning — hourly (only if switched on + configured + assets waiting)
 Schedule::command('servosity:provision-backups')
     ->hourly()
     ->withoutOverlapping()
     ->runInBackground()
     ->when(fn () => \App\Support\ServosityConfig::isConfigured()
+        && \App\Support\ServosityConfig::isEnabled()
         && \App\Models\Asset::where('servosity_backup_enabled', true)
             ->whereNull('servosity_dr_backup_id')->exists());
 

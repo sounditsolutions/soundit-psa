@@ -411,7 +411,8 @@ These commands execute automatically based on their schedule:
 | `contracts:evaluate-rules` | Daily at 05:15 | Evaluate contract assignment rules (reconciliation) |
 | `ninja:sync-backup` | Daily at 05:30 | Sync backup storage usage and license counts from NinjaRMM (only if `ninja_enabled=1` and orgs mapped) |
 | `comet:sync-backup` | Daily at 05:40 | Sync backup storage usage and license counts from Comet Backup (only if configured + orgs mapped) |
-| `servosity:sync-licenses` | Daily at 05:45 | Sync backup license counts from Servosity (only if configured + clients mapped) |
+| `servosity:sync-licenses` | Daily at 05:45 | Sync backup license counts from Servosity (only if switched on (`servosity_enabled=1`, the default) + configured + clients mapped) |
+| `servosity:provision-backups` | Hourly | Provision DR backup accounts for assets awaiting Servosity One registration (only if switched on (`servosity_enabled=1`, the default) + configured + an asset has Servosity backup enabled and no DR backup id yet) |
 | `appriver:sync-licenses` | Daily at 05:50 | Sync M365 subscription seat counts from AppRiver (only if connected + clients mapped). If AppRiver was connected but its login has dropped, the run is logged under `[AppRiverSync]` and raises (or refreshes) one Alerts Hub alert instead of skipping silently |
 | `cipp:sync-contacts` | Daily at 05:55 | Sync M365 users as contacts + mailbox/MFA enrichment from CIPP (only if contact sync enabled + tenants mapped) |
 | `cipp:sync-devices` | Daily at 05:59 | Sync Intune devices + Defender state to assets from CIPP (only if device sync enabled + tenants mapped) |
@@ -1923,7 +1924,7 @@ Webhook-based integration for real-time device status, activity audit, and remot
 6. Enable the integration toggle
 
 **Scheduled commands:**
-- `screenconnect:count-licenses` — daily at 05:30, counts Access agents per client
+- `screenconnect:count-licenses` — daily at 05:30, counts Access agents per client (only while ScreenConnect is switched on, `screenconnect_enabled=1`, and configured)
 
 **MCP tools** (read-only, and **ungranted by default** — grant them per token under
 Settings > MCP Tokens). Both answer from the local webhook-fed snapshot; no live
