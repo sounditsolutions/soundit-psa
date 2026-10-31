@@ -30,8 +30,11 @@ use Tests\TestCase;
  * (GET /v2/devices/{id}), each ONE single-attempt read writing this asset only.
  *
  * G-5: the Http facade refuses every request (no catch-all). NinjaClient and
- * LevelClient use Guzzle, so each is bound to a scripted MockHandler whose history
- * counts every request; an empty queue throws, so an unexpected read fails the test.
+ * LevelClient use Guzzle, so each is bound to a scripted MockHandler. Every request
+ * is counted when it is sent (Middleware::tap), so a read whose failure a caller
+ * swallows is still counted: an empty queue throws before Middleware::history would
+ * record anything. An unscripted read on a path that does not catch that throw also
+ * fails the request.
  * G-13: synthetic data only.
  */
 class AssetSourcesNinjaLevelPanelTest extends TestCase
@@ -58,7 +61,7 @@ class AssetSourcesNinjaLevelPanelTest extends TestCase
         $this->ninjaRequests = new \ArrayObject;
         $this->ninjaQueue = new MockHandler([]);
         $stack = HandlerStack::create($this->ninjaQueue);
-        $stack->push(Middleware::history($this->ninjaRequests));
+        $stack->push(Middleware::tap(fn ($request) => $this->ninjaRequests[] = ['request' => $request]));
         $this->ninjaCache = new CacheRepository(new ArrayStore);
         // A cached token, so a Sync now is the one device GET (the token POST has its own test).
         $this->ninjaCache->put('ninja_api_token', 'synthetic-token', 600);
@@ -70,7 +73,7 @@ class AssetSourcesNinjaLevelPanelTest extends TestCase
         $this->levelRequests = new \ArrayObject;
         $this->levelQueue = new MockHandler([]);
         $stack = HandlerStack::create($this->levelQueue);
-        $stack->push(Middleware::history($this->levelRequests));
+        $stack->push(Middleware::tap(fn ($request) => $this->levelRequests[] = ['request' => $request]));
         $this->app->instance(LevelClient::class, new LevelClient([
             'api_key' => 'synthetic-level-key', 'base_url' => 'https://level.example.test', 'handler' => $stack,
         ]));
@@ -250,7 +253,12 @@ class AssetSourcesNinjaLevelPanelTest extends TestCase
             $this->assertSame(1, substr_count($panel, '<button'), "{$source}: Sync now is the panel's only button");
             $this->assertStringContainsString('data-sync-now="'.$source.'"', $panel, $source);
         }
-        $this->assertCount(0, $this->ninjaRequests, 'rendering the panels reads nothing from Ninja');
+        // Counted when sent, so the swallowed failures below still count. With Ninja on, the
+        // page view's only Ninja reads are AssetController::show()'s existing on-access refresh
+        // (syncDeviceDetail, then getBackupJobData); the panels add none.
+        $this->assertSame(['GET /v2/device/'.$asset->ninja_id, 'GET /v2/backup/jobs'],
+            array_map(fn ($t) => $t['request']->getMethod().' '.$t['request']->getUri()->getPath(), $this->ninjaRequests->getArrayCopy()),
+            "the page view's Ninja reads are AssetController::show()'s existing on-access refresh only; the panels read nothing");
         $this->assertCount(0, $this->levelRequests, 'rendering the panels reads nothing from Level');
     }
 
@@ -446,12 +454,13 @@ class AssetSourcesNinjaLevelPanelTest extends TestCase
     public function test_the_default_device_read_still_retries_a_429_for_the_scheduled_and_webhook_callers(): void
     {
         // Positive control for the opt-in: without singleAttempt the clients behave as before
-        // (Retry-After 0, so the existing back-off sleeps 0 s).
+        // (Retry-After 1, so the existing back-off sleeps 1 s per client; a Retry-After of '0'
+        // is falsy there and would fall back to 10 s).
         $this->configureAllSources();
         Setting::setValue('ninja_enabled', '1');
-        $this->ninjaQueue->append(new PsrResponse(429, ['Retry-After' => '0'], '{}'));
+        $this->ninjaQueue->append(new PsrResponse(429, ['Retry-After' => '1'], '{}'));
         $this->ninjaQueue->append(new PsrResponse(200, [], json_encode(['id' => 5])));
-        $this->levelQueue->append(new PsrResponse(429, ['Retry-After' => '0'], '{}'));
+        $this->levelQueue->append(new PsrResponse(429, ['Retry-After' => '1'], '{}'));
         $this->levelQueue->append(new PsrResponse(200, [], json_encode(['id' => 'level-5', 'online' => true])));
 
         $this->assertSame(5, app(NinjaClient::class)->getDevice(5)['id']);

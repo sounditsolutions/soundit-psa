@@ -94,10 +94,10 @@ use Illuminate\Support\Facades\RateLimiter;
  *                          Neither creates or unlinks an asset, changes its link or client,
  *                          or writes anything at the vendor. A Ninja device of another
  *                          organization is other_client with nothing written. Neither
- *                          scheduled run's withoutOverlapping mutex is consulted, as the
- *                          Overview refresh this replaces never consulted it: a run writes
- *                          these columns by the same rules, and its scheduler mutex only
- *                          keeps two runs apart. A 429 starts that source's vendor cooldown.
+ *                          scheduled run's withoutOverlapping mutex is consulted (the
+ *                          Overview refresh this replaces never consulted it either), so a
+ *                          Sync now can overlap a run, and whichever saves last decides the
+ *                          columns both write. A 429 starts that source's vendor cooldown.
  *                          Every other source that
  *                          passes 1-6 is refused with no_single_asset_read and makes no
  *                          vendor call
