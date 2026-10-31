@@ -186,6 +186,9 @@ class AssetSourcesSecurityPanelsTest extends TestCase
             'controld_last_seen_at' => now()->subHours(6), 'controld_synced_at' => now()->subDays(2),
         ]);
         $before = $b->refresh()->only(SourceSyncPipeline::CONTROLD_WRITES);
+        // Two identical answers queued, so a second read (the per-client sync) would succeed
+        // and reach its stale clear rather than fail on an empty queue.
+        $this->controldQueue->append($this->devicesResponse([$this->device($a->controld_device_id)]));
         $this->controldQueue->append($this->devicesResponse([$this->device($a->controld_device_id)]));
 
         $this->sync($a)->assertJsonPath('outcome', 'ok');
@@ -531,6 +534,8 @@ class AssetSourcesSecurityPanelsTest extends TestCase
         $this->assertSame(1, substr_count($script, 'fetch('));
         $this->assertMatchesRegularExpression("/addEventListener\('click', function \(\) \{ loadDnsActivity\(/", $script);
         $this->assertSame(1, substr_count($script, 'loadDnsActivity(parseInt'));
+        // Exactly the definition and the click handler call it: no call on load or on panel open.
+        $this->assertSame(2, substr_count($script, 'loadDnsActivity('));
         $this->assertStringContainsString("q.action === 'blocked'", $script, 'blocked rows first');
         // Nothing on the Security tab loads it any more.
         $this->assertStringNotContainsString('loadDnsActivity', $this->security($html));
