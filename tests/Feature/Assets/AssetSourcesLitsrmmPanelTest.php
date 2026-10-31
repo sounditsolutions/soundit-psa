@@ -303,7 +303,8 @@ class AssetSourcesLitsrmmPanelTest extends TestCase
         // M2.3: never retire on a retired device, and never un-retire an asset the run retired.
         $live = $this->linked();
         $this->queue->append($this->device($live, ['enrollmentState' => 'retired', 'availabilityState' => 'retired', 'retiredAt' => '2026-10-30T00:00:00Z']));
-        $this->sync($live)->assertJson(['outcome' => 'failed', 'reason' => 'not_found_at_vendor', 'changed' => []]);
+        $this->sync($live)->assertJson(['outcome' => 'failed', 'reason' => 'retired_at_vendor', 'changed' => []])
+            ->assertJsonPath('message', 'The vendor lists this device as retired; nothing was written and the link is kept.');
         $live->refresh();
         $this->assertTrue((bool) $live->is_active);
         $this->assertNull($live->litsrmm_retired_at);
@@ -313,7 +314,7 @@ class AssetSourcesLitsrmmPanelTest extends TestCase
         $stamp = $retired->refresh()->litsrmm_retired_at->toDateTimeString();
         $synced = $retired->litsrmm_synced_at->toDateTimeString();
         $this->queue->append($this->device($retired, ['enrollmentState' => 'retired', 'availabilityState' => 'retired', 'retiredAt' => '2026-10-29T00:00:00Z']));
-        $this->sync($retired)->assertJson(['outcome' => 'failed', 'reason' => 'not_found_at_vendor']);
+        $this->sync($retired)->assertJson(['outcome' => 'failed', 'reason' => 'retired_at_vendor']);
         $retired->refresh();
         $this->assertFalse((bool) $retired->is_active);
         $this->assertSame($stamp, $retired->litsrmm_retired_at->toDateTimeString());

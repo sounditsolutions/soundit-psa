@@ -481,7 +481,7 @@ class LitsrmmAssetSyncService
      * Every other answer writes nothing (synced_at included):
      *   client_not_mapped  the asset's client has no litsrmm_client_id;
      *   other_client       the device's clientId is not that client's;
-     *   not_found_at_vendor a device the vendor reports retired (both states);
+     *   retired_at_vendor  a device the vendor reports retired (both states);
      *                      the scheduled run decides what that means for the asset;
      *   drift              an id getDevice() refuses, a body without its
      *                      inventory or about another device, a row that breaks
@@ -557,7 +557,7 @@ class LitsrmmAssetSyncService
                 return $answer('other_client');
             }
             if ($device->isRetired()) {
-                return $answer('not_found_at_vendor', device: $device);
+                return $answer('retired_at_vendor', device: $device);
             }
             if ($device->hasSplitRetiredState() || $device->retiredAt !== null) {
                 return $answer('drift', device: $device);

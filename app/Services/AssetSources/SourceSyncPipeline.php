@@ -73,7 +73,7 @@ use Illuminate\Support\Facades\RateLimiter;
  *                          makes ONE GET /v1/devices/{id}
  *                          (LitsrmmAssetSyncService::syncDeviceDetail). A device of another
  *                          LITSRMM client is other_client and a device the vendor reports
- *                          retired is not_found_at_vendor, both with nothing written. ok
+ *                          retired is retired_at_vendor, both with nothing written. ok
  *                          writes only this asset's hostname, online flag, OS, last user,
  *                          last seen, hardware columns and litsrmm_synced_at. It never
  *                          creates, retires, un-retires or unlinks an asset, never writes
@@ -131,7 +131,7 @@ class SourceSyncPipeline
     public const REASONS = [
         'ok', 'switched_off', 'not_configured', 'not_linked', 'client_not_mapped',
         'user_throttled', 'recently_synced', 'vendor_cooling_down', 'vendor_429',
-        'not_found_at_vendor', 'other_client', 'run_in_progress', 'transport', 'drift',
+        'not_found_at_vendor', 'retired_at_vendor', 'other_client', 'run_in_progress', 'transport', 'drift',
         'no_single_asset_read', 'interactive_ceiling',
     ];
 
@@ -148,6 +148,7 @@ class SourceSyncPipeline
         'interactive_ceiling' => "Sync now has reached this PSA's per-minute limit for this vendor; no request was sent.",
         'vendor_429' => 'The vendor is rate-limiting requests.',
         'not_found_at_vendor' => 'The vendor did not return this device; the link is kept.',
+        'retired_at_vendor' => 'The vendor lists this device as retired; nothing was written and the link is kept.',
         'other_client' => "The vendor's device belongs to a different client; nothing was written.",
         'run_in_progress' => 'A sync for this source is running; try again when it finishes.',
         'transport' => 'Could not reach the vendor.',
