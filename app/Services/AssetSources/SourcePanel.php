@@ -596,8 +596,8 @@ class SourcePanel
      *
      * No chip takes an "as of" (S1-fix): ninja_synced_at / level_synced_at is the age of
      * none of these values. rmm_online and last_user are also written by paths that never
-     * stamp them (the other RMM syncs, the quick-look read, a staff edit), and Ninja and
-     * Level keep the stored last_boot_at / last_user when their read does not carry one.
+     * stamp them (the other RMM syncs, the quick-look read, a staff edit), and Ninja keeps
+     * the stored last_boot_at and Level the stored last_user when the read lacks one.
      */
     private static function ninjaLevelChips(Asset $asset, string $source, bool $off): array
     {

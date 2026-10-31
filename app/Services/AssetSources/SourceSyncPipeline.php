@@ -96,8 +96,8 @@ use Illuminate\Support\Facades\RateLimiter;
  *                          organization is other_client with nothing written. Neither
  *                          scheduled run's withoutOverlapping mutex is consulted (the
  *                          Overview refresh this replaces never consulted it either), so a
- *                          Sync now can overlap a run, and whichever saves last decides the
- *                          columns both write. A 429 starts that source's vendor cooldown.
+ *                          Sync now can overlap a run; each save writes only the columns it
+ *                          changed. A 429 starts that source's vendor cooldown.
  *                          Every other source that
  *                          passes 1-6 is refused with no_single_asset_read and makes no
  *                          vendor call
