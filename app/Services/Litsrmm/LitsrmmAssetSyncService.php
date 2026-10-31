@@ -568,14 +568,10 @@ class LitsrmmAssetSyncService
             }
 
             $data = array_merge(self::listFacts($device), $hardware->columns(), ['litsrmm_synced_at' => now()]);
-            $before = $asset->only(self::DEVICE_DETAIL_WRITES);
-            $asset->forceFill($data)->save();
-            $changed = [];
-            foreach (self::DEVICE_DETAIL_WRITES as $column) {
-                if ((string) $before[$column] !== (string) $asset->getAttribute($column)) {
-                    $changed[] = $column;
-                }
-            }
+            $asset->forceFill($data);
+            // getDirty() compares through the casts, so null and false differ on a boolean column.
+            $changed = array_values(array_intersect(self::DEVICE_DETAIL_WRITES, array_keys($asset->getDirty())));
+            $asset->save();
 
             return $answer('ok', changed: $changed, device: $device);
         } finally {

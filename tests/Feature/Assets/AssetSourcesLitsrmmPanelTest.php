@@ -163,16 +163,18 @@ class AssetSourcesLitsrmmPanelTest extends TestCase
         $this->assertStringNotContainsString(AssetSources::INFERRED_WORDING, $chips['Last synced']['note']);
     }
 
-    public function test_only_the_online_chip_takes_as_of_litsrmm_synced_at(): void
+    public function test_no_litsrmm_health_chip_takes_as_of_litsrmm_synced_at(): void
     {
-        // M-as (S1-fix): litsrmm_synced_at is stamped with rmm_online on every LITSRMM write, but
-        // os, last_user, last_seen_at and last_boot_at only when the read carried them.
-        $asset = $this->linked(['last_user' => 'exampleuser', 'last_boot_at' => now()->subDay()]);
+        // M-as (S1-fix): litsrmm_synced_at dates none of these shared columns. rmm_online is also
+        // written by Tactical, Ninja, Level and staff edits, none of which stamps it, and os,
+        // last_user, last_seen_at and last_boot_at are written by LITSRMM only when the read carried them.
+        $asset = $this->linked(['rmm_online' => true, 'last_user' => 'exampleuser', 'last_boot_at' => now()->subDay()]);
+        $this->assertNotNull($asset->litsrmm_synced_at, 'fixture: a LITSRMM sync is recorded');
         $chips = $this->chips($this->panel($this->show($asset)->getContent(), 'litsrmm'));
 
-        $this->assertSame('snapshot', $chips['Online']['kind']);
-        $this->assertMatchesRegularExpression('/^as of 4 minutes ago; '.preg_quote(AssetSources::INFERRED_WORDING, '/').'$/', $chips['Online']['note']);
-        foreach (['Last user', 'OS', 'Last boot'] as $label) {
+        $this->assertSame('Online', $chips['Online']['value']);
+        $this->assertSame(AssetSources::INFERRED_WORDING, $chips['Online']['note']);
+        foreach (['Online', 'Last user', 'OS', 'Last boot'] as $label) {
             $this->assertSame('none', $chips[$label]['kind'], $label);
             $this->assertStringNotContainsString('as of', $chips[$label]['note'], $label);
             $this->assertStringNotContainsString('ago', $chips[$label]['note'], $label);
@@ -340,8 +342,10 @@ class AssetSourcesLitsrmmPanelTest extends TestCase
         $run = Cache::lock(LitsrmmAssetSyncService::RUN_LOCK, 3600);
         $this->assertTrue($run->get());
 
+        // The holder may be the run (scheduled or started by hand) or another Sync now, so the
+        // sentence names no kind of sync.
         $this->sync($asset)->assertJson(['outcome' => 'refused', 'reason' => 'run_in_progress'])
-            ->assertJsonPath('message', 'A scheduled sync for this source is running; try again when it finishes.');
+            ->assertJsonPath('message', 'A sync for this source is running; try again when it finishes.');
         $this->assertCount(0, $this->requests);
         $this->assertTrue($run->release(), 'the run still owns its lock');
 
@@ -518,9 +522,10 @@ class AssetSourcesLitsrmmPanelTest extends TestCase
         $this->assertTrue(Cache::lock(LitsrmmAssetSyncService::RUN_LOCK, 10)->get(), 'the lock is released on a refusal too');
     }
 
-    public function test_after_an_ok_sync_now_only_the_online_chip_reads_just_now(): void
+    public function test_after_an_ok_sync_now_no_litsrmm_health_chip_reads_just_now(): void
     {
-        // S1-fix as-of: a read that leaves last_user and last_boot_at unwritten never dates them.
+        // S1-fix as-of: litsrmm_synced_at dates no health chip, even right after an ok read,
+        // and a read that leaves last_user and last_boot_at unwritten never dates them.
         $asset = $this->linked(['last_user' => 'olduser', 'last_boot_at' => now()->subDays(3)]);
         $asset->forceFill(['litsrmm_synced_at' => now()->subDay()])->saveQuietly();
         $this->queue->append($this->device($asset, ['lastUser' => null, 'inventory' => []]));
@@ -529,10 +534,30 @@ class AssetSourcesLitsrmmPanelTest extends TestCase
         $chips = $this->chips($this->panel($this->show($asset->refresh())->getContent(), 'litsrmm'));
 
         $this->assertSame('olduser', $chips['Last user']['value']);
-        $this->assertMatchesRegularExpression('/^as of \d+ seconds? ago; /', $chips['Online']['note']);
-        foreach (['Last user', 'OS', 'Last boot'] as $label) {
+        foreach (['Online', 'Last user', 'OS', 'Last boot'] as $label) {
             $this->assertStringNotContainsString('as of', $chips[$label]['note'], $label);
             $this->assertStringContainsString(AssetSources::INFERRED_WORDING, $chips[$label]['note'], $label);
         }
+    }
+
+    public function test_changed_lists_rmm_online_when_it_goes_from_null_to_false(): void
+    {
+        // A boolean column's null -> false write is a change, though both read '' as strings.
+        $asset = $this->linked(['rmm_online' => null]);
+        $this->assertNull($asset->rmm_online, 'fixture: online state unknown');
+        $this->queue->append($this->device($asset, ['availabilityState' => 'offline']));
+
+        $r = $this->sync($asset)->assertJsonPath('outcome', 'ok');
+
+        $this->assertFalse($asset->refresh()->rmm_online);
+        $this->assertContains('rmm_online', $r->json('changed'));
+
+        // Positive control: false -> false is no change.
+        $this->travel(SourceSyncPipeline::ASSET_SOURCE_COOLDOWN_S + 1)->seconds();
+        $this->queue->append($this->device($asset, ['availabilityState' => 'offline']));
+        $again = $this->sync($asset)->assertJsonPath('outcome', 'ok');
+        $this->assertNotContains('rmm_online', $again->json('changed'));
+        $this->assertContains('litsrmm_synced_at', $again->json('changed'));
+        $this->assertCount(2, $this->requests);
     }
 }

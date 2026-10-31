@@ -149,7 +149,7 @@ class SourceSyncPipeline
         'vendor_429' => 'The vendor is rate-limiting requests.',
         'not_found_at_vendor' => 'The vendor did not return this device; the link is kept.',
         'other_client' => "The vendor's device belongs to a different client; nothing was written.",
-        'run_in_progress' => 'A scheduled sync for this source is running; try again when it finishes.',
+        'run_in_progress' => 'A sync for this source is running; try again when it finishes.',
         'transport' => 'Could not reach the vendor.',
         'drift' => 'The vendor answered in a shape this PSA does not recognise; nothing was written.',
         'no_single_asset_read' => "Sync now can't read this source for a single asset. Its data arrives with the source's own updates.",

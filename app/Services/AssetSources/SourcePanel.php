@@ -481,7 +481,7 @@ class SourcePanel
             $chips = array_merge($chips, self::cometChips($cometJobData));
         }
         if ($source === 'litsrmm' && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
-            $chips = array_merge($chips, self::litsrmmChips($asset, $syncedAt, $off));
+            $chips = array_merge($chips, self::litsrmmChips($asset, $off));
         }
         if (in_array($source, ['controld', 'zorus', 'm365', 'screenconnect', 'servosity'], true)
             && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
@@ -558,14 +558,13 @@ class SourcePanel
      * Ninja, Level and others may write, so each note carries the inferred wording (Q-4 A,
      * M5L.1), never a statement that LITSRMM wrote the value.
      *
-     * As-of ages follow what wrote them (S1-fix). Both LITSRMM writers (the per-client run's
-     * write() and Sync now's syncDeviceDetail()) write rmm_online with litsrmm_synced_at on
-     * every write, so only Online takes "as of <litsrmm_synced_at>". os, last_user and
-     * last_seen_at are written only when the vendor's list carries them, and last_boot_at
-     * only when the inventory does, so litsrmm_synced_at is not their age: those chips
-     * show no "as of".
+     * No chip takes an "as of" (S1-fix): litsrmm_synced_at is the age of none of these
+     * values. rmm_online is also written by paths that never stamp litsrmm_synced_at
+     * (the Tactical, Ninja and Level syncs, a Tactical release, a staff edit), and LITSRMM
+     * writes os, last_user and last_seen_at only when its list carries them and
+     * last_boot_at only when the inventory does.
      */
-    private static function litsrmmChips(Asset $asset, ?CarbonInterface $syncedAt, bool $off): array
+    private static function litsrmmChips(Asset $asset, bool $off): array
     {
         $nr = 'Not reported by LITSRMM';
         $inferred = AssetSources::INFERRED_WORDING;
@@ -575,12 +574,8 @@ class SourcePanel
         $ageless = fn (string $label, string $value, string $key) => ['label' => $label, 'value' => $value, 'key' => $key,
             'kind' => 'none', 'note' => $stale.$inferred];
 
-        $onlineAge = $syncedAt
-            ? ['kind' => self::KIND_SNAPSHOT, 'note' => self::asOf($syncedAt).'; '.$stale.$inferred]
-            : ['kind' => 'none', 'note' => $stale.$inferred];
-
         return [
-            ['label' => 'Online', 'value' => $online === null ? $nr : ($online ? 'Online' : 'Offline'), 'key' => 'online'] + $onlineAge,
+            $ageless('Online', $online === null ? $nr : ($online ? 'Online' : 'Offline'), 'online'),
             $ageless('Last user', filled($asset->last_user) ? (string) $asset->last_user : $nr, 'last_user'),
             $ageless('OS', filled($asset->os) ? (string) $asset->os : $nr, 'os'),
             $ageless('Last boot', $boot instanceof CarbonInterface ? $boot->toAppTz()->format('M j, Y g:i A T') : $nr, 'last_boot'),
