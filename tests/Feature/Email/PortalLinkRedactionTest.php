@@ -123,6 +123,7 @@ class PortalLinkRedactionTest extends TestCase
             $this->assertStringNotContainsString($key.'=', $email->body_html);
             $this->assertStringNotContainsString(rawurlencode($value), $email->body_html);
         }
+        // Whole-model serialisation backstop: with body_html made visible, toJson() covers every visible column, appended accessor and loaded relation; a column still in $hidden is left out, so it needs its own column check above.
         $this->assertStringNotContainsString($token, $email->makeVisible('body_html')->toJson());
     }
 }
