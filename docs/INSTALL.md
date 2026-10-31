@@ -1924,7 +1924,7 @@ Webhook-based integration for real-time device status, activity audit, and remot
 6. Enable the integration toggle
 
 **Scheduled commands:**
-- `screenconnect:count-licenses` — daily at 05:30, counts Access agents per client (only while ScreenConnect is switched on, `screenconnect_enabled=1`, and configured)
+- `screenconnect:count-licenses` — daily at 05:30, counts Access agents per client (only while ScreenConnect is configured and not switched off: `screenconnect_enabled=0` stops it; a switch that was never saved, which the integration toggle shows as off, does not)
 
 **MCP tools** (read-only, and **ungranted by default** — grant them per token under
 Settings > MCP Tokens). Both answer from the local webhook-fed snapshot; no live

@@ -16,7 +16,8 @@ use Tests\TestCase;
  * their commands, as OFF=OFF (card YouDehkS) already does for Level, Control D
  * and Zorus. Each switched-off case has a switched-on positive control on the
  * same schedule with every other condition met, so the filter cannot pass or
- * fail vacuously.
+ * fail vacuously. A ScreenConnect switch that was never saved does not stop its
+ * schedule: only an explicit '0' does.
  *
  * Synthetic data only (G-13): fixture keys, .test hosts.
  */
@@ -79,5 +80,16 @@ class ScheduleSwitchOffMeansOffTest extends TestCase
         Setting::setValue($setting, '1');
 
         $this->assertTrue($this->scheduleFiltersPass($command), "{$command} must start while {$setting}=1 and its other conditions hold");
+    }
+
+    public function test_screenconnect_count_licenses_runs_while_its_switch_was_never_saved(): void
+    {
+        $this->configureAndMapAll();
+        $this->assertNull(Setting::getValue('screenconnect_enabled'), 'premise: no screenconnect_enabled row');
+
+        $this->assertTrue(
+            $this->scheduleFiltersPass('screenconnect:count-licenses'),
+            'screenconnect:count-licenses must keep starting on a configured install that never saved its switch'
+        );
     }
 }

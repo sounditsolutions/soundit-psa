@@ -181,13 +181,16 @@ Schedule::command('zorus:sync-devices')
         && \App\Support\ZorusConfig::isConfigured()
         && \App\Models\Client::whereNotNull('zorus_customer_id')->exists());
 
-// ScreenConnect license counting — daily (only if switched on + configured)
+// ScreenConnect license counting — daily (only if configured + not switched off).
+// Only an explicit screenconnect_enabled=0 stops it. ScreenConnectConfig::isEnabled()
+// reads a never-saved switch as off (default '0'), but a configured install that
+// never saved the toggle has always been counted, and the counts feed billing (#7926).
 Schedule::command('screenconnect:count-licenses')
     ->dailyAt('05:30')
     ->withoutOverlapping()
     ->runInBackground()
     ->when(fn () => \App\Support\ScreenConnectConfig::isConfigured()
-        && \App\Support\ScreenConnectConfig::isEnabled());
+        && \App\Models\Setting::getValue('screenconnect_enabled') !== '0');
 
 // Tactical RMM alert reconciliation — catch missed resolved webhooks
 Schedule::command('tactical:reconcile-alerts')
