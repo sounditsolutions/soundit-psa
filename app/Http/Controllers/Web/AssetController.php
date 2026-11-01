@@ -22,10 +22,7 @@ use App\Services\ControlD\ControlDClient;
 use App\Services\ControlD\ControlDClientException;
 use App\Services\ControlD\ControlDDeviceSyncService;
 use App\Services\Level\LevelClient;
-use App\Services\Level\LevelClientException;
-use App\Services\Level\LevelSyncService;
 use App\Services\Ninja\NinjaClient;
-use App\Services\Ninja\NinjaClientException;
 use App\Services\Ninja\NinjaSyncService;
 use App\Services\Servosity\ServosityDeploymentService;
 use App\Services\TicketService;
@@ -33,7 +30,6 @@ use App\Services\Zorus\ZorusClient;
 use App\Services\Zorus\ZorusClientException;
 use App\Support\AiConfig;
 use App\Support\ControlDConfig;
-use App\Support\LevelConfig;
 use App\Support\NinjaConfig;
 use App\Support\ZorusConfig;
 use Carbon\Carbon;
@@ -532,58 +528,6 @@ class AssetController extends Controller
 
         return redirect()->route('assets.index')
             ->with('success', 'Asset deleted successfully.');
-    }
-
-    public function refresh(Asset $asset, NinjaSyncService $ninjaSync, LevelSyncService $levelSync)
-    {
-        if (! $asset->ninja_id && ! $asset->level_id) {
-            return redirect()->route('assets.show', $asset)
-                ->with('error', 'This asset is not linked to any RMM.');
-        }
-
-        $sources = [];
-        $switchedOff = [];
-
-        // A switched-off RMM is skipped, not failed: the other linked RMM still
-        // refreshes, and the operator is told which one was not asked.
-        if ($asset->ninja_id && ! NinjaConfig::isEnabled()) {
-            $switchedOff[] = 'NinjaRMM';
-        } elseif ($asset->ninja_id) {
-            try {
-                $ninjaSync->syncDeviceDetail($asset);
-                $sources[] = 'NinjaRMM';
-            } catch (NinjaClientException $e) {
-                return redirect()->route('assets.show', $asset)
-                    ->with('error', 'Could not refresh from NinjaRMM: '.$e->getMessage());
-            }
-        }
-
-        if ($asset->level_id && ! LevelConfig::isEnabled()) {
-            $switchedOff[] = 'Level';
-        } elseif ($asset->level_id) {
-            try {
-                $levelSync->syncDeviceDetail($asset);
-                $sources[] = 'Level';
-            } catch (LevelClientException $e) {
-                return redirect()->route('assets.show', $asset)
-                    ->with('error', 'Could not refresh from Level: '.$e->getMessage());
-            }
-        }
-
-        $offMessage = $switchedOff === []
-            ? null
-            : implode(' and ', $switchedOff).(count($switchedOff) === 1 ? ' is' : ' are')
-                .' switched off, so '.(count($switchedOff) === 1 ? 'it was' : 'they were').' not refreshed.';
-
-        if ($sources === []) {
-            return redirect()->route('assets.show', $asset)
-                ->with('error', $offMessage);
-        }
-
-        $redirect = redirect()->route('assets.show', $asset)
-            ->with('success', 'Device data refreshed from '.implode(' and ', $sources).'.');
-
-        return $offMessage === null ? $redirect : $redirect->with('error', $offMessage);
     }
 
     public function linkControlD(Request $request, Asset $asset)

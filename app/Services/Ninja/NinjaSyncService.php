@@ -124,7 +124,7 @@ class NinjaSyncService
 
     /**
      * Fetch detailed hardware info for a single device and update the asset.
-     * Used by "Refresh from RMM" button and webhook processing — throws on failure.
+     * Used by the asset page view and webhook processing — throws on failure.
      */
     public function syncDeviceDetail(Asset $asset): void
     {
@@ -165,12 +165,6 @@ class NinjaSyncService
             $cpu = $cores ? "{$name} ({$cores} cores)" : $name;
         }
 
-        // Parse RAM
-        $ramGb = null;
-        if (isset($detail['system']['memory']['capacity'])) {
-            $ramGb = round($detail['system']['memory']['capacity'] / (1024 * 1024 * 1024), 2);
-        }
-
         // Parse volumes
         $volumes = $detail['_volumes'] ?? [];
         $diskParts = [];
@@ -192,8 +186,163 @@ class NinjaSyncService
             }
         }
 
-        $lastUser = $detail['lastLoggedInUser'] ?? null;
         $serial = $this->resolveSerial($detail);
+        $facts = self::deviceFacts($detail, $asset);
+
+        $asset->update([
+            'serial_number' => $serial ?: $asset->serial_number,
+            'os' => $facts['os'],
+            'cpu' => $cpu,
+            'ram_gb' => $facts['ram_gb'],
+            'disk_summary' => $diskParts ? implode(', ', $diskParts) : null,
+            'last_user' => $facts['last_user'],
+            'ip_address' => $facts['ip_address'],
+            'last_seen_at' => $facts['last_seen_at'],
+            'rmm_online' => $facts['rmm_online'],
+            'last_boot_at' => $facts['last_boot_at'],
+            'needs_reboot' => $facts['needs_reboot'],
+            'ninja_synced_at' => now(),
+        ]);
+    }
+
+    /** The columns syncNow() may write, on its one asset only. */
+    public const SYNC_NOW_WRITES = [
+        'os', 'ram_gb', 'last_user', 'ip_address', 'last_seen_at', 'rmm_online', 'last_boot_at', 'needs_reboot',
+        'ninja_synced_at',
+    ];
+
+    /**
+     * Asset Sources "Sync now" (nfuBmADp S6): ONE `GET /v2/device/{id}`
+     * (NinjaClient::getDevice, single attempt: no retry and no sleep on 429)
+     * for this asset's linked device. When no OAuth token is cached the client
+     * first makes its token POST, as every NinjaClient call does.
+     *
+     * ok writes THIS asset only, the columns enrichFromDetail() derives from
+     * that body (deviceFacts(): os, ram_gb, last_user, ip_address,
+     * last_seen_at, rmm_online, last_boot_at, needs_reboot) and
+     * ninja_synced_at. It does not read processors, volumes or custom fields,
+     * so it never writes cpu, disk_summary or the warranty dates; it never
+     * writes serial_number, ninja_id, ninja_url, client_id, is_active or the
+     * name, never creates an asset and never releases a link. The save is an
+     * ordinary model save, as enrichFromDetail()'s update() is, so when
+     * last_user changes AssetObserver links that user to the asset
+     * (AssetUserAssignmentService::assignForAsset).
+     *
+     * Every other answer writes nothing (ninja_synced_at included):
+     *   other_client  the device's organizationId is not the asset client's
+     *                 ninja_org_id (checked only when both are known);
+     *   drift         a body that is not one device object, about another
+     *                 device, or with a value the columns cannot take, or a
+     *                 token reply without a token;
+     *   failureReason(status) for an HTTP status from the GET or the token
+     *                 POST (404 not_found_at_vendor, the link kept; 429
+     *                 vendor_429 with retry_after_s from Retry-After; any other
+     *                 http_NNN);
+     *   transport     no response came back;
+     *   switched_off / not_configured  the client refused before any request.
+     * The exception's message is never read (C-56): only the chained response.
+     *
+     * @return array{reason: string, http_status: ?int, retry_after_s: ?int, changed: list<string>, this_read: array<string, mixed>}
+     */
+    public function syncNow(Asset $asset): array
+    {
+        $answer = fn (string $reason, ?int $status = null, ?int $retryAfter = null, array $changed = [], array $thisRead = []) => [
+            'reason' => $reason, 'http_status' => $status, 'retry_after_s' => $retryAfter, 'changed' => $changed, 'this_read' => $thisRead,
+        ];
+
+        $ninjaId = (int) $asset->ninja_id;
+        try {
+            $detail = $this->ninja->getDevice($ninjaId, singleAttempt: true);
+        } catch (NinjaClientException $e) {
+            $previous = $e->getPrevious();
+            if ($previous instanceof \GuzzleHttp\Exception\RequestException && $previous->getResponse() !== null) {
+                $status = $previous->getResponse()->getStatusCode();
+                $retryAfter = $status === 429
+                    ? \App\Services\AssetSources\SourceSyncPipeline::retryAfterSeconds($previous->getResponse()->getHeaderLine('Retry-After'))
+                    : null;
+
+                return $answer(\App\Services\AssetSources\SourceSyncPipeline::failureReason($status), $status, $retryAfter);
+            }
+            if ($previous instanceof \GuzzleHttp\Exception\GuzzleException) {
+                return $answer('transport');
+            }
+            if (! \App\Support\NinjaConfig::isEnabled()) {
+                return $answer('switched_off');
+            }
+            if (! \App\Support\NinjaConfig::isConfigured()) {
+                return $answer('not_configured');
+            }
+
+            // A 2xx body that is not JSON, or a token reply without a token.
+            return $answer('drift');
+        } catch (\TypeError) {
+            // A JSON body that is not an object or list (getDevice()'s array return type).
+            return $answer('drift');
+        }
+
+        if (! is_array($detail) || array_is_list($detail) || ! is_int($detail['id'] ?? null) || $detail['id'] !== $ninjaId) {
+            return $answer('drift');
+        }
+        $org = $detail['organizationId'] ?? null;
+        $mapped = $asset->client?->ninja_org_id;
+        if ($org !== null && ! is_int($org)) {
+            return $answer('drift');
+        }
+        if ($org !== null && $mapped !== null && $org !== (int) $mapped) {
+            return $answer('other_client');
+        }
+
+        try {
+            $facts = self::deviceFacts($detail, $asset);
+        } catch (\Throwable) {
+            return $answer('drift');
+        }
+        if (! self::fitsColumns($facts)) {
+            return $answer('drift');
+        }
+
+        $asset->forceFill($facts + ['ninja_synced_at' => now()]);
+        // getDirty() compares through the casts, so null and false differ on a boolean column.
+        $changed = array_values(array_intersect(self::SYNC_NOW_WRITES, array_keys($asset->getDirty())));
+        $asset->save();
+
+        return $answer('ok', changed: $changed, thisRead: ['online' => $facts['rmm_online']]);
+    }
+
+    /**
+     * Every value deviceFacts() built fits its assets column (MariaDB strict mode
+     * refuses what SQLite stores): strings of at most 255 characters (ip_address
+     * 45), ram_gb within decimal(8,2), dates within the TIMESTAMP range (1970 to
+     * 2038-01-19, a day's margin each side), flags as bools or null.
+     */
+    private static function fitsColumns(array $facts): bool
+    {
+        $str = fn ($v, int $max) => $v === null || (is_string($v) && mb_strlen($v) <= $max);
+        $date = fn ($v) => $v === null || ($v instanceof \DateTimeInterface
+            && $v->getTimestamp() >= 86400 && $v->getTimestamp() <= 2147483647 - 86400);
+
+        return $str($facts['os'], 255) && $str($facts['last_user'], 255) && $str($facts['ip_address'], 45)
+            && ($facts['ram_gb'] === null || (is_float($facts['ram_gb']) && $facts['ram_gb'] >= 0 && $facts['ram_gb'] < 1000000))
+            && $date($facts['last_seen_at']) && $date($facts['last_boot_at'])
+            && is_bool($facts['rmm_online']) && ($facts['needs_reboot'] === null || is_bool($facts['needs_reboot']));
+    }
+
+    /**
+     * The asset columns enrichFromDetail() derives from the GET /v2/device/{id} body
+     * alone (no processors, volumes or custom fields), with its rules: a value the
+     * body does not carry keeps the stored one for os, ip_address, last_seen_at,
+     * last_boot_at and needs_reboot; ram_gb and last_user are written as the body
+     * has them (null included); rmm_online is a last contact within
+     * ONLINE_THRESHOLD_MINUTES. Shared by enrichFromDetail() and syncNow().
+     *
+     * @return array{os: mixed, ram_gb: ?float, last_user: mixed, ip_address: mixed, last_seen_at: mixed, rmm_online: bool, last_boot_at: mixed, needs_reboot: ?bool}
+     */
+    private static function deviceFacts(array $detail, Asset $asset): array
+    {
+        $ramGb = null;
+        if (isset($detail['system']['memory']['capacity'])) {
+            $ramGb = round($detail['system']['memory']['capacity'] / (1024 * 1024 * 1024), 2);
+        }
         $lastContact = isset($detail['lastContact']) ? Carbon::createFromTimestamp($detail['lastContact']) : null;
 
         // Parse OS boot/reboot data
@@ -202,20 +351,16 @@ class NinjaSyncService
             : null;
         $needsReboot = isset($detail['os']['needsReboot']) ? (bool) $detail['os']['needsReboot'] : null;
 
-        $asset->update([
-            'serial_number' => $serial ?: $asset->serial_number,
+        return [
             'os' => $detail['os']['name'] ?? $asset->os,
-            'cpu' => $cpu,
             'ram_gb' => $ramGb,
-            'disk_summary' => $diskParts ? implode(', ', $diskParts) : null,
-            'last_user' => $lastUser,
+            'last_user' => $detail['lastLoggedInUser'] ?? null,
             'ip_address' => $detail['ipAddresses'][0] ?? $asset->ip_address,
             'last_seen_at' => $lastContact ?? $asset->last_seen_at,
             'rmm_online' => $lastContact && $lastContact->diffInMinutes(now()) <= self::ONLINE_THRESHOLD_MINUTES,
             'last_boot_at' => $lastBootAt ?? $asset->last_boot_at,
             'needs_reboot' => $needsReboot ?? $asset->needs_reboot,
-            'ninja_synced_at' => now(),
-        ]);
+        ];
     }
 
     /**

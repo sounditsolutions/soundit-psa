@@ -100,12 +100,18 @@ class NinjaClient
 
     /**
      * Fetch a single device by ID.
+     *
+     * $singleAttempt (Asset Sources Sync now, opt-in): the GET is sent once. A 401
+     * forgets the cached token but is not retried, and a 429 is thrown at once with
+     * no sleep; the thrown exception chains the Guzzle exception, so the caller can
+     * read the status and Retry-After. Every other caller keeps the default: one
+     * retry on 401 with a fresh token and up to three sleeps on 429.
      */
-    public function getDevice(int $deviceId, ?int $timeout = null): array
+    public function getDevice(int $deviceId, ?int $timeout = null, bool $singleAttempt = false): array
     {
         $options = $timeout ? ['timeout' => $timeout] : [];
 
-        return $this->request('GET', "/v2/device/{$deviceId}", $options);
+        return $this->request('GET', "/v2/device/{$deviceId}", $options, $singleAttempt);
     }
 
     /**
@@ -362,7 +368,7 @@ class NinjaClient
      * Execute an authenticated request with automatic token retry on 401
      * and rate-limit backoff on 429.
      */
-    private function request(string $method, string $endpoint, array $options = []): array
+    private function request(string $method, string $endpoint, array $options = [], bool $singleAttempt = false): array
     {
         $token = $this->getToken();
 
@@ -370,7 +376,8 @@ class NinjaClient
             'Authorization' => 'Bearer '.$token,
         ]);
 
-        $maxRetries = 3;
+        // Single attempt: no retry of any kind and no sleep (see getDevice()).
+        $maxRetries = $singleAttempt ? 0 : 3;
 
         for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
             try {
@@ -381,8 +388,14 @@ class NinjaClient
                     ? $e->getResponse()->getStatusCode()
                     : 0;
 
+                // Single attempt: a 401 still drops the cached token, so the next
+                // request asks for a fresh one, but this request is not retried.
+                if ($statusCode === 401 && $singleAttempt) {
+                    $this->cache->forget(self::TOKEN_CACHE_KEY);
+                }
+
                 // Retry once on 401 with a fresh token
-                if ($statusCode === 401 && $attempt === 0) {
+                if ($statusCode === 401 && $attempt === 0 && ! $singleAttempt) {
                     $this->cache->forget(self::TOKEN_CACHE_KEY);
                     $freshToken = $this->getToken();
                     $options['headers']['Authorization'] = 'Bearer '.$freshToken;
@@ -470,6 +483,7 @@ class NinjaClient
             ]);
             throw new NinjaClientException(
                 'Failed to obtain NinjaRMM API token: '.$e->getMessage(),
+                previous: $e,
             );
         }
 
@@ -500,7 +514,10 @@ class NinjaClient
 
         if (method_exists($e, 'getResponse') && $e->getResponse()) {
             $statusCode = $e->getResponse()->getStatusCode();
-            $responseBody = json_decode((string) $e->getResponse()->getBody(), true);
+            // A JSON body that is not an object or list (a bare string, number or bool) is no
+            // body this exception can carry; its status still is.
+            $decoded = json_decode((string) $e->getResponse()->getBody(), true);
+            $responseBody = is_array($decoded) ? $decoded : null;
         }
 
         Log::error('NinjaRMM API request failed', [
@@ -514,6 +531,7 @@ class NinjaClient
             "NinjaRMM API error: {$method} {$endpoint} returned {$statusCode}",
             $statusCode,
             $responseBody,
+            $e,
         );
     }
 }

@@ -27,8 +27,8 @@ use Tests\TestCase;
  * (design.md Item 3). S1 wires Tactical's existing single-agent read, S2
  * AutoElevate's GET-one (AssetSourcesAutoElevateTest), S3 Control D's per-org
  * device read (AssetSourcesSecurityPanelsTest) and S5 LITSRMM's device read
- * (AssetSourcesLitsrmmPanelTest); every other source is
- * still unwired, refuses with no_single_asset_read and calls no vendor. Generic
+ * (AssetSourcesLitsrmmPanelTest), S6 Ninja's and Level's device reads
+ * (AssetSourcesNinjaLevelPanelTest); every other source is still unwired, refuses with no_single_asset_read and calls no vendor. Generic
  * limiter/cooldown/audit controls run against unwired sources.
  * Synthetic data only.
  */
@@ -123,16 +123,17 @@ class AssetSourceSyncRouteTest extends TestCase
         $this->configureAllSources();
         $asset = $this->assetLinkedEverywhere();
         $user = User::factory()->tech()->create();
-        // litsrmm is wired since S5; ninja, switched on here so it reaches the limiter, takes its place.
-        Setting::setValue('ninja_enabled', '1');
-        foreach (['screenconnect', 'ninja', 'comet', 'level', 'servosity', 'zorus'] as $source) {
-            $this->sync($asset, $source, $user)->assertJsonPath('reason', 'no_single_asset_read');
+        // litsrmm (S5), ninja and level (S6) are wired; five sources are still unwired, so the
+        // sixth call is comet again on a second asset (the 30 s window is per asset+source).
+        $second = $this->assetLinkedEverywhere();
+        foreach ([[$asset, 'screenconnect'], [$asset, 'comet'], [$asset, 'm365'], [$asset, 'servosity'], [$asset, 'zorus'], [$second, 'comet']] as [$on, $source]) {
+            $this->sync($on, $source, $user)->assertJsonPath('reason', 'no_single_asset_read');
         }
 
-        $r = $this->sync($asset, 'm365', $user)->assertJsonPath('reason', 'user_throttled');
+        $r = $this->sync($second, 'm365', $user)->assertJsonPath('reason', 'user_throttled');
         $this->assertGreaterThan(0, $r->json('retry_after_s'));
         // Another user is not throttled by the first one's calls.
-        $this->sync($asset, 'm365')->assertJsonPath('reason', 'no_single_asset_read');
+        $this->sync($second, 'm365')->assertJsonPath('reason', 'no_single_asset_read');
         Http::assertNothingSent();
     }
 
@@ -140,9 +141,9 @@ class AssetSourceSyncRouteTest extends TestCase
     {
         $this->configureAllSources();
         $asset = $this->assetLinkedEverywhere();
-        $this->sync($asset, 'level')->assertJsonPath('reason', 'no_single_asset_read');
+        $this->sync($asset, 'comet')->assertJsonPath('reason', 'no_single_asset_read');
 
-        $r = $this->sync($asset, 'level')->assertJson([
+        $r = $this->sync($asset, 'comet')->assertJson([
             'outcome' => 'refused', 'reason' => 'recently_synced',
             'previous' => ['outcome' => 'refused', 'reason' => 'no_single_asset_read'],
         ])->assertJsonPath('message', 'Sync now was already tried for this source on this asset moments ago.');
@@ -150,7 +151,7 @@ class AssetSourceSyncRouteTest extends TestCase
         $this->assertLessThanOrEqual(SourceSyncPipeline::ASSET_SOURCE_COOLDOWN_S, $r->json('retry_after_s'));
 
         $this->travel(SourceSyncPipeline::ASSET_SOURCE_COOLDOWN_S + 1)->seconds();
-        $this->sync($asset, 'level')->assertJsonPath('reason', 'no_single_asset_read');
+        $this->sync($asset, 'comet')->assertJsonPath('reason', 'no_single_asset_read');
     }
 
     public function test_while_vendor_cooldown_is_set_no_request_is_sent_and_the_reply_carries_the_remaining_seconds(): void
@@ -158,9 +159,9 @@ class AssetSourceSyncRouteTest extends TestCase
         // M0.3.
         $this->configureAllSources();
         $asset = $this->assetLinkedEverywhere();
-        Cache::put(SourceSyncPipeline::vendorCooldownKey('level'), now()->getTimestamp() + 42, 60);
+        Cache::put(SourceSyncPipeline::vendorCooldownKey('comet'), now()->getTimestamp() + 42, 60);
 
-        $this->sync($asset, 'level')->assertJson([
+        $this->sync($asset, 'comet')->assertJson([
             'outcome' => 'refused', 'reason' => 'vendor_cooling_down', 'retry_after_s' => 42,
         ]);
         $this->assertSame(42, AssetSourceSync::latest('id')->first()->retry_after_s);
@@ -187,9 +188,9 @@ class AssetSourceSyncRouteTest extends TestCase
         $this->assertGreaterThanOrEqual(0, $row->duration_ms);
     }
 
-    public function test_only_tactical_autoelevate_controld_and_litsrmm_can_return_ok_in_s5(): void
+    public function test_only_tactical_autoelevate_controld_litsrmm_ninja_and_level_can_return_ok_in_s6(): void
     {
-        // M-wired: wiring a fifth source to the pipeline read turns this red.
+        // M-wired: wiring a seventh source to the pipeline read turns this red.
         $this->configureAllSources();
         Setting::setValue('ninja_enabled', '1'); // so Ninja reaches the read step like the others
         $history = $this->bindTactical([$this->agentResponse()]);
@@ -207,6 +208,20 @@ class AssetSourceSyncRouteTest extends TestCase
             'api_key' => 'synthetic-litsrmm-key', 'base_url' => 'https://litsrmm.example.test', 'handler' => $lsStack,
         ]));
         $lsClient = '00000000-0000-4000-8000-00000000c1e7';
+        $ninja = new \ArrayObject;
+        $njQueue = new MockHandler([]);
+        $njStack = HandlerStack::create($njQueue);
+        $njStack->push(Middleware::history($ninja));
+        $this->app->instance(\App\Services\Ninja\NinjaClient::class, new \App\Services\Ninja\NinjaClient([
+            'base_url' => 'https://ninja.example.test', 'client_id' => 'synthetic-ninja-id', 'client_secret' => 'synthetic-ninja-secret', 'handler' => $njStack,
+        ], new \Illuminate\Cache\Repository(new \Illuminate\Cache\ArrayStore)));
+        $level = new \ArrayObject;
+        $lvQueue = new MockHandler([]);
+        $lvStack = HandlerStack::create($lvQueue);
+        $lvStack->push(Middleware::history($level));
+        $this->app->instance(\App\Services\Level\LevelClient::class, new \App\Services\Level\LevelClient([
+            'api_key' => 'synthetic-level-key', 'base_url' => 'https://level.example.test', 'handler' => $lvStack,
+        ]));
         foreach (AssetSources::ORDER as $source) {
             $asset = $this->assetLinkedEverywhere();
             $asset->client->update(['autoelevate_company_id' => $company, 'controld_org_id' => 'synthetic-org-'.$source, 'litsrmm_client_id' => $lsClient]);
@@ -215,6 +230,13 @@ class AssetSourceSyncRouteTest extends TestCase
                     'id' => $asset->litsrmm_device_id, 'clientId' => $lsClient, 'clientName' => 'Example Dental Co.',
                     'hostname' => 'DESK-EXAMPLE-01', 'enrollmentState' => 'enrolled', 'availabilityState' => 'online', 'inventory' => [],
                 ])));
+            }
+            if ($source === 'ninja') {
+                $njQueue->append(new PsrResponse(200, [], json_encode(['access_token' => 'synthetic-token', 'expires_in' => 3600])));
+                $njQueue->append(new PsrResponse(200, [], json_encode(['id' => (int) $asset->ninja_id, 'systemName' => 'DESK-EXAMPLE-01', 'lastContact' => now()->getTimestamp()])));
+            }
+            if ($source === 'level') {
+                $lvQueue->append(new PsrResponse(200, [], json_encode(['id' => $asset->level_id, 'hostname' => 'DESK-EXAMPLE-01', 'online' => true])));
             }
             if ($source === 'controld') {
                 $queue->append(new PsrResponse(200, [], json_encode(['body' => ['devices' => [
@@ -229,17 +251,21 @@ class AssetSourceSyncRouteTest extends TestCase
                 ], 200)]);
             }
             $r = $this->sync($asset, $source);
-            if (in_array($source, ['tactical', 'autoelevate', 'controld', 'litsrmm'], true)) {
+            if (in_array($source, ['tactical', 'autoelevate', 'controld', 'litsrmm', 'ninja', 'level'], true)) {
                 $r->assertJsonPath('outcome', 'ok')->assertJsonPath('reason', 'ok');
             } else {
                 $r->assertJson(['outcome' => 'refused', 'reason' => 'no_single_asset_read'], $source);
             }
         }
-        $this->assertEqualsCanonicalizing(['tactical', 'autoelevate', 'controld', 'litsrmm'], AssetSourceSync::where('outcome', '!=', 'refused')->pluck('source')->all());
+        $this->assertEqualsCanonicalizing(['tactical', 'autoelevate', 'controld', 'litsrmm', 'ninja', 'level'], AssetSourceSync::where('outcome', '!=', 'refused')->pluck('source')->all());
         $this->assertSame(count(AssetSources::ORDER), AssetSourceSync::count());
         $this->assertCount(1, $history, 'one Tactical getAgent read, nothing else');
         $this->assertCount(1, $controld, 'one Control D devices read, nothing else');
         $this->assertCount(1, $litsrmm, 'one LITSRMM device read, nothing else');
+        $this->assertSame(['POST /ws/oauth/token', 'GET'], [$ninja[0]['request']->getMethod().' '.$ninja[0]['request']->getUri()->getPath(), $ninja[1]['request']->getMethod()],
+            'Ninja: the client\'s token POST, then one device GET');
+        $this->assertCount(2, $ninja, 'one Ninja token POST and one device read, nothing else');
+        $this->assertCount(1, $level, 'one Level device read, nothing else');
         Http::assertSentCount(1); // the one AutoElevate GET-one, nothing else
     }
 

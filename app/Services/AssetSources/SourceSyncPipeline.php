@@ -12,7 +12,9 @@ use App\Services\AutoElevate\AutoElevateReadService;
 use App\Services\ControlD\ControlDClient;
 use App\Services\ControlD\ControlDClientException;
 use App\Services\ControlD\ControlDDeviceSyncService;
+use App\Services\Level\LevelSyncService;
 use App\Services\Litsrmm\LitsrmmAssetSyncService;
+use App\Services\Ninja\NinjaSyncService;
 use App\Services\Tactical\TacticalDeviceSyncService;
 use App\Support\ControlDConfig;
 use GuzzleHttp\Exception\RequestException;
@@ -79,6 +81,24 @@ use Illuminate\Support\Facades\RateLimiter;
  *                          creates, retires, un-retires or unlinks an asset, never writes
  *                          its serial, and writes nothing at LITSRMM. A 429 starts the
  *                          LITSRMM vendor cooldown.
+ *                          Ninja and Level (S6) make the GET their existing device-detail
+ *                          refresh makes, ONE attempt with no retry and no sleep on 429
+ *                          (NinjaSyncService::syncNow: GET /v2/device/{id}, preceded by the
+ *                          client's OAuth token POST when no token is cached;
+ *                          LevelSyncService::syncNow: GET /v2/devices/{id}). ok writes only
+ *                          this asset's columns the existing device-detail refresh derives
+ *                          from that body, by its rules, and the source's synced_at (each
+ *                          service's SYNC_NOW_WRITES; Level's include hostname and name).
+ *                          Ninja's read carries no processors, volumes or custom fields, so
+ *                          it never writes cpu, disk_summary or warranty dates; the serial
+ *                          it carries is never written.
+ *                          Neither creates or unlinks an asset, changes its link or client,
+ *                          or writes anything at the vendor. A Ninja device of another
+ *                          organization is other_client with nothing written. Neither
+ *                          scheduled run's withoutOverlapping mutex is consulted (the
+ *                          Overview refresh this replaces never consulted it either), so a
+ *                          Sync now can overlap a run; each save writes only the columns it
+ *                          changed. A 429 starts that source's vendor cooldown.
  *                          Every other source that
  *                          passes 1-6 is refused with no_single_asset_read and makes no
  *                          vendor call
@@ -90,7 +110,7 @@ use Illuminate\Support\Facades\RateLimiter;
 class SourceSyncPipeline
 {
     /** Sources whose single-asset read is wired; each joins with its own slice. */
-    public const WIRED = ['tactical', 'autoelevate', 'controld', 'litsrmm'];
+    public const WIRED = ['tactical', 'autoelevate', 'controld', 'litsrmm', 'ninja', 'level'];
 
     /** Retry-After bounds for a vendor 429 this pipeline reads itself (Q-2 B). */
     public const RETRY_AFTER_CAP_S = 300;
@@ -118,6 +138,8 @@ class SourceSyncPipeline
         private readonly TacticalDeviceSyncService $tacticalSync,
         private readonly AutoElevateReadService $autoElevateReads,
         private readonly LitsrmmAssetSyncService $litsrmmSync,
+        private readonly NinjaSyncService $ninjaSync,
+        private readonly LevelSyncService $levelSync,
     ) {}
 
     public const USER_LIMIT_PER_MINUTE = 6;
@@ -321,7 +343,41 @@ class SourceSyncPipeline
             'autoelevate' => $this->readAutoElevate($asset),
             'controld' => $this->readControlD($asset),
             'litsrmm' => $this->readLitsrmm($asset),
+            'ninja' => $this->readSharedRmm($asset, 'ninja', $this->ninjaSync->syncNow($asset)),
+            'level' => $this->readSharedRmm($asset, 'level', $this->levelSync->syncNow($asset)),
         };
+    }
+
+    /**
+     * Ninja / Level: the result of NinjaSyncService::syncNow or LevelSyncService::syncNow,
+     * each ONE single-attempt GET of the device (no retry, no sleep). ok writes this
+     * asset's shared device columns and the source's synced_at only. Every failure leaves
+     * the snapshot (synced_at included) as it was; a 429 starts the source's vendor
+     * cooldown with the vendor's Retry-After, or the 60 s fallback (Q-2 B).
+     *
+     * @param  array{reason: string, http_status: ?int, retry_after_s: ?int, changed: list<string>, this_read: array<string, mixed>}  $result
+     */
+    private function readSharedRmm(Asset $asset, string $source, array $result): array
+    {
+        $syncedAt = fn () => AssetSources::syncedAt($asset, $source)?->toIso8601String();
+        $reason = $result['reason'];
+        if (in_array($reason, ['switched_off', 'not_configured'], true)) {
+            return self::refused($reason);
+        }
+        if ($reason !== 'ok') {
+            if ($reason === 'vendor_429') {
+                self::startVendorCooldown($source, $result['retry_after_s']);
+            }
+            $reply = ['outcome' => 'failed', 'reason' => $reason];
+            if ($result['retry_after_s'] !== null) {
+                $reply['retry_after_s'] = $result['retry_after_s'];
+            }
+
+            return $reply + ['synced_at' => $syncedAt(), 'changed' => [], 'this_read' => [], 'http_status' => $result['http_status']];
+        }
+
+        return ['outcome' => 'ok', 'reason' => 'ok', 'synced_at' => $syncedAt(),
+            'changed' => $result['changed'], 'this_read' => $result['this_read']];
     }
 
     /**

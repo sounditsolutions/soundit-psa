@@ -46,6 +46,8 @@ class SourcePanel
         'autoelevate' => "Reads this computer's record from AutoElevate. Changes nothing at AutoElevate.",
         'controld' => "Reads this client's device list from Control D and updates this computer only. Changes nothing at Control D.",
         'litsrmm' => "Reads this computer's record from LITSRMM and updates its details here. Changes nothing at LITSRMM.",
+        'ninja' => "Reads this computer's record from Ninja and updates its details here. Changes nothing at Ninja.",
+        'level' => "Reads this computer's record from Level and updates its details here. Changes nothing at Level.",
     ];
 
     /**
@@ -483,6 +485,9 @@ class SourcePanel
         if ($source === 'litsrmm' && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
             $chips = array_merge($chips, self::litsrmmChips($asset, $off));
         }
+        if (in_array($source, ['ninja', 'level'], true) && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
+            $chips = array_merge($chips, self::ninjaLevelChips($asset, $source, $off));
+        }
         if (in_array($source, ['controld', 'zorus', 'm365', 'screenconnect', 'servosity'], true)
             && $state !== AssetSources::STATE_NOT_CONFIGURED && AssetSources::isLinked($asset, $source)) {
             $own = match ($source) {
@@ -580,6 +585,38 @@ class SourcePanel
             $ageless('OS', filled($asset->os) ? (string) $asset->os : $nr, 'os'),
             $ageless('Last boot', $boot instanceof CarbonInterface ? $boot->toAppTz()->format('M j, Y g:i A T') : $nr, 'last_boot'),
         ];
+    }
+
+    /**
+     * Ninja and Level (design-r3 §2.2): Ninja online, last user, last boot; Level online,
+     * last user. Last contact / last seen is the shared Last contact chip. Each is a SHARED
+     * assets column that LITSRMM, Ninja, Level and others may write, so each note carries
+     * the inferred wording (Q-4 A and its r3 extension, M4.3), never a statement that this
+     * source wrote the value.
+     *
+     * No chip takes an "as of" (S1-fix): ninja_synced_at / level_synced_at is the age of
+     * none of these values. rmm_online and last_user are also written by paths that never
+     * stamp them (the other RMM syncs, the quick-look read, a staff edit), and Ninja keeps
+     * the stored last_boot_at and Level the stored last_user when the read lacks one.
+     */
+    private static function ninjaLevelChips(Asset $asset, string $source, bool $off): array
+    {
+        $nr = 'Not reported by '.AssetSources::label($source);
+        $stale = $off ? 'last known, not updated; ' : '';
+        $ageless = fn (string $label, string $value, string $key) => ['label' => $label, 'value' => $value, 'key' => $key,
+            'kind' => 'none', 'note' => $stale.AssetSources::INFERRED_WORDING];
+        $online = $asset->rmm_online;
+        $boot = $asset->last_boot_at;
+
+        $chips = [
+            $ageless('Online', $online === null ? $nr : ($online ? 'Online' : 'Offline'), 'online'),
+            $ageless('Last user', filled($asset->last_user) ? (string) $asset->last_user : $nr, 'last_user'),
+        ];
+        if ($source === 'ninja') {
+            $chips[] = $ageless('Last boot', $boot instanceof CarbonInterface ? $boot->toAppTz()->format('M j, Y g:i A T') : $nr, 'last_boot');
+        }
+
+        return $chips;
     }
 
     /**
