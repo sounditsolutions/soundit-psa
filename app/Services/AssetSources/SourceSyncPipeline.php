@@ -89,8 +89,9 @@ use Illuminate\Support\Facades\RateLimiter;
  *                          this asset's columns the existing device-detail refresh derives
  *                          from that body, by its rules, and the source's synced_at (each
  *                          service's SYNC_NOW_WRITES; Level's include hostname and name).
- *                          Ninja's reads no processors, volumes or custom fields, so it
- *                          never writes cpu, disk_summary, the serial or warranty dates.
+ *                          Ninja's read carries no processors, volumes or custom fields, so
+ *                          it never writes cpu, disk_summary or warranty dates; the serial
+ *                          it carries is never written.
  *                          Neither creates or unlinks an asset, changes its link or client,
  *                          or writes anything at the vendor. A Ninja device of another
  *                          organization is other_client with nothing written. Neither

@@ -338,7 +338,7 @@ class AssetSourcesNinjaLevelPanelTest extends TestCase
         $this->assertSame('192.0.2.10', $asset->ip_address);
         $this->assertTrue($asset->needs_reboot);
         $this->assertTrue($asset->ninja_synced_at->greaterThan(now()->subMinute()));
-        // Not read by this GET, so never written: cpu, disks, serial, warranty.
+        // Not in this GET, so never written: cpu, disks, warranty; the serial is in it but never written.
         $this->assertSame('Stored CPU', $asset->cpu);
         $this->assertSame('C: 100 GB', $asset->disk_summary);
         $this->assertSame('STORED-SERIAL', $asset->serial_number);
