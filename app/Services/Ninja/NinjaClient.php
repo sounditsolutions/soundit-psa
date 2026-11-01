@@ -514,7 +514,10 @@ class NinjaClient
 
         if (method_exists($e, 'getResponse') && $e->getResponse()) {
             $statusCode = $e->getResponse()->getStatusCode();
-            $responseBody = json_decode((string) $e->getResponse()->getBody(), true);
+            // A JSON body that is not an object or list (a bare string, number or bool) is no
+            // body this exception can carry; its status still is.
+            $decoded = json_decode((string) $e->getResponse()->getBody(), true);
+            $responseBody = is_array($decoded) ? $decoded : null;
         }
 
         Log::error('NinjaRMM API request failed', [

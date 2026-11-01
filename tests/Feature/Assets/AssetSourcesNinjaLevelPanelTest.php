@@ -571,6 +571,30 @@ class AssetSourcesNinjaLevelPanelTest extends TestCase
         $this->assertCount(1, $this->requests($source));
     }
 
+    #[\PHPUnit\Framework\Attributes\DataProvider('rmms')]
+    public function test_an_error_whose_body_is_scalar_json_keeps_its_status_and_a_429_starts_the_cooldown(string $source): void
+    {
+        // A JSON string body on an error is no body the client exception can carry; the
+        // status still reaches failureReason(), so it is never drift.
+        $asset = $this->linked();
+        $before = $asset->refresh()->getAttributes();
+        $this->queue($source)->append(new PsrResponse(429, ['Retry-After' => '120'], json_encode('rate limited')));
+
+        $this->sync($asset, $source)->assertJson(['outcome' => 'failed', 'reason' => 'vendor_429', 'retry_after_s' => 120]);
+
+        $this->assertUnwritten($asset, $before);
+        $row = AssetSourceSync::sole();
+        $this->assertSame([429, 120], [$row->http_status, $row->retry_after_s]);
+        $this->assertEqualsWithDelta(now()->getTimestamp() + 120, (int) Cache::get(SourceSyncPipeline::vendorCooldownKey($source)), 2);
+
+        Cache::forget(SourceSyncPipeline::vendorCooldownKey($source));
+        $other = $this->linked();
+        $this->queue($source)->append(new PsrResponse(404, [], json_encode('Not found')));
+        $this->sync($other, $source)->assertJson(['outcome' => 'failed', 'reason' => 'not_found_at_vendor']);
+        $this->assertSame(404, AssetSourceSync::latest('id')->first()->http_status);
+        $this->assertCount(2, $this->requests($source));
+    }
+
     public function test_ninja_401_is_http_401_with_no_retry_and_drops_the_cached_token(): void
     {
         // The scheduled callers retry a 401 once with a fresh token; the single attempt does not.
@@ -620,12 +644,15 @@ class AssetSourcesNinjaLevelPanelTest extends TestCase
             'ninja: organizationId not an integer' => ['ninja', ['organizationId' => 'seven']],
             'ninja: os.name not a string' => ['ninja', ['os' => ['name' => ['Windows']]]],
             'ninja: a user longer than the column' => ['ninja', ['lastLoggedInUser' => str_repeat('u', 256)]],
+            'ninja: lastContact in milliseconds' => ['ninja', ['lastContact' => 1716900000000]],
+            'ninja: lastBootTime in milliseconds' => ['ninja', ['os' => ['name' => 'Windows 11 Pro', 'lastBootTime' => 1716900000000]]],
             'level: not JSON' => ['level', 'not json'],
             'level: a list' => ['level', [['id' => 'x']]],
             'level: another device' => ['level', ['id' => 'level-other']],
             'level: no online flag' => ['level', ['online' => null]],
             'level: online not a bool' => ['level', ['online' => 'yes']],
             'level: hostname not a string' => ['level', ['hostname' => ['DESK']]],
+            'level: a zero reboot time on an offline device' => ['level', ['last_reboot_time' => '0001-01-01T00:00:00Z']],
         ];
     }
 

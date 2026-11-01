@@ -312,12 +312,14 @@ class NinjaSyncService
     /**
      * Every value deviceFacts() built fits its assets column (MariaDB strict mode
      * refuses what SQLite stores): strings of at most 255 characters (ip_address
-     * 45), ram_gb within decimal(8,2), dates as dates, flags as bools or null.
+     * 45), ram_gb within decimal(8,2), dates within the TIMESTAMP range (1970 to
+     * 2038-01-19, a day's margin each side), flags as bools or null.
      */
     private static function fitsColumns(array $facts): bool
     {
         $str = fn ($v, int $max) => $v === null || (is_string($v) && mb_strlen($v) <= $max);
-        $date = fn ($v) => $v === null || $v instanceof \DateTimeInterface;
+        $date = fn ($v) => $v === null || ($v instanceof \DateTimeInterface
+            && $v->getTimestamp() >= 86400 && $v->getTimestamp() <= 2147483647 - 86400);
 
         return $str($facts['os'], 255) && $str($facts['last_user'], 255) && $str($facts['ip_address'], 45)
             && ($facts['ram_gb'] === null || (is_float($facts['ram_gb']) && $facts['ram_gb'] >= 0 && $facts['ram_gb'] < 1000000))

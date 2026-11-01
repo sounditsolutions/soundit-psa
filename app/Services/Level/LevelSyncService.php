@@ -313,7 +313,8 @@ class LevelSyncService
      * Every value detailData() built fits its assets column (MariaDB strict mode
      * refuses what SQLite stores): strings within their lengths (name, hostname,
      * os, cpu, last_user 255; ip_address 45; disk_summary 500), ram_gb within
-     * decimal(8,2), last_seen_at a date.
+     * decimal(8,2), last_seen_at a date within the TIMESTAMP range (1970 to
+     * 2038-01-19, a day's margin each side).
      */
     private static function fitsColumns(array $data): bool
     {
@@ -326,7 +327,8 @@ class LevelSyncService
 
         return $str($data['ip_address'], 45) && $str($data['disk_summary'], 500)
             && ($data['ram_gb'] === null || (is_float($data['ram_gb']) && $data['ram_gb'] >= 0 && $data['ram_gb'] < 1000000))
-            && (! array_key_exists('last_seen_at', $data) || $data['last_seen_at'] instanceof \DateTimeInterface);
+            && (! array_key_exists('last_seen_at', $data) || ($data['last_seen_at'] instanceof \DateTimeInterface
+                && $data['last_seen_at']->getTimestamp() >= 86400 && $data['last_seen_at']->getTimestamp() <= 2147483647 - 86400));
     }
 
     /**
