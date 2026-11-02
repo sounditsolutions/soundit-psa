@@ -87,6 +87,7 @@ final readonly class HdbReportResult
         public ?string $authReason = null,
         public ?HdbReportRedaction $redaction = null,
         public ?string $screenshot = null,
+        public ?int $retryAfterSeconds = null,
     ) {}
 
     /**
@@ -192,10 +193,16 @@ final readonly class HdbReportResult
         return $this->status === HdbReportStatus::Fetched;
     }
 
-    /** Is a later attempt expected to do better? Only the upload gate is. */
+    /** API-only failure factory; portal factories retain their contracts. */
+    public static function apiFailure(HdbReportStatus $status, string $reason, ?int $retryAfterSeconds = null): self
+    {
+        return new self($status, $reason, retryAfterSeconds: $retryAfterSeconds);
+    }
+
+    /** Is a later attempt expected to do better? */
     public function retryable(): bool
     {
-        return $this->reason === self::REASON_UPLOAD_INCOMPLETE;
+        return $this->reason === self::REASON_UPLOAD_INCOMPLETE || $this->reason === 'rate_limited';
     }
 
     /**
