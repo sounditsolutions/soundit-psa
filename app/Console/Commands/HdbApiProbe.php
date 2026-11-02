@@ -11,7 +11,7 @@ class HdbApiProbe extends Command
 {
     protected $signature = 'hdb:api-probe {--notes=10}';
 
-    protected $description = 'Measure Reports API mapping with boolean and count output';
+    protected $description = 'Measure Reports API mapping; prints booleans, counts and status codes, never ids or content.';
 
     public function handle(HdbApiReportClient $client): int
     {
