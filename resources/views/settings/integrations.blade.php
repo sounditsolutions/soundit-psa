@@ -3672,6 +3672,28 @@
                         </div>
                     </div>
 
+                    <fieldset class="border rounded p-3 mb-3">
+                        <legend class="float-none w-auto px-2 fs-6 text-muted">Reports API (beta)</legend>
+                        <p class="text-muted small">Saved for the upcoming API reader; reports still come from the portal sign-in below.</p>
+                        <p class="text-muted small">Grant view-endpoints, report-history, report-diagnostics and view-instant-replay only. Do not grant actions.</p>
+                        @if(auth()->user()?->isAdmin())
+                            <label for="hdb_api_key" class="form-label">API key</label>
+                            <input type="password" class="form-control @error('hdb_api_key') is-invalid @enderror"
+                                   id="hdb_api_key" name="hdb_api_key" autocomplete="new-password"
+                                   placeholder="{{ $hdbApiConfigured ? '••••••••' : 'Not set' }}">
+                            @error('hdb_api_key')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                            <div class="form-text">Stored encrypted and never shown again. Leave blank to keep the current key.</div>
+                            @if($hdbApiConfigured)
+                                <div class="form-check my-2">
+                                    <input class="form-check-input" type="checkbox" id="hdb_api_key_clear" name="hdb_api_key_clear" value="1">
+                                    <label class="form-check-label" for="hdb_api_key_clear">Clear the stored API key</label>
+                                </div>
+                            @endif
+                            <button type="button" class="btn btn-outline-secondary btn-sm mt-2" onclick="testHdbApiKey(this)">Test API key</button>
+                            <div id="test-result-hdb-api" class="mt-2" role="status"></div>
+                        @endif
+                    </fieldset>
+
                     {{-- HDB Report Portal credentials (psa #340) --}}
                     <fieldset class="border rounded p-3 mb-3">
                         <legend class="float-none w-auto px-2 fs-6 text-muted">
@@ -5571,6 +5593,23 @@ async function detectHuntressAccount(button) {
         }
     } catch (_) {
         result.textContent = 'Unable to detect the account ID. Check saved Huntress API credentials and try again. No settings were changed.';
+    } finally {
+        button.disabled = false;
+    }
+}
+
+async function testHdbApiKey(button) {
+    button.disabled = true;
+    const result = document.getElementById('test-result-hdb-api');
+    try {
+        const response = await fetch(@json(route('settings.integrations.hdb-api.test')), {
+            method: 'POST',
+            headers: {'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content, 'Accept': 'application/json'}
+        });
+        const data = await response.json();
+        result.textContent = ['connected', 'rejected', 'missing_permission', 'unreachable', 'unexpected', 'not_configured'].includes(data.message) ? data.message : 'unexpected';
+    } catch (error) {
+        result.textContent = 'unreachable';
     } finally {
         button.disabled = false;
     }

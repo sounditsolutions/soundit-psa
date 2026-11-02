@@ -623,6 +623,7 @@ Route::middleware('auth')->group(function () {
     Route::post('/settings/integrations/t2t', [IntegrationsController::class, 'updateT2t'])->name('settings.integrations.t2t.update');
     Route::post('/settings/integrations/t2t/generate-key', [IntegrationsController::class, 'generateT2tKey'])->name('settings.integrations.t2t.generate-key');
     // Admin-gated inside the action, not here — see IntegrationsController::testHdb().
+    Route::post('/settings/integrations/hdb-api/test', [IntegrationsController::class, 'testHdbApi'])->name('settings.integrations.hdb-api.test');
     Route::post('/settings/integrations/hdb/test', [IntegrationsController::class, 'testHdb'])->name('settings.integrations.hdb.test');
 
     // Settings — QBO
