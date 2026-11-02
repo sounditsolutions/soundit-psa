@@ -99,6 +99,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'comet_admin_password',
             'comet_backup_password',
             'credentials',
+            'hdb_api_key',
             'hdb_password',
             'hdb_totp_secret',
             'install_account_token',
