@@ -94,10 +94,37 @@ class HdbApiReportClientTest extends TestCase
     {
         $data = self::fixture();
         $data['instant_replay'] = ['redacted' => true, 'redaction_reason' => 'user', 'sprite' => '/sprite'];
-        $this->fake($data);
+        Http::fake([
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID => Http::response($data),
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID.'/instant-replay/sprite' => Http::response('synthetic-sprite'),
+        ]);
         $this->assertNull((new HdbApiReportClient)->report(self::ID, 17)->screenshot);
         Http::assertNotSent(fn ($r) => str_contains($r->url(), '/instant-replay/sprite'));
         Http::assertSentCount(1);
+    }
+
+    public function test_allowed_sprite_is_fixed_path_resized_and_bucketed_before_resize(): void
+    {
+        $data = self::fixture();
+        $data['instant_replay']['sprite'] = '/do-not-follow';
+        $image = imagecreatetruecolor(2000, 1000);
+        ob_start();
+        imagepng($image);
+        $bytes = ob_get_clean();
+        imagedestroy($image);
+        Http::fake([
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID => Http::response($data),
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID.'/instant-replay/sprite' => Http::response($bytes),
+        ]);
+        $client = new HdbApiReportClient;
+        $result = $client->report(self::ID, 17);
+        $this->assertSame(1568, getimagesizefromstring($result->screenshot)[0]);
+        $this->assertSame('<=4MP', $client->spriteSizeBucket());
+        $this->assertSame($result, $client->report(self::ID, 17));
+        $this->assertSame('<=4MP', $client->spriteSizeBucket());
+        $this->assertSame('instant-replay.png', HdbApiReportClient::SPRITE_FILENAME);
+        Http::assertSentCount(2);
+        Http::assertNotSent(fn ($r) => ! str_starts_with($r->url(), HdbApiConfig::BASE_URL) || $r->method() !== 'GET');
     }
 
     public function test_redacted_diagnostics_are_withheld(): void

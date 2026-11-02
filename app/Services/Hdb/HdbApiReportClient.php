@@ -14,6 +14,8 @@ use Illuminate\Support\Sleep;
  */
 final class HdbApiReportClient
 {
+    public const SPRITE_FILENAME = 'instant-replay.png';
+
     public const MAX_PAGES = 10;
 
     public const MAX_ITEMS = 500;
@@ -26,6 +28,15 @@ final class HdbApiReportClient
 
     private array $memo = [];
 
+    private string $spriteBucket = 'none';
+
+    private array $memoBuckets = [];
+
+    public function spriteSizeBucket(): string
+    {
+        return $this->spriteBucket;
+    }
+
     /** Read-only measurement seam; never writes vendor data to disk. */
     public function detail(string $reportId): array
     {
@@ -34,8 +45,11 @@ final class HdbApiReportClient
 
     public function report(string $reportId, int $ticketId): HdbReportResult
     {
+        $this->spriteBucket = 'none';
         $memoKey = $ticketId.':'.$reportId;
         if (isset($this->memo[$memoKey])) {
+            $this->spriteBucket = $this->memoBuckets[$memoKey] ?? 'none';
+
             return $this->memo[$memoKey];
         }
         $read = $this->detail($reportId);
@@ -66,14 +80,35 @@ final class HdbApiReportClient
         $sprite = null;
         if ($screenshots === false && is_string($data['instant_replay']['sprite'] ?? null) && $data['instant_replay']['sprite'] !== '') {
             $image = $this->request('/reports/'.rawurlencode($reportId).'/instant-replay/sprite', [], true);
-            $sprite = $image['bytes'] ?? null;
+            $sprite = $this->boundedSprite($image['bytes'] ?? null);
         }
         $missing = $diagnostic ? [] : array_values(array_diff(self::REQUIRED_SECTIONS, array_keys($report)));
         if ($missing !== []) {
             return HdbReportResult::degraded($reportId, $metadata, $report, $missing, $redaction, $sprite);
         }
 
+        $this->memoBuckets[$memoKey] = $this->spriteBucket;
+
         return $this->memo[$memoKey] = HdbReportResult::fetched($reportId, $metadata, $report, $redaction, $sprite);
+    }
+
+    private function boundedSprite(?string $bytes): ?string
+    {
+        if ($bytes === null || strlen($bytes) > \App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES) {
+            return null;
+        }
+        $size = @getimagesizefromstring($bytes);
+        if ($size !== false) {
+            $pixels = $size[0] * $size[1];
+            $this->spriteBucket = $pixels <= 1_000_000 ? '<=1MP' : ($pixels <= 4_000_000 ? '<=4MP' : '>4MP');
+        }
+        if ($size === false || ($size['mime'] ?? '') !== 'image/png'
+            || $size[0] * $size[1] > \App\Services\Assistant\AssistantToolExecutor::MAX_IMAGE_PIXELS) {
+            return null;
+        }
+        $encoded = app(\App\Services\AttachmentService::class)->resizeImageBytesForAi($bytes, 'image/png');
+
+        return $encoded === null ? null : base64_decode($encoded, true);
     }
 
     public function matchesTicket(mixed $value, int $ticketId): bool

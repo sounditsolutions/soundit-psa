@@ -51,14 +51,8 @@ class HdbApiProbe extends Command
             $sprite = is_string($data['instant_replay']['sprite'] ?? null) && $data['instant_replay']['sprite'] !== '';
             $bucket = 'none';
             if ($h1 && $sprite) {
-                $result = $client->report($note->hdb_press_id, $note->ticket_id);
-                if ($result->screenshot !== null) {
-                    $size = @getimagesizefromstring($result->screenshot);
-                    if ($size !== false) {
-                        $pixels = $size[0] * $size[1];
-                        $bucket = $pixels <= 1_000_000 ? '<=1MP' : ($pixels <= 4_000_000 ? '<=4MP' : '>4MP');
-                    }
-                }
+                $client->report($note->hdb_press_id, $note->ticket_id);
+                $bucket = $client->spriteSizeBucket();
             }
             $row = [
                 'row' => $index + 1,
@@ -72,6 +66,10 @@ class HdbApiProbe extends Command
             if (isset($read['failure'])) {
                 $row['http_status'] = $read['http_status'] ?? 0;
                 $row['error_code'] = $read['code'] ?? $read['failure']->reason;
+            }
+            if (isset($list['failure'])) {
+                $row['list_http_status'] = $list['http_status'] ?? 0;
+                $row['list_error_code'] = $list['code'] ?? $list['failure']->reason;
             }
             $this->line(json_encode($row, JSON_UNESCAPED_SLASHES));
             $totals['rows']++;
