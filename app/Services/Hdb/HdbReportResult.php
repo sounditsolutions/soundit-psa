@@ -88,6 +88,10 @@ final readonly class HdbReportResult
         public ?HdbReportRedaction $redaction = null,
         public ?string $screenshot = null,
         public ?int $retryAfterSeconds = null,
+        public ?string $spriteReason = null,
+        public string $source = 'portal',
+        public ?int $httpStatus = null,
+        public ?string $apiCode = null,
     ) {}
 
     /**
@@ -197,6 +201,36 @@ final readonly class HdbReportResult
     public static function apiFailure(HdbReportStatus $status, string $reason, ?int $retryAfterSeconds = null): self
     {
         return new self($status, $reason, retryAfterSeconds: $retryAfterSeconds);
+    }
+
+    public function fromApi(?int $httpStatus = null, ?string $code = null): self
+    {
+        if ($this->source === 'api' && $this->httpStatus === $httpStatus && $this->apiCode === $code) {
+            return $this;
+        }
+        $values = get_object_vars($this);
+        $values['source'] = 'api';
+        $values['httpStatus'] = $httpStatus;
+        $values['apiCode'] = $code;
+
+        return new self(...$values);
+    }
+
+    /** Add the API sprite outcome without changing the portal factory contracts. */
+    public function withSpriteOutcome(?string $reason): self
+    {
+        if ($reason !== null && ! in_array($reason, ['redacted', 'oversize', 'not_image', 'fetch_failed', 'not_advertised'], true)) {
+            throw new \InvalidArgumentException('Invalid sprite reason');
+        }
+
+        $values = get_object_vars($this);
+        $values['spriteReason'] = $reason;
+        if ($reason === 'fetch_failed' && $this->status === HdbReportStatus::Fetched) {
+            $values['status'] = HdbReportStatus::Degraded;
+            $values['reason'] = 'sprite_fetch_failed';
+        }
+
+        return new self(...$values);
     }
 
     /** Is a later attempt expected to do better? */

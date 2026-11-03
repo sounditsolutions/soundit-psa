@@ -2,9 +2,11 @@
 
 namespace App\Services\Hdb;
 
+use App\Support\HdbApiConfig;
 use App\Support\HdbPortalConfig;
 use GuzzleHttp\Cookie\CookieJar;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Read-only fetch of one HelpDesk Buttons press report (psa #340 / #1359).
@@ -245,12 +247,38 @@ final class HdbReportClient
         $authorization = $this->authorizer->authorize($ticketId, $pressId);
 
         if ($authorization->refused()) {
-            return HdbReportResult::refused($authorization->refusal ?? HdbReportFetchRefusal::NoKeyedNote);
+            return self::refusal($authorization->refusal ?? HdbReportFetchRefusal::NoKeyedNote);
         }
 
+        return $this->fetchAfterAuthorization($authorization);
+    }
+
+    /**
+     * A refusal names the configured reader as its source: nothing is requested
+     * from either source, so `source` cannot name a reply.
+     */
+    public static function refusal(HdbReportFetchRefusal $refusal): HdbReportResult
+    {
+        $result = HdbReportResult::refused($refusal);
+
+        return HdbApiConfig::isConfigured() ? $result->fromApi() : $result;
+    }
+
+    private ?HdbApiReportClient $api = null;
+
+    private function fetchAfterAuthorization(HdbReportFetchAuthorization $authorization): HdbReportResult
+    {
         // The authorizer's normalised id, never the caller's string: the gate
         // decided on the normalised value, so the fetch must spend that one.
         $press = (string) $authorization->pressId;
+
+        if (HdbApiConfig::isConfigured()) {
+            $result = ($this->api ??= new HdbApiReportClient)->report($press, (int) $authorization->ticketId);
+            if (! $this->shouldFallback($result) || ! HdbPortalConfig::isConfigured()) {
+                return $result;
+            }
+            Log::info('hdb_api_fallback', ['http_status' => $result->httpStatus, 'code' => $result->apiCode]);
+        }
 
         if (isset($this->fetched[$press])) {
             return $this->fetched[$press];
@@ -278,10 +306,28 @@ final class HdbReportClient
         $authorization = $this->authorizer->authorizeNote($ticketId, $noteId);
 
         if ($authorization->refused()) {
-            return HdbReportResult::refused($authorization->refusal ?? HdbReportFetchRefusal::NoKeyedNote);
+            return self::refusal($authorization->refusal ?? HdbReportFetchRefusal::NoKeyedNote);
         }
 
-        return $this->fetch($ticketId, $authorization->pressId);
+        return $this->fetchAfterAuthorization($authorization);
+    }
+
+    private function shouldFallback(HdbReportResult $result): bool
+    {
+        if ($result->redaction !== null || in_array($result->status, [HdbReportStatus::Fetched, HdbReportStatus::Degraded, HdbReportStatus::Incomplete, HdbReportStatus::Refused], true)) {
+            return false;
+        }
+
+        return match (true) {
+            $result->httpStatus === 401 => true,
+            $result->httpStatus === 403 => in_array($result->apiCode, ['forbidden', 'api_version_forbidden', 'account_disabled'], true),
+            $result->httpStatus === 404 => $result->apiCode === 'report_not_found',
+            $result->httpStatus === 422 => $result->apiCode === 'unsupported_report_os',
+            $result->httpStatus >= 500 => true,
+            $result->httpStatus === null => $result->reason === HdbReportResult::REASON_TRANSPORT_ERROR,
+            $result->httpStatus === 200 => $result->reason === HdbReportResult::REASON_UNREADABLE_PAYLOAD,
+            default => false,
+        };
     }
 
     /**

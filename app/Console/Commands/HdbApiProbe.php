@@ -50,8 +50,9 @@ class HdbApiProbe extends Command
             $status = in_array($data['status'] ?? null, ['complete', 'pending', 'requested', 'pressed'], true) ? $data['status'] : 'unknown';
             $sprite = is_string($data['instant_replay']['sprite'] ?? null) && $data['instant_replay']['sprite'] !== '';
             $bucket = 'none';
+            $spriteReason = ! isset($read['data']) ? null : (($data['instant_replay']['redacted'] ?? null) === true ? 'redacted' : ($sprite ? null : 'not_advertised'));
             if ($h1 && $sprite) {
-                $client->report($note->hdb_press_id, $note->ticket_id);
+                $spriteReason = $client->report($note->hdb_press_id, $note->ticket_id)->spriteReason;
                 $bucket = $client->spriteSizeBucket();
             }
             $row = [
@@ -61,7 +62,7 @@ class HdbApiProbe extends Command
                 'binding_ticket_number_eq' => $client->matchesTicket($data['ticket_number'] ?? null, $note->ticket_id),
                 'sprite_advertised' => $sprite,
                 'redaction_flags_present' => is_bool($data['diagnostics_redacted'] ?? null) && is_bool($data['instant_replay']['redacted'] ?? null),
-                'status' => $status, 'sprite_size' => $bucket,
+                'status' => $status, 'sprite_size' => $bucket, 'sprite_reason' => $spriteReason,
             ];
             if (isset($read['failure'])) {
                 $row['http_status'] = $read['http_status'] ?? 0;

@@ -82,6 +82,30 @@ class HdbApiReportClientTest extends TestCase
         $this->assertSame('redaction_flag_unreadable', (new HdbApiReportClient)->report(self::ID, 17)->reason);
     }
 
+    public static function bindings(): array
+    {
+        return [
+            'both equal' => [17, '17', true],
+            'id null' => [null, '17', true],
+            'number null' => ['17', null, true],
+            'id differs' => [18, '17', false],
+            'number differs' => ['17', 18, false],
+            'both null' => [null, null, false],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('bindings')]
+    public function test_every_non_null_binding_must_match(mixed $id, mixed $number, bool $accepted): void
+    {
+        $data = self::fixture();
+        $data['ticket_id'] = $id;
+        $data['ticket_number'] = $number;
+        $this->fake($data);
+        $result = (new HdbApiReportClient)->report(self::ID, 17);
+        $this->assertSame($accepted ? HdbReportStatus::Fetched : HdbReportStatus::Refused, $result->status);
+        $this->assertSame($accepted ? 'ok' : 'report_ticket_mismatch', $result->reason);
+    }
+
     public function test_binding_mismatch_refuses(): void
     {
         $this->fake(self::fixture());
@@ -119,6 +143,8 @@ class HdbApiReportClientTest extends TestCase
         $client = new HdbApiReportClient;
         $result = $client->report(self::ID, 17);
         $this->assertSame(1568, getimagesizefromstring($result->screenshot)[0]);
+        $this->assertNull($result->spriteReason);
+        Http::assertSent(fn ($r) => str_ends_with($r->url(), '/instant-replay/sprite') && $r->hasHeader('Accept', 'image/png') && ! $r->hasHeader('Accept', 'application/json'));
         $this->assertSame('<=4MP', $client->spriteSizeBucket());
         $this->assertSame($result, $client->report(self::ID, 17));
         $this->assertSame('<=4MP', $client->spriteSizeBucket());
@@ -237,6 +263,113 @@ class HdbApiReportClientTest extends TestCase
         $this->assertCount(1, $result['items']);
         Http::assertSentCount(2);
         Http::assertSent(fn ($r) => ($r['cursor'] ?? null) === 'synthetic-cursor' && $r['group'] === 'ALL');
+    }
+
+    public function test_failed_sprite_is_degraded_and_never_memoized(): void
+    {
+        $data = self::fixture();
+        $data['instant_replay']['sprite'] = '/synthetic';
+        $sequence = Http::sequence();
+        foreach ([401, 403, 404, 429, 500] as $status) {
+            $sequence->push([], $status);
+        }
+        $sequence->pushResponse(Http::failedConnection());
+        Http::fake([
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID => Http::response($data),
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID.'/instant-replay/sprite' => $sequence,
+        ]);
+        $client = new HdbApiReportClient;
+        for ($i = 0; $i < 6; $i++) {
+            $result = $client->report(self::ID, 17);
+            $this->assertSame(HdbReportStatus::Degraded, $result->status);
+            $this->assertSame('fetch_failed', $result->spriteReason);
+            $this->assertFalse($result->importable());
+            $this->assertNotNull($result->report);
+        }
+        Http::assertSentCount(12);
+    }
+
+    public function test_sprite_reasons_and_ceiling_precede_decode(): void
+    {
+        $data = self::fixture();
+        $data['instant_replay']['sprite'] = '/synthetic';
+        $ihdr = 'IHDR'.pack('NNCCCCC', 6000, 6000, 8, 2, 0, 0, 0);
+        $bomb = "\x89PNG\r\n\x1a\n".pack('N', 13).$ihdr.pack('N', crc32($ihdr));
+        $this->mock(\App\Services\AttachmentService::class)->shouldNotReceive('resizeImageBytesForAi');
+        Http::fake([
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID => Http::response($data),
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID.'/instant-replay/sprite' => Http::sequence()
+                ->push($bomb)->push(str_repeat('x', \App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES + 1))->push('synthetic-not-image'),
+        ]);
+        foreach (['oversize', 'oversize', 'not_image'] as $reason) {
+            $result = (new HdbApiReportClient)->report(self::ID, 17);
+            $this->assertNull($result->screenshot);
+            $this->assertSame($reason, $result->spriteReason);
+        }
+    }
+
+    public function test_sprite_stream_limit_is_oversize_not_fetch_failed(): void
+    {
+        $data = self::fixture();
+        $data['instant_replay']['sprite'] = '/synthetic';
+        Http::fake([
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID => Http::response($data),
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID.'/instant-replay/sprite' => fn () => throw new \RuntimeException('synthetic', 0, new \LengthException),
+        ]);
+        $result = (new HdbApiReportClient)->report(self::ID, 17);
+        $this->assertSame('oversize', $result->spriteReason);
+        $this->assertNull($result->screenshot);
+    }
+
+    public function test_unadvertised_and_redacted_sprite_reasons(): void
+    {
+        $data = self::fixture();
+        $sequence = Http::sequence()->push($data);
+        $data['instant_replay']['redacted'] = true;
+        $sequence->push($data);
+        Http::fake([HdbApiConfig::BASE_URL.'/reports/'.self::ID => $sequence]);
+        foreach (['not_advertised', 'redacted'] as $reason) {
+            $this->assertSame($reason, (new HdbApiReportClient)->report(self::ID, 17)->spriteReason);
+        }
+        Http::assertSentCount(2);
+    }
+
+    public function test_no_sprite_reason_is_claimed_where_no_sprite_was_requested(): void
+    {
+        $data = self::fixture();
+        $data['instant_replay']['sprite'] = '/synthetic';
+        $pending = ['status' => 'pending'] + $data;
+        $unreadable = ['diagnostics_redacted' => null] + $data;
+        Http::fake([HdbApiConfig::BASE_URL.'/reports/'.self::ID => Http::sequence()->push($pending)->push($data)->push($unreadable)->push(['error' => ['code' => 'report_not_found']], 404)]);
+        foreach ([[17, 'upload_incomplete'], [18, 'report_ticket_mismatch'], [17, 'redaction_flag_unreadable'], [17, 'report_not_found']] as [$ticket, $reason]) {
+            $result = (new HdbApiReportClient)->report(self::ID, $ticket);
+            $this->assertSame($reason, $result->reason);
+            $this->assertNull($result->spriteReason, $reason);
+        }
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), '/instant-replay/sprite'));
+        Http::assertSentCount(4);
+    }
+
+    public function test_undecodable_png_is_not_image(): void
+    {
+        $data = self::fixture();
+        $data['instant_replay']['sprite'] = '/synthetic';
+        $ihdr = 'IHDR'.pack('NNCCCCC', 20, 20, 8, 2, 0, 0, 0);
+        $bytes = "\x89PNG\r\n\x1a\n".pack('N', 13).$ihdr.pack('N', crc32($ihdr));
+        Http::fake([
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID => Http::response($data),
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID.'/instant-replay/sprite' => Http::response($bytes),
+        ]);
+        $this->assertSame('not_image', (new HdbApiReportClient)->report(self::ID, 17)->spriteReason);
+    }
+
+    protected function tearDown(): void
+    {
+        try {
+            Http::assertNotSent(fn ($r) => $r->method() !== 'GET' || parse_url($r->url(), PHP_URL_HOST) !== parse_url(HdbApiConfig::BASE_URL, PHP_URL_HOST));
+        } finally {
+            parent::tearDown();
+        }
     }
 
     public function test_page_bound_is_not_exhaustion(): void

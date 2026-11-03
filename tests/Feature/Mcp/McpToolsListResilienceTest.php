@@ -129,7 +129,14 @@ class McpToolsListResilienceTest extends TestCase
         // which tools/list assembles twice. carbon_mcp_enabled defaults OFF, so isLive()
         // short-circuits after the single switch read. 2 + 1 x 2 assemblies = +4 flat,
         // independent of the size of either catalog.
-        $this->assertLessThanOrEqual(106, count($queries), $sql);
+        //
+        // Raised 106 -> 108 for the HDB Reports API (card J732ulwu S2): get_hdb_report
+        // is published when HdbApiConfig::isConfigured() OR HdbPortalConfig::
+        // isConfigured(), consulted in liveGeneralToolDefinitions(), which tools/list
+        // assembles twice. Unconfigured the API check pays the single encrypted
+        // hdb_api_key read before the portal check — +1 x 2 assemblies = +2 flat,
+        // independent of catalog size.
+        $this->assertLessThanOrEqual(108, count($queries), $sql);
     }
 
     public function test_tools_list_repairs_dynamic_cipp_schema_before_publishing(): void

@@ -55,7 +55,34 @@ class HdbApiProbeCommandTest extends TestCase
         $this->assertSame(1, $rows[0]['h3_match_count']);
         $this->assertTrue($rows[0]['binding_ticket_id_eq']);
         $this->assertSame('complete', $rows[0]['status']);
+        $this->assertSame('not_advertised', $rows[0]['sprite_reason']);
+        Http::assertNotSent(fn ($r) => $r->method() !== 'GET' || parse_url($r->url(), PHP_URL_HOST) !== parse_url(HdbApiConfig::BASE_URL, PHP_URL_HOST));
         $this->assertSame(1, $rows[1]['rows']);
+        Http::assertSentCount(2);
+    }
+
+    public function test_probe_claims_no_sprite_reason_it_did_not_measure(): void
+    {
+        Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
+        $ticket = Ticket::factory()->create();
+        $data = HdbApiReportClientTest::fixture();
+        $note = TicketNote::create(['ticket_id' => $ticket->id, 'note_type' => NoteType::System, 'body' => 'synthetic-note', 'is_private' => true, 'noted_at' => now()]);
+        $note->forceFill(['hdb_press_id' => $data['report_id']])->save();
+        $data['report_id'] = 'synthetic-other-report';
+        unset($data['report_url']);
+        $data['instant_replay'] = ['redacted' => 'false', 'sprite' => '/synthetic'];
+        Http::fake([
+            HdbApiConfig::BASE_URL.'/reports/'.$note->hdb_press_id => Http::response($data),
+            HdbApiConfig::BASE_URL.'/reports?*' => Http::response(['data' => [], 'pagination' => ['next_cursor' => null]]),
+        ]);
+        $this->assertSame(0, Artisan::call('hdb:api-probe', ['--notes' => 1]));
+        $row = json_decode(explode("\n", trim(Artisan::output()))[0], true);
+        $this->assertFalse($row['h1_hit']);
+        $this->assertTrue($row['sprite_advertised']);
+        $this->assertFalse($row['redaction_flags_present']);
+        $this->assertArrayHasKey('sprite_reason', $row);
+        $this->assertNull($row['sprite_reason']);
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), '/instant-replay/sprite'));
         Http::assertSentCount(2);
     }
 
