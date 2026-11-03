@@ -334,6 +334,22 @@ class HdbApiReportClientTest extends TestCase
         Http::assertSentCount(2);
     }
 
+    public function test_no_sprite_reason_is_claimed_where_no_sprite_was_requested(): void
+    {
+        $data = self::fixture();
+        $data['instant_replay']['sprite'] = '/synthetic';
+        $pending = ['status' => 'pending'] + $data;
+        $unreadable = ['diagnostics_redacted' => null] + $data;
+        Http::fake([HdbApiConfig::BASE_URL.'/reports/'.self::ID => Http::sequence()->push($pending)->push($data)->push($unreadable)->push(['error' => ['code' => 'report_not_found']], 404)]);
+        foreach ([[17, 'upload_incomplete'], [18, 'report_ticket_mismatch'], [17, 'redaction_flag_unreadable'], [17, 'report_not_found']] as [$ticket, $reason]) {
+            $result = (new HdbApiReportClient)->report(self::ID, $ticket);
+            $this->assertSame($reason, $result->reason);
+            $this->assertNull($result->spriteReason, $reason);
+        }
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), '/instant-replay/sprite'));
+        Http::assertSentCount(4);
+    }
+
     public function test_undecodable_png_is_not_image(): void
     {
         $data = self::fixture();

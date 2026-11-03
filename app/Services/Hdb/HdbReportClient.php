@@ -247,10 +247,21 @@ final class HdbReportClient
         $authorization = $this->authorizer->authorize($ticketId, $pressId);
 
         if ($authorization->refused()) {
-            return HdbReportResult::refused($authorization->refusal ?? HdbReportFetchRefusal::NoKeyedNote);
+            return self::refusal($authorization->refusal ?? HdbReportFetchRefusal::NoKeyedNote);
         }
 
         return $this->fetchAfterAuthorization($authorization);
+    }
+
+    /**
+     * A refusal names the configured reader as its source: nothing is requested
+     * from either source, so `source` cannot name a reply.
+     */
+    public static function refusal(HdbReportFetchRefusal $refusal): HdbReportResult
+    {
+        $result = HdbReportResult::refused($refusal);
+
+        return HdbApiConfig::isConfigured() ? $result->fromApi() : $result;
     }
 
     private ?HdbApiReportClient $api = null;
@@ -295,7 +306,7 @@ final class HdbReportClient
         $authorization = $this->authorizer->authorizeNote($ticketId, $noteId);
 
         if ($authorization->refused()) {
-            return HdbReportResult::refused($authorization->refusal ?? HdbReportFetchRefusal::NoKeyedNote);
+            return self::refusal($authorization->refusal ?? HdbReportFetchRefusal::NoKeyedNote);
         }
 
         return $this->fetchAfterAuthorization($authorization);

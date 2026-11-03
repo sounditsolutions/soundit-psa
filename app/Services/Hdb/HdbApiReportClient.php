@@ -69,32 +69,33 @@ final class HdbApiReportClient
         $this->reportHttpStatus = $read['http_status'] ?? null;
         $this->reportCode = $read['code'] ?? null;
         if (isset($read['failure'])) {
-            return $read['failure']->withSpriteOutcome('fetch_failed');
+            return $read['failure'];
         }
         $data = $read['data'];
         $bindings = array_filter([$data['ticket_id'] ?? null, $data['ticket_number'] ?? null], static fn ($value) => $value !== null);
         if ($bindings === [] || count(array_filter($bindings, fn ($value) => $this->matchesTicket($value, $ticketId))) !== count($bindings)) {
-            return HdbReportResult::apiFailure(HdbReportStatus::Refused, 'report_ticket_mismatch')->withSpriteOutcome('fetch_failed');
+            return HdbReportResult::apiFailure(HdbReportStatus::Refused, 'report_ticket_mismatch');
         }
         $diagnostic = $data['diagnostics_redacted'] ?? null;
         $screenshots = $data['instant_replay']['redacted'] ?? null;
+        $advertised = is_string($data['instant_replay']['sprite'] ?? null) && $data['instant_replay']['sprite'] !== '';
         if (! is_bool($diagnostic) || ! is_bool($screenshots)) {
-            return HdbReportResult::apiFailure(HdbReportStatus::Refused, 'redaction_flag_unreadable')->withSpriteOutcome('redacted');
+            return HdbReportResult::apiFailure(HdbReportStatus::Refused, 'redaction_flag_unreadable');
         }
         $status = $data['status'] ?? null;
         if ($status !== 'complete') {
-            return HdbReportResult::incomplete($reportId, [], in_array($status, ['pending', 'requested', 'pressed'], true) ? 'upload_incomplete' : 'upload_gate_missing')->withSpriteOutcome($screenshots ? 'redacted' : 'not_advertised');
+            return HdbReportResult::incomplete($reportId, [], in_array($status, ['pending', 'requested', 'pressed'], true) ? 'upload_incomplete' : 'upload_gate_missing')->withSpriteOutcome($screenshots ? 'redacted' : ($advertised ? null : 'not_advertised'));
         }
         $redaction = HdbReportRedaction::fromTicket(['redactDiagnostic' => $diagnostic, 'redactScreenshots' => $screenshots]);
         $metadata = array_intersect_key($data, array_flip(['ticket', 'user', 'status', 'created_at', 'os']));
         $report = $diagnostic ? [] : ($data['diagnostics'] ?? null);
         if (! is_array($report)) {
-            return HdbReportResult::malformed($reportId)->withSpriteOutcome('fetch_failed');
+            return HdbReportResult::malformed($reportId);
         }
         unset($report['breach_exposure'], $report['identity_verification']);
         $sprite = null;
         $spriteReason = $screenshots ? 'redacted' : 'not_advertised';
-        if ($screenshots === false && is_string($data['instant_replay']['sprite'] ?? null) && $data['instant_replay']['sprite'] !== '') {
+        if ($screenshots === false && $advertised) {
             $image = $this->request('/reports/'.rawurlencode($reportId).'/instant-replay/sprite', [], true);
             [$sprite, $spriteReason] = isset($image['sprite_reason'])
                 ? [null, $image['sprite_reason']]

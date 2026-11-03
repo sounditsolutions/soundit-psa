@@ -364,7 +364,31 @@ class HdbReportToolTest extends TestCase
         $out = $this->decoded($this->callTool(['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id]));
 
         $this->assertSame('no_keyed_note', $out['refusal'] ?? null, json_encode($out));
+        $this->assertSame(\App\Support\HdbApiConfig::isConfigured() ? 'api' : 'portal', $out['source'] ?? null);
+        $this->assertStringStartsWith('note_id does not name a live, visible note', (string) ($out['error'] ?? ''));
         Http::assertNothingSent();
+    }
+
+    public function test_failed_sprite_with_redacted_diagnostics_warns_only_of_the_sprite(): void
+    {
+        $ticket = $this->helpdeskTicket();
+        $note = $this->note($ticket);
+        Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
+        Setting::where('key', 'hdb_password')->first()->delete();
+        $data = \Tests\Feature\Hdb\HdbApiReportClientTest::fixture();
+        $data['ticket_id'] = (string) $ticket->id;
+        $data['diagnostics_redacted'] = true;
+        $data['instant_replay']['sprite'] = '/synthetic';
+        Http::fake([
+            \App\Support\HdbApiConfig::BASE_URL.'/reports/'.self::PRESS => Http::response($data),
+            \App\Support\HdbApiConfig::BASE_URL.'/reports/'.self::PRESS.'/instant-replay/sprite' => Http::response([], 500),
+        ]);
+        $out = $this->decoded($this->callTool(['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id]));
+        $this->assertSame('degraded', $out['status']);
+        $this->assertSame('sprite_fetch_failed', $out['reason']);
+        $this->assertNull($out['report']);
+        $this->assertArrayHasKey('report_note', $out);
+        $this->assertSame('The Instant Replay sprite fetch failed.', $out['warning']);
     }
 
     public function test_api_and_portal_output_keys_match_with_source(): void

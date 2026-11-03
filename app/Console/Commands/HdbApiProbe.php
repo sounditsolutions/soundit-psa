@@ -50,7 +50,7 @@ class HdbApiProbe extends Command
             $status = in_array($data['status'] ?? null, ['complete', 'pending', 'requested', 'pressed'], true) ? $data['status'] : 'unknown';
             $sprite = is_string($data['instant_replay']['sprite'] ?? null) && $data['instant_replay']['sprite'] !== '';
             $bucket = 'none';
-            $spriteReason = ($data['instant_replay']['redacted'] ?? false) ? 'redacted' : 'not_advertised';
+            $spriteReason = ! isset($read['data']) ? null : (($data['instant_replay']['redacted'] ?? null) === true ? 'redacted' : ($sprite ? null : 'not_advertised'));
             if ($h1 && $sprite) {
                 $spriteReason = $client->report($note->hdb_press_id, $note->ticket_id)->spriteReason;
                 $bucket = $client->spriteSizeBucket();

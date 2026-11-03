@@ -165,7 +165,19 @@ class HdbReportSourceOrderTest extends TestCase
     {
         $this->fake(Http::response($this->fixture()));
         $this->note->delete();
-        $this->assertSame('refused', (new HdbReportClient)->fetch($this->ticket->id, self::PRESS)->status->value);
+        $result = (new HdbReportClient)->fetch($this->ticket->id, self::PRESS);
+        $this->assertSame('refused', $result->status->value);
+        $this->assertSame('api', $result->source);
+        Http::assertNothingSent();
+    }
+
+    public function test_refusal_source_without_key_is_portal(): void
+    {
+        Setting::where('key', 'hdb_api_key')->first()->delete();
+        $this->note->delete();
+        $result = (new HdbReportClient)->fetch($this->ticket->id, self::PRESS);
+        $this->assertSame('refused', $result->status->value);
+        $this->assertSame('portal', $result->source);
         Http::assertNothingSent();
     }
 

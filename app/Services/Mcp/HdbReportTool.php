@@ -111,7 +111,7 @@ class HdbReportTool
 
         $report = $visible
             ? (new HdbReportClient)->fetchForNote($ticket->id, $noteId)
-            : HdbReportResult::refused(HdbReportFetchRefusal::NoKeyedNote);
+            : HdbReportClient::refusal(HdbReportFetchRefusal::NoKeyedNote);
 
         $result = $this->present($report, $ticket->id, $noteId);
         TicketToolActivityContext::current()?->finish($result, read: true);
@@ -168,7 +168,7 @@ class HdbReportTool
         }
         if ($report->status === HdbReportStatus::Degraded) {
             $out['warning'] = $report->reason === 'sprite_fetch_failed'
-                ? 'The Instant Replay sprite fetch failed. Diagnostics are returned without the image.'
+                ? 'The Instant Replay sprite fetch failed.'
                 : 'The report arrived without sections the HDB report client requires (listed in missing_sections). What arrived is returned, but it is not a complete report: a missing section is not an all-clear.';
         }
 
@@ -240,7 +240,7 @@ class HdbReportTool
      */
     private function failureMessage(HdbReportResult $report): string
     {
-        if ($report->source === 'api') {
+        if ($report->source === 'api' && $report->reason !== HdbReportResult::REASON_NOT_AUTHORIZED) {
             return 'The HelpDesk Buttons Reports API returned no usable report ('.$report->reason.').';
         }
 
