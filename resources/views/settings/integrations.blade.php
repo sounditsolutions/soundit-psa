@@ -3674,7 +3674,7 @@
 
                     <fieldset class="border rounded p-3 mb-3">
                         <legend class="float-none w-auto px-2 fs-6 text-muted">Reports API (beta)</legend>
-                        <p class="text-muted small">Saved for the upcoming API reader; reports still come from the portal sign-in below.</p>
+                        <p class="text-muted small">Reports use the API when a key is saved. Without a key, or on eligible API failures, the portal sign-in below is used when configured.</p>
                         <p class="text-muted small">Reading reports needs the view-endpoints, report-history, report-diagnostics and view-instant-replay permissions. The PSA only reads for now; action permissions switch on features as they ship, and a key without them still works.</p>
                         @if(auth()->user()?->isAdmin())
                             <label for="hdb_api_key" class="form-label">API key</label>
@@ -3697,7 +3697,7 @@
                     {{-- HDB Report Portal credentials (psa #340) --}}
                     <fieldset class="border rounded p-3 mb-3">
                         <legend class="float-none w-auto px-2 fs-6 text-muted">
-                            <i class="bi bi-file-earmark-medical me-1"></i>HDB Report Portal
+                            <i class="bi bi-file-earmark-medical me-1"></i>HDB Report Portal (fallback)
                         </legend>
 
                         <p class="text-muted small mb-3">
