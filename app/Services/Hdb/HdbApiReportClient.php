@@ -37,7 +37,7 @@ final class HdbApiReportClient
         return $this->spriteBucket;
     }
 
-    /** Read-only measurement seam; never writes vendor data to disk. */
+    /** Read-only measurement seam; returns the HTTP client's decoded response. */
     public function detail(string $reportId): array
     {
         return $this->request('/reports/'.rawurlencode($reportId));
