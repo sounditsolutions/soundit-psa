@@ -119,6 +119,8 @@ class HdbApiReportClientTest extends TestCase
         $client = new HdbApiReportClient;
         $result = $client->report(self::ID, 17);
         $this->assertSame(1568, getimagesizefromstring($result->screenshot)[0]);
+        $this->assertNull($result->spriteReason);
+        Http::assertSent(fn ($r) => str_ends_with($r->url(), '/instant-replay/sprite') && $r->hasHeader('Accept', 'image/png') && ! $r->hasHeader('Accept', 'application/json'));
         $this->assertSame('<=4MP', $client->spriteSizeBucket());
         $this->assertSame($result, $client->report(self::ID, 17));
         $this->assertSame('<=4MP', $client->spriteSizeBucket());
@@ -237,6 +239,81 @@ class HdbApiReportClientTest extends TestCase
         $this->assertCount(1, $result['items']);
         Http::assertSentCount(2);
         Http::assertSent(fn ($r) => ($r['cursor'] ?? null) === 'synthetic-cursor' && $r['group'] === 'ALL');
+    }
+
+    public function test_failed_sprite_is_degraded_and_never_memoized(): void
+    {
+        $data = self::fixture();
+        $data['instant_replay']['sprite'] = '/synthetic';
+        $sequence = Http::sequence();
+        foreach ([401, 403, 404, 429, 500] as $status) {
+            $sequence->push([], $status);
+        }
+        $sequence->pushResponse(Http::failedConnection());
+        Http::fake([
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID => Http::response($data),
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID.'/instant-replay/sprite' => $sequence,
+        ]);
+        $client = new HdbApiReportClient;
+        for ($i = 0; $i < 6; $i++) {
+            $result = $client->report(self::ID, 17);
+            $this->assertSame(HdbReportStatus::Degraded, $result->status);
+            $this->assertSame('fetch_failed', $result->spriteReason);
+            $this->assertFalse($result->importable());
+            $this->assertNotNull($result->report);
+        }
+        Http::assertSentCount(12);
+    }
+
+    public function test_sprite_reasons_and_ceiling_precede_decode(): void
+    {
+        $data = self::fixture();
+        $data['instant_replay']['sprite'] = '/synthetic';
+        $ihdr = 'IHDR'.pack('NNCCCCC', 6000, 6000, 8, 2, 0, 0, 0);
+        $bomb = "\x89PNG\r\n\x1a\n".pack('N', 13).$ihdr.pack('N', crc32($ihdr));
+        $this->mock(\App\Services\AttachmentService::class)->shouldNotReceive('resizeImageBytesForAi');
+        Http::fake([
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID => Http::response($data),
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID.'/instant-replay/sprite' => Http::sequence()
+                ->push($bomb)->push(str_repeat('x', \App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES + 1))->push('synthetic-not-image'),
+        ]);
+        foreach (['oversize', 'oversize', 'not_image'] as $reason) {
+            $result = (new HdbApiReportClient)->report(self::ID, 17);
+            $this->assertNull($result->screenshot);
+            $this->assertSame($reason, $result->spriteReason);
+        }
+    }
+
+    public function test_unadvertised_and_redacted_sprite_reasons(): void
+    {
+        $data = self::fixture();
+        $sequence = Http::sequence()->push($data);
+        $data['instant_replay']['redacted'] = true;
+        $sequence->push($data);
+        Http::fake([HdbApiConfig::BASE_URL.'/reports/'.self::ID => $sequence]);
+        foreach (['not_advertised', 'redacted'] as $reason) {
+            $this->assertSame($reason, (new HdbApiReportClient)->report(self::ID, 17)->spriteReason);
+        }
+        Http::assertSentCount(2);
+    }
+
+    public function test_undecodable_png_is_not_image(): void
+    {
+        $data = self::fixture();
+        $data['instant_replay']['sprite'] = '/synthetic';
+        $ihdr = 'IHDR'.pack('NNCCCCC', 20, 20, 8, 2, 0, 0, 0);
+        $bytes = "\x89PNG\r\n\x1a\n".pack('N', 13).$ihdr.pack('N', crc32($ihdr));
+        Http::fake([
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID => Http::response($data),
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID.'/instant-replay/sprite' => Http::response($bytes),
+        ]);
+        $this->assertSame('not_image', (new HdbApiReportClient)->report(self::ID, 17)->spriteReason);
+    }
+
+    protected function tearDown(): void
+    {
+        Http::assertNotSent(fn ($r) => $r->method() !== 'GET' || parse_url($r->url(), PHP_URL_HOST) !== parse_url(HdbApiConfig::BASE_URL, PHP_URL_HOST));
+        parent::tearDown();
     }
 
     public function test_page_bound_is_not_exhaustion(): void

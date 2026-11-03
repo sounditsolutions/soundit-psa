@@ -88,6 +88,7 @@ final readonly class HdbReportResult
         public ?HdbReportRedaction $redaction = null,
         public ?string $screenshot = null,
         public ?int $retryAfterSeconds = null,
+        public ?string $spriteReason = null,
     ) {}
 
     /**
@@ -197,6 +198,23 @@ final readonly class HdbReportResult
     public static function apiFailure(HdbReportStatus $status, string $reason, ?int $retryAfterSeconds = null): self
     {
         return new self($status, $reason, retryAfterSeconds: $retryAfterSeconds);
+    }
+
+    /** Add the API sprite outcome without changing the portal factory contracts. */
+    public function withSpriteOutcome(?string $reason): self
+    {
+        if ($reason !== null && ! in_array($reason, ['redacted', 'oversize', 'not_image', 'fetch_failed', 'not_advertised'], true)) {
+            throw new \InvalidArgumentException('Invalid sprite reason');
+        }
+
+        $values = get_object_vars($this);
+        $values['spriteReason'] = $reason;
+        if ($reason === 'fetch_failed' && $this->status === HdbReportStatus::Fetched) {
+            $values['status'] = HdbReportStatus::Degraded;
+            $values['reason'] = 'sprite_fetch_failed';
+        }
+
+        return new self(...$values);
     }
 
     /** Is a later attempt expected to do better? */

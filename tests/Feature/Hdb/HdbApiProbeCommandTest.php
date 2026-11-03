@@ -55,6 +55,8 @@ class HdbApiProbeCommandTest extends TestCase
         $this->assertSame(1, $rows[0]['h3_match_count']);
         $this->assertTrue($rows[0]['binding_ticket_id_eq']);
         $this->assertSame('complete', $rows[0]['status']);
+        $this->assertSame('not_advertised', $rows[0]['sprite_reason']);
+        Http::assertNotSent(fn ($r) => $r->method() !== 'GET' || parse_url($r->url(), PHP_URL_HOST) !== parse_url(HdbApiConfig::BASE_URL, PHP_URL_HOST));
         $this->assertSame(1, $rows[1]['rows']);
         Http::assertSentCount(2);
     }

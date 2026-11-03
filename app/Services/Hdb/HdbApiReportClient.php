@@ -54,61 +54,74 @@ final class HdbApiReportClient
         }
         $read = $this->detail($reportId);
         if (isset($read['failure'])) {
-            return $read['failure'];
+            return $read['failure']->withSpriteOutcome('fetch_failed');
         }
         $data = $read['data'];
         if (! $this->matchesTicket($data['ticket_id'] ?? null, $ticketId)
             && ! $this->matchesTicket($data['ticket_number'] ?? null, $ticketId)) {
-            return HdbReportResult::apiFailure(HdbReportStatus::Refused, 'report_ticket_mismatch');
+            return HdbReportResult::apiFailure(HdbReportStatus::Refused, 'report_ticket_mismatch')->withSpriteOutcome('fetch_failed');
         }
         $diagnostic = $data['diagnostics_redacted'] ?? null;
         $screenshots = $data['instant_replay']['redacted'] ?? null;
         if (! is_bool($diagnostic) || ! is_bool($screenshots)) {
-            return HdbReportResult::apiFailure(HdbReportStatus::Refused, 'redaction_flag_unreadable');
+            return HdbReportResult::apiFailure(HdbReportStatus::Refused, 'redaction_flag_unreadable')->withSpriteOutcome('redacted');
         }
         $status = $data['status'] ?? null;
         if ($status !== 'complete') {
-            return HdbReportResult::incomplete($reportId, [], in_array($status, ['pending', 'requested', 'pressed'], true) ? 'upload_incomplete' : 'upload_gate_missing');
+            return HdbReportResult::incomplete($reportId, [], in_array($status, ['pending', 'requested', 'pressed'], true) ? 'upload_incomplete' : 'upload_gate_missing')->withSpriteOutcome($screenshots ? 'redacted' : 'not_advertised');
         }
         $redaction = HdbReportRedaction::fromTicket(['redactDiagnostic' => $diagnostic, 'redactScreenshots' => $screenshots]);
         $metadata = array_intersect_key($data, array_flip(['ticket', 'user', 'status', 'created_at', 'os']));
         $report = $diagnostic ? [] : ($data['diagnostics'] ?? null);
         if (! is_array($report)) {
-            return HdbReportResult::malformed($reportId);
+            return HdbReportResult::malformed($reportId)->withSpriteOutcome('fetch_failed');
         }
         unset($report['breach_exposure'], $report['identity_verification']);
         $sprite = null;
+        $spriteReason = $screenshots ? 'redacted' : 'not_advertised';
         if ($screenshots === false && is_string($data['instant_replay']['sprite'] ?? null) && $data['instant_replay']['sprite'] !== '') {
             $image = $this->request('/reports/'.rawurlencode($reportId).'/instant-replay/sprite', [], true);
-            $sprite = $this->boundedSprite($image['bytes'] ?? null);
+            [$sprite, $spriteReason] = isset($image['failure'])
+                ? [null, 'fetch_failed']
+                : $this->boundedSprite($image['bytes'] ?? null);
         }
         $missing = $diagnostic ? [] : array_values(array_diff(self::REQUIRED_SECTIONS, array_keys($report)));
         if ($missing !== []) {
-            return HdbReportResult::degraded($reportId, $metadata, $report, $missing, $redaction, $sprite);
+            return HdbReportResult::degraded($reportId, $metadata, $report, $missing, $redaction, $sprite)->withSpriteOutcome($spriteReason);
         }
 
+        $result = HdbReportResult::fetched($reportId, $metadata, $report, $redaction, $sprite)->withSpriteOutcome($spriteReason);
+        if ($spriteReason === 'fetch_failed') {
+            return $result;
+        }
         $this->memoBuckets[$memoKey] = $this->spriteBucket;
 
-        return $this->memo[$memoKey] = HdbReportResult::fetched($reportId, $metadata, $report, $redaction, $sprite);
+        return $this->memo[$memoKey] = $result;
     }
 
-    private function boundedSprite(?string $bytes): ?string
+    /** @return array{?string, ?string} */
+    private function boundedSprite(?string $bytes): array
     {
-        if ($bytes === null || strlen($bytes) > \App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES) {
-            return null;
+        if ($bytes === null) {
+            return [null, 'fetch_failed'];
+        }
+        if (strlen($bytes) > \App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES) {
+            return [null, 'oversize'];
         }
         $size = @getimagesizefromstring($bytes);
         if ($size !== false) {
             $pixels = $size[0] * $size[1];
             $this->spriteBucket = $pixels <= 1_000_000 ? '<=1MP' : ($pixels <= 4_000_000 ? '<=4MP' : '>4MP');
         }
-        if ($size === false || ($size['mime'] ?? '') !== 'image/png'
-            || $size[0] * $size[1] > \App\Services\Assistant\AssistantToolExecutor::MAX_IMAGE_PIXELS) {
-            return null;
+        if ($size === false || ($size['mime'] ?? '') !== 'image/png') {
+            return [null, 'not_image'];
+        }
+        if ($size[0] * $size[1] > \App\Services\Assistant\AssistantToolExecutor::MAX_IMAGE_PIXELS) {
+            return [null, 'oversize'];
         }
         $encoded = app(\App\Services\AttachmentService::class)->resizeImageBytesForAi($bytes, 'image/png');
 
-        return $encoded === null ? null : base64_decode($encoded, true);
+        return $encoded === null ? [null, 'not_image'] : [base64_decode($encoded, true), null];
     }
 
     public function matchesTicket(mixed $value, int $ticketId): bool
@@ -162,7 +175,7 @@ final class HdbApiReportClient
         }
         for ($attempt = 0; $attempt < 2; $attempt++) {
             try {
-                $response = Http::withToken($key)->acceptJson()->connectTimeout(5)->timeout(30)
+                $response = Http::withToken($key)->accept($binary ? 'image/png' : 'application/json')->connectTimeout(5)->timeout(30)
                     ->withoutRedirecting()->withOptions(['on_headers' => static function ($response) {
                         if ((int) $response->getHeaderLine('Content-Length') > self::MAX_BODY_BYTES) {
                             throw new \LengthException;
