@@ -4,6 +4,14 @@ Deploy your own instance of this PSA on a fresh VPS. This guide covers everythin
 
 ---
 
+## HelpDesk Buttons Reports API (beta)
+
+1. In `account.helpdeskbuttons.com/api-credentials`, mint a key. Reading reports needs `view-endpoints`, `report-history`, `report-diagnostics` and `view-instant-replay`. Action permissions are optional: the PSA only reads today, each action feature switches on as it ships, and a key without that permission leaves that feature off. Scope it to the intended endpoint groups.
+2. As an administrator, paste the key into **Settings → Integrations → Tier2Tickets / HelpDesk Buttons → Reports API (beta)** and save. Blank or the mask keeps the stored key; **Clear the stored API key** deletes it, even if a replacement is entered in the same save.
+3. Run **Test saved API key** after saving. This makes one read of `/groups`; it does not fetch a report or prove report permissions.
+4. Run `php artisan hdb:api-probe --notes=10` in the authorized application environment. It reads recent keyed notes and prints mapping booleans, counts and status codes, never ids or report content. Lists are bounded; `list_incomplete` counts walks that did not reach a null cursor. An incomplete walk cannot prove absence.
+5. This slice does not change report fetching: the existing portal sign-in remains the only reader used by the ticket tool. Have the probe evidence reviewed before enabling any future API source mapping. No report identifiers are persisted by the probe.
+
 ## Dormant agreement signing
 
 | Setting / dependency | Requirement |

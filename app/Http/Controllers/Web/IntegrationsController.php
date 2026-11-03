@@ -22,6 +22,7 @@ use App\Support\AutoElevateConfig;
 use App\Support\BenjiPaysConfig;
 use App\Support\CippConfig;
 use App\Support\ControlDConfig;
+use App\Support\HdbApiConfig;
 use App\Support\HdbPortalConfig;
 use App\Support\HuntressConfig;
 use App\Support\LevelConfig;
@@ -389,6 +390,7 @@ class IntegrationsController extends Controller
         // placeholder. It now lives on the read path that applies it
         // ({@see HdbPortalConfig}) rather than in a private const here, so the form
         // and the client cannot drift to two different hosts — psa #1352.
+        $hdbApiConfigured = HdbApiConfig::isConfigured();
         $hdbBaseUrl = trim((string) Setting::getValue('hdb_base_url', ''));
         $hdbDefaultBaseUrl = HdbPortalConfig::DEFAULT_BASE_URL;
         $hdbEmail = (string) Setting::getValue('hdb_email', '');
@@ -650,7 +652,7 @@ class IntegrationsController extends Controller
             'transcriptionConfigured', 'transcriptionHasKey', 'transcriptionAutoEnabled', 'transcriptionMinSeconds',
             'huntressCwConfigured', 'huntressCwHost', 'huntressCwCompanyId', 'huntressCwPublicKey', 'huntressCwSystemUserId', 'huntressCwUsers',
             't2tConfigured', 't2tApiUrl', 't2tCompanyId', 't2tCallbackUrl', 't2tUsers', 't2tSystemUserId', 't2tEnabled',
-            'hdbBaseUrl', 'hdbDefaultBaseUrl', 'hdbEmail', 'hdbHasPassword', 'hdbHasTotpSecret',
+            'hdbApiConfigured', 'hdbBaseUrl', 'hdbDefaultBaseUrl', 'hdbEmail', 'hdbHasPassword', 'hdbHasTotpSecret',
             'triageEnabled', 'triageAutoNew', 'triageAutoReview', 'triageReviewFrequency', 'triageReviewAutoClose', 'triageReviewThreshold',
             'triageDefaultAssignee', 'triageSystemUser', 'triageModel', 'triageMaxTokens', 'triageDailyTokens', 'triageBatchSize', 'triageStages',
             'assistantIntent', 'assistantEligible', 'assistantActive', 'assistantMaxMessages', 'assistantDailyTokens',
@@ -2836,6 +2838,8 @@ class IntegrationsController extends Controller
                 }
             }];
             $rules['hdb_email'] = 'nullable|email|max:255';
+            $rules['hdb_api_key'] = 'nullable|string|max:500';
+            $rules['hdb_api_key_clear'] = 'nullable|boolean';
             $rules['hdb_password'] = 'nullable|string|max:1024';
             $rules['hdb_totp_secret'] = 'nullable|string|max:255';
         }
@@ -2886,6 +2890,13 @@ class IntegrationsController extends Controller
         // secret and the encrypted Teams webhook: a blank submit or the echoed mask
         // means "keep what is stored", so saving an unrelated field on this form can
         // never wipe a credential.
+        $hdbApiKey = trim((string) ($validated['hdb_api_key'] ?? ''));
+        if ($request->boolean('hdb_api_key_clear')) {
+            Setting::where('key', 'hdb_api_key')->first()?->delete();
+        } elseif ($hdbApiKey !== '' && $hdbApiKey !== self::SECRET_MASK) {
+            Setting::setEncrypted('hdb_api_key', $hdbApiKey);
+        }
+
         $hdbPassword = trim((string) ($validated['hdb_password'] ?? ''));
         if ($hdbPassword !== '' && $hdbPassword !== self::SECRET_MASK) {
             Setting::setEncrypted('hdb_password', $hdbPassword);
@@ -2962,6 +2973,33 @@ class IntegrationsController extends Controller
             'success' => $result->ok(),
             'message' => $result->message(),
         ]);
+    }
+
+    public function testHdbApi(Request $request)
+    {
+        abort_unless($request->user()?->isAdmin() === true, 403);
+
+        $key = HdbApiConfig::apiKey();
+        if ($key === null) {
+            return response()->json(['success' => false, 'message' => 'not_configured']);
+        }
+
+        try {
+            $response = \Illuminate\Support\Facades\Http::withToken($key)->acceptJson()->connectTimeout(5)->timeout(30)
+                ->withoutRedirecting()->get(HdbApiConfig::BASE_URL.'/groups');
+            $status = $response->status();
+            $result = match (true) {
+                $status === 200 => 'connected',
+                $status === 401 => 'rejected',
+                $status === 403 => 'missing_permission',
+                $status >= 500 => 'unreachable',
+                default => 'unexpected',
+            };
+
+            return response()->json(['success' => $result === 'connected', 'message' => $result, 'http_status' => $status]);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => 'unreachable', 'exception_class' => $e::class]);
+        }
     }
 
     public function generateT2tKey()
