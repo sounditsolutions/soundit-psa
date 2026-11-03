@@ -50,7 +50,7 @@ class HdbReportTool
     {
         return [
             'name' => self::NAME,
-            'description' => 'Fetch a HelpDesk Buttons (HDB) help button report using client_id, ticket_id and a live, visible, PSA-captured note_id; pasted links and press ids never authorize a fetch. '
+            'description' => 'Fetch a HelpDesk Buttons (HDB) help button report and screenshot using client_id, ticket_id and a live, visible, PSA-captured note_id; pasted links and press ids never authorize a fetch. '
                 .'Uses the HDB Reports API when configured, otherwise the portal, with portal fallback on eligible API failures. source says api or portal. '
                 .'API report contains normalized diagnostics sections: system, hardware, network, security, software, processes and events; screenshot is the Instant Replay sprite (instant-replay.png). The portal returns report.json sections and its desktop screenshot. '
                 .'Returns status, report, report_metadata, missing_sections, redaction and screenshot as {filename, media_type, is_image, data_base64}, subject to byte/pixel ceilings and redaction. screenshot_note explains an omitted image. '

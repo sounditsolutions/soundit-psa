@@ -384,6 +384,8 @@ class HdbReportToolTest extends TestCase
             \App\Support\HdbApiConfig::BASE_URL.'/reports/'.self::PRESS.'/instant-replay/sprite' => Http::response($this->png()),
         ]);
         $api = $this->decoded($this->callTool($args));
+        $this->assertArrayHasKey('source', $portal);
+        $this->assertArrayHasKey('source', $api);
         $this->assertSame('portal', $portal['source']);
         $this->assertSame('api', $api['source']);
         $this->assertSame(array_keys($portal), array_keys($api));

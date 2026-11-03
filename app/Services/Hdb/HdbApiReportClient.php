@@ -96,9 +96,9 @@ final class HdbApiReportClient
         $spriteReason = $screenshots ? 'redacted' : 'not_advertised';
         if ($screenshots === false && is_string($data['instant_replay']['sprite'] ?? null) && $data['instant_replay']['sprite'] !== '') {
             $image = $this->request('/reports/'.rawurlencode($reportId).'/instant-replay/sprite', [], true);
-            [$sprite, $spriteReason] = isset($image['failure'])
-                ? [null, 'fetch_failed']
-                : $this->boundedSprite($image['bytes'] ?? null);
+            [$sprite, $spriteReason] = isset($image['sprite_reason'])
+                ? [null, $image['sprite_reason']]
+                : (isset($image['failure']) ? [null, 'fetch_failed'] : $this->boundedSprite($image['bytes'] ?? null));
         }
         $missing = $diagnostic ? [] : array_values(array_diff(self::REQUIRED_SECTIONS, array_keys($report)));
         if ($missing !== []) {
@@ -201,6 +201,11 @@ final class HdbApiReportClient
                         }
                     }])->get(HdbApiConfig::BASE_URL.$path, $query);
             } catch (\Throwable $e) {
+                for ($cause = $e; $cause !== null; $cause = $cause->getPrevious()) {
+                    if ($binary && $cause instanceof \LengthException) {
+                        return ['sprite_reason' => 'oversize'];
+                    }
+                }
                 Log::warning('hdb_api', ['exception_class' => $e::class]);
 
                 return ['failure' => HdbReportResult::unreachable('')];
@@ -231,6 +236,9 @@ final class HdbApiReportClient
             };
 
             return ['failure' => $failure, 'http_status' => $status, 'code' => $code];
+        }
+        if ($binary && strlen($body) > \App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES) {
+            return ['sprite_reason' => 'oversize'];
         }
         if (strlen($body) > self::MAX_BODY_BYTES) {
             return ['failure' => HdbReportResult::malformed(''), 'http_status' => $status];

@@ -308,6 +308,19 @@ class HdbApiReportClientTest extends TestCase
         }
     }
 
+    public function test_sprite_stream_limit_is_oversize_not_fetch_failed(): void
+    {
+        $data = self::fixture();
+        $data['instant_replay']['sprite'] = '/synthetic';
+        Http::fake([
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID => Http::response($data),
+            HdbApiConfig::BASE_URL.'/reports/'.self::ID.'/instant-replay/sprite' => fn () => throw new \RuntimeException('synthetic', 0, new \LengthException),
+        ]);
+        $result = (new HdbApiReportClient)->report(self::ID, 17);
+        $this->assertSame('oversize', $result->spriteReason);
+        $this->assertNull($result->screenshot);
+    }
+
     public function test_unadvertised_and_redacted_sprite_reasons(): void
     {
         $data = self::fixture();
@@ -336,8 +349,11 @@ class HdbApiReportClientTest extends TestCase
 
     protected function tearDown(): void
     {
-        Http::assertNotSent(fn ($r) => $r->method() !== 'GET' || parse_url($r->url(), PHP_URL_HOST) !== parse_url(HdbApiConfig::BASE_URL, PHP_URL_HOST));
-        parent::tearDown();
+        try {
+            Http::assertNotSent(fn ($r) => $r->method() !== 'GET' || parse_url($r->url(), PHP_URL_HOST) !== parse_url(HdbApiConfig::BASE_URL, PHP_URL_HOST));
+        } finally {
+            parent::tearDown();
+        }
     }
 
     public function test_page_bound_is_not_exhaustion(): void
