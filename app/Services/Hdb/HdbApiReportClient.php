@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Sleep;
 
 /**
- * Unwired S1 reader. Field source: vendor swagger.yaml, v1.0.0-beta,
+ * Reports API reader. Field source: vendor swagger.yaml, v1.0.0-beta,
  * ReportDetail, ReportSummary, Pagination and ApiError (November 2026).
  * Synthetic tests prove handling of that contract, not live vendor behaviour.
  */
@@ -45,20 +45,35 @@ final class HdbApiReportClient
 
     public function report(string $reportId, int $ticketId): HdbReportResult
     {
+        return $this->readReport($reportId, $ticketId)->fromApi($this->reportHttpStatus, $this->reportCode);
+    }
+
+    private ?int $reportHttpStatus = null;
+
+    private ?string $reportCode = null;
+
+    private function readReport(string $reportId, int $ticketId): HdbReportResult
+    {
+        $this->reportHttpStatus = null;
+        $this->reportCode = null;
         $this->spriteBucket = 'none';
         $memoKey = $ticketId.':'.$reportId;
         if (isset($this->memo[$memoKey])) {
             $this->spriteBucket = $this->memoBuckets[$memoKey] ?? 'none';
+            $this->reportHttpStatus = $this->memo[$memoKey]->httpStatus;
+            $this->reportCode = $this->memo[$memoKey]->apiCode;
 
             return $this->memo[$memoKey];
         }
         $read = $this->detail($reportId);
+        $this->reportHttpStatus = $read['http_status'] ?? null;
+        $this->reportCode = $read['code'] ?? null;
         if (isset($read['failure'])) {
             return $read['failure']->withSpriteOutcome('fetch_failed');
         }
         $data = $read['data'];
-        if (! $this->matchesTicket($data['ticket_id'] ?? null, $ticketId)
-            && ! $this->matchesTicket($data['ticket_number'] ?? null, $ticketId)) {
+        $bindings = array_filter([$data['ticket_id'] ?? null, $data['ticket_number'] ?? null], static fn ($value) => $value !== null);
+        if ($bindings === [] || count(array_filter($bindings, fn ($value) => $this->matchesTicket($value, $ticketId))) !== count($bindings)) {
             return HdbReportResult::apiFailure(HdbReportStatus::Refused, 'report_ticket_mismatch')->withSpriteOutcome('fetch_failed');
         }
         $diagnostic = $data['diagnostics_redacted'] ?? null;
@@ -96,7 +111,7 @@ final class HdbApiReportClient
         }
         $this->memoBuckets[$memoKey] = $this->spriteBucket;
 
-        return $this->memo[$memoKey] = $result;
+        return $this->memo[$memoKey] = $result->fromApi($this->reportHttpStatus, $this->reportCode);
     }
 
     /** @return array{?string, ?string} */

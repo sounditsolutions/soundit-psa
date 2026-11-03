@@ -18,10 +18,9 @@ class HdbApiNoBehaviourChangeTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_key_set_tool_still_uses_only_portal(): void
+    public function test_key_unset_tool_still_uses_only_portal(): void
     {
         Http::preventStrayRequests();
-        Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
         Setting::setValue('hdb_base_url', HdbPortalConfig::DEFAULT_BASE_URL);
         Setting::setValue('hdb_email', 'synthetic@example.test');
         Setting::setEncrypted('hdb_password', 'synthetic-password');
@@ -36,7 +35,7 @@ class HdbApiNoBehaviourChangeTest extends TestCase
         ]);
         $result = app(HdbReportTool::class)->execute(['ticket_id' => $ticket->id, 'note_id' => $note->id], $ticket->client_id);
         $this->assertSame('fetched', $result['status']);
-        $this->assertArrayNotHasKey('source', $result);
+        $this->assertSame('portal', $result['source']);
         Http::assertSent(fn ($r) => str_contains($r->url(), 'getFile=report.json'));
         Http::assertNotSent(fn ($r) => str_contains($r->url(), 'cyl.helpdeskbuttons.com'));
     }

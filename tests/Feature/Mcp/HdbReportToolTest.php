@@ -367,6 +367,60 @@ class HdbReportToolTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_api_and_portal_output_keys_match_with_source(): void
+    {
+        $ticket = $this->helpdeskTicket();
+        $note = $this->note($ticket);
+        $this->fakeWholeReport();
+        $args = ['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id];
+        $portal = $this->decoded($this->callTool($args));
+        Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
+        Setting::where('key', 'hdb_password')->first()->delete();
+        $data = \Tests\Feature\Hdb\HdbApiReportClientTest::fixture();
+        $data['ticket_id'] = (string) $ticket->id;
+        $data['instant_replay']['sprite'] = '/synthetic';
+        Http::fake([
+            \App\Support\HdbApiConfig::BASE_URL.'/reports/'.self::PRESS => Http::response($data),
+            \App\Support\HdbApiConfig::BASE_URL.'/reports/'.self::PRESS.'/instant-replay/sprite' => Http::response($this->png()),
+        ]);
+        $api = $this->decoded($this->callTool($args));
+        $this->assertSame('portal', $portal['source']);
+        $this->assertSame('api', $api['source']);
+        $this->assertSame(array_keys($portal), array_keys($api));
+        $this->assertSame('instant-replay.png', $api['screenshot']['filename']);
+        $this->assertSame(array_keys($portal['screenshot']), array_keys($api['screenshot']));
+    }
+
+    public static function authoritySources(): array
+    {
+        return ['portal' => [false], 'api' => [true]];
+    }
+
+    #[DataProvider('authoritySources')]
+    public function test_authority_refusals_with_each_source(bool $api): void
+    {
+        if ($api) {
+            Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
+        }
+        $this->test_a_ticket_of_another_client_is_refused_like_get_ticket_attachment_and_nothing_is_fetched();
+        $this->test_a_raw_press_id_or_link_is_refused_as_input_and_nothing_is_fetched();
+        $this->test_an_unverified_contact_intake_ticket_is_refused_like_get_ticket_attachment();
+        $this->test_an_unverified_contact_intake_note_is_refused_in_the_no_keyed_note_shape();
+        $this->test_a_note_keyed_on_another_ticket_is_refused_even_when_this_ticket_cache_names_the_press();
+        Http::assertNothingSent();
+    }
+
+    public function test_api_configuration_keeps_the_integration_off_gate(): void
+    {
+        Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
+        Setting::where('key', 'hdb_password')->first()->delete();
+        Setting::setValue('t2t_enabled', '0');
+        $this->assertNotContains(HdbReportTool::NAME, array_column($this->mcp('tools/list', [])->json('result.tools'), 'name'));
+        Setting::setValue('t2t_enabled', '1');
+        $this->assertContains(HdbReportTool::NAME, array_column($this->mcp('tools/list', [])->json('result.tools'), 'name'));
+        Http::assertNothingSent();
+    }
+
     // ---------------------------------------------------------------- grants
 
     /**

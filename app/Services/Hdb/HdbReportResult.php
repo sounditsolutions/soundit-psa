@@ -89,6 +89,9 @@ final readonly class HdbReportResult
         public ?string $screenshot = null,
         public ?int $retryAfterSeconds = null,
         public ?string $spriteReason = null,
+        public string $source = 'portal',
+        public ?int $httpStatus = null,
+        public ?string $apiCode = null,
     ) {}
 
     /**
@@ -198,6 +201,19 @@ final readonly class HdbReportResult
     public static function apiFailure(HdbReportStatus $status, string $reason, ?int $retryAfterSeconds = null): self
     {
         return new self($status, $reason, retryAfterSeconds: $retryAfterSeconds);
+    }
+
+    public function fromApi(?int $httpStatus = null, ?string $code = null): self
+    {
+        if ($this->source === 'api' && $this->httpStatus === $httpStatus && $this->apiCode === $code) {
+            return $this;
+        }
+        $values = get_object_vars($this);
+        $values['source'] = 'api';
+        $values['httpStatus'] = $httpStatus;
+        $values['apiCode'] = $code;
+
+        return new self(...$values);
     }
 
     /** Add the API sprite outcome without changing the portal factory contracts. */

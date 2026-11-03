@@ -82,6 +82,30 @@ class HdbApiReportClientTest extends TestCase
         $this->assertSame('redaction_flag_unreadable', (new HdbApiReportClient)->report(self::ID, 17)->reason);
     }
 
+    public static function bindings(): array
+    {
+        return [
+            'both equal' => [17, '17', true],
+            'id null' => [null, '17', true],
+            'number null' => ['17', null, true],
+            'id differs' => [18, '17', false],
+            'number differs' => ['17', 18, false],
+            'both null' => [null, null, false],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('bindings')]
+    public function test_every_non_null_binding_must_match(mixed $id, mixed $number, bool $accepted): void
+    {
+        $data = self::fixture();
+        $data['ticket_id'] = $id;
+        $data['ticket_number'] = $number;
+        $this->fake($data);
+        $result = (new HdbApiReportClient)->report(self::ID, 17);
+        $this->assertSame($accepted ? HdbReportStatus::Fetched : HdbReportStatus::Refused, $result->status);
+        $this->assertSame($accepted ? 'ok' : 'report_ticket_mismatch', $result->reason);
+    }
+
     public function test_binding_mismatch_refuses(): void
     {
         $this->fake(self::fixture());

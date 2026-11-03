@@ -127,6 +127,7 @@ class HdbReportTool
         $base = [
             'ticket_id' => $ticketId,
             'note_id' => $noteId,
+            'source' => $report->source,
             'status' => $report->status->value,
             'reason' => $report->reason,
         ];
@@ -142,6 +143,15 @@ class HdbReportTool
         // Fetched and Degraded always carry a redaction verdict (HdbReportResult::fetched/degraded).
         $redaction = $report->redaction;
         [$screenshot, $screenshotNote] = $this->screenshot($report->screenshot, $redaction?->allowsScreenshots() ?? false);
+
+        if ($report->source === 'api') {
+            if (is_array($screenshot) && isset($screenshot['filename'])) {
+                $screenshot['filename'] = \App\Services\Hdb\HdbApiReportClient::SPRITE_FILENAME;
+            }
+            if ($report->spriteReason !== null) {
+                $screenshotNote = $report->spriteReason;
+            }
+        }
 
         $out = $base + [
             'redaction' => ['diagnostic' => (bool) $redaction?->diagnostic, 'screenshots' => (bool) $redaction?->screenshots],
@@ -159,7 +169,9 @@ class HdbReportTool
             $out['screenshot_note'] = $screenshotNote;
         }
         if ($report->status === HdbReportStatus::Degraded) {
-            $out['warning'] = 'The report arrived without sections the HDB report client requires (listed in missing_sections). What arrived is returned, but it is not a complete report: a missing section is not an all-clear.';
+            $out['warning'] = $report->reason === 'sprite_fetch_failed'
+                ? 'The Instant Replay sprite fetch failed. Diagnostics are returned without the image.'
+                : 'The report arrived without sections the HDB report client requires (listed in missing_sections). What arrived is returned, but it is not a complete report: a missing section is not an all-clear.';
         }
 
         return $out;
@@ -230,6 +242,10 @@ class HdbReportTool
      */
     private function failureMessage(HdbReportResult $report): string
     {
+        if ($report->source === 'api') {
+            return 'The HelpDesk Buttons Reports API returned no usable report ('.$report->reason.').';
+        }
+
         return match ($report->reason) {
             HdbReportResult::REASON_NOT_AUTHORIZED => $report->refusal === HdbReportFetchRefusal::NoKeyedNote || $report->refusal === null
                 ? 'note_id does not name a live, visible note on this ticket carrying a HelpDesk Buttons press the PSA captured, so no report was fetched.'
