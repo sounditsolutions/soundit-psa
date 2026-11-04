@@ -1565,7 +1565,7 @@ class McpToolRegistry
     {
         return [
             'name' => 'list_email_items',
-            'description' => 'List inbound/outbound email items (metadata + short body_preview only; never full bodies). Each row carries to/cc address lists (Cc-only means the item was copied to us, not addressed to us). Staff-class, cross-client. Filter by direction, unlinked (no ticket), client_id, since. Returns has_more/truncated and opaque before/after/next_cursor values. before reads older entries; after reads the nearest newer page, always newest-first. Keep scope/filters unchanged when using cursors; inserts do not shift pages.',
+            'description' => 'List inbound/outbound email items (metadata + short body_preview only; never full bodies). Each row carries to and cc address lists (addresses only; get_email_item adds names). Staff-class, cross-client. Filter by direction, unlinked (no ticket), client_id, since. Returns has_more/truncated and opaque before/after/next_cursor values. before reads older entries; after reads the nearest newer page, always newest-first. Keep scope/filters unchanged when using cursors; inserts do not shift pages.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
