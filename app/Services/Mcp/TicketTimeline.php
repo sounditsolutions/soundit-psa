@@ -104,6 +104,14 @@ final class TicketTimeline
                 $model = $loaded['note'][$row->id] ?? null;
                 $entry['actor'] = $model?->author?->name ?? $model?->author_name ?? 'System';
                 $entry['summary'] = $this->text($model?->body);
+                // A ticket-linked email is mirrored into a note and its envelope row is
+                // suppressed, so the note is where the recipients must surface (Tk3X8x1p).
+                // 'email' is already eager-loaded in hydrate(); no extra query.
+                if ($model?->email) {
+                    $entry['email_id'] = (int) $model->email->id;
+                    $entry['to'] = $model->email->recipientList('to_recipients', false);
+                    $entry['cc'] = $model->email->recipientList('cc_recipients', false);
+                }
             } elseif ($kind === 'call') {
                 $model = $loaded['call'][$row->id] ?? null;
                 $entry['actor'] = $model?->answeredBy?->name ?? 'Phone';
@@ -114,6 +122,8 @@ final class TicketTimeline
                 $entry['summary'] = $this->text(($model?->subject ?? '').' — '.($model?->body_preview ?? ''));
                 $entry['direction'] = $model?->direction?->value;
                 $entry['email_id'] = (int) $row->id;
+                $entry['to'] = $model?->recipientList('to_recipients', false) ?? [];
+                $entry['cc'] = $model?->recipientList('cc_recipients', false) ?? [];
             } else {
                 $model = $loaded['ai_chat'][$row->id] ?? null;
                 $entry['actor'] = $model?->user?->name ?? 'Assistant';
