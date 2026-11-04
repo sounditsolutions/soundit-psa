@@ -214,6 +214,32 @@ class Email extends Model
         return null;
     }
 
+    /**
+     * Normalised recipient list for read surfaces (MCP email reads, ticket
+     * timeline). Recipients are stored either as ['name' => ..., 'address' => ...]
+     * maps (Graph ingestion, outbound sends) or as plain address strings
+     * (seeded/legacy data) — tolerate both, as primaryRecipientAddress() does.
+     * Entries without an address are dropped.
+     *
+     * @param  'to_recipients'|'cc_recipients'  $field
+     * @return list<array{address: string, name: ?string}>|list<string>
+     */
+    public function recipientList(string $field, bool $withNames = true): array
+    {
+        $out = [];
+        foreach ((array) ($this->{$field} ?? []) as $r) {
+            $address = is_string($r) ? $r : (is_array($r) ? ($r['address'] ?? null) : null);
+            if (! is_string($address) || trim($address) === '') {
+                continue;
+            }
+            $address = strtolower(trim($address));
+            $name = is_array($r) && is_string($r['name'] ?? null) && $r['name'] !== '' ? $r['name'] : null;
+            $out[] = $withNames ? ['address' => $address, 'name' => $name] : $address;
+        }
+
+        return $out;
+    }
+
     public function fromDomain(): ?string
     {
         $parts = explode('@', $this->from_address);

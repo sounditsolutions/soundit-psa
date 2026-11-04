@@ -988,10 +988,15 @@ class AssistantToolExecutor
         } catch (\InvalidArgumentException $e) {
             return ['error' => $e->getMessage()];
         }
-        $byId = $query->with('attachments', 'author')->whereIn('id', $page['ids'])->get()->keyBy('id');
+        $byId = $query->with('attachments', 'author', 'email')->whereIn('id', $page['ids'])->get()->keyBy('id');
         $notes = collect($page['ids'])->map(fn ($id) => $byId->get($id))->filter()->reverse()->values();
 
         $items = $notes->map(fn (TicketNote $n) => [
+            // Email-mirrored notes carry the message's recipients, so a reader can
+            // tell To from Cc-only (Tk3X8x1p). Absent on non-email notes.
+            ...($n->email ? ['email_id' => $n->email->id,
+                'to' => $n->email->recipientList('to_recipients', false),
+                'cc' => $n->email->recipientList('cc_recipients', false)] : []),
             'type' => $n->note_type?->value,
             'author' => $n->author?->name ?? $n->author_name ?? 'System',
             // Generous cap: a full final client message must not be clipped
@@ -2308,6 +2313,10 @@ class AssistantToolExecutor
                 'id' => $e->id,
                 'direction' => $e->direction->value,
                 'from_address' => $e->from_address,
+                // Compact address lists: a caller must be able to tell an email
+                // addressed to us from one where we are only a Cc (Tk3X8x1p).
+                'to' => $e->recipientList('to_recipients', false),
+                'cc' => $e->recipientList('cc_recipients', false),
                 'subject' => $e->subject,
                 'received_at' => $e->received_at?->toIso8601String(),
                 'client_id' => $e->client_id,
@@ -2342,6 +2351,8 @@ class AssistantToolExecutor
             'direction' => $email->direction->value,
             'from_address' => $email->from_address,
             'from_name' => $email->from_name,
+            'to_recipients' => $email->recipientList('to_recipients'),
+            'cc_recipients' => $email->recipientList('cc_recipients'),
             'subject' => $email->subject,
             'received_at' => $email->received_at?->toIso8601String(),
             'client_id' => $email->client_id,
