@@ -38,7 +38,9 @@ class PortalSharedEmailResetLoginTest extends TestCase
 
     private const EMAIL = 'shared-inbox@example.test';
 
-    private const PASSWORD = 'brand-new-pass-1';
+    private const NEW_PASSPHRASE = 'brand-new-pass-1';
+
+    private const OLD_PASSPHRASE = 'old-sibling-pass';
 
     /** @var list<array{to: string, name: ?string, body: string}> */
     private array $sent = [];
@@ -105,17 +107,17 @@ class PortalSharedEmailResetLoginTest extends TestCase
         $this->post('/portal/reset-password', [
             'token' => $token,
             'email' => self::EMAIL,
-            'password' => self::PASSWORD,
-            'password_confirmation' => self::PASSWORD,
+            'password' => self::NEW_PASSPHRASE,
+            'password_confirmation' => self::NEW_PASSPHRASE,
         ])->assertRedirect(route('portal.dashboard'));
 
-        $this->assertTrue(Hash::check(self::PASSWORD, (string) $owner->fresh()->password), 'the portal user receives the password');
+        $this->assertTrue(Hash::check(self::NEW_PASSPHRASE, (string) $owner->fresh()->password), 'the portal user receives the password');
         foreach ($others as $other) {
             $this->assertFalse(filled($other->fresh()->password), "contact {$other->last_name} must not receive the password");
         }
 
         Auth::guard('portal')->logout();
-        $this->post('/portal/login', ['email' => self::EMAIL, 'password' => self::PASSWORD])
+        $this->post('/portal/login', ['email' => self::EMAIL, 'password' => self::NEW_PASSPHRASE])
             ->assertSessionHasNoErrors();
         $this->assertSame($owner->id, Auth::guard('portal')->id(), 'login resolves the same person the reset wrote');
     }
@@ -157,7 +159,7 @@ class PortalSharedEmailResetLoginTest extends TestCase
 
     public function test_forgot_password_with_no_portal_user_on_the_email_sends_nothing_and_answers_the_same(): void
     {
-        $this->contact(Client::factory()->create(), false, 'Sibling', password: 'old-sibling-pass');
+        $this->contact(Client::factory()->create(), false, 'Sibling', password: self::OLD_PASSPHRASE);
 
         $this->post('/portal/forgot-password', ['email' => self::EMAIL])
             ->assertRedirect()
@@ -199,12 +201,12 @@ class PortalSharedEmailResetLoginTest extends TestCase
 
     public function test_a_lookup_with_no_identifying_credential_finds_nobody(): void
     {
-        $this->contact(Client::factory()->create(), true, 'PortalUser', password: self::PASSWORD);
+        $this->contact(Client::factory()->create(), true, 'PortalUser', password: self::NEW_PASSPHRASE);
 
         // The provider adds portal_enabled/is_active to every credentials lookup;
         // a password-only lookup must still find nobody, as the parent provider does.
-        $this->assertNull(Auth::guard('portal')->getProvider()->retrieveByCredentials(['password' => self::PASSWORD]));
-        $this->assertFalse(Auth::guard('portal')->attempt(['password' => self::PASSWORD]));
+        $this->assertNull(Auth::guard('portal')->getProvider()->retrieveByCredentials(['password' => self::NEW_PASSPHRASE]));
+        $this->assertFalse(Auth::guard('portal')->attempt(['password' => self::NEW_PASSPHRASE]));
     }
 
     /** Control: the single-contact path works, so the failures above are the shared email. */
