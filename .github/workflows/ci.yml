@@ -15,7 +15,7 @@ concurrency:
 jobs:
   mariadb-lock-order:
     name: MariaDB 10.11 lock order
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       DB_CONNECTION: mariadb
@@ -70,7 +70,7 @@ jobs:
 
   verify:
     name: Tests & style gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
