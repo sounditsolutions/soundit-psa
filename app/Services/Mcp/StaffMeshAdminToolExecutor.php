@@ -68,6 +68,206 @@ class StaffMeshAdminToolExecutor
 {
     private const DIRECT_DEDUP_HOURS = 24;
 
+    private static function releaseTool(): array
+    {
+        return [
+            'name' => self::RELEASE_TOOL,
+            'description' => 'Deliver only (never "& Allow", creates no allow rule); one message. Needs a queue id from this client\'s mesh_search_email_logs. Release only when Charlie has said to release this specific item — whether Chet may release on a clean verdict alone is undecided. A 2xx without confirming delivery events means requested, not confirmed: Mesh accepted the release; delivery not yet confirmed in the log. No automatic retry.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'client_id' => ['type' => 'integer'],
+                    'ticket_id' => ['type' => 'integer'],
+                    'queue_id' => ['type' => 'string'],
+                    'reason' => ['type' => 'string'],
+                    'recipient' => ['type' => 'array', 'minItems' => 1, 'items' => ['type' => 'string'], 'description' => 'Optional subset of the served row recipients; omit for all.'],
+                ],
+                'required' => ['client_id', 'ticket_id', 'queue_id', 'reason'],
+                'additionalProperties' => false,
+            ],
+        ];
+    }
+
+    private function releaseEmail(array $arguments, ?int $clientId, string $actorLabel): array
+    {
+        $guard = $this->baseGuard(self::RELEASE_TOOL, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return $guard;
+        }
+        if (! $this->client->isConfigured()) {
+            return ['error' => 'Mesh delivery client unavailable'];
+        }
+        if ($this->positiveInteger($arguments['ticket_id'] ?? null) === null) {
+            return ['error' => 'ticket_id is required'];
+        }
+        $ticket = $this->ticketForClient($arguments['ticket_id'], (int) $clientId);
+        if (is_array($ticket)) {
+            return $ticket;
+        }
+        $queueId = $arguments['queue_id'] ?? null;
+        if (! is_string($queueId) || ! preg_match('/\A[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\z/i', $queueId)) {
+            return ['error' => 'One UUID queue_id is required; batches are refused'];
+        }
+        $queueId = strtolower($queueId);
+        $client = Client::find($clientId);
+        $key = \App\Services\Mesh\MeshReadTools::resolve($client, $clientId);
+        if (is_array($key)) {
+            return $key;
+        }
+        $reads = app(\App\Services\Mesh\MeshReadTools::class);
+        $row = $reads->servedDeliveryRow($clientId, $key, $queueId);
+        if ($row === null) {
+            return ['error' => 'Search this client\'s email logs first; queue_id has no served delivery row'];
+        }
+        $recipients = $row['recipients'];
+        $recipients = is_string($recipients) ? [$recipients] : $recipients;
+        if (! is_array($recipients) || ! array_is_list($recipients) || $recipients === []) {
+            return ['error' => 'Served row has no usable recipients'];
+        }
+        foreach ($recipients as $recipient) {
+            if (! is_string($recipient) || ! filter_var($recipient, FILTER_VALIDATE_EMAIL)) {
+                return ['error' => 'Served row has invalid recipients'];
+            }
+        }
+        $recipients = array_values(array_unique(array_map('strtolower', $recipients)));
+        if (array_key_exists('recipient', $arguments)) {
+            $subset = $arguments['recipient'];
+            if (! is_array($subset) || ! array_is_list($subset) || $subset === []) {
+                return ['error' => 'recipient must be a non-empty subset list'];
+            }
+            foreach ($subset as $recipient) {
+                if (! is_string($recipient) || ! in_array(strtolower($recipient), $recipients, true)) {
+                    return ['error' => 'recipient must belong to the served row'];
+                }
+            }
+            $recipients = array_values(array_unique(array_map('strtolower', $subset)));
+        }
+        $timestamp = $row['Timestamp'];
+        $service = $row['Service'];
+        if (! is_string($timestamp) || ! preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z\z/', $timestamp)
+            || ! is_string($service) || trim($service) === '') {
+            return ['error' => 'Served row has invalid Timestamp or Service'];
+        }
+        try {
+            $date = new \DateTimeImmutable($timestamp);
+            $errors = \DateTimeImmutable::getLastErrors();
+            if ($errors !== false && ($errors['warning_count'] || $errors['error_count'])) {
+                return ['error' => 'Served row Timestamp is invalid'];
+            }
+            // FORGE CHOICE: ISO year/week inferred, not yet verified by Mesh.
+            $yearweek = $date->format('oW');
+        } catch (\Throwable) {
+            return ['error' => 'Served row Timestamp is invalid'];
+        }
+
+        $hash = hash('sha256', $queueId);
+        // Shared file-cache lock, non-blocking. No queued second release.
+        $lock = \Illuminate\Support\Facades\Cache::lock('mesh-release:'.$hash, 120);
+        if (! $lock->get()) {
+            return ['error' => 'Release for this queue id is already in flight'];
+        }
+        try {
+            if (TechnicianActionLog::where('action_type', self::RELEASE_TOOL)->where('content_hash', $hash)
+                ->whereIn('result_status', ['delivered', 'requested-not-confirmed'])->exists()) {
+                return ['error' => 'A prior release for this queue id is delivered or requested, not confirmed'];
+            }
+            $correlation = (string) Str::uuid();
+            $audit = [
+                'actor_id' => TechnicianConfig::aiActorUserId(), 'actor_label' => $actorLabel,
+                'action_type' => self::RELEASE_TOOL, 'tier' => TechnicianTier::Approve->value,
+                'ticket_id' => $ticket->id, 'client_id' => $clientId,
+                'content_hash' => $hash, 'correlation_id' => $correlation,
+            ];
+            try {
+                $attempt = TechnicianActionLog::create($audit + ['result_status' => 'attempted', 'summary' => 'Mesh Deliver attempt']);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('[Mesh] Delivery attempt audit', ['exception' => $e::class]);
+
+                return ['error' => 'Delivery attempt audit not recorded; no PATCH sent'];
+            }
+            $sentAt = now()->toImmutable();
+            try {
+                $this->client->deliver($queueId, $yearweek, $service, $recipients);
+                $state = 'requested-not-confirmed';
+                $message = 'Mesh accepted the release; delivery not yet confirmed in the log';
+                // One immediate read-back, no sleep and no PATCH retry.
+                try {
+                    $events = $reads->events($client, $clientId, ['queue_id' => $queueId], '[Mesh release]');
+                    if (self::deliveryConfirmed($events, $recipients, $sentAt)) {
+                        $state = 'delivered';
+                        $message = 'Delivery confirmed in Mesh events';
+                    }
+                } catch (\Throwable) {
+                    // A failed read cannot turn an accepted PATCH into failure.
+                }
+            } catch (\Throwable $e) {
+                $state = 'failed';
+                $status = $e instanceof MeshClientException ? $e->getCode() : 0;
+                $message = in_array($status, [401, 403], true)
+                    ? 'Mesh refused the PSA key\'s permission; partner_access is Charlie\'s. No retry.'
+                    : 'Mesh release failed; no automatic retry';
+                \Illuminate\Support\Facades\Log::error('[Mesh] Delivery request exception', ['status' => $status, 'exception' => $e::class]);
+            }
+            $warning = null;
+            try {
+                TechnicianActionLog::create($audit + ['result_status' => $state, 'summary' => $message]);
+            } catch (\Throwable $e) {
+                $warning = 'audit outcome not recorded; attempt row '.$attempt->id;
+                \Illuminate\Support\Facades\Log::error('[Mesh] Delivery outcome audit', ['attempt_id' => $attempt->id, 'exception' => $e::class]);
+            }
+            try {
+                $ticket->notes()->create([
+                    'author_id' => TechnicianConfig::aiActorUserId(),
+                    'note_type' => \App\Enums\NoteType::System,
+                    'is_private' => true,
+                    'body' => 'Mesh Deliver: queue '.$queueId.'; recipient count '.count($recipients)
+                        .'; actor '.$actorLabel.'; reason '.$guard['reason'].'; outcome '.$state.'. '.$message
+                        .($warning === null ? '' : '; '.$warning),
+                ]);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('[Mesh] Delivery ticket note', ['exception' => $e::class]);
+                $warning = trim(($warning ?? '').'; ticket note not recorded', '; ');
+            }
+
+            return array_filter(['status' => $state, 'message' => $message, 'attempt_id' => $attempt->id, 'warning' => $warning], fn ($v) => $v !== null);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /** Producer: tests/Fixtures/mesh/events-released.json (operator Deliver events). */
+    private static function deliveryConfirmed(array $events, array $recipients, \DateTimeInterface $sentAt): bool
+    {
+        if (! array_is_list($events)) {
+            return false;
+        }
+        $confirmed = [];
+        foreach ($events as $event) {
+            if (! is_array($event) || ($event['action'] ?? null) !== 'Email delivered'
+                || ! is_string($event['date'] ?? null)
+                || ! preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z\z/', $event['date'])) {
+                continue;
+            }
+            try {
+                $date = new \DateTimeImmutable($event['date']);
+                $errors = \DateTimeImmutable::getLastErrors();
+                if ($date < $sentAt || ($errors !== false && ($errors['warning_count'] || $errors['error_count']))) {
+                    continue;
+                }
+            } catch (\Throwable) {
+                continue;
+            }
+            $to = $event['to'] ?? null;
+            foreach (is_string($to) ? [$to] : (is_array($to) ? $to : []) as $recipient) {
+                if (is_string($recipient)) {
+                    $confirmed[] = strtolower($recipient);
+                }
+            }
+        }
+
+        return array_diff($recipients, $confirmed) === [];
+    }
+
     /**
      * What an approval-time dedup refusal does to its card (#5568): it is
      * closed, not returned to the approval queue, so no later click on it
@@ -123,6 +323,7 @@ class StaffMeshAdminToolExecutor
         'mesh_edit_allow_rule',
         'mesh_stage_edit_allow_rule',
         self::LIST_TOOL,
+        self::RELEASE_TOOL,
     ];
 
     /**
@@ -135,6 +336,8 @@ class StaffMeshAdminToolExecutor
      * through an explicit per-token grant (McpStaffController::toolAllowed()).
      */
     public const LIST_TOOL = 'mesh_list_allow_rules';
+
+    public const RELEASE_TOOL = 'mesh_release_quarantined_email';
 
     /**
      * The complete set of keys a caller may send. Anything else is a refusal.
@@ -158,6 +361,7 @@ class StaffMeshAdminToolExecutor
         // dxWX6IBS: client_id is lifted out by the controller before dispatch,
         // so the only key this read takes is the optional filter.
         self::LIST_TOOL => ['sender'],
+        self::RELEASE_TOOL => ['queue_id', 'ticket_id', 'reason', 'recipient'],
     ];
 
     /**
@@ -332,6 +536,7 @@ class StaffMeshAdminToolExecutor
             self::editAllowRuleTool(),
             self::stageEditAllowRuleTool(),
             self::listAllowRulesTool(),
+            self::releaseTool(),
         ];
     }
 
@@ -389,6 +594,7 @@ class StaffMeshAdminToolExecutor
             'mesh_stage_edit_allow_rule' => $this->stageEditAllowRule($arguments, (int) $clientId, $actorLabel, $tokenLabel),
             'mesh_edit_allow_rule' => $this->immediateRefused('mesh_edit_allow_rule', 'mesh_stage_edit_allow_rule', $arguments, $clientId, $actorLabel),
             self::LIST_TOOL => $this->listAllowRules($arguments, $clientId),
+            self::RELEASE_TOOL => $this->releaseEmail($arguments, $clientId, $actorLabel),
             default => ['error' => "Unknown Mesh admin tool: {$name}"],
         };
         // Same outcome recording as the PSA/Assistant executors: a returned

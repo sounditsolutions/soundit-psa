@@ -162,7 +162,7 @@ class McpToolRegistry
                 'tactical_admin' => ['label' => 'Tactical admin/provisioning (sensitive)', 'sensitive' => true, 'tools' => $tacticalAdmin],
                 'huntress_action' => ['label' => 'Huntress SOC escalation actions (sensitive)', 'sensitive' => true, 'tools' => $huntressActions],
                 'mesh_read' => ['label' => 'Mesh Email Security allow-list reads (sensitive)', 'sensitive' => true, 'tools' => $meshRead],
-                'mesh_admin' => ['label' => 'Mesh Email Security allow-list writes (sensitive)', 'sensitive' => true, 'tools' => $meshAdmin],
+                'mesh_admin' => ['label' => 'Mesh Email Security writes (sensitive)', 'sensitive' => true, 'tools' => $meshAdmin],
                 'controld_onboarding' => ['label' => 'Control D client onboarding (sensitive)', 'sensitive' => true, 'tools' => $controldOnboarding],
                 'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
                 'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],

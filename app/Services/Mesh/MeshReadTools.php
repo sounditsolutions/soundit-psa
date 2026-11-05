@@ -272,6 +272,14 @@ final class MeshReadTools
                     continue;
                 }
                 try {
+                    Cache::put($this->queueCacheKey($clientId, $queueId).':release', [
+                        'customer' => $key,
+                        // Measured emaillogs row fields, FkMQAfQG. Retain only
+                        // delivery inputs, not subject/sender/body.
+                        'Timestamp' => $row['Timestamp'] ?? null,
+                        'Service' => $row['Service'] ?? null,
+                        'recipients' => array_key_exists('Recipient', $row) ? $row['Recipient'] : ($row['To'] ?? null),
+                    ], self::QUEUE_TTL_SECONDS);
                     Cache::put($this->queueCacheKey($clientId, $queueId), $key, self::QUEUE_TTL_SECONDS);
                 } catch (\Throwable $e) {
                     Log::warning("{$logPrefix} Mesh queue id could not be recorded", ['exception' => $e::class]);
@@ -293,6 +301,21 @@ final class MeshReadTools
         return $e instanceof MeshClientException
             ? $e->statusPhrase($what)
             : "{$what} failed with an unexpected error; the PSA log names its class";
+    }
+
+    /** Delivery inputs are bound to the same served-queue/customer proof as events. */
+    public function servedDeliveryRow(int $clientId, string $key, string $queueId): ?array
+    {
+        if (! $this->servedQueueId($clientId, $key, $queueId)) {
+            return null;
+        }
+        try {
+            $row = Cache::get($this->queueCacheKey($clientId, $queueId).':release');
+
+            return is_array($row) && ($row['customer'] ?? null) === $key ? $row : null;
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private function servedQueueId(int $clientId, string $key, string $queueId): bool
