@@ -30,7 +30,8 @@ use Tests\TestCase;
  *
  * These tests drive the real routes (forgot-password, the staff reset and
  * invite actions, reset-password, login). Mail goes through a mocked
- * EmailService that records who each message was addressed to.
+ * EmailService that records who each message was addressed to. The
+ * passphrase constants below are synthetic test values.
  */
 class PortalSharedEmailResetLoginTest extends TestCase
 {
