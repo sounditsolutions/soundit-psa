@@ -284,6 +284,14 @@ class MeshReleaseQuarantinedEmailTest extends TestCase
         $this->assertSame(1, $this->patchAttempts);
     }
 
+    public function test_served_queue_proof_cannot_be_replaced_by_cached_fields(): void
+    {
+        $this->serve();
+        Cache::forget('mesh-read-scope:queue:'.$this->client->id.':'.sha1(self::QUEUE));
+        $this->assertArrayHasKey('error', $this->release());
+        $this->assertSame(0, $this->patchAttempts);
+    }
+
     public function test_missing_delivery_fields_fail_closed(): void
     {
         foreach (['Timestamp', 'Service', 'Recipient'] as $field) {
