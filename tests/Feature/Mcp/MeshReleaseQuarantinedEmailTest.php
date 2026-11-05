@@ -193,9 +193,14 @@ class MeshReleaseQuarantinedEmailTest extends TestCase
             $result = $this->release();
             $this->assertSame('failed', $result['status']);
             if ($status !== 404) {
-                $this->assertStringContainsString("Mesh refused the PSA key's permission", $result['message']);
+                $this->assertSame("The Mesh host (or something in front of it) answered the release with HTTP {$status}; the PSA key may lack Deliver access, and partner_access is Charlie's. No retry.", $result['message']);
             } else {
-                $this->assertSame('Mesh refused the release with HTTP 404; no automatic retry', $result['message']);
+                $this->assertSame('The Mesh host (or something in front of it) answered the release with HTTP 404; no automatic retry', $result['message']);
+            }
+            $this->assertStringNotContainsString('Mesh refused', $result['message']);
+            $summary = TechnicianActionLog::where('result_status', 'failed')->orderByDesc('id')->value('summary');
+            $this->assertSame($result['message'], $summary);
+            if (false) {
             }
         }
         $this->status = 500;

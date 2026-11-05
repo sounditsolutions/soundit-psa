@@ -219,9 +219,11 @@ class StaffMeshAdminToolExecutor
                 // follow a send Mesh acted on, so its outcome is unknown.
                 $refused = $status >= 400 && $status < 500;
                 $state = ($refused || ($e instanceof MeshClientException && $e->nothingWasSent())) ? 'failed' : 'outcome-unknown';
+                // #6290: who answered a status is not measured (statusPhrase()).
+                $answered = $e instanceof MeshClientException ? ucfirst($e->statusPhrase('the release')) : '';
                 $message = match (true) {
-                    in_array($status, [401, 403], true) => 'Mesh refused the PSA key\'s permission; partner_access is Charlie\'s. No retry.',
-                    $refused => "Mesh refused the release with HTTP {$status}; no automatic retry",
+                    in_array($status, [401, 403], true) => $answered.'; the PSA key may lack Deliver access, and partner_access is Charlie\'s. No retry.',
+                    $refused => $answered.'; no automatic retry',
                     $state === 'failed' => 'Mesh release not sent; no automatic retry',
                     default => 'Mesh release outcome unknown: no 2xx or 4xx answer was received, so Mesh may have acted on it. No automatic retry; this tool refuses another release of this queue id',
                 };
