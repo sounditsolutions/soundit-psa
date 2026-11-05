@@ -240,7 +240,7 @@ class McpToolRegistry
                 // (from the integration group) and would absorb it, losing the sensitive tier flag
                 // that drives the bulk-grant confirmation (as psa_raw_file above).
                 'mesh_read' => ['mesh', 'allow_list_read', 'Allow-list reads', 2],
-                'mesh_admin' => ['mesh', 'write', 'Allow-list writes', 3],
+                'mesh_admin' => ['mesh', 'write', 'Allow-list writes and quarantine release', 3],
                 // Creates vendor organizations and provisioning codes: a sensitive write tier
                 // under its own integration card, never a line in "Other integrations".
                 'controld_onboarding' => ['controld', 'write', 'Client onboarding', 2],

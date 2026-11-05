@@ -508,7 +508,7 @@ class McpToolRegistryTest extends TestCase
 
         $this->assertFalse($tiers['read']['sensitive']);
         $this->assertNotContains($name, array_column($tiers['read']['tools'], 'name'));
-        $this->assertSame('Allow-list writes', $tiers['write']['label']);
+        $this->assertSame('Allow-list writes and quarantine release', $tiers['write']['label']);
         $this->assertTrue($tiers['write']['sensitive']);
         $this->assertSame(['mesh_add_allow_rule', 'mesh_remove_allow_rule', 'mesh_edit_allow_rule', 'mesh_release_quarantined_email'], array_column($tiers['write']['tools'], 'name'));
         $this->assertSame(['read', 'allow_list_read', 'write'], $tiers->keys()->all(), 'reads render before writes');

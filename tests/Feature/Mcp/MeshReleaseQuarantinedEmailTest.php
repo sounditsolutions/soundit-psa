@@ -58,7 +58,7 @@ class MeshReleaseQuarantinedEmailTest extends TestCase
         Cache::flush();
         Setting::setEncrypted('mesh_api_key', 'synthetic');
         Setting::setValue('mesh_enabled', '1');
-        $this->travelTo(\Illuminate\Support\Carbon::parse('2026-10-06T19:36:12Z'));
+        $this->travelTo(\Illuminate\Support\Carbon::parse('2026-03-02T12:00:00Z'));
         $this->client = Client::factory()->create(['mesh_customer_id' => 'synthetic-tenant']);
         $this->ticket = Ticket::factory()->create(['client_id' => $this->client->id]);
         $fixture = json_decode(file_get_contents(base_path('tests/Fixtures/mesh/events-released.json')), true);
@@ -150,7 +150,7 @@ class MeshReleaseQuarantinedEmailTest extends TestCase
     public function test_old_delivery_does_not_confirm_new_patch(): void
     {
         $this->serve();
-        $this->travelTo(\Illuminate\Support\Carbon::parse('2026-10-07T00:00:00Z'));
+        $this->travelTo(\Illuminate\Support\Carbon::parse('2026-03-03T00:00:00Z'));
         $this->assertSame('requested-not-confirmed', $this->release()['status']);
     }
 
@@ -188,23 +188,31 @@ class MeshReleaseQuarantinedEmailTest extends TestCase
     public function test_non_2xx_never_retries(): void
     {
         $this->serve();
-        foreach ([401, 403, 500] as $status) {
+        foreach ([401, 403, 404] as $status) {
             $this->status = $status;
             $result = $this->release();
             $this->assertSame('failed', $result['status']);
-            if ($status !== 500) {
+            if ($status !== 404) {
                 $this->assertStringContainsString("Mesh refused the PSA key's permission", $result['message']);
+            } else {
+                $this->assertSame('Mesh refused the release with HTTP 404; no automatic retry', $result['message']);
             }
         }
-        $this->assertCount(3, $this->history);
+        $this->status = 500;
+        $this->assertSame('outcome-unknown', $this->release()['status']);
+        $this->status = 200;
+        $this->assertStringContainsString('unknown outcome', $this->release()['error']);
+        $this->assertCount(4, $this->history);
     }
 
-    public function test_transport_failure_is_failed_without_retry(): void
+    public function test_post_send_transport_failure_is_outcome_unknown_and_blocks_resend(): void
     {
         $this->serve();
         $this->transportError = true;
-        $this->assertSame('failed', $this->release()['status']);
-        $this->assertSame(['attempted', 'failed'], TechnicianActionLog::pluck('result_status')->all());
+        $this->assertSame('outcome-unknown', $this->release()['status']);
+        $this->assertSame(['attempted', 'outcome-unknown'], TechnicianActionLog::pluck('result_status')->all());
+        $this->transportError = false;
+        $this->assertStringContainsString('unknown outcome', $this->release()['error']);
         $this->assertSame(1, $this->patchAttempts);
     }
 
@@ -250,7 +258,20 @@ class MeshReleaseQuarantinedEmailTest extends TestCase
         $records = array_values(array_filter($handler->getRecords(), fn ($r) => $r->message === '[Mesh] Delivery outcome audit'));
         $this->assertCount(1, $records);
         $this->assertSame(\Monolog\Level::Error, $records[0]->level);
+        $this->assertStringContainsString('attempt row '.$result['attempt_id'].') recorded no outcome', $this->release()['error']);
         $this->assertCount(1, $this->history);
+    }
+
+    public function test_attempt_without_outcome_blocks_release_after_lock_is_gone(): void
+    {
+        $this->serve();
+        $this->duringPatch = function () {
+            $this->duringPatch = null;
+            Cache::lock('mesh-release:'.hash('sha256', self::QUEUE))->forceRelease();
+            $this->assertStringContainsString('recorded no outcome', $this->release()['error'] ?? '');
+        };
+        $this->assertSame('delivered', $this->release()['status']);
+        $this->assertSame(1, $this->patchAttempts);
     }
 
     public function test_same_queue_in_flight_is_refused(): void

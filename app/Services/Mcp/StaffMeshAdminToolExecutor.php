@@ -167,9 +167,21 @@ class StaffMeshAdminToolExecutor
             return ['error' => 'Release for this queue id is already in flight'];
         }
         try {
-            if (TechnicianActionLog::where('action_type', self::RELEASE_TOOL)->where('content_hash', $hash)
-                ->whereIn('result_status', ['delivered', 'requested-not-confirmed'])->exists()) {
-                return ['error' => 'A prior release for this queue id is delivered or requested, not confirmed'];
+            // Each attempt row blocks another release unless its correlated
+            // outcome is 'failed' (a 4xx answer, or nothing was sent). An
+            // attempt with no outcome row (the outcome write failed, the
+            // worker died, or a call outlived the lock) is unresolved.
+            $prior = TechnicianActionLog::where('action_type', self::RELEASE_TOOL)->where('content_hash', $hash)
+                ->get(['id', 'result_status', 'correlation_id']);
+            if ($prior->whereIn('result_status', ['delivered', 'requested-not-confirmed', 'outcome-unknown'])->isNotEmpty()) {
+                return ['error' => 'A prior release for this queue id is delivered, requested and not confirmed, or of unknown outcome'];
+            }
+            $failed = $prior->where('result_status', 'failed')->pluck('correlation_id')->all();
+            $orphan = $prior->first(fn ($row) => $row->result_status === 'attempted' && ! in_array($row->correlation_id, $failed, true));
+            if ($orphan !== null) {
+                \Illuminate\Support\Facades\Log::warning('[Mesh] Delivery attempt without outcome', ['attempt_id' => $orphan->id]);
+
+                return ['error' => 'A prior release attempt for this queue id (attempt row '.$orphan->id.') recorded no outcome, so whether Mesh acted on it is unknown; another release is refused'];
             }
             $correlation = (string) Str::uuid();
             $audit = [
@@ -201,12 +213,19 @@ class StaffMeshAdminToolExecutor
                     // A failed read cannot turn an accepted PATCH into failure.
                 }
             } catch (\Throwable $e) {
-                $state = 'failed';
                 $status = $e instanceof MeshClientException ? $e->getCode() : 0;
-                $message = in_array($status, [401, 403], true)
-                    ? 'Mesh refused the PSA key\'s permission; partner_access is Charlie\'s. No retry.'
-                    : 'Mesh release failed; no automatic retry';
-                \Illuminate\Support\Facades\Log::error('[Mesh] Delivery request exception', ['status' => $status, 'exception' => $e::class]);
+                // Known failure: Mesh answered 4xx, or nothing left the PSA.
+                // Anything else (3xx, 5xx, a post-send transport error) may
+                // follow a send Mesh acted on, so its outcome is unknown.
+                $refused = $status >= 400 && $status < 500;
+                $state = ($refused || ($e instanceof MeshClientException && $e->nothingWasSent())) ? 'failed' : 'outcome-unknown';
+                $message = match (true) {
+                    in_array($status, [401, 403], true) => 'Mesh refused the PSA key\'s permission; partner_access is Charlie\'s. No retry.',
+                    $refused => "Mesh refused the release with HTTP {$status}; no automatic retry",
+                    $state === 'failed' => 'Mesh release not sent; no automatic retry',
+                    default => 'Mesh release outcome unknown: no 2xx or 4xx answer was received, so Mesh may have acted on it. No automatic retry; this tool refuses another release of this queue id',
+                };
+                \Illuminate\Support\Facades\Log::error('[Mesh] Delivery request exception', ['status' => $status, 'state' => $state, 'exception' => $e::class]);
             }
             $warning = null;
             try {
