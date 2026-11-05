@@ -4,28 +4,33 @@ namespace Tests\Feature\Portal;
 
 use App\Enums\PersonType;
 use App\Models\Client;
+use App\Models\Email;
 use App\Models\Person;
 use App\Models\Setting;
+use App\Models\User;
+use App\Services\EmailService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Password;
+use Mockery\MockInterface;
 use Tests\TestCase;
 
 /**
- * Card FhGlCXPw (T-22977): contacts at one Active client share one email.
+ * Card FhGlCXPw: contacts at one Active client share one email.
  *
- * The portal password broker resolves the Person by email alone
- * (EloquentUserProvider::retrieveByCredentials -> first(), no portal_enabled
- * filter, no order), while login() resolves by email + portal_enabled +
- * is_active. With a lower-id, NOT portal-enabled sibling on the same email,
- * a token minted for the portal user (staff invite / verifyAccess both call
- * createToken($person)) is redeemed onto the sibling: the password lands on
- * the wrong row and the portal user can never log in.
+ * Login resolves the Person by email + portal_enabled + is_active. The portal
+ * password broker used to resolve by email alone (first row, no order), so a
+ * reset link or invite token was redeemed onto a lower-id sibling who is not
+ * portal-enabled: the password landed on the wrong row and the portal user
+ * could never log in. PortalUserProvider::retrieveByCredentials now applies
+ * login's predicate to every broker lookup.
  *
- * These tests assert the CORRECT behaviour and are expected to FAIL at
- * a18b98a6. They are the proof for the card, not a fix.
+ * These tests drive the real routes (forgot-password, the staff reset and
+ * invite actions, reset-password, login). Mail goes through a mocked
+ * EmailService that records who each message was addressed to.
  */
 class PortalSharedEmailResetLoginTest extends TestCase
 {
@@ -33,22 +38,36 @@ class PortalSharedEmailResetLoginTest extends TestCase
 
     private const EMAIL = 'shared-inbox@example.test';
 
+    private const PASSWORD = 'brand-new-pass-1';
+
+    /** @var list<array{to: string, name: ?string, body: string}> */
+    private array $sent = [];
+
     protected function setUp(): void
     {
         parent::setUp();
         Bus::fake();
+        Http::preventStrayRequests();
+        Http::fake();
         Setting::setValue('portal_enabled', '1');
+        $this->mock(EmailService::class, function (MockInterface $m): void {
+            $m->shouldReceive('sendNew')->andReturnUsing(function (string $to, string $subject, string $body, ?string $name = null) {
+                $this->sent[] = ['to' => $to, 'name' => $name, 'body' => $body];
+
+                return new Email;
+            });
+        });
     }
 
-    private function contact(Client $client, bool $portalEnabled, ?string $password = null): Person
+    private function contact(Client $client, bool $portalEnabled, string $lastName, bool $active = true, ?string $password = null): Person
     {
         $person = Person::create([
             'client_id' => $client->id,
             'person_type' => PersonType::User,
             'first_name' => 'Synthetic',
-            'last_name' => $portalEnabled ? 'PortalUser' : 'Sibling',
+            'last_name' => $lastName,
             'email' => self::EMAIL,
-            'is_active' => true,
+            'is_active' => $active,
             'portal_enabled' => $portalEnabled,
         ]);
         if ($password !== null) {
@@ -62,28 +81,91 @@ class PortalSharedEmailResetLoginTest extends TestCase
     private function prodShape(): array
     {
         $client = Client::factory()->create(); // Active stage
-        $sibling = $this->contact($client, false);
-        $portalUser = $this->contact($client, true);
+        $sibling = $this->contact($client, false, 'Sibling');
+        $portalUser = $this->contact($client, true, 'PortalUser');
         $this->assertLessThan($portalUser->id, $sibling->id, 'fixture: sibling must sort first');
 
         return [$sibling, $portalUser];
+    }
+
+    /** The one message sent: assert its addressee, return the token in its link. */
+    private function sentTokenFor(Person $person): string
+    {
+        $this->assertCount(1, $this->sent, 'exactly one portal message is sent');
+        $this->assertSame(self::EMAIL, $this->sent[0]['to']);
+        $this->assertSame($person->full_name, $this->sent[0]['name'], 'the message is addressed to '.$person->full_name);
+        $this->assertSame(1, preg_match('~/portal/reset-password/([^\s?"<>]+)~', $this->sent[0]['body'], $m), 'the message carries a reset link');
+
+        return $m[1];
+    }
+
+    /** Redeem through the real reset route, then prove the password and login landed on $owner only. */
+    private function redeemAndAssertOwner(string $token, Person $owner, Person ...$others): void
+    {
+        $this->post('/portal/reset-password', [
+            'token' => $token,
+            'email' => self::EMAIL,
+            'password' => self::PASSWORD,
+            'password_confirmation' => self::PASSWORD,
+        ])->assertRedirect(route('portal.dashboard'));
+
+        $this->assertTrue(Hash::check(self::PASSWORD, (string) $owner->fresh()->password), 'the portal user receives the password');
+        foreach ($others as $other) {
+            $this->assertFalse(filled($other->fresh()->password), "contact {$other->last_name} must not receive the password");
+        }
+
+        Auth::guard('portal')->logout();
+        $this->post('/portal/login', ['email' => self::EMAIL, 'password' => self::PASSWORD])
+            ->assertSessionHasNoErrors();
+        $this->assertSame($owner->id, Auth::guard('portal')->id(), 'login resolves the same person the reset wrote');
     }
 
     public function test_reset_and_login_resolve_the_same_person_for_a_shared_email(): void
     {
         [$sibling, $portalUser] = $this->prodShape();
 
-        $resetResolves = Password::broker('portal')->getUser(['email' => self::EMAIL]);
-        $loginResolves = Auth::guard('portal')->getProvider()->retrieveByCredentials([
-            'email' => self::EMAIL, 'portal_enabled' => true, 'is_active' => true,
-        ]);
+        $this->post('/portal/forgot-password', ['email' => self::EMAIL])
+            ->assertRedirect()
+            ->assertSessionHas('status', 'If an account exists with that email, a password reset link has been sent.');
 
-        $this->assertSame($portalUser->id, $loginResolves?->id, 'login resolves the portal user');
-        $this->assertSame(
-            $loginResolves?->id,
-            $resetResolves?->id,
-            "reset broker resolves person {$resetResolves?->id}, login resolves person {$loginResolves?->id}"
-        );
+        $this->redeemAndAssertOwner($this->sentTokenFor($portalUser), $portalUser, $sibling);
+    }
+
+    public function test_staff_send_reset_on_a_shared_email_resets_the_portal_user(): void
+    {
+        [$sibling, $portalUser] = $this->prodShape();
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('clients.portal.reset-password', $portalUser->client_id), ['person_id' => $portalUser->id])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $this->redeemAndAssertOwner($this->sentTokenFor($portalUser), $portalUser, $sibling);
+    }
+
+    public function test_reset_skips_an_inactive_portal_enabled_sibling(): void
+    {
+        $client = Client::factory()->create();
+        $inactive = $this->contact($client, true, 'Inactive', active: false);
+        $portalUser = $this->contact($client, true, 'PortalUser');
+        $this->assertLessThan($portalUser->id, $inactive->id, 'fixture: inactive sibling must sort first');
+
+        $this->post('/portal/forgot-password', ['email' => self::EMAIL])->assertRedirect();
+
+        $this->redeemAndAssertOwner($this->sentTokenFor($portalUser), $portalUser, $inactive);
+    }
+
+    public function test_forgot_password_with_no_portal_user_on_the_email_sends_nothing_and_answers_the_same(): void
+    {
+        $this->contact(Client::factory()->create(), false, 'Sibling', password: 'old-sibling-pass');
+
+        $this->post('/portal/forgot-password', ['email' => self::EMAIL])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors()
+            ->assertSessionHas('status', 'If an account exists with that email, a password reset link has been sent.');
+
+        $this->assertSame([], $this->sent, 'no reset link goes to a contact who is not portal-enabled');
+        $this->assertSame(0, \DB::table('portal_password_reset_tokens')->count(), 'no token is minted');
     }
 
     public function test_invite_token_redeemed_sets_the_invited_persons_password_and_login_works(): void
@@ -93,38 +175,44 @@ class PortalSharedEmailResetLoginTest extends TestCase
         // Same call PortalManagementController::invite and verifyAccess make.
         $token = Password::broker('portal')->createToken($portalUser);
 
-        $this->post('/portal/reset-password', [
-            'token' => $token,
-            'email' => self::EMAIL,
-            'password' => 'brand-new-pass-1',
-            'password_confirmation' => 'brand-new-pass-1',
-        ])->assertRedirect();
+        $this->redeemAndAssertOwner($token, $portalUser, $sibling);
+    }
 
-        $this->assertFalse(filled($sibling->fresh()->password), 'the non-portal sibling must not receive the password');
-        $this->assertTrue(filled($portalUser->fresh()->password), 'the invited portal user must receive the password');
+    public function test_staff_re_invite_on_a_shared_email_puts_the_password_on_the_invited_person(): void
+    {
+        $client = Client::factory()->create();
+        $sibling = $this->contact($client, false, 'Sibling');
+        // Re-invite: the invited person is not yet portal-enabled; invite() enables
+        // them before minting the token, so the redeem must find them, not the sibling.
+        $invited = $this->contact($client, false, 'Invited');
+        $this->assertLessThan($invited->id, $sibling->id, 'fixture: sibling must sort first');
 
-        Auth::guard('portal')->logout();
-        $this->post('/portal/login', ['email' => self::EMAIL, 'password' => 'brand-new-pass-1'])
-            ->assertSessionHasNoErrors();
-        $this->assertSame($portalUser->id, Auth::guard('portal')->id());
+        $this->actingAs(User::factory()->create())
+            ->post(route('clients.portal.invite', $client), ['person_id' => $invited->id])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+        $this->assertTrue($invited->fresh()->portal_enabled);
+        $this->assertFalse($sibling->fresh()->portal_enabled);
+
+        $this->redeemAndAssertOwner($this->sentTokenFor($invited), $invited->fresh(), $sibling);
+    }
+
+    public function test_a_lookup_with_no_identifying_credential_finds_nobody(): void
+    {
+        $this->contact(Client::factory()->create(), true, 'PortalUser', password: self::PASSWORD);
+
+        // The provider adds portal_enabled/is_active to every credentials lookup;
+        // a password-only lookup must still find nobody, as the parent provider does.
+        $this->assertNull(Auth::guard('portal')->getProvider()->retrieveByCredentials(['password' => self::PASSWORD]));
+        $this->assertFalse(Auth::guard('portal')->attempt(['password' => self::PASSWORD]));
     }
 
     /** Control: the single-contact path works, so the failures above are the shared email. */
     public function test_control_single_contact_reset_then_login_succeeds(): void
     {
-        $portalUser = $this->contact(Client::factory()->create(), true);
+        $portalUser = $this->contact(Client::factory()->create(), true, 'PortalUser');
         $token = Password::broker('portal')->createToken($portalUser);
 
-        $this->post('/portal/reset-password', [
-            'token' => $token,
-            'email' => self::EMAIL,
-            'password' => 'brand-new-pass-1',
-            'password_confirmation' => 'brand-new-pass-1',
-        ])->assertRedirect(route('portal.dashboard'));
-
-        Auth::guard('portal')->logout();
-        $this->post('/portal/login', ['email' => self::EMAIL, 'password' => 'brand-new-pass-1'])
-            ->assertSessionHasNoErrors();
-        $this->assertSame($portalUser->id, Auth::guard('portal')->id());
+        $this->redeemAndAssertOwner($token, $portalUser);
     }
 }
