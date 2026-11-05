@@ -72,7 +72,7 @@ class StaffMeshAdminToolExecutor
     {
         return [
             'name' => self::RELEASE_TOOL,
-            'description' => 'Deliver only (never "& Allow", creates no allow rule); one message. Needs a queue id from this client\'s mesh_search_email_logs. Release only when Charlie has said to release this specific item — whether Chet may release on a clean verdict alone is undecided. A 2xx without confirming delivery events means requested, not confirmed: Mesh accepted the release; delivery not yet confirmed in the log. No automatic retry.',
+            'description' => 'Deliver only (never "& Allow", creates no allow rule); one message. Needs a queue id from this client\'s mesh_search_email_logs. Release only when Charlie has said to release this specific item — whether an agent may release on a clean verdict alone is undecided. A 2xx without confirming delivery events means requested, not confirmed: Mesh accepted the release; delivery not yet confirmed in the log. No automatic retry.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
