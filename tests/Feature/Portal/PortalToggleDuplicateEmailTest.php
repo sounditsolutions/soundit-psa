@@ -30,7 +30,6 @@ class PortalToggleDuplicateEmailTest extends TestCase
         parent::setUp();
         Bus::fake();
         Http::preventStrayRequests();
-        Http::fake();
         Setting::setValue('portal_enabled', '1');
     }
 
@@ -88,6 +87,37 @@ class PortalToggleDuplicateEmailTest extends TestCase
 
         $this->assertFalse($second->fresh()->portal_enabled);
         $this->assertTrue($first->fresh()->portal_enabled);
+    }
+
+    public function test_enabling_a_contact_with_no_email_is_not_refused_as_a_duplicate(): void
+    {
+        $client = Client::factory()->create();
+        $this->contact($client, true, 'NoEmailPortal')->forceFill(['email' => null])->save();
+        $person = $this->contact($client, false, 'NoEmail');
+        $person->forceFill(['email' => null])->save();
+
+        $this->toggle($person)->assertRedirect()->assertSessionHas('success');
+
+        $this->assertTrue($person->fresh()->portal_enabled);
+    }
+
+    /** The row is enabled concurrently after the controller read it: its only match is itself. */
+    public function test_enabling_a_contact_whose_only_portal_enabled_match_is_itself_is_allowed(): void
+    {
+        $client = Client::factory()->create();
+        $person = $this->contact($client, false, 'Self');
+        $raced = false;
+        Person::retrieved(function (Person $p) use ($person, &$raced): void {
+            if (! $raced && $p->id === $person->id) {
+                $raced = true;
+                Person::whereKey($p->id)->update(['portal_enabled' => true]);
+            }
+        });
+
+        $this->toggle($person)->assertRedirect()->assertSessionHas('success');
+
+        $this->assertTrue($raced, 'the concurrent enable ran');
+        $this->assertTrue($person->fresh()->portal_enabled);
     }
 
     /** Control: a contact with a unique email is enabled as before. */

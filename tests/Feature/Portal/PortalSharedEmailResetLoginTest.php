@@ -51,7 +51,6 @@ class PortalSharedEmailResetLoginTest extends TestCase
         parent::setUp();
         Bus::fake();
         Http::preventStrayRequests();
-        Http::fake();
         Setting::setValue('portal_enabled', '1');
         $this->mock(EmailService::class, function (MockInterface $m): void {
             $m->shouldReceive('sendNew')->andReturnUsing(function (string $to, string $subject, string $body, ?string $name = null) {
