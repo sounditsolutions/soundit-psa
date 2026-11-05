@@ -200,8 +200,6 @@ class MeshReleaseQuarantinedEmailTest extends TestCase
             $this->assertStringNotContainsString('Mesh refused', $result['message']);
             $summary = TechnicianActionLog::where('result_status', 'failed')->orderByDesc('id')->value('summary');
             $this->assertSame($result['message'], $summary);
-            if (false) {
-            }
         }
         $this->status = 500;
         $this->assertSame('outcome-unknown', $this->release()['status']);
