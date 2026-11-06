@@ -225,7 +225,8 @@ class StaffMeshAdminToolExecutor
                     in_array($status, [401, 403], true) => $answered.'; the PSA key may lack Deliver access, and partner_access is Charlie\'s. No retry.',
                     $refused => $answered.'; no automatic retry',
                     $state === 'failed' => 'Mesh release not sent; no automatic retry',
-                    default => 'Mesh release outcome unknown: no 2xx or 4xx answer was received, so Mesh may have acted on it. No automatic retry; this tool refuses another release of this queue id',
+                    $status > 0 => 'Mesh release outcome unknown: '.$e->statusPhrase('the release').'; Mesh may have acted on it. No automatic retry; this tool refuses another release of this queue id.',
+                    default => 'Mesh release outcome unknown: no HTTP answer was recorded, so Mesh may have acted on it. No automatic retry; this tool refuses another release of this queue id.',
                 };
                 \Illuminate\Support\Facades\Log::error('[Mesh] Delivery request exception', ['status' => $status, 'state' => $state, 'exception' => $e::class]);
             }

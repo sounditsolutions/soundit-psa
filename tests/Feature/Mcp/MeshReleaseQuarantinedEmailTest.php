@@ -219,6 +219,37 @@ class MeshReleaseQuarantinedEmailTest extends TestCase
         $this->assertSame(1, $this->patchAttempts);
     }
 
+    private function assertOutcomeUnknownNamesStatus(int $status): void
+    {
+        $this->serve();
+        $this->status = $status;
+        $result = $this->release();
+        $this->assertSame('outcome-unknown', $result['status']);
+        $this->assertSame("Mesh release outcome unknown: the Mesh host (or something in front of it) answered the release with HTTP {$status}; Mesh may have acted on it. No automatic retry; this tool refuses another release of this queue id.", $result['message']);
+        $this->assertSame($result['message'], TechnicianActionLog::where('result_status', 'outcome-unknown')->value('summary'));
+        $this->assertSame(1, $this->patchAttempts);
+    }
+
+    public function test_outcome_unknown_after_a_502_names_the_answering_status(): void
+    {
+        $this->assertOutcomeUnknownNamesStatus(502);
+    }
+
+    public function test_outcome_unknown_after_a_3xx_names_the_answering_status(): void
+    {
+        $this->assertOutcomeUnknownNamesStatus(302);
+    }
+
+    public function test_outcome_unknown_without_a_status_says_no_answer_was_recorded(): void
+    {
+        $this->serve();
+        $this->transportError = true;
+        $result = $this->release();
+        $this->assertSame('outcome-unknown', $result['status']);
+        $this->assertSame('Mesh release outcome unknown: no HTTP answer was recorded, so Mesh may have acted on it. No automatic retry; this tool refuses another release of this queue id.', $result['message']);
+        $this->assertSame($result['message'], TechnicianActionLog::where('result_status', 'outcome-unknown')->value('summary'));
+    }
+
     public function test_unserved_other_client_batch_and_foreign_recipient_are_refused(): void
     {
         $this->assertArrayHasKey('error', $this->release());
