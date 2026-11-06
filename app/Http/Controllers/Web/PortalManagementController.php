@@ -101,6 +101,21 @@ class PortalManagementController extends Controller
         // Prospects must never have portal access enabled.
         abort_if($client->stage !== \App\Enums\ClientStage::Active, 403, 'Portal access is unavailable for prospects.');
 
+        // Enabling: at most one portal-enabled active contact per email, so the
+        // password broker and login always resolve the same person. Disabling is
+        // always allowed.
+        if (! $person->portal_enabled && filled($person->email)) {
+            $duplicate = Person::where('email', $person->email)
+                ->where('portal_enabled', true)
+                ->where('is_active', true)
+                ->where('id', '!=', $person->id)
+                ->exists();
+
+            if ($duplicate) {
+                return back()->with('error', 'Another portal user already exists with this email address.');
+            }
+        }
+
         $person->update(['portal_enabled' => ! $person->portal_enabled]);
 
         $status = $person->portal_enabled ? 'enabled' : 'disabled';

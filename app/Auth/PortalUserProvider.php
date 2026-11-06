@@ -20,6 +20,13 @@ use Illuminate\Database\Eloquent\Builder;
  * Direct Person lookups that bypass the provider (sendAccessLink, verifyAccess,
  * and the staff invite/toggle/impersonate actions) are gated separately on
  * `client.stage`, and PortalAuthenticate re-checks it as defense-in-depth.
+ *
+ * Lookups by credentials (login and every password-broker call: forgot-password,
+ * the staff "send reset" action and redeeming a reset token) also require
+ * portal_enabled and is_active, the same predicate login passes. Several contacts
+ * may share one email; without this the broker took whichever row came first and
+ * could put the password on a contact who cannot log in. Retrieval by id and by
+ * remember token (the session) is unchanged.
  */
 class PortalUserProvider extends EloquentUserProvider
 {
@@ -27,5 +34,19 @@ class PortalUserProvider extends EloquentUserProvider
     {
         return parent::newModelQuery($model)
             ->whereHas('client', fn (Builder $q) => $q->where('stage', ClientStage::Active));
+    }
+
+    public function retrieveByCredentials(#[\SensitiveParameter] array $credentials)
+    {
+        // Keep the parent's "nothing but a password -> no user" rule; the added
+        // filters below must not turn an empty lookup into "any portal user".
+        if (array_filter($credentials, fn ($key) => ! str_contains($key, 'password'), ARRAY_FILTER_USE_KEY) === []) {
+            return null;
+        }
+
+        return parent::retrieveByCredentials(array_merge($credentials, [
+            'portal_enabled' => true,
+            'is_active' => true,
+        ]));
     }
 }
