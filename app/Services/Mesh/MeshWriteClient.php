@@ -169,6 +169,36 @@ class MeshWriteClient
     }
 
     /**
+     * Plain Deliver, per Mesh support's request contract (FkMQAfQG).
+     * The response body has no documented schema; success here means 2xx,
+     * not delivery. The caller must confirm delivery through message events.
+     */
+    public function deliver(#[\SensitiveParameter] string $queueId, string $yearweek, string $service, #[\SensitiveParameter] array $recipients): array
+    {
+        $this->assertConfigured();
+        if (! preg_match('/\A[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\z/i', $queueId)
+            || ! preg_match('/\A\d{6}\z/', $yearweek)
+            || trim($service) === '' || ! array_is_list($recipients) || $recipients === []) {
+            throw new MeshClientException('Invalid Mesh delivery input; nothing was sent.', clientDetected: true, nothingSent: true);
+        }
+        foreach ($recipients as $recipient) {
+            if (! is_string($recipient) || ! filter_var($recipient, FILTER_VALIDATE_EMAIL)) {
+                throw new MeshClientException('Invalid Mesh delivery recipient; nothing was sent.', clientDetected: true, nothingSent: true);
+            }
+        }
+
+        return $this->request('PATCH', 'api/message/', ['json' => [
+            'action' => 'deliver',
+            'messages' => [[
+                'queue_id' => $queueId,
+                'yearweek' => $yearweek,
+                'service' => $service,
+                'recipient' => $recipients,
+            ]],
+        ]]);
+    }
+
+    /**
      * Create ONE customer-scoped ALLOW rule and return the decoded 201 body.
      *
      * The 201 is `{"detail":"Allow/Block Rules added","added_for":["<uuid>"]}`
@@ -777,6 +807,12 @@ class MeshWriteClient
         }
 
         $status = $response->getStatusCode();
+        // Deliver must reject every non-2xx even on an injected client with
+        // http_errors disabled. Keep the existing allow-rule lane unchanged.
+        if ($endpoint === 'api/message/' && ($status < 200 || $status >= 300)) {
+            Log::error('[MeshWriteClient] Delivery response', ['status' => $status]);
+            throw new MeshClientException("Mesh delivery HTTP {$status}.", $status);
+        }
         if ($status >= 300 && $status < 400) {
             // #6105: a 3xx, not followed. The configured host (Mesh or
             // something in front of it) answered, so for a write the

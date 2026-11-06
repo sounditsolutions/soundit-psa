@@ -163,6 +163,9 @@ class McpToolModes
         // clearing an expiry LENGTHENS a hole in a customer's mail filtering,
         // which is the create verb's reason for being here, reached later.
         'mesh_edit_allow_rule',
+        // Deliver changes live mail delivery; a full-surface token must not
+        // inherit immediate trust. The Mesh sensitive group requires a named grant.
+        'mesh_release_quarantined_email',
         // A CLIENT-scoped Tactical custom field is read by automation for every
         // agent under that client, so one write is a fleet-wide change and may be
         // a deploy trigger. Immediate execution requires an explicit grant; a

@@ -1,0 +1,89 @@
+{
+  "provenance": "Shape of Mesh GET api/emaillogs/events?queue_id=<id> (read-only) for a quarantined message released with plain Deliver in the Mesh portal: event keys (action, date, to), action strings, 'to' as an array on some events and a bare string on others, and variable fractional-second precision are as the vendor returns them. Every value is synthetic: addresses are recipientN@example.test, dates are invented, and no queue id or value derived from one is included.",
+  "items": [
+    {
+      "item": "released-1",
+      "events": [
+        {
+          "action": "Email accepted",
+          "date": "2026-03-02T10:00:00.100Z",
+          "to": [
+            "recipient1@example.test",
+            "recipient2@example.test"
+          ]
+        },
+        {
+          "action": "Content analysis",
+          "date": "2026-03-02T10:01:00.200Z",
+          "to": [
+            "recipient1@example.test",
+            "recipient2@example.test"
+          ]
+        },
+        {
+          "action": "Email quarantined",
+          "date": "2026-03-02T10:01:00.200Z",
+          "to": [
+            "recipient1@example.test",
+            "recipient2@example.test"
+          ]
+        },
+        {
+          "action": "Email release requested",
+          "date": "2026-03-02T11:00:00.3Z",
+          "to": [
+            "recipient1@example.test"
+          ]
+        },
+        {
+          "action": "Email released",
+          "date": "2026-03-02T12:00:00.400Z",
+          "to": [
+            "recipient1@example.test"
+          ]
+        },
+        {
+          "action": "Email released",
+          "date": "2026-03-02T12:00:00.500Z",
+          "to": [
+            "recipient2@example.test"
+          ]
+        },
+        {
+          "action": "Email delivered",
+          "date": "2026-03-02T12:00:05.600Z",
+          "to": [
+            "recipient1@example.test"
+          ]
+        },
+        {
+          "action": "Email delivered",
+          "date": "2026-03-02T12:00:10.700Z",
+          "to": [
+            "recipient2@example.test"
+          ]
+        },
+        {
+          "action": "Content analysis",
+          "date": "2026-03-02T12:01:00.8Z",
+          "to": "recipient1@example.test"
+        },
+        {
+          "action": "Email released",
+          "date": "2026-03-02T12:01:00.8Z",
+          "to": "recipient1@example.test"
+        },
+        {
+          "action": "Content analysis",
+          "date": "2026-03-02T12:01:10.900Z",
+          "to": "recipient2@example.test"
+        },
+        {
+          "action": "Email released",
+          "date": "2026-03-02T12:01:10.900Z",
+          "to": "recipient2@example.test"
+        }
+      ]
+    }
+  ]
+}

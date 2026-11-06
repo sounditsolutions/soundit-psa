@@ -492,7 +492,7 @@ class McpToolRegistryTest extends TestCase
         $this->assertStringNotContainsString('write', $groups['mesh_read']['label']);
         $this->assertNotContains($name, $names('mesh_admin'), 'a read must not sit in the allow-list writes group');
         $this->assertNotContains($name, $names('integration'), 'a read granted explicitly must not sit in the non-sensitive integration reads');
-        $this->assertSame(['mesh_add_allow_rule', 'mesh_remove_allow_rule', 'mesh_edit_allow_rule'], $names('mesh_admin'), 'the three writes stay in the writes group');
+        $this->assertSame(['mesh_add_allow_rule', 'mesh_remove_allow_rule', 'mesh_edit_allow_rule', 'mesh_release_quarantined_email'], $names('mesh_admin'), 'allow-rule writes and Deliver stay in the writes group');
 
         $mesh = McpToolRegistry::integrationGroups()['mesh'] ?? null;
         $this->assertNotNull($mesh, 'the Mesh card must render');
@@ -508,10 +508,10 @@ class McpToolRegistryTest extends TestCase
 
         $this->assertFalse($tiers['read']['sensitive']);
         $this->assertNotContains($name, array_column($tiers['read']['tools'], 'name'));
-        $this->assertSame('Allow-list writes', $tiers['write']['label']);
+        $this->assertSame('Allow-list writes and quarantine release', $tiers['write']['label']);
         $this->assertTrue($tiers['write']['sensitive']);
-        $this->assertSame(['mesh_add_allow_rule', 'mesh_remove_allow_rule', 'mesh_edit_allow_rule'], array_column($tiers['write']['tools'], 'name'));
+        $this->assertSame(['mesh_add_allow_rule', 'mesh_remove_allow_rule', 'mesh_edit_allow_rule', 'mesh_release_quarantined_email'], array_column($tiers['write']['tools'], 'name'));
         $this->assertSame(['read', 'allow_list_read', 'write'], $tiers->keys()->all(), 'reads render before writes');
-        $this->assertSame(4, $mesh['sensitive_count'], 'the list verb still counts as sensitive');
+        $this->assertSame(5, $mesh['sensitive_count'], 'the list verb and Deliver both count as sensitive');
     }
 }

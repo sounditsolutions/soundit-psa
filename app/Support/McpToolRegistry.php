@@ -162,7 +162,7 @@ class McpToolRegistry
                 'tactical_admin' => ['label' => 'Tactical admin/provisioning (sensitive)', 'sensitive' => true, 'tools' => $tacticalAdmin],
                 'huntress_action' => ['label' => 'Huntress SOC escalation actions (sensitive)', 'sensitive' => true, 'tools' => $huntressActions],
                 'mesh_read' => ['label' => 'Mesh Email Security allow-list reads (sensitive)', 'sensitive' => true, 'tools' => $meshRead],
-                'mesh_admin' => ['label' => 'Mesh Email Security allow-list writes (sensitive)', 'sensitive' => true, 'tools' => $meshAdmin],
+                'mesh_admin' => ['label' => 'Mesh Email Security writes (sensitive)', 'sensitive' => true, 'tools' => $meshAdmin],
                 'controld_onboarding' => ['label' => 'Control D client onboarding (sensitive)', 'sensitive' => true, 'tools' => $controldOnboarding],
                 'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
                 'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],
@@ -240,7 +240,7 @@ class McpToolRegistry
                 // (from the integration group) and would absorb it, losing the sensitive tier flag
                 // that drives the bulk-grant confirmation (as psa_raw_file above).
                 'mesh_read' => ['mesh', 'allow_list_read', 'Allow-list reads', 2],
-                'mesh_admin' => ['mesh', 'write', 'Allow-list writes', 3],
+                'mesh_admin' => ['mesh', 'write', 'Allow-list writes and quarantine release', 3],
                 // Creates vendor organizations and provisioning codes: a sensitive write tier
                 // under its own integration card, never a line in "Other integrations".
                 'controld_onboarding' => ['controld', 'write', 'Client onboarding', 2],
