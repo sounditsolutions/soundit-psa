@@ -787,15 +787,7 @@ class CippRestWriteClient
     }
 
     /**
-     * Verification read for the tenant-targeted licence write: the tenant's
-     * live user listing exactly as CIPP projects it. Uses the same credential
-     * set as the write it gates, so a UPN the caller typed can only ever be
-     * turned into an object id the SERVER read out of the resolved tenant.
-     *
-     * Queue-guarded at the source for the same reason listMailQuarantine() is
-     * (psa-lmex): an unguarded queue reply is an empty list, and an empty list
-     * here must be a refusal rather than "no such user" — but that polarity is
-     * a property of the caller, and this method must not depend on it.
+     * Live mailbox verification read; no reporting cache or minimal projection.
      *
      * @return array<int, array<string, mixed>>
      */
@@ -828,6 +820,11 @@ class CippRestWriteClient
         return $rows;
     }
 
+    /**
+     * Queue-guarded live user listing for tenant-targeted licence verification.
+     *
+     * @return array<int, array<string, mixed>>
+     */
     public function listUsers(string $tenantFilter): array
     {
         $body = $this->sendGet('api/ListUsers', ['tenantFilter' => $tenantFilter]);
