@@ -6496,7 +6496,7 @@ class StaffCippWriteToolExecutor
             if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
                 return ['error' => 'This proposal is no longer awaiting approval; stage on a new ticket.'];
             }
-            $this->auditAttempt($tool, 'awaiting_approval', $clientId, $ticket, null, null, $hash, $display, $actorLabel, $run->id);
+            $this->auditAttempt($tool, 'awaiting_approval', $clientId, $ticket, null, null, $hash, 'delegate person #'.$params['delegate_person_id'].': '.$params['operation'].' '.$params['permission'].' (mailbox target)', $actorLabel, $run->id);
 
             return ['success' => true, 'run_id' => $run->id, 'ticket_id' => $ticket->id, 'message' => 'Staged for cockpit approval.'];
         } catch (CippWriteScopeException $e) {
@@ -6523,9 +6523,8 @@ class StaffCippWriteToolExecutor
                 throw new CippWriteScopeException('Held mailbox binding changed; re-stage.');
             }
             $stored = $payload['params'];
-            $targetKey = $stored['target_mailbox_upn'];
             if (TechnicianConfig::killSwitchEngaged()) {
-                $this->auditAttempt($run->action_type, 'blocked', $run->client_id, null, null, null, $run->content_hash, "{$targetKey}: Technician kill-switch engaged; staged CIPP write refused.", $this->approverLabel($approverId), $run->id, $approverId);
+                $this->auditAttempt($run->action_type, 'blocked', $run->client_id, null, null, null, $run->content_hash, 'delegate person #'.$stored['delegate_person_id'].': Technician kill-switch engaged; staged CIPP write refused.', $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
                 return $this->declined('Technician kill-switch engaged; the staged CIPP write was refused.');
@@ -6553,7 +6552,7 @@ class StaffCippWriteToolExecutor
             }
             $this->client->setMailboxDelegate($tenant, $target['upn'], $params['delegate_person']->userPrincipalName, $params['permission'], $params['operation'], $params['auto_map']);
             $sent = true;
-            $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $run->content_hash, $target['upn'].' ('.$target['recipient_type_details'].')', $this->approverLabel($approverId), $run->id, $approverId);
+            $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $run->content_hash, 'delegate person #'.$params['delegate_person_id'].': '.$params['operation'].' '.$params['permission'].' (mailbox target)', $this->approverLabel($approverId), $run->id, $approverId);
             if (! $run->advanceTo(TechnicianRunState::Done)) {
                 return self::executedNotClosed($run);
             }

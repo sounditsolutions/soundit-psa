@@ -118,6 +118,14 @@ class CippWriteMailboxDelegateTargetUpnTest extends TestCase
         $this->actingAs($this->actor)->post(route('cockpit.approve', $run))->assertRedirect();
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
         Http::assertSentCount(4);
+        $expected = 'delegate person #'.$this->delegate->id.': grant full_access (mailbox target)';
+        $this->assertSame($expected, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'awaiting_approval')->sole()->summary);
+        $this->assertSame($expected, TechnicianActionLog::where('run_id', $run->id)->where('result_status', 'executed')->sole()->summary);
+        foreach (TechnicianActionLog::pluck('summary') as $summary) {
+            foreach (['@', 'contoso.example', 'SharedMailbox'] as $sensitive) {
+                $this->assertStringNotContainsString($sensitive, (string) $summary);
+            }
+        }
         Http::assertSent(fn ($request) => str_contains($request->url(), '/api/ExecEditMailboxPermissions') && $request->data() === [
             'TenantFilter' => 'contoso.example', 'UserID' => 'shared@contoso.example',
             'AddFullAccess' => [['value' => 'delegate@contoso.example', 'label' => 'delegate@contoso.example']],
@@ -225,7 +233,7 @@ class CippWriteMailboxDelegateTargetUpnTest extends TestCase
         $this->assertSame($run->client_id, $audit->client_id);
         $this->assertSame($run->content_hash, $audit->content_hash);
         $this->assertSame($this->actor->id, $audit->approver_user_id);
-        $this->assertSame('shared@contoso.example: Technician kill-switch engaged; staged CIPP write refused.', $audit->summary);
+        $this->assertSame('delegate person #'.$this->delegate->id.': Technician kill-switch engaged; staged CIPP write refused.', $audit->summary);
     }
 
     public function test_room_and_equipment_are_allowed(): void
