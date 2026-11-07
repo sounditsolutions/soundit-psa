@@ -799,6 +799,35 @@ class CippRestWriteClient
      *
      * @return array<int, array<string, mixed>>
      */
+    public function listMailboxes(string $tenantFilter): array
+    {
+        // CIPP-API Invoke-ListMailboxes.ps1, live EXO projection: UPN,
+        // primarySmtpAddress, recipientTypeDetails. Do not request UseReportDB.
+        $status = 0;
+        try {
+            $url = $this->endpointUrl('api/ListMailboxes');
+            $options = $this->safeRequestOptions($url);
+            $response = Http::timeout(60)->acceptJson()->withOptions($options)
+                ->withToken($this->getToken())->get($url, ['tenantFilter' => $tenantFilter]);
+            $status = $response->status();
+            $body = $response->json();
+            if (! $response->successful() || ! is_array($body)) {
+                throw new CippClientException('Mailbox listing refused');
+            }
+        } catch (\Throwable $e) {
+            throw new CippClientException('Mailbox listing failed (status '.$status.'; '.$e::class.')');
+        }
+        CippQueueGuard::assertNotQueueBacked($body);
+        $rows = array_is_list($body) ? $body : ($body['Results'] ?? null);
+        if (! is_array($rows) || ! array_is_list($rows)
+            || count(array_filter($rows, 'is_array')) !== count($rows)
+            || ! empty($body['Metadata']['nextLink'])) {
+            throw new CippClientException('Mailbox listing shape refused');
+        }
+
+        return $rows;
+    }
+
     public function listUsers(string $tenantFilter): array
     {
         $body = $this->sendGet('api/ListUsers', ['tenantFilter' => $tenantFilter]);
