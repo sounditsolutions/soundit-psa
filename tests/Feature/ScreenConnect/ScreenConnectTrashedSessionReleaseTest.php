@@ -336,37 +336,39 @@ class ScreenConnectTrashedSessionReleaseTest extends TestCase
         $this->assertNoRelease();
     }
 
-    // ── (d) W1 fires before any release ──
-
-    public function test_d_a_contradicted_company_releases_nothing(): void
+    public function test_a_a_trashed_holder_of_another_client_is_released_to_the_hostname_match(): void
     {
         Log::spy();
         $alpha = Client::factory()->create(['name' => 'Alpha Co']);
         $bravo = Client::factory()->create(['name' => 'Bravo Co']);
-        // The trashed holder belongs to Bravo; the webhook company resolves to Alpha,
-        // where a live asset matches the hostname.
+        // The device moved clients: its old asset was trashed under Bravo, and the webhook
+        // company now resolves to Alpha, where a live asset matches the hostname. A trashed
+        // holder is released whatever its client, so this heals instead of being skipped.
         $trashed = $this->trashedHolder($bravo);
         $live = $this->liveAsset($alpha);
 
         $webhook = $this->runThroughJob($this->nativePayload('RanCommand', 'Alpha Co'));
 
-        $this->assertSame('skipped', $webhook->status);
-        $this->assertStringStartsWith('Skipped:', (string) $webhook->error);
-        $this->assertStringNotContainsString('Alpha Co', (string) $webhook->error);
-        $this->assertStringNotContainsString('Trash-Host', (string) $webhook->error);
-        $this->assertSame(self::SESSION, $this->sessionOf($trashed), 'the trashed row keeps its id');
-        $this->assertNull($this->sessionOf($live), 'nothing is attached');
-        $this->assertNull($live->fresh()->screenconnect_synced_at);
-        $this->assertSame(0, ScreenConnectEvent::count());
-        $this->assertNoRelease();
+        $this->assertSame('processed', $webhook->status, 'a client move must not be skipped');
+        $this->assertNull($webhook->error);
+        $this->assertSame(self::SESSION, $this->sessionOf($live), 'the live asset takes the id');
+        $this->assertNull($this->sessionOf($trashed), 'the trashed holder is released');
+        $this->assertSoftDeleted($trashed);
+        $this->assertSame(1, ScreenConnectEvent::where('asset_id', $live->id)->count());
         Log::shouldHaveReceived('warning')->once()->withArgs(
-            fn (string $message, array $context = []): bool => str_contains($message, 'contradicts')
-                && array_keys($context) === ['trashed_asset_id', 'asset_id', 'linked_client_id', 'resolved_client_id', 'session_id']
-                && $context['trashed_asset_id'] === $trashed->id
-                && $context['linked_client_id'] === $bravo->id
-                && $context['resolved_client_id'] === $alpha->id
+            fn (string $message, array $context = []): bool => $message === self::RELEASE_MESSAGE
+                && $context === [
+                    'trashed_asset_id' => $trashed->id,
+                    'asset_id' => $live->id,
+                    'session_id' => self::SESSION,
+                ]
         );
+        Log::shouldNotHaveReceived('warning', [\Mockery::on(
+            fn ($message): bool => is_string($message) && str_contains($message, 'contradicts')
+        ), \Mockery::any()]);
     }
+
+    // ── (d) W1 fires before any release ──
 
     public function test_d_a_live_cross_client_holder_is_skipped_by_w1_and_releases_nothing(): void
     {

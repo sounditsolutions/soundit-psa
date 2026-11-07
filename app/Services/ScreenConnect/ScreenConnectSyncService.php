@@ -135,28 +135,12 @@ class ScreenConnectSyncService
         // SoftDeletes scope and cannot see it, but the single-column unique key on
         // screenconnect_session_id does, so the save below would fail on every webhook
         // for this device. Such a trashed holder is released in the same transaction as
-        // the save. A live holder is never touched: it is resolved by step 1 and never
-        // reaches this branch.
+        // the save, whichever client it belonged to: a device whose old asset was trashed
+        // under another client heals the same way. A live holder is never touched: it is
+        // resolved by step 1 and never reaches this branch.
         $trashedHolder = null;
         if (! $asset->screenconnect_session_id) {
             $trashedHolder = Asset::onlyTrashed()->where('screenconnect_session_id', $sessionId)->first();
-
-            // W1 applied to the trashed link: a step-2 asset always belongs to the
-            // resolved client, so the check above cannot see a session last linked to
-            // ANOTHER client's (now trashed) asset. That is the same contradiction W1
-            // refuses, so it is refused the same way: nothing is released and nothing is
-            // attached. Ids only.
-            if ($trashedHolder && $trashedHolder->client_id !== null && (int) $trashedHolder->client_id !== (int) $asset->client_id) {
-                Log::warning('[ScreenConnect] Webhook company contradicts the client of the trashed asset holding the session id; nothing released or attached', [
-                    'trashed_asset_id' => $trashedHolder->id,
-                    'asset_id' => $asset->id,
-                    'linked_client_id' => (int) $trashedHolder->client_id,
-                    'resolved_client_id' => (int) $asset->client_id,
-                    'session_id' => $sessionId,
-                ]);
-
-                return "Skipped: session {$sessionId} is held by trashed asset #{$trashedHolder->id} of client #{$trashedHolder->client_id}, but the webhook company resolves to client #{$asset->client_id}; nothing attached";
-            }
 
             $asset->screenconnect_session_id = $sessionId;
         }
