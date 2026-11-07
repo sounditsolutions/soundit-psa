@@ -1,0 +1,254 @@
+<?php
+
+namespace Tests\Feature\Mcp;
+
+use App\Enums\PersonType;
+use App\Enums\TechnicianRunState;
+use App\Models\Client;
+use App\Models\Person;
+use App\Models\Setting;
+use App\Models\TechnicianRun;
+use App\Models\Ticket;
+use App\Models\User;
+use App\Services\Cipp\CippRestWriteClient;
+use App\Services\Mcp\StaffCippWriteToolExecutor;
+use App\Support\McpConfig;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
+use Tests\TestCase;
+
+class CippWriteMailboxDelegateTargetUpnTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private array $args;
+
+    private array $rows;
+
+    private int $listingStatus = 200;
+
+    private User $actor;
+
+    private Person $delegate;
+
+    private string $token;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Http::preventStrayRequests();
+        Cache::flush();
+        Setting::setValue('cipp_enabled', '1');
+        Setting::setValue('cipp_api_url', 'https://cipp.example.test');
+        Setting::setValue('cipp_tenant_id', 'synthetic-tenant');
+        Setting::setValue('cipp_client_id', 'synthetic-client');
+        Setting::setEncrypted('cipp_client_secret', 'synthetic-value');
+        $this->actor = User::factory()->create();
+        Setting::setValue('triage_system_user_id', (string) $this->actor->id);
+        $client = Client::factory()->create(['cipp_tenant_domain' => 'contoso.example']);
+        $this->delegate = Person::create([
+            'client_id' => $client->id, 'person_type' => PersonType::User,
+            'first_name' => 'Synthetic', 'last_name' => 'Delegate', 'email' => 'delegate@contoso.example',
+            'cipp_upn' => 'delegate@contoso.example', 'cipp_user_id' => 'synthetic-delegate', 'is_active' => true,
+        ]);
+        $ticket = Ticket::factory()->for($client)->create();
+        $this->args = [
+            'client_id' => $client->id, 'ticket_id' => $ticket->id, 'staged' => true,
+            'target_mailbox_upn' => 'shared@contoso.example', 'delegate_person_id' => $this->delegate->id,
+            'permission' => 'full_access', 'operation' => 'grant', 'reason' => 'Synthetic coverage',
+        ];
+        // CIPP-API Invoke-ListMailboxes.ps1 live projection.
+        $this->rows = [['UPN' => 'shared@contoso.example', 'primarySmtpAddress' => 'shared@contoso.example', 'recipientTypeDetails' => 'SharedMailbox']];
+        $this->token = McpConfig::rotateStaffToken(allowedTools: ['cipp_set_mailbox_delegate'], label: 'synthetic');
+        $this->app->instance(CippRestWriteClient::class, new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test', 'tenant_id' => 'synthetic-tenant',
+            'client_id' => 'synthetic-client', 'client_secret' => 'synthetic-value',
+        ], Cache::store(), fn () => ['93.184.216.34']));
+        $this->fake();
+    }
+
+    private function fake(): void
+    {
+        Http::fake([
+            'https://login.microsoftonline.com/synthetic-tenant/oauth2/v2.0/token' => Http::response(['access_token' => 'synthetic-token']),
+            'https://cipp.example.test/api/ListMailboxes*' => fn () => Http::response($this->rows, $this->listingStatus),
+            'https://cipp.example.test/api/ExecEditMailboxPermissions' => Http::response(['Results' => ['Success']]),
+        ]);
+    }
+
+    private function callTarget(array $args): array
+    {
+        return $this->withHeaders(['Authorization' => 'Bearer '.$this->token])->postJson('/api/mcp/staff', [
+            'jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/call',
+            'params' => ['name' => 'cipp_set_mailbox_delegate', 'arguments' => $args],
+        ])->json();
+    }
+
+    private function stage(): TechnicianRun
+    {
+        $reply = $this->callTarget($this->args);
+        $this->assertFalse($reply['result']['isError'] ?? false, json_encode($reply));
+        $data = json_decode($reply['result']['content'][0]['text'], true);
+        $this->assertArrayHasKey('run_id', $data, json_encode($reply));
+
+        return TechnicianRun::findOrFail($data['run_id']);
+    }
+
+    private function refused(array $args, string $text = ''): void
+    {
+        $reply = $this->callTarget($args);
+        $this->assertTrue(isset($reply['error']) || ($reply['result']['isError'] ?? false), json_encode($reply));
+        if ($text !== '') {
+            $this->assertStringContainsString($text, json_encode($reply));
+        }
+        $this->assertSame(0, TechnicianRun::count());
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), '/api/Exec'));
+    }
+
+    public function test_shared_stages_case_insensitively_and_approval_uses_fresh_listing(): void
+    {
+        $this->args['target_mailbox_upn'] = 'SHARED@CONTOSO.EXAMPLE';
+        $run = $this->stage();
+        $this->assertSame('SharedMailbox', $run->proposed_meta['redacted_params']['verified_mailbox']['recipient_type_details']);
+        $this->assertStringContainsString('shared@contoso.example (SharedMailbox)', $run->proposed_content);
+        $this->actingAs($this->actor)->get(route('cockpit.index'))
+            ->assertOk()->assertSee('shared@contoso.example (SharedMailbox)');
+        $this->actingAs($this->actor)->post(route('cockpit.approve', $run))->assertRedirect();
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        Http::assertSentCount(4);
+        Http::assertSent(fn ($request) => str_contains($request->url(), '/api/ExecEditMailboxPermissions') && $request->data() === [
+            'TenantFilter' => 'contoso.example', 'UserID' => 'shared@contoso.example',
+            'AddFullAccess' => [['value' => 'delegate@contoso.example', 'label' => 'delegate@contoso.example']],
+            'AddFullAccessNoAutoMap' => [], 'RemoveFullAccess' => [], 'AddSendAs' => [],
+            'RemoveSendAs' => [], 'AddSendOnBehalf' => [], 'RemoveSendOnBehalf' => [],
+        ]);
+    }
+
+    public function test_room_and_equipment_are_allowed(): void
+    {
+        foreach (['RoomMailbox', 'EquipmentMailbox'] as $type) {
+            $this->rows[0]['recipientTypeDetails'] = $type;
+            $run = $this->stage();
+            $this->assertSame($type, $run->proposed_meta['redacted_params']['verified_mailbox']['recipient_type_details']);
+        }
+    }
+
+    public function test_user_mailbox_is_refused(): void
+    {
+        $this->rows[0]['recipientTypeDetails'] = 'UserMailbox';
+        $this->refused($this->args, 'person_id');
+    }
+
+    public function test_unknown_and_out_of_tenant_are_refused(): void
+    {
+        foreach (['unknown@contoso.example', 'shared@other.example'] as $upn) {
+            $this->refused(array_replace($this->args, ['target_mailbox_upn' => $upn]), 'person_id');
+        }
+    }
+
+    public function test_empty_listing_is_refused(): void
+    {
+        $this->rows = [];
+        $this->refused($this->args, 'person_id');
+    }
+
+    public function test_listing_error_duplicates_and_missing_or_unknown_type_are_refused(): void
+    {
+        $this->listingStatus = 503;
+        $this->refused($this->args, 'person_id');
+        $this->listingStatus = 200;
+        $this->rows[] = $this->rows[0];
+        $this->refused($this->args, 'person_id');
+        array_pop($this->rows);
+        unset($this->rows[0]['recipientTypeDetails']);
+        $this->refused($this->args, 'person_id');
+        $this->rows[0]['recipientTypeDetails'] = 'UnknownMailbox';
+        $this->refused($this->args, 'person_id');
+    }
+
+    public function test_active_mapping_refuses_and_inactive_mapping_is_recorded(): void
+    {
+        $mapped = $this->delegate->replicate();
+        $mapped->email = $mapped->cipp_upn = 'shared@contoso.example';
+        $mapped->cipp_user_id = 'synthetic-shared';
+        $mapped->save();
+        $this->refused($this->args, 'person_id');
+        $mapped->update(['is_active' => false]);
+        $run = $this->stage();
+        $this->assertSame($mapped->id, $run->proposed_meta['redacted_params']['verified_mailbox']['inactive_person_id']);
+    }
+
+    public function test_both_and_neither_shape_are_refused(): void
+    {
+        $this->refused(array_replace($this->args, ['person_id' => $this->delegate->id]));
+        $args = $this->args;
+        unset($args['target_mailbox_upn']);
+        $this->refused($args);
+        Http::assertNothingSent();
+    }
+
+    public function test_direct_executor_refuses_target_upn(): void
+    {
+        $result = app(StaffCippWriteToolExecutor::class)->execute('cipp_set_mailbox_delegate', $this->args, $this->args['client_id'], 'synthetic');
+        $this->assertArrayHasKey('error', $result);
+        $this->assertSame(0, TechnicianRun::count());
+        Http::assertNothingSent();
+    }
+
+    public function test_approval_declines_type_drift_and_disappearance(): void
+    {
+        $run = $this->stage();
+        $this->rows[0]['recipientTypeDetails'] = 'UserMailbox';
+        $this->actingAs($this->actor)->post(route('cockpit.approve', $run))->assertRedirect();
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->rows = [];
+        $this->actingAs($this->actor)->post(route('cockpit.approve', $run))->assertRedirect();
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), '/api/Exec'));
+    }
+
+    public function test_inactive_delegate_and_self_delegation_are_refused(): void
+    {
+        $this->delegate->update(['is_active' => false]);
+        $this->refused($this->args);
+        $this->delegate->update(['cipp_upn' => 'shared@contoso.example']);
+        $this->refused(array_replace($this->args, ['operation' => 'remove']), 'Self-delegation');
+    }
+
+    public function test_active_mapping_and_empty_listing_at_approval_decline(): void
+    {
+        $run = $this->stage();
+        $this->delegate->update(['email' => 'shared@contoso.example']);
+        $this->actingAs($this->actor)->post(route('cockpit.approve', $run))->assertRedirect();
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->delegate->update(['email' => 'delegate@contoso.example']);
+        $this->rows = [];
+        $this->actingAs($this->actor)->post(route('cockpit.approve', $run))->assertRedirect();
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), '/api/Exec'));
+    }
+
+    public function test_staged_only_token_still_requires_explicit_true(): void
+    {
+        $this->token = McpConfig::rotateStaffToken(allowedTools: ['cipp_set_mailbox_delegate:staged'], label: 'synthetic-held');
+        $this->refused(array_replace($this->args, ['staged' => false]));
+        Http::assertNothingSent();
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $this->stage()->state);
+    }
+
+    public function test_execute_at_refuses_before_any_read(): void
+    {
+        $this->refused(array_replace($this->args, ['execute_at' => now()->addHour()->toIso8601String()]), 'person_id');
+        Http::assertNothingSent();
+    }
+
+    public function test_staged_absent_or_false_refuses_before_any_read(): void
+    {
+        $args = $this->args;
+        unset($args['staged']);
+        $this->refused($args, 'staged');
+        $this->refused(array_replace($args, ['staged' => false]), 'staged');
+        Http::assertNothingSent();
+    }
+}

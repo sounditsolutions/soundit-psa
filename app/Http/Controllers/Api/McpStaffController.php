@@ -687,6 +687,15 @@ class McpStaffController extends Controller
             return $this->error($id, -32602, 'Missing tool name');
         }
 
+        $mailboxTarget = in_array($name, ['cipp_set_mailbox_delegate', 'cipp_stage_set_mailbox_delegate'], true)
+            && array_key_exists('target_mailbox_upn', $arguments);
+        if ($mailboxTarget && ($arguments['staged'] ?? null) !== true) {
+            return $this->error($id, -32602, 'target_mailbox_upn requires staged=true for held cockpit approval.');
+        }
+        if ($mailboxTarget && array_key_exists('execute_at', $arguments)) {
+            return $this->error($id, -32602, 'target_mailbox_upn is held cockpit approval only; scheduling is available on the person_id shape.');
+        }
+
         $offboarding = in_array($name, ['cipp_offboard_user', 'cipp_stage_offboard_user'], true);
         if ($offboarding && (($arguments['staged'] ?? null) !== true || ! is_int($arguments['client_id'] ?? null) || $arguments['client_id'] < 1)) {
             return $this->error($id, -32602, 'Offboarding requires staged=true and an explicit positive integer client_id; immediate calls are refused, not downgraded.');
@@ -1380,6 +1389,9 @@ class McpStaffController extends Controller
             } elseif (ChetDataSurfaceTools::handles((string) $name)) {
                 $result = app(ChetDataSurfaceToolExecutor::class)->execute((string) $name, $arguments, $clientId);
             } elseif ($this->isCippWriteTool((string) $name)) {
+                if ($mailboxTarget) {
+                    $arguments['staged'] = true;
+                }
                 if ($offboarding) {
                     if ($explicitClientArgument !== (int) $clientId) {
                         throw new \RuntimeException('Offboarding requires matching explicit client scope.');

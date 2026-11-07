@@ -159,8 +159,17 @@ class CippWriteMailboxDelegateTest extends TestCase
         $tool = $scoped['cipp_set_mailbox_delegate'];
 
         $this->assertContains('client_id', $tool['inputSchema']['required']);
-        foreach (['person_id', 'delegate_person_id', 'permission', 'operation', 'confirm_upn', 'reason'] as $req) {
+        foreach (['delegate_person_id', 'permission', 'operation', 'reason'] as $req) {
             $this->assertContains($req, $tool['inputSchema']['required']);
+        }
+        $held = collect($this->listTools($this->token(['cipp_set_mailbox_delegate:staged'])))->keyBy('name');
+        foreach ([$tool, $held['cipp_set_mailbox_delegate']] as $definition) {
+            $branches = $definition['inputSchema']['oneOf'];
+            $this->assertSame(['person_id', 'confirm_upn'], $branches[0]['required']);
+            $this->assertContains('target_mailbox_upn', $branches[1]['required']);
+            $this->assertContains('staged', $branches[1]['required']);
+            $this->assertTrue($branches[1]['properties']['staged']['const']);
+            $this->assertContains(['required' => ['execute_at']], $branches[1]['not']['anyOf']);
         }
         // No upstream CIPP identities are ever accepted from the caller.
         $this->assertArrayNotHasKey('tenantFilter', $tool['inputSchema']['properties']);

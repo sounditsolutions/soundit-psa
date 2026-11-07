@@ -801,6 +801,21 @@ class StaffCippWriteToolExecutor
                 : $this->executeLicenseTargetDirect($name, $arguments, $clientId, $actorLabel);
         }
 
+        if ((self::STAGED_TO_DIRECT[$name] ?? $name) === 'cipp_set_mailbox_delegate'
+            && array_key_exists('target_mailbox_upn', $arguments)) {
+            if ($name !== 'cipp_stage_set_mailbox_delegate') {
+                return ['error' => 'target_mailbox_upn is staged only.'];
+            }
+            if (($arguments['staged'] ?? null) !== true) {
+                return ['error' => 'target_mailbox_upn requires staged=true.'];
+            }
+            if ($executeAt !== null || array_key_exists('execute_at', $arguments)) {
+                return ['error' => 'target_mailbox_upn is held cockpit approval only; scheduling is available on the person_id shape.'];
+            }
+
+            return $this->stageMailboxTarget($arguments, $clientId, $actorLabel, $tokenLabel);
+        }
+
         if (isset(self::STAGED_TO_DIRECT[$name])) {
             $staged = $this->stageAction($name, $arguments, $clientId, $actorLabel, $scheduledTokenId, $executeAt, $tokenLabel);
 
@@ -935,6 +950,11 @@ class StaffCippWriteToolExecutor
 
         if (in_array(self::STAGED_TO_DIRECT[$run->action_type] ?? '', self::LICENSE_TARGET_TOOLS, true)) {
             return $this->approveLicenseTargetStagedRun($run, $approverId);
+        }
+
+        if ($run->action_type === 'cipp_stage_set_mailbox_delegate'
+            && ($this->decryptRunPayload($run)['family'] ?? null) === 'mailbox_target') {
+            return $this->approveMailboxTarget($run, $approverId);
         }
 
         try {
@@ -6331,6 +6351,173 @@ class StaffCippWriteToolExecutor
      *
      * @return array<string, mixed>
      */
+    /** Live target verification shared by staging and approval. */
+    private function verifiedMailboxTarget(int $clientId, string $tenant, string $upn): array
+    {
+        $refusal = 'Mailbox target could not be verified as SharedMailbox, RoomMailbox or EquipmentMailbox; use the person_id shape for a PSA person.';
+        try {
+            $rows = $this->client->listMailboxes($tenant);
+        } catch (\Throwable $e) {
+            throw new CippWriteScopeException($refusal);
+        }
+        // CIPP-API Invoke-ListMailboxes.ps1 live projection; hedge raw EXO casing.
+        $matches = array_values(array_filter($rows, static function ($row) use ($upn): bool {
+            $address = $row['UPN'] ?? $row['userPrincipalName'] ?? $row['UserPrincipalName'] ?? null;
+
+            return is_string($address) && mb_strtolower(trim($address)) === mb_strtolower($upn);
+        }));
+        if (count($matches) !== 1) {
+            throw new CippWriteScopeException($refusal);
+        }
+        $row = $matches[0];
+        $type = $row['recipientTypeDetails'] ?? $row['RecipientTypeDetails'] ?? null;
+        if (! in_array($type, ['SharedMailbox', 'RoomMailbox', 'EquipmentMailbox'], true)) {
+            throw new CippWriteScopeException($refusal);
+        }
+        $verified = trim($row['UPN'] ?? $row['userPrincipalName'] ?? $row['UserPrincipalName']);
+        $mapped = null;
+        foreach (\App\Models\Person::where('client_id', $clientId)->get(['id', 'is_active', 'cipp_upn', 'email']) as $person) {
+            if (mb_strtolower(trim((string) $person->cipp_upn)) !== mb_strtolower($verified)
+                && mb_strtolower(trim((string) $person->email)) !== mb_strtolower($verified)) {
+                continue;
+            }
+            if ($person->is_active) {
+                throw new CippWriteScopeException('An active PSA person maps to this mailbox; use the person_id shape.');
+            }
+            $mapped ??= $person->id;
+        }
+
+        return ['upn' => mb_strtolower($verified), 'recipient_type_details' => $type, 'inactive_person_id' => $mapped];
+    }
+
+    private function stageMailboxTarget(array $arguments, int $clientId, string $actorLabel, ?string $tokenLabel): array
+    {
+        $tool = 'cipp_stage_set_mailbox_delegate';
+        try {
+            if (array_key_exists('person_id', $arguments)) {
+                throw new CippWriteScopeException('Choose target_mailbox_upn or person_id, not both.');
+            }
+            if ($this->upstreamIdentifierKeys($arguments)) {
+                throw new CippWriteScopeException('Caller-supplied upstream CIPP identifiers are not accepted.');
+            }
+            if (TechnicianConfig::killSwitchEngaged()) {
+                throw new CippWriteScopeException('Technician kill-switch engaged.');
+            }
+            $upn = $this->boundedString($arguments, 'target_mailbox_upn', self::CREATE_UPN_MAX, required: true);
+            if (! is_string($upn) || ! filter_var($upn, FILTER_VALIDATE_EMAIL)) {
+                throw new CippWriteScopeException('A full target_mailbox_upn is required; use person_id for a PSA person.');
+            }
+            $reason = $this->requiredString($arguments, 'reason');
+            if ($reason === null) {
+                throw new CippWriteScopeException('reason is required');
+            }
+            $client = Client::find($clientId);
+            if (! $client) {
+                throw new CippWriteScopeException('Client not found');
+            }
+            $tenant = $this->resolver->resolveCippTenant($client);
+            $ticket = $this->resolver->resolveTicketForHeldAction($clientId, $arguments['ticket_id'] ?? null);
+            $params = $this->mailboxDelegateParams($clientId, $arguments);
+            $target = $this->verifiedMailboxTarget($clientId, $tenant, $upn);
+            if (strcasecmp($target['upn'], $params['delegate_person']->userPrincipalName) === 0) {
+                throw new CippWriteScopeException('Self-delegation refused.');
+            }
+            $delegateUpn = $params['delegate_person']->userPrincipalName;
+            unset($params['delegate_person']);
+            $params['verified_delegate_upn'] = $delegateUpn;
+            $params['target_mailbox_upn'] = $target['upn'];
+            $params['verified_mailbox'] = $target;
+            $params['verified_tenant'] = $tenant;
+            $hash = $this->contentHash($tool, $clientId, null, $ticket->id, $params);
+            $hash = $this->unspentContentHash($tool, $ticket->id, $hash);
+            if ($hash === null) {
+                throw new CippWriteScopeException('Proposal limit reached; use another ticket.');
+            }
+            $display = $target['upn'].' ('.$target['recipient_type_details'].') — '.$params['operation'].' '.$params['permission'].'; delegate '.$delegateUpn.' (person #'.$params['delegate_person_id'].')';
+            $run = TechnicianRun::firstOrCreate(
+                ['ticket_id' => $ticket->id, 'action_type' => $tool, 'content_hash' => $hash],
+                [
+                    'client_id' => $clientId, 'state' => TechnicianRunState::AwaitingApproval,
+                    'proposed_content' => $display."\nReason: ".$this->safeReason($tool, $reason, $arguments),
+                    'proposed_meta' => [
+                        ...DraftedByToken::meta($actorLabel, $tokenLabel),
+                        'person_id' => null, 'redacted_params' => $params, 'sensitive_inputs' => [],
+                        'encrypted_payload' => Crypt::encryptString(json_encode([
+                            'family' => 'mailbox_target', 'direct_tool' => 'cipp_set_mailbox_delegate',
+                            'client_id' => $clientId, 'ticket_id' => $ticket->id, 'params' => $params,
+                        ], JSON_THROW_ON_ERROR)),
+                    ],
+                    'tokens_used' => 0,
+                ],
+            );
+            if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
+                return ['error' => 'This proposal is no longer awaiting approval; stage on a new ticket.'];
+            }
+            $this->auditAttempt($tool, 'awaiting_approval', $clientId, $ticket, null, null, $hash, $display, $actorLabel, $run->id);
+
+            return ['success' => true, 'run_id' => $run->id, 'ticket_id' => $ticket->id, 'message' => 'Staged for cockpit approval.'];
+        } catch (CippWriteScopeException $e) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null,
+                $this->contentHash($tool, $clientId, null, null, []), $e->getMessage(), $actorLabel);
+
+            return ['error' => $e->getMessage()];
+        }
+    }
+
+    private function approveMailboxTarget(TechnicianRun $run, int $approverId): TechnicianApprovalResult
+    {
+        $sent = false;
+        try {
+            $payload = $this->decryptRunPayload($run);
+            if (($payload['direct_tool'] ?? null) !== 'cipp_set_mailbox_delegate'
+                || ($payload['client_id'] ?? null) !== $run->client_id
+                || ($payload['ticket_id'] ?? null) !== $run->ticket_id) {
+                throw new CippWriteScopeException('Held mailbox binding changed; re-stage.');
+            }
+            if (TechnicianConfig::killSwitchEngaged()) {
+                throw new CippWriteScopeException('Technician kill-switch engaged.');
+            }
+            $client = Client::findOrFail($run->client_id);
+            $tenant = $this->resolver->resolveCippTenant($client);
+            $ticket = $this->resolver->resolveTicketForHeldAction($client->id, $run->ticket_id);
+            $stored = $payload['params'];
+            $params = $this->mailboxDelegateParams($client->id, $stored);
+            $target = $this->verifiedMailboxTarget($client->id, $tenant, $stored['target_mailbox_upn']);
+            if ($target !== $stored['verified_mailbox'] || $tenant !== $stored['verified_tenant']
+                || strcasecmp($params['delegate_person']->userPrincipalName, $stored['verified_delegate_upn']) !== 0) {
+                throw new CippWriteScopeException('Mailbox evidence changed after staging; re-stage.');
+            }
+            if (strcasecmp($target['upn'], $params['delegate_person']->userPrincipalName) === 0) {
+                throw new CippWriteScopeException('Self-delegation refused.');
+            }
+            $this->client->setMailboxDelegate($tenant, $target['upn'], $params['delegate_person']->userPrincipalName, $params['permission'], $params['operation'], $params['auto_map']);
+            $sent = true;
+            $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $run->content_hash, $target['upn'].' ('.$target['recipient_type_details'].')', $this->approverLabel($approverId), $run->id, $approverId);
+            if (! $run->advanceTo(TechnicianRunState::Done)) {
+                return self::executedNotClosed($run);
+            }
+
+            return new TechnicianApprovalResult('executed');
+        } catch (CippWriteScopeException $e) {
+            $this->auditAttempt($run->action_type, 'rejected', $run->client_id, null, null, null, $run->content_hash, $e->getMessage(), $this->approverLabel($approverId), $run->id, $approverId);
+            $run->releaseClaim();
+
+            return $this->declined($e->getMessage());
+        } catch (CippClientException $e) {
+            $this->auditAttempt($run->action_type, 'error', $run->client_id, null, null, null,
+                $run->content_hash, $this->safeFailureSummary($run->action_type, $e),
+                $this->approverLabel($approverId), $run->id, $approverId);
+            $run->releaseClaim();
+
+            return $this->declined($this->writeFailureMessage($run->action_type, $e));
+        } catch (\Throwable $e) {
+            if (! $sent) {
+                $run->releaseClaim();
+            }
+            throw $e;
+        }
+    }
+
     private function mailboxDelegateParams(int $clientId, array $arguments): array
     {
         $permission = $this->canonicalChoice($this->requiredString($arguments, 'permission'), self::DELEGATE_PERMISSIONS, 'permission');

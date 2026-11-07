@@ -524,6 +524,25 @@ class McpToolModes
             $description .= ' Supports execute_at to schedule the approved action for a later instant.';
         }
 
+        if (($direct['name'] ?? null) === 'cipp_set_mailbox_delegate') {
+            $schema['properties']['target_mailbox_upn'] = [
+                'type' => 'string',
+                'description' => 'SharedMailbox, RoomMailbox or EquipmentMailbox UPN instead of person_id; requires staged=true and forbids execute_at. Verified live at staging and approval.',
+            ];
+            $schema['required'] = array_values(array_diff($schema['required'] ?? [], ['person_id', 'confirm_upn']));
+            $schema['oneOf'] = [
+                ['required' => ['person_id', 'confirm_upn'], 'not' => ['required' => ['target_mailbox_upn']]],
+                [
+                    'required' => ['target_mailbox_upn', 'staged', 'ticket_id'],
+                    'properties' => ['staged' => ['const' => true]],
+                    'not' => ['anyOf' => [['required' => ['person_id']], ['required' => ['execute_at']]]],
+                ],
+            ];
+            $schema['properties']['staged']['description'] = 'For person_id, controls held versus immediate execution under the token grant. target_mailbox_upn requires true.';
+            $schema['properties']['execute_at']['description'] = 'Person_id shape only. '.$schema['properties']['execute_at']['description'];
+            $description = 'Grant or remove a mailbox delegate permission. The person_id shape requires confirm_upn and supports scheduling unchanged. Supports staged=true for cockpit approval. Alternatively, target_mailbox_upn reaches only SharedMailbox, RoomMailbox or EquipmentMailbox with no active PSA person mapping; live verification runs at staging and approval. This shape requires staged=true and ticket_id, forbids execute_at, and does not use confirm_upn. The delegate must be an active PSA person on grant.';
+        }
+
         $direct['description'] = $description;
         $direct['input_schema'] = $schema;
 
