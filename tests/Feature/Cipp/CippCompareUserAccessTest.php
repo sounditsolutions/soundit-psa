@@ -4,6 +4,7 @@ namespace Tests\Feature\Cipp;
 
 use App\Models\Client;
 use App\Models\Setting;
+use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Assistant\AssistantToolExecutor;
 use App\Services\Cipp\CippClient;
 use App\Services\Cipp\CippCompareUserAccess;
@@ -11,7 +12,11 @@ use App\Services\Cipp\CippGroupMembershipPredicates;
 use App\Services\Cipp\CippMcpToolRelay;
 use App\Services\Cipp\CippRestWriteClient;
 use App\Services\Cipp\CippWriteScopeException;
+use App\Services\Mcp\CippCompareToolExecutor;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
+use App\Services\Teams\TeamsReadOnlyToolset;
+use App\Services\Triage\TriageToolDefinitions;
+use App\Services\Triage\TriageToolExecutor;
 use App\Support\McpConfig;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Promise\Create;
@@ -111,7 +116,7 @@ class CippCompareUserAccessTest extends TestCase
 
     private function runCompare(array $input = []): array
     {
-        return (new AssistantToolExecutor(null, $this->client->id, null))->execute('cipp_compare_user_access', $input + ['source_user' => self::SOURCE, 'target_user' => self::TARGET]);
+        return (new CippCompareToolExecutor($this->client->id))->execute($input + ['source_user' => self::SOURCE, 'target_user' => self::TARGET]);
     }
 
     public function test_complete_diff_and_observations_are_separate_and_read_only(): void
@@ -328,6 +333,39 @@ class CippCompareUserAccessTest extends TestCase
         }
     }
 
+    public function test_compare_is_absent_from_non_mcp_publication(): void
+    {
+        $this->assertTrue(TriageToolDefinitions::isCippAvailable());
+        $teams = TeamsReadOnlyToolset::forTurn(null);
+        foreach ([TriageToolDefinitions::getTools(), AssistantToolDefinitions::getTools(true), $teams->tools()] as $tools) {
+            $names = array_column($tools, 'name');
+            $this->assertContains('cipp_list_users', $names);
+            $this->assertNotContains('cipp_compare_user_access', $names);
+        }
+        $this->assertNotContains('cipp_compare_user_access', array_column(AssistantToolDefinitions::getTools(false), 'name'));
+        $this->assertFalse($teams->allows('cipp_compare_user_access'));
+        $this->assertTrue($teams->allows('cipp_list_users'));
+        $this->assertNotContains('cipp_compare_user_access', AssistantToolExecutor::readTools());
+        Http::assertNothingSent();
+    }
+
+    public function test_non_mcp_executors_refuse_compare_by_name_without_requests(): void
+    {
+        $ticket = new \App\Models\Ticket(['client_id' => $this->client->id]);
+        foreach ([new AssistantToolExecutor(null, $this->client->id), new TriageToolExecutor($ticket)] as $executor) {
+            $result = $executor->execute('cipp_compare_user_access', ['source_user' => self::SOURCE, 'target_user' => self::TARGET]);
+            $this->assertSame(['error' => 'Unknown tool: cipp_compare_user_access'], $result);
+            Http::assertNothingSent();
+        }
+        // Positive control: ordinary CIPP reads remain runnable on each surface.
+        Setting::setValue('cipp_mcp_enabled', '0');
+        Http::fake(['https://cipp.example/api/ListGroups?*' => Http::response([])]);
+        foreach ([new AssistantToolExecutor(null, $this->client->id), new TriageToolExecutor($ticket)] as $executor) {
+            $this->assertArrayNotHasKey('error', $executor->execute('cipp_list_groups', []));
+        }
+        Http::assertSentCount(2);
+    }
+
     public function test_explicit_grant_required_for_publication_and_call(): void
     {
         foreach ([null, ['cipp_list_users'], ['cipp_compare_user_access']] as $grants) {
@@ -340,6 +378,10 @@ class CippCompareUserAccessTest extends TestCase
             if ($allowed) {
                 $data = json_decode($response->json('result.content.0.text'), true);
                 $this->assertSame(['admin roles'], $data['not_included']);
+                $this->assertSame([self::GROUP], array_column($data['groups']['only_in_source'], 'id'));
+                $this->assertSame([['skuId' => self::SKU]], $data['licences']['only_in_source']);
+                $this->assertSame(['FullAccess', 'SendOnBehalf'], $data['mailbox_access']['mailbox_rights_observed']['source'][0]['rights']);
+                Http::assertSentCount(6);
             } else {
                 $this->assertTrue($response->json('result.isError') === true || $response->json('error') !== null, $response->getContent());
                 Http::assertNothingSent();

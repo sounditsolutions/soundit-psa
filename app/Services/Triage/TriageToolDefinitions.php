@@ -19,6 +19,13 @@ use App\Support\ZorusConfig;
  */
 class TriageToolDefinitions
 {
+    public const MCP_ONLY_TOOLS = ['cipp_compare_user_access'];
+
+    public static function nonMcpCippTools(): array
+    {
+        return array_values(array_filter(self::cippTools(), fn (array $tool): bool => ! in_array($tool['name'], self::MCP_ONLY_TOOLS, true)));
+    }
+
     /**
      * Read-only tool definitions available to the AI Technician.
      *
@@ -157,7 +164,7 @@ class TriageToolDefinitions
         }
 
         if (self::isCippAvailable()) {
-            $tools = array_merge($tools, self::cippTools());
+            $tools = array_merge($tools, self::nonMcpCippTools());
         }
 
         if (self::isControlDAvailable()) {
