@@ -199,7 +199,12 @@ class CippWriteMailboxDelegateTargetUpnTest extends TestCase
     public function test_listing_error_duplicates_and_missing_or_unknown_type_are_refused(): void
     {
         $this->listingStatus = 503;
-        $this->refused($this->args, 'person_id');
+        $this->refused($this->args, 'status 503');
+        $audit = TechnicianActionLog::latest('id')->first();
+        $this->assertSame('error', $audit->result_status);
+        $this->assertStringContainsString('status 503', $audit->summary);
+        $this->assertStringNotContainsString('person_id', $audit->summary);
+        $this->assertStringNotContainsString('contoso.example', $audit->summary);
         $this->listingStatus = 200;
         $this->rows[] = $this->rows[0];
         $this->refused($this->args, 'person_id');
@@ -220,6 +225,41 @@ class CippWriteMailboxDelegateTargetUpnTest extends TestCase
         $mapped->update(['is_active' => false]);
         $run = $this->stage();
         $this->assertSame($mapped->id, $run->proposed_meta['redacted_params']['verified_mailbox']['inactive_person_id']);
+    }
+
+    public function test_active_mapping_on_primary_smtp_refuses_and_inactive_is_recorded(): void
+    {
+        $this->args['target_mailbox_upn'] = 'shared@tenant.onmicrosoft.example';
+        $this->rows[0]['UPN'] = 'shared@tenant.onmicrosoft.example';
+        $mapped = $this->delegate->replicate();
+        $mapped->email = $mapped->cipp_upn = 'shared@contoso.example';
+        $mapped->cipp_user_id = 'synthetic-shared';
+        $mapped->save();
+        $this->refused($this->args, 'active PSA person');
+        $mapped->update(['is_active' => false]);
+        $run = $this->stage();
+        $this->assertSame($mapped->id, $run->proposed_meta['redacted_params']['verified_mailbox']['inactive_person_id']);
+    }
+
+    public function test_listing_failure_at_approval_declines_as_error_not_type_refusal(): void
+    {
+        $run = $this->stage();
+        $auditId = TechnicianActionLog::max('id');
+        $this->listingStatus = 503;
+
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun($run, $this->actor->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertStringContainsString('status 503', $result->message);
+        $this->assertStringNotContainsString('person_id', $result->message);
+        $this->assertStringNotContainsString('contoso.example', $result->message);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), '/api/Exec'));
+        $audit = TechnicianActionLog::where('id', '>', $auditId)->sole();
+        $this->assertSame('error', $audit->result_status);
+        $this->assertSame($run->id, $audit->run_id);
+        $this->assertStringContainsString('status 503', $audit->summary);
+        $this->assertStringNotContainsString('contoso.example', $audit->summary);
     }
 
     public function test_both_and_neither_shape_are_refused(): void

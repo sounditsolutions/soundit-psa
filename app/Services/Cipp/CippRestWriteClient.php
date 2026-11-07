@@ -806,10 +806,10 @@ class CippRestWriteClient
             if (! $response->successful() || ! is_array($body)) {
                 throw new CippClientException('Mailbox listing refused');
             }
+            CippQueueGuard::assertNotQueueBacked($body);
         } catch (\Throwable $e) {
             throw new CippClientException('Mailbox listing failed (status '.$status.'; '.$e::class.')');
         }
-        CippQueueGuard::assertNotQueueBacked($body);
         $rows = array_is_list($body) ? $body : ($body['Results'] ?? null);
         if (! is_array($rows) || ! array_is_list($rows)
             || count(array_filter($rows, 'is_array')) !== count($rows)

@@ -6357,8 +6357,12 @@ class StaffCippWriteToolExecutor
         $refusal = 'Mailbox target could not be verified as SharedMailbox, RoomMailbox or EquipmentMailbox; use the person_id shape for a PSA person.';
         try {
             $rows = $this->client->listMailboxes($tenant);
-        } catch (\Throwable $e) {
-            throw new CippWriteScopeException($refusal);
+        } catch (CippClientException $e) {
+            // C-56: a failed read is not a type refusal. listMailboxes() carries status and class only.
+            \Illuminate\Support\Facades\Log::warning('[CIPP] mailbox target listing failed', [
+                'client_id' => $clientId, 'error' => $e->getMessage(),
+            ]);
+            throw $e;
         }
         // CIPP-API Invoke-ListMailboxes.ps1 live projection; hedge raw EXO casing.
         $matches = array_values(array_filter($rows, static function ($row) use ($upn): bool {
@@ -6375,10 +6379,21 @@ class StaffCippWriteToolExecutor
             throw new CippWriteScopeException($refusal);
         }
         $verified = trim($row['UPN'] ?? $row['userPrincipalName'] ?? $row['UserPrincipalName']);
+        // Every address the live projection carries for this row: a person on the
+        // primary SMTP address maps the mailbox as surely as one on its UPN.
+        $addresses = [];
+        foreach (['UPN', 'userPrincipalName', 'UserPrincipalName', 'primarySmtpAddress', 'PrimarySmtpAddress'] as $key) {
+            if (is_string($row[$key] ?? null) && trim($row[$key]) !== '') {
+                $addresses[] = mb_strtolower(trim($row[$key]));
+            }
+        }
         $mapped = null;
         foreach (\App\Models\Person::where('client_id', $clientId)->get(['id', 'is_active', 'cipp_upn', 'email']) as $person) {
-            if (mb_strtolower(trim((string) $person->cipp_upn)) !== mb_strtolower($verified)
-                && mb_strtolower(trim((string) $person->email)) !== mb_strtolower($verified)) {
+            $known = array_filter(
+                [mb_strtolower(trim((string) $person->cipp_upn)), mb_strtolower(trim((string) $person->email))],
+                static fn (string $value): bool => $value !== '',
+            );
+            if (array_intersect($known, $addresses) === []) {
                 continue;
             }
             if ($person->is_active) {
@@ -6464,6 +6479,11 @@ class StaffCippWriteToolExecutor
                 $this->contentHash($tool, $clientId, null, null, []), $e->getMessage(), $actorLabel);
 
             return ['error' => $e->getMessage()];
+        } catch (CippClientException $e) {
+            $this->auditAttempt($tool, 'error', $clientId, null, null, null,
+                $this->contentHash($tool, $clientId, null, null, []), $this->safeFailureSummary($tool, $e), $actorLabel);
+
+            return ['error' => $e->getMessage().'; nothing was staged. Retry when the mailbox listing is readable.'];
         }
     }
 
@@ -6489,7 +6509,16 @@ class StaffCippWriteToolExecutor
             $tenant = $this->resolver->resolveCippTenant($client);
             $ticket = $this->resolver->resolveTicketForHeldAction($client->id, $run->ticket_id);
             $params = $this->mailboxDelegateParams($client->id, $stored);
-            $target = $this->verifiedMailboxTarget($client->id, $tenant, $stored['target_mailbox_upn']);
+            try {
+                $target = $this->verifiedMailboxTarget($client->id, $tenant, $stored['target_mailbox_upn']);
+            } catch (CippClientException $e) {
+                $this->auditAttempt($run->action_type, 'error', $run->client_id, null, null, null,
+                    $run->content_hash, $this->safeFailureSummary($run->action_type, $e),
+                    $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined($e->getMessage().'; no mailbox permission change was sent. Retry approval when the mailbox listing is readable.');
+            }
             if ($target !== $stored['verified_mailbox'] || $tenant !== $stored['verified_tenant']
                 || strcasecmp($params['delegate_person']->userPrincipalName, $stored['verified_delegate_upn']) !== 0) {
                 throw new CippWriteScopeException('Mailbox evidence changed after staging; re-stage.');
