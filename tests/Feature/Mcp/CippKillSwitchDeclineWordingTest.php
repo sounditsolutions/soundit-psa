@@ -6,8 +6,8 @@ use App\Services\Mcp\StaffCippWriteToolExecutor;
 use Tests\TestCase;
 
 /**
- * #3901 / yf7IXuhQ effect-denial sweep — the six CIPP kill-switch decline
- * messages, including approveDirectoryRoleGrant added 2026-10-18 (uztKjE24).
+ * #3901 / yf7IXuhQ effect-denial sweep — the seven CIPP kill-switch decline
+ * messages, including approveDirectoryRoleGrant and approveMailboxTarget.
  *
  * The original five arms were adjudicated on 2026-09-26 as TRUE on every path: each checks the kill switch, writes an audit row, and declines before any client call (measured, with a positive control finding 7 `->client->` calls past the kill switch in the same method). The sixth, approveDirectoryRoleGrant, was added 2026-10-18 with its own ruled sentence and was not part of that measurement.
  *
@@ -37,6 +37,7 @@ class CippKillSwitchDeclineWordingTest extends TestCase
             'approveGroupMembershipStagedRun' => ['approveGroupMembershipStagedRun', 'Technician kill-switch engaged; the staged CIPP write was refused.'],
             'approveLicenseTargetStagedRun' => ['approveLicenseTargetStagedRun', 'Technician kill-switch engaged; the staged CIPP write was refused.'],
             'approveDirectoryRoleGrant' => ['approveDirectoryRoleGrant', 'Technician kill-switch engaged; the staged role grant was refused.'],
+            'approveMailboxTarget' => ['approveMailboxTarget', 'Technician kill-switch engaged; the staged CIPP write was refused.'],
         ];
     }
 
@@ -145,14 +146,15 @@ class CippKillSwitchDeclineWordingTest extends TestCase
             "/\\\$this->declined\('Technician kill-switch engaged;/",
             $source
         );
-        $this->assertSame(6, $declinedArms, 'Six CIPP kill-switch arms decline with an adjudicated sentence; read any new one before it ships.');
+        $this->assertSame(7, $declinedArms, 'Seven CIPP kill-switch arms decline with an adjudicated sentence; read any new one before it ships.');
 
-        // The wider anchor. 12 = the 6 above + approveEmailSecurityStagedRun's
-        // message-less arm + 5 non-staged MCP write guards that return
-        // ['error' => ...] rather than a TechnicianApprovalResult.
+        // The wider anchor. 14 = the 7 above + approveEmailSecurityStagedRun's
+        // message-less arm + 6 non-staged MCP write guards that return
+        // ['error' => ...] rather than a TechnicianApprovalResult (the sixth
+        // is stageMailboxTarget).
         $killSwitchChecks = preg_match_all('/killSwitchEngaged\(/', $source);
         $this->assertSame(
-            12,
+            14,
             $killSwitchChecks,
             'A kill-switch check was added or removed in this executor. Read its arm: if it declines with a sentence, adjudicate the wording and pin it above; if it returns message-less, it renders the cockpit fallback (#3901) instead.'
         );

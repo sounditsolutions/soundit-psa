@@ -159,8 +159,17 @@ class CippWriteMailboxDelegateTest extends TestCase
         $tool = $scoped['cipp_set_mailbox_delegate'];
 
         $this->assertContains('client_id', $tool['inputSchema']['required']);
-        foreach (['person_id', 'delegate_person_id', 'permission', 'operation', 'confirm_upn', 'reason'] as $req) {
+        foreach (['delegate_person_id', 'permission', 'operation', 'reason'] as $req) {
             $this->assertContains($req, $tool['inputSchema']['required']);
+        }
+        $held = collect($this->listTools($this->token(['cipp_set_mailbox_delegate:staged'])))->keyBy('name');
+        foreach ([$tool, $held['cipp_set_mailbox_delegate']] as $definition) {
+            $this->assertSame('object', $definition['inputSchema']['type']);
+            foreach (['oneOf', 'anyOf', 'allOf'] as $combinator) {
+                $this->assertArrayNotHasKey($combinator, $definition['inputSchema']);
+            }
+            $this->assertStringContainsString('requires staged=true', $definition['inputSchema']['properties']['target_mailbox_upn']['description']);
+            $this->assertStringContainsString('confirm_upn', $definition['inputSchema']['properties']['person_id']['description']);
         }
         // No upstream CIPP identities are ever accepted from the caller.
         $this->assertArrayNotHasKey('tenantFilter', $tool['inputSchema']['properties']);
@@ -172,6 +181,49 @@ class CippWriteMailboxDelegateTest extends TestCase
         // Unified surface: one tool, with the staged parameter folded in.
         $this->assertArrayHasKey('staged', $tool['inputSchema']['properties']);
         $this->assertStringContainsString('Supports staged=true', $tool['description']);
+
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        \Illuminate\Support\Facades\Http::preventStrayRequests();
+        \Illuminate\Support\Facades\Http::fake([]);
+        $args = [
+            'client_id' => $fixture['client']->id, 'ticket_id' => $fixture['ticket']->id,
+            'delegate_person_id' => $fixture['target']->id, 'permission' => 'full_access',
+            'operation' => 'grant', 'reason' => 'Synthetic contract coverage',
+        ];
+        foreach (['cipp_set_mailbox_delegate', 'cipp_set_mailbox_delegate:staged'] as $grant) {
+            $token = $this->token([$grant]);
+            $upn = $args + ['target_mailbox_upn' => 'shared@contoso.example'];
+            foreach ([
+                $args,
+                $args + ['person_id' => $fixture['person']->id],
+                $args + ['person_id' => $fixture['person']->id, 'confirm_upn' => 'wrong@contoso.example'],
+                $upn,
+                $upn + ['staged' => false],
+                $upn + ['staged' => true, 'person_id' => $fixture['person']->id],
+                $upn + ['staged' => true, 'execute_at' => now()->addHour()->toIso8601String()],
+            ] as $invalid) {
+                $reply = $this->callTool($token, 'cipp_set_mailbox_delegate', $invalid)->json();
+                $this->assertTrue(isset($reply['error']) || ($reply['result']['isError'] ?? false), json_encode($reply));
+                $this->assertSame(0, TechnicianRun::count());
+            }
+        }
+        \Illuminate\Support\Facades\Http::assertNothingSent();
+    }
+
+    public function test_delegate_descriptions_are_additive_and_mode_truthful(): void
+    {
+        $this->configureCipp();
+        $addition = ' Choose exactly one target shape. The person_id shape requires person_id and confirm_upn and supports execute_at scheduling. Alternatively, target_mailbox_upn reaches only SharedMailbox, RoomMailbox or EquipmentMailbox with no active PSA person mapping; live verification runs at staging and approval. This shape requires staged=true and ticket_id, forbids person_id and execute_at, and does not use confirm_upn. Its verified mailbox, tenant and delegate evidence is encrypted; redacted parameters retain local ids, permission/operation and a keyed mailbox hash. The delegate must be an active PSA person on grant; remove allows an inactive delegate.';
+        $immediate = 'Grant or remove a Microsoft 365 mailbox delegate permission (FullAccess, Send-As, or Send-on-Behalf) immediately through CIPP for one server-derived mailbox owner (person_id) and one server-derived delegate (delegate_person_id, a different person). Delegate access exposes another user\'s mailbox and can enable impersonation or data exfiltration, so it is a sensitive write. confirm_upn must be the mailbox OWNER\'s UPN (person_id). Requires an explicit grant, reason, confirm_upn, kill-switch, exact-content duplicate protection, and audit. Distinct delegates on the same mailbox do not impose an application cooldown on each other. Supports staged=true to hold the action for cockpit approval instead of executing immediately. Supports execute_at to schedule the approved action for a later instant.';
+        $held = 'Stage a Microsoft 365 mailbox delegate permission change (FullAccess, Send-As, or Send-on-Behalf) for cockpit approval. Delegate grants expose another user\'s mailbox; the held payload stores only local PSA identifiers plus the permission/operation, and approval revalidates local client/person scope before CIPP execution. confirm_upn must be the mailbox OWNER\'s UPN (person_id); delegate_person_id is a different person in the same client. This token grants staged mode only; immediate execution (staged=false) is downgraded to a staged proposal. Supports execute_at to schedule the approved action for a later instant.';
+        foreach (['cipp_set_mailbox_delegate' => $immediate, 'cipp_set_mailbox_delegate:staged' => $held] as $grant => $base) {
+            $tool = collect($this->listTools($this->token([$grant])))->keyBy('name')['cipp_set_mailbox_delegate'];
+            $this->assertSame($base.$addition, $tool['description']);
+            if (str_ends_with($grant, ':staged')) {
+                $this->assertSame('For person_id, every call is held for cockpit approval; staged=false is downgraded to a staged proposal. target_mailbox_upn requires true explicitly.', $tool['inputSchema']['properties']['staged']['description']);
+            }
+        }
     }
 
     public function test_direct_delegate_grant_and_remove_use_server_derived_scope(): void

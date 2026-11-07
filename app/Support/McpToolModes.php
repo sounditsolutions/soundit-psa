@@ -524,6 +524,22 @@ class McpToolModes
             $description .= ' Supports execute_at to schedule the approved action for a later instant.';
         }
 
+        if (($direct['name'] ?? null) === 'cipp_set_mailbox_delegate') {
+            $schema['properties']['target_mailbox_upn'] = [
+                'type' => 'string',
+                'description' => 'SharedMailbox, RoomMailbox or EquipmentMailbox UPN instead of person_id; requires staged=true and forbids execute_at. Verified live at staging and approval.',
+            ];
+            $schema['required'] = array_values(array_diff($schema['required'] ?? [], ['person_id', 'confirm_upn']));
+            $schema['properties']['person_id']['description'] .= ' Required with confirm_upn on the person shape; mutually exclusive with target_mailbox_upn.';
+            $schema['properties']['confirm_upn']['description'] .= ' Required for person_id; unused for target_mailbox_upn.';
+            $schema['properties']['target_mailbox_upn']['description'] .= ' Requires ticket_id; forbids person_id; confirm_upn is unused. No active PSA person mapping is allowed.';
+            $schema['properties']['staged']['description'] = $mode === self::MODE_STAGED
+                ? 'For person_id, every call is held for cockpit approval; staged=false is downgraded to a staged proposal. target_mailbox_upn requires true explicitly.'
+                : 'For person_id, controls held versus immediate execution under the token grant. target_mailbox_upn requires true explicitly.';
+            $schema['properties']['execute_at']['description'] = 'Person_id shape only. '.$schema['properties']['execute_at']['description'];
+            $description .= ' Choose exactly one target shape. The person_id shape requires person_id and confirm_upn and supports execute_at scheduling. Alternatively, target_mailbox_upn reaches only SharedMailbox, RoomMailbox or EquipmentMailbox with no active PSA person mapping; live verification runs at staging and approval. This shape requires staged=true and ticket_id, forbids person_id and execute_at, and does not use confirm_upn. Its verified mailbox, tenant and delegate evidence is encrypted; redacted parameters retain local ids, permission/operation and a keyed mailbox hash. The delegate must be an active PSA person on grant; remove allows an inactive delegate.';
+        }
+
         $direct['description'] = $description;
         $direct['input_schema'] = $schema;
 

@@ -787,15 +787,42 @@ class CippRestWriteClient
     }
 
     /**
-     * Verification read for the tenant-targeted licence write: the tenant's
-     * live user listing exactly as CIPP projects it. Uses the same credential
-     * set as the write it gates, so a UPN the caller typed can only ever be
-     * turned into an object id the SERVER read out of the resolved tenant.
+     * Live mailbox verification read; no reporting cache or minimal projection.
      *
-     * Queue-guarded at the source for the same reason listMailQuarantine() is
-     * (psa-lmex): an unguarded queue reply is an empty list, and an empty list
-     * here must be a refusal rather than "no such user" — but that polarity is
-     * a property of the caller, and this method must not depend on it.
+     * @return array<int, array<string, mixed>>
+     */
+    public function listMailboxes(string $tenantFilter): array
+    {
+        // CIPP-API Invoke-ListMailboxes.ps1, live EXO projection: UPN,
+        // primarySmtpAddress, AdditionalEmailAddresses, ExternalDirectoryObjectId,
+        // recipientTypeDetails. Do not request UseReportDB.
+        $status = 0;
+        try {
+            $url = $this->endpointUrl('api/ListMailboxes');
+            $options = $this->safeRequestOptions($url);
+            $response = Http::timeout(60)->acceptJson()->withOptions($options)
+                ->withToken($this->getToken())->get($url, ['tenantFilter' => $tenantFilter]);
+            $status = $response->status();
+            $body = $response->json();
+            if (! $response->successful() || ! is_array($body)) {
+                throw new CippClientException('Mailbox listing refused');
+            }
+            CippQueueGuard::assertNotQueueBacked($body);
+        } catch (\Throwable $e) {
+            throw new CippClientException('Mailbox listing failed (status '.$status.'; '.$e::class.')');
+        }
+        $rows = array_is_list($body) ? $body : ($body['Results'] ?? null);
+        if (! is_array($rows) || ! array_is_list($rows)
+            || count(array_filter($rows, 'is_array')) !== count($rows)
+            || ! empty($body['Metadata']['nextLink'])) {
+            throw new CippClientException('Mailbox listing shape refused');
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Queue-guarded live user listing for tenant-targeted licence verification.
      *
      * @return array<int, array<string, mixed>>
      */
