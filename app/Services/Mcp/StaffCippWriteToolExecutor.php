@@ -6380,20 +6380,43 @@ class StaffCippWriteToolExecutor
         }
         $verified = trim($row['UPN'] ?? $row['userPrincipalName'] ?? $row['UserPrincipalName']);
         // Every address the live projection carries for this row: a person on the
-        // primary SMTP address maps the mailbox as surely as one on its UPN.
+        // primary SMTP address or an alias maps the mailbox as surely as one on its UPN.
         $addresses = [];
         foreach (['UPN', 'userPrincipalName', 'UserPrincipalName', 'primarySmtpAddress', 'PrimarySmtpAddress'] as $key) {
             if (is_string($row[$key] ?? null) && trim($row[$key]) !== '') {
                 $addresses[] = mb_strtolower(trim($row[$key]));
             }
         }
+        // Aliases: the live projection joins the secondary smtp: proxies as
+        // AdditionalEmailAddresses ("a, b"); raw EXO carries prefixed EmailAddresses.
+        $aliases = [];
+        foreach (['AdditionalEmailAddresses', 'additionalEmailAddresses'] as $key) {
+            $value = $row[$key] ?? null;
+            $aliases = array_merge($aliases, is_string($value) ? explode(',', $value) : (is_array($value) ? array_values($value) : []));
+        }
+        foreach (['EmailAddresses', 'emailAddresses'] as $key) {
+            foreach (is_array($row[$key] ?? null) ? $row[$key] : [] as $proxy) {
+                if (is_string($proxy) && strncasecmp($proxy, 'smtp:', 5) === 0) {
+                    $aliases[] = substr($proxy, 5);
+                }
+            }
+        }
+        foreach ($aliases as $alias) {
+            if (is_string($alias) && trim($alias) !== '') {
+                $addresses[] = mb_strtolower(trim($alias));
+            }
+        }
+        // The mailbox's Entra object id maps it to the person synced onto that id.
+        $objectId = $row['ExternalDirectoryObjectId'] ?? $row['externalDirectoryObjectId'] ?? null;
+        $objectId = is_string($objectId) && trim($objectId) !== '' ? mb_strtolower(trim($objectId)) : null;
         $mapped = null;
-        foreach (\App\Models\Person::where('client_id', $clientId)->get(['id', 'is_active', 'cipp_upn', 'email']) as $person) {
+        foreach (\App\Models\Person::where('client_id', $clientId)->get(['id', 'is_active', 'cipp_upn', 'email', 'cipp_user_id']) as $person) {
             $known = array_filter(
                 [mb_strtolower(trim((string) $person->cipp_upn)), mb_strtolower(trim((string) $person->email))],
                 static fn (string $value): bool => $value !== '',
             );
-            if (array_intersect($known, $addresses) === []) {
+            $sameObject = $objectId !== null && mb_strtolower(trim((string) $person->cipp_user_id)) === $objectId;
+            if (! $sameObject && array_intersect($known, $addresses) === []) {
                 continue;
             }
             if ($person->is_active) {

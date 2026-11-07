@@ -241,6 +241,29 @@ class CippWriteMailboxDelegateTargetUpnTest extends TestCase
         $this->assertSame($mapped->id, $run->proposed_meta['redacted_params']['verified_mailbox']['inactive_person_id']);
     }
 
+    public function test_active_mapping_on_alias_or_object_id_refuses_and_inactive_is_recorded(): void
+    {
+        $mapped = $this->delegate->replicate();
+        $mapped->email = $mapped->cipp_upn = 'frontdesk@contoso.example';
+        $mapped->cipp_user_id = 'synthetic-shared-object';
+        $mapped->save();
+        // Projected alias list.
+        $this->rows[0]['AdditionalEmailAddresses'] = 'reception@contoso.example, FrontDesk@contoso.example';
+        $this->refused($this->args, 'active PSA person');
+        // Raw EXO proxy addresses.
+        unset($this->rows[0]['AdditionalEmailAddresses']);
+        $this->rows[0]['EmailAddresses'] = ['SMTP:shared@contoso.example', 'smtp:frontdesk@contoso.example'];
+        $this->refused($this->args, 'active PSA person');
+        // Object id with no shared address.
+        unset($this->rows[0]['EmailAddresses']);
+        $mapped->update(['email' => 'elsewhere@contoso.example', 'cipp_upn' => 'elsewhere@contoso.example']);
+        $this->rows[0]['ExternalDirectoryObjectId'] = 'SYNTHETIC-SHARED-OBJECT';
+        $this->refused($this->args, 'active PSA person');
+        $mapped->update(['is_active' => false]);
+        $run = $this->stage();
+        $this->assertSame($mapped->id, $run->proposed_meta['redacted_params']['verified_mailbox']['inactive_person_id']);
+    }
+
     public function test_listing_failure_at_approval_declines_as_error_not_type_refusal(): void
     {
         $run = $this->stage();

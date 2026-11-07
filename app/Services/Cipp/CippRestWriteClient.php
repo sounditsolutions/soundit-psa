@@ -794,7 +794,8 @@ class CippRestWriteClient
     public function listMailboxes(string $tenantFilter): array
     {
         // CIPP-API Invoke-ListMailboxes.ps1, live EXO projection: UPN,
-        // primarySmtpAddress, recipientTypeDetails. Do not request UseReportDB.
+        // primarySmtpAddress, AdditionalEmailAddresses, ExternalDirectoryObjectId,
+        // recipientTypeDetails. Do not request UseReportDB.
         $status = 0;
         try {
             $url = $this->endpointUrl('api/ListMailboxes');
