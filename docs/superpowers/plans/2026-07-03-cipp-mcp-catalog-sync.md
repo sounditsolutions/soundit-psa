@@ -37,6 +37,7 @@ The PSA currently exposes **17** CIPP tool names:
 - `cipp_list_sign_ins`
 - `cipp_list_groups`
 - `cipp_list_user_groups`
+- `cipp_compare_user_access` — MCP-only, explicit grant, no grant to any token; REST-only read: direct group/licence diffs and mailbox observations (50-mailbox cap); admin roles not included.
 - `cipp_list_mailbox_permissions`
 - `cipp_list_mailbox_rules`
 - `cipp_list_defender_state`

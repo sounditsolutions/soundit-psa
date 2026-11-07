@@ -128,6 +128,7 @@ class McpStaffController extends Controller
      * belong here — the per-token grant already covers it.
      */
     private const CIPP_EXPLICIT_GRANT_READ_TOOLS = [
+        'cipp_compare_user_access',
         'cipp_list_tenant_mailbox_rules',
     ];
 
@@ -1528,6 +1529,8 @@ class McpStaffController extends Controller
                     $this->actorLabel($request),
                     $this->tokenLabel($request),
                 );
+            } elseif ((string) $name === 'cipp_compare_user_access') {
+                $result = (new \App\Services\Mcp\CippCompareToolExecutor($clientId))->execute($arguments);
             } elseif ((string) $name === 'send_reply') {
                 $result = $this->sendReply($arguments, $request);
             } elseif ((string) $name === 'request_tool') {

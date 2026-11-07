@@ -151,6 +151,10 @@ class McpToolSurface
 
         return array_merge(
             AssistantToolDefinitions::getTools(hasClient: true),
+            $cippRestLive ? array_values(array_filter(
+                \App\Services\Triage\TriageToolDefinitions::cippTools(),
+                fn (array $tool): bool => in_array($tool['name'], \App\Services\Triage\TriageToolDefinitions::MCP_ONLY_TOOLS, true),
+            )) : [],
             ChetDataSurfaceTools::clientTools(),
             $cippMcpLive ? McpToolRegistry::dynamicCippReadTools() : [],
             $cippMcpLive ? McpToolRegistry::dynamicCippWriteTools() : [],

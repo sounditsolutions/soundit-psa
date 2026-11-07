@@ -78,7 +78,7 @@ class AssistantToolDefinitions
         }
 
         if (TriageToolDefinitions::isCippAvailable()) {
-            $tools = array_merge($tools, TriageToolDefinitions::cippTools());
+            $tools = array_merge($tools, TriageToolDefinitions::nonMcpCippTools());
         }
 
         // DNS tools — always available in client context too

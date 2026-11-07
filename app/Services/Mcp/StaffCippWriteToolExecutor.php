@@ -3670,27 +3670,16 @@ class StaffCippWriteToolExecutor
                 continue;
             }
 
-            $groupTypes = array_values(array_filter(is_array($row['groupTypes'] ?? null) ? $row['groupTypes'] : [], 'is_string'));
-            $isDynamic = (bool) ($row['dynamicGroupBool'] ?? false)
-                || in_array('DynamicMembership', $groupTypes, true)
-                || trim((string) ($row['membershipRule'] ?? '')) !== '';
-            if ($isDynamic) {
+            $notAddable = \App\Services\Cipp\CippGroupMembershipPredicates::notAddableReason($row);
+            if ($notAddable === 'dynamic') {
                 throw new CippWriteScopeException('This group uses dynamic membership; its members are managed by the membership rule, not manually. Adjust the rule in Entra (or pick a non-dynamic group) instead.');
             }
 
-            if (($row['onPremisesSyncEnabled'] ?? null) === true) {
+            if ($notAddable === 'on_premises') {
                 throw new CippWriteScopeException('This group is synced from on-premises Active Directory; change its membership in AD — cloud-side changes are refused by Microsoft 365.');
             }
 
-            $type = trim((string) ($row['groupType'] ?? ''));
-            $recognized = false;
-            foreach (self::GROUP_TYPES as $known) {
-                if (strcasecmp($type, $known) === 0) {
-                    $recognized = true;
-                    break;
-                }
-            }
-            if (! $recognized) {
+            if ($notAddable === 'unrecognized_type') {
                 throw new CippWriteScopeException('The group type could not be determined from the CIPP group listing; membership changes are refused for unrecognized group types.');
             }
 

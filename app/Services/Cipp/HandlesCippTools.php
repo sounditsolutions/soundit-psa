@@ -105,6 +105,11 @@ trait HandlesCippTools
         return $direct($tenantDomain);
     }
 
+    private function cippCompareUserAccess(array $input): array
+    {
+        return $this->cippDispatch('cipp_compare_user_access', $input, fn (string $tenant): array => app(CippCompareUserAccess::class)->compare($tenant, $input, $this->clientId));
+    }
+
     private function cippQuery(string $toolName, array $input, string $endpoint): array
     {
         return $this->cippDispatch($toolName, $input, function (string $tenantDomain) use ($toolName, $input, $endpoint): array {

@@ -19,6 +19,13 @@ use App\Support\ZorusConfig;
  */
 class TriageToolDefinitions
 {
+    public const MCP_ONLY_TOOLS = ['cipp_compare_user_access'];
+
+    public static function nonMcpCippTools(): array
+    {
+        return array_values(array_filter(self::cippTools(), fn (array $tool): bool => ! in_array($tool['name'], self::MCP_ONLY_TOOLS, true)));
+    }
+
     /**
      * Read-only tool definitions available to the AI Technician.
      *
@@ -157,7 +164,7 @@ class TriageToolDefinitions
         }
 
         if (self::isCippAvailable()) {
-            $tools = array_merge($tools, self::cippTools());
+            $tools = array_merge($tools, self::nonMcpCippTools());
         }
 
         if (self::isControlDAvailable()) {
@@ -648,6 +655,18 @@ class TriageToolDefinitions
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => (object) [],
+                ],
+            ],
+            [
+                'name' => 'cipp_compare_user_access',
+                'description' => "Read-only comparison of two users' groups and licences; direct membership only (nested groups not shown). Mailbox fan-out cap: 50. Advisory only.\nThe deployed CIPP version's default pagination behaviour is trusted per the vendor source.\nMailbox rights are observations only: CIPP cannot prove a mailbox permission list is complete, so the tool never reports a mailbox right as missing.\nAdmin roles are not compared by this tool.",
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'source_user' => ['type' => 'string', 'description' => 'Source UPN or object ID'],
+                        'target_user' => ['type' => 'string', 'description' => 'Target UPN or object ID'],
+                    ],
+                    'required' => ['source_user', 'target_user'],
                 ],
             ],
             [

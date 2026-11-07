@@ -3393,6 +3393,10 @@ class AssistantToolExecutor
 
     protected function cippMcpRelay(string $toolName, array $input): ?array
     {
+        if ($toolName === 'cipp_compare_user_access') {
+            return null;
+        }
+
         // MCP is the primary transport whenever the relay is switched on. Each
         // `return null` below hands this call to the REST body in HandlesCippTools.
         // The three taken because MCP was switched on but unusable (settings that

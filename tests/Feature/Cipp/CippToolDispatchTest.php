@@ -26,8 +26,8 @@ class CippToolDispatchTest extends TestCase
     use RefreshDatabase;
 
     /**
-     * Every CIPP tool defined once in TriageToolDefinitions::cippTools() must be
-     * DISPATCHED by both executors. The original bug surfaced as
+     * Every non-MCP-only CIPP tool defined in TriageToolDefinitions::cippTools()
+     * must be DISPATCHED by both executors; MCP-only tools must be refused. The original bug surfaced as
      * "Unknown tool: cipp_list_user_mfa_methods" from the assistant after a tool
      * was added to triage + the definitions but not the assistant's match block.
      *
@@ -53,6 +53,11 @@ class CippToolDispatchTest extends TestCase
                 $result = $executor->execute($tool, []);
 
                 $this->assertIsArray($result, "{$label} returned a non-array for {$tool}");
+                if (in_array($tool, TriageToolDefinitions::MCP_ONLY_TOOLS, true)) {
+                    $this->assertSame(['error' => "Unknown tool: {$tool}"], $result);
+
+                    continue;
+                }
                 $this->assertStringNotContainsString(
                     'Unknown tool',
                     (string) ($result['error'] ?? ''),

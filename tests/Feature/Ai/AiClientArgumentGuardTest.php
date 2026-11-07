@@ -134,7 +134,7 @@ class AiClientArgumentGuardTest extends TestCase
                 }
             }
         }
-        $this->assertCount(58, $tools);
+        $this->assertCount(59, $tools);
         $empty = array_values(array_filter($tools, fn ($tool) => isset($tool['input_schema']['properties']) && (array) $tool['input_schema']['properties'] === []));
         $this->assertCount(13, $empty);
         $modelCalls = [];
