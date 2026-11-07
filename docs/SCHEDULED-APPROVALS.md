@@ -23,6 +23,8 @@ parameter only on those thirteen canonical tools:
   `tactical_shutdown_device`, `tactical_recover_mesh`, `tactical_set_maintenance`,
   `tactical_start_service`, `tactical_stop_service`, `tactical_restart_service`.
 
+For `cipp_set_mailbox_delegate`, the alternative `target_mailbox_upn` shape supports only SharedMailbox, RoomMailbox and EquipmentMailbox verified live at staging and approval, requires `staged: true`, and refuses `execute_at`; scheduling remains available on the `person_id` shape.
+
 Every refusal is named and nothing runs now in its place: `execute_at` on any other
 tool — including `tactical_run_script` and `tactical_install_approved_patches`, which
 await an immutable/conditional vendor execution primitive (#1911; see
