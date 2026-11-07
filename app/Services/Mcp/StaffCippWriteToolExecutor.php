@@ -6401,7 +6401,10 @@ class StaffCippWriteToolExecutor
                 throw new CippWriteScopeException('Caller-supplied upstream CIPP identifiers are not accepted.');
             }
             if (TechnicianConfig::killSwitchEngaged()) {
-                throw new CippWriteScopeException('Technician kill-switch engaged.');
+                $contentHash = $this->contentHash($tool, $clientId, null, null, []);
+                $this->auditAttempt($tool, 'blocked', $clientId, null, null, null, $contentHash, 'Technician kill-switch engaged; CIPP MCP write refused.', $actorLabel);
+
+                return ['error' => 'Technician kill-switch engaged; CIPP MCP write refused'];
             }
             $upn = $this->boundedString($arguments, 'target_mailbox_upn', self::CREATE_UPN_MAX, required: true);
             if (! is_string($upn) || ! filter_var($upn, FILTER_VALIDATE_EMAIL)) {
@@ -6474,13 +6477,17 @@ class StaffCippWriteToolExecutor
                 || ($payload['ticket_id'] ?? null) !== $run->ticket_id) {
                 throw new CippWriteScopeException('Held mailbox binding changed; re-stage.');
             }
+            $stored = $payload['params'];
+            $targetKey = $stored['target_mailbox_upn'];
             if (TechnicianConfig::killSwitchEngaged()) {
-                throw new CippWriteScopeException('Technician kill-switch engaged.');
+                $this->auditAttempt($run->action_type, 'blocked', $run->client_id, null, null, null, $run->content_hash, "{$targetKey}: Technician kill-switch engaged; staged CIPP write refused.", $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined('Technician kill-switch engaged; the staged CIPP write was refused.');
             }
             $client = Client::findOrFail($run->client_id);
             $tenant = $this->resolver->resolveCippTenant($client);
             $ticket = $this->resolver->resolveTicketForHeldAction($client->id, $run->ticket_id);
-            $stored = $payload['params'];
             $params = $this->mailboxDelegateParams($client->id, $stored);
             $target = $this->verifiedMailboxTarget($client->id, $tenant, $stored['target_mailbox_upn']);
             if ($target !== $stored['verified_mailbox'] || $tenant !== $stored['verified_tenant']

@@ -7,6 +7,7 @@ use App\Enums\TechnicianRunState;
 use App\Models\Client;
 use App\Models\Person;
 use App\Models\Setting;
+use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
@@ -123,6 +124,48 @@ class CippWriteMailboxDelegateTargetUpnTest extends TestCase
             'AddFullAccessNoAutoMap' => [], 'RemoveFullAccess' => [], 'AddSendAs' => [],
             'RemoveSendAs' => [], 'AddSendOnBehalf' => [], 'RemoveSendOnBehalf' => [],
         ]);
+    }
+
+    public function test_kill_switch_at_stage_blocks_once_before_any_read(): void
+    {
+        Setting::setValue('technician_kill_switch', '1');
+        $reply = $this->callTarget($this->args);
+        $this->assertTrue($reply['result']['isError']);
+        $data = json_decode($reply['result']['content'][0]['text'], true);
+        $this->assertSame('Technician kill-switch engaged; CIPP MCP write refused', $data['error']);
+        $this->assertSame(0, TechnicianRun::count());
+        Http::assertNothingSent();
+        $audit = TechnicianActionLog::sole();
+        $this->assertSame('blocked', $audit->result_status);
+        $this->assertSame('cipp_stage_set_mailbox_delegate', $audit->action_type);
+        $this->assertSame($this->args['client_id'], $audit->client_id);
+        $this->assertSame('Technician kill-switch engaged; CIPP MCP write refused.', $audit->summary);
+    }
+
+    public function test_kill_switch_at_approval_blocks_once_and_releases_claim(): void
+    {
+        $run = $this->stage();
+        $auditId = TechnicianActionLog::max('id');
+        Http::assertSentCount(2);
+        Setting::setValue('technician_kill_switch', '1');
+
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun($run, $this->actor->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame('Technician kill-switch engaged; the staged CIPP write was refused.', $result->message);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertNotNull($run->fresh()->claimed_at);
+        Http::assertSentCount(2);
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), '/api/Exec'));
+        $audits = TechnicianActionLog::where('id', '>', $auditId)->get();
+        $this->assertCount(1, $audits);
+        $audit = $audits->sole();
+        $this->assertSame('blocked', $audit->result_status);
+        $this->assertSame($run->id, $audit->run_id);
+        $this->assertSame($run->client_id, $audit->client_id);
+        $this->assertSame($run->content_hash, $audit->content_hash);
+        $this->assertSame($this->actor->id, $audit->approver_user_id);
+        $this->assertSame('shared@contoso.example: Technician kill-switch engaged; staged CIPP write refused.', $audit->summary);
     }
 
     public function test_room_and_equipment_are_allowed(): void
