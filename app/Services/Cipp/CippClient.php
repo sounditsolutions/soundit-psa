@@ -266,6 +266,14 @@ class CippClient
         return array_is_list($data) ? $data : null;
     }
 
+    /** Single-send read retaining the envelope for composite completeness checks. */
+    public function getRawOnce(string $endpoint, array $params): array
+    {
+        $response = $this->sendRequest('GET', $endpoint, ['query' => $params], 'application/json', 1);
+
+        return ['status' => $response->getStatusCode(), 'body' => (string) $response->getBody()];
+    }
+
     protected function tokenClient(): Client
     {
         return new Client(['timeout' => 15]);
@@ -384,10 +392,9 @@ class CippClient
      * response so callers can decode JSON or read binary bytes as needed.
      * Auto-retries on 401 (token expired) and 429 (rate limited).
      */
-    private function sendRequest(string $method, string $endpoint, array $options, string $accept): ResponseInterface
+    private function sendRequest(string $method, string $endpoint, array $options, string $accept, int $maxAttempts = 3): ResponseInterface
     {
         $attempts = 0;
-        $maxAttempts = 3;
 
         while ($attempts < $maxAttempts) {
             $attempts++;
