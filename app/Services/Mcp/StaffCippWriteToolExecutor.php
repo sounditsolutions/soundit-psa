@@ -6465,11 +6465,13 @@ class StaffCippWriteToolExecutor
             }
             $delegateUpn = $params['delegate_person']->userPrincipalName;
             unset($params['delegate_person']);
+            $redactedParams = $params;
+            $redactedParams['target_mailbox_key'] = hash_hmac('sha256', mb_strtolower(trim($target['upn'])), (string) config('app.key'));
             $params['verified_delegate_upn'] = $delegateUpn;
             $params['target_mailbox_upn'] = $target['upn'];
             $params['verified_mailbox'] = $target;
             $params['verified_tenant'] = $tenant;
-            $hash = $this->contentHash($tool, $clientId, null, $ticket->id, $params);
+            $hash = $this->contentHash($tool, $clientId, null, $ticket->id, $redactedParams + $params);
             $hash = $this->unspentContentHash($tool, $ticket->id, $hash);
             if ($hash === null) {
                 throw new CippWriteScopeException('Proposal limit reached; use another ticket.');
@@ -6482,7 +6484,7 @@ class StaffCippWriteToolExecutor
                     'proposed_content' => $display."\nReason: ".$this->safeReason($tool, $reason, $arguments),
                     'proposed_meta' => [
                         ...DraftedByToken::meta($actorLabel, $tokenLabel),
-                        'person_id' => null, 'redacted_params' => $params, 'sensitive_inputs' => [],
+                        'person_id' => null, 'redacted_params' => $redactedParams, 'sensitive_inputs' => [],
                         'encrypted_payload' => Crypt::encryptString(json_encode([
                             'family' => 'mailbox_target', 'direct_tool' => 'cipp_set_mailbox_delegate',
                             'client_id' => $clientId, 'ticket_id' => $ticket->id, 'params' => $params,

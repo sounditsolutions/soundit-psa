@@ -111,7 +111,7 @@ class CippWriteMailboxDelegateTargetUpnTest extends TestCase
     {
         $this->args['target_mailbox_upn'] = 'SHARED@CONTOSO.EXAMPLE';
         $run = $this->stage();
-        $this->assertSame('SharedMailbox', $run->proposed_meta['redacted_params']['verified_mailbox']['recipient_type_details']);
+        $this->assertSame('SharedMailbox', $this->evidence($run)['verified_mailbox']['recipient_type_details']);
         $this->assertStringContainsString('shared@contoso.example (SharedMailbox)', $run->proposed_content);
         $this->actingAs($this->actor)->get(route('cockpit.index'))
             ->assertOk()->assertSee('shared@contoso.example (SharedMailbox)');
@@ -124,6 +124,66 @@ class CippWriteMailboxDelegateTargetUpnTest extends TestCase
             'AddFullAccessNoAutoMap' => [], 'RemoveFullAccess' => [], 'AddSendAs' => [],
             'RemoveSendAs' => [], 'AddSendOnBehalf' => [], 'RemoveSendOnBehalf' => [],
         ]);
+    }
+
+    public function test_target_evidence_is_encrypted_and_redacted_dedup_is_keyed(): void
+    {
+        $this->args['target_mailbox_upn'] = '  SHARED@CONTOSO.EXAMPLE  ';
+        $run = $this->stage();
+        $meta = $run->proposed_meta;
+        unset($meta['encrypted_payload']);
+        $plain = json_encode($meta, JSON_THROW_ON_ERROR);
+        foreach (['@', 'contoso.example', 'SharedMailbox', 'verified_delegate_upn', 'verified_tenant', 'verified_mailbox', 'target_mailbox_upn'] as $sensitive) {
+            $this->assertStringNotContainsString($sensitive, $plain);
+        }
+        $params = $run->proposed_meta['redacted_params'];
+        $this->assertSame([
+            'permission' => 'full_access', 'operation' => 'grant', 'auto_map' => true,
+            'delegate_person_id' => $this->delegate->id,
+            'target_mailbox_key' => hash_hmac('sha256', 'shared@contoso.example', (string) config('app.key')),
+        ], $params);
+        $evidence = $this->evidence($run);
+        $this->assertSame('shared@contoso.example', $evidence['target_mailbox_upn']);
+        $this->assertSame('delegate@contoso.example', $evidence['verified_delegate_upn']);
+        $this->assertSame('contoso.example', $evidence['verified_tenant']);
+        $this->assertSame('SharedMailbox', $evidence['verified_mailbox']['recipient_type_details']);
+        $this->args['target_mailbox_upn'] = 'shared@contoso.example';
+        $this->assertSame($run->id, $this->stage()->id);
+        $owner = $this->delegate->replicate();
+        $owner->email = $owner->cipp_upn = 'shared@contoso.example';
+        $owner->cipp_user_id = 'synthetic-owner';
+        $owner->is_active = false;
+        $owner->save();
+        $personArgs = $this->args;
+        unset($personArgs['target_mailbox_upn']);
+        $reply = $this->callTarget($personArgs + ['person_id' => $owner->id, 'confirm_upn' => 'shared@contoso.example']);
+        $this->assertFalse($reply['result']['isError'] ?? false, json_encode($reply));
+        $personData = json_decode($reply['result']['content'][0]['text'], true);
+        $personRun = TechnicianRun::findOrFail($personData['run_id']);
+        $this->assertNotSame($run->id, $personRun->id);
+        $this->assertNotSame($run->content_hash, $personRun->content_hash);
+        $this->args['target_mailbox_upn'] = $this->rows[0]['UPN'] = $this->rows[0]['primarySmtpAddress'] = 'other@contoso.example';
+        $other = $this->stage();
+        $this->assertNotSame($run->content_hash, $other->content_hash);
+    }
+
+    private function evidence(TechnicianRun $run): array
+    {
+        return json_decode(\Illuminate\Support\Facades\Crypt::decryptString($run->proposed_meta['encrypted_payload']), true, flags: JSON_THROW_ON_ERROR)['params'];
+    }
+
+    public function test_remove_with_inactive_delegate_stages_and_executes(): void
+    {
+        $this->delegate->update(['is_active' => false]);
+        $this->args['operation'] = 'remove';
+        $run = $this->stage();
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun($run, $this->actor->id);
+        $this->assertSame('executed', $result->status);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        Http::assertSent(fn ($request) => str_contains($request->url(), '/api/ExecEditMailboxPermissions')
+            && $request['UserID'] === 'shared@contoso.example'
+            && $request['RemoveFullAccess'] === [['value' => 'delegate@contoso.example', 'label' => 'delegate@contoso.example']]
+            && $request['AddFullAccess'] === []);
     }
 
     public function test_kill_switch_at_stage_blocks_once_before_any_read(): void
@@ -173,7 +233,7 @@ class CippWriteMailboxDelegateTargetUpnTest extends TestCase
         foreach (['RoomMailbox', 'EquipmentMailbox'] as $type) {
             $this->rows[0]['recipientTypeDetails'] = $type;
             $run = $this->stage();
-            $this->assertSame($type, $run->proposed_meta['redacted_params']['verified_mailbox']['recipient_type_details']);
+            $this->assertSame($type, $this->evidence($run)['verified_mailbox']['recipient_type_details']);
         }
     }
 
@@ -224,7 +284,7 @@ class CippWriteMailboxDelegateTargetUpnTest extends TestCase
         $this->refused($this->args, 'person_id');
         $mapped->update(['is_active' => false]);
         $run = $this->stage();
-        $this->assertSame($mapped->id, $run->proposed_meta['redacted_params']['verified_mailbox']['inactive_person_id']);
+        $this->assertSame($mapped->id, $this->evidence($run)['verified_mailbox']['inactive_person_id']);
     }
 
     public function test_active_mapping_on_primary_smtp_refuses_and_inactive_is_recorded(): void
@@ -238,7 +298,7 @@ class CippWriteMailboxDelegateTargetUpnTest extends TestCase
         $this->refused($this->args, 'active PSA person');
         $mapped->update(['is_active' => false]);
         $run = $this->stage();
-        $this->assertSame($mapped->id, $run->proposed_meta['redacted_params']['verified_mailbox']['inactive_person_id']);
+        $this->assertSame($mapped->id, $this->evidence($run)['verified_mailbox']['inactive_person_id']);
     }
 
     public function test_active_mapping_on_alias_or_object_id_refuses_and_inactive_is_recorded(): void
@@ -261,7 +321,7 @@ class CippWriteMailboxDelegateTargetUpnTest extends TestCase
         $this->refused($this->args, 'active PSA person');
         $mapped->update(['is_active' => false]);
         $run = $this->stage();
-        $this->assertSame($mapped->id, $run->proposed_meta['redacted_params']['verified_mailbox']['inactive_person_id']);
+        $this->assertSame($mapped->id, $this->evidence($run)['verified_mailbox']['inactive_person_id']);
     }
 
     public function test_listing_failure_at_approval_declines_as_error_not_type_refusal(): void
