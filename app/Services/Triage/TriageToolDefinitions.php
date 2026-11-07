@@ -651,6 +651,18 @@ class TriageToolDefinitions
                 ],
             ],
             [
+                'name' => 'cipp_compare_user_access',
+                'description' => "Read-only comparison of two users' groups and licences; direct membership only (nested groups not shown). Mailbox fan-out cap: 50. Advisory only.\nThe deployed CIPP version's default pagination behaviour is trusted per the vendor source.\nMailbox rights are observations only: CIPP cannot prove a mailbox permission list is complete, so the tool never reports a mailbox right as missing.\nAdmin roles are not compared by this tool.",
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'source_user' => ['type' => 'string', 'description' => 'Source UPN or object ID'],
+                        'target_user' => ['type' => 'string', 'description' => 'Target UPN or object ID'],
+                    ],
+                    'required' => ['source_user', 'target_user'],
+                ],
+            ],
+            [
                 'name' => 'cipp_list_user_groups',
                 'description' => 'List the M365 groups a specific user belongs to. Requires a user ID (UPN or object ID from cipp_list_users).',
                 'input_schema' => [

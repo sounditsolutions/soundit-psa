@@ -309,7 +309,7 @@ class CippClientIdResolutionTest extends TestCase
     public function test_every_curated_cipp_read_describes_client_id_as_the_key_with_no_name_fallback(): void
     {
         $definitions = TriageToolDefinitions::cippTools();
-        $this->assertCount(18, $definitions);
+        $this->assertCount(19, $definitions);
         foreach ($definitions as $tool) {
             $this->assertStringContainsString(CippTenantScope::KEY_NOTE, (string) $tool['description'], $tool['name']);
         }

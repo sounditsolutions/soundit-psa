@@ -128,6 +128,7 @@ class McpStaffController extends Controller
      * belong here — the per-token grant already covers it.
      */
     private const CIPP_EXPLICIT_GRANT_READ_TOOLS = [
+        'cipp_compare_user_access',
         'cipp_list_tenant_mailbox_rules',
     ];
 

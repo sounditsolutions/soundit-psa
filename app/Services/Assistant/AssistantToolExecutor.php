@@ -227,6 +227,7 @@ class AssistantToolExecutor
             'cipp_list_devices' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQuery('cipp_list_devices', $in, 'api/ListDevices')],
             'cipp_list_sign_ins' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippListSignIns($in)],
             'cipp_list_groups' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQuery('cipp_list_groups', $in, 'api/ListGroups')],
+            'cipp_compare_user_access' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippCompareUserAccess($in)],
             'cipp_list_user_groups' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQueryWithUser('cipp_list_user_groups', $in, 'api/ListUserGroups')],
             'cipp_list_mailbox_permissions' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQueryWithUser('cipp_list_mailbox_permissions', $in, 'api/ListmailboxPermissions')],
             // ListUserMailboxRules, NOT ListMailboxRules: the latter takes no user
@@ -3393,6 +3394,10 @@ class AssistantToolExecutor
 
     protected function cippMcpRelay(string $toolName, array $input): ?array
     {
+        if ($toolName === 'cipp_compare_user_access') {
+            return null;
+        }
+
         // MCP is the primary transport whenever the relay is switched on. Each
         // `return null` below hands this call to the REST body in HandlesCippTools.
         // The three taken because MCP was switched on but unusable (settings that

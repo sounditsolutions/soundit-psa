@@ -115,6 +115,7 @@ class TriageToolExecutor
             'cipp_list_devices' => $this->cippQuery('cipp_list_devices', $input, 'api/ListDevices'),
             'cipp_list_sign_ins' => $this->cippListSignIns($input),
             'cipp_list_groups' => $this->cippQuery('cipp_list_groups', $input, 'api/ListGroups'),
+            'cipp_compare_user_access' => $this->cippCompareUserAccess($input),
             'cipp_list_user_groups' => $this->cippQueryWithUser('cipp_list_user_groups', $input, 'api/ListUserGroups'),
             'cipp_list_mailbox_permissions' => $this->cippQueryWithUser('cipp_list_mailbox_permissions', $input, 'api/ListmailboxPermissions'),
             // ListUserMailboxRules, NOT ListMailboxRules: the latter takes no user
