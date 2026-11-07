@@ -223,7 +223,7 @@ class ScreenConnectTrashedSessionReleaseTest extends TestCase
         $this->assertNoRelease();
     }
 
-    public function test_c_a_live_holder_of_the_same_id_is_never_released_by_a_hostname_match(): void
+    public function test_c_a_live_holder_of_another_id_is_untouched_when_a_trashed_holder_is_released(): void
     {
         Log::spy();
         $client = Client::factory()->create(['name' => 'Alpha Co']);
@@ -302,6 +302,33 @@ class ScreenConnectTrashedSessionReleaseTest extends TestCase
         $this->assertSame(self::SESSION, $this->sessionOf($racer));
         $this->assertNull($this->sessionOf($live));
         $this->assertSame(self::OTHER_SESSION, $this->sessionOf($trashed));
+        $this->assertNoRelease();
+    }
+
+    public function test_a_a_trashed_holder_already_cleared_before_the_lock_is_not_logged_as_released(): void
+    {
+        Log::spy();
+        $client = Client::factory()->create(['name' => 'Alpha Co']);
+        $trashed = $this->trashedHolder($client);
+        $live = $this->liveAsset($client);
+
+        // The trashed holder is found, then its id is cleared (as a concurrent webhook's
+        // release would) before the locked re-read: nothing is released here, the save
+        // succeeds because no row holds the id, and no release is logged.
+        $cleared = false;
+        DB::listen(function ($query) use (&$cleared, $trashed): void {
+            if (! $cleared && str_contains($query->sql, '"deleted_at" is not null') && str_contains($query->sql, 'screenconnect_session_id')) {
+                $cleared = true;
+                DB::table('assets')->where('id', $trashed->id)->update(['screenconnect_session_id' => null]);
+            }
+        });
+
+        $webhook = $this->runThroughJob($this->nativePayload('Connected', 'Alpha Co'));
+
+        $this->assertTrue($cleared, 'the clear was injected');
+        $this->assertSame('processed', $webhook->status);
+        $this->assertSame(self::SESSION, $this->sessionOf($live));
+        $this->assertNull($this->sessionOf($trashed));
         $this->assertNoRelease();
     }
 

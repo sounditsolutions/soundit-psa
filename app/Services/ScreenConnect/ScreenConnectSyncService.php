@@ -136,8 +136,9 @@ class ScreenConnectSyncService
         // screenconnect_session_id does, so the save below would fail on every webhook
         // for this device. Such a trashed holder is released in the same transaction as
         // the save, whichever client it belonged to: a device whose old asset was trashed
-        // under another client heals the same way. A live holder is never touched: it is
-        // resolved by step 1 and never reaches this branch.
+        // under another client heals the same way. A live holder is never touched: both
+        // the lookup below and the locked re-read in releaseTrashedHolder are
+        // onlyTrashed(), so a live asset that took the id after step 1 is not released.
         $trashedHolder = null;
         if (! $asset->screenconnect_session_id) {
             $trashedHolder = Asset::onlyTrashed()->where('screenconnect_session_id', $sessionId)->first();
@@ -183,8 +184,10 @@ class ScreenConnectSyncService
     /**
      * Card LDlXWBwA: inside the caller's transaction, lock the trashed row and clear its
      * session id. The row is re-read under the lock and must still be trashed and still
-     * hold the id; if it was restored (or changed) since it was found, nothing is
-     * released and the caller's save fails on the unique key as before, rolling back.
+     * hold the id. If it no longer does (restored, its id cleared or changed, or
+     * force-deleted since it was found), nothing is released and null is returned; the
+     * caller's save then succeeds if no row holds the id any more, or fails on the
+     * unique key and rolls back if one still does.
      * Returns the released asset's id, or null when nothing was released.
      */
     private function releaseTrashedHolder(int $trashedAssetId, string $sessionId): ?int
