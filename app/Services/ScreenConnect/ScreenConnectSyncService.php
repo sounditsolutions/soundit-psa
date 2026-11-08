@@ -5,6 +5,7 @@ namespace App\Services\ScreenConnect;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\ScreenConnectEvent;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class ScreenConnectSyncService
@@ -128,22 +129,86 @@ class ScreenConnectSyncService
             return "Skipped: session {$sessionId} is linked to asset #{$asset->id} of client #{$asset->client_id}, but the webhook company resolves to client #{$client->id}; nothing attached";
         }
 
+        // Card LDlXWBwA: the asset is about to take the session id, so it was matched by
+        // hostname (step 2), and step 1 found no LIVE asset holding the id. The id can
+        // still be held by a soft-deleted asset: resolveAsset step 1 runs under the
+        // SoftDeletes scope and cannot see it, but the single-column unique key on
+        // screenconnect_session_id does, so the save below would fail on every webhook
+        // for this device. Such a trashed holder is released in the same transaction as
+        // the save, whichever client it belonged to: a device whose old asset was trashed
+        // under another client heals the same way. A live holder is never touched: both
+        // the lookup below and the locked re-read in releaseTrashedHolder are
+        // onlyTrashed(), so a live asset that took the id after step 1 is not released.
+        $trashedHolder = null;
         if (! $asset->screenconnect_session_id) {
+            $trashedHolder = Asset::onlyTrashed()->where('screenconnect_session_id', $sessionId)->first();
+
             $asset->screenconnect_session_id = $sessionId;
         }
 
-        if ($this->isDeviceEvent($eventType)) {
-            $this->updateAssetFromPayload($asset, $payload, $eventType);
-        }
+        $attach = function () use ($asset, $payload, $eventType): void {
+            if ($this->isDeviceEvent($eventType)) {
+                $this->updateAssetFromPayload($asset, $payload, $eventType);
+            }
 
-        if ($this->isActivityEvent($eventType)) {
-            $this->logActivityEvent($asset, $payload);
-        }
+            if ($this->isActivityEvent($eventType)) {
+                $this->logActivityEvent($asset, $payload);
+            }
 
-        $asset->screenconnect_synced_at = now();
-        $asset->save();
+            $asset->screenconnect_synced_at = now();
+            $asset->save();
+        };
+
+        if ($trashedHolder) {
+            $releasedFrom = DB::transaction(function () use ($trashedHolder, $sessionId, $attach): ?int {
+                $releasedFrom = $this->releaseTrashedHolder($trashedHolder->id, $sessionId);
+                $attach();
+
+                return $releasedFrom;
+            });
+
+            if ($releasedFrom !== null) {
+                Log::warning('[ScreenConnect] Released session id from a trashed asset to the hostname-matched asset', [
+                    'trashed_asset_id' => $releasedFrom,
+                    'asset_id' => $asset->id,
+                    'session_id' => $sessionId,
+                ]);
+            }
+        } else {
+            $attach();
+        }
 
         return "Processed {$eventType} for asset #{$asset->id} ({$asset->name})";
+    }
+
+    /**
+     * Card LDlXWBwA: inside the caller's transaction, lock the trashed row and clear its
+     * session id. The row is re-read under the lock and must still be trashed and still
+     * hold the id. If it no longer does (restored, its id cleared or changed, or
+     * force-deleted since it was found), nothing is released and null is returned. The
+     * caller's save then meets the unique key as the database stands: it passes when no
+     * other row holds the id, either because none does any more or because the row
+     * holding it is the asset being saved (a duplicate concurrent webhook for the same
+     * device has already linked it), and it fails, rolling the transaction back, when
+     * another row still holds the id (for example a restored holder).
+     * Returns the released asset's id, or null when nothing was released.
+     */
+    private function releaseTrashedHolder(int $trashedAssetId, string $sessionId): ?int
+    {
+        $held = Asset::onlyTrashed()
+            ->whereKey($trashedAssetId)
+            ->where('screenconnect_session_id', $sessionId)
+            ->lockForUpdate()
+            ->first();
+
+        if (! $held) {
+            return null;
+        }
+
+        $held->screenconnect_session_id = null;
+        $held->save();
+
+        return $held->id;
     }
 
     private function resolveClient(?string $company): ?Client
