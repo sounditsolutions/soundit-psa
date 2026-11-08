@@ -97,6 +97,14 @@ class ScreenConnectTrashedSessionReleaseTest extends TestCase
         return Asset::withTrashed()->findOrFail($asset->id)->screenconnect_session_id;
     }
 
+    /** Every asset, trashed or not, as id => [session id, trashed?]. */
+    private function sessionRows(): array
+    {
+        return Asset::withTrashed()->orderBy('id')->get()
+            ->mapWithKeys(fn (Asset $asset): array => [$asset->id => [$asset->screenconnect_session_id, $asset->trashed()]])
+            ->all();
+    }
+
     private function assertNoRelease(): void
     {
         Log::shouldNotHaveReceived('warning', [self::RELEASE_MESSAGE, \Mockery::any()]);
@@ -134,10 +142,16 @@ class ScreenConnectTrashedSessionReleaseTest extends TestCase
             fn ($context): bool => str_contains(json_encode($context), 'Trash-Host') || str_contains(json_encode($context), 'Alpha Co')
         )]);
 
-        // The next webhook resolves by step 1 and releases nothing further.
+        // The next webhook resolves by step 1 and releases nothing further: the release
+        // warning stays at one in total, and no asset's session id or trash state changes.
+        $before = $this->sessionRows();
         $again = $this->runThroughJob($this->nativePayload('RanCommand', 'Alpha Co'));
         $this->assertSame('processed', $again->status);
         $this->assertSame(1, ScreenConnectEvent::where('asset_id', $live->id)->count());
+        $this->assertSame($before, $this->sessionRows(), 'the second webhook changes no session id and no trash state');
+        Log::shouldHaveReceived('warning')->once()->withArgs(
+            fn (string $message, array $context = []): bool => $message === self::RELEASE_MESSAGE
+        );
     }
 
     public function test_a_failed_save_rolls_the_release_back(): void
@@ -207,7 +221,7 @@ class ScreenConnectTrashedSessionReleaseTest extends TestCase
     {
         Log::spy();
         $client = Client::factory()->create(['name' => 'Alpha Co']);
-        // A trashed holder of a DIFFERENT id, so a release that ignored the id would show.
+        // A trashed row holding a different id; it is asserted unchanged below.
         $trashedOther = $this->trashedHolder($client, self::OTHER_SESSION);
         $holder = $this->liveAsset($client, ['name' => 'Holder-Host', 'hostname' => 'Holder-Host', 'screenconnect_session_id' => self::SESSION]);
         // A hostname match for the webhook machine that must NOT be chosen over step 1.
@@ -395,10 +409,16 @@ class ScreenConnectTrashedSessionReleaseTest extends TestCase
         ), \Mockery::any()]);
     }
 
-    // ── (d) W1 fires before any release ──
+    // ── (d) the W1 cross-client skip on a live holder ──
 
-    public function test_d_a_live_cross_client_holder_is_skipped_by_w1_and_releases_nothing(): void
+    public function test_d_the_w1_cross_client_skip_fires_on_a_live_holder_of_another_client_and_releases_nothing(): void
     {
+        // Pins that W1 still skips a webhook whose company contradicts the client of the
+        // live asset holding the id, and that nothing is released or relinked. W1 can only
+        // fire on a step-1 asset, which already holds the id, so the release branch never
+        // runs on this path; and the unique key rules out a trashed holder of the same id.
+        // This test therefore cannot see a release moved ahead of W1; the (a) release,
+        // rollback and cross-client release tests catch that instead.
         Log::spy();
         $alpha = Client::factory()->create(['name' => 'Alpha Co']);
         $bravo = Client::factory()->create(['name' => 'Bravo Co']);

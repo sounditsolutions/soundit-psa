@@ -185,9 +185,12 @@ class ScreenConnectSyncService
      * Card LDlXWBwA: inside the caller's transaction, lock the trashed row and clear its
      * session id. The row is re-read under the lock and must still be trashed and still
      * hold the id. If it no longer does (restored, its id cleared or changed, or
-     * force-deleted since it was found), nothing is released and null is returned; the
-     * caller's save then succeeds if no row holds the id any more, or fails on the
-     * unique key and rolls back if one still does.
+     * force-deleted since it was found), nothing is released and null is returned. The
+     * caller's save then meets the unique key as the database stands: it passes when no
+     * other row holds the id, either because none does any more or because the row
+     * holding it is the asset being saved (a duplicate concurrent webhook for the same
+     * device has already linked it), and it fails, rolling the transaction back, when
+     * another row still holds the id (for example a restored holder).
      * Returns the released asset's id, or null when nothing was released.
      */
     private function releaseTrashedHolder(int $trashedAssetId, string $sessionId): ?int
