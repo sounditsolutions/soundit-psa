@@ -2,17 +2,21 @@
 
 namespace Tests\Feature\Carbon;
 
+use App\Enums\PersonType;
 use App\Models\Client;
+use App\Models\Person;
 use App\Models\Setting;
 use App\Models\User;
 use App\Services\Carbon\CarbonHardwareService;
 use App\Services\Mcp\StaffCarbonHardwareExecutor;
+use App\Services\Mcp\StaffCarbonHardwareTools;
 use App\Support\CarbonHardwareConfig;
 use App\Support\McpConfig;
 use App\Support\McpToolRegistry;
 use App\Support\McpToolSurface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Validation\ValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -195,6 +199,35 @@ class CarbonHardwareTest extends TestCase
         $denied = $this->callHardware($legacy, $name, ['client_id' => $this->client->id, 'model_id' => $model->id, 'sell_price' => '300.00']);
         $this->assertTrue($denied->json('result.isError'));
         $this->assertSame('250.00', $model->fresh()->sell_price);
+    }
+
+    // Ruled A (card sL0cPqhk, STOP3): staff tokens are cross-client by design; the only
+    // client-bound caller is the portal MCP. A portal person bound to client X naming
+    // client Y must be refused before any read: no Carbon call, no hardware-model query.
+    public function test_portal_caller_bound_to_x_is_refused_for_client_y_before_any_read(): void
+    {
+        $model = $this->add();
+        $other = Client::factory()->create(['name' => 'Synthetic Portal Lab']);
+        Person::create(['client_id' => $other->id, 'cipp_user_id' => 'synthetic-portal-oid', 'person_type' => PersonType::User,
+            'first_name' => 'Pat', 'last_name' => 'Portal', 'email' => 'pat-portal@example.test', 'is_active' => true,
+            'portal_enabled' => true, 'company_wide_access' => true, 'password' => 'synthetic-pw']);
+        $token = McpConfig::rotatePortalToken();
+        Http::fake(fn () => throw new \RuntimeException('no Carbon call expected'));
+        $reads = [];
+        DB::listen(function ($query) use (&$reads) {
+            if (str_contains($query->sql, 'client_hardware_models')) {
+                $reads[] = $query->sql;
+            }
+        });
+        $arguments = ['client_id' => $this->client->id, 'mfg_part_no' => 'SYNTH-LAPTOP', 'model_id' => $model->id, 'sell_price' => '1.00', 'confirm_below_cost' => true];
+        foreach (array_column(StaffCarbonHardwareTools::definitions(), 'name') as $name) {
+            $response = $this->withHeaders(['Authorization' => 'Bearer '.$token, 'X-Mcp-Portal-Object-Id' => 'synthetic-portal-oid'])
+                ->postJson('/api/mcp/portal', ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/call', 'params' => ['name' => $name, 'arguments' => $arguments]]);
+            $this->assertTrue($response->json('result.isError'), $name.': '.$response->getContent());
+        }
+        $this->assertSame([], $reads);
+        Http::assertNothingSent();
+        $this->assertSame('200.00', $model->fresh()->sell_price);
     }
 
     public function test_incomplete_customer_page_refuses_instead_of_returning_partial_list(): void
