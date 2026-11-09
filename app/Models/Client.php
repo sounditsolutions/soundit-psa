@@ -82,6 +82,8 @@ class Client extends Model
     {
         return [
             'stage' => \App\Enums\ClientStage::class,
+            'carbon_customer_id' => 'integer',
+            'carbon_hardware_ordering_enabled' => 'boolean',
             'ninja_org_id' => 'integer',
             'huntress_organization_id' => 'integer',
             'servosity_company_id' => 'integer',
@@ -130,6 +132,11 @@ class Client extends Model
     }
 
     // ── Relations ──
+
+    public function hardwareModels(): HasMany
+    {
+        return $this->hasMany(ClientHardwareModel::class);
+    }
 
     public function people(): HasMany
     {

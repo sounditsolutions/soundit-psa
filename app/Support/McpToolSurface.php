@@ -113,6 +113,7 @@ class McpToolSurface
             // (never client-scoped). OFF=OFF: live only while carbon_mcp_enabled is on AND a
             // Carbon sign-in is stored, the predicate CarbonMcpToolExecutor refuses on.
             // Read once per assembly; the default-off switch short-circuits after one query.
+            $carbonLive && CarbonHardwareConfig::isEnabled() ? \App\Services\Mcp\StaffCarbonHardwareTools::definitions() : [],
             $carbonLive ? McpToolRegistry::dynamicCarbonReadTools() : [],
             $carbonLive ? McpToolRegistry::dynamicCarbonWriteTools() : [],
         );
