@@ -17,8 +17,8 @@ use Tests\TestCase;
  * The sync's lookups run under the SoftDeletes scope and cannot see a trashed holder,
  * but the single-column unique key on zorus_endpoint_id can, so a hostname-matched live
  * asset taking the id failed on every sync. The fix releases the id from the trashed row
- * in the same transaction as the update, only on the hostname-match path, and never from
- * a live holder.
+ * in the same transaction as the update, only on the hostname-match path, only within the
+ * syncing client, and never from a live holder.
  *
  * Synthetic names and data only.
  */
@@ -123,6 +123,35 @@ class ZorusTrashedEndpointReleaseTest extends TestCase
         }
 
         $this->assertSame(self::ENDPOINT, $liveHolder->fresh()->zorus_endpoint_id);
+        $this->assertNull($matched->fresh()->zorus_endpoint_id);
+        Log::shouldNotHaveReceived('warning', [self::RELEASE_MESSAGE, \Mockery::any()]);
+    }
+
+    public function test_a_trashed_holder_under_another_client_is_never_released(): void
+    {
+        Log::spy();
+
+        $client = Client::factory()->create();
+        $otherClient = Client::factory()->create();
+        // A TRASHED asset under another client holds the id: the release is scoped to the
+        // syncing client, so it must not be touched and the update still fails loud.
+        $foreignTrashed = $this->trashedHolder($otherClient);
+        $matched = Asset::factory()->create([
+            'client_id' => $client->id,
+            'hostname' => 'Zorus-Host',
+            'zorus_endpoint_id' => null,
+        ]);
+
+        try {
+            $this->service()->syncEndpointsForClient($client, [$this->endpoint()], true, new SyncResult);
+            $this->fail('A trashed holder under another client must not be released.');
+        } catch (UniqueConstraintViolationException) {
+            // expected
+        }
+
+        $foreignNow = Asset::withTrashed()->find($foreignTrashed->id);
+        $this->assertSame(self::ENDPOINT, $foreignNow->zorus_endpoint_id);
+        $this->assertNotNull($foreignNow->deleted_at, 'the foreign holder stays trashed');
         $this->assertNull($matched->fresh()->zorus_endpoint_id);
         Log::shouldNotHaveReceived('warning', [self::RELEASE_MESSAGE, \Mockery::any()]);
     }

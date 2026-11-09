@@ -128,16 +128,20 @@ class ZorusDeviceSyncService
             // above run under the SoftDeletes scope and cannot see it, but the
             // single-column unique key on zorus_endpoint_id does, so the update would fail
             // on every sync for this client. Such a trashed holder is released in the same
-            // transaction as the update. A live holder is never touched: both the lookup
-            // below and the locked re-read in releaseTrashedHolder are onlyTrashed(), so a
-            // live asset holding the id still fails loud on the unique key.
+            // transaction as the update. Only a trashed holder of this client is released:
+            // both the lookup below and the locked re-read in releaseTrashedHolder are
+            // onlyTrashed() and scoped to the client, so a live holder, or a trashed holder
+            // under another client, still fails loud on the unique key.
             $trashedHolder = $matchedByHostname
-                ? Asset::onlyTrashed()->where('zorus_endpoint_id', $endpointUuid)->first()
+                ? Asset::onlyTrashed()
+                    ->where('client_id', $client->id)
+                    ->where('zorus_endpoint_id', $endpointUuid)
+                    ->first()
                 : null;
 
             if ($trashedHolder) {
-                $releasedFrom = DB::transaction(function () use ($trashedHolder, $endpointUuid, $asset, $endpoint): ?int {
-                    $releasedFrom = $this->releaseTrashedHolder($trashedHolder->id, $endpointUuid);
+                $releasedFrom = DB::transaction(function () use ($trashedHolder, $client, $endpointUuid, $asset, $endpoint): ?int {
+                    $releasedFrom = $this->releaseTrashedHolder($trashedHolder->id, $client->id, $endpointUuid);
                     $this->updateAssetFromEndpoint($asset, $endpoint);
 
                     return $releasedFrom;
@@ -185,17 +189,19 @@ class ZorusDeviceSyncService
 
     /**
      * #8278: inside the caller's transaction, lock the trashed row and clear its
-     * endpoint id. The row is re-read under the lock and must still be trashed and still
-     * hold the id; if it no longer does (restored, cleared or force-deleted since it was
-     * found), nothing is released and null is returned, and the caller's update meets
-     * the unique key as the database stands. Only the id is cleared: the trashed row's
+     * endpoint id. The row is re-read under the lock and must still be trashed, still
+     * belong to the syncing client and still hold the id; if it no longer does (restored,
+     * moved, cleared or force-deleted since it was found), nothing is released and null
+     * is returned, and the caller's update meets the unique key as the database stands.
+     * Only the id is cleared: the trashed row's
      * other Zorus fields are left as they were.
      * Returns the released asset's id, or null when nothing was released.
      */
-    private function releaseTrashedHolder(int $trashedAssetId, string $endpointUuid): ?int
+    private function releaseTrashedHolder(int $trashedAssetId, int $clientId, string $endpointUuid): ?int
     {
         $held = Asset::onlyTrashed()
             ->whereKey($trashedAssetId)
+            ->where('client_id', $clientId)
             ->where('zorus_endpoint_id', $endpointUuid)
             ->lockForUpdate()
             ->first();
