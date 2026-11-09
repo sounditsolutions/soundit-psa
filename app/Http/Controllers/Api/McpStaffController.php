@@ -1057,7 +1057,7 @@ class McpStaffController extends Controller
 
         // Client-entity targets (update/delete client) + the create_contact parent
         // scope require an explicit client_id argument.
-        if ($this->psaRecordsRequiresClientId((string) $name) && $clientId === null) {
+        if (($this->psaRecordsRequiresClientId((string) $name) || \App\Services\Mcp\StaffCarbonHardwareTools::handles((string) $name)) && $clientId === null) {
             $message = "client_id is required for {$name}.";
             $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
 
@@ -1529,6 +1529,8 @@ class McpStaffController extends Controller
                     $this->actorLabel($request),
                     $this->tokenLabel($request),
                 );
+            } elseif (\App\Services\Mcp\StaffCarbonHardwareTools::handles((string) $name)) {
+                $result = app(\App\Services\Mcp\StaffCarbonHardwareExecutor::class)->execute((string) $name, $arguments, (int) $clientId);
             } elseif ((string) $name === 'cipp_compare_user_access') {
                 $result = (new \App\Services\Mcp\CippCompareToolExecutor($clientId))->execute($arguments);
             } elseif ((string) $name === 'send_reply') {
@@ -3265,6 +3267,10 @@ class McpStaffController extends Controller
         // by the legacy full-surface token. Attachment bytes flow straight into agent
         // context, so the operator grants this by name or not at all.
         if (in_array($toolName, self::RAW_FILE_CONTENT_EXPLICIT_GRANT_TOOLS, true)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
+        if (\App\Services\Mcp\StaffCarbonHardwareTools::handles($toolName)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 
