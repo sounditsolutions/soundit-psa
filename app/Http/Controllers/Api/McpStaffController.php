@@ -868,6 +868,9 @@ class McpStaffController extends Controller
         if (\App\Services\Mcp\AssetWatchTool::handles((string) $name) && $clientId !== null) {
             $auditArguments['client_id'] = $clientId;
         }
+        if (\App\Services\Mcp\StaffCarbonHardwareTools::handles((string) $name) && $clientId !== null) {
+            $auditArguments['client_id'] = $clientId;
+        }
 
         // A present-but-malformed scope on a fleet-capable read is a caller error,
         // and the failure mode of guessing is cross-tenant disclosure. Refuse and

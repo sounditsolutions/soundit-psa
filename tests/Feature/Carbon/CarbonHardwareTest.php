@@ -70,7 +70,7 @@ class CarbonHardwareTest extends TestCase
         $model = $this->add();
         $this->assertSame('123.45', $model->carbon_price);
         $this->assertSame('200.00', $model->sell_price);
-        $this->assertSame('in_stock', $model->availability);
+        $this->assertSame('unknown', $model->availability);
         $calls = Http::recorded(fn ($r) => ($r->data()['method'] ?? null) === 'tools/call')->values();
         $this->assertCount(1, $calls);
         $this->assertSame('get_product', $calls[0][0]['params']['name']);
@@ -88,6 +88,8 @@ class CarbonHardwareTest extends TestCase
             'part mismatch' => [['mfgPartNo' => 'SYNTH-OTHER']],
             'price nonnumeric' => [['price' => 'unknown']],
             'price zero' => [['price' => 0]],
+            'price numeric string' => [['price' => '123.45']],
+            'price exponent string' => [['price' => '1e2']],
         ];
     }
 
@@ -195,6 +197,8 @@ class CarbonHardwareTest extends TestCase
         $ok = $this->callHardware($token, $name, ['client_id' => $this->client->id, 'model_id' => $model->id, 'sell_price' => '250.00']);
         $this->assertFalse($ok->json('result.isError'), $ok->getContent());
         $this->assertSame('250.00', $model->fresh()->sell_price);
+        $audit = \App\Models\McpAuditLog::where('tool_name', $name)->latest('id')->first();
+        $this->assertSame($this->client->id, $audit->arguments['client_id'] ?? null);
         $legacy = McpConfig::rotateStaffToken(null);
         $denied = $this->callHardware($legacy, $name, ['client_id' => $this->client->id, 'model_id' => $model->id, 'sell_price' => '300.00']);
         $this->assertTrue($denied->json('result.isError'));

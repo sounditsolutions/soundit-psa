@@ -10,8 +10,6 @@ return [
     'margin_confirm' => 'Confirm the sell price below the cached Carbon price to save.',
     'margin_warning' => 'The cached Carbon price is at or above the sell price. Review pricing.',
     'unknown' => 'Unknown',
-    'in_stock' => 'In stock',
-    'out_of_stock' => 'Out of stock',
     'failed' => 'Carbon lookup failed. Try again later.',
     'mapping' => 'Carbon customer mapping',
     'none' => 'Not mapped',

@@ -94,7 +94,7 @@ class CarbonHardwareService
         // have named fields; a JSON list cannot satisfy this contract.
         if (($result['isError'] ?? false) === true || ! is_array($data) || array_is_list($data)
             || ($data['mfgPartNo'] ?? null) !== $part
-            || ! is_numeric($data['price'] ?? null) || (float) $data['price'] <= 0
+            || ! (is_int($data['price'] ?? null) || is_float($data['price'] ?? null)) || (float) $data['price'] <= 0
             || array_key_exists('configs', $data)
             || array_key_exists('requiredConfigs', $data)
             || array_key_exists('isConfigurable', $data)) {
@@ -133,7 +133,8 @@ class CarbonHardwareService
                 'label' => is_string($product['title'] ?? null) ? mb_substr($product['title'], 0, 255) : $part,
                 'sell_price' => $sell,
                 'carbon_price' => $cost,
-                'availability' => is_int($product['inventory'] ?? null) ? ($product['inventory'] > 0 ? 'in_stock' : 'out_of_stock') : 'unknown',
+                // Ruled: availability shows unknown. get_product inventory is not stored.
+                'availability' => 'unknown',
                 'synced_at' => now(),
             ]);
         });
