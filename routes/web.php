@@ -166,6 +166,10 @@ Route::middleware('auth')->group(function () {
     Route::get('/clients/create', [ClientController::class, 'create'])->name('clients.create');
     Route::post('/clients', [ClientController::class, 'store'])->name('clients.store');
     Route::get('/clients/{client}', [ClientController::class, 'show'])->name('clients.show');
+    Route::get('/clients/{client}/hardware', [\App\Http\Controllers\Web\ClientHardwareController::class, 'show'])->name('clients.hardware');
+    Route::post('/clients/{client}/hardware/mapping', [\App\Http\Controllers\Web\ClientHardwareController::class, 'mapping'])->name('clients.hardware.mapping');
+    Route::post('/clients/{client}/hardware/models/{operation}', [\App\Http\Controllers\Web\ClientHardwareController::class, 'model'])->name('clients.hardware.model');
+    Route::post('/settings/integrations/carbon/hardware', [\App\Http\Controllers\Web\ClientHardwareController::class, 'settings'])->middleware('admin')->name('settings.integrations.carbon.hardware');
     Route::get('/clients/{client}/edit', [ClientController::class, 'edit'])->name('clients.edit');
     Route::patch('/clients/{client}', [ClientController::class, 'update'])->name('clients.update');
     Route::delete('/clients/{client}', [ClientController::class, 'destroy'])->name('clients.destroy');

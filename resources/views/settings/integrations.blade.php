@@ -2126,6 +2126,23 @@
                     Each token gets only the Carbon tools granted to it on Settings &gt; MCP tokens. The sign-in requests all five Carbon scopes.
                 </p>
 
+                @if(auth()->user()->isAdmin())
+                <form method="POST" action="{{ route('settings.integrations.carbon.hardware') }}" class="border rounded p-3 mb-3">
+                    @csrf
+                    <input type="hidden" name="enabled" value="0">
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" name="enabled" value="1" id="carbon-hardware-enabled"
+                            @checked(\App\Support\CarbonHardwareConfig::isEnabled()) @disabled(!\App\Support\CarbonMcpConfig::isLive())>
+                        <label class="form-check-label" for="carbon-hardware-enabled">{{ __('carbon_hardware.tenant_switch') }}</label>
+                    </div>
+                    @unless(\App\Support\CarbonMcpConfig::isLive())
+                        <p class="text-muted small">{{ __('carbon_hardware.not_live') }}</p>
+                    @endunless
+                    <label class="form-label" for="carbon-hardware-country">{{ __('carbon_hardware.country') }}</label>
+                    <input class="form-control mb-2" id="carbon-hardware-country" name="country" maxlength="100" required value="{{ \App\Support\CarbonHardwareConfig::country() }}">
+                    <button class="btn btn-primary btn-sm">{{ __('carbon_hardware.save') }}</button>
+                </form>
+                @endif
                 @if($carbonState === 'not_connected')
                     <p class="small mb-2" id="carbon-mcp-not-connected">Not connected. No Carbon tools are offered to any token until an admin signs in.</p>
                 @else

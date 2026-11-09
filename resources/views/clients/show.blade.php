@@ -93,7 +93,7 @@
 
 @php
     $activeContracts = $client->contracts()->active()->withCount('profiles')->get();
-    if (!in_array($activeTab ?? '', ['tickets', 'assets', 'people', 'contracts', 'licenses', 'billing'])) {
+    if (!in_array($activeTab ?? '', ['tickets', 'assets', 'people', 'contracts', 'licenses', 'billing', 'hardware'])) {
         // True open-ticket count for the badge (uncapped); $openTickets stays a 5-row preview.
         $openTicketsCount = $client->tickets()->open()->count();
         $openTickets = $client->tickets()->open()->with('categoryNode.parent.parent')->orderByDesc('updated_at')->limit(5)->get();
@@ -106,7 +106,7 @@
         $allRecent = collect();
     }
     $clientLicenses = ($activeTab ?? '') === 'licenses' ? collect() : $client->licenses()->with('licenseType')->where('status', 'active')->get();
-    $isTabOverride = in_array($activeTab ?? '', ['tickets', 'assets', 'people', 'contracts', 'licenses', 'billing']);
+    $isTabOverride = in_array($activeTab ?? '', ['tickets', 'assets', 'people', 'contracts', 'licenses', 'billing', 'hardware']);
 @endphp
 
 <div class="row g-4">
@@ -114,6 +114,9 @@
     <div class="col-md-8">
         {{-- Tabs --}}
         <ul class="nav nav-tabs detail-tabs mb-3" id="clientTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <a class="nav-link {{ ($activeTab ?? '') === 'hardware' ? 'active' : '' }}" href="{{ route('clients.hardware', $client) }}">{{ __('carbon_hardware.title') }}</a>
+            </li>
             <li class="nav-item" role="presentation">
                 @if($isTabOverride)
                     <a class="nav-link" href="{{ route('clients.show', $client) }}">Overview</a>
@@ -943,6 +946,12 @@
                     </div>
                 @endif
             </div>
+
+            @if(($activeTab ?? '') === 'hardware')
+            <div class="tab-pane fade show active" id="hardware" role="tabpanel">
+                @include('clients.partials.hardware')
+            </div>
+            @endif
 
             {{-- Billing Tab (read-only, card iNjqGETC): built only on clients.billing --}}
             @if(($activeTab ?? '') === 'billing')
