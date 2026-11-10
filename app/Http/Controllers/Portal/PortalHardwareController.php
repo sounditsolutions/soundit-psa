@@ -33,6 +33,8 @@ class PortalHardwareController extends Controller
     {
         $person = $request->attributes->get('portal_person');
         abort_unless(CarbonHardwareOrderService::available(Client::findOrFail($person->client_id)), 404);
+        // #8311: staff viewing the portal as a contact never place a vendor order in that contact's name.
+        abort_if($request->session()->has('portal_impersonator_id'), 403);
         $service->submit($person, $request->all());
 
         return redirect()->route('portal.hardware')->with('success', __('carbon_hardware.recorded'));
