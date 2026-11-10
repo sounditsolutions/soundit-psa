@@ -192,11 +192,11 @@ class CarbonMcpClient
             return null;
         }
 
-        return $this->decode($response, $label);
+        return $this->decode($response, $label, preserveStructuredObject: ! $replay);
     }
 
     /** @return array<string, mixed>|null */
-    private function decode(Response $response, string $label): ?array
+    private function decode(Response $response, string $label, bool $preserveStructuredObject = false): ?array
     {
         $body = (string) $response->body();
         $payload = str_contains((string) $response->header('Content-Type'), 'text/event-stream')
@@ -211,6 +211,11 @@ class CarbonMcpClient
         if (isset($decoded['error'])) {
             $code = is_array($decoded['error']) && is_int($decoded['error']['code'] ?? null) ? $decoded['error']['code'] : 'unknown';
             throw new CarbonMcpException("Carbon MCP {$label} returned JSON-RPC error {$code}");
+        }
+
+        if ($preserveStructuredObject && is_array($decoded['result'] ?? null)) {
+            $identity = json_decode((string) $payload);
+            $decoded['result']['structuredContent'] = $identity->result->structuredContent ?? null;
         }
 
         return is_array($decoded['result'] ?? null) ? $decoded['result'] : null;

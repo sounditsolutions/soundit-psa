@@ -58,6 +58,11 @@
                             <i class="bi bi-file-earmark-text me-1"></i>Service Agreements
                         </a>
                     </li>
+                    @if(App\Support\CarbonHardwareConfig::isEnabled())
+                        <li class="nav-item">
+                            <a class="nav-link {{ request()->routeIs('portal.hardware*') ? 'active' : '' }}" href="{{ route('portal.hardware') }}">{{ __('carbon_hardware.title') }}</a>
+                        </li>
+                    @endif
                     @if(App\Support\PortalConfig::shopEnabled())
                         <li class="nav-item">
                             <a class="nav-link {{ request()->routeIs('portal.shop.*') ? 'active' : '' }}" href="{{ route('portal.shop.index') }}">

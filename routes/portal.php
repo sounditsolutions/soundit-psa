@@ -134,6 +134,9 @@ Route::middleware(['portal.enabled', 'portal.auth', 'portal.scope'])->group(func
     Route::get('/prepaid/payment-status/{invoice}', [PortalPrepayController::class, 'paymentStatus'])->name('portal.prepaid.payment-status');
     Route::put('/prepaid/{contract}/alert-settings', [PortalPrepayController::class, 'updateAlertSettings'])->name('portal.prepaid.update-alert-settings');
 
+    Route::get('/hardware', [\App\Http\Controllers\Portal\PortalHardwareController::class, 'index'])->name('portal.hardware');
+    Route::post('/hardware', [\App\Http\Controllers\Portal\PortalHardwareController::class, 'store'])->name('portal.hardware.store');
+
     // Product catalog / shop
     Route::get('/shop', [PortalOrderController::class, 'index'])->name('portal.shop.index');
     Route::post('/shop', [PortalOrderController::class, 'store'])->name('portal.shop.store')->middleware('throttle:3,5');
