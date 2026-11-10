@@ -3,6 +3,7 @@
 // Client-facing copy is DRAFT pending Charlie's approval.
 return [
     'title' => 'Hardware',
+    'portal_unavailable' => "Hardware ordering isn't available right now. Open a ticket if you need hardware.",
     'portal_unmapped' => "Hardware ordering isn't set up for your account yet. Open a ticket if you need hardware now.",
     'personal' => 'Your account can view hardware but cannot submit requests. Open a ticket if you need hardware.',
     'address_incomplete' => 'Your shipping address is incomplete. Ask your IT provider to update it.',

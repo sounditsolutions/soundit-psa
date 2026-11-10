@@ -3,6 +3,7 @@
 namespace Tests\Feature\Carbon;
 
 use App\Services\Carbon\CarbonMcpClient;
+use App\Services\Carbon\CarbonMcpConnector;
 use App\Services\Carbon\CarbonMcpDraftAuthException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -31,6 +32,8 @@ class CarbonDraftTransportTest extends TestCase
             $this->fail('Expected draft auth exception.');
         } catch (CarbonMcpDraftAuthException $e) {
             $this->assertSame('Carbon MCP draft HTTP 401', $e->getMessage());
+            $key = (new \ReflectionMethod(CarbonMcpConnector::class, 'accessCacheKey'))->invoke(app(CarbonMcpConnector::class));
+            $this->assertFalse(Cache::has($key));
         } finally {
             $calls = Http::recorded(fn ($r) => ($r['params']['name'] ?? null) === 'create_draft_order');
             $this->assertCount(1, $calls);

@@ -58,7 +58,7 @@
                             <i class="bi bi-file-earmark-text me-1"></i>Service Agreements
                         </a>
                     </li>
-                    @if(App\Support\CarbonHardwareConfig::isEnabled())
+                    @if(isset($portalPerson) && ($hardwareClient = App\Models\Client::find($portalPerson->client_id)) && App\Services\Carbon\CarbonHardwareOrderService::available($hardwareClient))
                         <li class="nav-item">
                             <a class="nav-link {{ request()->routeIs('portal.hardware*') ? 'active' : '' }}" href="{{ route('portal.hardware') }}">{{ __('carbon_hardware.title') }}</a>
                         </li>

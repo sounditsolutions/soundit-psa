@@ -167,6 +167,8 @@ class CarbonMcpClient
         }
 
         if ($response->status() === 401 && ! $replay) {
+            // Cache invalidation only, so later requests mint a fresh token; this draft is never re-sent.
+            $this->connector->forgetAccessToken();
             throw new CarbonMcpDraftAuthException('Carbon MCP draft HTTP 401');
         }
 

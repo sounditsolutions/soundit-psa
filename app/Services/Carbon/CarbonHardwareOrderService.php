@@ -30,10 +30,16 @@ class CarbonHardwareOrderService
             'country' => trim(CarbonHardwareConfig::country())];
     }
 
+    /** OFF=OFF choke point for the portal page, its submit and its nav link. */
+    public static function available(Client $client): bool
+    {
+        return CarbonHardwareConfig::isEnabled() && (bool) $client->carbon_customer_id && (bool) $client->carbon_hardware_ordering_enabled;
+    }
+
     public function reason(Client $client, Person $person): ?string
     {
         if (! CarbonHardwareConfig::isEnabled()) {
-            return 'unavailable';
+            return 'portal_unavailable';
         }
         if (! $client->carbon_customer_id || ! $client->carbon_hardware_ordering_enabled) {
             return 'portal_unmapped';
@@ -41,8 +47,8 @@ class CarbonHardwareOrderService
         if (! $person->company_wide_access) {
             return 'personal';
         }
-        foreach (['name' => 1, 'addressOne' => 5, 'city' => 2, 'state' => 2, 'postalCode' => 5, 'country' => 2] as $key => $minimum) {
-            if (mb_strlen($this->address($client)[$key]) < $minimum) {
+        foreach (['name', 'addressOne', 'city', 'state', 'postalCode', 'country'] as $key) {
+            if ($this->address($client)[$key] === '') {
                 return 'address_incomplete';
             }
         }

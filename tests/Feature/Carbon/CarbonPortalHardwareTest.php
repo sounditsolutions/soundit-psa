@@ -8,6 +8,8 @@ use App\Models\ClientHardwareOrder;
 use App\Models\Person;
 use App\Models\Setting;
 use App\Models\Ticket;
+use App\Services\Carbon\CarbonHardwareOrderService;
+use Illuminate\Validation\ValidationException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -177,7 +179,13 @@ class CarbonPortalHardwareTest extends TestCase
             'country' => Setting::setValue('carbon_hardware_country', ''),
             default => $this->client->update([$case => '']),
         };
-        $this->post(route('portal.hardware.store'), $this->input)->assertSessionHasErrors('hardware');
+        $response = $this->post(route('portal.hardware.store'), $this->input);
+        if (in_array($case, ['tenant', 'carbon', 'unmapped', 'client_off'], true)) {
+            $response->assertNotFound();
+            $this->get(route('portal.hardware'))->assertNotFound();
+        } else {
+            $response->assertSessionHasErrors('hardware');
+        }
         Http::assertNothingSent();
         $this->assertDatabaseCount('client_hardware_orders', 0);
     }
@@ -218,6 +226,63 @@ class CarbonPortalHardwareTest extends TestCase
         $this->input['idempotency_key'] = (string) Str::uuid();
         $this->submit();
         $this->assertSame('unread', ClientHardwareOrder::latest('id')->first()->status);
+    }
+
+    public static function offSwitches(): array
+    {
+        return ['tenant' => ['carbon_hardware_ordering_enabled'], 'carbon' => ['carbon_mcp_enabled']];
+    }
+
+    #[DataProvider('offSwitches')]
+    public function test_off_refusal_copy_never_names_carbon(string $setting): void
+    {
+        $this->responseFixture();
+        Setting::setValue($setting, '0');
+        try {
+            app(CarbonHardwareOrderService::class)->submit($this->person, $this->input);
+            $this->fail('Off submit accepted.');
+        } catch (ValidationException $e) {
+            $this->assertSame([__('carbon_hardware.portal_unavailable')], $e->errors()['hardware']);
+            $this->assertStringNotContainsString('Carbon', $e->errors()['hardware'][0]);
+        }
+        $this->assertSame('portal_unavailable', app(CarbonHardwareOrderService::class)->reason($this->client, $this->person));
+        Http::assertNothingSent();
+        $this->assertDatabaseCount('client_hardware_orders', 0);
+    }
+
+    public function test_short_complete_address_is_accepted(): void
+    {
+        $this->responseFixture();
+        $this->client->update(['name' => 'S', 'address_line1' => '1 Rd', 'city' => 'X', 'state' => 'B', 'postcode' => '2000']);
+        Setting::setValue('carbon_hardware_country', 'A');
+        $this->submit();
+        $this->assertSame('submitted', ClientHardwareOrder::sole()->status);
+        $this->assertSame(['name' => 'S', 'addressOne' => '1 Rd', 'addressTwo' => '', 'city' => 'X', 'state' => 'B', 'postalCode' => '2000', 'country' => 'A'], $this->calls()[0][0]['params']['arguments']['shippingAddress']);
+    }
+
+    public function test_submit_is_rate_limited(): void
+    {
+        $this->responseFixture();
+        foreach (range(1, 3) as $attempt) {
+            $this->input['idempotency_key'] = (string) Str::uuid();
+            $this->submit();
+        }
+        $this->input['idempotency_key'] = (string) Str::uuid();
+        $this->post(route('portal.hardware.store'), $this->input)->assertStatus(429);
+        $this->assertCount(3, $this->calls());
+        $this->assertDatabaseCount('client_hardware_orders', 3);
+    }
+
+    public function test_personal_access_lists_only_own_orders(): void
+    {
+        $this->responseFixture();
+        $colleague = Person::create(['client_id' => $this->client->id, 'person_type' => PersonType::User, 'first_name' => 'Synthetic', 'last_name' => 'Colleague', 'email' => 'colleague@example.test', 'is_active' => true, 'portal_enabled' => true, 'company_wide_access' => true]);
+        ClientHardwareOrder::create(['client_id' => $this->client->id, 'person_id' => $colleague->id, 'idempotency_key' => (string) Str::uuid(), 'status' => 'submitted', 'lines' => [], 'estimated_total' => '5555.55']);
+        ClientHardwareOrder::create(['client_id' => $this->client->id, 'person_id' => $this->person->id, 'idempotency_key' => (string) Str::uuid(), 'status' => 'submitted', 'lines' => [], 'estimated_total' => '4444.44']);
+        $this->get(route('portal.hardware'))->assertOk()->assertSee('4444.44')->assertSee('5555.55');
+        $this->person->update(['company_wide_access' => false]);
+        $this->get(route('portal.hardware'))->assertOk()->assertSee('4444.44')->assertDontSee('5555.55');
+        Http::assertNothingSent();
     }
 
     public function test_migration_down_up(): void

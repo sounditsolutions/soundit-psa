@@ -15,10 +15,15 @@ class PortalHardwareController extends Controller
     {
         $person = $request->attributes->get('portal_person');
         $client = Client::findOrFail($person->client_id);
+        abort_unless(CarbonHardwareOrderService::available($client), 404);
+        $orders = ClientHardwareOrder::where('client_id', $client->id);
+        if (! $person->company_wide_access) {
+            $orders->where('person_id', $person->id);
+        }
 
         return view('portal.hardware', [
             'models' => $client->hardwareModels()->get(),
-            'orders' => ClientHardwareOrder::where('client_id', $client->id)->latest()->paginate(25),
+            'orders' => $orders->latest()->paginate(25),
             'reason' => $service->reason($client, $person),
             'address' => $service->address($client), 'token' => (string) Str::uuid(),
         ]);
@@ -26,7 +31,9 @@ class PortalHardwareController extends Controller
 
     public function store(Request $request, CarbonHardwareOrderService $service)
     {
-        $service->submit($request->attributes->get('portal_person'), $request->all());
+        $person = $request->attributes->get('portal_person');
+        abort_unless(CarbonHardwareOrderService::available(Client::findOrFail($person->client_id)), 404);
+        $service->submit($person, $request->all());
 
         return redirect()->route('portal.hardware')->with('success', __('carbon_hardware.recorded'));
     }
