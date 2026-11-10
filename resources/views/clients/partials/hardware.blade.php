@@ -15,7 +15,7 @@
         <form method="POST" action="{{ route('clients.hardware.mapping', $client) }}">
             @csrf
             <label for="hardware-customer" class="form-label">{{ __('carbon_hardware.mapping') }}</label>
-            <select class="form-select mb-2" name="carbon_customer_id" id="hardware-customer" @disabled(!$hardwareLive || $hardwareLookupError)>
+            <select class="form-select mb-2" name="carbon_customer_id" id="hardware-customer" @disabled(!$hardwareEnabled || $hardwareLookupError)>
                 <option value="">{{ __('carbon_hardware.none') }}</option>
                 @foreach($hardwareCustomers as $customer)
                     <option value="{{ $customer['id'] }}" @selected($client->carbon_customer_id === $customer['id'])>{{ $customer['name'] }}</option>
@@ -23,10 +23,10 @@
             </select>
             <input type="hidden" name="enabled" value="0">
             <div class="form-check form-switch mb-2">
-                <input type="checkbox" class="form-check-input" name="enabled" value="1" id="hardware-client-enabled" @checked($client->carbon_hardware_ordering_enabled)>
+                <input type="checkbox" class="form-check-input" name="enabled" value="1" id="hardware-client-enabled" @checked($client->carbon_hardware_ordering_enabled) @disabled(!$hardwareEnabled || $hardwareLookupError)>
                 <label for="hardware-client-enabled" class="form-check-label">{{ __('carbon_hardware.client_switch') }}</label>
             </div>
-            <button class="btn btn-primary btn-sm" @disabled(!$hardwareLive || $hardwareLookupError)>{{ __('carbon_hardware.save') }}</button>
+            <button class="btn btn-primary btn-sm" @disabled(!$hardwareEnabled || $hardwareLookupError)>{{ __('carbon_hardware.save') }}</button>
         </form>
     </div>
 </div>

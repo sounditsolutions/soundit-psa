@@ -80,6 +80,25 @@ class CarbonMcpClient
         ], 'tools/call');
     }
 
+    /** Single-attempt write seam; no arbitrary tool name can enter this path. */
+    public function createDraftOrderOnce(array $arguments): array
+    {
+        $this->ensureInitialized();
+
+        $result = $this->post([
+            'jsonrpc' => '2.0',
+            'id' => $this->nextId++,
+            'method' => 'tools/call',
+            'params' => ['name' => 'create_draft_order', 'arguments' => $arguments],
+        ], 'tools/call', replay: false);
+
+        if (! is_array($result)) {
+            throw new CarbonMcpException('Carbon MCP draft response class: missing_result');
+        }
+
+        return $result;
+    }
+
     private function ensureInitialized(): void
     {
         if ($this->initialized) {
@@ -125,7 +144,7 @@ class CarbonMcpClient
     }
 
     /** @return array<string, mixed>|null the JSON-RPC result, or null for a notification */
-    private function post(array $payload, string $label, bool $captureSession = false, bool $notification = false, bool $retried = false): ?array
+    private function post(array $payload, string $label, bool $captureSession = false, bool $notification = false, bool $retried = false, bool $replay = true): ?array
     {
         $headers = ['MCP-Protocol-Version' => self::PROTOCOL_VERSION];
         if ($this->sessionId !== null) {
@@ -145,6 +164,12 @@ class CarbonMcpClient
             // A timeout or connect failure is ambiguous: the request may have been
             // delivered and acted on, so this never says Carbon was not reached.
             throw new CarbonMcpException("Carbon MCP {$label} got no response from Carbon (may have been delivered): ".class_basename($e));
+        }
+
+        if ($response->status() === 401 && ! $replay) {
+            // Cache invalidation only, so later requests mint a fresh token; this draft is never re-sent.
+            $this->connector->forgetAccessToken();
+            throw new CarbonMcpDraftAuthException('Carbon MCP draft HTTP 401');
         }
 
         if ($response->status() === 401) {
@@ -169,11 +194,11 @@ class CarbonMcpClient
             return null;
         }
 
-        return $this->decode($response, $label);
+        return $this->decode($response, $label, preserveStructuredObject: ! $replay);
     }
 
     /** @return array<string, mixed>|null */
-    private function decode(Response $response, string $label): ?array
+    private function decode(Response $response, string $label, bool $preserveStructuredObject = false): ?array
     {
         $body = (string) $response->body();
         $payload = str_contains((string) $response->header('Content-Type'), 'text/event-stream')
@@ -188,6 +213,11 @@ class CarbonMcpClient
         if (isset($decoded['error'])) {
             $code = is_array($decoded['error']) && is_int($decoded['error']['code'] ?? null) ? $decoded['error']['code'] : 'unknown';
             throw new CarbonMcpException("Carbon MCP {$label} returned JSON-RPC error {$code}");
+        }
+
+        if ($preserveStructuredObject && is_array($decoded['result'] ?? null)) {
+            $identity = json_decode((string) $payload);
+            $decoded['result']['structuredContent'] = $identity->result->structuredContent ?? null;
         }
 
         return is_array($decoded['result'] ?? null) ? $decoded['result'] : null;

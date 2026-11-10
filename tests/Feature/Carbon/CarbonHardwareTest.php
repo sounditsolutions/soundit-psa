@@ -328,6 +328,19 @@ class CarbonHardwareTest extends TestCase
         $this->assertTrue(\Illuminate\Support\Facades\Schema::hasTable('client_hardware_models'));
     }
 
+    public function test_hardware_off_never_lists_customers_or_maps(): void
+    {
+        Setting::setValue('carbon_hardware_ordering_enabled', '0');
+        $this->actingAs(User::factory()->create())->get(route('clients.hardware', $this->client))
+            ->assertOk()->assertSee(__('carbon_hardware.unavailable'));
+        $this->post(route('clients.hardware.mapping', $this->client), ['carbon_customer_id' => 91001, 'enabled' => 1])
+            ->assertSessionHasErrors('hardware');
+        $this->post(route('clients.hardware.mapping', $this->client), ['carbon_customer_id' => '', 'enabled' => 0])
+            ->assertSessionHasErrors('hardware');
+        Http::assertNothingSent();
+        $this->assertSame(91001, $this->client->fresh()->carbon_customer_id);
+    }
+
     public function test_settings_http_rejects_nonadmin_and_off_enable(): void
     {
         $staff = User::factory()->create(['role' => 'tech']);

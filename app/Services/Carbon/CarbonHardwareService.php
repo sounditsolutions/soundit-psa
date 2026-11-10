@@ -5,7 +5,6 @@ namespace App\Services\Carbon;
 use App\Models\Client;
 use App\Models\ClientHardwareModel;
 use App\Support\CarbonHardwareConfig;
-use App\Support\CarbonMcpConfig;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -31,8 +30,8 @@ class CarbonHardwareService
     /** Captured MCP contract: mcp-capture-20261109 19:37Z; only id/name leave this seam. */
     public function customers(): array
     {
-        if (! CarbonMcpConfig::isLive()) {
-            $this->refuse('not_live');
+        if (! CarbonHardwareConfig::isEnabled()) {
+            $this->refuse('unavailable');
         }
         $customers = [];
         $expectedTotal = null;
@@ -74,6 +73,9 @@ class CarbonHardwareService
 
     public function map(Client $client, ?int $customerId, bool $enabled): void
     {
+        if (! CarbonHardwareConfig::isEnabled()) {
+            $this->refuse('unavailable');
+        }
         if ($customerId !== null && ! in_array($customerId, array_column($this->customers(), 'id'), true)) {
             $this->refuse('customer_invalid');
         }

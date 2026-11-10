@@ -17,7 +17,7 @@ class ClientHardwareController extends Controller
         $view = app(ClientController::class)->show($client);
         $customers = [];
         $lookupError = null;
-        if (CarbonMcpConfig::isLive()) {
+        if (CarbonHardwareConfig::isEnabled()) {
             try {
                 $customers = $hardware->customers();
             } catch (\Throwable $e) {
