@@ -197,12 +197,27 @@ class CarbonPortalHardwareTest extends TestCase
         $other = Client::factory()->create();
         $model = $other->hardwareModels()->create(['mfg_part_no' => 'OTHER', 'label' => 'Other Model Secret', 'sell_price' => '300.00']);
         ClientHardwareOrder::create(['client_id' => $other->id, 'person_id' => $this->person->id, 'idempotency_key' => (string) Str::uuid(), 'status' => 'submitted', 'lines' => [], 'estimated_total' => '9876.54']);
-        $this->get(route('portal.hardware'))->assertOk()->assertSee('200.01')->assertDontSee('123.45')->assertDontSee('Other Model Secret')->assertDontSee('9876.54')->assertSee('Unknown');
+        $this->get(route('portal.hardware'))->assertOk()->assertSee('$200.01')->assertDontSee('123.45')->assertDontSee('Other Model Secret')->assertDontSee('9,876.54')
+            ->assertSee('<th>'.__('carbon_hardware.portal_price').'</th>', false)->assertSee('<th>Price</th>', false)->assertDontSee(__('carbon_hardware.sell_price'))
+            ->assertDontSee(__('carbon_hardware.availability'))->assertDontSee(__('carbon_hardware.unknown'))->assertSee('$0.00');
         $this->input['lines'][0]['model_id'] = $model->id;
         $this->post(route('portal.hardware.store'), $this->input)->assertSessionHasErrors('hardware');
         $this->person->update(['company_wide_access' => false]);
         $this->get(route('portal.hardware'))->assertOk()->assertSee(__('carbon_hardware.personal'))->assertSee('disabled');
         Http::assertNothingSent();
+    }
+
+    public function test_portal_table_formats_thousands_keeps_raw_data_price_and_pins_js_total(): void
+    {
+        $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-DESKTOP', 'label' => 'Synthetic Desktop', 'sell_price' => '1049.00', 'carbon_price' => '900.00']);
+        $this->get(route('portal.hardware'))->assertOk()->assertSee('<td>$1,049.00</td>', false)->assertSee('data-price="1049.00"', false)
+            ->assertSee("textContent = '\$' + (cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });", false);
+    }
+
+    public function test_empty_state_spans_the_four_columns(): void
+    {
+        $this->client->hardwareModels()->delete();
+        $this->get(route('portal.hardware'))->assertOk()->assertSee('<tr><td colspan="4">'.__('carbon_hardware.empty').'</td></tr>', false);
     }
 
     public function test_pending_reservation_never_dispatches_and_other_client_key_refuses(): void
@@ -325,9 +340,9 @@ class CarbonPortalHardwareTest extends TestCase
         $colleague = Person::create(['client_id' => $this->client->id, 'person_type' => PersonType::User, 'first_name' => 'Synthetic', 'last_name' => 'Colleague', 'email' => 'colleague@example.test', 'is_active' => true, 'portal_enabled' => true, 'company_wide_access' => true]);
         ClientHardwareOrder::create(['client_id' => $this->client->id, 'person_id' => $colleague->id, 'idempotency_key' => (string) Str::uuid(), 'status' => 'submitted', 'lines' => [], 'estimated_total' => '5555.55']);
         ClientHardwareOrder::create(['client_id' => $this->client->id, 'person_id' => $this->person->id, 'idempotency_key' => (string) Str::uuid(), 'status' => 'submitted', 'lines' => [], 'estimated_total' => '4444.44']);
-        $this->get(route('portal.hardware'))->assertOk()->assertSee('4444.44')->assertSee('5555.55');
+        $this->get(route('portal.hardware'))->assertOk()->assertSee('$4,444.44')->assertSee('$5,555.55');
         $this->person->update(['company_wide_access' => false]);
-        $this->get(route('portal.hardware'))->assertOk()->assertSee('4444.44')->assertDontSee('5555.55');
+        $this->get(route('portal.hardware'))->assertOk()->assertSee('$4,444.44')->assertDontSee('5,555.55');
         Http::assertNothingSent();
     }
 

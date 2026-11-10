@@ -48,6 +48,7 @@ return [
     'label' => 'Model',
     'carbon_price' => 'Cached Carbon price',
     'sell_price' => 'Sell price',
+    'portal_price' => 'Price',
     'margin' => 'Margin',
     'availability' => 'Availability',
     'add' => 'Add model',
