@@ -7,10 +7,8 @@ use App\Models\Client;
 use App\Models\Setting;
 use App\Models\Ticket;
 use App\Models\TicketNote;
-use App\Services\Hdb\HdbReportClient;
-use App\Services\Hdb\HdbReportFetchAuthorizer;
+use App\Services\Hdb\HdbReportReader;
 use App\Support\HdbApiConfig;
-use App\Support\HdbPortalConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Http;
@@ -32,9 +30,9 @@ class HdbReportSourceOrderTest extends TestCase
         parent::setUp();
         Http::preventStrayRequests();
         Setting::setEncrypted('hdb_api_key', 'synthetic-key');
+        // Retired credentials can remain stored without enabling a second reader.
         Setting::setValue('hdb_email', 'synthetic@example.test');
         Setting::setEncrypted('hdb_password', 'synthetic-password');
-        $this->app->instance(HdbPortalConfig::HOST_RESOLVER, fn () => ['93.184.216.34']);
         $this->ticket = Ticket::factory()->create(['client_id' => Client::factory()->create()->id]);
         $this->note = TicketNote::create(['ticket_id' => $this->ticket->id, 'note_type' => NoteType::System, 'body' => 'synthetic', 'is_private' => true, 'noted_at' => now()]);
         $this->note->forceFill(['hdb_press_id' => self::PRESS])->save();
@@ -50,22 +48,17 @@ class HdbReportSourceOrderTest extends TestCase
 
     private function fake($api): void
     {
-        Http::fake([
-            HdbApiConfig::BASE_URL.'/reports/'.self::PRESS => $api,
-            HdbPortalConfig::DEFAULT_BASE_URL.'/login' => Http::response('<html><h1>Dashboard</h1></html>'),
-            HdbPortalConfig::DEFAULT_BASE_URL.'/gatekeeper_auth.php?*getFile=ticket.json*' => Http::response(['uploadComplete' => true, 'redactDiagnostic' => false, 'redactScreenshots' => true]),
-            HdbPortalConfig::DEFAULT_BASE_URL.'/gatekeeper_auth.php?*getFile=report.json*' => Http::response(array_fill_keys(HdbReportClient::REQUIRED_REPORT_SECTIONS, [])),
-        ]);
+        Http::fake([HdbApiConfig::BASE_URL.'/reports/'.self::PRESS => $api]);
     }
 
-    public static function fallbackOutcomes(): array
+    public static function formerFallbackOutcomes(): array
     {
         return [
             '401' => [401, 'authentication_required'],
             '403 forbidden' => [403, 'forbidden'],
             '403 version' => [403, 'api_version_forbidden'],
             '403 disabled' => [403, 'account_disabled'],
-            '404 proving' => [404, 'report_not_found'],
+            '404' => [404, 'report_not_found'],
             '422 os' => [422, 'unsupported_report_os'],
             '500' => [500, 'internal_error'],
             '503' => [503, 'report_storage_unavailable'],
@@ -74,8 +67,8 @@ class HdbReportSourceOrderTest extends TestCase
         ];
     }
 
-    #[DataProvider('fallbackOutcomes')]
-    public function test_fallback_is_once_and_counted(?int $status, ?string $code): void
+    #[DataProvider('formerFallbackOutcomes')]
+    public function test_every_former_fallback_is_final(?int $status, ?string $code): void
     {
         $records = [];
         $this->app['events']->listen(MessageLogged::class, function ($event) use (&$records) {
@@ -84,12 +77,14 @@ class HdbReportSourceOrderTest extends TestCase
             }
         });
         $this->fake($status === null ? Http::failedConnection() : Http::response($code === null ? 'synthetic-non-json' : ['error' => ['code' => $code]], $status));
-        $result = (new HdbReportClient)->fetchForNote($this->ticket->id, $this->note->id);
-        $this->assertSame('portal', $result->source);
-        $this->assertSame('fetched', $result->status->value);
-        $this->assertSame([['info', ['http_status' => $status, 'code' => $code]]], $records);
-        Http::assertSentCount(5);
-        $this->assertCount(1, Http::recorded(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/login')));
+        $result = (new HdbReportReader)->fetchForNote($this->ticket->id, $this->note->id);
+        $this->assertSame('api', $result->source);
+        $this->assertNotSame('fetched', $result->status->value);
+        $this->assertSame([], $records);
+        if ($status === 404) {
+            $this->assertSame('report_not_found', $result->reason);
+        }
+        Http::assertSentCount(1);
     }
 
     public static function finalOutcomes(): array
@@ -124,40 +119,9 @@ class HdbReportSourceOrderTest extends TestCase
             $expected = $status === 403 ? 'unauthenticated' : 'unreachable';
         }
         $this->fake(Http::response($data, $status));
-        $result = (new HdbReportClient)->fetchForNote($this->ticket->id, $this->note->id);
+        $result = (new HdbReportReader)->fetchForNote($this->ticket->id, $this->note->id);
         $this->assertSame('api', $result->source);
         $this->assertSame($expected, $result->status->value);
-        Http::assertSentCount(1);
-        Http::assertNotSent(fn ($r) => ! str_starts_with($r->url(), HdbApiConfig::BASE_URL.'/'));
-    }
-
-    public function test_unset_key_is_portal_only(): void
-    {
-        Setting::where('key', 'hdb_api_key')->first()->delete();
-        $this->fake(Http::response($this->fixture()));
-        $result = (new HdbReportClient)->fetchForNote($this->ticket->id, $this->note->id);
-        $this->assertSame('portal', $result->source);
-        Http::assertSentCount(4);
-        Http::assertNotSent(fn ($r) => str_starts_with($r->url(), HdbApiConfig::BASE_URL));
-    }
-
-    public function test_unconfigured_portal_cannot_fallback(): void
-    {
-        Setting::where('key', 'hdb_password')->first()->delete();
-        $this->fake(Http::response(['error' => ['code' => 'report_not_found']], 404));
-        $result = (new HdbReportClient)->fetchForNote($this->ticket->id, $this->note->id);
-        $this->assertSame('api', $result->source);
-        $this->assertSame('unreachable', $result->status->value);
-        Http::assertSentCount(1);
-    }
-
-    public function test_authorizer_runs_once_before_any_api_request(): void
-    {
-        $this->fake(Http::response($this->fixture()));
-        $authorizer = \Mockery::mock(HdbReportFetchAuthorizer::class)->makePartial();
-        $authorizer->shouldReceive('authorize')->once()->with($this->ticket->id, self::PRESS)->passthru();
-        $client = new HdbReportClient($authorizer);
-        $this->assertSame('fetched', $client->fetchForNote($this->ticket->id, $this->note->id)->status->value);
         Http::assertSentCount(1);
     }
 
@@ -165,28 +129,22 @@ class HdbReportSourceOrderTest extends TestCase
     {
         $this->fake(Http::response($this->fixture()));
         $this->note->delete();
-        $result = (new HdbReportClient)->fetch($this->ticket->id, self::PRESS);
+        $result = (new HdbReportReader)->fetchForNote($this->ticket->id, $this->note->id);
         $this->assertSame('refused', $result->status->value);
         $this->assertSame('api', $result->source);
         Http::assertNothingSent();
     }
 
-    public function test_refusal_source_without_key_is_portal(): void
+    public function test_refusal_source_without_key_is_api(): void
     {
         Setting::where('key', 'hdb_api_key')->first()->delete();
-        $this->note->delete();
-        $result = (new HdbReportClient)->fetch($this->ticket->id, self::PRESS);
-        $this->assertSame('refused', $result->status->value);
-        $this->assertSame('portal', $result->source);
-        Http::assertNothingSent();
+        $this->test_refused_authority_never_calls_api();
     }
 
     protected function tearDown(): void
     {
         try {
-            // The unchanged portal handshake posts its login; API requests remain GET-only.
-            Http::assertNotSent(fn ($r) => str_starts_with($r->url(), HdbApiConfig::BASE_URL) && $r->method() !== 'GET');
-            Http::assertNotSent(fn ($r) => ! in_array(parse_url($r->url(), PHP_URL_HOST), [parse_url(HdbApiConfig::BASE_URL, PHP_URL_HOST), parse_url(HdbPortalConfig::DEFAULT_BASE_URL, PHP_URL_HOST)], true));
+            Http::assertNotSent(fn ($r) => $r->method() !== 'GET' || ! str_starts_with($r->url(), HdbApiConfig::BASE_URL.'/'));
         } finally {
             parent::tearDown();
         }

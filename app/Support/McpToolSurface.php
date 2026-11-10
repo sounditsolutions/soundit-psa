@@ -104,7 +104,7 @@ class McpToolSurface
             // HelpDesk Buttons report (card c5JaSetu). OFF=OFF: live only when the
             // API or portal credentials are stored AND the Tier2Tickets /
             // HelpDesk Buttons integration is switched on. Declares client_id.
-            (HdbApiConfig::isConfigured() || HdbPortalConfig::isConfigured()) && T2TConfig::isEnabled() ? McpToolRegistry::hdbReportTools() : [],
+            HdbApiConfig::isConfigured() && T2TConfig::isEnabled() ? McpToolRegistry::hdbReportTools() : [],
             // Asset watch alerts (card K3VEcxtw). v1 covers Tactical assets only, so
             // OFF=OFF: live only while Tactical is enabled, the predicate the poller
             // and its schedule gate on. Declares its own client_id where it takes one.
