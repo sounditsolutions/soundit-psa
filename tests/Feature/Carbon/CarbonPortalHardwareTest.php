@@ -8,6 +8,7 @@ use App\Models\ClientHardwareOrder;
 use App\Models\Person;
 use App\Models\Setting;
 use App\Models\Ticket;
+use App\Models\User;
 use App\Services\Carbon\CarbonHardwareOrderService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -250,16 +251,49 @@ class CarbonPortalHardwareTest extends TestCase
         $this->assertDatabaseCount('client_hardware_orders', 0);
     }
 
+    private function impersonateThroughStaffRoute(): void
+    {
+        $staff = User::factory()->create();
+        $this->actingAs($staff, 'web')
+            ->post(route('clients.portal.impersonate', $this->client), ['person_id' => $this->person->id])
+            ->assertRedirect(route('portal.dashboard'));
+    }
+
     public function test_impersonated_submit_is_refused_without_order_ticket_or_request(): void
     {
         $this->responseFixture();
-        $this->withSession(['portal_impersonator_id' => 1])->post(route('portal.hardware.store'), $this->input)->assertForbidden();
+        $this->impersonateThroughStaffRoute();
+        $this->post(route('portal.hardware.store'), $this->input)->assertForbidden();
         Http::assertNothingSent();
         $this->assertDatabaseCount('client_hardware_orders', 0);
         $this->assertDatabaseCount('tickets', 0);
-        $this->flushSession();
+
+        // Positive control: once staff stop impersonating and the contact signs in, the same submit goes through.
+        $this->post(route('portal.stop-impersonating'));
+        $this->assertFalse(session()->has('portal_impersonator_id'));
+        $this->actingAs($this->person, 'portal');
         $this->submit();
-        $this->assertDatabaseCount('client_hardware_orders', 1);
+        $this->assertSame('submitted', ClientHardwareOrder::sole()->status);
+        $this->assertCount(1, $this->calls());
+        $this->assertSame('create_draft_order', $this->calls()[0][0]['params']['name']);
+        $this->assertDatabaseCount('tickets', 1);
+    }
+
+    public static function unavailableWhileImpersonating(): array
+    {
+        return ['switched off' => ['off'], 'unmapped' => ['unmapped']];
+    }
+
+    #[DataProvider('unavailableWhileImpersonating')]
+    public function test_unavailable_client_is_404_before_impersonation_403(string $state): void
+    {
+        $this->responseFixture();
+        $this->impersonateThroughStaffRoute();
+        $this->client->forceFill($state === 'off' ? ['carbon_hardware_ordering_enabled' => false] : ['carbon_customer_id' => null])->save();
+        $this->post(route('portal.hardware.store'), $this->input)->assertNotFound();
+        Http::assertNothingSent();
+        $this->assertDatabaseCount('client_hardware_orders', 0);
+        $this->assertDatabaseCount('tickets', 0);
     }
 
     public function test_short_complete_address_is_accepted(): void
