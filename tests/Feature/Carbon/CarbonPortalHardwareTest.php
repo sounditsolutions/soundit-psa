@@ -197,7 +197,9 @@ class CarbonPortalHardwareTest extends TestCase
         $other = Client::factory()->create();
         $model = $other->hardwareModels()->create(['mfg_part_no' => 'OTHER', 'label' => 'Other Model Secret', 'sell_price' => '300.00']);
         ClientHardwareOrder::create(['client_id' => $other->id, 'person_id' => $this->person->id, 'idempotency_key' => (string) Str::uuid(), 'status' => 'submitted', 'lines' => [], 'estimated_total' => '9876.54']);
-        $this->get(route('portal.hardware'))->assertOk()->assertSee('200.01')->assertDontSee('123.45')->assertDontSee('Other Model Secret')->assertDontSee('9876.54')->assertSee('Unknown');
+        $this->get(route('portal.hardware'))->assertOk()->assertSee('$200.01')->assertDontSee('123.45')->assertDontSee('Other Model Secret')->assertDontSee('9876.54')
+            ->assertSee('<th>'.__('carbon_hardware.portal_price').'</th>', false)->assertDontSee(__('carbon_hardware.sell_price'))
+            ->assertDontSee(__('carbon_hardware.availability'))->assertDontSee(__('carbon_hardware.unknown'))->assertSee('$0.00');
         $this->input['lines'][0]['model_id'] = $model->id;
         $this->post(route('portal.hardware.store'), $this->input)->assertSessionHasErrors('hardware');
         $this->person->update(['company_wide_access' => false]);
@@ -325,9 +327,9 @@ class CarbonPortalHardwareTest extends TestCase
         $colleague = Person::create(['client_id' => $this->client->id, 'person_type' => PersonType::User, 'first_name' => 'Synthetic', 'last_name' => 'Colleague', 'email' => 'colleague@example.test', 'is_active' => true, 'portal_enabled' => true, 'company_wide_access' => true]);
         ClientHardwareOrder::create(['client_id' => $this->client->id, 'person_id' => $colleague->id, 'idempotency_key' => (string) Str::uuid(), 'status' => 'submitted', 'lines' => [], 'estimated_total' => '5555.55']);
         ClientHardwareOrder::create(['client_id' => $this->client->id, 'person_id' => $this->person->id, 'idempotency_key' => (string) Str::uuid(), 'status' => 'submitted', 'lines' => [], 'estimated_total' => '4444.44']);
-        $this->get(route('portal.hardware'))->assertOk()->assertSee('4444.44')->assertSee('5555.55');
+        $this->get(route('portal.hardware'))->assertOk()->assertSee('$4,444.44')->assertSee('$5,555.55');
         $this->person->update(['company_wide_access' => false]);
-        $this->get(route('portal.hardware'))->assertOk()->assertSee('4444.44')->assertDontSee('5555.55');
+        $this->get(route('portal.hardware'))->assertOk()->assertSee('$4,444.44')->assertDontSee('5,555.55');
         Http::assertNothingSent();
     }
 
