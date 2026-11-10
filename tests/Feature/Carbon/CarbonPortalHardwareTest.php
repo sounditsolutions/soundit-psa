@@ -250,6 +250,18 @@ class CarbonPortalHardwareTest extends TestCase
         $this->assertDatabaseCount('client_hardware_orders', 0);
     }
 
+    public function test_impersonated_submit_is_refused_without_order_ticket_or_request(): void
+    {
+        $this->responseFixture();
+        $this->withSession(['portal_impersonator_id' => 1])->post(route('portal.hardware.store'), $this->input)->assertForbidden();
+        Http::assertNothingSent();
+        $this->assertDatabaseCount('client_hardware_orders', 0);
+        $this->assertDatabaseCount('tickets', 0);
+        $this->flushSession();
+        $this->submit();
+        $this->assertDatabaseCount('client_hardware_orders', 1);
+    }
+
     public function test_short_complete_address_is_accepted(): void
     {
         $this->responseFixture();
