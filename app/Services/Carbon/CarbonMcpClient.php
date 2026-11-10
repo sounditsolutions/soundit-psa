@@ -80,6 +80,25 @@ class CarbonMcpClient
         ], 'tools/call');
     }
 
+    /** Single-attempt write seam; no arbitrary tool name can enter this path. */
+    public function createDraftOrderOnce(array $arguments): array
+    {
+        $this->ensureInitialized();
+
+        $result = $this->post([
+            'jsonrpc' => '2.0',
+            'id' => $this->nextId++,
+            'method' => 'tools/call',
+            'params' => ['name' => 'create_draft_order', 'arguments' => $arguments],
+        ], 'tools/call', replay: false);
+
+        if (! is_array($result)) {
+            throw new CarbonMcpException('Carbon MCP draft response class: missing_result');
+        }
+
+        return $result;
+    }
+
     private function ensureInitialized(): void
     {
         if ($this->initialized) {
@@ -125,7 +144,7 @@ class CarbonMcpClient
     }
 
     /** @return array<string, mixed>|null the JSON-RPC result, or null for a notification */
-    private function post(array $payload, string $label, bool $captureSession = false, bool $notification = false, bool $retried = false): ?array
+    private function post(array $payload, string $label, bool $captureSession = false, bool $notification = false, bool $retried = false, bool $replay = true): ?array
     {
         $headers = ['MCP-Protocol-Version' => self::PROTOCOL_VERSION];
         if ($this->sessionId !== null) {
@@ -145,6 +164,10 @@ class CarbonMcpClient
             // A timeout or connect failure is ambiguous: the request may have been
             // delivered and acted on, so this never says Carbon was not reached.
             throw new CarbonMcpException("Carbon MCP {$label} got no response from Carbon (may have been delivered): ".class_basename($e));
+        }
+
+        if ($response->status() === 401 && ! $replay) {
+            throw new CarbonMcpDraftAuthException('Carbon MCP draft HTTP 401');
         }
 
         if ($response->status() === 401) {
