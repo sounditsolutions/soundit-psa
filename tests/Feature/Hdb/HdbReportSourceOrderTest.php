@@ -48,7 +48,10 @@ class HdbReportSourceOrderTest extends TestCase
 
     private function fake($api): void
     {
-        Http::fake([HdbApiConfig::BASE_URL.'/reports/'.self::PRESS => $api]);
+        Http::fake([
+            HdbApiConfig::BASE_URL.'/reports/'.self::PRESS => $api,
+            'https://portal.example.test/*' => Http::response('synthetic retired reader'),
+        ]);
     }
 
     public static function formerFallbackOutcomes(): array

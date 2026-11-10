@@ -9,9 +9,9 @@ use App\Models\Setting;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Services\Assistant\AssistantToolExecutor;
-use App\Services\Hdb\HdbReportClient;
+use App\Services\Hdb\HdbApiReportClient;
 use App\Services\Mcp\HdbReportTool;
-use App\Support\HdbPortalConfig;
+use App\Support\HdbApiConfig;
 use App\Support\McpConfig;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -22,43 +22,23 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
- * get_hdb_report (card c5JaSetu): the HelpDesk Buttons report over staff MCP.
- *
- * Every call goes through the real staff MCP route and the real
- * HdbReportClient + HdbReportFetchAuthorizer; only the portal is faked, with
- * Http::preventStrayRequests() so an unscripted request fails the test.
- *
- * FIXTURES ARE SYNTHETIC (G-13): example.test hosts, invented users,
- * documentation-range addresses and an invented press id, shaped after the
- * key list HdbReportClientTest already uses (that suite's docblock states the
- * provenance limit: a second-hand transcription, not a captured payload). No
- * client name, press id or screenshot from a real ticket appears here.
+ * Real staff MCP route, API reader and authorizer; only HTTP is faked.
+ * Synthetic fixtures follow the API contract in HdbApiReportClientTest.
  */
 class HdbReportToolTest extends TestCase
 {
     use RefreshDatabase;
-
-    private const BASE = 'https://portal.example.test';
 
     // Deliberately synthetic; never an id copied from a client ticket.
     private const PRESS = 'deadbeef-0000-4000-8000-0000000000c5';
 
     private const SIBLING_PRESS = 'deadbeef-0000-4000-8000-0000000000c6';
 
-    private const IP_FILTER_NOTICE = 'Your IP address is not on the account IP Filter whitelist.';
-
     protected function setUp(): void
     {
         parent::setUp();
 
-        // The example portal host resolves nowhere; the config guard fails
-        // closed on NXDOMAIN, so resolution gets a fixed public answer (the
-        // seam HdbReportClientTest and HdbAuthClientTest use).
-        $this->app->bind(HdbPortalConfig::HOST_RESOLVER, fn () => fn (string $host) => ['93.184.216.34']);
-
-        Setting::setValue('hdb_base_url', self::BASE);
-        Setting::setValue('hdb_email', 'reports@example.test');
-        Setting::setEncrypted('hdb_password', 'service-account-password');
+        Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
 
         Http::preventStrayRequests();
     }
@@ -133,71 +113,24 @@ class HdbReportToolTest extends TestCase
         return $bytes;
     }
 
-    /** @return array<string, mixed> */
-    private function ticketJson(array $overrides = []): array
+    private function fakeWholeReport(?string $screenshot = null, array $overrides = []): void
     {
-        return array_replace([
-            'ticketNumber' => '22814',
-            'pressTime' => '2026-09-04 11:02:41',
-            'uploadComplete' => true,
-            'redactDiagnostic' => false,
-            'redactScreenshots' => false,
-            'hostname' => 'WS-INVENTED-01',
-            'username' => 'avery.invented',
-            'localIP' => '192.0.2.31',
-            'msg' => 'A synthetic popup keeps appearing.',
-        ], $overrides);
-    }
+        $data = \Tests\Feature\Hdb\HdbApiReportClientTest::fixture();
+        $data['diagnostics']['system'] = ['hostname' => 'WS-INVENTED-01'];
+        $data['diagnostics']['processes'] = ['explorer' => ['PID' => 4242]];
+        $data['instant_replay']['sprite'] = '/synthetic';
+        $data = array_replace_recursive($data, $overrides);
+        Http::fake(function (Request $request) use ($data, $screenshot) {
+            if ($request->url() === HdbApiConfig::BASE_URL.'/reports/'.self::PRESS) {
+                $data['ticket_id'] = (string) TicketNote::where('hdb_press_id', self::PRESS)->firstOrFail()->ticket_id;
 
-    /** @return array<string, mixed> */
-    private function reportJson(array $overrides = []): array
-    {
-        return array_replace([
-            'info' => ['hostname' => 'WS-INVENTED-01', 'user' => 'avery.invented'],
-            'avStatus' => ['Windows Defender' => ['state' => 'Enabled']],
-            'windowsFirewall' => ['firewallState' => 'ON'],
-            'hardware' => ['deviceErrors' => []],
-            'netStatus' => ['gateway' => '192.0.2.1'],
-            'eventLog' => ['application' => [], 'system' => []],
-            'processList' => ['explorer' => ['PID' => 4242]],
-            'software' => ['bsodList' => []],
-        ], $overrides);
-    }
-
-    /** The portal: a successful sign-in, then each report file as given. */
-    private function fakePortal(array $files): void
-    {
-        $fakes = [self::BASE.'/login' => Http::response('<html><body><h1>Dashboard</h1></body></html>')];
-
-        foreach ($files as $name => $body) {
-            $fakes[self::BASE.'/gatekeeper_auth.php?*getFile='.$name.'*'] = is_string($body) ? Http::response($body) : $body;
-        }
-
-        Http::fake($fakes);
-    }
-
-    private function fakeWholeReport(?string $screenshot = null, array $ticketOverrides = []): void
-    {
-        $this->fakePortal([
-            HdbReportClient::FILE_TICKET => json_encode($this->ticketJson($ticketOverrides)),
-            HdbReportClient::FILE_REPORT => json_encode($this->reportJson()),
-            HdbReportClient::FILE_SCREENSHOT => $screenshot ?? $this->png(),
-        ]);
-    }
-
-    /** @return list<string> every gatekeeper getFile requested, in order */
-    private function requestedFiles(): array
-    {
-        $files = [];
-        foreach (Http::recorded() as [$request]) {
-            /** @var Request $request */
-            if (str_contains($request->url(), 'gatekeeper_auth.php')) {
-                parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $q);
-                $files[] = (string) ($q['getFile'] ?? '');
+                return Http::response($data);
             }
-        }
-
-        return $files;
+            if ($request->url() === HdbApiConfig::BASE_URL.'/reports/'.self::PRESS.'/instant-replay/sprite') {
+                return Http::response($screenshot ?? $this->png());
+            }
+            throw new \LogicException('Unexpected synthetic request');
+        });
     }
 
     // ------------------------------------------------------------- happy path
@@ -218,9 +151,11 @@ class HdbReportToolTest extends TestCase
         $this->assertArrayNotHasKey('error', $out);
         $this->assertSame('fetched', $out['status']);
         $this->assertSame([$ticket->id, $note->id], [$out['ticket_id'], $out['note_id']]);
-        $this->assertSame('WS-INVENTED-01', $out['report']['info']['hostname']);
-        $this->assertSame(['explorer' => ['PID' => 4242]], $out['report']['processList']);
-        $this->assertSame('22814', $out['report_metadata']['ticketNumber']);
+        $this->assertSame('WS-INVENTED-01', $out['report']['system']['hostname']);
+        $this->assertSame(['explorer' => ['PID' => 4242]], $out['report']['processes']);
+        $this->assertSame('complete', $out['report_metadata']['status']);
+        $this->assertSame('api', $out['source']);
+        $this->assertSame(HdbApiReportClient::SPRITE_FILENAME, $out['screenshot']['filename']);
         $this->assertSame([], $out['missing_sections']);
         $this->assertSame(['diagnostic' => false, 'screenshots' => false], $out['redaction']);
 
@@ -234,7 +169,8 @@ class HdbReportToolTest extends TestCase
 
         // The press id never leaves (LinkedIds keeps it off reads: paste-to-fetch).
         $this->assertStringNotContainsString(self::PRESS, (string) $this->callTool(['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id])->getContent());
-        $this->assertSame(['ticket.json', 'report.json', 'screen.png'], array_slice($this->requestedFiles(), 0, 3));
+        Http::assertSent(fn (Request $request) => $request->url() === HdbApiConfig::BASE_URL.'/reports/'.self::PRESS);
+        Http::assertNotSent(fn (Request $request) => $request->method() !== 'GET');
     }
 
     // ------------------------------------------------------------ authority
@@ -364,7 +300,7 @@ class HdbReportToolTest extends TestCase
         $out = $this->decoded($this->callTool(['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id]));
 
         $this->assertSame('no_keyed_note', $out['refusal'] ?? null, json_encode($out));
-        $this->assertSame(\App\Support\HdbApiConfig::isConfigured() ? 'api' : 'portal', $out['source'] ?? null);
+        $this->assertSame('api', $out['source'] ?? null);
         $this->assertStringStartsWith('note_id does not name a live, visible note', (string) ($out['error'] ?? ''));
         Http::assertNothingSent();
     }
@@ -374,7 +310,6 @@ class HdbReportToolTest extends TestCase
         $ticket = $this->helpdeskTicket();
         $note = $this->note($ticket);
         Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
-        Setting::where('key', 'hdb_password')->first()->delete();
         $data = \Tests\Feature\Hdb\HdbApiReportClientTest::fixture();
         $data['ticket_id'] = (string) $ticket->id;
         $data['diagnostics_redacted'] = true;
@@ -391,55 +326,9 @@ class HdbReportToolTest extends TestCase
         $this->assertSame('The Instant Replay sprite fetch failed.', $out['warning']);
     }
 
-    public function test_api_and_portal_output_keys_match_with_source(): void
-    {
-        $ticket = $this->helpdeskTicket();
-        $note = $this->note($ticket);
-        $this->fakeWholeReport();
-        $args = ['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id];
-        $portal = $this->decoded($this->callTool($args));
-        Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
-        Setting::where('key', 'hdb_password')->first()->delete();
-        $data = \Tests\Feature\Hdb\HdbApiReportClientTest::fixture();
-        $data['ticket_id'] = (string) $ticket->id;
-        $data['instant_replay']['sprite'] = '/synthetic';
-        Http::fake([
-            \App\Support\HdbApiConfig::BASE_URL.'/reports/'.self::PRESS => Http::response($data),
-            \App\Support\HdbApiConfig::BASE_URL.'/reports/'.self::PRESS.'/instant-replay/sprite' => Http::response($this->png()),
-        ]);
-        $api = $this->decoded($this->callTool($args));
-        $this->assertArrayHasKey('source', $portal);
-        $this->assertArrayHasKey('source', $api);
-        $this->assertSame('portal', $portal['source']);
-        $this->assertSame('api', $api['source']);
-        $this->assertSame(array_keys($portal), array_keys($api));
-        $this->assertSame('instant-replay.png', $api['screenshot']['filename']);
-        $this->assertSame(array_keys($portal['screenshot']), array_keys($api['screenshot']));
-    }
-
-    public static function authoritySources(): array
-    {
-        return ['portal' => [false], 'api' => [true]];
-    }
-
-    #[DataProvider('authoritySources')]
-    public function test_authority_refusals_with_each_source(bool $api): void
-    {
-        if ($api) {
-            Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
-        }
-        $this->test_a_ticket_of_another_client_is_refused_like_get_ticket_attachment_and_nothing_is_fetched();
-        $this->test_a_raw_press_id_or_link_is_refused_as_input_and_nothing_is_fetched();
-        $this->test_an_unverified_contact_intake_ticket_is_refused_like_get_ticket_attachment();
-        $this->test_an_unverified_contact_intake_note_is_refused_in_the_no_keyed_note_shape();
-        $this->test_a_note_keyed_on_another_ticket_is_refused_even_when_this_ticket_cache_names_the_press();
-        Http::assertNothingSent();
-    }
-
     public function test_api_configuration_keeps_the_integration_off_gate(): void
     {
         Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
-        Setting::where('key', 'hdb_password')->first()->delete();
         Setting::setValue('t2t_enabled', '0');
         $this->assertNotContains(HdbReportTool::NAME, array_column($this->mcp('tools/list', [])->json('result.tools'), 'name'));
         Setting::setValue('t2t_enabled', '1');
@@ -490,97 +379,64 @@ class HdbReportToolTest extends TestCase
 
     // -------------------------------------------------------- non-fetched
 
-    /**
-     * The portal's IP filter refused the sign-in: the caller is told which leg
-     * failed in plain words, never an empty success.
-     */
-    public function test_an_unauthenticated_portal_returns_its_reason_plainly(): void
-    {
-        $ticket = $this->helpdeskTicket();
-        $note = $this->note($ticket);
-        $login = '<form action="" method="post" id="theOnlyForm"><input type="email" name="email"><input type="password" name="password"><input type="hidden" name="g" value="g"><input type="submit" name="submit" disabled hidden></form>';
-        Http::fake([
-            self::BASE.'/login' => Http::sequence()
-                ->push('<html><body>'.$login.'</body></html>')
-                ->push('<html><body><div class="notify notify--bad"><span>'.self::IP_FILTER_NOTICE.'</span></div>'.$login.'</body></html>'),
-        ]);
-
-        $r = $this->callTool(['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id]);
-        $out = $this->decoded($r);
-
-        $this->assertTrue($r->json('result.isError'));
-        $this->assertSame('unauthenticated', $out['status']);
-        $this->assertSame('portal_ip_filtered', $out['auth_reason']);
-        $this->assertStringStartsWith('Could not sign in to the HelpDesk Buttons portal, so no report was fetched.', $out['error']);
-        $this->assertStringContainsString('IP filter whitelist', $out['error']);
-        $this->assertArrayNotHasKey('report', $out);
-        $this->assertSame([], $this->requestedFiles());
-    }
-
-    /** @return array<string, array{0: array<string, mixed>, 1: string, 2: string, 3: string}> */
-    public static function nonFetchedPortalAnswers(): array
+    public static function nonFetchedApiAnswers(): array
     {
         return [
-            'unreachable' => [['ticket' => 'connection'], 'unreachable', 'transport_error', 'No response was received'],
-            'malformed' => [['ticket' => '<html>not json</html>'], 'malformed', 'unreadable_payload', 'not a readable report'],
-            'unexpected response' => [['ticket' => 503], 'malformed', 'unexpected_response', 'did not return a usable report file'],
-            'incomplete' => [['ticket' => ['uploadComplete' => false]], 'incomplete', 'upload_incomplete', 'not finished uploading'],
-            'upload gate missing' => [['ticket' => ['uploadComplete' => null]], 'incomplete', 'upload_gate_missing', 'did not say whether the upload had finished'],
-            'redaction unreadable' => [['ticket' => ['redactScreenshots' => 'no']], 'incomplete', 'redaction_flag_unreadable', 'did not carry readable redaction settings'],
+            'unreachable' => ['connection', 'unreachable', 'transport_error'],
+            'malformed' => ['malformed', 'malformed', 'unreadable_payload'],
+            'server error' => [503, 'unreachable', 'transport_error'],
+            'not found' => [404, 'unreachable', 'report_not_found'],
+            'rejected' => [401, 'unauthenticated', 'not_authenticated'],
+            'forbidden' => [403, 'unauthenticated', 'not_authenticated'],
+            'incomplete' => [['status' => 'pending'], 'incomplete', 'upload_incomplete'],
+            'upload gate missing' => [['status' => null], 'incomplete', 'upload_gate_missing'],
+            'redaction unreadable' => [['diagnostics_redacted' => 'no'], 'refused', 'redaction_flag_unreadable'],
         ];
     }
 
-    /** @param  array<string, mixed>  $answer */
-    #[DataProvider('nonFetchedPortalAnswers')]
-    public function test_every_non_fetched_status_is_an_error_with_its_reason_never_an_empty_success(array $answer, string $status, string $reason, string $says): void
+    #[DataProvider('nonFetchedApiAnswers')]
+    public function test_every_non_fetched_status_is_an_error_with_its_reason_never_an_empty_success(mixed $answer, string $status, string $reason): void
     {
         $ticket = $this->helpdeskTicket();
         $note = $this->note($ticket);
-
-        $ticketFile = $answer['ticket'];
-        $ticketResponse = match (true) {
-            $ticketFile === 'connection' => fn () => throw new \Illuminate\Http\Client\ConnectionException('synthetic'),
-            is_int($ticketFile) => Http::response('unavailable', $ticketFile),
-            is_array($ticketFile) => Http::response(json_encode(array_filter($this->ticketJson($ticketFile), static fn ($v) => $v !== null))),
-            default => Http::response($ticketFile),
-        };
-        $this->fakePortal([
-            HdbReportClient::FILE_TICKET => $ticketResponse,
-            HdbReportClient::FILE_REPORT => json_encode($this->reportJson()),
-            HdbReportClient::FILE_SCREENSHOT => $this->png(),
-        ]);
-
+        if (is_array($answer)) {
+            $this->fakeWholeReport(null, $answer);
+        } else {
+            Http::fake([HdbApiConfig::BASE_URL.'/reports/'.self::PRESS => match (true) {
+                $answer === 'connection' => Http::failedConnection(),
+                is_int($answer) => Http::response([], $answer),
+                default => Http::response('<html>not json</html>'),
+            }]);
+        }
         $r = $this->callTool(['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id]);
         $out = $this->decoded($r);
-
         $this->assertTrue($r->json('result.isError'));
         $this->assertSame($status, $out['status']);
         $this->assertSame($reason, $out['reason']);
-        $this->assertStringContainsString($says, $out['error']);
-        $this->assertStringNotContainsString('imported', $out['error'], 'the import path\'s wording is false for this tool');
+        $this->assertSame('api', $out['source']);
+        $this->assertStringContainsString($reason, $out['error']);
+        $this->assertStringNotContainsString('portal', $out['error']);
         $this->assertArrayNotHasKey('report', $out);
         $this->assertArrayNotHasKey('screenshot', $out);
+        if ($answer === 404) {
+            $this->assertSame('HelpDesk Buttons has no report for this press yet (report_not_found). Nothing was fetched; try again later.', $out['error']);
+        }
+        Http::assertSentCount(1);
     }
 
     public function test_a_degraded_report_returns_what_arrived_with_a_warning_naming_the_missing_sections(): void
     {
         $ticket = $this->helpdeskTicket();
         $note = $this->note($ticket);
-        $report = $this->reportJson();
-        unset($report['eventLog']);
-        $this->fakePortal([
-            HdbReportClient::FILE_TICKET => json_encode($this->ticketJson()),
-            HdbReportClient::FILE_REPORT => json_encode($report),
-            HdbReportClient::FILE_SCREENSHOT => $this->png(),
-        ]);
-
+        $data = \Tests\Feature\Hdb\HdbApiReportClientTest::fixture();
+        $data['ticket_id'] = (string) $ticket->id;
+        unset($data['diagnostics']['events']);
+        Http::fake([HdbApiConfig::BASE_URL.'/reports/'.self::PRESS => Http::response($data)]);
         $out = $this->decoded($this->callTool(['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id]));
-
         $this->assertSame('degraded', $out['status']);
-        $this->assertSame(['eventLog'], $out['missing_sections']);
+        $this->assertSame(['events'], $out['missing_sections']);
         $this->assertStringContainsString('not a complete report', $out['warning']);
-        $this->assertSame('WS-INVENTED-01', $out['report']['info']['hostname']);
-        $this->assertTrue($out['screenshot']['is_image']);
+        $this->assertSame($data['diagnostics'], $out['report']);
     }
 
     // ------------------------------------------------------------- ceilings
@@ -600,8 +456,9 @@ class HdbReportToolTest extends TestCase
         $out = $this->decoded($this->callTool(['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id]));
 
         $this->assertSame('fetched', $out['status']);
-        $this->assertSame(['error' => 'Screenshot is too large to return inline ('.strlen($oversize).' bytes, limit '.AssistantToolExecutor::MAX_ATTACHMENT_BYTES.'); open the report in the HelpDesk Buttons portal.'], $out['screenshot']);
-        $this->assertSame('WS-INVENTED-01', $out['report']['info']['hostname']);
+        $this->assertNull($out['screenshot']);
+        $this->assertSame('oversize', $out['screenshot_note']);
+        $this->assertSame('WS-INVENTED-01', $out['report']['system']['hostname']);
     }
 
     public function test_a_screenshot_over_the_pixel_ceiling_is_refused_before_decode(): void
@@ -616,27 +473,28 @@ class HdbReportToolTest extends TestCase
 
         $out = $this->decoded($this->callTool(['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id]));
 
-        $this->assertSame(['error' => 'Image dimensions too large to process (6000x6000).'], $out['screenshot']);
+        $this->assertNull($out['screenshot']);
+        $this->assertSame('oversize', $out['screenshot_note']);
     }
 
     public function test_a_screenshot_the_end_user_withheld_is_not_fetched_and_says_why(): void
     {
         $ticket = $this->helpdeskTicket();
         $note = $this->note($ticket);
-        $this->fakeWholeReport(null, ['redactScreenshots' => true]);
+        $this->fakeWholeReport(null, ['instant_replay' => ['redacted' => true]]);
 
         $out = $this->decoded($this->callTool(['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id]));
 
         $this->assertNull($out['screenshot']);
-        $this->assertStringContainsString('asked that screenshots not be shown', $out['screenshot_note']);
-        $this->assertNotContains('screen.png', $this->requestedFiles());
+        $this->assertSame('redacted', $out['screenshot_note']);
+        Http::assertSentCount(1);
     }
 
     public function test_diagnostic_redaction_withholds_the_report_sections_and_says_so(): void
     {
         $ticket = $this->helpdeskTicket();
         $note = $this->note($ticket);
-        $this->fakeWholeReport(null, ['redactDiagnostic' => true]);
+        $this->fakeWholeReport(null, ['diagnostics_redacted' => true]);
 
         $out = $this->decoded($this->callTool(['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id]));
 
@@ -663,9 +521,15 @@ class HdbReportToolTest extends TestCase
         $this->assertSame('granted', $match['grant_state']);
     }
 
-    public function test_without_portal_credentials_it_is_not_live_and_searches_as_unavailable_config(): void
+    public function test_portal_only_credentials_do_not_publish_the_tool(): void
     {
-        Setting::where('key', 'hdb_password')->delete();
+        Setting::where('key', 'hdb_api_key')->delete();
+        Setting::setValue('t2t_enabled', '1');
+        Setting::setValue('hdb_base_url', 'https://portal.example.test');
+        Setting::setValue('hdb_email', 'synthetic@example.test');
+        Setting::setEncrypted('hdb_password', 'synthetic-password');
+        Setting::setEncrypted('hdb_totp_secret', 'synthetic-seed');
+        $this->assertNotContains(HdbReportTool::NAME, array_column($this->mcp('tools/list', [])->json('result.tools'), 'name'));
 
         $out = $this->decoded($this->mcp('tools/call', ['name' => 'search_tools', 'arguments' => ['query' => 'helpdesk']]));
         $this->assertSame('unavailable_config', collect($out['matches'])->firstWhere('name', HdbReportTool::NAME)['grant_state'] ?? null);
@@ -676,17 +540,17 @@ class HdbReportToolTest extends TestCase
     }
 
     /**
-     * OFF=OFF (C-47): the portal credentials sit on the Tier2Tickets / HelpDesk
+     * OFF=OFF (C-47): the API credentials sit on the Tier2Tickets / HelpDesk
      * Buttons card, so switching that integration off unpublishes the tool even
-     * with the credentials still saved, and no sign-in is attempted.
+     * with the credentials still saved, and no request is attempted.
      */
-    public function test_with_the_integration_switched_off_it_is_not_live_even_with_portal_credentials_saved(): void
+    public function test_with_the_integration_switched_off_it_is_not_live_even_with_api_credentials_saved(): void
     {
         $ticket = $this->helpdeskTicket();
         $note = $this->note($ticket);
         $this->fakeWholeReport();
         $args = ['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id];
-        $this->assertTrue(HdbPortalConfig::isConfigured());
+        $this->assertTrue(HdbApiConfig::isConfigured());
 
         Setting::setValue('t2t_enabled', '0');
 

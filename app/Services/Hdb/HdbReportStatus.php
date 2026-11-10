@@ -5,14 +5,11 @@ namespace App\Services\Hdb;
 /**
  * The whole vocabulary one HelpDesk Buttons press-report fetch may report.
  *
- * Closed on purpose, for the same reason {@see HdbAuthStatus} is: everything
- * behind `gatekeeper_auth.php` is vendor-controlled bytes, and a technician-
- * facing surface may not carry them. Only one of these symbols, plus the
- * closed reason list on {@see HdbReportResult}, leaves the client.
+ * Status and reason symbols are controlled locally, never vendor text.
  *
  * DEGRADED is the case this enum exists for. docs/ARCHITECTURE.md § "Vendor
  * response shapes" rule 3 forbids a degraded read from returning a clean empty
- * result: a `report.json` that arrived without a section this integration was
+ * result: diagnostics that arrived without a section this integration was
  * built to read is a BUG, not "that machine had no event log". So the payload
  * is still handed back — dropping it would be its own data loss — carried by a
  * status that is not Fetched and a reason that NAMES the missing sections.
@@ -30,27 +27,20 @@ enum HdbReportStatus: string
      */
     case Degraded = 'degraded';
 
-    /**
-     * `ticket.json` says `uploadComplete: false`. The press is still uploading,
-     * so `report.json` was NOT fetched and nothing may be imported yet. This is
-     * the one outcome that is expected to succeed on a later attempt.
-     */
+    /** The API has not supplied a recognized complete status. */
     case Incomplete = 'incomplete';
 
-    /**
-     * {@see HdbReportFetchAuthorizer} refused. No request was issued: the gate
-     * runs before the session, not after it.
-     */
+    /** Note authorization, API ticket binding or redaction validation refused. */
     case Refused = 'refused';
 
-    /** The portal session could not be established — see the auth reason. */
+    /** The API key is missing, rejected or lacks permission. */
     case Unauthenticated = 'unauthenticated';
 
-    /** Transport, redirect policy or request budget. Nothing was learned. */
+    /** Transport failure or an upstream error; no usable report. */
     case Unreachable = 'unreachable';
 
     /**
-     * The portal answered, and what it answered is not a shape this client can
+     * The API answered, and what it answered is not a shape this client can
      * read. Never treated as "no data" — fail closed, and name it.
      */
     case Malformed = 'malformed';

@@ -102,7 +102,7 @@ class McpToolSurface
             ChetDataSurfaceTools::generalTools(),
             OperatorBridgeTools::definitions(),
             // HelpDesk Buttons report (card c5JaSetu). OFF=OFF: live only when the
-            // API or portal credentials are stored AND the Tier2Tickets /
+            // An API key is stored AND the Tier2Tickets /
             // HelpDesk Buttons integration is switched on. Declares client_id.
             HdbApiConfig::isConfigured() && T2TConfig::isEnabled() ? McpToolRegistry::hdbReportTools() : [],
             // Asset watch alerts (card K3VEcxtw). v1 covers Tactical assets only, so

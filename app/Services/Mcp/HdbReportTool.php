@@ -171,7 +171,7 @@ class HdbReportTool
 
     /**
      * The screenshot in get_ticket_attachment's image shape, or null and the
-     * reason. The client hands back the raw Instant Replay sprite body (bytes, not
+     * reason. The client hands back a bounded, resized Instant Replay sprite (bytes, not
      * base64), and only when the end user's redaction flags allowed it to be
      * fetched at all. Ceilings run in get_ticket_attachment's order: bytes,
      * then a header-only type and pixel check, then the GD decode.

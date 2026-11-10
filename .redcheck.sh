@@ -19,7 +19,7 @@ set -uo pipefail
 cd "$(dirname "$0")"
 
 PHPUNIT=${REDCHECK_PHPUNIT:-./vendor/bin/phpunit}
-FILTER=${REDCHECK_FILTER:-HdbReportClientTest}
+FILTER=${REDCHECK_FILTER:-HdbApiReportClientTest}
 TIMEOUT=${REDCHECK_TIMEOUT:-900}
 
 TIP=$(git rev-parse HEAD)
@@ -229,10 +229,6 @@ PY
   git diff --quiet -- "$file" || { echo "ABORT: restore failed for $file"; exit 1; }
 }
 
-C=app/Services/Hdb/HdbReportClient.php
-R=app/Services/Hdb/HdbReportRedaction.php
-V=app/Services/Hdb/HdbReportResult.php
-
 # Baseline. The UNMUTATED suite must run and pass BEFORE the first mutation, or
 # every KILLED below is indistinguishable from the tip being red for a reason
 # that predates the mutant: a suite already failing at $TIP scores 14/14 and
@@ -250,102 +246,9 @@ if [ "${BASE_LINE%%$'\t'*}" != SURVIVED ]; then
 fi
 echo "baseline: unmutated suite ran and passed under filter $FILTER"
 
-# M1 — the upload gate deleted entirely (import an unfinished press).
-run M1-upload-gate-removed "$C" \
-  'if (! is_bool($complete)) {' \
-  'if (false) {'
-
-# M2 — the natural permissive coalesce on the upload gate.
-run M2-upload-gate-coalesce "$C" \
-  '$complete = $ticket[' "\$complete = (bool) (\$ticket['uploadComplete'] ?? true); \$ignored = \$ticket["
-
-# M3 — THE dangerous redaction default: absent flag means "not redacted".
-run M3-redaction-permissive-default "$R" \
-  '$diagnostic = $ticket[' \
-  'return new self((bool) ($ticket['"'"'redactDiagnostic'"'"'] ?? false), (bool) ($ticket['"'"'redactScreenshots'"'"'] ?? false)); $diagnostic = $ticket['
-
-# M4 — screenshot fetched regardless of the flag, nulled afterwards.
-run M4-screenshot-fetched-then-discarded "$C" \
-  '$screenshot = $redaction->allowsScreenshots() ? $this->screenshot($press) : null;' \
-  '$screenshot = $this->screenshot($press); $screenshot = $redaction->allowsScreenshots() ? $screenshot : null;'
-
-# M5 — the CIPP failure: a missing section coalesces to empty, import proceeds.
-run M5-missing-section-becomes-empty "$C" \
-  'if (! array_key_exists($section, $report)) {' \
-  'if (false && ! array_key_exists($section, $report)) {'
-
-# M6 — a degraded read reported as importable.
-run M6-degraded-is-importable "$V" \
-  'return $this->status === HdbReportStatus::Fetched;' \
-  'return in_array($this->status, [HdbReportStatus::Fetched, HdbReportStatus::Degraded], true);'
-
-# M7 — the gate DEFERRED: the session is established and the fetch attempted
-# first, and only then is the refusal returned. The status is identical; what
-# changes is that a refused press now costs round trips, which is the existence
-# oracle the zero-request assertion exists to stop.
-run M7-gate-deferred-after-network "$C" \
-  '        if ($authorization->refused()) {
-            return HdbReportResult::refused($authorization->refusal ?? HdbReportFetchRefusal::NoKeyedNote);
-        }
-
-        // The authorizer'"'"'s normalised id' \
-  '        if ($authorization->refused()) {
-            $this->session ??= $this->auth->authenticate();
-            $this->get('"'"'00000000-0000-4000-8000-000000000000'"'"', self::FILE_TICKET);
-
-            return HdbReportResult::refused($authorization->refusal ?? HdbReportFetchRefusal::NoKeyedNote);
-        }
-
-        // The authorizer'"'"'s normalised id'
-
-# M7b — the gate itself removed: every press authorizes.
-run M7b-gate-removed "$C" \
-  'if ($authorization->refused()) {
-            return HdbReportResult::refused($authorization->refusal ?? HdbReportFetchRefusal::NoKeyedNote);
-        }
-
-        // The authorizer'"'"'s normalised id' \
-  'if (false) {
-            return HdbReportResult::refused($authorization->refusal ?? HdbReportFetchRefusal::NoKeyedNote);
-        }
-        $authorization = $authorization->allowed ? $authorization : \App\Services\Hdb\HdbReportFetchAuthorization::allow(strtolower(trim((string) $pressId)), 1, (int) $ticketId, 1);
-
-        // The authorizer'"'"'s normalised id'
-
-# M8 — a malformed body becomes a clean empty payload.
-run M8-malformed-becomes-empty "$C" \
-  '        if (! is_array($decoded) || $decoded === [] || array_is_list($decoded)) {
-            return null;
-        }' \
-  '        if (! is_array($decoded) || array_is_list($decoded)) {
-            return [];
-        }'
-
-# M9 — the memo consulted BEFORE the gate (cross-client cache hit).
-run M9-memo-before-gate "$C" \
-  '$authorization = $this->authorizer->authorize($ticketId, $pressId);' \
-  'foreach ($this->fetched as $k => $v) { if (strtolower(trim((string) $pressId)) === $k) { return $v; } } $authorization = $this->authorizer->authorize($ticketId, $pressId);'
-
-# M10 — the getFile whitelist removed.
-run M10-whitelist-removed "$C" \
-  'if (! in_array($file, self::FETCHABLE_FILES, true)) {' \
-  'if (false) {'
-
-# M11 — the transport catch removed (a vendor outage becomes an exception).
-run M11-transport-catch-removed "$C" \
-  '} catch (\Throwable) {' \
-  '} catch (\LogicException) {'
-
-# M12 — every outcome memoised, so a failing press is pinned for the life of
-# the process and no retry can ever succeed.
-run M12-memoise-every-outcome "$C" \
-  '        return $this->fetchAuthorized($press);' \
-  '        return $this->fetched[$press] = $this->fetchAuthorized($press);'
-
-# M13 — the redaction refusal hands back the metadata it could not judge.
-run M13-redaction-refusal-leaks-metadata "$C" \
-  'return HdbReportResult::incomplete($press, [], HdbReportResult::REASON_REDACTION_FLAG_UNREADABLE);' \
-  'return HdbReportResult::incomplete($press, $ticket, HdbReportResult::REASON_REDACTION_FLAG_UNREADABLE);'
+# The portal-reader mutation set was retired with its implementation in S3.
+# This retained classifier harness has no default mutants; an empty set fails
+# closed below rather than claiming mutation coverage.
 
 echo "restored tip: $(git rev-parse HEAD); dirty: $(git status --porcelain | wc -l)"
 
