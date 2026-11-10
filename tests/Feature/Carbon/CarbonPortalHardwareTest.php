@@ -72,6 +72,7 @@ class CarbonPortalHardwareTest extends TestCase
         $this->assertSame('400.02', $order->estimated_total);
         $this->assertSame('SYNTH-CODE', $order->confirmation_code);
         $this->assertStringContainsString('Confirmation: SYNTH-CODE', Ticket::findOrFail($order->ticket_id)->description);
+        $this->assertSame(0, Ticket::findOrFail($order->ticket_id)->notes()->count());
         $this->assertCount(1, $this->calls());
         $params = $this->calls()[0][0]['params'];
         $this->assertSame('create_draft_order', $params['name']);
@@ -111,7 +112,7 @@ class CarbonPortalHardwareTest extends TestCase
         sort($keys);
         $this->assertSame(['structuredContent' => $keys, 'content_types' => ['text']], $order->response_keys);
         $this->assertStringNotContainsString('SECRET', json_encode($order->response_keys));
-        $this->assertStringContainsString('check Carbon before retrying', Ticket::findOrFail($order->ticket_id)->description);
+        $this->assertUnreadTicketKeepsCarbonStaffOnly($order);
         $this->assertCount(1, $this->calls());
         $this->assertDatabaseCount('tickets', 1);
     }
@@ -126,6 +127,18 @@ class CarbonPortalHardwareTest extends TestCase
         $this->assertSame($sent, count(Http::recorded()));
         $this->assertSame('unread', ClientHardwareOrder::sole()->status);
         $this->assertDatabaseCount('tickets', 1);
+        $this->assertUnreadTicketKeepsCarbonStaffOnly(ClientHardwareOrder::sole());
+    }
+
+    private function assertUnreadTicketKeepsCarbonStaffOnly(ClientHardwareOrder $order): void
+    {
+        $ticket = Ticket::findOrFail($order->ticket_id);
+        $this->assertStringNotContainsString('Carbon', $ticket->description);
+        $this->assertStringContainsString(__('carbon_hardware.unread'), $ticket->description);
+        $private = $ticket->notes()->where('is_private', true)->pluck('body')->all();
+        $this->assertSame([__('carbon_hardware.check_carbon')], $private);
+        $this->assertStringContainsString('Carbon', $private[0]);
+        $this->assertSame(0, $ticket->notes()->portalVisible()->count());
     }
 
     public function test_401_draft_is_sent_once_and_resubmit_sends_nothing(): void
@@ -135,6 +148,7 @@ class CarbonPortalHardwareTest extends TestCase
             ->push('', 202)->push('', 401)->push('', 401)]);
         $this->submit();
         $this->assertSame('unread', ClientHardwareOrder::sole()->status);
+        $this->assertUnreadTicketKeepsCarbonStaffOnly(ClientHardwareOrder::sole());
         $sent = count(Http::recorded());
         $this->submit();
         $this->assertSame($sent, count(Http::recorded()));

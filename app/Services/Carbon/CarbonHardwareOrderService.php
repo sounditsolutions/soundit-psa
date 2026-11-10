@@ -2,13 +2,16 @@
 
 namespace App\Services\Carbon;
 
+use App\Enums\NoteType;
 use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
 use App\Enums\TicketType;
+use App\Enums\WhoType;
 use App\Models\Client;
 use App\Models\ClientHardwareOrder;
 use App\Models\Person;
+use App\Models\TicketNote;
 use App\Services\TicketService;
 use App\Support\CarbonHardwareConfig;
 use Illuminate\Support\Facades\DB;
@@ -142,11 +145,17 @@ class CarbonHardwareOrderService
             }
             $description[] = __('carbon_hardware.estimate').': '.$order->estimated_total;
             $description[] = __('carbon_hardware.ship_to').': '.implode(', ', array_filter($arguments['shippingAddress']));
-            $description[] = $read ? __('carbon_hardware.confirmation', ['code' => $code]) : __('carbon_hardware.check_carbon');
+            $description[] = $read ? __('carbon_hardware.confirmation', ['code' => $code]) : __('carbon_hardware.unread');
             $ticket = $this->tickets->createTicket(['client_id' => $order->client_id, 'contact_id' => $order->person_id,
                 'subject' => __('carbon_hardware.ticket_subject'), 'description' => implode("\n", $description),
                 'source' => TicketSource::Portal, 'type' => TicketType::ServiceRequest, 'priority' => TicketPriority::P3,
                 'status' => TicketStatus::New, 'opened_at' => now()], null);
+            if (! $read) {
+                // Staff-only: the description is portal-visible, this private note is not.
+                TicketNote::create(['ticket_id' => $ticket->id, 'author_id' => null, 'author_name' => 'System',
+                    'who_type' => WhoType::System, 'body' => __('carbon_hardware.check_carbon'),
+                    'note_type' => NoteType::Note, 'is_private' => true, 'noted_at' => now()]);
+            }
             $order->update(['ticket_id' => $ticket->id]);
         });
 
