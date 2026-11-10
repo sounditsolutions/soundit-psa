@@ -9,11 +9,11 @@ use App\Models\Person;
 use App\Models\Setting;
 use App\Models\Ticket;
 use App\Services\Carbon\CarbonHardwareOrderService;
-use Illuminate\Validation\ValidationException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
