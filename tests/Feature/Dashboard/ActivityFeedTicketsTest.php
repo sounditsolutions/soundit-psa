@@ -2,10 +2,14 @@
 
 namespace Tests\Feature\Dashboard;
 
+use App\Enums\CallDirection;
+use App\Enums\CallStatus;
 use App\Enums\EmailDirection;
 use App\Enums\NoteType;
 use App\Models\Client;
 use App\Models\Email;
+use App\Models\Person;
+use App\Models\PhoneCall;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
@@ -149,5 +153,42 @@ class ActivityFeedTicketsTest extends TestCase
         $this->assertStringContainsString('Ticket opened', $html);
         $this->assertStringContainsString('Synthetic VPN outage subject', $html);
         $this->assertStringContainsString('data-type="ticket"', $html);
+    }
+
+    public function test_softphone_person_stream_serializes_opened_ticket(): void
+    {
+        $client = Client::factory()->create();
+        $person = Person::create([
+            'client_id' => $client->id, 'first_name' => 'Synthetic', 'last_name' => 'Caller', 'is_active' => true,
+        ]);
+        $ticket = Ticket::factory()->create([
+            'client_id' => $client->id,
+            'contact_id' => $person->id,
+            'subject' => 'Synthetic caller ticket subject',
+        ]);
+        // client_id is not mass-assignable on PhoneCall, so bypass the guard.
+        PhoneCall::forceCreate([
+            'call_uuid' => 'synthetic-softphone-opened',
+            'direction' => CallDirection::Inbound,
+            'from_number' => '+15555550100',
+            'to_number' => '+15555550199',
+            'status' => CallStatus::Ringing,
+            'started_at' => now(),
+            'client_id' => $client->id,
+            'person_id' => $person->id,
+        ]);
+
+        $activity = collect($this->actingAs(User::factory()->create())
+            ->getJson(route('calls.latest'))
+            ->assertOk()
+            ->json('call.activity'));
+        $row = $activity->firstWhere('type', 'ticket-opened');
+
+        $this->assertNotNull($row);
+        $this->assertSame('bi-ticket-perforated', $row['icon']);
+        $this->assertSame('Ticket opened', $row['label']);
+        $this->assertSame($ticket->display_id, $row['ticket_id']);
+        $this->assertSame('Synthetic caller ticket subject', $row['preview']);
+        $this->assertSame($person->full_name, $row['who']);
     }
 }
