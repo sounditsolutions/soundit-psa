@@ -12,10 +12,12 @@ use App\Models\User;
 use App\Services\Carbon\CarbonHardwareOrderService;
 use App\Services\Carbon\CarbonMcpClient;
 use App\Services\Carbon\CarbonMcpConnector;
+use App\Services\Carbon\CarbonMcpException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -351,11 +353,13 @@ class CarbonPortalHardwareTest extends TestCase
         $this->responseFixture();
         $colleague = Person::create(['client_id' => $this->client->id, 'person_type' => PersonType::User, 'first_name' => 'Synthetic', 'last_name' => 'Colleague', 'email' => 'colleague@example.test', 'is_active' => true, 'portal_enabled' => true, 'company_wide_access' => true]);
         ClientHardwareOrder::create(['client_id' => $this->client->id, 'person_id' => $colleague->id, 'idempotency_key' => (string) Str::uuid(), 'status' => 'submitted', 'lines' => [], 'estimated_total' => '5555.55']);
-        $this->travelTo(now()->setDate(2026, 3, 9)->setTime(12, 0));
+        // 03:30 UTC on Mar 10 is still Mar 9 in Los Angeles: the date must be the app timezone's, not UTC's.
+        Setting::setValue('app_timezone', 'America/Los_Angeles');
+        $this->travelTo(\Illuminate\Support\Carbon::create(2026, 3, 10, 3, 30, 0, 'UTC'));
         ClientHardwareOrder::create(['client_id' => $this->client->id, 'person_id' => $this->person->id, 'idempotency_key' => (string) Str::uuid(), 'status' => 'submitted', 'lines' => [], 'estimated_total' => '4444.44']);
         $html = $this->get(route('portal.hardware'))->assertOk()->assertSee('$4,444.44')->assertSee('$5,555.55')
             ->assertSee('<th class="text-end">'.__('carbon_hardware.total').'</th>', false)->assertDontSee('<th class="text-end">'.__('carbon_hardware.estimate').'</th>', false)
-            ->assertDontSee('2026-03-09')->getContent();
+            ->assertDontSee('2026-03-09')->assertDontSee('Mar 10, 2026')->getContent();
         $this->assertMatchesRegularExpression('#<tr><td>Mar 9, 2026</td><td>\s*</td><td class="text-end">\$4,444\.44</td><td>'.preg_quote(__('carbon_hardware.submitted'), '#').'</td></tr>#', $html);
         $this->person->update(['company_wide_access' => false]);
         $this->get(route('portal.hardware'))->assertOk()->assertSee('$4,444.44')->assertDontSee('5,555.55');
@@ -407,7 +411,7 @@ class CarbonPortalHardwareTest extends TestCase
                 throw new \RuntimeException('SECRET-MESSAGE-TEXT');
             }
         });
-        Log::spy();
+        $records = $this->recordLogs();
         $this->submit();
         $order = ClientHardwareOrder::sole();
         $this->assertSame('unread', $order->status);
@@ -417,12 +421,89 @@ class CarbonPortalHardwareTest extends TestCase
         $this->assertUnreadTicketKeepsCarbonStaffOnly($order);
         $this->assertSame(1, Ticket::findOrFail($order->ticket_id)->notes()->where('is_private', true)->count());
         $this->assertCount(1, $this->calls());
-        Log::shouldHaveReceived('warning')->once()->withArgs(fn ($message, $context) => $context === ['exception' => 'RuntimeException', 'order_id' => $order->id]
-            && ! str_contains($message.json_encode($context), 'SECRET'));
+        // One record through Laravel's logger, with the exact text.
+        $this->assertCount(1, $records);
+        $this->assertSame('warning', $records[0]->level);
+        $this->assertSame('[CarbonHardwareOrder] Draft submit threw', $records[0]->message);
+        $this->assertSame(['exception' => 'RuntimeException', 'order_id' => $order->id], $records[0]->context);
+        $this->assertStringNotContainsString('SECRET', $records[0]->message.json_encode($records[0]->context));
         $sent = count(Http::recorded());
         $this->post(route('portal.hardware.store'), $this->input)->assertRedirect(route('portal.hardware'))->assertSessionHasNoErrors()->assertSessionHas('success', __('carbon_hardware.recorded'));
         $this->assertSame($sent, count(Http::recorded()));
         $this->assertCount(1, $this->calls());
         $this->assertDatabaseCount('tickets', 1);
+        $this->assertCount(1, $records);
+    }
+
+    public function test_a_carbon_mcp_exception_from_the_draft_is_unread_and_logs_nothing(): void
+    {
+        $this->responseFixture();
+        $this->app->bind(CarbonMcpClient::class, fn ($app) => new class($app->make(CarbonMcpConnector::class)) extends CarbonMcpClient
+        {
+            public function createDraftOrderOnce(array $arguments): array
+            {
+                parent::createDraftOrderOnce($arguments);
+
+                throw new CarbonMcpException('Carbon MCP call failed: HTTP 504');
+            }
+        });
+        $records = $this->recordLogs();
+        $this->submit();
+        $order = ClientHardwareOrder::sole();
+        $this->assertSame('unread', $order->status);
+        $this->assertDatabaseCount('tickets', 1);
+        $this->assertCount(1, $this->calls());
+        $this->assertCount(0, $records);
+    }
+
+    public function test_an_anonymous_exception_logs_its_parent_class_and_no_file_path(): void
+    {
+        $this->responseFixture();
+        $this->app->bind(CarbonMcpClient::class, fn ($app) => new class($app->make(CarbonMcpConnector::class)) extends CarbonMcpClient
+        {
+            public function createDraftOrderOnce(array $arguments): array
+            {
+                parent::createDraftOrderOnce($arguments);
+
+                throw new class('SECRET-MESSAGE-TEXT') extends \RuntimeException {};
+            }
+        });
+        $records = $this->recordLogs();
+        $this->submit();
+        $order = ClientHardwareOrder::sole();
+        $this->assertSame('unread', $order->status);
+        $this->assertCount(1, $records);
+        $this->assertSame('warning', $records[0]->level);
+        $this->assertSame('[CarbonHardwareOrder] Draft submit threw', $records[0]->message);
+        $this->assertSame(['exception' => 'RuntimeException@anonymous', 'order_id' => $order->id], $records[0]->context);
+    }
+
+    public function test_a_namespaced_exception_logs_its_short_class_name(): void
+    {
+        $this->responseFixture();
+        $this->app->bind(CarbonMcpClient::class, fn ($app) => new class($app->make(CarbonMcpConnector::class)) extends CarbonMcpClient
+        {
+            public function createDraftOrderOnce(array $arguments): array
+            {
+                parent::createDraftOrderOnce($arguments);
+
+                throw new \Illuminate\Http\Client\ConnectionException('SECRET-MESSAGE-TEXT');
+            }
+        });
+        $records = $this->recordLogs();
+        $this->submit();
+        $order = ClientHardwareOrder::sole();
+        $this->assertSame('unread', $order->status);
+        $this->assertCount(1, $records);
+        $this->assertSame(['exception' => 'ConnectionException', 'order_id' => $order->id], $records[0]->context);
+    }
+
+    /** Records written through Laravel's logger during the test. */
+    private function recordLogs(): \ArrayObject
+    {
+        $records = new \ArrayObject;
+        Event::listen(MessageLogged::class, fn (MessageLogged $event) => $records->append($event));
+
+        return $records;
     }
 }
