@@ -10,9 +10,12 @@ use App\Models\Setting;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Carbon\CarbonHardwareOrderService;
+use App\Services\Carbon\CarbonMcpClient;
+use App\Services\Carbon\CarbonMcpConnector;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -366,5 +369,60 @@ class CarbonPortalHardwareTest extends TestCase
         $this->assertFalse(\Illuminate\Support\Facades\Schema::hasTable('client_hardware_orders'));
         $migration->up();
         $this->assertTrue(\Illuminate\Support\Facades\Schema::hasTable('client_hardware_orders'));
+    }
+
+    public function test_ticket_text_prints_money_as_the_page_does_and_stored_values_stay_raw(): void
+    {
+        $this->responseFixture();
+        $dock = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-DOCK', 'label' => 'Synthetic Dock', 'sell_price' => '1049.00', 'carbon_price' => '900.00']);
+        $this->input['lines'][] = ['model_id' => $dock->id, 'quantity' => 1];
+        $this->submit();
+        $order = ClientHardwareOrder::sole();
+        $lines = explode("\n", Ticket::findOrFail($order->ticket_id)->description);
+        $this->assertSame('2 x Synthetic Laptop (SYNTH-LAPTOP) @ $200.01', $lines[0]);
+        $this->assertSame('1 x Synthetic Dock (SYNTH-DOCK) @ $1,049.00', $lines[1]);
+        $this->assertSame('Estimated total, before tax and shipping: $1,449.02', $lines[2]);
+        $this->assertSame('1449.02', $order->estimated_total);
+        $this->assertSame(['200.01', '1049.00'], array_column($order->lines, 'sell_price'));
+    }
+
+    public function test_ticket_text_pins_the_ruled_two_laptop_lines(): void
+    {
+        $this->responseFixture();
+        $this->submit();
+        $lines = explode("\n", Ticket::findOrFail(ClientHardwareOrder::sole()->ticket_id)->description);
+        $this->assertSame('2 x Synthetic Laptop (SYNTH-LAPTOP) @ $200.01', $lines[0]);
+        $this->assertSame('Estimated total, before tax and shipping: $400.02', $lines[1]);
+    }
+
+    public function test_any_throwable_after_the_draft_is_unread_with_ticket_and_not_resent(): void
+    {
+        $this->responseFixture();
+        $this->app->bind(CarbonMcpClient::class, fn ($app) => new class($app->make(CarbonMcpConnector::class)) extends CarbonMcpClient
+        {
+            public function createDraftOrderOnce(array $arguments): array
+            {
+                parent::createDraftOrderOnce($arguments);
+
+                throw new \RuntimeException('SECRET-MESSAGE-TEXT');
+            }
+        });
+        Log::spy();
+        $this->submit();
+        $order = ClientHardwareOrder::sole();
+        $this->assertSame('unread', $order->status);
+        $this->assertNull($order->confirmation_code);
+        $this->assertDatabaseCount('client_hardware_orders', 1);
+        $this->assertDatabaseCount('tickets', 1);
+        $this->assertUnreadTicketKeepsCarbonStaffOnly($order);
+        $this->assertSame(1, Ticket::findOrFail($order->ticket_id)->notes()->where('is_private', true)->count());
+        $this->assertCount(1, $this->calls());
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn ($message, $context) => $context === ['exception' => 'RuntimeException', 'order_id' => $order->id]
+            && ! str_contains($message.json_encode($context), 'SECRET'));
+        $sent = count(Http::recorded());
+        $this->post(route('portal.hardware.store'), $this->input)->assertRedirect(route('portal.hardware'))->assertSessionHasNoErrors()->assertSessionHas('success', __('carbon_hardware.recorded'));
+        $this->assertSame($sent, count(Http::recorded()));
+        $this->assertCount(1, $this->calls());
+        $this->assertDatabaseCount('tickets', 1);
     }
 }

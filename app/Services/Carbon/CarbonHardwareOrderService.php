@@ -15,6 +15,7 @@ use App\Models\TicketNote;
 use App\Services\TicketService;
 use App\Support\CarbonHardwareConfig;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 
@@ -54,6 +55,12 @@ class CarbonHardwareOrderService
         }
 
         return null;
+    }
+
+    /** Ticket text prints money as the portal page does; stored values are unchanged. */
+    private function money(string|int|float $amount): string
+    {
+        return '$'.number_format((float) $amount, 2);
     }
 
     private function refuse(string $key): never
@@ -127,6 +134,10 @@ class CarbonHardwareOrderService
             $result = $this->carbon->createDraftOrderOnce($arguments);
         } catch (CarbonMcpException) {
             // Ambiguous delivery remains reserved, including preflight auth failures.
+        } catch (\Throwable $e) {
+            // Any other failure after the reservation is also unread: the draft may have gone out,
+            // so it is never retried. Class and order id only, never the message text.
+            Log::warning('[CarbonHardwareOrder] Draft submit threw; recorded as unread', ['exception' => class_basename($e), 'order_id' => $order->id]);
         }
         $data = $result['structuredContent'] ?? null;
         $code = $data instanceof \stdClass ? ($data->confirmationCode ?? null) : null;
@@ -147,9 +158,9 @@ class CarbonHardwareOrderService
         DB::transaction(function () use ($order, $arguments, $read, $code) {
             $description = [];
             foreach ($order->lines as $line) {
-                $description[] = $line['quantity'].' x '.$line['label'].' ('.$line['mfgPartNo'].') @ '.$line['sell_price'];
+                $description[] = $line['quantity'].' x '.$line['label'].' ('.$line['mfgPartNo'].') @ '.$this->money($line['sell_price']);
             }
-            $description[] = __('carbon_hardware.estimate').': '.$order->estimated_total;
+            $description[] = __('carbon_hardware.estimate').': '.$this->money($order->estimated_total);
             $description[] = __('carbon_hardware.ship_to').': '.implode(', ', array_filter($arguments['shippingAddress']));
             $description[] = $read ? __('carbon_hardware.confirmation', ['code' => $code]) : __('carbon_hardware.unread');
             $ticket = $this->tickets->createTicket(['client_id' => $order->client_id, 'contact_id' => $order->person_id,
