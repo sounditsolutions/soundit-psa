@@ -1575,13 +1575,12 @@ class McpStaffController extends Controller
                 unset($result['data_base64']);
                 $result['image_block'] = true;
             }
+            $imageBlocks = $imageBlock !== null ? [$imageBlock] : $this->hdbReportImageBlocks((string) $name, $result);
 
             $content = [
                 ['type' => 'text', 'text' => json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)],
+                ...$imageBlocks,
             ];
-            if ($imageBlock !== null) {
-                $content[] = $imageBlock;
-            }
 
             // Alerts-Hub payload piggyback (psa-0j6i): if this token has unread nudge-flagged
             // alerts, ride a short awareness notice on the NORMAL response of this tool call so
@@ -1676,6 +1675,46 @@ class McpStaffController extends Controller
         }
 
         return ['type' => 'image', 'data' => $data, 'mimeType' => $mimeType];
+    }
+
+    /**
+     * Card 6Xiehny3: get_hdb_report's screenshot as native MCP image blocks,
+     * one per Instant Replay frame in the order the tool lists them (oldest
+     * first), or one for a whole sprite. Each frame's bytes are removed from
+     * the result, so the text carries only its "frame k of N" line. A
+     * screenshot that is not a PNG, or any of whose entries lacks a non-empty
+     * data_base64 string, is left as it is and yields no block.
+     *
+     * @param  array<string, mixed>|mixed  $result  edited in place
+     * @return list<array{type: 'image', data: string, mimeType: string}>
+     */
+    private function hdbReportImageBlocks(string $name, mixed &$result): array
+    {
+        if ($name !== \App\Services\Mcp\HdbReportTool::NAME || ! is_array($result) || isset($result['error'])
+            || ! is_array($result['screenshot'] ?? null) || ($result['screenshot']['is_image'] ?? null) !== true
+            || ($result['screenshot']['media_type'] ?? null) !== 'image/png') {
+            return [];
+        }
+        $shot = $result['screenshot'];
+        $frames = is_array($shot['frames'] ?? null) ? $shot['frames'] : [$shot];
+        $blocks = [];
+        foreach ($frames as $frame) {
+            $data = is_array($frame) ? ($frame['data_base64'] ?? null) : null;
+            if (! is_string($data) || $data === '') {
+                return [];
+            }
+            $blocks[] = ['type' => 'image', 'data' => $data, 'mimeType' => 'image/png'];
+        }
+        if (isset($shot['frames'])) {
+            foreach (array_keys($shot['frames']) as $k) {
+                unset($result['screenshot']['frames'][$k]['data_base64']);
+            }
+        } else {
+            unset($result['screenshot']['data_base64']);
+        }
+        $result['screenshot']['image_blocks'] = count($blocks);
+
+        return $blocks;
     }
 
     /** @return array<string, mixed> */

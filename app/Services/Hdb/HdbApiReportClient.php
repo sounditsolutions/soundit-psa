@@ -94,19 +94,21 @@ final class HdbApiReportClient
         }
         unset($report['breach_exposure'], $report['identity_verification']);
         $sprite = null;
+        $frames = [];
+        $spriteDetail = null;
         $spriteReason = $screenshots ? 'redacted' : 'not_advertised';
         if ($screenshots === false && $advertised) {
             $image = $this->request('/reports/'.rawurlencode($reportId).'/instant-replay/sprite', [], true);
-            [$sprite, $spriteReason] = isset($image['sprite_reason'])
-                ? [null, $image['sprite_reason']]
-                : (isset($image['failure']) ? [null, 'fetch_failed'] : $this->boundedSprite($image['bytes'] ?? null));
+            [$sprite, $frames, $spriteReason, $spriteDetail] = isset($image['sprite_reason'])
+                ? [null, [], $image['sprite_reason'], 'the sprite download is over the '.self::MAX_BODY_BYTES.'-byte limit; it was not kept']
+                : (isset($image['failure']) ? [null, [], 'fetch_failed', null] : $this->sprite($image['bytes'] ?? null));
         }
         $missing = $diagnostic ? [] : array_values(array_diff(self::REQUIRED_SECTIONS, array_keys($report)));
         if ($missing !== []) {
-            return HdbReportResult::degraded($reportId, $metadata, $report, $missing, $redaction, $sprite)->withSpriteOutcome($spriteReason);
+            return HdbReportResult::degraded($reportId, $metadata, $report, $missing, $redaction, $sprite)->withFrames($frames)->withSpriteOutcome($spriteReason, $spriteDetail);
         }
 
-        $result = HdbReportResult::fetched($reportId, $metadata, $report, $redaction, $sprite)->withSpriteOutcome($spriteReason);
+        $result = HdbReportResult::fetched($reportId, $metadata, $report, $redaction, $sprite)->withFrames($frames)->withSpriteOutcome($spriteReason, $spriteDetail);
         if ($spriteReason === 'fetch_failed') {
             return $result;
         }
@@ -115,29 +117,48 @@ final class HdbApiReportClient
         return $this->memo[$memoKey] = $result->fromApi($this->reportHttpStatus, $this->reportCode);
     }
 
-    /** @return array{?string, ?string} */
-    private function boundedSprite(?string $bytes): array
+    /**
+     * The sprite as either the newest frames (when its PNG carries the
+     * `hdbc` frame layout chunk) or, without that chunk, the whole image under
+     * the attachment byte and pixel ceilings, as before frames existed. An
+     * omission carries a reason and, where bytes arrived, a detail with the
+     * byte count and W x H.
+     *
+     * @return array{?string, list<array{png: string, width: int, height: int, index: int, total: int}>, ?string, ?string}
+     */
+    private function sprite(?string $bytes): array
     {
         if ($bytes === null) {
-            return [null, 'fetch_failed'];
-        }
-        if (strlen($bytes) > \App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES) {
-            return [null, 'oversize'];
+            return [null, [], 'fetch_failed', null];
         }
         $size = @getimagesizefromstring($bytes);
         if ($size !== false) {
             $pixels = $size[0] * $size[1];
             $this->spriteBucket = $pixels <= 1_000_000 ? '<=1MP' : ($pixels <= 4_000_000 ? '<=4MP' : '>4MP');
         }
+        $info = HdbSpriteFrames::inspect($bytes);
+        $facts = static fn (?array $info) => strlen($bytes).' bytes'.($info === null ? '' : ', '.$info['width'].'x'.$info['height'].' px');
+        if ($info !== null && $info['layouts'] > 0) {
+            $out = HdbSpriteFrames::extract($bytes, $info);
+
+            return isset($out['frames'])
+                ? [null, $out['frames'], null, null]
+                : [null, [], $out['reason'], $out['detail'].' (sprite: '.$facts($info).')'];
+        }
+        if (strlen($bytes) > \App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES) {
+            return [null, [], 'oversize', 'the sprite carries no frame layout and is over the '.\App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES.'-byte whole-image limit (sprite: '.$facts($info).')'];
+        }
         if ($size === false || ($size['mime'] ?? '') !== 'image/png') {
-            return [null, 'not_image'];
+            return [null, [], 'not_image', 'the sprite is not a readable PNG (sprite: '.$facts($info).')'];
         }
         if ($size[0] * $size[1] > \App\Services\Assistant\AssistantToolExecutor::MAX_IMAGE_PIXELS) {
-            return [null, 'oversize'];
+            return [null, [], 'oversize', 'the sprite carries no frame layout and is over the '.\App\Services\Assistant\AssistantToolExecutor::MAX_IMAGE_PIXELS.'-pixel whole-image limit (sprite: '.$facts($info).')'];
         }
         $encoded = app(\App\Services\AttachmentService::class)->resizeImageBytesForAi($bytes, 'image/png');
 
-        return $encoded === null ? [null, 'not_image'] : [base64_decode($encoded, true), null];
+        return $encoded === null
+            ? [null, [], 'not_image', 'the sprite could not be decoded (sprite: '.$facts($info).')']
+            : [base64_decode($encoded, true), [], null, null];
     }
 
     public function matchesTicket(mixed $value, int $ticketId): bool
@@ -237,9 +258,6 @@ final class HdbApiReportClient
             };
 
             return ['failure' => $failure, 'http_status' => $status, 'code' => $code];
-        }
-        if ($binary && strlen($body) > \App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES) {
-            return ['sprite_reason' => 'oversize'];
         }
         if (strlen($body) > self::MAX_BODY_BYTES) {
             return ['failure' => HdbReportResult::malformed(''), 'http_status' => $status];

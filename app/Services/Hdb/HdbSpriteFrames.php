@@ -138,9 +138,9 @@ final class HdbSpriteFrames
             return ['reason' => 'not_image', 'detail' => 'the sprite image data could not be decoded'];
         }
         $frames = [];
-        foreach ($crops as $index => $bytes) {
-            $size = getimagesizefromstring($bytes);
-            $frames[] = ['png' => $bytes, 'width' => (int) $size[0], 'height' => (int) $size[1], 'index' => $index + 1, 'total' => $total];
+        foreach (array_keys($picked) as $i => $position) {
+            $size = getimagesizefromstring($crops[$i]);
+            $frames[] = ['png' => $crops[$i], 'width' => (int) $size[0], 'height' => (int) $size[1], 'index' => $position + 1, 'total' => $total];
         }
 
         return ['frames' => $frames];
