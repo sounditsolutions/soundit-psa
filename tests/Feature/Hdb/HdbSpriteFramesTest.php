@@ -266,7 +266,9 @@ class HdbSpriteFramesTest extends TestCase
      * Ceiling +-1. Work is (right x 3) x bottom, so it is always a multiple
      * of 3: 222,000,003 is the smallest work over the ceiling that exists
      * (right 3 px, bottom 24,666,667 rows; 24,666,667 is prime). Inflate is
-     * (W x 3 + 1) x bottom and 847,000,001 = 466,153 x 1,817 exists exactly.
+     * (W x 3 + 1) x bottom; inside the 300,000-byte row cap 847,000,001 exists
+     * only as 79 x 10,721,519 (a decision row) and 847,000,002 as
+     * 502 x 1,687,251 (the full crop).
      * Each pair has a full crop at the ceiling and one just over it, where
      * the newest three fall back to two; and a decision pair on header-only
      * sprites (no valid image data: not_image means the ceiling let it
@@ -288,22 +290,27 @@ class HdbSpriteFramesTest extends TestCase
 
     public function test_work_just_over_the_ceiling_falls_back_to_the_newest_two_and_says_so(): void
     {
-        // 270,073 x 3 x 274 = 222,000,006 with the oldest of three at the far right.
-        $positions = [[269073, 0], [0, 0], [1000, 0]];
+        // 50,581 x 3 x 1,463 = 222,000,009 with the oldest of three at the far
+        // right: the smallest work over the ceiling for a strip inside the row
+        // cap with frames 1,000 px wide.
+        $positions = [[49581, 0], [0, 0], [1000, 0]];
 
-        $out = $this->extractFrom(HdbSyntheticSprite::tiled(270073, 274, 1000, 274, $positions));
+        $out = $this->extractFrom(HdbSyntheticSprite::tiled(50581, 1463, 1000, 1463, $positions));
 
         $this->assertFramesFrom([1, 2], 3, $out['frames'] ?? []);
-        $this->assertSame('2 of the newest 3 frames: the newest 3 frames (ending 270073 px from the left and 274 rows from the top) would unfilter 222000006 bytes, over the work ceiling of 222000000 bytes', $out['note']);
+        $this->assertSame('2 of the newest 3 frames: the newest 3 frames (ending 50581 px from the left and 1463 rows from the top) would unfilter 222000009 bytes, over the work ceiling of 222000000 bytes', $out['note']);
     }
 
-    public function test_inflate_exactly_at_the_ceiling_crops_three_frames(): void
+    public function test_inflate_exactly_at_the_ceiling_with_the_work_at_it_too_crops_three_frames(): void
     {
-        // (282,333 x 3 + 1) x 1,000 = 847,000,000; the frames sit at the left.
-        $positions = [[0, 0], [1000, 0], [2000, 0]];
-        $this->assertSame(HdbSpriteFrames::INFLATE_CEILING_BYTES, (282333 * 3 + 1) * 1000);
+        // Both ceilings at once, inside the row cap: (83,333 x 3 + 1) x 3,388 =
+        // 847,000,000 of inflate (rows of 250,000 bytes), and the newest frame
+        // ends at 21,841 px, so the work is 21,841 x 3 x 3,388 = 221,991,924.
+        $positions = [[0, 0], [1000, 0], [20841, 0]];
+        $this->assertSame(HdbSpriteFrames::INFLATE_CEILING_BYTES, (83333 * 3 + 1) * 3388);
+        $this->assertLessThanOrEqual(HdbSpriteFrames::WORK_CEILING_BYTES, 21841 * 3 * 3388);
 
-        $out = $this->extractFrom(HdbSyntheticSprite::tiled(282333, 1000, 1000, 1000, $positions));
+        $out = $this->extractFrom(HdbSyntheticSprite::tiled(83333, 3388, 1000, 3388, $positions));
 
         $this->assertArrayHasKey('frames', $out, $out['detail'] ?? '');
         $this->assertNull($out['note']);
@@ -312,13 +319,15 @@ class HdbSpriteFramesTest extends TestCase
 
     public function test_inflate_just_over_the_ceiling_falls_back_to_the_newest_two_and_names_only_that_ceiling(): void
     {
-        // (155,384 x 3 + 1) x 1,817 = 847,000,001; work 20 x 3 x 1,817 = 0.1 M.
-        $positions = [[0, 1807], [0, 0], [10, 0]];
+        // (167 x 3 + 1) x 1,687,251 = 847,000,002, the nearest full crop over
+        // the ceiling inside the row cap (847,000,001 is the decision row
+        // below); work 20 x 3 x 1,687,251 = 101.2 M.
+        $positions = [[0, 1687241], [0, 0], [10, 0]];
 
-        $out = $this->extractFrom(HdbSyntheticSprite::tiled(155384, 1817, 10, 10, $positions, 4));
+        $out = $this->extractFrom(HdbSyntheticSprite::tiled(167, 1687251, 10, 10, $positions, 4));
 
         $this->assertFramesFrom([1, 2], 3, $out['frames'] ?? []);
-        $this->assertSame('2 of the newest 3 frames: the newest 3 frames (ending 20 px from the left and 1817 rows from the top) would inflate 847000001 bytes, over the inflate ceiling of 847000000 bytes', $out['note']);
+        $this->assertSame('2 of the newest 3 frames: the newest 3 frames (ending 20 px from the left and 1687251 rows from the top) would inflate 847000002 bytes, over the inflate ceiling of 847000000 bytes', $out['note']);
     }
 
     public static function ceilingDecisions(): array
@@ -326,10 +335,10 @@ class HdbSpriteFramesTest extends TestCase
         return [
             'work at the ceiling' => [74000, 1000, 1000, 1000, [73000, 0], 'not_image', null],
             'work one step over' => [3, 24666667, 3, 1, [0, 24666666], 'over_work_ceiling', 'unfilter 222000003 bytes, over the work ceiling of 222000000 bytes'],
-            'inflate at the ceiling' => [282333, 1000, 1000, 1000, [0, 0], 'not_image', null],
-            'inflate one over' => [155384, 1817, 10, 10, [0, 1807], 'over_work_ceiling', 'inflate 847000001 bytes, over the inflate ceiling of 847000000 bytes'],
+            'inflate at the ceiling' => [83333, 3388, 1000, 3388, [0, 0], 'not_image', null],
+            'inflate one over' => [26, 10721519, 1, 1, [0, 10721518], 'over_work_ceiling', 'inflate 847000001 bytes, over the inflate ceiling of 847000000 bytes'],
             'one frame over the held pixels' => [9000, 3400, 4000, 3400, [0, 0], 'oversize', 'hold 13600000 px (1 x 4000x3400), over the held-pixel ceiling of 13500000 px'],
-            'work and inflate both over' => [100000, 3000, 1000, 1000, [99000, 2000], 'over_work_ceiling', 'unfilter 900000000 bytes, over the work ceiling of 222000000 bytes and inflate 900003000 bytes, over the inflate ceiling of 847000000 bytes'],
+            'work and inflate both over' => [90000, 3200, 1000, 1000, [89000, 2200], 'over_work_ceiling', 'unfilter 864000000 bytes, over the work ceiling of 222000000 bytes and inflate 864003200 bytes, over the inflate ceiling of 847000000 bytes'],
         ];
     }
 
@@ -431,14 +440,26 @@ class HdbSpriteFramesTest extends TestCase
     public function test_a_row_over_the_row_ceiling_is_refused_before_any_inflate_even_when_the_frames_are_tiny(): void
     {
         // One 1 x 1 frame passes the work, inflate and held-pixel ceilings, but
-        // a whole 1,200,001-byte row would have to be buffered to reach it.
-        $sprite = HdbSyntheticSprite::headerOnly(400000, 1, HdbSyntheticSprite::layout(1, 1, [[0, 0]]));
+        // a whole 300,001-byte row (100,000 px) would have to be buffered to reach it.
+        $this->assertSame(300_000, HdbSpriteFrames::MAX_ROW_BYTES);
+        $sprite = HdbSyntheticSprite::headerOnly(100000, 1, HdbSyntheticSprite::layout(1, 1, [[0, 0]]));
 
         $result = $this->report($sprite);
 
         $this->assertSame('over_work_ceiling', $result->spriteReason);
-        $this->assertStringContainsString('rows are 1200001 bytes each', (string) $result->spriteDetail);
-        $this->assertStringContainsString(strlen($sprite).' bytes, 400000x1 px', (string) $result->spriteDetail);
+        $this->assertStringContainsString('rows are 300001 bytes each', (string) $result->spriteDetail);
+        $this->assertStringContainsString(strlen($sprite).' bytes, 100000x1 px', (string) $result->spriteDetail);
+    }
+
+    public function test_a_row_at_the_row_ceiling_reaches_the_inflate(): void
+    {
+        // 99,999 px: rows of 299,998 bytes, inside the cap, so the header-only
+        // sprite gets as far as its (invalid) image data.
+        $sprite = HdbSyntheticSprite::headerOnly(99999, 1, HdbSyntheticSprite::layout(1, 1, [[0, 0]]));
+
+        $result = $this->report($sprite);
+
+        $this->assertSame('not_image', $result->spriteReason, (string) $result->spriteDetail);
     }
 
     public function test_idat_chunks_past_the_ceiling_are_counted_not_listed_and_the_frames_are_refused(): void

@@ -73,9 +73,11 @@ final class HdbSpriteFrames
      * Bytes of one full filtered row (W x 3 + 1). Rows are cut from the
      * inflated stream only once a whole row is buffered, so this bounds the
      * row held there and the widest unfilter band, whatever the rows to the
-     * bottom edge.
+     * bottom edge. It also bounds the CPU: at the work and inflate ceilings
+     * together, wider rows cost more, so the cap (a strip up to 99,999 px
+     * wide) keeps that corner inside the measured budget.
      */
-    public const MAX_ROW_BYTES = 1_000_000;
+    public const MAX_ROW_BYTES = 300_000;
 
     /** IDAT chunks inspect() lists; a sprite with more is counted, not cropped. */
     public const MAX_IDAT_CHUNKS = 16_384;
