@@ -25,16 +25,18 @@ namespace App\Services\Hdb;
  *
  * WORK CEILING. The cost grows with (bytes to the right edge) x (rows to the
  * bottom edge), with the inflate of every row above the bottom edge at full
- * width, and with the pixels of the frames held and resampled; the memory
- * also grows with one full row and with the IDAT chunks listed. Each is
- * bounded by a constant checked before any inflate. When the newest
- * FRAME_COUNT frames are over the work, inflate or held-pixel ceiling, the
- * newest two are tried, then the newest one; only when the newest one is
- * over too is nothing cropped, and the refusal names each ceiling met with
- * its figure. The work and inflate ceilings were set from CPU measured on
- * the production host (card 6Xiehny3): the crops measured there at about
- * these figures stayed under the 10 s CPU bar. The row and chunk ceilings
- * refuse whatever the frame count, and bound memory.
+ * width, with a fixed step for each of those rows, and with the pixels of
+ * the frames held and resampled; the memory also grows with one full row
+ * and with the IDAT chunks listed. Each is bounded by a constant checked
+ * before any inflate. When the newest FRAME_COUNT frames are over the work,
+ * inflate, row-count or held-pixel ceiling, the newest two are tried, then
+ * the newest one; only when the newest one is over too is nothing cropped,
+ * and the refusal names each ceiling met with its figure. The work and
+ * inflate ceilings were set from CPU measured on the production host (card
+ * 6Xiehny3): the crops measured there at about these figures stayed under
+ * the 10 s CPU bar. The row-count ceiling was not measured there (see
+ * ROWS_CEILING). The row-byte and chunk ceilings refuse whatever the frame
+ * count, and bound memory.
  */
 final class HdbSpriteFrames
 {
@@ -64,6 +66,16 @@ final class HdbSpriteFrames
      * copy-and-resample cost.
      */
     public const HELD_PIXELS_CEILING = 13_500_000;
+
+    /**
+     * Rows to the frames' bottom edge. Each row costs a fixed PHP step and a
+     * libpng row decode that the work and inflate figures do not count, so
+     * without this a strip 1 px wide and 74 million rows tall is inside both.
+     * 65,536 is about 15 times the tallest ruled layout (20 x 3840x2160 on the
+     * 17-per-row grid, 4,320 rows). The per-row cost at this ceiling was not
+     * measured on the production host.
+     */
+    public const ROWS_CEILING = 65_536;
 
     public const MAX_LAYOUT_BYTES = 65_536;
 
@@ -136,7 +148,8 @@ final class HdbSpriteFrames
      * Crop the newest frames named by the sprite's `hdbc` chunk, oldest first.
      *
      * The newest FRAME_COUNT are tried first (all of them when there are
-     * fewer); while they are over the work, inflate or held-pixel ceiling, one
+     * fewer); while they are over the work, inflate, row-count or held-pixel
+     * ceiling, one
      * fewer is tried, down to the newest one. When fewer come back than were
      * tried first, `note` says how many and which ceiling each larger try met.
      *
@@ -166,7 +179,7 @@ final class HdbSpriteFrames
             $over[$count] = $plan;
         }
         if ($count === 0) {
-            // Named by what refused the newest frame alone: its pixels (oversize) or its work or inflate.
+            // Named by what refused the newest frame alone: its pixels (oversize) or its work, inflate or rows.
             return ['reason' => isset($over[1]['over']['held']) ? 'oversize' : 'over_work_ceiling',
                 'detail' => 'no frame was cropped: '.self::overText($over, $fw, $fh)];
         }
@@ -201,6 +214,7 @@ final class HdbSpriteFrames
         $figures = [
             'work' => [$right * 3 * $bottom, self::WORK_CEILING_BYTES],
             'inflate' => [$stride * $bottom, self::INFLATE_CEILING_BYTES],
+            'rows' => [$bottom, self::ROWS_CEILING],
             'held' => [$count * $fw * $fh, self::HELD_PIXELS_CEILING],
         ];
 
@@ -223,6 +237,7 @@ final class HdbSpriteFrames
                 $parts[] = match ($ceiling) {
                     'work' => 'unfilter '.$figure.' bytes, over the work ceiling of '.$limit.' bytes',
                     'inflate' => 'inflate '.$figure.' bytes, over the inflate ceiling of '.$limit.' bytes',
+                    'rows' => 'stream '.$figure.' rows, over the row-count ceiling of '.$limit.' rows',
                     default => 'hold '.$figure.' px ('.$count.' x '.$fw.'x'.$fh.'), over the held-pixel ceiling of '.$limit.' px',
                 };
             }

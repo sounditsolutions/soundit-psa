@@ -264,11 +264,13 @@ class HdbSpriteFramesTest extends TestCase
 
     /*
      * Ceiling +-1. Work is (right x 3) x bottom, so it is always a multiple
-     * of 3: 222,000,003 is the smallest work over the ceiling that exists
-     * (right 3 px, bottom 24,666,667 rows; 24,666,667 is prime). Inflate is
-     * (W x 3 + 1) x bottom; inside the 300,000-byte row cap 847,000,001 exists
-     * only as 79 x 10,721,519 (a decision row) and 847,000,002 as
-     * 502 x 1,687,251 (the full crop).
+     * of 3; inflate is (W x 3 + 1) x bottom. Inside the 300,000-byte row cap
+     * and the 65,536-row ceiling, work 222,000,003 does not exist (inside the
+     * row cap it needs at least 24,666,667 rows; 24,666,667 is prime) and nor
+     * does inflate 847,000,001 (only 79 x 10,721,519), so the over side of
+     * each pair is the shape built here: work 222,000,009 (50,581 x 1,463)
+     * and inflate one row past the at-ceiling strip, 250,000 x 3,389 =
+     * 847,250,000.
      * Each pair has a full crop at the ceiling and one just over it, where
      * the newest three fall back to two; and a decision pair on header-only
      * sprites (no valid image data: not_image means the ceiling let it
@@ -319,24 +321,39 @@ class HdbSpriteFramesTest extends TestCase
 
     public function test_inflate_just_over_the_ceiling_falls_back_to_the_newest_two_and_names_only_that_ceiling(): void
     {
-        // (167 x 3 + 1) x 1,687,251 = 847,000,002, the nearest full crop over
-        // the ceiling inside the row cap (847,000,001 is the decision row
-        // below); work 20 x 3 x 1,687,251 = 101.2 M.
-        $positions = [[0, 1687241], [0, 0], [10, 0]];
+        // One row past the at-ceiling strip: (83,333 x 3 + 1) x 3,389 =
+        // 847,250,000; work 20 x 3 x 3,389 = 203,340, rows inside their ceiling.
+        $positions = [[0, 3379], [0, 0], [10, 0]];
 
-        $out = $this->extractFrom(HdbSyntheticSprite::tiled(167, 1687251, 10, 10, $positions, 4));
+        $out = $this->extractFrom(HdbSyntheticSprite::tiled(83333, 3389, 10, 10, $positions, 4));
 
         $this->assertFramesFrom([1, 2], 3, $out['frames'] ?? []);
-        $this->assertSame('2 of the newest 3 frames: the newest 3 frames (ending 20 px from the left and 1687251 rows from the top) would inflate 847000002 bytes, over the inflate ceiling of 847000000 bytes', $out['note']);
+        $this->assertSame('2 of the newest 3 frames: the newest 3 frames (ending 20 px from the left and 3389 rows from the top) would inflate 847250000 bytes, over the inflate ceiling of 847000000 bytes', $out['note']);
+    }
+
+    public function test_rows_over_the_row_count_ceiling_fall_back_to_the_newest_two_and_name_only_that_ceiling(): void
+    {
+        // A strip 20 px wide and 65,537 rows tall: work (3.9 M) and inflate
+        // (4.0 M) are tiny, but the oldest of the newest three ends one row
+        // past the row-count ceiling.
+        $this->assertSame(65_536, HdbSpriteFrames::ROWS_CEILING);
+        $positions = [[0, 65527], [0, 0], [10, 0]];
+
+        $out = $this->extractFrom(HdbSyntheticSprite::tiled(20, 65537, 10, 10, $positions, 4));
+
+        $this->assertFramesFrom([1, 2], 3, $out['frames'] ?? []);
+        $this->assertSame('2 of the newest 3 frames: the newest 3 frames (ending 20 px from the left and 65537 rows from the top) would stream 65537 rows, over the row-count ceiling of 65536 rows', $out['note']);
     }
 
     public static function ceilingDecisions(): array
     {
         return [
             'work at the ceiling' => [74000, 1000, 1000, 1000, [73000, 0], 'not_image', null],
-            'work one step over' => [3, 24666667, 3, 1, [0, 24666666], 'over_work_ceiling', 'unfilter 222000003 bytes, over the work ceiling of 222000000 bytes'],
+            'work just over' => [50581, 1463, 1, 1, [50580, 1462], 'over_work_ceiling', 'unfilter 222000009 bytes, over the work ceiling of 222000000 bytes'],
             'inflate at the ceiling' => [83333, 3388, 1000, 3388, [0, 0], 'not_image', null],
-            'inflate one over' => [26, 10721519, 1, 1, [0, 10721518], 'over_work_ceiling', 'inflate 847000001 bytes, over the inflate ceiling of 847000000 bytes'],
+            'inflate one row over' => [83333, 3389, 1, 1, [0, 3388], 'over_work_ceiling', 'inflate 847250000 bytes, over the inflate ceiling of 847000000 bytes'],
+            'rows at the ceiling' => [500, 65536, 1, 1, [0, 65535], 'not_image', null],
+            'rows one over' => [500, 65537, 1, 1, [0, 65536], 'over_work_ceiling', 'stream 65537 rows, over the row-count ceiling of 65536 rows'],
             'one frame over the held pixels' => [9000, 3400, 4000, 3400, [0, 0], 'oversize', 'hold 13600000 px (1 x 4000x3400), over the held-pixel ceiling of 13500000 px'],
             'work and inflate both over' => [90000, 3200, 1000, 1000, [89000, 2200], 'over_work_ceiling', 'unfilter 864000000 bytes, over the work ceiling of 222000000 bytes and inflate 864003200 bytes, over the inflate ceiling of 847000000 bytes'],
         ];
