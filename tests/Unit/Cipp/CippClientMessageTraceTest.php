@@ -106,7 +106,7 @@ class CippClientMessageTraceTest extends TestCase
         $client = $this->client([$this->ok('')]);
 
         $this->expectException(CippClientException::class);
-        $this->expectExceptionMessage('unreadable body');
+        $this->expectExceptionMessage('not a JSON object or array');
 
         $client->listMessageTrace('contoso.onmicrosoft.com', 2);
     }

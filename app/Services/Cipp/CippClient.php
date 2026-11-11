@@ -272,7 +272,8 @@ class CippClient
     /**
      * Run a message trace: POST api/ListMessageTrace with a JSON body.
      *
-     * This is the ONLY POST this client makes, and it is a READ. The endpoint is
+     * This is the only POST to CIPP this client makes (getToken() also POSTs, to
+     * the token endpoint), and it is a READ. The endpoint is
      * a constant, not a parameter, on purpose: a general POST would open CIPP's
      * write endpoints, and each of those needs its own ruling (card AsGVKuRa).
      * Do not add a caller for another endpoint here — writes go through
@@ -291,10 +292,12 @@ class CippClient
      *   - success :189-193  {Results: [...], Metadata: {Returned, Source, Note?}}
      *     where Source is 'Graph' or 'Get-MessageTraceV2' (the fallback);
      *   - failure :198-202  HTTP 500 {Results: [], Metadata: {Error: "..."}}.
-     * The 500 throws inside sendRequest() like any other; when its body carries a
-     * Metadata.Error string it is returned as metadata (rows []) so the caller can
-     * report CIPP's reason instead of an opaque status or a silent 0. Any other
-     * failure rethrows unchanged.
+     * An HTTP error throws inside sendRequest() like any other. When the error
+     * response's body carries a non-empty Metadata.Error string, whatever its HTTP
+     * status (not only the 500 above), it is returned as metadata (rows []) so the
+     * caller can report CIPP's reason instead of an opaque status or a silent 0; the
+     * HTTP status itself is not carried in that return. Any other failure rethrows
+     * unchanged.
      *
      * @return array{rows: array<int|string, mixed>, metadata: array<string, mixed>}
      *
@@ -328,7 +331,7 @@ class CippClient
         $data = json_decode($raw, true);
         $identity = json_decode($raw);
         if (! is_array($data)) {
-            throw new CippClientException('CIPP message trace returned an unreadable body');
+            throw new CippClientException('CIPP message trace returned a body that is not a JSON object or array (empty, invalid JSON, a scalar or null)');
         }
 
         CippQueueGuard::assertNotQueueBacked($data);
@@ -346,8 +349,9 @@ class CippClient
     }
 
     /**
-     * CIPP's Metadata from a failed message-trace response, when it carries a
-     * non-empty Metadata.Error string; null otherwise (the caller rethrows).
+     * CIPP's Metadata from a failed message-trace response of any HTTP error status,
+     * when its body carries a non-empty Metadata.Error string; null otherwise (the
+     * caller rethrows). The status is not part of what it returns.
      *
      * @return array<string, mixed>|null
      */
