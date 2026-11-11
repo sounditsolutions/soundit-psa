@@ -34,7 +34,7 @@ namespace App\Services\Hdb;
  * and the refusal names each ceiling met with its figure. The work and
  * inflate ceilings were set from CPU measured on the production host (card
  * 6Xiehny3): the crops measured there at about these figures stayed under
- * the 10 s CPU bar. The row-count ceiling was not measured there (see
+ * the 10 s CPU bar. The row-count ceiling was measured there too (see
  * ROWS_CEILING). The row-byte and chunk ceilings refuse whatever the frame
  * count, and bound memory.
  */
@@ -72,8 +72,10 @@ final class HdbSpriteFrames
      * libpng row decode that the work and inflate figures do not count, so
      * without this a strip 1 px wide and 74 million rows tall is inside both.
      * 65,536 is about 15 times the tallest ruled layout (20 x 3840x2160 on the
-     * 17-per-row grid, 4,320 rows). The per-row cost at this ceiling was not
-     * measured on the production host.
+     * 17-per-row grid, 4,320 rows). Measured on the production host (card
+     * 6Xiehny3): 4,307 x 65,536 with the work, inflate and held-pixel figures
+     * at their ceilings took 3.08 s CPU plain and 4.32 s with Paeth rows and
+     * noise; 1,129 x 65,536 at the work ceiling took 2.78 s.
      */
     public const ROWS_CEILING = 65_536;
 
@@ -94,8 +96,17 @@ final class HdbSpriteFrames
     /** IDAT chunks inspect() lists; a sprite with more is counted, not cropped. */
     public const MAX_IDAT_CHUNKS = 16_384;
 
-    /** GD pixels per unfilter band. */
+    /**
+     * GD pixels per unfilter band. A band is never under BAND_ROWS_FLOOR rows:
+     * past 75,000 px to the right edge, BAND_PIXELS alone gives one-row bands,
+     * a GD decode per row, and that was the dearest shape inside the ceilings
+     * (99,999 x 986, right edge 75,001, work 221.9 M, three 4,500 x 986
+     * frames). CPU on the production host, plain | Paeth rows with noise:
+     * 8.62 | 9.12 s with one-row bands, 7.24 | 7.04 s with two (card 6Xiehny3).
+     */
     private const BAND_PIXELS = 150_000;
+
+    private const BAND_ROWS_FLOOR = 2;
 
     private const INFLATE_SLICE = 4_096;
 
@@ -259,7 +270,7 @@ final class HdbSpriteFrames
     {
         $stride = $info['width'] * 3 + 1;
         $keep = 1 + $right * 3;
-        $bandRows = max(1, intdiv(self::BAND_PIXELS, $right));
+        $bandRows = self::bandRows($right);
         $outs = [];
         foreach ($picked as $k => $p) {
             $outs[$k] = imagecreatetruecolor($fw, $fh);
@@ -325,6 +336,17 @@ final class HdbSpriteFrames
         }
 
         return $result;
+    }
+
+    /**
+     * Rows per unfilter band for a crop $right px wide: BAND_PIXELS / $right,
+     * never under BAND_ROWS_FLOOR.
+     *
+     * @internal public for the band-size test only
+     */
+    public static function bandRows(int $right): int
+    {
+        return max(self::BAND_ROWS_FLOOR, intdiv(self::BAND_PIXELS, $right));
     }
 
     /**

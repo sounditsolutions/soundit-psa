@@ -23,8 +23,9 @@ final class HdbSyntheticSprite
      * @param  array<string, mixed>|string|null  $layout  chunk JSON (array), raw chunk data (string), or null for none
      * @param  int  $noise  random bytes written into every row (to make the file large)
      * @param  int  $markerSize  side of the solid marker square
+     * @param  int|null  $filter  one PNG filter type (0-4) for every row after the first; null cycles y % $filterCycle
      */
-    public static function png(int $width, int $height, array $positions = [], array|string|null $layout = null, int $noise = 0, int $markerSize = 16, int $filterCycle = 5): string
+    public static function png(int $width, int $height, array $positions = [], array|string|null $layout = null, int $noise = 0, int $markerSize = 16, int $filterCycle = 5, ?int $filter = null): string
     {
         mt_srand(12345);
         $base = '';
@@ -44,7 +45,7 @@ final class HdbSyntheticSprite
                     $row = substr_replace($row, str_repeat(chr($c >> 16).chr(($c >> 8) & 255).chr($c & 255), $markerSize), $left * 3, $markerSize * 3);
                 }
             }
-            $idat .= deflate_add($deflate, self::filter($row, $y === 0 ? null : ($prev ?? null), $y % $filterCycle), ZLIB_NO_FLUSH);
+            $idat .= deflate_add($deflate, self::filter($row, $y === 0 ? null : ($prev ?? null), $filter ?? $y % $filterCycle), ZLIB_NO_FLUSH);
             $prev = $row;
         }
         $idat .= deflate_add($deflate, '', ZLIB_FINISH);

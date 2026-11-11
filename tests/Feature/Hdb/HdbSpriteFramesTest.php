@@ -125,6 +125,65 @@ class HdbSpriteFramesTest extends TestCase
         }
     }
 
+    public static function filterTypes(): array
+    {
+        return ['sub' => [1], 'up' => [2], 'average' => [3], 'paeth' => [4]];
+    }
+
+    /**
+     * Band carry, one filter type at a time (card 6Xiehny3, context:1): every
+     * row after the first uses $filter and carries noise, so a band whose top
+     * row is unfiltered against the wrong row above it gives wrong pixels in
+     * every frame below the first band. Bands here are 250 rows (600 px to
+     * the right edge), and each frame crosses a band boundary.
+     */
+    #[DataProvider('filterTypes')]
+    public function test_each_filter_type_carries_across_bands_pixel_for_pixel(int $filter): void
+    {
+        $positions = [[0, 100], [200, 600], [400, 1050]];
+        $sprite = HdbSyntheticSprite::png(600, 1600, $positions, HdbSyntheticSprite::layout(200, 500, $positions), 1800, 16, 5, $filter);
+
+        $this->assertFramesEqualWholeDecode($sprite, $positions, 200, 500);
+    }
+
+    /**
+     * Past 75,000 px to the right edge BAND_PIXELS alone gives one-row bands;
+     * the floor keeps them at two rows, and the crop stays equal to a whole
+     * decode there.
+     */
+    public function test_bands_are_never_under_two_rows_and_stay_exact_past_seventy_five_thousand_px(): void
+    {
+        $this->assertSame(1_500, HdbSpriteFrames::bandRows(100));
+        $this->assertSame(2, HdbSpriteFrames::bandRows(75_000));
+        $this->assertSame(2, HdbSpriteFrames::bandRows(75_001));
+        $this->assertSame(2, HdbSpriteFrames::bandRows(99_999));
+
+        $positions = [[0, 0], [100, 0], [79_900, 0]];
+        $sprite = HdbSyntheticSprite::png(80_000, 7, $positions, HdbSyntheticSprite::layout(100, 7, $positions), 6000, 4, 5, 4);
+
+        $this->assertFramesEqualWholeDecode($sprite, $positions, 100, 7);
+    }
+
+    /** @param  list<array{int, int}>  $positions */
+    private function assertFramesEqualWholeDecode(string $sprite, array $positions, int $fw, int $fh): void
+    {
+        $whole = imagecreatefromstring($sprite);
+        $result = $this->report($sprite);
+
+        $this->assertCount(count($positions), $result->frames);
+        foreach ($positions as $k => [$left, $top]) {
+            $frame = imagecreatefromstring($result->frames[$k]['png']);
+            $this->assertSame([$fw, $fh], [imagesx($frame), imagesy($frame)], "frame {$k} size");
+            $diffs = 0;
+            for ($y = 0; $y < $fh; $y++) {
+                for ($x = 0; $x < $fw; $x++) {
+                    $diffs += imagecolorat($frame, $x, $y) === imagecolorat($whole, $left + $x, $top + $y) ? 0 : 1;
+                }
+            }
+            $this->assertSame(0, $diffs, "frame {$k}");
+        }
+    }
+
     public static function badLayouts(): array
     {
         $ok = HdbSyntheticSprite::layout(100, 60, [[0, 0]]);
