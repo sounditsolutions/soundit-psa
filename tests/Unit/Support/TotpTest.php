@@ -95,7 +95,7 @@ class TotpTest extends TestCase
     public function test_it_returns_null_rather_than_throwing_on_a_non_base32_secret(): void
     {
         // A caller asking for a code must be able to treat "no usable seed" as a
-        // status, not catch an exception — see HdbAuthResult::REASON_TOTP_SEED_UNUSABLE.
+        // status, not catch an exception.
         $this->assertNull(Totp::code('not valid base32!'));
         $this->assertNull(Totp::code('JBSWY3DP1EHPK3PXP'));  // 1 and 8 are not in the alphabet
         $this->assertNull(Totp::code('JBSWY3DP0EHPK3PXP'));

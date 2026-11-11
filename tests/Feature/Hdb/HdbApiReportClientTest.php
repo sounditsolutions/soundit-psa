@@ -174,6 +174,24 @@ class HdbApiReportClientTest extends TestCase
         Http::assertSentCount(2);
     }
 
+    public function test_api_retryable_distinguishes_pending_from_an_unknown_upload_gate(): void
+    {
+        $sequence = Http::sequence()
+            ->push(['status' => 'pending'] + self::fixture())
+            ->push(['status' => 'synthetic-unknown'] + self::fixture());
+        Http::fake([HdbApiConfig::BASE_URL.'/reports/'.self::ID => $sequence]);
+
+        $pending = (new HdbApiReportClient)->report(self::ID, 17);
+        $unknown = (new HdbApiReportClient)->report(self::ID, 17);
+        $this->assertSame('api', $pending->source);
+        $this->assertSame('api', $unknown->source);
+        $this->assertSame('upload_incomplete', $pending->reason);
+        $this->assertSame('upload_gate_missing', $unknown->reason);
+        $this->assertTrue($pending->retryable());
+        $this->assertFalse($unknown->retryable());
+        Http::assertSentCount(2);
+    }
+
     public function test_other_incomplete_statuses(): void
     {
         $sequence = Http::sequence();

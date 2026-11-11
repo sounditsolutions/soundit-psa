@@ -4,13 +4,13 @@ Deploy your own instance of this PSA on a fresh VPS. This guide covers everythin
 
 ---
 
-## HelpDesk Buttons Reports API (beta)
+## HelpDesk Buttons Reports API
 
 1. In `account.helpdeskbuttons.com/api-credentials`, mint a key. Reading reports needs `view-endpoints`, `report-history`, `report-diagnostics` and `view-instant-replay`. Action permissions are optional: the PSA only reads today, each action feature switches on as it ships, and a key without that permission leaves that feature off. Scope it to the intended endpoint groups.
-2. As an administrator, paste the key into **Settings → Integrations → Tier2Tickets / HelpDesk Buttons → Reports API (beta)** and save. Blank or the mask keeps the stored key; **Clear the stored API key** deletes it, even if a replacement is entered in the same save.
+2. As an administrator, paste the key into **Settings → Integrations → Tier2Tickets / HelpDesk Buttons → Reports API** and save. Blank or the mask keeps the stored key; **Clear the stored API key** deletes it, even if a replacement is entered in the same save.
 3. Run **Test saved API key** after saving. This makes one read of `/groups`; it does not fetch a report or prove report permissions.
 4. Run `php artisan hdb:api-probe --notes=10` in the authorized application environment. It reads recent keyed notes and prints mapping booleans, counts and status codes, never ids or report content. Lists are bounded; `list_incomplete` counts walks that did not reach a null cursor. An incomplete walk cannot prove absence.
-5. With a key saved, the ticket tool reads `GET /reports/{pressID}` after authorizing the captured note and checks every non-null ticket binding. Without a key, it uses the portal. A configured portal is also the fallback for authentication/permission failures, `report_not_found` during proving, `unsupported_report_os`, server/transport failures and unreadable JSON. Redaction, incomplete reports, rate limits and ticket mismatches never fall back. The result's `source` identifies `api` or `portal`; `hdb_api_fallback` log events count fallbacks with HTTP status and closed-vocabulary code only. No report identifiers are persisted. The API supplies normalized diagnostics and the Instant Replay sprite, not the portal's desktop screenshot. Sprites over the existing byte or 30 MP ceilings are omitted; smaller images use the existing 1568 px resize path.
+5. With a key saved and the integration enabled, the ticket tool reads `GET /reports/{pressID}` after authorizing the captured note and checks every non-null ticket binding. Without a saved key, or with the integration switched off, the tool lists as `unavailable_config`. Every API result is final: there is no second reader and no retry. `report_not_found` means HelpDesk Buttons has no report for this press yet. The result's `source` is always `api`. No report identifiers are persisted. The API supplies normalized diagnostics and the Instant Replay sprite. Sprites over the existing byte or 30 MP ceilings are omitted; smaller images use the existing 1568 px resize path.
 
 ## Dormant agreement signing
 
@@ -1205,7 +1205,7 @@ Desktop shortcut/application that lets MSP clients submit support tickets direct
 - Status updates in the PSA are pushed back to T2T via webhook callbacks (requires a queue worker — see Call Transcription section for queue setup)
 - The API URL path includes `v4_6_release/apis/3.0/` — this is normal and matches the ConnectWise Manage API format that T2T expects
 
-**Press report read over staff MCP (optional).** The staff MCP read tool `get_hdb_report` returns the HelpDesk Buttons report for one press (diagnostic sections plus the desktop screenshot) from the HDB note the PSA captured on a ticket. It is published only when the card's **Integration enabled** switch is on and the **HDB Report Portal** email and password are saved in the same settings card; otherwise it lists as `unavailable_config`. The portal must also accept sign-ins from this PSA's outbound address (the HDB account's IP filter whitelist); **Test Connection** in that card reports an IP-filter refusal by name. The tool returns end-user desktop screenshots, so like `get_ticket_attachment` it is never inherited by a full-surface token and must be granted to a token by name.
+**Press report read over staff MCP (optional).** The staff MCP read tool `get_hdb_report` returns the HelpDesk Buttons report for one press (normalized diagnostics plus the Instant Replay sprite) from the HDB note the PSA captured on a ticket. It is published only when the card's **Integration enabled** switch is on and a **Reports API** key is saved in the same settings card; otherwise it lists as `unavailable_config`. The tool returns end-user desktop screenshots, so like `get_ticket_attachment` it is never inherited by a full-surface token and must be granted to a token by name.
 
 ### Huntress (License Sync)
 

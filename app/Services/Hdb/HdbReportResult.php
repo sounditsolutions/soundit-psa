@@ -11,12 +11,12 @@ namespace App\Services\Hdb;
  * vendor-controlled data, so they are DATA: nothing in this object is
  * safe to interpolate into a rendered surface without escaping, and the
  * operator-facing {@see message()} deliberately draws from a fixed list rather
- * than from anything the portal said.
+ * than from anything the vendor said.
  *
  * WHY A DEGRADED FETCH STILL CARRIES ITS PAYLOAD. docs/ARCHITECTURE.md
  * § "Vendor response shapes" rule 3: a degraded read must SCREAM rather than
- * return a clean empty result. Returning `[]` for a `report.json` that arrived
- * missing `eventLog` would read to a technician as "that machine logged no
+ * return a clean empty result. Returning `[]` for diagnostics that arrived
+ * missing `events` would read to a technician as "that machine logged no
  * errors", which is the false all-clear that rule exists to forbid. So the
  * bytes that DID arrive are preserved, {@see $missingSections} names what did
  * not, and the status is Degraded — which is not Fetched, and any caller
@@ -28,19 +28,12 @@ final readonly class HdbReportResult
     public const REASON_OK = 'ok';
 
     /**
-     * `ticket.json` carried `uploadComplete: false`. Retry later; the vendor is
-     * still uploading the press. Vault field source §6a.
+     * The API reports a pending, requested or pressed status, not complete.
      */
     public const REASON_UPLOAD_INCOMPLETE = 'upload_incomplete';
 
     /**
-     * `ticket.json` arrived without a readable `uploadComplete` key at all.
-     *
-     * NOT the same as false, and deliberately not defaulted to either value: an
-     * absent gate field means this client cannot tell a complete press from an
-     * incomplete one, which is a vendor-shape change and a bug. Defaulting it
-     * true would import half a report; defaulting it false would retry forever
-     * while reporting a normal-looking "still uploading".
+     * The API status is absent or unrecognized, so completeness is unknown.
      */
     public const REASON_UPLOAD_GATE_MISSING = 'upload_gate_missing';
 
@@ -52,29 +45,29 @@ final readonly class HdbReportResult
      */
     public const REASON_REDACTION_FLAG_UNREADABLE = 'redaction_flag_unreadable';
 
-    /** `report.json` arrived missing sections this integration reads. */
+    /** Diagnostics arrived missing sections this integration reads. */
     public const REASON_REPORT_SECTIONS_MISSING = 'report_sections_missing';
 
     /** The body is not JSON, or is JSON that is not an object. */
     public const REASON_UNREADABLE_PAYLOAD = 'unreadable_payload';
 
-    /** The portal answered a non-2xx after redirects were followed. */
+    /** An HTTP status not otherwise mapped; redirects are not followed. */
     public const REASON_UNEXPECTED_RESPONSE = 'unexpected_response';
 
     /** The press id offered is not a press id, or is not bound to this ticket. */
     public const REASON_NOT_AUTHORIZED = 'not_authorized';
 
-    /** The login handshake did not produce a session — see {@see $authReason}. */
+    /** The API key is missing, rejected or lacks permission — see {@see $authReason}. */
     public const REASON_NOT_AUTHENTICATED = 'not_authenticated';
 
-    /** DNS, TLS, timeout, refused redirect or exhausted request budget. */
+    /** Transport failure or an upstream server error. */
     public const REASON_TRANSPORT_ERROR = 'transport_error';
 
     /**
-     * @param  array<string, mixed>|null  $ticket  decoded ticket.json, post-redaction
-     * @param  array<string, mixed>|null  $report  decoded report.json, post-redaction
-     * @param  list<string>  $missingSections  report.json sections that did not arrive
-     * @param  string|null  $authReason  the {@see HdbAuthResult} reason, when the session failed
+     * @param  array<string, mixed>|null  $ticket  normalized report metadata
+     * @param  array<string, mixed>|null  $report  decoded diagnostics, post-redaction
+     * @param  list<string>  $missingSections  diagnostic sections that did not arrive
+     * @param  string|null  $authReason  the API authentication or permission failure reason
      */
     private function __construct(
         public HdbReportStatus $status,
@@ -197,7 +190,7 @@ final readonly class HdbReportResult
         return $this->status === HdbReportStatus::Fetched;
     }
 
-    /** API-only failure factory; portal factories retain their contracts. */
+    /** API-only failure factory; legacy factories retain their contracts. */
     public static function apiFailure(HdbReportStatus $status, string $reason, ?int $retryAfterSeconds = null): self
     {
         return new self($status, $reason, retryAfterSeconds: $retryAfterSeconds);
@@ -216,7 +209,7 @@ final readonly class HdbReportResult
         return new self(...$values);
     }
 
-    /** Add the API sprite outcome without changing the portal factory contracts. */
+    /** Add the API sprite outcome without changing the legacy factory contracts. */
     public function withSpriteOutcome(?string $reason): self
     {
         if ($reason !== null && ! in_array($reason, ['redacted', 'oversize', 'not_image', 'fetch_failed', 'not_advertised'], true)) {
@@ -241,7 +234,7 @@ final readonly class HdbReportResult
 
     /**
      * The operator-facing sentence. Fixed strings selected by symbol — nothing
-     * from the portal, and nothing from the press, is interpolated.
+     * from the vendor, and nothing from the press, is interpolated.
      */
     public function message(): string
     {

@@ -114,7 +114,7 @@ final class LinkedIds
             'carbon_customer_id' => 'Carbon hardware customer mapping (sL0cPqhk PR 1). Staff-side only in this PR; publishing it on assistant reads changes the get_client description and is left to its own decision.',
         ],
         'tickets' => [
-            'hdb_press_id' => 'HelpDesk Buttons press uuid: the single key the HDB portal fetch is addressed by (HdbReportClient::get). Authority to fetch flows only from a PSA-captured NOTE (HdbReportFetchAuthorizer, #1359); the ticket column is a last-note-wins display cache that is "never an authority". Publishing it on a read invites paste-to-fetch, so it stays off until ruled otherwise.',
+            'hdb_press_id' => 'HelpDesk Buttons press uuid: the key the HDB API reader fetches after note authorization (HdbReportReader::fetchForNote). Authority to fetch flows only from a PSA-captured NOTE (HdbReportFetchAuthorizer, #1359); the ticket column is a last-note-wins display cache that is "never an authority". Publishing it on a read invites paste-to-fetch, so it stays off until ruled otherwise.',
         ],
     ];
 

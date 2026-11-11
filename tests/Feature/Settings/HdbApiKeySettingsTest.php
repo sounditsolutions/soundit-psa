@@ -36,6 +36,14 @@ class HdbApiKeySettingsTest extends TestCase
         }
     }
 
+    public function test_saving_api_settings_preserves_t2t_key_and_saves_company_id(): void
+    {
+        Setting::setEncrypted('t2t_api_key', 'existing-private-key');
+        $this->save(['company_id' => 'SoundPSA', 'hdb_api_key' => 'synthetic-api-key']);
+        $this->assertSame('existing-private-key', Setting::getEncrypted('t2t_api_key'));
+        $this->assertSame('SoundPSA', Setting::getValue('t2t_company_id'));
+    }
+
     public function test_clear_deletes_key(): void
     {
         Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
@@ -73,7 +81,7 @@ class HdbApiKeySettingsTest extends TestCase
 
     public function test_page_never_renders_stored_key_and_clear_requires_key(): void
     {
-        $this->get(route('settings.integrations'))->assertOk()->assertSee('Reports API (beta)')->assertDontSee('name="hdb_api_key_clear"', false);
+        $this->get(route('settings.integrations'))->assertOk()->assertSee('Reports API')->assertDontSee('Reports API (beta)')->assertDontSee('name="hdb_api_key_clear"', false);
         Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
         $this->get(route('settings.integrations'))->assertOk()->assertDontSee('synthetic-api-key')->assertSee('name="hdb_api_key_clear"', false)->assertSee('••••••••');
     }
@@ -110,5 +118,34 @@ class HdbApiKeySettingsTest extends TestCase
         Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
         Http::fake([HdbApiConfig::BASE_URL.'/groups' => Http::failedConnection()]);
         $this->postJson(route('settings.integrations.hdb-api.test'))->assertJson(['message' => 'unreachable']);
+    }
+
+    public function test_retired_portal_fields_and_action_are_absent(): void
+    {
+        $page = $this->get(route('settings.integrations'))->assertOk();
+        $page->assertDontSee('HDB Report Portal')->assertDontSee('settings/integrations/hdb/test');
+        foreach (['hdb_base_url', 'hdb_email', 'hdb_password', 'hdb_totp_secret'] as $key) {
+            $page->assertDontSee('name="'.$key.'"', false);
+        }
+        $page->assertSee('Reports are read through the API. Without a saved key, the HelpDesk Buttons report tool is not available.');
+        $this->post('/settings/integrations/hdb/test')->assertNotFound();
+        Http::assertNothingSent();
+    }
+
+    public function test_old_fields_never_change_stored_rows(): void
+    {
+        $values = ['hdb_base_url' => 'https://portal.example.test', 'hdb_email' => 'synthetic@example.test', 'hdb_password' => 'synthetic-password', 'hdb_totp_secret' => 'synthetic-seed', 'hdb_connected_at' => 'synthetic-stamp'];
+        foreach ($values as $key => $value) {
+            Setting::setValue($key, $value);
+        }
+        $snapshot = Setting::whereIn('key', array_keys($values))->orderBy('key')->get()->toArray();
+        foreach ([User::factory()->create(), User::factory()->tech()->create()] as $user) {
+            $this->actingAs($user);
+            foreach ([array_fill_keys(array_keys($values), ''), array_fill_keys(array_keys($values), 'replacement'), []] as $input) {
+                $this->save($input);
+                $this->assertSame($snapshot, Setting::whereIn('key', array_keys($values))->orderBy('key')->get()->toArray());
+            }
+        }
+        Http::assertNothingSent();
     }
 }

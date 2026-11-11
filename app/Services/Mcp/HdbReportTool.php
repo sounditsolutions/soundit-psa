@@ -6,20 +6,19 @@ use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Services\Assistant\AssistantToolExecutor;
 use App\Services\AttachmentService;
-use App\Services\Hdb\HdbAuthResult;
-use App\Services\Hdb\HdbAuthStatus;
-use App\Services\Hdb\HdbReportClient;
+use App\Services\Hdb\HdbApiReportClient;
 use App\Services\Hdb\HdbReportFetchRefusal;
+use App\Services\Hdb\HdbReportReader;
 use App\Services\Hdb\HdbReportResult;
 use App\Services\Hdb\HdbReportStatus;
 
 /**
  * get_hdb_report (card c5JaSetu): the HelpDesk Buttons press report for one
  * HDB note on one ticket, over staff MCP. Read-only: it writes nothing and
- * only calls {@see HdbReportClient}, which reads.
+ * only calls {@see HdbReportReader}, which reads.
  *
  * AUTHORITY (#1359). The fetch goes through
- * {@see HdbReportClient::fetchForNote()} and nothing else: the note must be a
+ * {@see HdbReportReader::fetchForNote()} and nothing else: the note must be a
  * live note on the ticket, carrying the press id the PSA captured. The input
  * has no press id or link, and `tickets.hdb_press_id` (a last-note-wins
  * display cache) is never read here.
@@ -29,7 +28,7 @@ use App\Services\Hdb\HdbReportStatus;
  * applies before anything else: the ticket must belong to client_id (refused
  * with the same text), it must not be an unverified contact intake, and the
  * note must pass TicketNote::automationVisible(). Only then is the report
- * client called, so a refused call issues no request to the portal.
+ * reader called, so a refused call issues no request to the API.
  *
  * OUTPUT. A payload status (fetched, degraded) returns the vendor's decoded
  * JSON plus the screenshot in get_ticket_attachment's image shape and under
@@ -51,8 +50,8 @@ class HdbReportTool
         return [
             'name' => self::NAME,
             'description' => 'Fetch a HelpDesk Buttons (HDB) help button report and screenshot using client_id, ticket_id and a live, visible, PSA-captured note_id; pasted links and press ids never authorize a fetch. '
-                .'Uses the HDB Reports API when configured, otherwise the portal, with portal fallback on eligible API failures. source says api or portal. '
-                .'API report contains normalized diagnostics sections: system, hardware, network, security, software, processes and events; screenshot is the Instant Replay sprite (instant-replay.png). The portal returns report.json sections and its desktop screenshot. '
+                .'Reads through the HDB Reports API; a report the API does not have yet returns report_not_found and is not retried. source is api. '
+                .'The report contains normalized diagnostics sections: system, hardware, network, security, software, processes and events; screenshot is the Instant Replay sprite (instant-replay.png). '
                 .'Returns status, report, report_metadata, missing_sections, redaction and screenshot as {filename, media_type, is_image, data_base64}, subject to byte/pixel ceilings and redaction. screenshot_note explains an omitted image. '
                 .'Degraded results carry a warning; other non-fetched statuses return an error. Requires an explicit token grant.',
             'input_schema' => [
@@ -110,8 +109,8 @@ class HdbReportTool
         $visible = TicketNote::withTrashed()->automationVisible()->whereKey($noteId)->where('ticket_id', $ticket->id)->exists();
 
         $report = $visible
-            ? (new HdbReportClient)->fetchForNote($ticket->id, $noteId)
-            : HdbReportClient::refusal(HdbReportFetchRefusal::NoKeyedNote);
+            ? (new HdbReportReader)->fetchForNote($ticket->id, $noteId)
+            : HdbReportReader::refusal(HdbReportFetchRefusal::NoKeyedNote);
 
         $result = $this->present($report, $ticket->id, $noteId);
         TicketToolActivityContext::current()?->finish($result, read: true);
@@ -142,13 +141,8 @@ class HdbReportTool
         $redaction = $report->redaction;
         [$screenshot, $screenshotNote] = $this->screenshot($report->screenshot, $redaction?->allowsScreenshots() ?? false);
 
-        if ($report->source === 'api') {
-            if (is_array($screenshot) && isset($screenshot['filename'])) {
-                $screenshot['filename'] = \App\Services\Hdb\HdbApiReportClient::SPRITE_FILENAME;
-            }
-            if ($report->spriteReason !== null) {
-                $screenshotNote = $report->spriteReason;
-            }
+        if ($report->spriteReason !== null) {
+            $screenshotNote = $report->spriteReason;
         }
 
         $out = $base + [
@@ -177,7 +171,7 @@ class HdbReportTool
 
     /**
      * The screenshot in get_ticket_attachment's image shape, or null and the
-     * reason. The client hands back the raw `screen.png` body (bytes, not
+     * reason. The client hands back a bounded, resized Instant Replay sprite (bytes, not
      * base64), and only when the end user's redaction flags allowed it to be
      * fetched at all. Ceilings run in get_ticket_attachment's order: bytes,
      * then a header-only type and pixel check, then the GD decode.
@@ -196,12 +190,12 @@ class HdbReportTool
         }
 
         if ($bytes === null || $bytes === '') {
-            return [null, 'No screenshot image came back from the portal; the report is returned without it.'];
+            return [null, 'No screenshot image came back from the Reports API; the report is returned without it.'];
         }
 
         $limit = AssistantToolExecutor::MAX_ATTACHMENT_BYTES;
         if (strlen($bytes) > $limit) {
-            return [['error' => 'Screenshot is too large to return inline ('.strlen($bytes).' bytes, limit '.$limit.'); open the report in the HelpDesk Buttons portal.'], null];
+            return [['error' => 'Screenshot is too large to return inline ('.strlen($bytes).' bytes, limit '.$limit.'); open the report in HelpDesk Buttons.'], null];
         }
 
         // The type comes from the bytes, never from the file name.
@@ -221,7 +215,7 @@ class HdbReportTool
         }
 
         return [[
-            'filename' => HdbReportClient::FILE_SCREENSHOT,
+            'filename' => HdbApiReportClient::SPRITE_FILENAME,
             'media_type' => match ($mime) {
                 'image/png', 'image/gif' => 'image/png',
                 'image/webp' => 'image/webp',
@@ -240,6 +234,10 @@ class HdbReportTool
      */
     private function failureMessage(HdbReportResult $report): string
     {
+        if ($report->reason === 'report_not_found') {
+            return 'HelpDesk Buttons has no report for this press yet (report_not_found). Nothing was fetched; try again later.';
+        }
+
         if ($report->source === 'api' && $report->reason !== HdbReportResult::REASON_NOT_AUTHORIZED) {
             return 'The HelpDesk Buttons Reports API returned no usable report ('.$report->reason.').';
         }
@@ -248,16 +246,7 @@ class HdbReportTool
             HdbReportResult::REASON_NOT_AUTHORIZED => $report->refusal === HdbReportFetchRefusal::NoKeyedNote || $report->refusal === null
                 ? 'note_id does not name a live, visible note on this ticket carrying a HelpDesk Buttons press the PSA captured, so no report was fetched.'
                 : 'The report fetch was refused ('.$report->refusal->value.'), so no report was fetched.',
-            // The sign-in sentence is HdbAuthResult's own, chosen by its reason
-            // symbol alone (message() does not read the status), so the caller
-            // learns which leg failed, e.g. the portal's IP filter.
-            HdbReportResult::REASON_NOT_AUTHENTICATED => 'Could not sign in to the HelpDesk Buttons portal, so no report was fetched. '
-                .(new HdbAuthResult(HdbAuthStatus::Rejected, (string) $report->authReason))->message(),
-            HdbReportResult::REASON_TRANSPORT_ERROR => 'No response was received from the HelpDesk Buttons portal, so no report was returned.',
-            HdbReportResult::REASON_UNREADABLE_PAYLOAD => 'The portal answered with something that is not a readable report, so no report was returned.',
-            HdbReportResult::REASON_UNEXPECTED_RESPONSE => 'The portal did not return a usable report file, so no report was returned.',
-            HdbReportResult::REASON_UPLOAD_INCOMPLETE => 'The endpoint has not finished uploading this report yet, so no report was returned. Try again later.',
-            HdbReportResult::REASON_UPLOAD_GATE_MISSING => 'The report metadata did not say whether the upload had finished, so no report was returned. The portal format may have changed.',
+
             HdbReportResult::REASON_REDACTION_FLAG_UNREADABLE => 'The report metadata did not carry readable redaction settings, so nothing was returned rather than risk showing data the end user asked to withhold.',
             default => 'The HelpDesk Buttons report was not returned (status '.$report->status->value.').',
         };

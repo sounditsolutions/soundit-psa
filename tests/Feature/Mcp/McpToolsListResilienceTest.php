@@ -115,12 +115,8 @@ class McpToolsListResilienceTest extends TestCase
         // of catalog size. (An enabled instance pays the integration switch, key and
         // six defaults on top; still flat.)
         //
-        // Raised 100 -> 102 for get_hdb_report (card c5JaSetu): HdbPortalConfig::
-        // isConfigured() is consulted in liveGeneralToolDefinitions(), which tools/list
-        // assembles twice. Unconfigured it short-circuits after the single hdb_email
-        // read — +1 x 2 assemblies = +2 flat, independent of catalog size. (A configured
-        // instance pays the encrypted hdb_password read and then the t2t_enabled
-        // switch read on top: +4 more, still flat.)
+        // Raised 100 -> 102 for get_hdb_report (card c5JaSetu); since S3,
+        // HdbApiConfig only. The historical ceiling is retained.
         //
         // Raised 102 -> 106 for the Carbon Connect MCP passthrough (card PEYvh4NL): the
         // grant catalog (McpToolRegistry::groups(), memoized per request) reads
@@ -131,11 +127,10 @@ class McpToolsListResilienceTest extends TestCase
         // independent of the size of either catalog.
         //
         // Raised 106 -> 108 for the HDB Reports API (card J732ulwu S2): get_hdb_report
-        // is published when HdbApiConfig::isConfigured() OR HdbPortalConfig::
-        // isConfigured(), consulted in liveGeneralToolDefinitions(), which tools/list
-        // assembles twice. Unconfigured the API check pays the single encrypted
-        // hdb_api_key read before the portal check — +1 x 2 assemblies = +2 flat,
-        // independent of catalog size.
+        // is published when HdbApiConfig::isConfigured() and T2TConfig::isEnabled().
+        // tools/list assembles twice. Unconfigured the API check pays the single
+        // encrypted hdb_api_key read — +1 x 2 assemblies = +2 flat,
+        // independent of catalog size. Since S3 there is no portal check.
         $this->assertLessThanOrEqual(108, count($queries), $sql);
     }
 
