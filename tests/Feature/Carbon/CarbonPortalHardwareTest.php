@@ -216,6 +216,13 @@ class CarbonPortalHardwareTest extends TestCase
         $this->assertMatchesRegularExpression('#<tr>\s*<td><input type="checkbox" class="form-check-input hardware-select"[^>]*></td>\s*<td>Synthetic Desktop<div class="text-muted small">SYNTH-DESKTOP</div></td>\s*<td class="text-end">\$1,049\.00</td>#', $html);
     }
 
+    public function test_quantity_column_is_right_aligned_with_a_narrow_input(): void
+    {
+        $html = $this->get(route('portal.hardware'))->assertOk()
+            ->assertSee('<th class="text-end">'.__('carbon_hardware.quantity').'</th></tr></thead>', false)->getContent();
+        $this->assertMatchesRegularExpression('#<td class="text-end">\s*<input type="hidden" class="hardware-line-0"[^>]*>\s*<input type="number" class="form-control form-control-sm d-inline-block text-end hardware-quantity hardware-line-0"[^>]* style="width: 6rem;"[^>]*>\s*</td>#', $html);
+    }
+
     public function test_empty_state_spans_the_four_columns(): void
     {
         $this->client->hardwareModels()->delete();
@@ -341,9 +348,12 @@ class CarbonPortalHardwareTest extends TestCase
         $this->responseFixture();
         $colleague = Person::create(['client_id' => $this->client->id, 'person_type' => PersonType::User, 'first_name' => 'Synthetic', 'last_name' => 'Colleague', 'email' => 'colleague@example.test', 'is_active' => true, 'portal_enabled' => true, 'company_wide_access' => true]);
         ClientHardwareOrder::create(['client_id' => $this->client->id, 'person_id' => $colleague->id, 'idempotency_key' => (string) Str::uuid(), 'status' => 'submitted', 'lines' => [], 'estimated_total' => '5555.55']);
+        $this->travelTo(now()->setDate(2026, 3, 9)->setTime(12, 0));
         ClientHardwareOrder::create(['client_id' => $this->client->id, 'person_id' => $this->person->id, 'idempotency_key' => (string) Str::uuid(), 'status' => 'submitted', 'lines' => [], 'estimated_total' => '4444.44']);
-        $this->get(route('portal.hardware'))->assertOk()->assertSee('$4,444.44')->assertSee('$5,555.55')
-            ->assertSee('<th class="text-end">'.__('carbon_hardware.estimate').'</th>', false)->assertSee('<td class="text-end">$4,444.44</td>', false);
+        $html = $this->get(route('portal.hardware'))->assertOk()->assertSee('$4,444.44')->assertSee('$5,555.55')
+            ->assertSee('<th class="text-end">'.__('carbon_hardware.total').'</th>', false)->assertDontSee('<th class="text-end">'.__('carbon_hardware.estimate').'</th>', false)
+            ->assertDontSee('2026-03-09')->getContent();
+        $this->assertMatchesRegularExpression('#<tr><td>Mar 9, 2026</td><td>\s*</td><td class="text-end">\$4,444\.44</td><td>'.preg_quote(__('carbon_hardware.submitted'), '#').'</td></tr>#', $html);
         $this->person->update(['company_wide_access' => false]);
         $this->get(route('portal.hardware'))->assertOk()->assertSee('$4,444.44')->assertDontSee('5,555.55');
         Http::assertNothingSent();

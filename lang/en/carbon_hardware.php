@@ -20,6 +20,7 @@ return [
     'submit' => 'Submit request',
     'open_ticket' => 'Open a ticket',
     'estimate' => 'Estimated total, before tax and shipping',
+    'total' => 'Total',
     'not_charged' => 'Nothing is charged now; your IT provider confirms the final price.',
     'pending' => 'Request recorded — your IT provider will confirm',
     'submitted' => 'Submitted',
