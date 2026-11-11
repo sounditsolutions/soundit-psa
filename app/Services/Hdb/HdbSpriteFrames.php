@@ -32,9 +32,9 @@ namespace App\Services\Hdb;
  * newest two are tried, then the newest one; only when the newest one is
  * over too is nothing cropped, and the refusal names each ceiling met with
  * its figure. The work and inflate ceilings were set from CPU measured on
- * the production host (card 6Xiehny3): at about these figures a crop took
- * 7 s of CPU or less there. The row and chunk ceilings refuse whatever the
- * frame count, and bound memory.
+ * the production host (card 6Xiehny3): the crops measured there at about
+ * these figures stayed under the 10 s CPU bar. The row and chunk ceilings
+ * refuse whatever the frame count, and bound memory.
  */
 final class HdbSpriteFrames
 {
@@ -55,7 +55,7 @@ final class HdbSpriteFrames
     public const WORK_CEILING_BYTES = 222_000_000;
 
     /** (full row stride) x (rows to the frames' bottom edge), all inflated. */
-    public const INFLATE_CEILING_BYTES = 664_000_000;
+    public const INFLATE_CEILING_BYTES = 847_000_000;
 
     /**
      * Pixels of the frames held whole while rows stream past (all of them

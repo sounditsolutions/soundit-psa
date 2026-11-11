@@ -61,9 +61,9 @@ final class HdbSyntheticSprite
     }
 
     /**
-     * A wide RGB8 strip whose rows repeat one 1024-pixel tile, so even a
-     * strip of several hundred MB of pixels deflates to a few MB and builds
-     * in about a second. Every row uses filter 0 (the filter types are
+     * A wide RGB8 strip whose rows repeat one 256-pixel tile, so even a
+     * strip of several hundred MB of pixels deflates to well under the
+     * 32 MiB download limit and builds in a few seconds. Every row uses filter 0 (the filter types are
      * covered by png() at small sizes). Each position gets its marker, as in
      * png(), and the layout chunk names the positions.
      *
@@ -73,10 +73,10 @@ final class HdbSyntheticSprite
     {
         mt_srand(54321);
         $tile = '';
-        for ($i = 0; $i < 3072; $i++) {
+        for ($i = 0; $i < 768; $i++) {
             $tile .= chr(mt_rand(0, 255));
         }
-        $base = substr(str_repeat($tile, intdiv($width, 1024) + 1), 0, $width * 3);
+        $base = substr(str_repeat($tile, intdiv($width, 256) + 1), 0, $width * 3);
         $deflate = deflate_init(ZLIB_ENCODING_DEFLATE, ['level' => 1]);
         $idat = '';
         for ($y = 0; $y < $height; $y++) {

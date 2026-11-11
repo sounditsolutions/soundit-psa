@@ -266,7 +266,7 @@ class HdbSpriteFramesTest extends TestCase
      * Ceiling +-1. Work is (right x 3) x bottom, so it is always a multiple
      * of 3: 222,000,003 is the smallest work over the ceiling that exists
      * (right 3 px, bottom 24,666,667 rows; 24,666,667 is prime). Inflate is
-     * (W x 3 + 1) x bottom and 664,000,001 = 1,057 x 628,193 exists exactly.
+     * (W x 3 + 1) x bottom and 847,000,001 = 466,153 x 1,817 exists exactly.
      * Each pair has a full crop at the ceiling and one just over it, where
      * the newest three fall back to two; and a decision pair on header-only
      * sprites (no valid image data: not_image means the ceiling let it
@@ -299,11 +299,11 @@ class HdbSpriteFramesTest extends TestCase
 
     public function test_inflate_exactly_at_the_ceiling_crops_three_frames(): void
     {
-        // (221,333 x 3 + 1) x 1,000 = 664,000,000; the frames sit at the left.
+        // (282,333 x 3 + 1) x 1,000 = 847,000,000; the frames sit at the left.
         $positions = [[0, 0], [1000, 0], [2000, 0]];
-        $this->assertSame(HdbSpriteFrames::INFLATE_CEILING_BYTES, (221333 * 3 + 1) * 1000);
+        $this->assertSame(HdbSpriteFrames::INFLATE_CEILING_BYTES, (282333 * 3 + 1) * 1000);
 
-        $out = $this->extractFrom(HdbSyntheticSprite::tiled(221333, 1000, 1000, 1000, $positions));
+        $out = $this->extractFrom(HdbSyntheticSprite::tiled(282333, 1000, 1000, 1000, $positions));
 
         $this->assertArrayHasKey('frames', $out, $out['detail'] ?? '');
         $this->assertNull($out['note']);
@@ -312,13 +312,13 @@ class HdbSpriteFramesTest extends TestCase
 
     public function test_inflate_just_over_the_ceiling_falls_back_to_the_newest_two_and_names_only_that_ceiling(): void
     {
-        // (352 x 3 + 1) x 628,193 = 664,000,001; work 20 x 3 x 628,193 = 37.7 M.
-        $positions = [[0, 628183], [0, 0], [10, 0]];
+        // (155,384 x 3 + 1) x 1,817 = 847,000,001; work 20 x 3 x 1,817 = 0.1 M.
+        $positions = [[0, 1807], [0, 0], [10, 0]];
 
-        $out = $this->extractFrom(HdbSyntheticSprite::tiled(352, 628193, 10, 10, $positions, 4));
+        $out = $this->extractFrom(HdbSyntheticSprite::tiled(155384, 1817, 10, 10, $positions, 4));
 
         $this->assertFramesFrom([1, 2], 3, $out['frames'] ?? []);
-        $this->assertSame('2 of the newest 3 frames: the newest 3 frames (ending 20 px from the left and 628193 rows from the top) would inflate 664000001 bytes, over the inflate ceiling of 664000000 bytes', $out['note']);
+        $this->assertSame('2 of the newest 3 frames: the newest 3 frames (ending 20 px from the left and 1817 rows from the top) would inflate 847000001 bytes, over the inflate ceiling of 847000000 bytes', $out['note']);
     }
 
     public static function ceilingDecisions(): array
@@ -326,10 +326,10 @@ class HdbSpriteFramesTest extends TestCase
         return [
             'work at the ceiling' => [74000, 1000, 1000, 1000, [73000, 0], 'not_image', null],
             'work one step over' => [3, 24666667, 3, 1, [0, 24666666], 'over_work_ceiling', 'unfilter 222000003 bytes, over the work ceiling of 222000000 bytes'],
-            'inflate at the ceiling' => [221333, 1000, 1000, 1000, [0, 0], 'not_image', null],
-            'inflate one over' => [352, 628193, 10, 10, [0, 628183], 'over_work_ceiling', 'inflate 664000001 bytes, over the inflate ceiling of 664000000 bytes'],
+            'inflate at the ceiling' => [282333, 1000, 1000, 1000, [0, 0], 'not_image', null],
+            'inflate one over' => [155384, 1817, 10, 10, [0, 1807], 'over_work_ceiling', 'inflate 847000001 bytes, over the inflate ceiling of 847000000 bytes'],
             'one frame over the held pixels' => [9000, 3400, 4000, 3400, [0, 0], 'oversize', 'hold 13600000 px (1 x 4000x3400), over the held-pixel ceiling of 13500000 px'],
-            'work and inflate both over' => [100000, 3000, 1000, 1000, [99000, 2000], 'over_work_ceiling', 'unfilter 900000000 bytes, over the work ceiling of 222000000 bytes and inflate 900003000 bytes, over the inflate ceiling of 664000000 bytes'],
+            'work and inflate both over' => [100000, 3000, 1000, 1000, [99000, 2000], 'over_work_ceiling', 'unfilter 900000000 bytes, over the work ceiling of 222000000 bytes and inflate 900003000 bytes, over the inflate ceiling of 847000000 bytes'],
         ];
     }
 
@@ -350,6 +350,41 @@ class HdbSpriteFramesTest extends TestCase
             $this->assertSame(substr_count($says, 'ceiling'), substr_count((string) $result->spriteDetail, 'ceiling'), 'only the ceilings that are over are named');
             $this->assertStringContainsString(strlen($sprite).' bytes, '.$w.'x'.$h.' px', (string) $result->spriteDetail);
         }
+    }
+
+    /**
+     * Twenty 3840 x 2160 frames on the 17-per-row grid (65,280 x 4,320): the
+     * newest three sit at the left of row 1, so the work is 149.3 M but every
+     * row is inflated, 846.0 M, inside the 847 M ceiling. Three (24.9 M px)
+     * and two (16.6 M px) are over the held pixels; the newest one returns.
+     */
+    public function test_twenty_4k_frames_on_the_grid_return_the_newest_one(): void
+    {
+        $positions = HdbSyntheticSprite::grid(20, 17, 3840, 2160);
+
+        $result = $this->report(HdbSyntheticSprite::tiled(65280, 4320, 3840, 2160, $positions));
+
+        $this->assertNull($result->spriteReason, (string) $result->spriteDetail);
+        $this->assertFramesFrom([19], 20, $result->frames);
+        $this->assertSame('1 of the newest 3 frames: the newest 3 frames (ending 11520 px from the left and 4320 rows from the top) would hold 24883200 px (3 x 3840x2160), over the held-pixel ceiling of 13500000 px; '
+            .'the newest 2 frames (ending 11520 px from the left and 4320 rows from the top) would hold 16588800 px (2 x 3840x2160), over the held-pixel ceiling of 13500000 px', $result->framesNote);
+    }
+
+    /**
+     * Twenty 3840 x 1200 frames (two 1920 x 1200 monitors) on the 17-per-row
+     * grid (65,280 x 2,400; work 82.9 M, inflate 470.0 M): three hold
+     * 13.82 M px, over 13.5 M, so the held-pixel check must sit inside the
+     * fallback and the newest two return.
+     */
+    public function test_twenty_dual_monitor_frames_on_the_grid_return_the_newest_two(): void
+    {
+        $positions = HdbSyntheticSprite::grid(20, 17, 3840, 1200);
+
+        $result = $this->report(HdbSyntheticSprite::tiled(65280, 2400, 3840, 1200, $positions));
+
+        $this->assertNull($result->spriteReason, (string) $result->spriteDetail);
+        $this->assertFramesFrom([18, 19], 20, $result->frames);
+        $this->assertSame('2 of the newest 3 frames: the newest 3 frames (ending 11520 px from the left and 2400 rows from the top) would hold 13824000 px (3 x 3840x1200), over the held-pixel ceiling of 13500000 px', $result->framesNote);
     }
 
     public function test_held_pixels_over_the_ceiling_fall_back_to_the_newest_two(): void
