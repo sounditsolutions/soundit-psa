@@ -9,6 +9,7 @@ use App\Models\ContractActivity;
 use App\Models\Email;
 use App\Models\Invoice;
 use App\Models\PhoneCall;
+use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\TriageRun;
 use App\Support\ActivityItem;
@@ -139,31 +140,46 @@ class ActivityStreamService
 
     // ── Private query methods ──
 
+    /**
+     * The 'ticket' source: staff ticket notes plus newly opened tickets.
+     *
+     * Private notes are included on every stream, dashboard too: every caller
+     * of this service is a staff route behind auth (the client portal does not
+     * use it), and production writes staff notes private, so a public-only
+     * filter left the dashboard with no ticket items at all. System-generated
+     * notes stay out, and so do email-linked notes, which already appear as
+     * Email items.
+     *
+     * Opened tickets carry type 'ticket-opened' (own partial, data-type
+     * "ticket" so the Tickets filter chip still covers them). The two queries
+     * are merged and cut back to $limit, so the source still returns at most
+     * its perSource share.
+     */
     private function queryTicketNotes(?Carbon $before, int $limit, ?int $clientId = null, ?int $personId = null): Collection
     {
         $query = TicketNote::with(['ticket.client', 'author'])
             ->whereNotIn('note_type', NoteType::systemGenerated())
             ->whereNull('email_id');
 
-        // Dashboard: public notes only. Client/person scoped: include private notes for staff context.
-        if (! $clientId && ! $personId) {
-            $query->where('is_private', false);
-        }
-
         $this->applyScope($query, 'ticket', $clientId, $personId);
 
-        return $query
+        $notes = $query
             ->when($before, fn ($q) => $q->where('noted_at', '<', $before))
             ->orderByDesc('noted_at')
             ->limit($limit)
             ->get()
             ->map(fn ($note) => $this->wrapItem($note, 'ticket'));
+
+        return $notes
+            ->concat($this->queryOpenedTickets($before, $limit, $clientId, $personId))
+            ->sortByDesc(fn (ActivityItem $item) => $item->timestamp)
+            ->take($limit)
+            ->values();
     }
 
     private function queryTicketNotesSince(Carbon $since): Collection
     {
-        return TicketNote::with(['ticket.client', 'author'])
-            ->where('is_private', false)
+        $notes = TicketNote::with(['ticket.client', 'author'])
             ->whereNotIn('note_type', NoteType::systemGenerated())
             ->whereNull('email_id')
             ->where('noted_at', '>', $since)
@@ -171,6 +187,31 @@ class ActivityStreamService
             ->limit(100)
             ->get()
             ->map(fn ($note) => $this->wrapItem($note, 'ticket'));
+
+        $opened = Ticket::with(['client', 'contact'])
+            ->where('created_at', '>', $since)
+            ->orderByDesc('created_at')
+            ->limit(100)
+            ->get()
+            ->map(fn ($ticket) => $this->wrapItem($ticket, 'ticket-opened'));
+
+        return $notes
+            ->concat($opened)
+            ->sortByDesc(fn (ActivityItem $item) => $item->timestamp)
+            ->take(100)
+            ->values();
+    }
+
+    private function queryOpenedTickets(?Carbon $before, int $limit, ?int $clientId, ?int $personId): Collection
+    {
+        return Ticket::with(['client', 'contact'])
+            ->when($clientId, fn ($q) => $q->where('client_id', $clientId))
+            ->when(! $clientId && $personId, fn ($q) => $q->where('contact_id', $personId))
+            ->when($before, fn ($q) => $q->where('created_at', '<', $before))
+            ->orderByDesc('created_at')
+            ->limit($limit)
+            ->get()
+            ->map(fn ($ticket) => $this->wrapItem($ticket, 'ticket-opened'));
     }
 
     private function queryPhoneCalls(?Carbon $before, int $limit, ?int $clientId = null, ?int $personId = null): Collection
@@ -306,6 +347,7 @@ class ActivityStreamService
     {
         return match (true) {
             $model instanceof TicketNote => $model->noted_at,
+            $model instanceof Ticket => $model->created_at,
             $model instanceof PhoneCall => $model->started_at,
             $model instanceof Email => $model->received_at,
             $model instanceof ContractActivity => $model->created_at,
@@ -319,6 +361,7 @@ class ActivityStreamService
     {
         return match ($type) {
             'ticket' => $model->ticket ? route('tickets.show', $model->ticket) : '#',
+            'ticket-opened' => route('tickets.show', $model),
             'call' => route('calls.show', $model),
             'email' => route('emails.show', $model),
             'contract' => $model->contract ? route('contracts.show', $model->contract) : '#',
