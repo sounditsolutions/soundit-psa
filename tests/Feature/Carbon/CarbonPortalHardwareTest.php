@@ -421,7 +421,7 @@ class CarbonPortalHardwareTest extends TestCase
         $this->assertUnreadTicketKeepsCarbonStaffOnly($order);
         $this->assertSame(1, Ticket::findOrFail($order->ticket_id)->notes()->where('is_private', true)->count());
         $this->assertCount(1, $this->calls());
-        // One record in total, at any level and through any channel or stack, with the exact text.
+        // One record through Laravel's logger, with the exact text.
         $this->assertCount(1, $records);
         $this->assertSame('warning', $records[0]->level);
         $this->assertSame('[CarbonHardwareOrder] Draft submit threw', $records[0]->message);
@@ -432,6 +432,7 @@ class CarbonPortalHardwareTest extends TestCase
         $this->assertSame($sent, count(Http::recorded()));
         $this->assertCount(1, $this->calls());
         $this->assertDatabaseCount('tickets', 1);
+        $this->assertCount(1, $records);
     }
 
     public function test_a_carbon_mcp_exception_from_the_draft_is_unread_and_logs_nothing(): void
@@ -472,10 +473,32 @@ class CarbonPortalHardwareTest extends TestCase
         $order = ClientHardwareOrder::sole();
         $this->assertSame('unread', $order->status);
         $this->assertCount(1, $records);
+        $this->assertSame('warning', $records[0]->level);
+        $this->assertSame('[CarbonHardwareOrder] Draft submit threw', $records[0]->message);
         $this->assertSame(['exception' => 'RuntimeException@anonymous', 'order_id' => $order->id], $records[0]->context);
     }
 
-    /** Every log record written during the test, at any level, through any channel or stack. */
+    public function test_a_namespaced_exception_logs_its_short_class_name(): void
+    {
+        $this->responseFixture();
+        $this->app->bind(CarbonMcpClient::class, fn ($app) => new class($app->make(CarbonMcpConnector::class)) extends CarbonMcpClient
+        {
+            public function createDraftOrderOnce(array $arguments): array
+            {
+                parent::createDraftOrderOnce($arguments);
+
+                throw new \Illuminate\Http\Client\ConnectionException('SECRET-MESSAGE-TEXT');
+            }
+        });
+        $records = $this->recordLogs();
+        $this->submit();
+        $order = ClientHardwareOrder::sole();
+        $this->assertSame('unread', $order->status);
+        $this->assertCount(1, $records);
+        $this->assertSame(['exception' => 'ConnectionException', 'order_id' => $order->id], $records[0]->context);
+    }
+
+    /** Records written through Laravel's logger during the test. */
     private function recordLogs(): \ArrayObject
     {
         $records = new \ArrayObject;
