@@ -14,6 +14,9 @@ class CippClient
 
     private const TOKEN_CACHE_KEY = 'cipp_oauth_token';
 
+    /** The ONE endpoint this client POSTs to — see listMessageTrace(). */
+    private const MESSAGE_TRACE_ENDPOINT = 'api/ListMessageTrace';
+
     public function __construct(
         private readonly array $config,
         private readonly CacheInterface $cache,
@@ -264,6 +267,110 @@ class CippClient
         }
 
         return array_is_list($data) ? $data : null;
+    }
+
+    /**
+     * Run a message trace: POST api/ListMessageTrace with a JSON body.
+     *
+     * This is the ONLY POST this client makes, and it is a READ. The endpoint is
+     * a constant, not a parameter, on purpose: a general POST would open CIPP's
+     * write endpoints, and each of those needs its own ruling (card AsGVKuRa).
+     * Do not add a caller for another endpoint here — writes go through
+     * CippRestWriteClient.
+     *
+     * Why POST: CIPP-API Invoke-ListMessageTrace.ps1 (master b4ab8d9a) reads every
+     * input from $Request.Body — tenantFilter (:68), days (:90), sender and
+     * recipient (:112-113) — and nothing from $Request.Query. A GET with query
+     * parameters reaches it with no tenant and no window and answers an empty
+     * Results, which read as "no mail" for every tenant. CIPP's own UI POSTs the
+     * same keys (CIPP src/pages/email/tools/message-trace/index.jsx:125-139).
+     *
+     * Same transport as get(): sendRequest() (401 token refresh, 429 backoff) and
+     * CippQueueGuard. Unlike get(), it KEEPS Metadata, because for this endpoint
+     * Metadata is the difference between an answer and a failure:
+     *   - success :189-193  {Results: [...], Metadata: {Returned, Source, Note?}}
+     *     where Source is 'Graph' or 'Get-MessageTraceV2' (the fallback);
+     *   - failure :198-202  HTTP 500 {Results: [], Metadata: {Error: "..."}}.
+     * The 500 throws inside sendRequest() like any other; when its body carries a
+     * Metadata.Error string it is returned as metadata (rows []) so the caller can
+     * report CIPP's reason instead of an opaque status or a silent 0. Any other
+     * failure rethrows unchanged.
+     *
+     * @return array{rows: array<int|string, mixed>, metadata: array<string, mixed>}
+     *
+     * @throws CippClientException on transport failure, a queue-backed answer, or
+     *                             a body that is not a readable Results envelope.
+     */
+    public function listMessageTrace(string $tenantFilter, int $days, ?string $sender = null, ?string $recipient = null): array
+    {
+        $body = ['tenantFilter' => $tenantFilter, 'days' => $days];
+        foreach (['sender' => $sender, 'recipient' => $recipient] as $key => $value) {
+            if ($value !== null && trim($value) !== '') {
+                $body[$key] = trim($value);
+            }
+        }
+
+        try {
+            $response = $this->sendRequest('POST', self::MESSAGE_TRACE_ENDPOINT, ['json' => $body], 'application/json');
+        } catch (CippClientException $e) {
+            $error = self::messageTraceError($e);
+            if ($error === null) {
+                throw $e;
+            }
+
+            return ['rows' => [], 'metadata' => $error];
+        }
+
+        $data = json_decode((string) $response->getBody(), true);
+        if (! is_array($data)) {
+            // get() would turn this into [] — the silent 0 this method exists to end.
+            throw new CippClientException('CIPP message trace returned an unreadable body');
+        }
+
+        CippQueueGuard::assertNotQueueBacked($data);
+
+        if (array_is_list($data)) {
+            return ['rows' => $data, 'metadata' => []];
+        }
+
+        if (! isset($data['Results']) || ! is_array($data['Results'])) {
+            throw new CippClientException('CIPP message trace returned an object that is not a Results envelope');
+        }
+
+        $metadata = $data['Metadata'] ?? $data['metadata'] ?? [];
+
+        return ['rows' => $data['Results'], 'metadata' => is_array($metadata) ? $metadata : []];
+    }
+
+    /**
+     * CIPP's Metadata from a failed message-trace response, when it carries a
+     * non-empty Metadata.Error string; null otherwise (the caller rethrows).
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function messageTraceError(CippClientException $e): ?array
+    {
+        $previous = $e->getPrevious();
+        if (! $previous instanceof \GuzzleHttp\Exception\RequestException || ! $previous->getResponse()) {
+            return null;
+        }
+
+        try {
+            $stream = $previous->getResponse()->getBody();
+            if ($stream->isSeekable()) {
+                $stream->rewind();
+            }
+            $data = json_decode($stream->read(65536), true);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        $metadata = is_array($data) ? ($data['Metadata'] ?? $data['metadata'] ?? null) : null;
+        if (! is_array($metadata) || ! is_string($metadata['Error'] ?? null) || trim($metadata['Error']) === '') {
+            return null;
+        }
+
+        return $metadata;
     }
 
     /** Single-send read retaining the envelope for composite completeness checks. */
