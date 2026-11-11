@@ -159,12 +159,17 @@ class HdbReportToolTest extends TestCase
         $this->assertSame([], $out['missing_sections']);
         $this->assertSame(['diagnostic' => false, 'screenshots' => false], $out['redaction']);
 
+        // Card 6Xiehny3: the bytes travel once, as a native image block after
+        // the text; the text keeps the image's description only.
         $shot = $out['screenshot'];
         ksort($shot);
-        $this->assertSame(['data_base64', 'filename', 'is_image', 'media_type'], array_keys($shot));
+        $this->assertSame(['filename', 'image_blocks', 'is_image', 'media_type'], array_keys($shot));
         $this->assertTrue($shot['is_image']);
         $this->assertSame('image/png', $shot['media_type']);
-        $info = getimagesizefromstring((string) base64_decode($shot['data_base64'], true));
+        $this->assertSame(1, $shot['image_blocks']);
+        $block = $this->callTool(['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id])->json('result.content.1');
+        $this->assertSame(['image', 'image/png'], [$block['type'], $block['mimeType']]);
+        $info = getimagesizefromstring((string) base64_decode($block['data'], true));
         $this->assertSame([64, 48, 'image/png'], [$info[0], $info[1], $info['mime']]);
 
         // The press id never leaves (LinkedIds keeps it off reads: paste-to-fetch).
