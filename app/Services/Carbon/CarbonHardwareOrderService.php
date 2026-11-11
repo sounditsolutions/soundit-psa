@@ -135,9 +135,9 @@ class CarbonHardwareOrderService
         } catch (CarbonMcpException) {
             // Ambiguous delivery remains reserved, including preflight auth failures.
         } catch (\Throwable $e) {
-            // Any other failure after the reservation is also unread: the draft may have gone out,
+            // Any other exception from the draft call is also unread: the draft may have gone out,
             // so it is never retried. Class and order id only, never the message text.
-            Log::warning('[CarbonHardwareOrder] Draft submit threw; recorded as unread', ['exception' => class_basename($e), 'order_id' => $order->id]);
+            Log::warning('[CarbonHardwareOrder] Draft submit threw', ['exception' => class_basename(get_debug_type($e)), 'order_id' => $order->id]);
         }
         $data = $result['structuredContent'] ?? null;
         $code = $data instanceof \stdClass ? ($data->confirmationCode ?? null) : null;
