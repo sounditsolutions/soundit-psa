@@ -14,7 +14,7 @@ class CippClient
 
     private const TOKEN_CACHE_KEY = 'cipp_oauth_token';
 
-    /** The ONE endpoint this client POSTs to — see listMessageTrace(). */
+    /** The only CIPP endpoint this client POSTs to — see listMessageTrace(). */
     private const MESSAGE_TRACE_ENDPOINT = 'api/ListMessageTrace';
 
     public function __construct(

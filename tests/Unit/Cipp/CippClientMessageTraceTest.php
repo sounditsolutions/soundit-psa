@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
- * CippClient::listMessageTrace() — the one POST this client makes (card AsGVKuRa).
+ * CippClient::listMessageTrace() — the only POST to CIPP this client makes (card AsGVKuRa).
  *
  * CIPP-API Invoke-ListMessageTrace.ps1 (master b4ab8d9a) reads tenantFilter (:68),
  * days (:90), sender and recipient (:112-113) from $Request.Body only. These tests
