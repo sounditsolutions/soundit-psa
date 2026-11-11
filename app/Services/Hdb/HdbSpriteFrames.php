@@ -11,7 +11,8 @@ namespace App\Services\Hdb;
  * are in capture order, oldest first, so the last FRAME_COUNT positions are
  * the newest frames. Nothing here guesses a grid: a sprite whose chunk is
  * missing is not handled by this class, and a chunk that is unreadable, or
- * names a frame outside the image, is an omission with a reason.
+ * names a frame outside the image, is refused with a reason (the report
+ * client then tries the whole image under its own limits).
  *
  * WHY NO WHOLE DECODE. A real strip can be well over the 30 MP decode
  * guard (a GD decode of the whole strip needs about 4 bytes per pixel). A
@@ -24,11 +25,13 @@ namespace App\Services\Hdb;
  *
  * WORK CEILING. The cost grows with (bytes to the right edge) x (rows to the
  * bottom edge), with the inflate of every row above the bottom edge at full
- * width, and with the pixels of the frames held and resampled. Each is
+ * width, and with the pixels of the frames held and resampled; the memory
+ * also grows with one full row and with the IDAT chunks listed. Each is
  * bounded by a constant checked before any inflate; beyond any of them,
- * nothing is cropped and the omission says why. The values were chosen so
- * that the measured CPU at the ceilings stays under 10 s on the production
- * host's slower CPU (card 6Xiehny3 probe).
+ * nothing is cropped and the refusal says why. The work, inflate and
+ * held-pixel values were chosen so that the measured CPU at the ceilings
+ * stays under 10 s on the production host's slower CPU (card 6Xiehny3
+ * probe); the row and chunk ceilings only refuse more, and bound memory.
  */
 final class HdbSpriteFrames
 {
@@ -63,6 +66,17 @@ final class HdbSpriteFrames
 
     public const MAX_POSITIONS = 4_096;
 
+    /**
+     * Bytes of one full filtered row (W x 3 + 1). Rows are cut from the
+     * inflated stream only once a whole row is buffered, so this bounds the
+     * row held there and the widest unfilter band, whatever the rows to the
+     * bottom edge.
+     */
+    public const MAX_ROW_BYTES = 1_000_000;
+
+    /** IDAT chunks inspect() lists; a sprite with more is counted, not cropped. */
+    public const MAX_IDAT_CHUNKS = 16_384;
+
     /** GD pixels per unfilter band. */
     private const BAND_PIXELS = 150_000;
 
@@ -74,8 +88,8 @@ final class HdbSpriteFrames
     /**
      * Header facts, read without inflating anything.
      *
-     * @return array{width: int, height: int, depth: int, color: int, interlace: int, layout: ?string, layouts: int, idat: list<array{int, int}>}|null
-     *                                                                                                                                                 null when the bytes are not a PNG whose chunks can be walked
+     * @return array{width: int, height: int, depth: int, color: int, interlace: int, layout: ?string, layouts: int, idats: int, idat: list<array{int, int}>}|null
+     *                                                                                                                                                             null when the bytes are not a PNG whose chunks can be walked
      */
     public static function inspect(string $png): ?array
     {
@@ -85,7 +99,7 @@ final class HdbSpriteFrames
         }
         $ihdr = unpack('Nwidth/Nheight/Cdepth/Ccolor/Ccompression/Cfilter/Cinterlace', substr($png, 16, 13));
         $out = ['width' => $ihdr['width'], 'height' => $ihdr['height'], 'depth' => $ihdr['depth'], 'color' => $ihdr['color'],
-            'interlace' => $ihdr['interlace'], 'layout' => null, 'layouts' => 0, 'idat' => []];
+            'interlace' => $ihdr['interlace'], 'layout' => null, 'layouts' => 0, 'idats' => 0, 'idat' => []];
         $at = 8;
         while ($at + 12 <= $length) {
             $size = unpack('N', substr($png, $at, 4))[1];
@@ -94,7 +108,11 @@ final class HdbSpriteFrames
                 return null;
             }
             if ($type === 'IDAT') {
-                $out['idat'][] = [$at + 8, $size];
+                // Counted always, listed only up to the ceiling: a body of empty
+                // IDAT chunks must not become an unbounded list (extract() refuses).
+                if (++$out['idats'] <= self::MAX_IDAT_CHUNKS) {
+                    $out['idat'][] = [$at + 8, $size];
+                }
             } elseif ($type === 'hdbc') {
                 $out['layouts']++;
                 $data = substr($png, $at + 8, $size);
@@ -112,7 +130,7 @@ final class HdbSpriteFrames
     /**
      * Crop the newest frames named by the sprite's `hdbc` chunk, oldest first.
      *
-     * @param  array{width: int, height: int, depth: int, color: int, interlace: int, layout: ?string, layouts: int, idat: list<array{int, int}>}  $info  from inspect(), with a layout
+     * @param  array{width: int, height: int, depth: int, color: int, interlace: int, layout: ?string, layouts: int, idats: int, idat: list<array{int, int}>}  $info  from inspect(), with a layout
      * @return array{frames: list<array{png: string, width: int, height: int, index: int, total: int}>}|array{reason: string, detail: string}
      */
     public static function extract(string $png, array $info): array
@@ -126,8 +144,12 @@ final class HdbSpriteFrames
         $picked = array_slice($positions, -self::FRAME_COUNT, null, true);
         $right = max(array_map(static fn (array $p) => $p['left'] + $fw, $picked));
         $bottom = max(array_map(static fn (array $p) => $p['top'] + $fh, $picked));
+        $stride = $info['width'] * 3 + 1;
+        if ($stride > self::MAX_ROW_BYTES || $info['idats'] > self::MAX_IDAT_CHUNKS) {
+            return ['reason' => 'over_work_ceiling', 'detail' => 'the sprite rows are '.$stride.' bytes each and its image data is in '.$info['idats'].' IDAT chunks; this tool crops only up to '.self::MAX_ROW_BYTES.' bytes a row and '.self::MAX_IDAT_CHUNKS.' chunks'];
+        }
         $work = $right * 3 * $bottom;
-        $inflate = ($info['width'] * 3 + 1) * $bottom;
+        $inflate = $stride * $bottom;
         if ($work > self::WORK_CEILING_BYTES || $inflate > self::INFLATE_CEILING_BYTES) {
             return ['reason' => 'over_work_ceiling', 'detail' => 'the newest frames end '.$right.' px from the left and '.$bottom.' rows from the top; cropping them would unfilter '.$work.' bytes and inflate '.$inflate
                 .' bytes, over this tool\'s ceilings of '.self::WORK_CEILING_BYTES.' and '.self::INFLATE_CEILING_BYTES.' bytes'];

@@ -6,6 +6,7 @@ use App\Models\Setting;
 use App\Services\Assistant\AssistantToolExecutor;
 use App\Services\Hdb\HdbApiReportClient;
 use App\Services\Hdb\HdbReportResult;
+use App\Services\Hdb\HdbSpriteFrames;
 use App\Support\HdbApiConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -147,13 +148,16 @@ class HdbSpriteFramesTest extends TestCase
     }
 
     /**
-     * The sprite's image data is not valid deflate, so any decode would
-     * fail as not_image: a layout reason proves the check ran before it.
+     * The sprite's image data is not valid deflate, so a crop would fail as
+     * not_image: a layout reason proves the check ran before any inflate.
+     * The sprite is inside the whole-image limits, so the whole image is
+     * tried once (made to fail here, as this data would) and the layout
+     * reason is what comes back.
      */
     #[DataProvider('badLayouts')]
-    public function test_a_bad_layout_or_format_is_omitted_with_its_reason_and_the_sprite_size_without_decoding(array|string $layout, array $header, string $reason, string $says): void
+    public function test_a_bad_layout_or_format_is_omitted_with_its_reason_and_the_sprite_size_before_any_inflate(array|string $layout, array $header, string $reason, string $says): void
     {
-        $this->mock(\App\Services\AttachmentService::class)->shouldNotReceive('resizeImageBytesForAi');
+        $this->mock(\App\Services\AttachmentService::class)->shouldReceive('resizeImageBytesForAi')->once()->andReturnNull();
         $sprite = HdbSyntheticSprite::headerOnly(300, 120, $layout, $header['depth'] ?? 8, $header['color'] ?? 2, $header['interlace'] ?? 0, $header['twice'] ?? false);
 
         $result = $this->report($sprite);
@@ -179,14 +183,16 @@ class HdbSpriteFramesTest extends TestCase
 
     public function test_newest_frames_past_the_work_ceiling_are_omitted_with_the_figures_before_any_inflate(): void
     {
-        // Right edge 30000 px x 3 bytes x 1000 rows = 90 M bytes > 80 M.
-        $sprite = HdbSyntheticSprite::headerOnly(30000, 1000, HdbSyntheticSprite::layout(1000, 1000, [[0, 0], [29000, 0]]));
+        // Right edge 30000 px x 3 bytes x 1000 rows = 90 M bytes > 80 M. The
+        // strip (30.03 M px) is over the whole-image pixel limit, so no whole
+        // decode is tried either.
+        $sprite = HdbSyntheticSprite::headerOnly(30000, 1001, HdbSyntheticSprite::layout(1000, 1000, [[0, 0], [29000, 0]]));
 
         $result = $this->report($sprite);
 
         $this->assertSame('over_work_ceiling', $result->spriteReason);
         $this->assertStringContainsString('unfilter 90000000 bytes', (string) $result->spriteDetail);
-        $this->assertStringContainsString(strlen($sprite).' bytes, 30000x1000 px', (string) $result->spriteDetail);
+        $this->assertStringContainsString(strlen($sprite).' bytes, 30000x1001 px', (string) $result->spriteDetail);
     }
 
     public function test_the_inflate_ceiling_applies_even_when_the_frames_are_narrow(): void
@@ -204,7 +210,9 @@ class HdbSpriteFramesTest extends TestCase
     public function test_frames_over_the_held_pixel_ceiling_are_omitted_as_oversize(): void
     {
         // Three 3000 x 1600 frames = 14.4 M px > 13.5 M; two of them would fit.
-        $sprite = HdbSyntheticSprite::headerOnly(9000, 1600, HdbSyntheticSprite::layout(3000, 1600, [[0, 0], [3000, 0], [6000, 0]]));
+        // The strip (30.6 M px) is over the whole-image pixel limit, so no
+        // whole decode is tried either.
+        $sprite = HdbSyntheticSprite::headerOnly(9000, 3400, HdbSyntheticSprite::layout(3000, 1600, [[0, 0], [3000, 0], [6000, 0]]));
 
         $result = $this->report($sprite);
 
@@ -220,6 +228,57 @@ class HdbSpriteFramesTest extends TestCase
 
         $this->assertSame('not_image', $result->spriteReason);
         $this->assertStringContainsString(strlen($sprite).' bytes, 300x120 px', (string) $result->spriteDetail);
+    }
+
+    public static function uncroppableLayouts(): array
+    {
+        return [
+            'frame past the right edge' => [HdbSyntheticSprite::layout(100, 60, [[0, 0], [250, 0]])],
+            'not JSON' => ['{frame_width:'],
+        ];
+    }
+
+    /** Ruling condition 4: a sprite returned whole before frames existed still is, chunk or not. */
+    #[DataProvider('uncroppableLayouts')]
+    public function test_a_sprite_whose_frames_cannot_be_cropped_is_returned_whole_within_the_limits(array|string $layout): void
+    {
+        $result = $this->report(HdbSyntheticSprite::png(300, 120, [[0, 0]], $layout));
+
+        $this->assertSame([], $result->frames);
+        $this->assertNull($result->spriteReason, (string) $result->spriteDetail);
+        $this->assertSame([300, 120], array_slice(getimagesizefromstring((string) $result->screenshot), 0, 2));
+    }
+
+    public function test_a_row_over_the_row_ceiling_is_refused_before_any_inflate_even_when_the_frames_are_tiny(): void
+    {
+        // One 1 x 1 frame passes the work, inflate and held-pixel ceilings, but
+        // a whole 1,200,001-byte row would have to be buffered to reach it.
+        $sprite = HdbSyntheticSprite::headerOnly(400000, 1, HdbSyntheticSprite::layout(1, 1, [[0, 0]]));
+
+        $result = $this->report($sprite);
+
+        $this->assertSame('over_work_ceiling', $result->spriteReason);
+        $this->assertStringContainsString('rows are 1200001 bytes each', (string) $result->spriteDetail);
+        $this->assertStringContainsString(strlen($sprite).' bytes, 400000x1 px', (string) $result->spriteDetail);
+    }
+
+    public function test_idat_chunks_past_the_ceiling_are_counted_not_listed_and_the_frames_are_refused(): void
+    {
+        $sprite = HdbSyntheticSprite::png(300, 120, [[0, 0]], HdbSyntheticSprite::layout(100, 60, [[0, 0]]));
+        $at = strpos($sprite, 'IDAT') - 4;
+        $sprite = substr($sprite, 0, $at).str_repeat(HdbSyntheticSprite::chunk('IDAT', ''), HdbSpriteFrames::MAX_IDAT_CHUNKS).substr($sprite, $at);
+
+        $info = HdbSpriteFrames::inspect($sprite);
+        $this->assertSame(HdbSpriteFrames::MAX_IDAT_CHUNKS + 1, $info['idats']);
+        $this->assertCount(HdbSpriteFrames::MAX_IDAT_CHUNKS, $info['idat']);
+        $out = HdbSpriteFrames::extract($sprite, $info);
+        $this->assertSame('over_work_ceiling', $out['reason'] ?? null);
+        $this->assertStringContainsString('is in '.(HdbSpriteFrames::MAX_IDAT_CHUNKS + 1).' IDAT chunks', $out['detail']);
+
+        // Inside the whole-image limits, so the client still returns it whole.
+        $result = $this->report($sprite);
+        $this->assertSame([], $result->frames);
+        $this->assertSame([300, 120], array_slice(getimagesizefromstring((string) $result->screenshot), 0, 2));
     }
 
     public function test_a_sprite_without_a_layout_within_the_limits_is_still_returned_whole(): void

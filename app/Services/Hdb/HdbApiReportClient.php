@@ -119,10 +119,11 @@ final class HdbApiReportClient
 
     /**
      * The sprite as either the newest frames (when its PNG carries the
-     * `hdbc` frame layout chunk) or, without that chunk, the whole image under
-     * the attachment byte and pixel ceilings, as before frames existed. An
-     * omission carries a reason and, where bytes arrived, a detail with the
-     * byte count and W x H.
+     * `hdbc` frame layout chunk and they can be cropped) or, otherwise, the
+     * whole image under the attachment byte and pixel ceilings, as before
+     * frames existed. An omission carries a reason (the frame path's, when a
+     * layout was present) and, where bytes arrived, a detail with the byte
+     * count and W x H.
      *
      * @return array{?string, list<array{png: string, width: int, height: int, index: int, total: int}>, ?string, ?string}
      */
@@ -138,26 +139,30 @@ final class HdbApiReportClient
         }
         $info = HdbSpriteFrames::inspect($bytes);
         $facts = static fn (?array $info) => strlen($bytes).' bytes'.($info === null ? '' : ', '.$info['width'].'x'.$info['height'].' px');
+        $refused = null;
         if ($info !== null && $info['layouts'] > 0) {
             $out = HdbSpriteFrames::extract($bytes, $info);
-
-            return isset($out['frames'])
-                ? [null, $out['frames'], null, null]
-                : [null, [], $out['reason'], $out['detail'].' (sprite: '.$facts($info).')'];
+            if (isset($out['frames'])) {
+                return [null, $out['frames'], null, null];
+            }
+            // Card 6Xiehny3 condition 4: frames that cannot be cropped fall back to
+            // the whole image exactly as before frames existed. Only when that is
+            // omitted too does the frame path's reason come back.
+            $refused = [null, [], $out['reason'], $out['detail'].' (sprite: '.$facts($info).')'];
         }
         if (strlen($bytes) > \App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES) {
-            return [null, [], 'oversize', 'the sprite carries no frame layout and is over the '.\App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES.'-byte whole-image limit (sprite: '.$facts($info).')'];
+            return $refused ?? [null, [], 'oversize', 'the sprite carries no frame layout and is over the '.\App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES.'-byte whole-image limit (sprite: '.$facts($info).')'];
         }
         if ($size === false || ($size['mime'] ?? '') !== 'image/png') {
-            return [null, [], 'not_image', 'the sprite is not a readable PNG (sprite: '.$facts($info).')'];
+            return $refused ?? [null, [], 'not_image', 'the sprite is not a readable PNG (sprite: '.$facts($info).')'];
         }
         if ($size[0] * $size[1] > \App\Services\Assistant\AssistantToolExecutor::MAX_IMAGE_PIXELS) {
-            return [null, [], 'oversize', 'the sprite carries no frame layout and is over the '.\App\Services\Assistant\AssistantToolExecutor::MAX_IMAGE_PIXELS.'-pixel whole-image limit (sprite: '.$facts($info).')'];
+            return $refused ?? [null, [], 'oversize', 'the sprite carries no frame layout and is over the '.\App\Services\Assistant\AssistantToolExecutor::MAX_IMAGE_PIXELS.'-pixel whole-image limit (sprite: '.$facts($info).')'];
         }
         $encoded = app(\App\Services\AttachmentService::class)->resizeImageBytesForAi($bytes, 'image/png');
 
         return $encoded === null
-            ? [null, [], 'not_image', 'the sprite could not be decoded (sprite: '.$facts($info).')']
+            ? ($refused ?? [null, [], 'not_image', 'the sprite could not be decoded (sprite: '.$facts($info).')'])
             : [base64_decode($encoded, true), [], null, null];
     }
 

@@ -30,8 +30,9 @@ use App\Services\Hdb\HdbSpriteFrames;
  * reader called, so a refused call issues no request to the API.
  *
  * OUTPUT. A payload status (fetched, degraded) returns the vendor's decoded
- * JSON plus the screenshot: the newest Instant Replay frames when the sprite
- * names its frame layout, else the whole sprite under get_ticket_attachment's
+ * JSON plus the screenshot: the newest Instant Replay frames when they can be
+ * cropped from the frame layout the sprite names, else the whole sprite under
+ * get_ticket_attachment's
  * byte and pixel ceilings (both bounded in {@see HdbApiReportClient}). Every
  * other status returns `error` naming why nothing was returned. The press id
  * is not returned (LinkedIds keeps it off reads so it cannot be pasted back as
@@ -51,7 +52,7 @@ class HdbReportTool
             'description' => 'Fetch a HelpDesk Buttons (HDB) help button report and screenshot using client_id, ticket_id and a live, visible, PSA-captured note_id; pasted links and press ids never authorize a fetch. '
                 .'Reads through the HDB Reports API; a report the API does not have yet returns report_not_found and is not retried. source is api. '
                 .'The report contains normalized diagnostics sections: system, hardware, network, security, software, processes and events; screenshot is the Instant Replay sprite (instant-replay.png). '
-                .'Returns status, report, report_metadata, missing_sections, redaction and screenshot. The images come back as image content blocks, not text: when the sprite names its frame layout, the newest '.HdbSpriteFrames::FRAME_COUNT.' frames (fewer if the replay has fewer), oldest first, one block each, and screenshot.frames lists one line per block ("frame k of N, W x H px"); otherwise the whole sprite as one block, if it is within the byte and pixel limits. '
+                .'Returns status, report, report_metadata, missing_sections, redaction and screenshot. The images come back as image content blocks, not text: when the frames can be cropped from the frame layout the sprite names, the newest '.HdbSpriteFrames::FRAME_COUNT.' frames (fewer if the replay has fewer), oldest first, one block each, and screenshot.frames lists one line per block ("frame k of N, W x H px"); otherwise the whole sprite as one block, if it is within the byte and pixel limits. '
                 .'When no image is returned, screenshot is null, screenshot_note gives the reason and screenshot_detail the sprite bytes and W x H and the limit met. '
                 .'Degraded results carry a warning; other non-fetched statuses return an error. Requires an explicit token grant.',
             'input_schema' => [
@@ -168,8 +169,8 @@ class HdbReportTool
 
     /**
      * The screenshot, or null and the reason. The report client hands back
-     * either the newest frames ({@see HdbSpriteFrames}) or, for a sprite
-     * without a frame layout, the whole image already bounded and resized;
+     * either the newest frames ({@see HdbSpriteFrames}) or, when none could
+     * be cropped, the whole image already bounded and resized;
      * both are PNG bytes it decoded and re-encoded itself, so no ceiling is
      * re-checked here. With frames, `frames` holds one entry per frame,
      * oldest first: a line naming it ("frame k of N, W x H px") and its
