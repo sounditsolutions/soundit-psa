@@ -159,12 +159,17 @@ class HdbReportToolTest extends TestCase
         $this->assertSame([], $out['missing_sections']);
         $this->assertSame(['diagnostic' => false, 'screenshots' => false], $out['redaction']);
 
+        // Card 6Xiehny3: the bytes travel once, as a native image block after
+        // the text; the text keeps the image's description only.
         $shot = $out['screenshot'];
         ksort($shot);
-        $this->assertSame(['data_base64', 'filename', 'is_image', 'media_type'], array_keys($shot));
+        $this->assertSame(['filename', 'image_blocks', 'is_image', 'media_type'], array_keys($shot));
         $this->assertTrue($shot['is_image']);
         $this->assertSame('image/png', $shot['media_type']);
-        $info = getimagesizefromstring((string) base64_decode($shot['data_base64'], true));
+        $this->assertSame(1, $shot['image_blocks']);
+        $block = $this->callTool(['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id])->json('result.content.1');
+        $this->assertSame(['image', 'image/png'], [$block['type'], $block['mimeType']]);
+        $info = getimagesizefromstring((string) base64_decode($block['data'], true));
         $this->assertSame([64, 48, 'image/png'], [$info[0], $info[1], $info['mime']]);
 
         // The press id never leaves (LinkedIds keeps it off reads: paste-to-fetch).
@@ -531,6 +536,41 @@ class HdbReportToolTest extends TestCase
      * decode. The diagnostics are still returned (the client's fail-soft rule
      * for the image).
      */
+    public static function heldFrames(): array
+    {
+        return [
+            // 3 x 3000 x 1600 = 14.4 M px, over the 13.5 M held-pixel ceiling: the newest two.
+            'three over the held pixels' => [1600, ['frame 2 of 3, 1369x730 px', 'frame 3 of 3, 1369x730 px'],
+                '2 of the newest 3 frames: the newest 3 frames (ending 9000 px from the left and 1600 rows from the top) would hold 14400000 px (3 x 3000x1600), over the held-pixel ceiling of 13500000 px'],
+            // 3 x 3000 x 1000 = 9 M px: all three, and no note.
+            'three inside' => [1000, ['frame 1 of 3, 1568x523 px', 'frame 2 of 3, 1568x523 px', 'frame 3 of 3, 1568x523 px'], null],
+        ];
+    }
+
+    /**
+     * Card 6Xiehny3 r2: when fewer frames come back than the newest three,
+     * the text says how many and which ceiling with its figure; with all
+     * three there is no note.
+     *
+     * @param  list<string>  $lines
+     */
+    #[DataProvider('heldFrames')]
+    public function test_fewer_frames_than_the_newest_three_carry_a_note_naming_the_ceiling(int $frameHeight, array $lines, ?string $frameNote): void
+    {
+        $ticket = $this->helpdeskTicket();
+        $note = $this->note($ticket);
+        $this->fakeWholeReport(\Tests\Feature\Hdb\HdbSyntheticSprite::tiled(9000, $frameHeight, 3000, $frameHeight, [[0, 0], [3000, 0], [6000, 0]]));
+
+        $response = $this->callTool(['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id]);
+        $out = $this->decoded($response);
+
+        $this->assertSame($lines, array_column($out['screenshot']['frames'], 'frame'));
+        $this->assertSame(count($lines), $out['screenshot']['image_blocks']);
+        $this->assertSame($frameNote, $out['screenshot']['frames_note'] ?? null);
+        $this->assertArrayNotHasKey('screenshot_note', $out);
+        $this->assertSame('image', $response->json('result.content.'.count($lines).'.type'));
+    }
+
     public function test_an_oversize_screenshot_is_refused_at_get_ticket_attachments_ceiling(): void
     {
         $ticket = $this->helpdeskTicket();

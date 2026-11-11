@@ -68,6 +68,8 @@ final readonly class HdbReportResult
      * @param  array<string, mixed>|null  $report  decoded diagnostics, post-redaction
      * @param  list<string>  $missingSections  diagnostic sections that did not arrive
      * @param  string|null  $authReason  the API authentication or permission failure reason
+     * @param  list<array{png: string, width: int, height: int, index: int, total: int}>  $frames  newest sprite frames, oldest first
+     * @param  string|null  $framesNote  why fewer frames came back than were tried first; null when none were dropped
      */
     private function __construct(
         public HdbReportStatus $status,
@@ -85,6 +87,9 @@ final readonly class HdbReportResult
         public string $source = 'portal',
         public ?int $httpStatus = null,
         public ?string $apiCode = null,
+        public array $frames = [],
+        public ?string $spriteDetail = null,
+        public ?string $framesNote = null,
     ) {}
 
     /**
@@ -209,15 +214,36 @@ final readonly class HdbReportResult
         return new self(...$values);
     }
 
-    /** Add the API sprite outcome without changing the legacy factory contracts. */
-    public function withSpriteOutcome(?string $reason): self
+    /**
+     * The newest Instant Replay frames, oldest first, each a PNG with its
+     * size and its place in the sprite ({@see HdbSpriteFrames::extract()}),
+     * and the note saying why fewer came back than were tried first.
+     *
+     * @param  list<array{png: string, width: int, height: int, index: int, total: int}>  $frames
+     */
+    public function withFrames(array $frames, ?string $note = null): self
     {
-        if ($reason !== null && ! in_array($reason, ['redacted', 'oversize', 'not_image', 'fetch_failed', 'not_advertised'], true)) {
+        $values = get_object_vars($this);
+        $values['frames'] = array_values($frames);
+        $values['framesNote'] = $frames === [] ? null : $note;
+
+        return new self(...$values);
+    }
+
+    /**
+     * Add the API sprite outcome without changing the legacy factory contracts.
+     * $detail says, for an omitted image that arrived, what was measured
+     * (bytes and W x H) and which limit it met.
+     */
+    public function withSpriteOutcome(?string $reason, ?string $detail = null): self
+    {
+        if ($reason !== null && ! in_array($reason, ['redacted', 'oversize', 'not_image', 'fetch_failed', 'not_advertised', 'layout_invalid', 'unsupported_format', 'over_work_ceiling'], true)) {
             throw new \InvalidArgumentException('Invalid sprite reason');
         }
 
         $values = get_object_vars($this);
         $values['spriteReason'] = $reason;
+        $values['spriteDetail'] = $reason === null ? null : $detail;
         if ($reason === 'fetch_failed' && $this->status === HdbReportStatus::Fetched) {
             $values['status'] = HdbReportStatus::Degraded;
             $values['reason'] = 'sprite_fetch_failed';
