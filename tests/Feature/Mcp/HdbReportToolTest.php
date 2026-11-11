@@ -379,6 +379,91 @@ class HdbReportToolTest extends TestCase
 
     // -------------------------------------------------------- non-fetched
 
+    public static function readOnlyApiFailures(): array
+    {
+        return [
+            'pending' => [['status' => 'pending'], 'upload_incomplete'],
+            'unknown gate' => [['status' => 'synthetic-unknown'], 'upload_gate_missing'],
+            'unreadable redaction' => [['diagnostics_redacted' => 'maybe'], 'redaction_flag_unreadable'],
+            'no key' => ['no-key', 'not_authenticated'],
+            'transport' => ['connection', 'transport_error'],
+        ];
+    }
+
+    #[DataProvider('readOnlyApiFailures')]
+    public function test_api_failures_leave_ticket_link_note_and_note_count_unchanged(array|string $answer, string $reason): void
+    {
+        $ticket = $this->helpdeskTicket();
+        $note = $this->note($ticket);
+        if (is_array($answer)) {
+            $this->fakeWholeReport(null, $answer);
+        } elseif ($answer === 'no-key') {
+            Setting::where('key', 'hdb_api_key')->delete();
+            Http::fake();
+        } else {
+            Http::fake([HdbApiConfig::BASE_URL.'/reports/'.self::PRESS => fn () => throw new \Illuminate\Http\Client\ConnectionException('synthetic transport failure')]);
+        }
+        $beforeTicket = $ticket->fresh()->getRawOriginal();
+        $beforeNote = $note->fresh()->getRawOriginal();
+        $beforeCount = TicketNote::withTrashed()->where('ticket_id', $ticket->id)->count();
+
+        // Direct tool execution reaches the client's no-key guard even though
+        // the MCP publication gate hides an unconfigured tool.
+        $out = app(HdbReportTool::class)->execute(['ticket_id' => $ticket->id, 'note_id' => $note->id], $ticket->client_id);
+
+        $this->assertSame($reason, $out['reason']);
+        $this->assertSame('api', $out['source']);
+        $this->assertNotEmpty($out['error']);
+        if ($answer === 'no-key') {
+            $this->assertSame('api_key_missing', $out['auth_reason']);
+            Http::assertNothingSent();
+        } elseif (is_array($answer)) {
+            Http::assertSentCount(1);
+        }
+        $this->assertSame($beforeTicket, $ticket->fresh()->getRawOriginal());
+        $this->assertSame($beforeNote, $note->fresh()->getRawOriginal());
+        $this->assertSame($beforeCount, TicketNote::withTrashed()->where('ticket_id', $ticket->id)->count());
+    }
+
+    public static function vendorBodyFailures(): array
+    {
+        return [
+            'pending' => [['status' => 'pending'], 200, 'upload_incomplete'],
+            'unknown gate' => [['status' => 'synthetic-unknown'], 200, 'upload_gate_missing'],
+            'unreadable redaction' => [['diagnostics_redacted' => 'maybe'], 200, 'redaction_flag_unreadable'],
+            'rejected' => [[], 401, 'not_authenticated'],
+            'forbidden' => [[], 403, 'not_authenticated'],
+            'not found' => [[], 404, 'report_not_found'],
+            'unsupported' => [[], 422, 'unsupported_report_os'],
+            'rate limited' => [[], 429, 'rate_limited'],
+            'server failure' => [[], 503, 'transport_error'],
+            'unexpected' => [[], 409, 'unexpected_response'],
+        ];
+    }
+
+    #[DataProvider('vendorBodyFailures')]
+    public function test_api_failure_error_excludes_vendor_body_text(array $overrides, int $status, string $reason): void
+    {
+        $ticket = $this->helpdeskTicket();
+        $note = $this->note($ticket);
+        $message = 'synthetic-vendor-error-canary';
+        $hostname = 'synthetic-vendor-host.example.test';
+        $data = array_replace_recursive(\Tests\Feature\Hdb\HdbApiReportClientTest::fixture(), $overrides);
+        $data['ticket_id'] = (string) $ticket->id;
+        $data['error'] = ['code' => 'internal_error', 'message' => $message];
+        $data['hostname'] = $hostname;
+        Http::fake([HdbApiConfig::BASE_URL.'/reports/'.self::PRESS => Http::response($data, $status)]);
+
+        $out = $this->decoded($this->callTool(['client_id' => $ticket->client_id, 'ticket_id' => $ticket->id, 'note_id' => $note->id]));
+
+        $this->assertSame($reason, $out['reason']);
+        $this->assertSame('api', $out['source']);
+        $this->assertNotEmpty($out['error']);
+        $this->assertStringNotContainsString($message, $out['error']);
+        $this->assertStringNotContainsString($hostname, $out['error']);
+        Http::assertSentCount(1);
+    }
+
     public static function nonFetchedApiAnswers(): array
     {
         return [

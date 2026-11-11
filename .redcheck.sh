@@ -121,11 +121,11 @@ classify() {
   #
   # so a run in which every test calls markTestIncomplete() in its BODY is
   # "successful with issues": it prints "OK, but there were issues!" with
-  # "Tests: 14, Assertions: 0, Incomplete: 14." and exits 0. Those tests were
-  # prepared and DID emit testFinished, so "No tests executed!" never fires and
-  # numberOfTestsRun() is 14 -- while zero assertions were made. Subtracting
-  # only "Skipped:" admits exactly that run, and the harness would then score 14
-  # mutants against a suite that asserted nothing and call them all SURVIVED.
+  # counts showing every test incomplete and no assertions, and exits successfully.
+  # Those tests were prepared and DID emit testFinished, so "No tests executed!"
+  # never fires and numberOfTestsRun() counts them despite no assertions.
+  # Subtracting only "Skipped:" admits that run, and the harness would score
+  # every mutant against a suite that asserted nothing and call them all SURVIVED.
   #
   # So: require at least one test to have run that was NOT skipped and NOT
   # incomplete, AND require at least one assertion -- read from WHICHEVER of
@@ -231,7 +231,7 @@ PY
 
 # Baseline. The UNMUTATED suite must run and pass BEFORE the first mutation, or
 # every KILLED below is indistinguishable from the tip being red for a reason
-# that predates the mutant: a suite already failing at $TIP scores 14/14 and
+# that predates the mutant: a suite already failing at $TIP scores every mutant KILLED and
 # reports PASSED. Costs one extra suite run and is the precondition of any
 # mutation verdict. Judged by the same classify(), so "could not start" is not
 # mistaken for "red".

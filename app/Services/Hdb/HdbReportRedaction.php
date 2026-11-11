@@ -11,9 +11,9 @@ namespace App\Services\Hdb;
  * FAIL CLOSED ON AN UNREADABLE FLAG, and note which direction that is. An
  * absent or non-boolean flag does NOT mean "redaction was not requested" — it
  * means this client cannot tell. {@see fromTicket()} returns null for that
- * case, and the client turns null into a refusal
- * ({@see HdbReportResult::REASON_REDACTION_FLAG_UNREADABLE}): no diagnostics
- * and no screenshot are written. Defaulting the flags to false — the shape a
+ * case. HdbApiReportClient refuses non-boolean flags with redaction_flag_unreadable
+ * before calling fromTicket(); it does not check the returned value for null.
+ * Defaulting the flags to false — the shape a
  * `(bool) ($ticket['redactScreenshots'] ?? false)` would produce — would
  * publish a desktop screenshot the end user asked to withhold the first time
  * the vendor renamed a key, and it would do it silently.
