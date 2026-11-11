@@ -216,6 +216,13 @@ class CallController extends Controller
             $data['ticket_id'] = $model->ticket?->display_id;
             $data['preview'] = \Illuminate\Support\Str::limit($model->subject ?? '', 80);
             $data['body'] = \Illuminate\Support\Str::limit($model->body_preview ?? strip_tags($model->body_text ?? $model->subject ?? ''), 500);
+        } elseif ($item->type === 'ticket-opened') {
+            $data['icon'] = 'bi-ticket-perforated';
+            $data['who'] = $model->contact?->full_name ?? '';
+            $data['label'] = 'Ticket opened';
+            $data['ticket_id'] = $model->display_id;
+            $data['preview'] = \Illuminate\Support\Str::limit($model->subject ?? '', 80);
+            $data['body'] = \Illuminate\Support\Str::limit($model->subject ?? '', 500);
         }
 
         return $data;
