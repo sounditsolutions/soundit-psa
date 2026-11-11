@@ -69,6 +69,7 @@ final readonly class HdbReportResult
      * @param  list<string>  $missingSections  diagnostic sections that did not arrive
      * @param  string|null  $authReason  the API authentication or permission failure reason
      * @param  list<array{png: string, width: int, height: int, index: int, total: int}>  $frames  newest sprite frames, oldest first
+     * @param  string|null  $framesNote  why fewer frames came back than were tried first; null when none were dropped
      */
     private function __construct(
         public HdbReportStatus $status,
@@ -88,6 +89,7 @@ final readonly class HdbReportResult
         public ?string $apiCode = null,
         public array $frames = [],
         public ?string $spriteDetail = null,
+        public ?string $framesNote = null,
     ) {}
 
     /**
@@ -214,14 +216,16 @@ final readonly class HdbReportResult
 
     /**
      * The newest Instant Replay frames, oldest first, each a PNG with its
-     * size and its place in the sprite ({@see HdbSpriteFrames::extract()}).
+     * size and its place in the sprite ({@see HdbSpriteFrames::extract()}),
+     * and the note saying why fewer came back than were tried first.
      *
      * @param  list<array{png: string, width: int, height: int, index: int, total: int}>  $frames
      */
-    public function withFrames(array $frames): self
+    public function withFrames(array $frames, ?string $note = null): self
     {
         $values = get_object_vars($this);
         $values['frames'] = array_values($frames);
+        $values['framesNote'] = $frames === [] ? null : $note;
 
         return new self(...$values);
     }

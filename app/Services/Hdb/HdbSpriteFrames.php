@@ -27,11 +27,14 @@ namespace App\Services\Hdb;
  * bottom edge), with the inflate of every row above the bottom edge at full
  * width, and with the pixels of the frames held and resampled; the memory
  * also grows with one full row and with the IDAT chunks listed. Each is
- * bounded by a constant checked before any inflate; beyond any of them,
- * nothing is cropped and the refusal says why. The work, inflate and
- * held-pixel values were chosen so that the measured CPU at the ceilings
- * stays under 10 s on the production host's slower CPU (card 6Xiehny3
- * probe); the row and chunk ceilings only refuse more, and bound memory.
+ * bounded by a constant checked before any inflate. When the newest
+ * FRAME_COUNT frames are over the work, inflate or held-pixel ceiling, the
+ * newest two are tried, then the newest one; only when the newest one is
+ * over too is nothing cropped, and the refusal names each ceiling met with
+ * its figure. The work and inflate ceilings were set from CPU measured on
+ * the production host (card 6Xiehny3): at about these figures a crop took
+ * 7 s of CPU or less there. The row and chunk ceilings refuse whatever the
+ * frame count, and bound memory.
  */
 final class HdbSpriteFrames
 {
@@ -49,10 +52,10 @@ final class HdbSpriteFrames
     public const MAX_OUTPUT_PIXELS = 1_000_000;
 
     /** (frames' right edge x 3 bytes) x (rows to the frames' bottom edge). */
-    public const WORK_CEILING_BYTES = 80_000_000;
+    public const WORK_CEILING_BYTES = 222_000_000;
 
     /** (full row stride) x (rows to the frames' bottom edge), all inflated. */
-    public const INFLATE_CEILING_BYTES = 450_000_000;
+    public const INFLATE_CEILING_BYTES = 664_000_000;
 
     /**
      * Pixels of the frames held whole while rows stream past (all of them
@@ -130,8 +133,13 @@ final class HdbSpriteFrames
     /**
      * Crop the newest frames named by the sprite's `hdbc` chunk, oldest first.
      *
+     * The newest FRAME_COUNT are tried first (all of them when there are
+     * fewer); while they are over the work, inflate or held-pixel ceiling, one
+     * fewer is tried, down to the newest one. When fewer come back than were
+     * tried first, `note` says how many and which ceiling each larger try met.
+     *
      * @param  array{width: int, height: int, depth: int, color: int, interlace: int, layout: ?string, layouts: int, idats: int, idat: list<array{int, int}>}  $info  from inspect(), with a layout
-     * @return array{frames: list<array{png: string, width: int, height: int, index: int, total: int}>}|array{reason: string, detail: string}
+     * @return array{frames: list<array{png: string, width: int, height: int, index: int, total: int}>, note: ?string}|array{reason: string, detail: string}
      */
     public static function extract(string $png, array $info): array
     {
@@ -141,21 +149,28 @@ final class HdbSpriteFrames
         }
         ['frame_width' => $fw, 'frame_height' => $fh, 'positions' => $positions] = $layout;
         $total = count($positions);
-        $picked = array_slice($positions, -self::FRAME_COUNT, null, true);
-        $right = max(array_map(static fn (array $p) => $p['left'] + $fw, $picked));
-        $bottom = max(array_map(static fn (array $p) => $p['top'] + $fh, $picked));
         $stride = $info['width'] * 3 + 1;
         if ($stride > self::MAX_ROW_BYTES || $info['idats'] > self::MAX_IDAT_CHUNKS) {
             return ['reason' => 'over_work_ceiling', 'detail' => 'the sprite rows are '.$stride.' bytes each and its image data is in '.$info['idats'].' IDAT chunks; this tool crops only up to '.self::MAX_ROW_BYTES.' bytes a row and '.self::MAX_IDAT_CHUNKS.' chunks'];
         }
-        $work = $right * 3 * $bottom;
-        $inflate = $stride * $bottom;
-        if ($work > self::WORK_CEILING_BYTES || $inflate > self::INFLATE_CEILING_BYTES) {
-            return ['reason' => 'over_work_ceiling', 'detail' => 'the newest frames end '.$right.' px from the left and '.$bottom.' rows from the top; cropping them would unfilter '.$work.' bytes and inflate '.$inflate
-                .' bytes, over this tool\'s ceilings of '.self::WORK_CEILING_BYTES.' and '.self::INFLATE_CEILING_BYTES.' bytes'];
+
+        $first = min(self::FRAME_COUNT, $total);
+        $over = [];
+        for ($count = $first; $count >= 1; $count--) {
+            $plan = self::plan($positions, $count, $fw, $fh, $stride);
+            if ($plan['over'] === []) {
+                break;
+            }
+            $over[$count] = $plan;
+        }
+        if ($count === 0) {
+            // Named by what refused the newest frame alone: its pixels (oversize) or its work or inflate.
+            return ['reason' => isset($over[1]['over']['held']) ? 'oversize' : 'over_work_ceiling',
+                'detail' => 'no frame was cropped: '.self::overText($over, $fw, $fh)];
         }
 
-        $crops = self::crop($png, $info, $picked, $fw, $fh, $right, $bottom);
+        $picked = $plan['picked'];
+        $crops = self::crop($png, $info, $picked, $fw, $fh, $plan['right'], $plan['bottom']);
         if ($crops === null) {
             return ['reason' => 'not_image', 'detail' => 'the sprite image data could not be decoded'];
         }
@@ -165,7 +180,55 @@ final class HdbSpriteFrames
             $frames[] = ['png' => $crops[$i], 'width' => (int) $size[0], 'height' => (int) $size[1], 'index' => $position + 1, 'total' => $total];
         }
 
-        return ['frames' => $frames];
+        return ['frames' => $frames, 'note' => $over === [] ? null
+            : $count.' of the newest '.$first.' frames: '.self::overText($over, $fw, $fh)];
+    }
+
+    /**
+     * The newest $count positions and what cropping them costs, with each
+     * ceiling they are over (none when they can be cropped).
+     *
+     * @param  list<array{left: int, top: int}>  $positions
+     * @return array{picked: array<int, array{left: int, top: int}>, right: int, bottom: int, over: array<string, array{int, int}>}
+     */
+    private static function plan(array $positions, int $count, int $fw, int $fh, int $stride): array
+    {
+        $picked = array_slice($positions, -$count, null, true);
+        $right = max(array_map(static fn (array $p) => $p['left'] + $fw, $picked));
+        $bottom = max(array_map(static fn (array $p) => $p['top'] + $fh, $picked));
+        $figures = [
+            'work' => [$right * 3 * $bottom, self::WORK_CEILING_BYTES],
+            'inflate' => [$stride * $bottom, self::INFLATE_CEILING_BYTES],
+            'held' => [$count * $fw * $fh, self::HELD_PIXELS_CEILING],
+        ];
+
+        return ['picked' => $picked, 'right' => $right, 'bottom' => $bottom,
+            'over' => array_filter($figures, static fn (array $f) => $f[0] > $f[1])];
+    }
+
+    /**
+     * One clause per refused try, newest-first count descending, naming only
+     * the ceilings that try is over, each with its figure and its value.
+     *
+     * @param  array<int, array{right: int, bottom: int, over: array<string, array{int, int}>}>  $over
+     */
+    private static function overText(array $over, int $fw, int $fh): string
+    {
+        $clauses = [];
+        foreach ($over as $count => $plan) {
+            $parts = [];
+            foreach ($plan['over'] as $ceiling => [$figure, $limit]) {
+                $parts[] = match ($ceiling) {
+                    'work' => 'unfilter '.$figure.' bytes, over the work ceiling of '.$limit.' bytes',
+                    'inflate' => 'inflate '.$figure.' bytes, over the inflate ceiling of '.$limit.' bytes',
+                    default => 'hold '.$figure.' px ('.$count.' x '.$fw.'x'.$fh.'), over the held-pixel ceiling of '.$limit.' px',
+                };
+            }
+            $clauses[] = ($count === 1 ? 'the newest frame' : 'the newest '.$count.' frames').' (ending '.$plan['right'].' px from the left and '.$plan['bottom'].' rows from the top) would '
+                .implode(' and ', $parts);
+        }
+
+        return implode('; ', $clauses);
     }
 
     /**
@@ -321,10 +384,6 @@ final class HdbSpriteFrames
         }
         if ($positions === [] || count($positions) > self::MAX_POSITIONS) {
             return $bad('names '.count($positions).' frames');
-        }
-        $held = min(self::FRAME_COUNT, count($positions)) * $fw * $fh;
-        if ($held > self::HELD_PIXELS_CEILING) {
-            return ['reason' => 'oversize', 'detail' => 'the newest frames are '.$fw.'x'.$fh.' px each, '.$held.' px together, over this tool\'s ceiling of '.self::HELD_PIXELS_CEILING.' px'];
         }
         $out = [];
         foreach ($positions as $k => $p) {

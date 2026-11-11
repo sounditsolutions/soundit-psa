@@ -95,20 +95,21 @@ final class HdbApiReportClient
         unset($report['breach_exposure'], $report['identity_verification']);
         $sprite = null;
         $frames = [];
+        $framesNote = null;
         $spriteDetail = null;
         $spriteReason = $screenshots ? 'redacted' : 'not_advertised';
         if ($screenshots === false && $advertised) {
             $image = $this->request('/reports/'.rawurlencode($reportId).'/instant-replay/sprite', [], true);
-            [$sprite, $frames, $spriteReason, $spriteDetail] = isset($image['sprite_reason'])
-                ? [null, [], $image['sprite_reason'], 'the sprite download is over the '.self::MAX_BODY_BYTES.'-byte limit; it was not kept']
-                : (isset($image['failure']) ? [null, [], 'fetch_failed', null] : $this->sprite($image['bytes'] ?? null));
+            [$sprite, $frames, $spriteReason, $spriteDetail, $framesNote] = isset($image['sprite_reason'])
+                ? [null, [], $image['sprite_reason'], 'the sprite download is over the '.self::MAX_BODY_BYTES.'-byte limit; it was not kept', null]
+                : (isset($image['failure']) ? [null, [], 'fetch_failed', null, null] : $this->sprite($image['bytes'] ?? null));
         }
         $missing = $diagnostic ? [] : array_values(array_diff(self::REQUIRED_SECTIONS, array_keys($report)));
         if ($missing !== []) {
-            return HdbReportResult::degraded($reportId, $metadata, $report, $missing, $redaction, $sprite)->withFrames($frames)->withSpriteOutcome($spriteReason, $spriteDetail);
+            return HdbReportResult::degraded($reportId, $metadata, $report, $missing, $redaction, $sprite)->withFrames($frames, $framesNote)->withSpriteOutcome($spriteReason, $spriteDetail);
         }
 
-        $result = HdbReportResult::fetched($reportId, $metadata, $report, $redaction, $sprite)->withFrames($frames)->withSpriteOutcome($spriteReason, $spriteDetail);
+        $result = HdbReportResult::fetched($reportId, $metadata, $report, $redaction, $sprite)->withFrames($frames, $framesNote)->withSpriteOutcome($spriteReason, $spriteDetail);
         if ($spriteReason === 'fetch_failed') {
             return $result;
         }
@@ -123,14 +124,15 @@ final class HdbApiReportClient
      * whole image under the attachment byte and pixel ceilings, as before
      * frames existed. An omission carries a reason (the frame path's, when a
      * layout was present) and, where bytes arrived, a detail with the byte
-     * count and W x H.
+     * count and W x H. With frames, the last element says why fewer came
+     * back than the newest {@see HdbSpriteFrames::FRAME_COUNT} (null when none were dropped).
      *
-     * @return array{?string, list<array{png: string, width: int, height: int, index: int, total: int}>, ?string, ?string}
+     * @return array{?string, list<array{png: string, width: int, height: int, index: int, total: int}>, ?string, ?string, ?string}
      */
     private function sprite(?string $bytes): array
     {
         if ($bytes === null) {
-            return [null, [], 'fetch_failed', null];
+            return [null, [], 'fetch_failed', null, null];
         }
         $size = @getimagesizefromstring($bytes);
         if ($size !== false) {
@@ -143,27 +145,27 @@ final class HdbApiReportClient
         if ($info !== null && $info['layouts'] > 0) {
             $out = HdbSpriteFrames::extract($bytes, $info);
             if (isset($out['frames'])) {
-                return [null, $out['frames'], null, null];
+                return [null, $out['frames'], null, null, $out['note']];
             }
             // Card 6Xiehny3 condition 4: frames that cannot be cropped fall back to
             // the whole image exactly as before frames existed. Only when that is
             // omitted too does the frame path's reason come back.
-            $refused = [null, [], $out['reason'], $out['detail'].' (sprite: '.$facts($info).')'];
+            $refused = [null, [], $out['reason'], $out['detail'].' (sprite: '.$facts($info).')', null];
         }
         if (strlen($bytes) > \App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES) {
-            return $refused ?? [null, [], 'oversize', 'the sprite carries no frame layout and is over the '.\App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES.'-byte whole-image limit (sprite: '.$facts($info).')'];
+            return $refused ?? [null, [], 'oversize', 'the sprite carries no frame layout and is over the '.\App\Services\Assistant\AssistantToolExecutor::MAX_ATTACHMENT_BYTES.'-byte whole-image limit (sprite: '.$facts($info).')', null];
         }
         if ($size === false || ($size['mime'] ?? '') !== 'image/png') {
-            return $refused ?? [null, [], 'not_image', 'the sprite is not a readable PNG (sprite: '.$facts($info).')'];
+            return $refused ?? [null, [], 'not_image', 'the sprite is not a readable PNG (sprite: '.$facts($info).')', null];
         }
         if ($size[0] * $size[1] > \App\Services\Assistant\AssistantToolExecutor::MAX_IMAGE_PIXELS) {
-            return $refused ?? [null, [], 'oversize', 'the sprite carries no frame layout and is over the '.\App\Services\Assistant\AssistantToolExecutor::MAX_IMAGE_PIXELS.'-pixel whole-image limit (sprite: '.$facts($info).')'];
+            return $refused ?? [null, [], 'oversize', 'the sprite carries no frame layout and is over the '.\App\Services\Assistant\AssistantToolExecutor::MAX_IMAGE_PIXELS.'-pixel whole-image limit (sprite: '.$facts($info).')', null];
         }
         $encoded = app(\App\Services\AttachmentService::class)->resizeImageBytesForAi($bytes, 'image/png');
 
         return $encoded === null
-            ? ($refused ?? [null, [], 'not_image', 'the sprite could not be decoded (sprite: '.$facts($info).')'])
-            : [base64_decode($encoded, true), [], null, null];
+            ? ($refused ?? [null, [], 'not_image', 'the sprite could not be decoded (sprite: '.$facts($info).')', null])
+            : [base64_decode($encoded, true), [], null, null, null];
     }
 
     public function matchesTicket(mixed $value, int $ticketId): bool

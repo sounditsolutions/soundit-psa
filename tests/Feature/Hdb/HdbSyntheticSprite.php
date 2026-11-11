@@ -60,6 +60,60 @@ final class HdbSyntheticSprite
         return "\x89PNG\r\n\x1a\n".$chunks.self::chunk('IEND', '');
     }
 
+    /**
+     * A wide RGB8 strip whose rows repeat one 1024-pixel tile, so even a
+     * strip of several hundred MB of pixels deflates to a few MB and builds
+     * in about a second. Every row uses filter 0 (the filter types are
+     * covered by png() at small sizes). Each position gets its marker, as in
+     * png(), and the layout chunk names the positions.
+     *
+     * @param  list<array{int, int}>  $positions  [left, top] per frame, oldest first
+     */
+    public static function tiled(int $width, int $height, int $frameWidth, int $frameHeight, array $positions, int $markerSize = 32): string
+    {
+        mt_srand(54321);
+        $tile = '';
+        for ($i = 0; $i < 3072; $i++) {
+            $tile .= chr(mt_rand(0, 255));
+        }
+        $base = substr(str_repeat($tile, intdiv($width, 1024) + 1), 0, $width * 3);
+        $deflate = deflate_init(ZLIB_ENCODING_DEFLATE, ['level' => 1]);
+        $idat = '';
+        for ($y = 0; $y < $height; $y++) {
+            $row = $base;
+            foreach ($positions as $k => [$left, $top]) {
+                if ($y >= $top && $y < $top + $markerSize) {
+                    $c = self::marker($k);
+                    $row = substr_replace($row, str_repeat(chr($c >> 16).chr(($c >> 8) & 255).chr($c & 255), $markerSize), $left * 3, $markerSize * 3);
+                }
+            }
+            $idat .= deflate_add($deflate, "\0".$row, ZLIB_NO_FLUSH);
+        }
+        $idat .= deflate_add($deflate, '', ZLIB_FINISH);
+        $chunks = self::chunk('IHDR', pack('NNCCCCC', $width, $height, 8, 2, 0, 0, 0))
+            .self::chunk('hdbc', json_encode(self::layout($frameWidth, $frameHeight, $positions)));
+        foreach (str_split($idat, 1 << 20) as $part) {
+            $chunks .= self::chunk('IDAT', $part);
+        }
+
+        return "\x89PNG\r\n\x1a\n".$chunks.self::chunk('IEND', '');
+    }
+
+    /**
+     * The first $count positions of a row-major grid, $perRow frames to a row.
+     *
+     * @return list<array{int, int}>
+     */
+    public static function grid(int $count, int $perRow, int $frameWidth, int $frameHeight): array
+    {
+        $out = [];
+        for ($k = 0; $k < $count; $k++) {
+            $out[] = [($k % $perRow) * $frameWidth, intdiv($k, $perRow) * $frameHeight];
+        }
+
+        return $out;
+    }
+
     /** A layout chunk body in the vendor's shape. */
     public static function layout(int $frameWidth, int $frameHeight, array $positions): array
     {
