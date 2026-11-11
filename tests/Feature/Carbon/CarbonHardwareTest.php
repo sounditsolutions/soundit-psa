@@ -287,7 +287,8 @@ class CarbonHardwareTest extends TestCase
         $model->save();
         $this->envelope(['customers' => [], 'meta' => ['page' => 0, 'pageSize' => 100, 'totalRecords' => 0, 'totalPages' => 0]]);
         $response = $this->actingAs(User::factory()->create())->get(route('clients.hardware', $this->client));
-        $response->assertOk()->assertSee('Synthetic Laptop')->assertSee('123.45')->assertSee('100.00')->assertSee('Unknown')->assertSee('-23.5%');
+        $response->assertOk()->assertSee('Synthetic Laptop')->assertSee('123.45')->assertSee('100.00')->assertSee('Unknown')->assertSee('-23.5%')
+            ->assertSee('<th>'.__('carbon_hardware.sell_price').'</th>', false)->assertSee('<th>'.__('carbon_hardware.availability').'</th>', false);
         $this->assertSame(2, substr_count($response->getContent(), __('carbon_hardware.margin_warning')));
     }
 

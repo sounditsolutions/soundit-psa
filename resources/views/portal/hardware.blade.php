@@ -18,13 +18,13 @@
             <div class="card">
                 <div class="card-header">{{ __('carbon_hardware.approved') }}</div>
                 <div class="table-responsive"><table class="table mb-0">
-                    <thead><tr><th>{{ __('carbon_hardware.select') }}</th><th>{{ __('carbon_hardware.label') }}</th><th>{{ __('carbon_hardware.portal_price') }}</th><th>{{ __('carbon_hardware.quantity') }}</th></tr></thead>
+                    <thead><tr><th>{{ __('carbon_hardware.select') }}</th><th>{{ __('carbon_hardware.label') }}</th><th class="text-end">{{ __('carbon_hardware.portal_price') }}</th><th>{{ __('carbon_hardware.quantity') }}</th></tr></thead>
                     <tbody>
                     @forelse($models as $model)
                         <tr>
                             <td><input type="checkbox" class="form-check-input hardware-select" data-row="{{ $loop->index }}" aria-label="{{ __('carbon_hardware.select') }} {{ $model->label }}" @disabled($reason)></td>
                             <td>{{ $model->label }}<div class="text-muted small">{{ $model->mfg_part_no }}</div></td>
-                            <td>${{ number_format((float) $model->sell_price, 2) }}</td>
+                            <td class="text-end">${{ number_format((float) $model->sell_price, 2) }}</td>
                             <td>
                                 <input type="hidden" class="hardware-line-{{ $loop->index }}" name="lines[{{ $loop->index }}][model_id]" value="{{ $model->id }}" disabled>
                                 <input type="number" class="form-control hardware-quantity hardware-line-{{ $loop->index }}" name="lines[{{ $loop->index }}][quantity]" value="1" min="1" max="1000000" data-price="{{ $model->sell_price }}" aria-label="{{ __('carbon_hardware.quantity') }} {{ $model->label }}" disabled>
@@ -51,13 +51,13 @@
 <div class="card mt-3">
     <div class="card-header">{{ __('carbon_hardware.orders') }}</div>
     <div class="table-responsive"><table class="table mb-0">
-        <thead><tr><th>{{ __('carbon_hardware.date') }}</th><th>{{ __('carbon_hardware.ticket') }}</th><th>{{ __('carbon_hardware.estimate') }}</th><th>{{ __('carbon_hardware.status') }}</th></tr></thead>
+        <thead><tr><th>{{ __('carbon_hardware.date') }}</th><th>{{ __('carbon_hardware.ticket') }}</th><th class="text-end">{{ __('carbon_hardware.estimate') }}</th><th>{{ __('carbon_hardware.status') }}</th></tr></thead>
         <tbody>@forelse($orders as $order)
             <tr><td>{{ $order->created_at->toAppTz()->format('Y-m-d H:i') }}</td><td>
                 @if($order->ticket_id && ($portalPerson->company_wide_access || $portalPerson->id === $order->person_id))
                     <a href="{{ route('portal.tickets.show', $order->ticket_id) }}">#{{ $order->ticket_id }}</a>
                 @endif
-            </td><td>${{ number_format((float) $order->estimated_total, 2) }}</td><td>{{ __('carbon_hardware.'.$order->status) }}</td></tr>
+            </td><td class="text-end">${{ number_format((float) $order->estimated_total, 2) }}</td><td>{{ __('carbon_hardware.'.$order->status) }}</td></tr>
         @empty
             <tr><td colspan="4">{{ __('carbon_hardware.no_orders') }}</td></tr>
         @endforelse</tbody>
