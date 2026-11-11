@@ -552,10 +552,32 @@ class AttachmentService
     /**
      * resizeImageForAi() over bytes already in hand (Teams hosted content,
      * card 2Cj3kOsy): same 1568px bound, same re-encode per $mimeType.
+     *
+     * Decode guard (card riQQkVLF): GD's pixel buffers are not counted by PHP's
+     * memory_limit, so the only bound on what a decode allocates is a check made
+     * before it. The header is read with getimagesizefromstring() and null is
+     * returned, without decoding, when:
+     *  - the header cannot be read (false) — GD may still decode such bytes;
+     *  - the bytes are not PNG, JPEG, GIF or WebP, whatever $mimeType says
+     *    (GD decodes by content, and a stored type can be the sender's claim);
+     *  - width x height is over AssistantToolExecutor::MAX_IMAGE_PIXELS.
+     * Callers that run their own pixel check first keep it; theirs gives the
+     * better refusal text.
      */
     public function resizeImageBytesForAi(string $content, string $mimeType): ?string
     {
         if ($content === '') {
+            return null;
+        }
+
+        $info = @getimagesizefromstring($content);
+        if ($info === false) {
+            return null;
+        }
+        if (! in_array($info[2], [IMAGETYPE_PNG, IMAGETYPE_JPEG, IMAGETYPE_GIF, IMAGETYPE_WEBP], true)) {
+            return null;
+        }
+        if ($info[0] * $info[1] > \App\Services\Assistant\AssistantToolExecutor::MAX_IMAGE_PIXELS) {
             return null;
         }
 
