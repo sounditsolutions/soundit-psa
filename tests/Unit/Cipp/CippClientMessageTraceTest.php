@@ -121,6 +121,48 @@ class CippClientMessageTraceTest extends TestCase
         $client->listMessageTrace('contoso.onmicrosoft.com', 2);
     }
 
+    public function test_message_trace_refuses_an_empty_object_rather_than_answering_zero(): void
+    {
+        // Assoc json_decode turns `{}` into `[]`, which would otherwise pass as an empty list.
+        $client = $this->client([$this->ok('{}')]);
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('not a Results envelope');
+
+        $client->listMessageTrace('contoso.onmicrosoft.com', 2);
+    }
+
+    public function test_message_trace_refuses_an_empty_bare_list_rather_than_answering_zero(): void
+    {
+        $client = $this->client([$this->ok('[]')]);
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('not a Results envelope');
+
+        $client->listMessageTrace('contoso.onmicrosoft.com', 2);
+    }
+
+    public function test_message_trace_refuses_a_bare_list_of_rows(): void
+    {
+        // The producer always wraps rows as {Results, Metadata}; a bare list is not its shape.
+        $client = $this->client([$this->ok('[{"MessageTraceId":"t-1"}]')]);
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('not a Results envelope');
+
+        $client->listMessageTrace('contoso.onmicrosoft.com', 2);
+    }
+
+    public function test_message_trace_refuses_an_empty_object_as_results(): void
+    {
+        $client = $this->client([$this->ok('{"Results":{},"Metadata":{"Returned":0,"Source":"Graph"}}')]);
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('not a Results envelope');
+
+        $client->listMessageTrace('contoso.onmicrosoft.com', 2);
+    }
+
     public function test_message_trace_refreshes_the_token_on_401_and_resends_the_same_post(): void
     {
         $cache = \Mockery::mock(CacheInterface::class);

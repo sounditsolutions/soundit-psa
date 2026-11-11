@@ -321,20 +321,23 @@ class CippClient
             return ['rows' => [], 'metadata' => $error];
         }
 
-        $data = json_decode((string) $response->getBody(), true);
+        // Decoded twice, for the reason readList() gives: assoc mode turns `{}` into
+        // `[]`, which array_is_list() would pass as an empty list — the silent 0 this
+        // method exists to end. Only the identity decode can say "that was an object".
+        $raw = (string) $response->getBody();
+        $data = json_decode($raw, true);
+        $identity = json_decode($raw);
         if (! is_array($data)) {
-            // get() would turn this into [] — the silent 0 this method exists to end.
             throw new CippClientException('CIPP message trace returned an unreadable body');
         }
 
         CippQueueGuard::assertNotQueueBacked($data);
 
-        if (array_is_list($data)) {
-            return ['rows' => $data, 'metadata' => []];
-        }
-
-        if (! isset($data['Results']) || ! is_array($data['Results'])) {
-            throw new CippClientException('CIPP message trace returned an object that is not a Results envelope');
+        // Invoke-ListMessageTrace answers only with a {Results: [...], Metadata} object
+        // (:189-193), so a bare list, `{}`, or a Results that is not a JSON array is not
+        // an answer.
+        if (! $identity instanceof \stdClass || ! property_exists($identity, 'Results') || ! is_array($identity->Results)) {
+            throw new CippClientException('CIPP message trace returned a body that is not a Results envelope');
         }
 
         $metadata = $data['Metadata'] ?? $data['metadata'] ?? [];
