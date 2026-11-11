@@ -7,6 +7,7 @@ use App\Models\Client;
 use App\Models\Setting;
 use App\Models\Ticket;
 use App\Models\TicketNote;
+use App\Services\Hdb\HdbReportFetchAuthorizer;
 use App\Services\Hdb\HdbReportReader;
 use App\Support\HdbApiConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -136,6 +137,20 @@ class HdbReportSourceOrderTest extends TestCase
         $this->assertSame('refused', $result->status->value);
         $this->assertSame('api', $result->source);
         Http::assertNothingSent();
+    }
+
+    public function test_authorized_fetch_without_api_key_sends_nothing(): void
+    {
+        Setting::where('key', 'hdb_api_key')->first()->delete();
+        $this->assertNull(HdbApiConfig::apiKey());
+        $this->assertTrue((new HdbReportFetchAuthorizer)->authorizeNote($this->ticket->id, $this->note->id)->allowed);
+        $this->fake(Http::response($this->fixture()));
+
+        $result = (new HdbReportReader)->fetchForNote($this->ticket->id, $this->note->id);
+
+        Http::assertNothingSent();
+        $this->assertSame('api_key_missing', $result->authReason);
+        $this->assertSame('api', $result->source);
     }
 
     public function test_refusal_source_without_key_is_api(): void

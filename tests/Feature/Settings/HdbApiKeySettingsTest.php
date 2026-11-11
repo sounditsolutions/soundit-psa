@@ -36,6 +36,14 @@ class HdbApiKeySettingsTest extends TestCase
         }
     }
 
+    public function test_saving_api_settings_preserves_t2t_key_and_saves_company_id(): void
+    {
+        Setting::setEncrypted('t2t_api_key', 'existing-private-key');
+        $this->save(['company_id' => 'SoundPSA', 'hdb_api_key' => 'synthetic-api-key']);
+        $this->assertSame('existing-private-key', Setting::getEncrypted('t2t_api_key'));
+        $this->assertSame('SoundPSA', Setting::getValue('t2t_company_id'));
+    }
+
     public function test_clear_deletes_key(): void
     {
         Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
@@ -73,7 +81,7 @@ class HdbApiKeySettingsTest extends TestCase
 
     public function test_page_never_renders_stored_key_and_clear_requires_key(): void
     {
-        $this->get(route('settings.integrations'))->assertOk()->assertSee('Reports API')->assertDontSee('name="hdb_api_key_clear"', false);
+        $this->get(route('settings.integrations'))->assertOk()->assertSee('Reports API')->assertDontSee('Reports API (beta)')->assertDontSee('name="hdb_api_key_clear"', false);
         Setting::setEncrypted('hdb_api_key', 'synthetic-api-key');
         $this->get(route('settings.integrations'))->assertOk()->assertDontSee('synthetic-api-key')->assertSee('name="hdb_api_key_clear"', false)->assertSee('••••••••');
     }

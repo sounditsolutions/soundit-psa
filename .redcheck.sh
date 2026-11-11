@@ -19,7 +19,7 @@ set -uo pipefail
 cd "$(dirname "$0")"
 
 PHPUNIT=${REDCHECK_PHPUNIT:-./vendor/bin/phpunit}
-FILTER=${REDCHECK_FILTER:-HdbApiReportClientTest}
+FILTER=${REDCHECK_FILTER:-'HdbApiReportClientTest|HdbReportRedactionTest'}
 TIMEOUT=${REDCHECK_TIMEOUT:-900}
 
 TIP=$(git rev-parse HEAD)
@@ -246,9 +246,19 @@ if [ "${BASE_LINE%%$'\t'*}" != SURVIVED ]; then
 fi
 echo "baseline: unmutated suite ran and passed under filter $FILTER"
 
-# The portal-reader mutation set was retired with its implementation in S3.
-# This retained classifier harness has no default mutants; an empty set fails
-# closed below rather than claiming mutation coverage.
+# Portal mutants were retired with the portal; M3/M6 target kept files.
+R=app/Services/Hdb/HdbReportRedaction.php
+V=app/Services/Hdb/HdbReportResult.php
+
+# M3 — THE dangerous redaction default: absent flag means "not redacted".
+run M3-redaction-permissive-default "$R" \
+  '$diagnostic = $ticket[' \
+  'return new self((bool) ($ticket['"'"'redactDiagnostic'"'"'] ?? false), (bool) ($ticket['"'"'redactScreenshots'"'"'] ?? false)); $diagnostic = $ticket['
+
+# M6 — a degraded read reported as importable.
+run M6-degraded-is-importable "$V" \
+  'return $this->status === HdbReportStatus::Fetched;' \
+  'return in_array($this->status, [HdbReportStatus::Fetched, HdbReportStatus::Degraded], true);'
 
 echo "restored tip: $(git rev-parse HEAD); dirty: $(git status --porcelain | wc -l)"
 
