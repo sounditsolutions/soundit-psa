@@ -10,7 +10,7 @@ trait HuntressExpandedReads
 {
     private static function expandedDefinitions(): array
     {
-        return [...self::incidentDetailDefinitions(), ...self::signalDefinitions(), ...self::endpointDefinitions(), [
+        return [...self::logSourceDefinitions(), ...self::incidentDetailDefinitions(), ...self::signalDefinitions(), ...self::endpointDefinitions(), [
             'name' => 'huntress_siem_query',
             'description' => 'Query Huntress SIEM logs for one mapped PSA client. The organization filter is inserted before all other stages. Zero matches is not an all-clear; check log sources too. Requires the SIEM feature.',
             'input_schema' => [
@@ -26,6 +26,18 @@ trait HuntressExpandedReads
                 'required' => ['client_id', 'esql', 'range_start', 'range_end'],
             ],
         ]];
+    }
+
+    private static function logSourceDefinitions(): array
+    {
+        $scope = ['client_id' => ['type' => 'integer'], 'organization_id' => ['type' => 'integer']];
+
+        return [
+            ['name' => 'huntress_list_siem_log_sources', 'description' => 'List Huntress SIEM log sources in mapped organizations, optionally selecting misconfigured sources.',
+                'input_schema' => ['type' => 'object', 'properties' => $scope + ['misconfigured' => ['type' => 'boolean'], 'only_for_account' => ['type' => 'boolean'], 'type_code' => ['type' => 'string'], 'limit' => ['type' => 'integer'], 'page_token' => ['type' => 'string']], 'required' => []]],
+            ['name' => 'huntress_get_siem_log_source', 'description' => 'Read one Huntress SIEM log source in a mapped organization.',
+                'input_schema' => ['type' => 'object', 'properties' => $scope + ['id' => ['type' => 'integer']], 'required' => ['id']]],
+        ];
     }
 
     private static function signalDefinitions(): array
@@ -46,6 +58,8 @@ trait HuntressExpandedReads
     }
 
     private const ENDPOINT_FILTERS = [
+        'log_sources' => ['type_code'],
+        'misconfigured_log_sources' => [],
         'platform_actions' => ['sort_field', 'sort_direction', 'status', 'severity', 'subtype'],
         'agents' => ['sort_field', 'sort_direction', 'platform', 'hostname', 'os', 'version'],
         'reports' => ['sort_field', 'sort_direction', 'period_min', 'period_max', 'type'],
@@ -73,7 +87,17 @@ trait HuntressExpandedReads
 
     private function signalRead(array $input, ?int $clientId, bool $get, string $family = 'signals'): array
     {
-        $singular = ['signals' => 'signal', 'agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'][$family];
+        if ($family === 'log_sources' && ! $get) {
+            foreach (['misconfigured', 'only_for_account'] as $key) {
+                if (array_key_exists($key, $input) && ! is_bool($input[$key])) {
+                    return ['error' => $key.' must be a boolean'];
+                }
+            }
+            if ($input['misconfigured'] ?? false) {
+                $family = 'misconfigured_log_sources';
+            }
+        }
+        $singular = ['log_sources' => 'log_source', 'misconfigured_log_sources' => 'log_source', 'signals' => 'signal', 'agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'][$family];
         foreach (['client_id', 'organization_id'] as $key) {
             if (array_key_exists($key, $input) && $this->positiveInt($input[$key]) === null) {
                 return ['error' => $key.' must be a positive integer'];
@@ -89,7 +113,11 @@ trait HuntressExpandedReads
             return ['error' => 'Organization is not mapped to a PSA client'];
         }
         $params = [];
-        $endpoint = $family;
+        $endpoint = match ($family) {
+            'log_sources' => 'siem/log_sources',
+            'misconfigured_log_sources' => 'siem/log_sources/misconfigured',
+            default => $family,
+        };
         if ($get) {
             $id = $this->positiveInt($input['id'] ?? null);
             if ($id === null) {
@@ -105,6 +133,10 @@ trait HuntressExpandedReads
                     }
                     $params[$filter] = $input[$filter];
                 }
+            }
+            if ($family === 'log_sources' && array_key_exists('only_for_account', $input)) {
+                // Swagger boolean has no serialization override: use its literal boolean text.
+                $params['only_for_account'] = $input['only_for_account'] ? 'true' : 'false';
             }
             if ($org !== null) {
                 $params['organization_id'] = $org;
@@ -149,7 +181,7 @@ trait HuntressExpandedReads
 
                 continue;
             }
-            $rowOrg = $family === 'signals' ? ($row['organization']['id'] ?? null) : ($row['organization_id'] ?? null);
+            $rowOrg = in_array($family, ['signals', 'log_sources', 'misconfigured_log_sources'], true) ? ($row['organization']['id'] ?? null) : ($row['organization_id'] ?? null);
             if (! is_array($row) || ! is_int($rowOrg)) {
                 return ['error' => 'Huntress returned an unrecognized row organization'];
             }
