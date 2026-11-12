@@ -58,6 +58,7 @@ trait HuntressExpandedReads
     }
 
     private const ENDPOINT_FILTERS = [
+        'unwanted_access_rules' => ['type', 'status', 'scope', 'category', 'country_code', 'vpn', 'ip_address', 'logic'],
         'identities' => ['sort_field', 'sort_direction', 'tenant_type', 'risk_level'],
         'log_sources' => ['type_code'],
         'misconfigured_log_sources' => [],
@@ -71,11 +72,14 @@ trait HuntressExpandedReads
     {
         $definitions = [];
         // Vendor getV1Agents/getV1Reports: scalar string filters and common pagination.
-        foreach (['identities' => 'identity', 'agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'] as $plural => $singular) {
+        foreach (['unwanted_access_rules' => 'unwanted_access_rule', 'identities' => 'identity', 'agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'] as $plural => $singular) {
             $scope = ['client_id' => ['type' => 'integer'], 'organization_id' => ['type' => 'integer']];
             $filters = [];
             foreach (self::ENDPOINT_FILTERS[$plural] as $filter) {
                 $filters[$filter] = ['type' => 'string'];
+            }
+            if ($plural === 'unwanted_access_rules') {
+                $filters['identity_id'] = ['type' => 'integer'];
             }
             if ($plural === 'identities') {
                 foreach (['billable', 'enabled', 'external', 'mfa_enabled'] as $filter) {
@@ -104,7 +108,7 @@ trait HuntressExpandedReads
                 $family = 'misconfigured_log_sources';
             }
         }
-        $singular = ['identities' => 'identity', 'log_sources' => 'log_source', 'misconfigured_log_sources' => 'log_source', 'signals' => 'signal', 'agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'][$family];
+        $singular = ['unwanted_access_rules' => 'unwanted_access_rule', 'identities' => 'identity', 'log_sources' => 'log_source', 'misconfigured_log_sources' => 'log_source', 'signals' => 'signal', 'agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'][$family];
         foreach (['client_id', 'organization_id'] as $key) {
             if (array_key_exists($key, $input) && $this->positiveInt($input[$key]) === null) {
                 return ['error' => $key.' must be a positive integer'];
@@ -140,6 +144,13 @@ trait HuntressExpandedReads
                     }
                     $params[$filter] = $input[$filter];
                 }
+            }
+            if ($family === 'unwanted_access_rules' && array_key_exists('identity_id', $input)) {
+                $identity = $this->positiveInt($input['identity_id']);
+                if ($identity === null) {
+                    return ['error' => 'identity_id must be a positive integer'];
+                }
+                $params['identity_id'] = $identity;
             }
             if ($family === 'identities') {
                 foreach (['billable', 'enabled', 'external', 'mfa_enabled'] as $filter) {
@@ -178,7 +189,35 @@ trait HuntressExpandedReads
             return ['error' => 'Huntress returned an unrecognized collection shape'];
         }
         $result = [];
+        $dropped = 0;
         foreach ($rows as $row) {
+            if ($family === 'unwanted_access_rules') {
+                // Swagger only classifies applied_to.type=Organization with an integer id.
+                // Account/identity shapes are unspecified: fail closed, per STOP1.
+                $applied = is_array($row) ? ($row['applied_to'] ?? null) : null;
+                if (! is_array($applied) || ($applied['type'] ?? null) !== 'Organization' || ! is_int($applied['id'] ?? null)) {
+                    if ($get) {
+                        return ['error' => 'Unwanted access rule scope is unclassified'];
+                    }
+                    $dropped++;
+
+                    continue;
+                }
+                if ($org !== null && $applied['id'] !== $org) {
+                    return ['error' => 'Huntress returned a row outside the requested organization'];
+                }
+                if (! $mapped->has($applied['id'])) {
+                    if ($get) {
+                        return ['error' => 'Row organization is not mapped to a PSA client'];
+                    }
+                    $dropped++;
+
+                    continue;
+                }
+                $result[] = $this->sanitizeStructure('Huntress unwanted access rule', $row);
+
+                continue;
+            }
             if ($family === 'platform_actions') {
                 // PlatformAction Swagger example and measured rows use organizations: [{id, name}].
                 $organizations = is_array($row) ? ($row['organizations'] ?? null) : null;
@@ -228,7 +267,13 @@ trait HuntressExpandedReads
             $result[] = $this->sanitizeStructure('Huntress '.$singular, $row);
         }
 
-        return $get ? [$singular => $result[0]] : ['count' => count($result), $family => $result, 'next_page_token' => $this->nextPageToken($response)];
+        $output = $get ? [$singular => $result[0]] : ['count' => count($result), $family => $result, 'next_page_token' => $this->nextPageToken($response)];
+        if ($family === 'unwanted_access_rules' && ! $get) {
+            $output['dropped_unclassified'] = $dropped;
+            $output['note'] = 'Only classifiable mapped Organization rules are shown; other scopes and unmapped rules are dropped and counted. This list may be incomplete.';
+        }
+
+        return $output;
     }
 
     private const REMEDIATION_FILTERS = [

@@ -182,6 +182,8 @@ class HuntressReadOnlyToolset
         }
 
         return match ($toolName) {
+            'huntress_list_unwanted_access_rules' => $this->signalRead($input, $clientId, false, 'unwanted_access_rules'),
+            'huntress_get_unwanted_access_rule' => $this->signalRead($input, $clientId, true, 'unwanted_access_rules'),
             'huntress_list_identities' => $this->signalRead($input, $clientId, false, 'identities'),
             'huntress_get_identity' => $this->signalRead($input, $clientId, true, 'identities'),
             'huntress_list_siem_log_sources' => $this->signalRead($input, $clientId, false, 'log_sources'),
