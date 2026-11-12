@@ -11,8 +11,12 @@ use Illuminate\Support\Facades\Log;
 /**
  * Huntress P1 read tools for the staff MCP surface (bd psa-shej, epic psa-ppl9).
  *
- * Six general (account-scoped) read tools: list/get incident_reports, list/get
- * escalations, list/get organizations. Modeled on TacticalReadOnlyToolset and wired
+ * Huntress read tools, all registered as general (requiresClient() is false): the original
+ * list/get incident_reports, list/get escalations and list/get organizations, plus the
+ * expanded reads in HuntressExpandedReads (SIEM query and log sources, incident comments
+ * and remediations, signals, agents, reports, platform actions, identities, unwanted
+ * access rules, external ports, known VPNs, remote access connections). The resolve-
+ * escalation write is not here. Modeled on TacticalReadOnlyToolset and wired
  * into the Chet data surface (ChetDataSurfaceTools + ChetDataSurfaceToolExecutor).
  *
  * DATA-BOUNDARY RULE (the Huntress account can be shared across MSPs):

@@ -409,7 +409,7 @@ trait HuntressExpandedReads
 
         if ($family === 'platform_actions' && ! $get) {
             $output['dropped_unclassified'] = $dropped;
-            $output['note'] = 'Actions with no organization, with an unmapped organization, or, on a client-scoped call, shared with another organization are dropped and counted. This list may be incomplete.';
+            $output['note'] = 'Actions with no organization, with an unmapped organization, or, on a call scoped to one client or organization, shared with another organization are dropped and counted. This list may be incomplete.';
         }
 
         return $output;

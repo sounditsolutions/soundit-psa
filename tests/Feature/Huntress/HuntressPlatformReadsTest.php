@@ -94,7 +94,13 @@ class HuntressPlatformReadsTest extends TestCase
                 $this->assertSame(1, $shared['count']);
                 $this->assertSame([42], array_column($shared['platform_actions'][0]['organizations'], 'id'));
                 $this->assertSame(2, $shared['dropped_unclassified']);
-                $this->assertStringContainsString('shared with another organization', $shared['note']);
+                $this->assertSame('Actions with no organization, with an unmapped organization, or, on a call scoped to one client or organization, shared with another organization are dropped and counted. This list may be incomplete.', $shared['note']);
+                // organization_id alone scopes the call too: the same drop and count, the same note.
+                $orgOnly = $this->runRead(false, [$this->row([42, 43]), $this->row([42, 99]), $this->row([42])], ['organization_id' => 42]);
+                $this->assertArrayNotHasKey('error', $orgOnly);
+                $this->assertSame(1, $orgOnly['count']);
+                $this->assertSame(2, $orgOnly['dropped_unclassified']);
+                $this->assertSame($shared['note'], $orgOnly['note']);
             }
             $foreign = $this->runRead($get, [$this->row([43])], ['client_id' => $client->id]);
             $this->assertSame('Huntress returned a row outside the requested organization', $foreign['error'] ?? null);
