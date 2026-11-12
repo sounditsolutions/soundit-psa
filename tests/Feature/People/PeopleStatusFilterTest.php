@@ -37,8 +37,8 @@ class PeopleStatusFilterTest extends TestCase
     {
         $cases = [];
         foreach (['people.index', 'clients.people'] as $route) {
-            foreach ([null, 'active', 'inactive', 'all', 'unknown'] as $status) {
-                $cases[$route.'.'.($status ?? 'default')] = [$route, $status];
+            foreach ([null, 'active', 'inactive', 'all', 'unknown', '', ['all']] as $status) {
+                $cases[$route.'.'.(is_array($status) ? 'array' : ($status ?? 'default'))] = [$route, $status];
             }
         }
 
@@ -46,7 +46,7 @@ class PeopleStatusFilterTest extends TestCase
     }
 
     #[DataProvider('statuses')]
-    public function test_status_filters_rows_and_badges(string $route, ?string $status): void
+    public function test_status_filters_rows_and_badges(string $route, string|array|null $status): void
     {
         $client = Client::create(['name' => 'Example Company']);
         $active = $this->person($client, true);
@@ -72,6 +72,11 @@ class PeopleStatusFilterTest extends TestCase
         @$dom->loadHTML($response->getContent());
         $xpath = new \DOMXPath($dom);
         $this->assertSame(1, $xpath->query('//select[@name="status"]/option[@value="'.$chosen.'" and @selected]')->length);
+        $this->assertSame(1, $xpath->query('//select[@name="status"]/option[@selected]')->length);
+        if ($chosen === 'all') {
+            $this->assertSame(0, $xpath->query('//input[@name="person_ids[]" and @value="'.$inactive->id.'"]')->length);
+            $this->assertSame(1, $xpath->query('//input[@name="person_ids[]" and @value="'.$active->id.'"]')->length);
+        }
         foreach (['//tbody/tr', '//div[@class="data-row"]'] as $selector) {
             $rows = $xpath->query('//form[@id="bulkTypeForm"]'.$selector);
             $seen = 0;
@@ -87,7 +92,45 @@ class PeopleStatusFilterTest extends TestCase
         }
         if ($chosen !== 'active') {
             $response->assertSee('title="Clear"', false);
+        } else {
+            $response->assertDontSee('title="Clear"', false);
         }
+    }
+
+    public function test_default_client_tab_excludes_active_foreign_person(): void
+    {
+        $client = Client::create(['name' => 'Example Company']);
+        $active = $this->person($client, true);
+        $this->person(Client::create(['name' => 'Foreign Example Company']), true);
+        $response = $this->get(route('clients.people', $client))->assertOk();
+        $this->assertSame([$active->id], $response->viewData('people')->pluck('id')->all());
+    }
+
+    #[DataProvider('routes')]
+    public function test_default_empty_list_has_no_clear(string $route): void
+    {
+        $client = Client::create(['name' => 'Example Company']);
+        $params = $route === 'clients.people' ? ['client' => $client->id] : [];
+        $this->get(route($route, $params))->assertOk()
+            ->assertDontSee('title="Clear"', false)
+            ->assertSeeText('No contacts found.');
+    }
+
+    #[DataProvider('routes')]
+    public function test_inactive_status_combines_with_search(string $route): void
+    {
+        $client = Client::create(['name' => 'Example Company']);
+        $active = $this->person($client, true);
+        $active->update(['first_name' => 'SearchMatch']);
+        $inactive = $this->person($client, false);
+        $inactive->update(['first_name' => 'SearchMatch']);
+        $this->person($client, false);
+        $params = ['status' => 'inactive', 'search' => 'SearchMatch'];
+        if ($route === 'clients.people') {
+            $params['client'] = $client->id;
+        }
+        $response = $this->get(route($route, $params))->assertOk();
+        $this->assertSame([$inactive->id], $response->viewData('people')->pluck('id')->all());
     }
 
     public static function routes(): array

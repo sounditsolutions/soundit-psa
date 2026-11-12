@@ -3,6 +3,7 @@
      Optional: $listRoute (string, default 'people.index'), $prefilter (array, default [])
                $columns (array, default null = all columns), $showFilters (bool, default true),
                $showBulkActions (bool, default true)
+               $status ('active'|'inactive'|'all', default 'active')
      Column keys: checkbox, name, email, phone, mobile, client
 --}}
 @php
@@ -112,7 +113,9 @@
                             <tr>
                                 @if($showBulkActions && (!$columns || in_array('checkbox', $columns)))
                                 <td>
+                                    @if($person->is_active)
                                     <input class="form-check-input bulk-check" type="checkbox" name="person_ids[]" value="{{ $person->id }}">
+                                    @endif
                                 </td>
                                 @endif
                                 @if(!$columns || in_array('name', $columns))
