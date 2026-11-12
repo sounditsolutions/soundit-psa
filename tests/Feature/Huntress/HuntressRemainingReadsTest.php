@@ -47,6 +47,63 @@ class HuntressRemainingReadsTest extends TestCase
         $this->assertSame('', (string) $request->getBody());
     }
 
+    public function test_external_ports(): void
+    {
+        $other = Client::factory()->create(['huntress_organization_id' => 43]);
+        $tool = app(HuntressReadOnlyToolset::class);
+        foreach ([false, true] as $get) {
+            $name = $get ? 'huntress_get_external_port' : 'huntress_list_external_ports';
+            $key = $get ? 'external_port' : 'external_ports';
+            $row = ['id' => 7, 'organization_ids' => [42], 'ip_address' => '93.184.216.34', 'service' => 'synthetic'];
+            $id = $this->bind([$key => $get ? $row : [$row], 'pagination' => ['next_page_token' => 'next']]);
+            $input = $get ? ['id' => 7] : ['limit' => 2, 'page_token' => 'cursor', 'sort_field' => 'port', 'sort_direction' => 'asc', 'protocol' => 'TCP', 'port' => 22, 'risky_service' => false, 'service' => 'ssh'];
+            $result = $tool->execute($name, $input + ['client_id' => $id]);
+            $this->assertArrayNotHasKey('error', $result);
+            $returned = $get ? $result[$key] : $result[$key][0];
+            $this->assertSame([['organization_id' => 42, 'client_id' => $id]], $returned['organizations']);
+            $this->assertStringContainsString('UNTRUSTED HUNTRESS', $returned['service']);
+            $this->wire('external_ports'.($get ? '/7' : ''), $get ? [] : array_replace($input, ['risky_service' => 'false', 'organization_id' => 42]));
+            if (! $get) {
+                $this->assertSame('next', $result['next_page_token']);
+            }
+            foreach ([null, [], ['42'], [99], [42, 99], [42, 43], [43]] as $ids) {
+                $row['organization_ids'] = $ids;
+                $this->bind([$key => $get ? $row : [$row]]);
+                $result = $tool->execute($name, ['id' => 7, 'client_id' => $id]);
+                if ($get) {
+                    $this->assertArrayHasKey('error', $result);
+                } else {
+                    $this->assertSame([], $result[$key]);
+                    $this->assertSame(1, $result['dropped_unclassified']);
+                    $this->assertStringContainsString('incomplete', $result['note']);
+                }
+            }
+            foreach ([null, [], ['42'], [99], [42, 99]] as $ids) {
+                $row['organization_ids'] = $ids;
+                $this->bind([$key => $get ? $row : [$row]]);
+                $result = $tool->execute($name, ['id' => 7]);
+                if ($get) {
+                    $this->assertArrayHasKey('error', $result);
+                } else {
+                    $this->assertSame(1, $result['dropped_unclassified']);
+                }
+            }
+            $row['organization_ids'] = [42, 43];
+            $this->bind([$key => $get ? $row : [$row]]);
+            $result = $tool->execute($name, ['id' => 7]);
+            $returned = $get ? $result[$key] : $result[$key][0];
+            $this->assertSame([['organization_id' => 42, 'client_id' => $id], ['organization_id' => 43, 'client_id' => $other->id]], $returned['organizations']);
+            $this->bind([]);
+            $this->assertArrayHasKey('error', $tool->execute($name, ['id' => 7, 'client_id' => $id, 'organization_id' => 43]));
+            $this->assertCount(0, $this->history);
+            $this->bind(['error' => 'Forbidden'], 403);
+            $result = $tool->execute($name, ['id' => 7]);
+            $this->assertStringContainsString('403', $result['error']);
+            $this->assertStringContainsString("Charlie can widen the key's scope", $result['error']);
+            $this->assertStringNotContainsString('https://', $result['error']);
+        }
+    }
+
     public function test_known_vpns(): void
     {
         $body = ['known_vpns' => [['name' => 'Synthetic VPN', 'slug' => 'SYNTHETIC']]];

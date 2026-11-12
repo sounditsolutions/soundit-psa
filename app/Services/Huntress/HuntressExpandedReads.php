@@ -81,6 +81,7 @@ trait HuntressExpandedReads
     }
 
     private const ENDPOINT_FILTERS = [
+        'external_ports' => ['sort_field', 'sort_direction', 'protocol', 'service'],
         'unwanted_access_rules' => ['type', 'status', 'scope', 'category', 'country_code', 'vpn', 'ip_address', 'logic'],
         'identities' => ['sort_field', 'sort_direction', 'tenant_type', 'risk_level'],
         'log_sources' => ['type_code'],
@@ -95,11 +96,15 @@ trait HuntressExpandedReads
     {
         $definitions = [];
         // Vendor getV1Agents/getV1Reports: scalar string filters and common pagination.
-        foreach (['unwanted_access_rules' => 'unwanted_access_rule', 'identities' => 'identity', 'agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'] as $plural => $singular) {
+        foreach (['external_ports' => 'external_port', 'unwanted_access_rules' => 'unwanted_access_rule', 'identities' => 'identity', 'agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'] as $plural => $singular) {
             $scope = ['client_id' => ['type' => 'integer'], 'organization_id' => ['type' => 'integer']];
             $filters = [];
             foreach (self::ENDPOINT_FILTERS[$plural] as $filter) {
                 $filters[$filter] = ['type' => 'string'];
+            }
+            if ($plural === 'external_ports') {
+                $filters['port'] = ['type' => 'integer'];
+                $filters['risky_service'] = ['type' => 'boolean'];
             }
             if ($plural === 'unwanted_access_rules') {
                 $filters['identity_id'] = ['type' => 'integer'];
@@ -131,7 +136,7 @@ trait HuntressExpandedReads
                 $family = 'misconfigured_log_sources';
             }
         }
-        $singular = ['unwanted_access_rules' => 'unwanted_access_rule', 'identities' => 'identity', 'log_sources' => 'log_source', 'misconfigured_log_sources' => 'log_source', 'signals' => 'signal', 'agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'][$family];
+        $singular = ['external_ports' => 'external_port', 'unwanted_access_rules' => 'unwanted_access_rule', 'identities' => 'identity', 'log_sources' => 'log_source', 'misconfigured_log_sources' => 'log_source', 'signals' => 'signal', 'agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'][$family];
         foreach (['client_id', 'organization_id'] as $key) {
             if (array_key_exists($key, $input) && $this->positiveInt($input[$key]) === null) {
                 return ['error' => $key.' must be a positive integer'];
@@ -166,6 +171,20 @@ trait HuntressExpandedReads
                         return ['error' => $filter.' must be a string'];
                     }
                     $params[$filter] = $input[$filter];
+                }
+            }
+            if ($family === 'external_ports') {
+                if (array_key_exists('port', $input)) {
+                    if (! is_int($input['port']) || $input['port'] < 0 || $input['port'] > 65535) {
+                        return ['error' => 'port must be an integer between 0 and 65535'];
+                    }
+                    $params['port'] = $input['port'];
+                }
+                if (array_key_exists('risky_service', $input)) {
+                    if (! is_bool($input['risky_service'])) {
+                        return ['error' => 'risky_service must be a boolean'];
+                    }
+                    $params['risky_service'] = $input['risky_service'] ? 'true' : 'false';
                 }
             }
             if ($family === 'unwanted_access_rules' && array_key_exists('identity_id', $input)) {
@@ -214,6 +233,29 @@ trait HuntressExpandedReads
         $result = [];
         $dropped = 0;
         foreach ($rows as $row) {
+            if ($family === 'external_ports') {
+                $ids = is_array($row) ? ($row['organization_ids'] ?? null) : null;
+                $allowed = is_array($ids) && array_is_list($ids) && $ids !== [];
+                if ($allowed) {
+                    foreach ($ids as $id) {
+                        $allowed = $allowed && is_int($id) && $mapped->has($id);
+                    }
+                    // Scoped reads must not expose a port shared with another mapped client.
+                    $allowed = $allowed && ($org === null || $ids === [$org]);
+                }
+                if (! $allowed) {
+                    if ($get) {
+                        return ['error' => 'External port organizations are outside the mapped scope or unclassified'];
+                    }
+                    $dropped++;
+
+                    continue;
+                }
+                $row['organizations'] = array_map(fn (int $id) => ['organization_id' => $id, 'client_id' => $mapped->get($id)->id], $ids);
+                $result[] = $this->sanitizeStructure('Huntress external port', $row);
+
+                continue;
+            }
             if ($family === 'unwanted_access_rules') {
                 // Swagger only classifies applied_to.type=Organization with an integer id.
                 // Account/identity shapes are unspecified: fail closed, per STOP1.
@@ -294,6 +336,11 @@ trait HuntressExpandedReads
         if ($family === 'unwanted_access_rules' && ! $get) {
             $output['dropped_unclassified'] = $dropped;
             $output['note'] = 'Only classifiable mapped Organization rules are shown; other scopes and unmapped rules are dropped and counted. This list may be incomplete.';
+        }
+
+        if ($family === 'external_ports' && ! $get) {
+            $output['dropped_unclassified'] = $dropped;
+            $output['note'] = 'Rows outside the mapped scope or with unclassified organizations are dropped and counted. This list may be incomplete.';
         }
 
         return $output;
