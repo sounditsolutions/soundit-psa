@@ -10,7 +10,7 @@ trait HuntressExpandedReads
 {
     private static function expandedDefinitions(): array
     {
-        return [...self::signalDefinitions(), ...self::endpointDefinitions(), [
+        return [...self::incidentDetailDefinitions(), ...self::signalDefinitions(), ...self::endpointDefinitions(), [
             'name' => 'huntress_siem_query',
             'description' => 'Query Huntress SIEM logs for one mapped PSA client. The organization filter is inserted before all other stages. Zero matches is not an all-clear; check log sources too. Requires the SIEM feature.',
             'input_schema' => [
@@ -167,6 +167,109 @@ trait HuntressExpandedReads
         }
 
         return $get ? [$singular => $result[0]] : ['count' => count($result), $family => $result, 'next_page_token' => $this->nextPageToken($response)];
+    }
+
+    private const REMEDIATION_FILTERS = [
+        'types' => ['assisted', 'manual', 'containment'],
+        'statuses' => ['unapproved', 'approved', 'completed', 'failed', 'cancelled'],
+    ];
+
+    private static function incidentDetailDefinitions(): array
+    {
+        $definitions = [];
+        foreach (['list_incident_comments', 'list_incident_remediations', 'get_incident_remediation'] as $tool) {
+            $get = str_starts_with($tool, 'get_');
+            $properties = ['incident_report_id' => ['type' => 'integer'], 'client_id' => ['type' => 'integer'], 'organization_id' => ['type' => 'integer']];
+            $required = ['incident_report_id'];
+            if ($get) {
+                $properties['remediation_id'] = ['type' => 'integer'];
+                $required[] = 'remediation_id';
+            } else {
+                $properties += ['limit' => ['type' => 'integer'], 'page_token' => ['type' => 'string'], 'sort_field' => ['type' => 'string'], 'sort_direction' => ['type' => 'string']];
+                if ($tool === 'list_incident_remediations') {
+                    foreach (self::REMEDIATION_FILTERS as $name => $enum) {
+                        $properties[$name] = ['type' => 'array', 'items' => ['type' => 'string', 'enum' => $enum]];
+                    }
+                }
+            }
+            $definitions[] = ['name' => 'huntress_'.$tool, 'description' => 'Read Huntress incident '.($tool === 'list_incident_comments' ? 'comments' : 'remediations').'. The parent incident must belong to a mapped organization.',
+                'input_schema' => ['type' => 'object', 'properties' => $properties, 'required' => $required]];
+        }
+
+        return $definitions;
+    }
+
+    private function incidentDetailRead(array $input, ?int $clientId, string $family, bool $get = false): array
+    {
+        foreach (['client_id', 'organization_id'] as $key) {
+            if (array_key_exists($key, $input) && $this->positiveInt($input[$key]) === null) {
+                return ['error' => $key.' must be a positive integer'];
+            }
+        }
+        $clientId ??= $this->positiveInt($input['client_id'] ?? null);
+        $org = $this->scopedOrgId($input, $clientId);
+        if (is_array($org)) {
+            return $org;
+        }
+        $mapped = $this->mappedClientsByOrgId();
+        if ($org !== null && ! $mapped->has($org)) {
+            return ['error' => 'Organization is not mapped to a PSA client'];
+        }
+        $parent = $this->positiveInt($input['incident_report_id'] ?? null);
+        $child = $this->positiveInt($input['remediation_id'] ?? null);
+        if ($parent === null || ($get && $child === null)) {
+            return ['error' => 'incident_report_id and, for a get, remediation_id must be positive integers'];
+        }
+        $params = $get ? [] : $this->pageParams($input, default: 10, max: 500);
+        if (! $get) {
+            foreach (['sort_field', 'sort_direction'] as $filter) {
+                if (isset($input[$filter])) {
+                    if (! is_string($input[$filter])) {
+                        return ['error' => $filter.' must be a string'];
+                    }
+                    $params[$filter] = $input[$filter];
+                }
+            }
+            if ($family === 'remediations') {
+                foreach (self::REMEDIATION_FILTERS as $filter => $enum) {
+                    if (array_key_exists($filter, $input)) {
+                        if (! is_array($input[$filter]) || ! array_is_list($input[$filter])) {
+                            return ['error' => $filter.' must be an array'];
+                        }
+                        foreach ($input[$filter] as $value) {
+                            if (! in_array($value, $enum, true)) {
+                                return ['error' => 'Invalid '.$filter.' value'];
+                            }
+                        }
+                        // Vendor description says comma-separated; literal bracket names per Forge ruling.
+                        $params[$filter.'[]'] = implode(',', $input[$filter]);
+                    }
+                }
+            }
+        }
+        try {
+            // Children carry no org. Prove the parent before sending any child request.
+            $report = $this->client()->getIncidentReport($parent);
+            $parentOrg = $report['organization_id'] ?? null;
+            if (! is_int($parentOrg) || ! $mapped->has($parentOrg) || ($org !== null && $parentOrg !== $org)) {
+                return ['error' => 'Parent incident organization is outside the mapped scope'];
+            }
+            $response = $this->client()->get('incident_reports/'.$parent.'/'.$family.($get ? '/'.$child : ''), $params);
+        } catch (HuntressClientException $e) {
+            return $this->expandedApiError($e);
+        }
+        $rows = $get ? [$response['remediation'] ?? null] : ($response[$family] ?? null);
+        if (! is_array($rows) || ! array_is_list($rows)) {
+            return ['error' => 'Huntress returned an unrecognized collection shape'];
+        }
+        foreach ($rows as $row) {
+            if (! is_array($row) || ! is_int($row['id'] ?? null)) {
+                return ['error' => 'Huntress returned an unrecognized incident detail shape'];
+            }
+        }
+        $rows = $this->sanitizeStructure('Huntress incident detail', $rows);
+
+        return $get ? ['remediation' => $rows[0]] : ['count' => count($rows), $family => $rows, 'next_page_token' => $this->nextPageToken($response)];
     }
 
     private function siemQuery(array $input, ?int $clientId): array

@@ -182,6 +182,9 @@ class HuntressReadOnlyToolset
         }
 
         return match ($toolName) {
+            'huntress_list_incident_comments' => $this->incidentDetailRead($input, $clientId, 'comments'),
+            'huntress_list_incident_remediations' => $this->incidentDetailRead($input, $clientId, 'remediations'),
+            'huntress_get_incident_remediation' => $this->incidentDetailRead($input, $clientId, 'remediations', true),
             'huntress_list_platform_actions' => $this->signalRead($input, $clientId, false, 'platform_actions'),
             'huntress_get_platform_action' => $this->signalRead($input, $clientId, true, 'platform_actions'),
             'huntress_siem_query' => $this->siemQuery($input, $clientId),
