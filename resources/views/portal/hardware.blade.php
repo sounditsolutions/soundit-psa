@@ -31,7 +31,7 @@
                             </td>
                         </tr>
                     @empty
-                        <tr><td colspan="4">{{ __('carbon_hardware.empty') }}</td></tr>
+                        <tr><td colspan="4">{{ __('carbon_hardware.portal_empty') }}</td></tr>
                     @endforelse
                     </tbody>
                 </table></div>
