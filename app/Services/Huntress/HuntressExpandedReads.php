@@ -10,7 +10,7 @@ trait HuntressExpandedReads
 {
     private static function expandedDefinitions(): array
     {
-        return [...self::logSourceDefinitions(), ...self::incidentDetailDefinitions(), ...self::signalDefinitions(), ...self::endpointDefinitions(), [
+        return [['name' => 'huntress_list_known_vpns', 'description' => 'List account-level Huntress VPN and proxy operators. Call without a client or organization.', 'input_schema' => ['type' => 'object', 'properties' => new \stdClass, 'required' => []]], ...self::logSourceDefinitions(), ...self::incidentDetailDefinitions(), ...self::signalDefinitions(), ...self::endpointDefinitions(), [
             'name' => 'huntress_siem_query',
             'description' => 'Query Huntress SIEM logs for one mapped PSA client. The organization filter is inserted before all other stages. Zero matches is not an all-clear; check log sources too. Requires the SIEM feature.',
             'input_schema' => [
@@ -26,6 +26,29 @@ trait HuntressExpandedReads
                 'required' => ['client_id', 'esql', 'range_start', 'range_end'],
             ],
         ]];
+    }
+
+    private function knownVpnRead(array $input, ?int $clientId): array
+    {
+        if ($clientId !== null || array_key_exists('client_id', $input) || array_key_exists('organization_id', $input)) {
+            return ['error' => 'Known VPNs are an account-level list; call without a client'];
+        }
+        try {
+            $response = $this->client()->get('known_vpns', []);
+        } catch (HuntressClientException $e) {
+            return $this->expandedApiError($e);
+        }
+        $rows = $response['known_vpns'] ?? null;
+        if (! is_array($rows) || ! array_is_list($rows)) {
+            return ['error' => 'Huntress returned an unrecognized collection shape'];
+        }
+        foreach ($rows as $row) {
+            if (! is_array($row) || ! is_string($row['name'] ?? null) || ! is_string($row['slug'] ?? null)) {
+                return ['error' => 'Huntress returned an unrecognized VPN shape'];
+            }
+        }
+
+        return ['count' => count($rows), 'known_vpns' => $this->sanitizeStructure('Huntress known VPN', $rows)];
     }
 
     private static function logSourceDefinitions(): array
