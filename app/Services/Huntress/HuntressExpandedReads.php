@@ -46,6 +46,7 @@ trait HuntressExpandedReads
     }
 
     private const ENDPOINT_FILTERS = [
+        'platform_actions' => ['sort_field', 'sort_direction', 'status', 'severity', 'subtype'],
         'agents' => ['sort_field', 'sort_direction', 'platform', 'hostname', 'os', 'version'],
         'reports' => ['sort_field', 'sort_direction', 'period_min', 'period_max', 'type'],
         'signals' => ['sort_field', 'sort_direction', 'investigated_at_min', 'investigated_at_max', 'entity_type', 'entity_id', 'types', 'statuses'],
@@ -55,7 +56,7 @@ trait HuntressExpandedReads
     {
         $definitions = [];
         // Vendor getV1Agents/getV1Reports: scalar string filters and common pagination.
-        foreach (['agents' => 'agent', 'reports' => 'report'] as $plural => $singular) {
+        foreach (['agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'] as $plural => $singular) {
             $scope = ['client_id' => ['type' => 'integer'], 'organization_id' => ['type' => 'integer']];
             $filters = [];
             foreach (self::ENDPOINT_FILTERS[$plural] as $filter) {
@@ -72,7 +73,7 @@ trait HuntressExpandedReads
 
     private function signalRead(array $input, ?int $clientId, bool $get, string $family = 'signals'): array
     {
-        $singular = ['signals' => 'signal', 'agents' => 'agent', 'reports' => 'report'][$family];
+        $singular = ['signals' => 'signal', 'agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'][$family];
         foreach (['client_id', 'organization_id'] as $key) {
             if (array_key_exists($key, $input) && $this->positiveInt($input[$key]) === null) {
                 return ['error' => $key.' must be a positive integer'];
@@ -121,6 +122,33 @@ trait HuntressExpandedReads
         }
         $result = [];
         foreach ($rows as $row) {
+            if ($family === 'platform_actions') {
+                // PlatformAction Swagger example and measured rows use organizations: [{id, name}].
+                $organizations = is_array($row) ? ($row['organizations'] ?? null) : null;
+                if (! is_array($organizations) || ! array_is_list($organizations)) {
+                    return ['error' => 'Huntress returned an unrecognized organizations shape'];
+                }
+                $allowed = true;
+                foreach ($organizations as $organization) {
+                    if (! is_array($organization) || ! is_int($organization['id'] ?? null)) {
+                        return ['error' => 'Huntress returned an unrecognized row organization'];
+                    }
+                    if ($org !== null && $organization['id'] !== $org) {
+                        return ['error' => 'Huntress returned a row outside the requested organization'];
+                    }
+                    $allowed = $allowed && $mapped->has($organization['id']);
+                }
+                if (! $allowed) {
+                    if ($get) {
+                        return ['error' => 'Row organization is not mapped to a PSA client'];
+                    }
+
+                    continue;
+                }
+                $result[] = $this->sanitizeStructure('Huntress platform action', $row);
+
+                continue;
+            }
             $rowOrg = $family === 'signals' ? ($row['organization']['id'] ?? null) : ($row['organization_id'] ?? null);
             if (! is_array($row) || ! is_int($rowOrg)) {
                 return ['error' => 'Huntress returned an unrecognized row organization'];
