@@ -52,23 +52,45 @@ class HuntressReadOnlyToolsetTest extends TestCase
 
     // ── tool surface ─────────────────────────────────────────────────────────
 
-    public function test_defines_six_general_read_tools_that_require_no_psa_client_scope(): void
+    public function test_defines_all_read_tools_on_the_general_surface(): void
     {
         $names = array_column(HuntressReadOnlyToolset::definitions(), 'name');
 
         sort($names);
         $this->assertSame([
+            'huntress_get_agent',
             'huntress_get_escalation',
+            'huntress_get_external_port',
+            'huntress_get_identity',
+            'huntress_get_incident_remediation',
             'huntress_get_incident_report',
             'huntress_get_organization',
+            'huntress_get_platform_action',
+            'huntress_get_report',
+            'huntress_get_siem_log_source',
+            'huntress_get_signal',
+            'huntress_get_unwanted_access_rule',
+            'huntress_list_agents',
             'huntress_list_escalations',
+            'huntress_list_external_ports',
+            'huntress_list_identities',
+            'huntress_list_incident_comments',
+            'huntress_list_incident_remediations',
             'huntress_list_incident_reports',
+            'huntress_list_known_vpns',
             'huntress_list_organizations',
+            'huntress_list_platform_actions',
+            'huntress_list_remote_access_connections',
+            'huntress_list_reports',
+            'huntress_list_siem_log_sources',
+            'huntress_list_signals',
+            'huntress_list_unwanted_access_rules',
+            'huntress_siem_query',
         ], $names);
 
         foreach ($names as $tool) {
             $this->assertTrue(HuntressReadOnlyToolset::handles($tool), "{$tool} must be handled");
-            $this->assertFalse(HuntressReadOnlyToolset::requiresClient($tool), "{$tool} is general — no client scope");
+            $this->assertFalse(HuntressReadOnlyToolset::requiresClient($tool), "{$tool} is registered on the general surface");
         }
 
         $this->assertSame([], HuntressReadOnlyToolset::clientDefinitions());

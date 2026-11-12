@@ -1218,6 +1218,8 @@ Sync EDR agent counts and ITDR user counts from Huntress for license billing.
 5. Click **Sync Licenses Now** or wait for the daily 05:00 cron
 6. Optional, for escalation resolution only: an administrator enters a **User API key** and **User API secret** (a user-based Huntress API key, separate from the account key above) in the same card and saves. The card shows **Write enabled** once both are saved. Leaving them blank keeps the saved pair; **Clear the saved user API key pair** removes it.
 
+**Read tools:** Staff MCP reads cover organizations, escalations, incident reports and their comments/remediations, SIEM queries and log sources (including misconfigured sources), identities, signals, unwanted access rules, known VPNs, agents, external ports, remote access connections, summary reports and platform actions. SIEM query requires the account's SIEM feature. Some endpoints require a key with wider scope; a 403 explicitly reports that lack of access, not an empty list. In the 2026-11-12 UTC check, the current key returned 403 on six families: SIEM log sources, identities, unwanted access rules, known VPNs, external ports and remote access connections. Remote access connections require a mapped client and rely on the vendor-side organization filter because rows have no organization field; results are capped at 500 newest rows without paging. Known VPNs are account-level and refuse client-scoped calls. No new settings or schedule are required.
+
 ### Huntress (Incident Tickets)
 
 Receive security incident reports from Huntress as tickets via ConnectWise-compatible webhooks.
