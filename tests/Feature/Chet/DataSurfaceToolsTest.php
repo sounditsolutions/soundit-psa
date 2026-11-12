@@ -148,9 +148,10 @@ class DataSurfaceToolsTest extends TestCase
         $token = $this->chetToken(['cipp_list_users']);
 
         $cipp = Mockery::mock(CippClient::class);
+        $cipp->shouldReceive('readDeadline')->andReturn(120.0);
         $cipp->shouldReceive('get')
             ->once()
-            ->with('api/ListUsers', ['TenantFilter' => 'acme.example'])
+            ->with('api/ListUsers', ['TenantFilter' => 'acme.example'], 120.0)
             ->andReturn([
                 ['userPrincipalName' => 'alex@acme.example', 'displayName' => 'Alex Acme'],
             ]);
