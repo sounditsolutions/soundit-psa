@@ -440,17 +440,105 @@ class CippReadDeadlineTest extends TestCase
         $this->assertSame(['error' => 'CIPP query failed: synthetic decrypt failure'], $this->executor($scope)->run());
     }
 
-    private function executor(\App\Models\Client $scope): object
+    public function test_undecryptable_rest_secret_leaves_relay_and_tenant_failover_working(): void
     {
-        return new class($scope)
+        \App\Models\Setting::setValue('cipp_enabled', '1');
+        \App\Models\Setting::setValue('cipp_api_url', 'https://example.test');
+        \App\Models\Setting::setValue('cipp_tenant_id', 'synthetic');
+        \App\Models\Setting::setValue('cipp_client_id', 'synthetic');
+        // Stored but not ciphertext: decrypting it throws, as after an APP_KEY rotation.
+        \App\Models\Setting::setValue('cipp_client_secret', 'synthetic-not-ciphertext');
+        \App\Models\Setting::setValue('cipp_mcp_client_id', 'synthetic');
+        \App\Models\Setting::setEncrypted('cipp_mcp_client_secret', 'synthetic');
+        \App\Models\Setting::setValue('cipp_mcp_enabled', '1');
+        $scope = \App\Models\Client::factory()->create(['cipp_tenant_domain' => 'example.test']);
+        \App\Models\Client::factory()->create(['cipp_tenant_domain' => 'other.example.test']);
+        $mcp = \Mockery::mock(\App\Services\Cipp\CippMcpClient::class);
+        // Invoke-ListTenants: customerId and defaultDomainName, synthetic identities.
+        $mcp->shouldReceive('callTool')->once()->with('ListTenants', [])->andReturn([
+            ['customerId' => '22222222-2222-4222-8222-222222222222', 'defaultDomainName' => 'example.test'],
+            ['customerId' => '33333333-3333-4333-8333-333333333333', 'defaultDomainName' => 'other.example.test'],
+        ]);
+        app()->instance(\App\Services\Cipp\CippMcpClient::class, $mcp);
+
+        $this->assertSame(['relayed' => true], $this->executor($scope, ['relayed' => true])->run());
+    }
+
+    public function test_tenant_list_deadline_names_the_timeout_not_sign_in_and_skips_mcp(): void
+    {
+        \App\Models\Setting::setValue('cipp_enabled', '1');
+        \App\Models\Setting::setValue('cipp_api_url', 'https://example.test');
+        \App\Models\Setting::setValue('cipp_tenant_id', 'synthetic');
+        \App\Models\Setting::setValue('cipp_client_id', 'synthetic');
+        \App\Models\Setting::setEncrypted('cipp_client_secret', 'synthetic');
+        \App\Models\Setting::setValue('cipp_mcp_client_id', 'synthetic');
+        \App\Models\Setting::setEncrypted('cipp_mcp_client_secret', 'synthetic');
+        \App\Models\Setting::setValue('cipp_mcp_enabled', '1');
+        $scope = \App\Models\Client::factory()->create(['cipp_tenant_domain' => 'example.test']);
+        \App\Models\Client::factory()->create(['cipp_tenant_domain' => 'other.example.test']);
+        $mcp = \Mockery::mock(\App\Services\Cipp\CippMcpClient::class);
+        $mcp->shouldNotReceive('callTool');
+        app()->instance(\App\Services\Cipp\CippMcpClient::class, $mcp);
+        // ListTenants answers 401; the token re-fetch then spends the budget, so the
+        // deadline failure carries code 401.
+        $client = null;
+        $client = $this->client([new Response(401), function () use (&$client) {
+            $client->clock = 120;
+
+            return $this->timeout();
+        }]);
+        app()->instance(CippClient::class, $client);
+
+        $result = $this->executor($scope)->run();
+
+        $this->assertSame(['error' => "PSA could not read a usable CIPP tenant list, so it cannot check PSA client {$scope->id}'s CIPP tenant's other domains against other PSA clients' mappings, and this read was not run. CIPP did not answer within 20 s (upstream timeout; this read is safe to retry)."], $result);
+        $this->assertStringNotContainsString('sign-in', $result['error']);
+        $this->assertCount(2, $this->history);
+        $this->assertSame('/api/ListTenants', $this->history[0]['request']->getUri()->getPath());
+        $this->assertSame(15.0, $this->history[1]['options']['timeout']);
+    }
+
+    public function test_comparison_mailbox_deadline_keeps_fence_error_and_clause(): void
+    {
+        $id = '11111111-1111-4111-8111-111111111111';
+        // Same Invoke-ListUsers and Invoke-ListMailboxes projections as the composite suite.
+        $user = json_encode([['id' => $id, 'userPrincipalName' => 'source@example.test', 'assignedLicenses' => []]]);
+        $client = null;
+        $client = $this->client([
+            new Response(200, [], $user), new Response(200, [], '[]'),
+            new Response(200, [], $user), new Response(200, [], '[]'),
+            new Response(200, [], '[{"recipientTypeDetails":"SharedMailbox","UPN":"shared-mailbox-address@example.test"}]'),
+            function () use (&$client) {
+                $client->clock = 120;
+
+                return $this->timeout();
+            },
+        ]);
+        $contract = app(\App\Services\Cipp\CippToolContract::class);
+        $service = new \App\Services\Cipp\CippCompareUserAccess($client, $contract);
+        $result = $service->compare('example.test', ['source_user' => $id, 'target_user' => $id], null);
+        $bounded = 'CIPP query failed: api/ListmailboxPermissions: CIPP API error: 0 ConnectException (curl 28); CIPP did not answer within 20 s (upstream timeout; this read is safe to retry)';
+        $this->assertSame(['error' => $bounded.' Mailbox: '.$contract->fence('cipp_compare_user_access', 'displayName', 'shared-mailbox-address@example.test')], $result);
+        $this->assertLessThanOrEqual(200, mb_strlen($bounded));
+        $this->assertCount(6, $this->history);
+    }
+
+    private function executor(\App\Models\Client $scope, ?array $relayAnswer = null): object
+    {
+        return new class($scope, $relayAnswer)
         {
             use \App\Services\Cipp\HandlesCippTools;
 
             protected ?int $clientId;
 
-            public function __construct(private \App\Models\Client $scope)
+            public function __construct(private \App\Models\Client $scope, private ?array $relayAnswer)
             {
                 $this->clientId = $scope->id;
+            }
+
+            protected function cippMcpRelay(string $toolName, array $input): ?array
+            {
+                return $this->relayAnswer;
             }
 
             protected function cippScopeClient(): ?\App\Models\Client

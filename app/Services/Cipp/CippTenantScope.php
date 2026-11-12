@@ -283,7 +283,7 @@ final class CippTenantScope
      * The refusal when no usable tenant list could be read, naming the cause when
      * one is known. The cause is PSA-authored, never the upstream exception text.
      *
-     * @param  array{cause: string, signIn: bool}|null  $failure
+     * @param  array{cause: string, signIn: bool, timeout?: bool}|null  $failure
      */
     private static function unreadableMessage(int $clientId, ?array $failure): string
     {
@@ -292,6 +292,10 @@ final class CippTenantScope
             $message .= " ({$failure['cause']})";
         }
         $message .= ", so it cannot check PSA client {$clientId}'s CIPP tenant's other domains against other PSA clients' mappings, and this read was not run.";
+
+        if ($failure !== null && ($failure['timeout'] ?? false)) {
+            $message .= ' CIPP did not answer within 20 s (upstream timeout; this read is safe to retry).';
+        }
 
         if ($failure !== null && $failure['signIn']) {
             $message .= ' CIPP sign-in failed: this is a problem with PSA\'s CIPP credentials, not with the client\'s mapping. Check the CIPP connection in Settings.';
@@ -338,7 +342,7 @@ final class CippTenantScope
      * on the next call rather than after the TTL. A list that is not usable is never
      * cached, so a failed read is retried on the next call.
      *
-     * @return array{0: array<int, array<string, mixed>>|null, 1: array{cause: string, signIn: bool}|null}
+     * @return array{0: array<int, array<string, mixed>>|null, 1: array{cause: string, signIn: bool, timeout?: bool}|null}
      */
     private static function readTenantList(?float $deadline = null): array
     {
@@ -367,6 +371,11 @@ final class CippTenantScope
                 return [null, ['cause' => 'CIPP answered ListTenants with something other than a tenant list', 'signIn' => false]];
             } catch (\Throwable $e) {
                 self::logReadFailure('REST', $e);
+                if (CippClient::isDeadlineFailure($e)) {
+                    // The tool's one budget is spent: no MCP read after it, and no
+                    // sign-in diagnosis from the code of the attempt before it.
+                    return [null, ['cause' => '', 'signIn' => false, 'timeout' => true]];
+                }
                 $signIn = self::isSignInFailure($e);
                 $causes[] = $signIn ? 'CIPP REST API sign-in failed' : 'the CIPP REST API request failed';
             }

@@ -165,7 +165,11 @@ final class CippCompareUserAccess
             ];
         } catch (\Throwable $e) {
             if (CippClient::isDeadlineFailure($e)) {
-                return ['error' => mb_substr('CIPP query failed: '.$read.($mailbox === null ? $whose : ' for mailbox '.$this->text($mailbox)).': '.$e->getMessage(), 0, 200)];
+                // Bounded text first, the fenced mailbox appended whole: a cut inside
+                // the fence would drop its closing delimiter, the error and the clause.
+                $error = mb_substr('CIPP query failed: '.$read.($mailbox === null ? $whose : '').': '.$e->getMessage(), 0, 200);
+
+                return ['error' => $mailbox === null ? $error : $error.' Mailbox: '.$this->text($mailbox)];
             }
 
             return ['error' => 'CIPP comparison failed'.($mailbox === null ? '' : ' for mailbox '.$this->text($mailbox)).': '.(int) $e->getCode().' '.class_basename($e)];
