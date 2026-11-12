@@ -182,6 +182,7 @@ class HuntressReadOnlyToolset
         }
 
         return match ($toolName) {
+            'huntress_list_remote_access_connections' => $this->remoteAccessRead($input, $clientId),
             'huntress_list_external_ports' => $this->signalRead($input, $clientId, false, 'external_ports'),
             'huntress_get_external_port' => $this->signalRead($input, $clientId, true, 'external_ports'),
             'huntress_list_known_vpns' => $this->knownVpnRead($input, $clientId),

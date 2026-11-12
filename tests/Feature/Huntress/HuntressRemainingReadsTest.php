@@ -47,6 +47,50 @@ class HuntressRemainingReadsTest extends TestCase
         $this->assertSame('', (string) $request->getBody());
     }
 
+    public function test_remote_access(): void
+    {
+        $tool = app(HuntressReadOnlyToolset::class);
+        $name = 'huntress_list_remote_access_connections';
+        $row = ['agent' => 'synthetic-host', 'client_type' => 'synthetic', 'host' => 'example.test', 'port' => 443, 'first_seen_at' => '2026-01-01T00:00:00Z', 'last_seen_at' => '2026-01-02T00:00:00Z'];
+        foreach ([0, 1, 500] as $count) {
+            $id = $this->bind(['connections' => array_fill(0, $count, $row)]);
+            $result = $tool->execute($name, ['client_id' => $id, 'last_seen_at_min' => '2026-01-01T00:00:00Z', 'limit' => 1, 'page_token' => 'ignored']);
+            $this->assertSame($count, $result['count']);
+            $this->assertSame(500, $result['capped_at']);
+            $this->assertArrayNotHasKey('next_page_token', $result);
+            $this->assertStringContainsString('no paging', $result['note']);
+            $this->assertStringContainsString('vendor organization filter', $result['note']);
+            if ($count === 500) {
+                $this->assertStringContainsString('may be incomplete', $result['note']);
+            } else {
+                $this->assertStringNotContainsString('may be incomplete', $result['note']);
+            }
+            if ($count > 0) {
+                $this->assertStringContainsString('UNTRUSTED HUNTRESS', $result['connections'][0]['agent']);
+            }
+            $this->wire('remote_access/connections', ['organization_id' => 42, 'last_seen_at_min' => '2026-01-01T00:00:00Z']);
+        }
+        foreach ([[], ['organization_id' => 42], ['client_id' => $id, 'organization_id' => 99], ['client_id' => $id, 'last_seen_at_min' => '2026-02-30T00:00:00Z'], ['client_id' => null]] as $input) {
+            $this->bind(['connections' => []]);
+            $this->assertArrayHasKey('error', $tool->execute($name, $input));
+            $this->assertCount(0, $this->history);
+        }
+        $unmapped = Client::factory()->create(['huntress_organization_id' => null]);
+        $this->bind(['connections' => []]);
+        $this->assertArrayHasKey('error', $tool->execute($name, ['client_id' => $unmapped->id]));
+        $this->assertCount(0, $this->history);
+        $this->bind(['connections' => []]);
+        $this->assertSame(0, $tool->execute($name, [], $id)['count']);
+        $this->wire('remote_access/connections', ['organization_id' => 42]);
+        $this->bind(['connections' => 'bad']);
+        $this->assertArrayHasKey('error', $tool->execute($name, ['client_id' => $id]));
+        $this->bind(['error' => 'Forbidden'], 403);
+        $result = $tool->execute($name, ['client_id' => $id]);
+        $this->assertStringContainsString('403', $result['error']);
+        $this->assertStringContainsString("Charlie can widen the key's scope", $result['error']);
+        $this->assertStringNotContainsString('https://', $result['error']);
+    }
+
     public function test_external_ports(): void
     {
         $other = Client::factory()->create(['huntress_organization_id' => 43]);

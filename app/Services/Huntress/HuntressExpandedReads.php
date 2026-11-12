@@ -10,7 +10,7 @@ trait HuntressExpandedReads
 {
     private static function expandedDefinitions(): array
     {
-        return [['name' => 'huntress_list_known_vpns', 'description' => 'List account-level Huntress VPN and proxy operators. Call without a client or organization.', 'input_schema' => ['type' => 'object', 'properties' => new \stdClass, 'required' => []]], ...self::logSourceDefinitions(), ...self::incidentDetailDefinitions(), ...self::signalDefinitions(), ...self::endpointDefinitions(), [
+        return [['name' => 'huntress_list_remote_access_connections', 'description' => 'List remote access connections for a required mapped client. Rows have no organization field: scope relies on the vendor organization filter, not a row-level check. At most 500 newest rows, without paging.', 'input_schema' => ['type' => 'object', 'properties' => ['client_id' => ['type' => 'integer'], 'organization_id' => ['type' => 'integer'], 'last_seen_at_min' => ['type' => 'string']], 'required' => ['client_id']]], ['name' => 'huntress_list_known_vpns', 'description' => 'List account-level Huntress VPN and proxy operators. Call without a client or organization.', 'input_schema' => ['type' => 'object', 'properties' => new \stdClass, 'required' => []]], ...self::logSourceDefinitions(), ...self::incidentDetailDefinitions(), ...self::signalDefinitions(), ...self::endpointDefinitions(), [
             'name' => 'huntress_siem_query',
             'description' => 'Query Huntress SIEM logs for one mapped PSA client. The organization filter is inserted before all other stages. Zero matches is not an all-clear; check log sources too. Requires the SIEM feature.',
             'input_schema' => [
@@ -26,6 +26,52 @@ trait HuntressExpandedReads
                 'required' => ['client_id', 'esql', 'range_start', 'range_end'],
             ],
         ]];
+    }
+
+    private function remoteAccessRead(array $input, ?int $clientId): array
+    {
+        foreach (['client_id', 'organization_id'] as $key) {
+            if (array_key_exists($key, $input) && $this->positiveInt($input[$key]) === null) {
+                return ['error' => $key.' must be a positive integer'];
+            }
+        }
+        $clientId ??= $this->positiveInt($input['client_id'] ?? null);
+        if ($clientId === null) {
+            return ['error' => 'client_id is required'];
+        }
+        $org = $this->scopedOrgId($input, $clientId);
+        if (is_array($org)) {
+            return $org;
+        }
+        $params = ['organization_id' => $org];
+        if (array_key_exists('last_seen_at_min', $input)) {
+            try {
+                $this->isoTimestamp($input['last_seen_at_min']);
+            } catch (\Throwable) {
+                return ['error' => 'last_seen_at_min must be an ISO 8601 timestamp'];
+            }
+            $params['last_seen_at_min'] = $input['last_seen_at_min'];
+        }
+        try {
+            // Connection has no org field. The boundary is the vendor organization filter only.
+            $response = $this->client()->get('remote_access/connections', $params);
+        } catch (HuntressClientException $e) {
+            return $this->expandedApiError($e);
+        }
+        $rows = $response['connections'] ?? null;
+        if (! is_array($rows) || ! array_is_list($rows)) {
+            return ['error' => 'Huntress returned an unrecognized collection shape'];
+        }
+        foreach ($rows as $row) {
+            if (! is_array($row)) {
+                return ['error' => 'Huntress returned an unrecognized connection shape'];
+            }
+        }
+
+        return ['count' => count($rows), 'connections' => $this->sanitizeStructure('Huntress remote access connection', $rows), 'capped_at' => 500,
+            'note' => count($rows) >= 500
+                ? 'The list may be incomplete: the vendor returns at most 500 connections, newest first, with no paging. Scope relies on the vendor organization filter; rows have no organization field.'
+                : 'The vendor returns at most 500 connections, newest first, with no paging. Scope relies on the vendor organization filter; rows have no organization field.'];
     }
 
     private function knownVpnRead(array $input, ?int $clientId): array
