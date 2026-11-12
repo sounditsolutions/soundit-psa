@@ -191,6 +191,7 @@ class CippDirectPathFailLoudTest extends TestCase
         $calls = 0;
 
         $cipp = Mockery::mock(CippClient::class);
+        $cipp->shouldReceive('readDeadline')->andReturn(120.0);
         $cipp->shouldReceive('get')->andReturnUsing(function () use (&$calls): array {
             $calls++;
 
@@ -252,8 +253,9 @@ class CippDirectPathFailLoudTest extends TestCase
     private function cippReturning(string $endpoint, array $rows, ?array &$captured = null): void
     {
         $cipp = Mockery::mock(CippClient::class);
+        $cipp->shouldReceive('readDeadline')->andReturn(120.0);
         $cipp->shouldReceive('get')
-            ->with($endpoint, Mockery::type('array'))
+            ->with($endpoint, Mockery::type('array'), 120.0)
             ->andReturnUsing(function (string $_endpoint, array $params) use ($rows, &$captured): array {
                 $captured = $params;
 
@@ -1334,6 +1336,7 @@ class CippDirectPathFailLoudTest extends TestCase
     private function cippTraceReturning(array $rows, array $metadata = ['Returned' => 1, 'Source' => 'Graph'], ?array &$captured = null): void
     {
         $cipp = Mockery::mock(CippClient::class);
+        $cipp->shouldReceive('readDeadline')->andReturn(120.0);
         $cipp->shouldNotReceive('get');
         $cipp->shouldReceive('listMessageTrace')
             ->andReturnUsing(function (...$args) use ($rows, $metadata, &$captured): array {
@@ -1352,7 +1355,7 @@ class CippDirectPathFailLoudTest extends TestCase
 
             $executor->execute('cipp_list_message_trace', ['sender' => ' s@remote.example ', 'recipient' => '', 'days' => 4]);
 
-            $this->assertSame(['contoso.onmicrosoft.com', 4, ' s@remote.example ', null], $captured, "{$label}");
+            $this->assertSame(['contoso.onmicrosoft.com', 4, ' s@remote.example ', null, 120.0], $captured, "{$label}");
         }
     }
 

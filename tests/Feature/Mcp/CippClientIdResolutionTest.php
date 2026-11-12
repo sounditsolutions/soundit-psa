@@ -95,6 +95,7 @@ class CippClientIdResolutionTest extends TestCase
         $this->app->instance(CippMcpClient::class, $mcp);
 
         $rest = Mockery::mock(CippClient::class);
+        $rest->shouldReceive('readDeadline')->andReturn(120.0);
         $rest->shouldReceive('get')->andReturnUsing(function (string $endpoint, array $query = []) use ($rows): array {
             if ($endpoint === 'api/ListTenants') {
                 if ($this->tenantList === null) {

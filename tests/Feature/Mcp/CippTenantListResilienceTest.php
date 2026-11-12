@@ -125,6 +125,7 @@ class CippTenantListResilienceTest extends TestCase
         $this->app->instance(CippMcpClient::class, $mcp);
 
         $rest = Mockery::mock(CippClient::class);
+        $rest->shouldReceive('readDeadline')->andReturn(120.0);
         $rest->shouldReceive('get')->andReturnUsing(function (string $endpoint, array $query = []) use ($restList, $rows): array {
             if ($endpoint === 'api/ListTenants') {
                 $this->listReads[] = 'rest';

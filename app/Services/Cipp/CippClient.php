@@ -397,7 +397,7 @@ class CippClient
      * Get an OAuth2 access token via client_credentials flow.
      * Token is cached in Laravel Cache with a 55-minute TTL (tokens last 60 min).
      */
-    private function getToken(?float $deadline = null): string
+    private function getToken(?float $deadline = null, ?GuzzleException $lastError = null): string
     {
         $cached = $this->cache->get(self::TOKEN_CACHE_KEY);
         if ($cached) {
@@ -413,7 +413,7 @@ class CippClient
 
         try {
             $tokenClient = $this->tokenClient();
-            $response = $tokenClient->post($tokenUrl, $this->deadlineOptions($deadline, 15) + [
+            $response = $tokenClient->post($tokenUrl, $this->deadlineOptions($deadline, 15, $lastError) + [
                 'form_params' => [
                     'grant_type' => 'client_credentials',
                     'client_id' => $clientId,
@@ -422,7 +422,7 @@ class CippClient
                 ],
             ]);
         } catch (GuzzleException $e) {
-            if ($deadline !== null && $this->isTimeout($e)) {
+            if ($deadline !== null && $this->monotonicTime() >= $deadline) {
                 throw $this->deadlineFailure($e);
             }
             $detail = self::failureDetail($e);
@@ -430,6 +430,9 @@ class CippClient
             throw new CippClientException("CIPP OAuth token request failed: {$detail}", $e->getCode(), $e);
         }
 
+        if ($deadline !== null && $this->monotonicTime() >= $deadline) {
+            throw $this->deadlineFailure($lastError);
+        }
         $data = json_decode((string) $response->getBody(), true);
         $token = $data['access_token'] ?? null;
 
@@ -454,29 +457,24 @@ class CippClient
         return hrtime(true) / 1e9;
     }
 
-    private function deadlineOptions(?float $deadline, float $cap = 60): array
+    private function deadlineOptions(?float $deadline, float $cap = 60, ?GuzzleException $lastError = null): array
     {
         if ($deadline === null) {
             return [];
         }
         $remaining = $deadline - $this->monotonicTime();
         if ($remaining <= 0) {
-            throw $this->deadlineFailure();
+            throw $this->deadlineFailure($lastError);
         }
 
         return ['timeout' => min($cap, $remaining), 'connect_timeout' => min($cap, $remaining)];
     }
 
-    private function isTimeout(GuzzleException $e): bool
-    {
-        return method_exists($e, 'getHandlerContext') && ($e->getHandlerContext()['errno'] ?? null) === 28;
-    }
-
     private function deadlineFailure(?GuzzleException $e = null): CippClientException
     {
-        $detail = $e === null ? '0 ConnectException (curl 28)' : self::failureDetail($e);
+        $prefix = $e === null ? '' : 'CIPP API error: '.self::failureDetail($e).'; ';
 
-        return new CippClientException('CIPP API error: '.$detail.'; CIPP did not answer within 20 s (upstream timeout; this read is safe to retry)', (int) ($e?->getCode() ?? 0), $e);
+        return new CippClientException($prefix.'CIPP did not answer within 20 s (upstream timeout; this read is safe to retry)', (int) ($e?->getCode() ?? 0), $e);
     }
 
     protected function pause(int $seconds): void
@@ -547,13 +545,16 @@ class CippClient
     private function sendRequest(string $method, string $endpoint, array $options, string $accept, int $maxAttempts = 3, ?float $deadline = null): ResponseInterface
     {
         $attempts = 0;
+        $lastError = null;
 
         while ($attempts < $maxAttempts) {
             $attempts++;
 
-            $this->deadlineOptions($deadline);
-            $token = $this->getToken($deadline);
-            $attemptOptions = $this->deadlineOptions($deadline) + $options;
+            if ($deadline !== null && $this->monotonicTime() >= $deadline) {
+                throw $this->deadlineFailure($lastError);
+            }
+            $token = $this->getToken($deadline, $lastError);
+            $attemptOptions = $this->deadlineOptions($deadline, 60, $lastError) + $options;
             $attemptOptions['headers'] = [
                 'Authorization' => "Bearer {$token}",
                 'Accept' => $accept,
@@ -561,15 +562,18 @@ class CippClient
 
             try {
                 $response = $this->http->request($method, $endpoint, $attemptOptions);
-                $this->deadlineOptions($deadline);
+                if ($deadline !== null && $this->monotonicTime() >= $deadline) {
+                    throw $this->deadlineFailure($lastError);
+                }
 
                 return $response;
             } catch (GuzzleException $e) {
                 $code = $e->getCode();
-                if ($deadline !== null && $this->isTimeout($e)) {
+                $lastError = $e;
+                if ($deadline !== null && $this->monotonicTime() >= $deadline) {
                     throw $this->deadlineFailure($e);
                 }
-                $this->deadlineOptions($deadline);
+                $this->deadlineOptions($deadline, 60, $lastError);
 
                 // On 401, clear cached token and retry once
                 if ($code === 401 && $attempts < $maxAttempts) {
@@ -583,7 +587,12 @@ class CippClient
                 if ($code === 429 && $attempts < $maxAttempts) {
                     $retryAfter = 2 ** $attempts; // 2s, 4s
                     if (method_exists($e, 'getResponse') && $e->getResponse()) {
-                        $retryAfter = (int) ($e->getResponse()->getHeaderLine('Retry-After') ?: $retryAfter);
+                        $header = $e->getResponse()->getHeaderLine('Retry-After');
+                        if (ctype_digit($header)) {
+                            $retryAfter = (int) $header;
+                        } elseif ($header !== '' && ($date = strtotime($header)) !== false) {
+                            $retryAfter = max(0, $date - time());
+                        }
                     }
                     if ($deadline !== null && $retryAfter >= $deadline - $this->monotonicTime()) {
                         throw new CippClientException('CIPP API error: '.self::failureDetail($e), $code, $e);
