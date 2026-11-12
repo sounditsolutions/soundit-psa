@@ -78,9 +78,10 @@ class CippMcpRelayTest extends TestCase
         ];
 
         $legacy = Mockery::mock(CippClient::class);
+        $legacy->shouldReceive('readDeadline')->andReturn(120.0);
         $legacy->shouldReceive('get')
             ->once()
-            ->with('api/ListUsers', ['TenantFilter' => 'acme.example'])
+            ->with('api/ListUsers', ['TenantFilter' => 'acme.example'], 120.0)
             ->andReturn($legacyRows);
         $this->app->instance(CippClient::class, $legacy);
 
@@ -694,6 +695,7 @@ class CippMcpRelayTest extends TestCase
         $token = $this->chetToken(['cipp_list_users']);
 
         $legacy = Mockery::mock(CippClient::class);
+        $legacy->shouldReceive('readDeadline')->andReturn(120.0);
         $legacy->shouldNotReceive('get');
         $this->app->instance(CippClient::class, $legacy);
 

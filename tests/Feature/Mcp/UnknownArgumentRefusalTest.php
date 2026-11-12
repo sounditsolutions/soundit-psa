@@ -424,6 +424,7 @@ class UnknownArgumentRefusalTest extends TestCase
         $token = $this->token();
 
         $cipp = \Mockery::mock(\App\Services\Cipp\CippClient::class);
+        $cipp->shouldReceive('readDeadline')->andReturn(120.0);
         $cipp->shouldReceive('get')->andReturn([
             [
                 'id' => 'user-1',

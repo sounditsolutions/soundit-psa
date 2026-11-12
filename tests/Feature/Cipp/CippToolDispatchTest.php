@@ -106,15 +106,16 @@ class CippToolDispatchTest extends TestCase
         ]);
 
         $cipp = Mockery::mock(CippClient::class);
+        $cipp->shouldReceive('readDeadline')->andReturn(120.0);
         // The tenant-wide endpoint must never be reached again, by either executor.
-        $cipp->shouldNotReceive('get')->with('api/ListMailboxRules', Mockery::any());
+        $cipp->shouldNotReceive('get')->with('api/ListMailboxRules', Mockery::any(), Mockery::any());
         $cipp->shouldReceive('get')
             ->twice()
             ->with('api/ListUserMailboxRules', Mockery::on(
                 fn (array $query): bool => ($query['UserID'] ?? null) === $objectId
                     && ($query['userEmail'] ?? null) === 'alice@contoso.com'
                     && ($query['TenantFilter'] ?? null) === 'contoso.onmicrosoft.com'
-            ))
+            ), 120.0)
             ->andReturn([]);
         $this->app->instance(CippClient::class, $cipp);
 
@@ -183,8 +184,9 @@ class CippToolDispatchTest extends TestCase
         ];
 
         $cipp = Mockery::mock(CippClient::class);
+        $cipp->shouldReceive('readDeadline')->andReturn(120.0);
         $cipp->shouldReceive('get')
-            ->with('api/ListAuditLogs', Mockery::type('array'))
+            ->with('api/ListAuditLogs', Mockery::type('array'), 120.0)
             ->andReturn($events);
         $this->app->instance(CippClient::class, $cipp);
 

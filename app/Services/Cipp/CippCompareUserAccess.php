@@ -10,9 +10,12 @@ final class CippCompareUserAccess
 
     public function __construct(private CippClient $client, private CippToolContract $contract) {}
 
-    public function compare(string $tenant, array $input, ?int $clientId): array
+    public function compare(string $tenant, array $input, ?int $clientId, ?float $deadline = null): array
     {
+        $deadline ??= $this->client->readDeadline();
         $mailbox = null;
+        $whose = '';
+        $read = 'api/ListUsers';
         try {
             $users = [];
             $groups = [];
@@ -25,7 +28,9 @@ final class CippCompareUserAccess
                 $resolved = CippToolContract::resolveUserId(trim($requested), $clientId);
                 // Invoke-ListUsers.ps1 selects assignedLicenses for UserID. Its fallback
                 // can omit the property: require the array, never invent an empty one.
-                $rows = $this->read('api/ListUsers', ['tenantFilter' => $tenant, 'UserID' => $resolved]);
+                $read = 'api/ListUsers';
+                $whose = ' for the '.$side.' user';
+                $rows = $this->read($read, ['tenantFilter' => $tenant, 'UserID' => $resolved], $deadline);
                 if (count($rows) !== 1) {
                     throw new \UnexpectedValueException;
                 }
@@ -45,11 +50,12 @@ final class CippCompareUserAccess
                 }
                 // Invoke-ListGraphRequest.ps1 / Get-GraphRequestList.ps1 follow all
                 // pages by default. Retain the envelope and refuse residual cursors.
-                $rows = $this->read('api/ListGraphRequest', [
+                $read = 'api/ListGraphRequest';
+                $rows = $this->read($read, [
                     'tenantFilter' => $tenant,
                     'Endpoint' => 'users/'.$user['id'].'/memberOf/microsoft.graph.group',
                     '$select' => 'id,displayName,groupTypes,membershipRule,onPremisesSyncEnabled,mailEnabled,securityEnabled',
-                ]);
+                ], $deadline);
                 $groups[$side] = [];
                 foreach ($rows as $row) {
                     if (! $this->id($row['id'] ?? null) || ! is_string($row['displayName'] ?? null) || trim($row['displayName']) === '') {
@@ -68,7 +74,9 @@ final class CippCompareUserAccess
             }
 
             // Invoke-ListMailboxes.ps1 emits recipientTypeDetails and UPN (mixed casing).
-            $rows = $this->read('api/ListMailboxes', ['tenantFilter' => $tenant]);
+            $read = 'api/ListMailboxes';
+            $whose = '';
+            $rows = $this->read($read, ['tenantFilter' => $tenant], $deadline);
             $mailboxes = [];
             foreach ($rows as $row) {
                 $type = $row['recipientTypeDetails'] ?? $row['RecipientTypeDetails'] ?? null;
@@ -90,7 +98,8 @@ final class CippCompareUserAccess
             foreach ($mailboxes as $mailbox) {
                 // Invoke-ListmailboxPermissions.ps1 emits User + Permissions; the
                 // latter is an array for Trustee rows, a joined string for AccessRights.
-                $permissions = $this->read('api/ListmailboxPermissions', ['tenantFilter' => $tenant, 'userId' => $mailbox]);
+                $read = 'api/ListmailboxPermissions';
+                $permissions = $this->read($read, ['tenantFilter' => $tenant, 'userId' => $mailbox], $deadline);
                 $sentinels = [];
                 $rights = ['source' => [], 'target' => []];
                 foreach ($permissions as $permission) {
@@ -155,6 +164,14 @@ final class CippCompareUserAccess
                 'not_included' => ['admin roles'],
             ];
         } catch (\Throwable $e) {
+            if (CippClient::isDeadlineFailure($e)) {
+                // Bounded text first, the fenced mailbox appended whole: a cut inside
+                // the fence would drop its closing delimiter, the error and the clause.
+                $error = mb_substr('CIPP query failed: '.$read.($mailbox === null ? $whose : '').': '.$e->getMessage(), 0, 200);
+
+                return ['error' => $mailbox === null ? $error : $error.' Mailbox: '.$this->text($mailbox)];
+            }
+
             return ['error' => 'CIPP comparison failed'.($mailbox === null ? '' : ' for mailbox '.$this->text($mailbox)).': '.(int) $e->getCode().' '.class_basename($e)];
         }
     }
@@ -181,9 +198,9 @@ final class CippCompareUserAccess
         ];
     }
 
-    private function read(string $endpoint, array $query): array
+    private function read(string $endpoint, array $query, float $deadline): array
     {
-        $response = $this->client->getRawOnce($endpoint, $query);
+        $response = $this->client->getRawOnce($endpoint, $query, $deadline);
         $identity = json_decode($response['body'], false, 512, JSON_THROW_ON_ERROR);
         $body = json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR);
         if ($response['status'] !== 200 || ! is_array($body)) {

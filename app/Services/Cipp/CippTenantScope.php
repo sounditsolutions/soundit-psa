@@ -49,7 +49,7 @@ final class CippTenantScope
      *
      * @return string|array{error: string}
      */
-    public static function resolve(?Client $client, ?int $clientId): string|array
+    public static function resolve(?Client $client, ?int $clientId, ?float $deadline = null): string|array
     {
         if ($clientId === null) {
             return ['error' => 'client_id is required: a CIPP read resolves its tenant through the PSA client\'s stored CIPP mapping and does not search tenants by name.'];
@@ -68,7 +68,7 @@ final class CippTenantScope
             return ['error' => "PSA client {$clientId}'s CIPP tenant is also mapped to another PSA client, so its data cannot be attributed to one client. Fix the duplicate mapping in Settings > CIPP Tenants."];
         }
 
-        $aliasError = self::aliasSharedWithAnotherClient($tenant, $clientId);
+        $aliasError = self::aliasSharedWithAnotherClient($tenant, $clientId, $deadline);
         if ($aliasError !== null) {
             return ['error' => $aliasError];
         }
@@ -137,7 +137,7 @@ final class CippTenantScope
      * strings alone would serve A's rows under B. With no other PSA client mapped
      * there is nothing to share, and CIPP is not asked.
      */
-    private static function aliasSharedWithAnotherClient(string $tenant, int $clientId): ?string
+    private static function aliasSharedWithAnotherClient(string $tenant, int $clientId, ?float $deadline = null): ?string
     {
         $anotherClientMapped = Client::whereKeyNot($clientId)
             ->whereNotNull('cipp_tenant_domain')
@@ -148,7 +148,7 @@ final class CippTenantScope
         }
 
         $cached = self::cachedTenantList();
-        [$tenants, $failure] = $cached !== null ? [$cached, null] : self::readTenantList();
+        [$tenants, $failure] = $cached !== null ? [$cached, null] : self::readTenantList($deadline);
         if ($tenants === null) {
             return self::unreadableMessage($clientId, $failure);
         }
@@ -158,7 +158,7 @@ final class CippTenantScope
             // Settings > CIPP Tenants maps a client from CIPP's live list, so a tenant
             // added (or finished onboarding) since this copy was cached is missing or
             // incomplete in it. Re-read before the mapping is reported as wrong.
-            [$tenants, $failure] = self::readTenantList();
+            [$tenants, $failure] = self::readTenantList($deadline);
             if ($tenants === null) {
                 return self::unreadableMessage($clientId, $failure);
             }
@@ -283,7 +283,7 @@ final class CippTenantScope
      * The refusal when no usable tenant list could be read, naming the cause when
      * one is known. The cause is PSA-authored, never the upstream exception text.
      *
-     * @param  array{cause: string, signIn: bool}|null  $failure
+     * @param  array{cause: string, signIn: bool, timeout?: bool}|null  $failure
      */
     private static function unreadableMessage(int $clientId, ?array $failure): string
     {
@@ -292,6 +292,10 @@ final class CippTenantScope
             $message .= " ({$failure['cause']})";
         }
         $message .= ", so it cannot check PSA client {$clientId}'s CIPP tenant's other domains against other PSA clients' mappings, and this read was not run.";
+
+        if ($failure !== null && ($failure['timeout'] ?? false)) {
+            $message .= ' CIPP did not answer within 20 s (upstream timeout; this read is safe to retry).';
+        }
 
         if ($failure !== null && $failure['signIn']) {
             $message .= ' CIPP sign-in failed: this is a problem with PSA\'s CIPP credentials, not with the client\'s mapping. Check the CIPP connection in Settings.';
@@ -338,9 +342,9 @@ final class CippTenantScope
      * on the next call rather than after the TTL. A list that is not usable is never
      * cached, so a failed read is retried on the next call.
      *
-     * @return array{0: array<int, array<string, mixed>>|null, 1: array{cause: string, signIn: bool}|null}
+     * @return array{0: array<int, array<string, mixed>>|null, 1: array{cause: string, signIn: bool, timeout?: bool}|null}
      */
-    private static function readTenantList(): array
+    private static function readTenantList(?float $deadline = null): array
     {
         $causes = [];
         $signIn = false;
@@ -358,7 +362,7 @@ final class CippTenantScope
 
         if ($restConfigured) {
             try {
-                $rows = app(CippClient::class)->get('api/ListTenants', []);
+                $rows = app(CippClient::class)->get('api/ListTenants', [], $deadline);
             } catch (\TypeError $e) {
                 // get() returned CIPP's unwrapped string Results: CIPP answered, with
                 // its failure object. Not re-asked over MCP.
@@ -367,6 +371,11 @@ final class CippTenantScope
                 return [null, ['cause' => 'CIPP answered ListTenants with something other than a tenant list', 'signIn' => false]];
             } catch (\Throwable $e) {
                 self::logReadFailure('REST', $e);
+                if (CippClient::isDeadlineFailure($e)) {
+                    // The tool's one budget is spent: no MCP read after it, and no
+                    // sign-in diagnosis from the code of the attempt before it.
+                    return [null, ['cause' => '', 'signIn' => false, 'timeout' => true]];
+                }
                 $signIn = self::isSignInFailure($e);
                 $causes[] = $signIn ? 'CIPP REST API sign-in failed' : 'the CIPP REST API request failed';
             }
