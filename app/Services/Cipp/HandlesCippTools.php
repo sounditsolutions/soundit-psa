@@ -251,23 +251,50 @@ trait HandlesCippTools
     private function cippListMessageTrace(array $input): array
     {
         return $this->cippDispatch('cipp_list_message_trace', $input, function (string $tenantDomain) use ($input): array {
-            $params = ['TenantFilter' => $tenantDomain, 'days' => CippToolContract::boundedDays($input['days'] ?? null, 2, 10)];
-            foreach (['sender', 'recipient'] as $field) {
-                if (! empty($input[$field])) {
-                    $params[$field] = trim((string) $input[$field]);
-                }
-            }
+            // CIPP reads these from the POST body, not the query string (card AsGVKuRa;
+            // the citation is on CippClient::listMessageTrace()). Empty filters are not sent.
+            $days = CippToolContract::boundedDays($input['days'] ?? null, 2, 10);
+            $sender = ! empty($input['sender']) ? (string) $input['sender'] : null;
+            $recipient = ! empty($input['recipient']) ? (string) $input['recipient'] : null;
 
             try {
-                $messages = app(CippClient::class)->get('api/ListMessageTrace', $params);
+                $trace = app(CippClient::class)->listMessageTrace($tenantDomain, $days, $sender, $recipient);
             } catch (\Throwable $e) {
                 return $this->cippFailure('api/ListMessageTrace', $e);
+            }
+
+            $metadata = $trace['metadata'];
+            $contract = app(CippToolContract::class);
+            $sanitizer = app(\App\Services\Chet\ChetDataSurfaceTextSanitizer::class);
+
+            // CIPP's own failure reason (Invoke-ListMessageTrace.ps1:198-202) is an
+            // answer of "unknown", never "no mail": report it, do not shape a 0.
+            // It is upstream text (Graph / Exchange errors can echo addresses), so fenced.
+            if (is_string($metadata['Error'] ?? null) && trim($metadata['Error']) !== '') {
+                Log::warning($this->cippLogPrefix().' CIPP message trace reported an error', ['endpoint' => 'api/ListMessageTrace']);
+
+                return [
+                    'error' => 'CIPP could not run the message trace; this is NOT an empty result. CIPP said: '
+                        .$sanitizer->sanitize($contract->fieldLabel('cipp_list_message_trace', 'Metadata.Error'), $metadata['Error'], 500),
+                ];
             }
 
             // The client-side sender/recipient re-filter (Message Trace upstream
             // filtering is unreliable across CIPP versions), projection and fencing all
             // live in the shared contract, so both transports answer identically.
-            return app(CippToolContract::class)->shape('cipp_list_message_trace', $messages, $input, $this->clientId);
+            $shaped = $contract->shape('cipp_list_message_trace', $trace['rows'], $input, $this->clientId);
+
+            // Which upstream answered: 'Graph', or 'Get-MessageTraceV2' while the Graph
+            // service principal activates (:189-192). Null means CIPP did not say.
+            $source = $metadata['Source'] ?? null;
+            $shaped['cipp_source'] = in_array($source, ['Graph', 'Get-MessageTraceV2'], true)
+                ? $source
+                : (is_string($source) && $source !== '' ? $sanitizer->sanitize($contract->fieldLabel('cipp_list_message_trace', 'Metadata.Source'), $source, 100) : null);
+            if (is_string($metadata['Note'] ?? null) && trim($metadata['Note']) !== '') {
+                $shaped['cipp_note'] = $sanitizer->sanitize($contract->fieldLabel('cipp_list_message_trace', 'Metadata.Note'), $metadata['Note'], 500);
+            }
+
+            return $shaped;
         });
     }
 
