@@ -95,6 +95,7 @@ class HuntressIncidentDetailReadsTest extends TestCase
             $input = ['client_id' => $client->id, 'incident_report_id' => 7, 'remediation_id' => 9];
             $this->bind(43, $family, $get);
             $result = app(HuntressReadOnlyToolset::class)->execute('huntress_'.$tool, $input);
+            $this->assertArrayHasKey('error', $result);
             $this->assertStringContainsString('outside the mapped scope', $result['error']);
             $this->assertCount(1, $this->history);
 
