@@ -66,6 +66,12 @@ class HuntressClient
         return $this->request('GET', $endpoint, ['query' => $params]);
     }
 
+    /** Read-only SIEM query transport; the vendor requires a JSON request body. */
+    public function post(string $endpoint, array $json): array
+    {
+        return $this->request('POST', $endpoint, ['json' => $json]);
+    }
+
     /**
      * A clone whose 429 back-off sleeps are clamped to
      * RETRY_AFTER_CEILING_SECONDS, for the caller that sleeps while holding a

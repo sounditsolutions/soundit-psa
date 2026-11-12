@@ -31,6 +31,8 @@ use Illuminate\Support\Facades\Log;
  */
 class HuntressReadOnlyToolset
 {
+    use HuntressExpandedReads;
+
     /** Max rows per organizations page this tool requests (pageParams max; the API allows 500). */
     private const ORG_LIST_MAX_LIMIT = 100;
 
@@ -57,6 +59,7 @@ class HuntressReadOnlyToolset
     public static function definitions(): array
     {
         return [
+            ...self::expandedDefinitions(),
             [
                 'name' => 'huntress_list_incident_reports',
                 'description' => 'List Huntress incident reports for organizations mapped to a PSA client. Filter by organization_id, status, severity, platform, agent_id, or indicator_type. Returns one page plus next_page_token; malware/incident bodies are on the get tool, not the list.',
@@ -159,7 +162,8 @@ class HuntressReadOnlyToolset
 
     public static function handles(string $toolName): bool
     {
-        return in_array($toolName, self::GENERAL_TOOL_NAMES, true);
+        return in_array($toolName, self::GENERAL_TOOL_NAMES, true)
+            || in_array($toolName, array_column(self::expandedDefinitions(), 'name'), true);
     }
 
     public static function requiresClient(string $toolName): bool
@@ -178,6 +182,7 @@ class HuntressReadOnlyToolset
         }
 
         return match ($toolName) {
+            'huntress_siem_query' => $this->siemQuery($input, $clientId),
             'huntress_list_incident_reports' => $this->listIncidentReports($input, $clientId),
             'huntress_get_incident_report' => $this->getIncidentReport($input),
             'huntress_list_escalations' => $this->listEscalations($input, $clientId),
