@@ -637,6 +637,7 @@
                         'search' => $peopleSearch,
                         'clientId' => $peopleClientId,
                         'personType' => $peoplePersonType,
+                        'status' => $peopleStatus,
                     ])
                 @endif
             </div>

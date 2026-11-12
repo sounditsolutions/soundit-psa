@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>People — status filter mockup</title>
+<link rel="stylesheet" href="../_tokens.css">
+<style>
+body { margin: 0; background: var(--psa-colors-canvas); color: var(--psa-colors-ink); font-family: var(--psa-typography-body-font-family); }
+main { padding: var(--psa-spacing-lg); }
+h1 { color: var(--psa-colors-navy); font-family: var(--psa-typography-headline-font-family); }
+form { display: flex; gap: var(--psa-spacing-sm); margin-bottom: var(--psa-spacing-md); }
+input, select, button { padding: var(--psa-spacing-sm); border: 1px solid var(--psa-colors-field-border); border-radius: var(--psa-rounded-sm); background: var(--psa-colors-surface); color: var(--psa-colors-ink); font: inherit; }
+input { flex: 1; }
+:focus-visible { outline: 2px solid var(--psa-colors-navy); outline-offset: 2px; }
+button:hover { color: var(--psa-colors-navy-light); }
+table { width: 100%; border-collapse: collapse; background: var(--psa-colors-surface); }
+th { background: var(--psa-colors-navy); color: var(--psa-colors-surface); text-align: left; font-family: var(--psa-typography-title-font-family); }
+th, td { padding: var(--psa-spacing-md); border-bottom: 1px solid var(--psa-colors-border); }
+a { color: var(--psa-colors-navy); }
+.badge { display: inline-block; background: var(--psa-colors-neutral); color: var(--psa-colors-surface); padding: var(--psa-spacing-xs) var(--psa-spacing-sm); border-radius: var(--psa-rounded-sm); font-size: var(--psa-typography-label-font-size); }
+.primary { background: var(--psa-colors-warning); color: var(--psa-colors-ink); }
+</style>
+</head>
+<body><main>
+<h1>People</h1>
+<form>
+<input aria-label="Search" placeholder="Search by name, email, or phone...">
+<button type="button">Clear</button>
+<select aria-label="Client"><option>All clients</option></select>
+<select aria-label="Type"><option>All types</option></select>
+<select name="status" aria-label="Status"><option>Active</option><option>Inactive</option><option selected>All</option></select>
+</form>
+<table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Mobile</th><th>Client</th></tr></thead>
+<tbody>
+<tr><td><a href="#">Alex Example</a> <span class="badge primary">Primary</span></td><td>alex@example.test</td><td>—</td><td>—</td><td>Example Company</td></tr>
+<tr><td><a href="#">Sam Example</a> <span class="badge">Inactive</span></td><td>sam@example.test</td><td>—</td><td>—</td><td>Example Company</td></tr>
+</tbody></table>
+</main></body></html>
