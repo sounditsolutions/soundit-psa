@@ -64,8 +64,25 @@ class HuntressPlatformReadsTest extends TestCase
         $this->assertSame('/v1/platform_actions/7', $request->getUri()->getPath());
         $this->assertSame('', $request->getUri()->getQuery());
         $this->assertSame('', (string) $request->getBody());
-        $this->assertSame(2, $this->runRead(false, [$this->row([]), $this->row([42, 43]), $this->row([42, 99])])['count']);
-        $this->assertSame(7, $this->runRead(true, [$this->row([])])['platform_action']['id']);
+        $result = $this->runRead(false, [$this->row([]), $this->row([42, 43]), $this->row([42, 99])]);
+        $this->assertSame(1, $result['count']);
+        $this->assertSame([42, 43], array_column($result['platform_actions'][0]['organizations'], 'id'));
+        $this->assertSame(2, $result['dropped_unclassified']);
+        $this->assertStringContainsString('incomplete', $result['note']);
+        $result = $this->runRead(true, [$this->row([])]);
+        $this->assertArrayHasKey('error', $result);
+        $this->assertArrayNotHasKey('platform_action', $result);
+        foreach ([false, true] as $get) {
+            $result = $this->runRead($get, [$this->row([])], ['client_id' => $client->id]);
+            if ($get) {
+                $this->assertArrayHasKey('error', $result);
+                $this->assertArrayNotHasKey('platform_action', $result);
+            } else {
+                $this->assertSame([], $result['platform_actions']);
+                $this->assertSame(0, $result['count']);
+                $this->assertSame(1, $result['dropped_unclassified']);
+            }
+        }
         foreach ([false, true] as $get) {
             $this->assertArrayHasKey('error', $this->runRead($get, [$this->row([42, 99])], ['client_id' => $client->id]));
             $this->assertArrayHasKey('error', $this->runRead($get, [$this->row([42])], ['client_id' => $client->id, 'organization_id' => 99]));

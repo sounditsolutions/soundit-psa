@@ -68,7 +68,7 @@ trait HuntressExpandedReads
             }
         }
 
-        return ['count' => count($rows), 'connections' => $this->sanitizeStructure('Huntress remote access connection', $rows), 'capped_at' => 500,
+        return ['count' => count($rows), 'connections' => array_map(fn (array $row) => $this->sanitizeStructure('Huntress remote access connection', $row), $rows), 'capped_at' => 500,
             'note' => count($rows) >= 500
                 ? 'The list may be incomplete: the vendor returns at most 500 connections, newest first, with no paging. Scope relies on the vendor organization filter; rows have no organization field.'
                 : 'The vendor returns at most 500 connections, newest first, with no paging. Scope relies on the vendor organization filter; rows have no organization field.'];
@@ -94,7 +94,7 @@ trait HuntressExpandedReads
             }
         }
 
-        return ['count' => count($rows), 'known_vpns' => $this->sanitizeStructure('Huntress known VPN', $rows)];
+        return ['count' => count($rows), 'known_vpns' => array_map(fn (array $row) => $this->sanitizeStructure('Huntress known VPN', $row), $rows)];
     }
 
     private static function logSourceDefinitions(): array
@@ -102,7 +102,7 @@ trait HuntressExpandedReads
         $scope = ['client_id' => ['type' => 'integer'], 'organization_id' => ['type' => 'integer']];
 
         return [
-            ['name' => 'huntress_list_siem_log_sources', 'description' => 'List Huntress SIEM log sources in mapped organizations, optionally selecting misconfigured sources.',
+            ['name' => 'huntress_list_siem_log_sources', 'description' => 'List Huntress SIEM log sources in mapped organizations, optionally selecting misconfigured sources. type_code and only_for_account are refused together with misconfigured=true.',
                 'input_schema' => ['type' => 'object', 'properties' => $scope + ['misconfigured' => ['type' => 'boolean'], 'only_for_account' => ['type' => 'boolean'], 'type_code' => ['type' => 'string'], 'limit' => ['type' => 'integer'], 'page_token' => ['type' => 'string']], 'required' => []]],
             ['name' => 'huntress_get_siem_log_source', 'description' => 'Read one Huntress SIEM log source in a mapped organization.',
                 'input_schema' => ['type' => 'object', 'properties' => $scope + ['id' => ['type' => 'integer']], 'required' => ['id']]],
@@ -179,6 +179,12 @@ trait HuntressExpandedReads
                 }
             }
             if ($input['misconfigured'] ?? false) {
+                // The misconfigured endpoint takes neither filter; refuse rather than drop it.
+                foreach (['type_code', 'only_for_account'] as $key) {
+                    if (array_key_exists($key, $input)) {
+                        return ['error' => $key.' cannot be combined with misconfigured=true'];
+                    }
+                }
                 $family = 'misconfigured_log_sources';
             }
         }
@@ -335,7 +341,8 @@ trait HuntressExpandedReads
                 if (! is_array($organizations) || ! array_is_list($organizations)) {
                     return ['error' => 'Huntress returned an unrecognized organizations shape'];
                 }
-                $allowed = true;
+                // An empty list attributes the action to no organization: unclassified, so fail closed.
+                $allowed = $organizations !== [];
                 foreach ($organizations as $organization) {
                     if (! is_array($organization) || ! is_int($organization['id'] ?? null)) {
                         return ['error' => 'Huntress returned an unrecognized row organization'];
@@ -347,8 +354,9 @@ trait HuntressExpandedReads
                 }
                 if (! $allowed) {
                     if ($get) {
-                        return ['error' => 'Row organization is not mapped to a PSA client'];
+                        return ['error' => 'Platform action organizations are outside the mapped scope or unclassified'];
                     }
+                    $dropped++;
 
                     continue;
                 }
@@ -387,6 +395,11 @@ trait HuntressExpandedReads
         if ($family === 'external_ports' && ! $get) {
             $output['dropped_unclassified'] = $dropped;
             $output['note'] = 'Rows outside the mapped scope or with unclassified organizations are dropped and counted. This list may be incomplete.';
+        }
+
+        if ($family === 'platform_actions' && ! $get) {
+            $output['dropped_unclassified'] = $dropped;
+            $output['note'] = 'Actions with no organization or with an unmapped organization are dropped and counted. This list may be incomplete.';
         }
 
         return $output;
@@ -490,7 +503,7 @@ trait HuntressExpandedReads
                 return ['error' => 'Huntress returned an unrecognized incident detail shape'];
             }
         }
-        $rows = $this->sanitizeStructure('Huntress incident detail', $rows);
+        $rows = array_map(fn (array $row) => $this->sanitizeStructure('Huntress incident detail', $row), $rows);
 
         return $get ? ['remediation' => $rows[0]] : ['count' => count($rows), $family => $rows, 'next_page_token' => $this->nextPageToken($response)];
     }

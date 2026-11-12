@@ -98,4 +98,16 @@ class HuntressLogSourceReadsTest extends TestCase
             $this->assertArrayHasKey('error', $this->runTool($get, $input));
         }
     }
+
+    public function test_misconfigured_refuses_filters_it_cannot_send(): void
+    {
+        foreach (['type_code' => 'meraki_cloud', 'only_for_account' => false] as $key => $value) {
+            $id = $this->bind(['misconfigured_log_sources' => []]);
+            $result = $this->runTool(false, ['misconfigured' => true, $key => $value, 'client_id' => $id]);
+            $this->assertArrayHasKey('error', $result);
+            $this->assertStringContainsString($key.' cannot be combined with misconfigured=true', $result['error']);
+            $this->assertArrayNotHasKey('misconfigured_log_sources', $result);
+            $this->assertCount(0, $this->history);
+        }
+    }
 }

@@ -120,6 +120,28 @@ class HuntressIncidentDetailReadsTest extends TestCase
         }
     }
 
+    public function test_lists_longer_than_thirty_rows_are_returned_whole(): void
+    {
+        Setting::setEncrypted('huntress_api_key', 'test-key');
+        Setting::setEncrypted('huntress_api_secret', 'test-secret');
+        $client = Client::factory()->create(['huntress_organization_id' => 42]);
+        $rows = array_map(fn (int $i) => ['id' => $i, 'type' => 'manual', 'action' => 'Synthetic action', 'parameters' => '', 'status' => 'completed'], range(1, 31));
+        $this->history = [];
+        $stack = HandlerStack::create(new MockHandler([
+            new Response(200, [], json_encode(['incident_report' => ['id' => 7, 'organization_id' => 42]])),
+            new Response(200, [], json_encode(['remediations' => $rows, 'pagination' => []])),
+        ]));
+        $stack->push(Middleware::history($this->history));
+        app()->instance(HuntressClient::class, new HuntressClient([], new HttpClient(['base_uri' => 'https://huntress.example/v1/', 'handler' => $stack])));
+        $result = app(HuntressReadOnlyToolset::class)->execute('huntress_list_incident_remediations', ['incident_report_id' => 7, 'client_id' => $client->id, 'limit' => 100]);
+        $this->assertArrayNotHasKey('error', $result);
+        $this->assertSame(31, $result['count']);
+        $this->assertCount(31, $result['remediations']);
+        $this->assertTrue(array_is_list($result['remediations']));
+        $this->assertSame(31, $result['remediations'][30]['id']);
+        $this->assertCount(2, $this->history);
+    }
+
     public function test_invalid_remediation_enums_refuse_before_transport(): void
     {
         foreach (['types' => ['wrong'], 'statuses' => ['wrong']] as $key => $values) {

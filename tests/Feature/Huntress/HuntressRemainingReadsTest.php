@@ -65,8 +65,11 @@ class HuntressRemainingReadsTest extends TestCase
             } else {
                 $this->assertStringNotContainsString('may be incomplete', $result['note']);
             }
+            $this->assertCount($count, $result['connections']);
+            $this->assertTrue(array_is_list($result['connections']));
             if ($count > 0) {
                 $this->assertStringContainsString('UNTRUSTED HUNTRESS', $result['connections'][0]['agent']);
+                $this->assertStringContainsString('UNTRUSTED HUNTRESS', $result['connections'][$count - 1]['agent']);
             }
             $this->wire('remote_access/connections', ['organization_id' => 42, 'last_seen_at_min' => '2026-01-01T00:00:00Z']);
         }
@@ -169,6 +172,12 @@ class HuntressRemainingReadsTest extends TestCase
         $this->assertCount(0, $this->history);
         $this->bind(['known_vpns' => []]);
         $this->assertSame(0, $tool->execute('huntress_list_known_vpns', [])['count']);
+        $this->bind(['known_vpns' => array_fill(0, 31, ['name' => 'Synthetic VPN', 'slug' => 'SYNTHETIC'])]);
+        $result = $tool->execute('huntress_list_known_vpns', []);
+        $this->assertSame(31, $result['count']);
+        $this->assertCount(31, $result['known_vpns']);
+        $this->assertTrue(array_is_list($result['known_vpns']));
+        $this->assertStringContainsString('UNTRUSTED HUNTRESS', $result['known_vpns'][30]['name']);
         $this->bind(['known_vpns' => [['name' => 'Bad']]]);
         $this->assertArrayHasKey('error', $tool->execute('huntress_list_known_vpns', []));
         $this->bind(['error' => 'Forbidden'], 403);
