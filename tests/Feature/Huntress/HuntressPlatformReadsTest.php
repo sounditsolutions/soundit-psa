@@ -84,7 +84,22 @@ class HuntressPlatformReadsTest extends TestCase
             }
         }
         foreach ([false, true] as $get) {
-            $this->assertArrayHasKey('error', $this->runRead($get, [$this->row([42, 99])], ['client_id' => $client->id]));
+            // Forbidden thing present: actions listing the asked org plus another (mapped or not).
+            $shared = $this->runRead($get, [$this->row([42, 43]), $this->row([42, 99]), $this->row([42])], ['client_id' => $client->id]);
+            if ($get) {
+                $this->assertSame('Platform action is shared with another organization', $shared['error'] ?? null);
+                $this->assertArrayNotHasKey('platform_action', $shared);
+            } else {
+                $this->assertArrayNotHasKey('error', $shared);
+                $this->assertSame(1, $shared['count']);
+                $this->assertSame([42], array_column($shared['platform_actions'][0]['organizations'], 'id'));
+                $this->assertSame(2, $shared['dropped_unclassified']);
+                $this->assertStringContainsString('shared with another organization', $shared['note']);
+            }
+            $foreign = $this->runRead($get, [$this->row([43])], ['client_id' => $client->id]);
+            $this->assertSame('Huntress returned a row outside the requested organization', $foreign['error'] ?? null);
+            $this->assertArrayNotHasKey('platform_actions', $foreign);
+            $this->assertArrayNotHasKey('platform_action', $foreign);
             $this->assertArrayHasKey('error', $this->runRead($get, [$this->row([42])], ['client_id' => $client->id, 'organization_id' => 99]));
             $this->assertCount(0, $this->history);
             $this->assertArrayHasKey('error', $this->runRead($get, [$this->row([42])], ['client_id' => 'bad']));

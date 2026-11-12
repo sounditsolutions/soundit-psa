@@ -343,18 +343,23 @@ trait HuntressExpandedReads
                 }
                 // An empty list attributes the action to no organization: unclassified, so fail closed.
                 $allowed = $organizations !== [];
+                $ids = [];
                 foreach ($organizations as $organization) {
                     if (! is_array($organization) || ! is_int($organization['id'] ?? null)) {
                         return ['error' => 'Huntress returned an unrecognized row organization'];
                     }
-                    if ($org !== null && $organization['id'] !== $org) {
-                        return ['error' => 'Huntress returned a row outside the requested organization'];
-                    }
+                    $ids[] = $organization['id'];
                     $allowed = $allowed && $mapped->has($organization['id']);
                 }
+                if ($org !== null && $ids !== [] && ! in_array($org, $ids, true)) {
+                    return ['error' => 'Huntress returned a row outside the requested organization'];
+                }
+                // Scoped reads must not expose an action shared with another organization.
+                $shared = $org !== null && count(array_unique($ids)) > 1;
+                $allowed = $allowed && ($org === null || $ids === [$org]);
                 if (! $allowed) {
                     if ($get) {
-                        return ['error' => 'Platform action organizations are outside the mapped scope or unclassified'];
+                        return ['error' => $shared ? 'Platform action is shared with another organization' : 'Platform action organizations are outside the mapped scope or unclassified'];
                     }
                     $dropped++;
 
@@ -399,7 +404,7 @@ trait HuntressExpandedReads
 
         if ($family === 'platform_actions' && ! $get) {
             $output['dropped_unclassified'] = $dropped;
-            $output['note'] = 'Actions with no organization or with an unmapped organization are dropped and counted. This list may be incomplete.';
+            $output['note'] = 'Actions with no organization, with an unmapped organization, or, on a client-scoped call, shared with another organization are dropped and counted. This list may be incomplete.';
         }
 
         return $output;
