@@ -102,19 +102,19 @@ trait HandlesCippTools
             return $relay;
         }
 
-        return $direct($tenantDomain);
+        return $direct($tenantDomain, app(CippClient::class)->readDeadline());
     }
 
     private function cippCompareUserAccess(array $input): array
     {
-        return $this->cippDispatch('cipp_compare_user_access', $input, fn (string $tenant): array => app(CippCompareUserAccess::class)->compare($tenant, $input, $this->clientId));
+        return $this->cippDispatch('cipp_compare_user_access', $input, fn (string $tenant, float $deadline): array => app(CippCompareUserAccess::class)->compare($tenant, $input, $this->clientId, $deadline));
     }
 
     private function cippQuery(string $toolName, array $input, string $endpoint): array
     {
-        return $this->cippDispatch($toolName, $input, function (string $tenantDomain) use ($toolName, $input, $endpoint): array {
+        return $this->cippDispatch($toolName, $input, function (string $tenantDomain, float $deadline) use ($toolName, $input, $endpoint): array {
             try {
-                $rows = app(CippClient::class)->get($endpoint, ['TenantFilter' => $tenantDomain]);
+                $rows = app(CippClient::class)->get($endpoint, ['TenantFilter' => $tenantDomain], $deadline);
             } catch (\Throwable $e) {
                 return $this->cippFailure($endpoint, $e);
             }
@@ -136,7 +136,7 @@ trait HandlesCippTools
      */
     private function cippQueryWithUser(string $toolName, array $input, string $endpoint, string $userParam = 'userId'): array
     {
-        return $this->cippDispatch($toolName, $input, function (string $tenantDomain) use ($toolName, $input, $endpoint, $userParam): array {
+        return $this->cippDispatch($toolName, $input, function (string $tenantDomain, float $deadline) use ($toolName, $input, $endpoint, $userParam): array {
             $userId = CippToolContract::requiredUserId($input);
             if ($userId === null) {
                 return ['error' => 'user_id is required'];
@@ -154,7 +154,7 @@ trait HandlesCippTools
             }
 
             try {
-                $rows = app(CippClient::class)->get($endpoint, $query);
+                $rows = app(CippClient::class)->get($endpoint, $query, $deadline);
             } catch (\Throwable $e) {
                 return $this->cippFailure($endpoint, $e);
             }
@@ -165,7 +165,7 @@ trait HandlesCippTools
 
     private function cippListSignIns(array $input): array
     {
-        return $this->cippDispatch('cipp_list_sign_ins', $input, function (string $tenantDomain) use ($input): array {
+        return $this->cippDispatch('cipp_list_sign_ins', $input, function (string $tenantDomain, float $deadline) use ($input): array {
             $userId = CippToolContract::optionalUserId($input);
             $days = CippToolContract::windowDays($input['days'] ?? null);
 
@@ -198,7 +198,7 @@ trait HandlesCippTools
             }
 
             try {
-                $events = app(CippClient::class)->get($endpoint, $params);
+                $events = app(CippClient::class)->get($endpoint, $params, $deadline);
             } catch (\Throwable $e) {
                 return $this->cippFailure($endpoint, $e);
             }
@@ -221,7 +221,7 @@ trait HandlesCippTools
      */
     private function cippListAuditLogs(array $input): array
     {
-        return $this->cippDispatch('cipp_list_audit_logs', $input, function (string $tenantDomain) use ($input): array {
+        return $this->cippDispatch('cipp_list_audit_logs', $input, function (string $tenantDomain, float $deadline) use ($input): array {
             $params = ['TenantFilter' => $tenantDomain];
 
             // RelativeTime is ListAuditLogs' SERVER-SIDE window, (\d+)([dhm]); with no
@@ -235,7 +235,7 @@ trait HandlesCippTools
             }
 
             try {
-                $events = app(CippClient::class)->get('api/ListAuditLogs', $params);
+                $events = app(CippClient::class)->get('api/ListAuditLogs', $params, $deadline);
             } catch (\Throwable $e) {
                 return $this->cippFailure('api/ListAuditLogs', $e);
             }
@@ -250,7 +250,7 @@ trait HandlesCippTools
 
     private function cippListMessageTrace(array $input): array
     {
-        return $this->cippDispatch('cipp_list_message_trace', $input, function (string $tenantDomain) use ($input): array {
+        return $this->cippDispatch('cipp_list_message_trace', $input, function (string $tenantDomain, float $deadline) use ($input): array {
             // CIPP reads these from the POST body, not the query string (card AsGVKuRa;
             // the citation is on CippClient::listMessageTrace()). Empty filters are not sent.
             $days = CippToolContract::boundedDays($input['days'] ?? null, 2, 10);
@@ -258,7 +258,7 @@ trait HandlesCippTools
             $recipient = ! empty($input['recipient']) ? (string) $input['recipient'] : null;
 
             try {
-                $trace = app(CippClient::class)->listMessageTrace($tenantDomain, $days, $sender, $recipient);
+                $trace = app(CippClient::class)->listMessageTrace($tenantDomain, $days, $sender, $recipient, $deadline);
             } catch (\Throwable $e) {
                 return $this->cippFailure('api/ListMessageTrace', $e);
             }
@@ -300,9 +300,9 @@ trait HandlesCippTools
 
     private function cippListMailQuarantine(array $input): array
     {
-        return $this->cippDispatch('cipp_list_mail_quarantine', $input, function (string $tenantDomain) use ($input): array {
+        return $this->cippDispatch('cipp_list_mail_quarantine', $input, function (string $tenantDomain, float $deadline) use ($input): array {
             try {
-                $entries = app(CippClient::class)->get('api/ListMailQuarantine', ['TenantFilter' => $tenantDomain]);
+                $entries = app(CippClient::class)->get('api/ListMailQuarantine', ['TenantFilter' => $tenantDomain], $deadline);
             } catch (\Throwable $e) {
                 return $this->cippFailure('api/ListMailQuarantine', $e);
             }
@@ -314,13 +314,13 @@ trait HandlesCippTools
 
     private function cippListUserMfaMethods(array $input): array
     {
-        return $this->cippDispatch('cipp_list_user_mfa_methods', $input, function (string $tenantDomain) use ($input): array {
+        return $this->cippDispatch('cipp_list_user_mfa_methods', $input, function (string $tenantDomain, float $deadline) use ($input): array {
             // CIPP's ListMFAUsers returns the user-level MFA picture: registration
             // status, method types, and which enforcement mechanism (CA / Security
             // Defaults / per-user) currently covers them. ListPerUserMFA is the
             // legacy per-user-toggle list and doesn't reflect modern MFA at all.
             try {
-                $rows = app(CippClient::class)->get('api/ListMFAUsers', ['TenantFilter' => $tenantDomain]);
+                $rows = app(CippClient::class)->get('api/ListMFAUsers', ['TenantFilter' => $tenantDomain], $deadline);
             } catch (\Throwable $e) {
                 return $this->cippFailure('api/ListMFAUsers', $e);
             }
@@ -341,9 +341,9 @@ trait HandlesCippTools
      */
     private function cippListOauthApps(array $input): array
     {
-        return $this->cippDispatch('cipp_list_oauth_apps', $input, function (string $tenantDomain): array {
+        return $this->cippDispatch('cipp_list_oauth_apps', $input, function (string $tenantDomain, float $deadline): array {
             try {
-                $apps = app(CippClient::class)->get('api/ListOAuthApps', ['TenantFilter' => $tenantDomain]);
+                $apps = app(CippClient::class)->get('api/ListOAuthApps', ['TenantFilter' => $tenantDomain], $deadline);
             } catch (\Throwable $e) {
                 return $this->cippFailure('api/ListOAuthApps', $e);
             }

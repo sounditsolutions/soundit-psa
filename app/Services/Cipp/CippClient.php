@@ -31,9 +31,9 @@ class CippClient
     /**
      * Make an authenticated GET request to the CIPP API, returning decoded JSON.
      */
-    public function get(string $endpoint, array $params = []): array
+    public function get(string $endpoint, array $params = [], ?float $deadline = null): array
     {
-        $response = $this->sendRequest('GET', $endpoint, ['query' => $params], 'application/json');
+        $response = $this->sendRequest('GET', $endpoint, ['query' => $params], 'application/json', deadline: $deadline);
 
         $data = json_decode((string) $response->getBody(), true) ?? [];
 
@@ -304,7 +304,7 @@ class CippClient
      * @throws CippClientException on transport failure, a queue-backed answer, or
      *                             a body that is not a readable Results envelope.
      */
-    public function listMessageTrace(string $tenantFilter, int $days, ?string $sender = null, ?string $recipient = null): array
+    public function listMessageTrace(string $tenantFilter, int $days, ?string $sender = null, ?string $recipient = null, ?float $deadline = null): array
     {
         $body = ['tenantFilter' => $tenantFilter, 'days' => $days];
         foreach (['sender' => $sender, 'recipient' => $recipient] as $key => $value) {
@@ -314,7 +314,7 @@ class CippClient
         }
 
         try {
-            $response = $this->sendRequest('POST', self::MESSAGE_TRACE_ENDPOINT, ['json' => $body], 'application/json');
+            $response = $this->sendRequest('POST', self::MESSAGE_TRACE_ENDPOINT, ['json' => $body], 'application/json', deadline: $deadline);
         } catch (CippClientException $e) {
             $error = self::messageTraceError($e);
             if ($error === null) {
@@ -381,9 +381,9 @@ class CippClient
     }
 
     /** Single-send read retaining the envelope for composite completeness checks. */
-    public function getRawOnce(string $endpoint, array $params): array
+    public function getRawOnce(string $endpoint, array $params, ?float $deadline = null): array
     {
-        $response = $this->sendRequest('GET', $endpoint, ['query' => $params], 'application/json', 1);
+        $response = $this->sendRequest('GET', $endpoint, ['query' => $params], 'application/json', 1, $deadline);
 
         return ['status' => $response->getStatusCode(), 'body' => (string) $response->getBody()];
     }
@@ -397,7 +397,7 @@ class CippClient
      * Get an OAuth2 access token via client_credentials flow.
      * Token is cached in Laravel Cache with a 55-minute TTL (tokens last 60 min).
      */
-    private function getToken(): string
+    private function getToken(?float $deadline = null): string
     {
         $cached = $this->cache->get(self::TOKEN_CACHE_KEY);
         if ($cached) {
@@ -413,7 +413,7 @@ class CippClient
 
         try {
             $tokenClient = $this->tokenClient();
-            $response = $tokenClient->post($tokenUrl, [
+            $response = $tokenClient->post($tokenUrl, $this->deadlineOptions($deadline, 15) + [
                 'form_params' => [
                     'grant_type' => 'client_credentials',
                     'client_id' => $clientId,
@@ -422,6 +422,9 @@ class CippClient
                 ],
             ]);
         } catch (GuzzleException $e) {
+            if ($deadline !== null && $this->isTimeout($e)) {
+                throw $this->deadlineFailure($e);
+            }
             $detail = self::failureDetail($e);
             Log::error("[CippClient] Token request failed: {$detail}");
             throw new CippClientException("CIPP OAuth token request failed: {$detail}", $e->getCode(), $e);
@@ -439,6 +442,41 @@ class CippClient
         $this->cache->put(self::TOKEN_CACHE_KEY, $token, max(60, $expiresIn - 300));
 
         return $token;
+    }
+
+    public function readDeadline(): float
+    {
+        return $this->monotonicTime() + 20;
+    }
+
+    protected function monotonicTime(): float
+    {
+        return hrtime(true) / 1e9;
+    }
+
+    private function deadlineOptions(?float $deadline, float $cap = 60): array
+    {
+        if ($deadline === null) {
+            return [];
+        }
+        $remaining = $deadline - $this->monotonicTime();
+        if ($remaining <= 0) {
+            throw $this->deadlineFailure();
+        }
+
+        return ['timeout' => min($cap, $remaining), 'connect_timeout' => min($cap, $remaining)];
+    }
+
+    private function isTimeout(GuzzleException $e): bool
+    {
+        return method_exists($e, 'getHandlerContext') && ($e->getHandlerContext()['errno'] ?? null) === 28;
+    }
+
+    private function deadlineFailure(?GuzzleException $e = null): CippClientException
+    {
+        $detail = $e === null ? '0 ConnectException (curl 28)' : self::failureDetail($e);
+
+        return new CippClientException('CIPP API error: '.$detail.'; CIPP did not answer within 20 s (upstream timeout; this read is safe to retry)', (int) ($e?->getCode() ?? 0), $e);
     }
 
     protected function pause(int $seconds): void
@@ -506,23 +544,32 @@ class CippClient
      * response so callers can decode JSON or read binary bytes as needed.
      * Auto-retries on 401 (token expired) and 429 (rate limited).
      */
-    private function sendRequest(string $method, string $endpoint, array $options, string $accept, int $maxAttempts = 3): ResponseInterface
+    private function sendRequest(string $method, string $endpoint, array $options, string $accept, int $maxAttempts = 3, ?float $deadline = null): ResponseInterface
     {
         $attempts = 0;
 
         while ($attempts < $maxAttempts) {
             $attempts++;
 
-            $token = $this->getToken();
-            $options['headers'] = [
+            $this->deadlineOptions($deadline);
+            $token = $this->getToken($deadline);
+            $attemptOptions = $this->deadlineOptions($deadline) + $options;
+            $attemptOptions['headers'] = [
                 'Authorization' => "Bearer {$token}",
                 'Accept' => $accept,
             ];
 
             try {
-                return $this->http->request($method, $endpoint, $options);
+                $response = $this->http->request($method, $endpoint, $attemptOptions);
+                $this->deadlineOptions($deadline);
+
+                return $response;
             } catch (GuzzleException $e) {
                 $code = $e->getCode();
+                if ($deadline !== null && $this->isTimeout($e)) {
+                    throw $this->deadlineFailure($e);
+                }
+                $this->deadlineOptions($deadline);
 
                 // On 401, clear cached token and retry once
                 if ($code === 401 && $attempts < $maxAttempts) {
@@ -537,6 +584,9 @@ class CippClient
                     $retryAfter = 2 ** $attempts; // 2s, 4s
                     if (method_exists($e, 'getResponse') && $e->getResponse()) {
                         $retryAfter = (int) ($e->getResponse()->getHeaderLine('Retry-After') ?: $retryAfter);
+                    }
+                    if ($deadline !== null && $retryAfter >= $deadline - $this->monotonicTime()) {
+                        throw new CippClientException('CIPP API error: '.self::failureDetail($e), $code, $e);
                     }
                     Log::info("[CippClient] Rate limited on {$endpoint}, retrying in {$retryAfter}s");
                     $this->pause($retryAfter);
