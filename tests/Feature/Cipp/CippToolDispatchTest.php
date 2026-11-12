@@ -108,7 +108,7 @@ class CippToolDispatchTest extends TestCase
         $cipp = Mockery::mock(CippClient::class);
         $cipp->shouldReceive('readDeadline')->andReturn(120.0);
         // The tenant-wide endpoint must never be reached again, by either executor.
-        $cipp->shouldNotReceive('get')->with('api/ListMailboxRules', Mockery::any());
+        $cipp->shouldNotReceive('get')->with('api/ListMailboxRules', Mockery::any(), Mockery::any());
         $cipp->shouldReceive('get')
             ->twice()
             ->with('api/ListUserMailboxRules', Mockery::on(

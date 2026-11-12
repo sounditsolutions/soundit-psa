@@ -422,8 +422,8 @@ class CippClient
                 ],
             ]);
         } catch (GuzzleException $e) {
-            if ($deadline !== null && $this->monotonicTime() >= $deadline) {
-                throw $this->deadlineFailure($e);
+            if ($deadline !== null && $deadline - $this->monotonicTime() < 0.001) {
+                throw $this->deadlineFailure($lastError);
             }
             $detail = self::failureDetail($e);
             Log::error("[CippClient] Token request failed: {$detail}");
@@ -463,18 +463,32 @@ class CippClient
             return [];
         }
         $remaining = $deadline - $this->monotonicTime();
-        if ($remaining <= 0) {
+        // Curl truncates sub-millisecond timeouts to zero (unbounded).
+        if ($remaining < 0.001) {
             throw $this->deadlineFailure($lastError);
         }
 
         return ['timeout' => min($cap, $remaining), 'connect_timeout' => min($cap, $remaining)];
     }
 
+    // Tag only locally created deadline failures, never vendor text. Weak keys
+    // avoid retaining exceptions in long-lived workers.
+    private static ?\WeakMap $deadlineFailures = null;
+
+    public static function isDeadlineFailure(\Throwable $e): bool
+    {
+        return isset(self::$deadlineFailures[$e]);
+    }
+
     private function deadlineFailure(?GuzzleException $e = null): CippClientException
     {
         $prefix = $e === null ? '' : 'CIPP API error: '.self::failureDetail($e).'; ';
 
-        return new CippClientException($prefix.'CIPP did not answer within 20 s (upstream timeout; this read is safe to retry)', (int) ($e?->getCode() ?? 0), $e);
+        $failure = new CippClientException($prefix.'CIPP did not answer within 20 s (upstream timeout; this read is safe to retry)', (int) ($e?->getCode() ?? 0), $e);
+        self::$deadlineFailures ??= new \WeakMap;
+        self::$deadlineFailures[$failure] = true;
+
+        return $failure;
     }
 
     protected function pause(int $seconds): void
@@ -588,7 +602,9 @@ class CippClient
                     $retryAfter = 2 ** $attempts; // 2s, 4s
                     if (method_exists($e, 'getResponse') && $e->getResponse()) {
                         $header = $e->getResponse()->getHeaderLine('Retry-After');
-                        if (ctype_digit($header)) {
+                        if ($deadline === null) {
+                            $retryAfter = (int) ($header ?: $retryAfter);
+                        } elseif (ctype_digit($header)) {
                             $retryAfter = (int) $header;
                         } elseif ($header !== '' && ($date = strtotime($header)) !== false) {
                             $retryAfter = max(0, $date - time());

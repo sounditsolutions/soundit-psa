@@ -92,7 +92,13 @@ trait HandlesCippTools
             return ['error' => $identityRefusal];
         }
 
-        $tenantDomain = CippTenantScope::resolve($this->cippScopeClient(), $this->clientId);
+        try {
+            $deadline = app(CippClient::class)->readDeadline();
+        } catch (\Throwable $e) {
+            return $this->cippFailure($toolName, $e);
+        }
+
+        $tenantDomain = CippTenantScope::resolve($this->cippScopeClient(), $this->clientId, $deadline);
         if (is_array($tenantDomain)) {
             return $tenantDomain;
         }
@@ -102,7 +108,7 @@ trait HandlesCippTools
             return $relay;
         }
 
-        return $direct($tenantDomain, app(CippClient::class)->readDeadline());
+        return $direct($tenantDomain, $deadline);
     }
 
     private function cippCompareUserAccess(array $input): array

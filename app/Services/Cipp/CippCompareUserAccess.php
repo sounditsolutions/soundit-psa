@@ -14,6 +14,7 @@ final class CippCompareUserAccess
     {
         $deadline ??= $this->client->readDeadline();
         $mailbox = null;
+        $whose = '';
         $read = 'api/ListUsers';
         try {
             $users = [];
@@ -28,6 +29,7 @@ final class CippCompareUserAccess
                 // Invoke-ListUsers.ps1 selects assignedLicenses for UserID. Its fallback
                 // can omit the property: require the array, never invent an empty one.
                 $read = 'api/ListUsers';
+                $whose = ' for the '.$side.' user';
                 $rows = $this->read($read, ['tenantFilter' => $tenant, 'UserID' => $resolved], $deadline);
                 if (count($rows) !== 1) {
                     throw new \UnexpectedValueException;
@@ -73,6 +75,7 @@ final class CippCompareUserAccess
 
             // Invoke-ListMailboxes.ps1 emits recipientTypeDetails and UPN (mixed casing).
             $read = 'api/ListMailboxes';
+            $whose = '';
             $rows = $this->read($read, ['tenantFilter' => $tenant], $deadline);
             $mailboxes = [];
             foreach ($rows as $row) {
@@ -161,8 +164,8 @@ final class CippCompareUserAccess
                 'not_included' => ['admin roles'],
             ];
         } catch (\Throwable $e) {
-            if ($e instanceof CippClientException) {
-                return ['error' => mb_substr('CIPP query failed: '.$read.': '.$e->getMessage(), 0, 200)];
+            if (CippClient::isDeadlineFailure($e)) {
+                return ['error' => mb_substr('CIPP query failed: '.$read.($mailbox === null ? $whose : ' for mailbox '.$this->text($mailbox)).': '.$e->getMessage(), 0, 200)];
             }
 
             return ['error' => 'CIPP comparison failed'.($mailbox === null ? '' : ' for mailbox '.$this->text($mailbox)).': '.(int) $e->getCode().' '.class_basename($e)];

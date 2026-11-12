@@ -132,7 +132,7 @@ class CippReadDeadlineTest extends TestCase
             $client->get('api/ListUsers', [], 120);
             $this->fail('Expected token timeout');
         } catch (CippClientException $e) {
-            $this->assertSame('CIPP API error: 0 ConnectException (curl 28); CIPP did not answer within 20 s (upstream timeout; this read is safe to retry)', $e->getMessage());
+            $this->assertSame(($refresh ? 'CIPP API error: 401 ClientException; ' : '').'CIPP did not answer within 20 s (upstream timeout; this read is safe to retry)', $e->getMessage());
         }
         $this->assertSame(8.0, $this->history[array_key_last($this->history)]['options']['timeout']);
     }
@@ -230,7 +230,7 @@ class CippReadDeadlineTest extends TestCase
         $service = new \App\Services\Cipp\CippCompareUserAccess($client, app(\App\Services\Cipp\CippToolContract::class));
         $result = $service->compare('example.test', ['source_user' => $id, 'target_user' => $id], null);
         $this->assertSame(['error'], array_keys($result));
-        $this->assertStringContainsString('api/ListGraphRequest', $result['error']);
+        $this->assertStringContainsString('api/ListGraphRequest for the source user', $result['error']);
         $this->assertStringContainsString('this read is safe to retry', $result['error']);
         $this->assertSame(8.0, $this->history[1]['options']['timeout']);
         $this->assertCount(2, $this->history);
@@ -292,7 +292,7 @@ class CippReadDeadlineTest extends TestCase
         });
         $cache = new Repository(new ArrayStore);
         $cache->put('cipp_oauth_token', 'synthetic');
-        $client = new \App\Services\Cipp\CippRestWriteClient(['api_url' => 'https://example.test', 'tenant_id' => 'synthetic', 'client_id' => 'synthetic', 'client_secret' => 'synthetic'], $cache, fn () => ['93.184.216.34']);
+        $client = new \App\Services\Cipp\CippRestWriteClient(['api_url' => 'https://example.test', 'tenant_id' => 'synthetic', 'client_id' => 'synthetic', 'client_secret' => 'synthetic'], $cache, fn () => ['192.0.2.1']);
         $client->setUserSignInState('example.test', 'synthetic-user', false);
         $this->assertSame(60, $options[0]['timeout']);
     }
@@ -318,6 +318,156 @@ class CippReadDeadlineTest extends TestCase
             $this->assertSame([2], $client->pauses);
             $this->assertSame(18.0, $this->history[1]['options']['timeout']);
         }
+    }
+
+    public function test_sub_millisecond_before_send_refuses(): void
+    {
+        $client = $this->client([new Response(200, [], '[]')]);
+        try {
+            $client->get('api/ListUsers', [], 100.0005);
+            $this->fail('Expected refusal');
+        } catch (CippClientException $e) {
+            $this->assertSame('CIPP did not answer within 20 s (upstream timeout; this read is safe to retry)', $e->getMessage());
+        }
+        $this->assertCount(0, $this->history);
+    }
+
+    public function test_curl_timeout_half_millisecond_before_deadline_counts_as_spent(): void
+    {
+        $client = null;
+        $client = $this->client([function () use (&$client) {
+            $client->clock = 119.9995;
+
+            return $this->timeout();
+        }]);
+        try {
+            $client->get('api/ListUsers', [], 120);
+            $this->fail('Expected timeout');
+        } catch (CippClientException $e) {
+            $this->assertSame('CIPP API error: 0 ConnectException (curl 28); CIPP did not answer within 20 s (upstream timeout; this read is safe to retry)', $e->getMessage());
+        }
+    }
+
+    public function test_retry_after_equal_to_remaining_refuses_without_sleep(): void
+    {
+        $client = $this->client([new Response(429, ['Retry-After' => '20']), new Response(200, [], '[]')]);
+        try {
+            $client->get('api/ListUsers', [], 120);
+            $this->fail('Expected refusal');
+        } catch (CippClientException $e) {
+            $this->assertSame('CIPP API error: 429 ClientException', $e->getMessage());
+        }
+        $this->assertSame([], $client->pauses);
+        $this->assertCount(1, $this->history);
+    }
+
+    public function test_unbudgeted_http_date_keeps_immediate_retry(): void
+    {
+        $client = $this->client([new Response(429, ['Retry-After' => gmdate('D, d M Y H:i:s', time() + 3600).' GMT']), new Response(200, [], '[]')]);
+        $this->assertSame([], $client->listUsers('example.test'));
+        $this->assertSame([0], $client->pauses);
+        $this->assertSame(60, $this->history[1]['options']['timeout']);
+    }
+
+    public function test_comparison_non_deadline_failures_keep_base_contract(): void
+    {
+        $id = '11111111-1111-4111-8111-111111111111';
+        foreach ([new Response(500), new Response(200, [], '{"QueueMessage":"synthetic vendor marker"}')] as $response) {
+            $client = $this->client([$response]);
+            $service = new \App\Services\Cipp\CippCompareUserAccess($client, app(\App\Services\Cipp\CippToolContract::class));
+            $result = $service->compare('example.test', ['source_user' => $id, 'target_user' => $id], null);
+            $this->assertSame(['error' => 'CIPP comparison failed: '.($response->getStatusCode() === 500 ? 500 : 0).' CippClientException'], $result);
+        }
+    }
+
+    public function test_comparison_mailbox_failure_keeps_context_without_vendor_text(): void
+    {
+        $id = '11111111-1111-4111-8111-111111111111';
+        // Same Invoke-ListUsers and Invoke-ListMailboxes projections as the composite suite.
+        $user = json_encode([['id' => $id, 'userPrincipalName' => 'source@example.test', 'assignedLicenses' => []]]);
+        $client = $this->client([
+            new Response(200, [], $user), new Response(200, [], '[]'),
+            new Response(200, [], $user), new Response(200, [], '[]'),
+            new Response(200, [], '[{"recipientTypeDetails":"SharedMailbox","UPN":"shared@example.test"}]'),
+            new Response(500, [], 'synthetic vendor message'),
+        ]);
+        $contract = app(\App\Services\Cipp\CippToolContract::class);
+        $service = new \App\Services\Cipp\CippCompareUserAccess($client, $contract);
+        $result = $service->compare('example.test', ['source_user' => $id, 'target_user' => $id], null);
+        $this->assertSame(['error' => 'CIPP comparison failed for mailbox '.$contract->fence('cipp_compare_user_access', 'displayName', 'shared@example.test').': 500 CippClientException'], $result);
+        $this->assertCount(6, $this->history);
+    }
+
+    public function test_tenant_resolution_spends_tool_budget(): void
+    {
+        \App\Models\Setting::setValue('cipp_api_url', 'https://example.test');
+        \App\Models\Setting::setValue('cipp_tenant_id', 'synthetic');
+        \App\Models\Setting::setValue('cipp_client_id', 'synthetic');
+        \App\Models\Setting::setEncrypted('cipp_client_secret', 'synthetic');
+        $scope = \App\Models\Client::factory()->create(['cipp_tenant_domain' => 'example.test']);
+        \App\Models\Client::factory()->create(['cipp_tenant_domain' => 'other.example.test']);
+        $client = null;
+        $client = $this->client([
+            function () use (&$client) {
+                $client->clock += 12;
+
+                // Invoke-ListTenants: customerId and defaultDomainName, synthetic identities.
+                return new Response(200, [], json_encode([
+                    ['customerId' => '22222222-2222-4222-8222-222222222222', 'defaultDomainName' => 'example.test'],
+                    ['customerId' => '33333333-3333-4333-8333-333333333333', 'defaultDomainName' => 'other.example.test'],
+                ]));
+            },
+            function () use (&$client) {
+                $client->clock = 120;
+
+                return $this->timeout();
+            },
+        ]);
+        app()->instance(CippClient::class, $client);
+        $result = $this->executor($scope)->run();
+        $this->assertSame(['error' => 'CIPP query failed: CIPP API error: 0 ConnectException (curl 28); CIPP did not answer within 20 s (upstream timeout; this read is safe to retry)'], $result);
+        $this->assertCount(2, $this->history);
+        $this->assertSame('/api/ListTenants', $this->history[0]['request']->getUri()->getPath());
+        $this->assertSame(20.0, $this->history[0]['options']['timeout']);
+        $this->assertSame('/api/ListMessageTrace', $this->history[1]['request']->getUri()->getPath());
+        $this->assertSame(8.0, $this->history[1]['options']['timeout']);
+    }
+
+    public function test_construction_decrypt_failure_returns_error_array(): void
+    {
+        $scope = \App\Models\Client::factory()->create(['cipp_tenant_domain' => 'example.test']);
+        app()->bind(CippClient::class, fn () => throw new \Illuminate\Contracts\Encryption\DecryptException('synthetic decrypt failure'));
+        $this->assertSame(['error' => 'CIPP query failed: synthetic decrypt failure'], $this->executor($scope)->run());
+    }
+
+    private function executor(\App\Models\Client $scope): object
+    {
+        return new class($scope)
+        {
+            use \App\Services\Cipp\HandlesCippTools;
+
+            protected ?int $clientId;
+
+            public function __construct(private \App\Models\Client $scope)
+            {
+                $this->clientId = $scope->id;
+            }
+
+            protected function cippScopeClient(): ?\App\Models\Client
+            {
+                return $this->scope;
+            }
+
+            protected function cippLogPrefix(): string
+            {
+                return '[Test]';
+            }
+
+            public function run(): array
+            {
+                return $this->cippListMessageTrace([]);
+            }
+        };
     }
 
     public function test_unbudgeted_sync_and_500_are_unchanged(): void
