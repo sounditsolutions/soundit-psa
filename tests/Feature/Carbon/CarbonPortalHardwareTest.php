@@ -231,7 +231,37 @@ class CarbonPortalHardwareTest extends TestCase
     public function test_empty_state_spans_the_four_columns(): void
     {
         $this->client->hardwareModels()->delete();
-        $this->get(route('portal.hardware'))->assertOk()->assertSee('<tr><td colspan="4">'.__('carbon_hardware.empty').'</td></tr>', false);
+        $this->get(route('portal.hardware'))->assertOk()
+            ->assertSee('<tr><td colspan="4">No hardware is approved for your organization yet. Open a ticket if you need hardware.</td></tr>', false)
+            ->assertDontSee('No approved models.');
+    }
+
+    public function test_staff_tab_keeps_its_own_empty_string(): void
+    {
+        $this->assertSame('No approved models.', __('carbon_hardware.empty'));
+        $this->assertSame('No hardware is approved for your organization yet. Open a ticket if you need hardware.', __('carbon_hardware.portal_empty'));
+    }
+
+    public function test_orders_card_header_reads_your_requests(): void
+    {
+        $this->get(route('portal.hardware'))->assertOk()
+            ->assertSee('<div class="card-header">Your requests</div>', false)
+            ->assertDontSee('Your orders');
+    }
+
+    public function test_invalid_request_refusal_reads_the_approved_copy(): void
+    {
+        $this->responseFixture();
+        $this->input['lines'][0]['quantity'] = 0;
+        $this->post(route('portal.hardware.store'), $this->input)->assertSessionHasErrors([
+            'hardware' => 'Select at least one item and enter a whole-number quantity of 1 or more. If the list has changed, reload the page and try again.',
+        ]);
+        Http::assertNothingSent();
+    }
+
+    public function test_copy_file_no_longer_carries_the_draft_header(): void
+    {
+        $this->assertStringNotContainsString('DRAFT', file_get_contents(lang_path('en/carbon_hardware.php')));
     }
 
     public function test_pending_reservation_never_dispatches_and_other_client_key_refuses(): void

@@ -1,20 +1,19 @@
 <?php
 
-// Client-facing copy is DRAFT pending Charlie's approval.
 return [
     'title' => 'Hardware',
     'portal_unavailable' => "Hardware ordering isn't available right now. Open a ticket if you need hardware.",
     'portal_unmapped' => "Hardware ordering isn't set up for your account yet. Open a ticket if you need hardware now.",
     'personal' => 'Your account can view hardware but cannot submit requests. Open a ticket if you need hardware.',
     'address_incomplete' => 'Your shipping address is incomplete. Ask your IT provider to update it.',
-    'invalid_request' => 'Choose approved models with whole-number quantities of at least one and a valid request token.',
+    'invalid_request' => 'Select at least one item and enter a whole-number quantity of 1 or more. If the list has changed, reload the page and try again.',
     'ticket_subject' => 'Hardware request',
     'confirmation' => 'Confirmation: :code',
     'check_carbon' => 'Submitted, confirmation not read — check Carbon before retrying.',
     'recorded' => 'Your request is recorded. Your IT provider will confirm.',
     'quantity' => 'Quantity',
     'select' => 'Select',
-    'orders' => 'Your orders',
+    'orders' => 'Your requests',
     'ship_to' => 'Ship to',
     'po' => 'PO number (optional)',
     'submit' => 'Submit request',
@@ -56,6 +55,7 @@ return [
     'remove' => 'Remove',
     'confirm' => 'I confirm selling below the cached Carbon price.',
     'empty' => 'No approved models.',
+    'portal_empty' => 'No hardware is approved for your organization yet. Open a ticket if you need hardware.',
     'customer_invalid' => 'Choose an existing customer from the Carbon list.',
     'duplicate' => 'This part is already approved for this client.',
 ];
