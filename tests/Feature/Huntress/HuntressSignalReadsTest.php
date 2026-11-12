@@ -105,6 +105,57 @@ class HuntressSignalReadsTest extends TestCase
         $this->assertCount(0, $this->history);
     }
 
+    public function test_agents_and_reports_wire_and_scope_contracts(): void
+    {
+        // Agent/SummaryReport schemas and measured list row keys; synthetic values.
+        foreach (['agents' => 'agent', 'reports' => 'report'] as $plural => $singular) {
+            $row = ['id' => 7, 'organization_id' => 42] + ($plural === 'agents'
+                ? ['hostname' => 'Synthetic host', 'platform' => 'windows', 'ipv4_address' => '93.184.216.34']
+                : ['analyst_note' => 'Synthetic report', 'period' => '2026-01-01', 'type' => 'monthly_summary']);
+            $filters = ['limit' => 2, 'page_token' => 'cursor', 'sort_field' => 'id', 'sort_direction' => 'asc'] + ($plural === 'agents'
+                ? ['platform' => 'windows', 'hostname' => 'Synthetic host', 'os' => 'Synthetic OS', 'version' => '1']
+                : ['period_min' => '2026-01-01', 'period_max' => '2026-02-01', 'type' => 'monthly_summary']);
+            $this->history = [];
+            $id = $this->bindResponse([$plural => [$row], 'pagination' => ['next_page_token' => 'next']]);
+            $result = $this->execute('list_'.$plural, ['client_id' => $id] + $filters);
+            $this->assertSame(1, $result['count']);
+            $this->assertSame('next', $result['next_page_token']);
+            $this->assertCount(1, $this->history);
+            $request = $this->history[0]['request'];
+            $this->assertSame('GET', $request->getMethod());
+            $this->assertSame('/v1/'.$plural, $request->getUri()->getPath());
+            parse_str($request->getUri()->getQuery(), $query);
+            $this->assertEquals($filters + ['organization_id' => '42'], $query);
+            $this->assertSame('', (string) $request->getBody());
+
+            $this->history = [];
+            $this->bindResponse([$singular => $row]);
+            $this->assertSame(7, $this->execute('get_'.$singular, ['id' => 7])[$singular]['id']);
+            $this->assertCount(1, $this->history);
+            $request = $this->history[0]['request'];
+            $this->assertSame('GET', $request->getMethod());
+            $this->assertSame('/v1/'.$plural.'/7', $request->getUri()->getPath());
+            $this->assertSame('', $request->getUri()->getQuery());
+            $this->assertSame('', (string) $request->getBody());
+
+            $foreign = array_replace($row, ['organization_id' => 99]);
+            $this->bindResponse([$plural => [$row, $foreign], 'pagination' => []]);
+            $this->assertSame(1, $this->execute('list_'.$plural)['count']);
+            $this->bindResponse([$plural => [$row, $foreign], 'pagination' => []]);
+            $this->assertArrayHasKey('error', $this->execute('list_'.$plural, ['client_id' => $id]));
+            $this->bindResponse([$singular => $foreign]);
+            $this->assertArrayHasKey('error', $this->execute('get_'.$singular, ['id' => 7]));
+            foreach (['list_'.$plural, 'get_'.$singular] as $tool) {
+                $this->history = [];
+                $this->bindResponse([]);
+                $this->assertArrayHasKey('error', $this->execute($tool, ['id' => 7, 'client_id' => $id, 'organization_id' => 99]));
+                $this->assertCount(0, $this->history);
+                $this->bindResponse(['error' => 'Forbidden'], 403);
+                $this->assertStringContainsString("Charlie can widen the key's scope", $this->execute($tool, ['id' => 7])['error']);
+            }
+        }
+    }
+
     public function test_signal_errors_and_shape_drift_are_not_empty_lists(): void
     {
         foreach (['list_signals', 'get_signal'] as $tool) {

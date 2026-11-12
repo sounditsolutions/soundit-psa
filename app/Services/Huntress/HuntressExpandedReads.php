@@ -10,7 +10,7 @@ trait HuntressExpandedReads
 {
     private static function expandedDefinitions(): array
     {
-        return [...self::signalDefinitions(), [
+        return [...self::signalDefinitions(), ...self::endpointDefinitions(), [
             'name' => 'huntress_siem_query',
             'description' => 'Query Huntress SIEM logs for one mapped PSA client. The organization filter is inserted before all other stages. Zero matches is not an all-clear; check log sources too. Requires the SIEM feature.',
             'input_schema' => [
@@ -45,8 +45,34 @@ trait HuntressExpandedReads
         ];
     }
 
-    private function signalRead(array $input, ?int $clientId, bool $get): array
+    private const ENDPOINT_FILTERS = [
+        'agents' => ['sort_field', 'sort_direction', 'platform', 'hostname', 'os', 'version'],
+        'reports' => ['sort_field', 'sort_direction', 'period_min', 'period_max', 'type'],
+        'signals' => ['sort_field', 'sort_direction', 'investigated_at_min', 'investigated_at_max', 'entity_type', 'entity_id', 'types', 'statuses'],
+    ];
+
+    private static function endpointDefinitions(): array
     {
+        $definitions = [];
+        // Vendor getV1Agents/getV1Reports: scalar string filters and common pagination.
+        foreach (['agents' => 'agent', 'reports' => 'report'] as $plural => $singular) {
+            $scope = ['client_id' => ['type' => 'integer'], 'organization_id' => ['type' => 'integer']];
+            $filters = [];
+            foreach (self::ENDPOINT_FILTERS[$plural] as $filter) {
+                $filters[$filter] = ['type' => 'string'];
+            }
+            $definitions[] = ['name' => 'huntress_list_'.$plural, 'description' => 'List Huntress '.$plural.' in mapped organizations, optionally for one client.',
+                'input_schema' => ['type' => 'object', 'properties' => $scope + $filters + ['limit' => ['type' => 'integer'], 'page_token' => ['type' => 'string']], 'required' => []]];
+            $definitions[] = ['name' => 'huntress_get_'.$singular, 'description' => 'Read one Huntress '.$singular.' in a mapped organization.',
+                'input_schema' => ['type' => 'object', 'properties' => $scope + ['id' => ['type' => 'integer']], 'required' => ['id']]];
+        }
+
+        return $definitions;
+    }
+
+    private function signalRead(array $input, ?int $clientId, bool $get, string $family = 'signals'): array
+    {
+        $singular = ['signals' => 'signal', 'agents' => 'agent', 'reports' => 'report'][$family];
         foreach (['client_id', 'organization_id'] as $key) {
             if (array_key_exists($key, $input) && $this->positiveInt($input[$key]) === null) {
                 return ['error' => $key.' must be a positive integer'];
@@ -62,7 +88,7 @@ trait HuntressExpandedReads
             return ['error' => 'Organization is not mapped to a PSA client'];
         }
         $params = [];
-        $endpoint = 'signals';
+        $endpoint = $family;
         if ($get) {
             $id = $this->positiveInt($input['id'] ?? null);
             if ($id === null) {
@@ -71,7 +97,7 @@ trait HuntressExpandedReads
             $endpoint .= '/'.$id;
         } else {
             $params = $this->pageParams($input, default: 10, max: 500);
-            foreach (['sort_field', 'sort_direction', 'investigated_at_min', 'investigated_at_max', 'entity_type', 'entity_id', 'types', 'statuses'] as $filter) {
+            foreach (self::ENDPOINT_FILTERS[$family] as $filter) {
                 if (isset($input[$filter])) {
                     if (! is_string($input[$filter])) {
                         return ['error' => $filter.' must be a string'];
@@ -88,31 +114,31 @@ trait HuntressExpandedReads
         } catch (HuntressClientException $e) {
             return $this->expandedApiError($e);
         }
-        // Vendor Signal schema uses organization: {id, name}, not organization_id.
-        $rows = $get ? [$response['signal'] ?? null] : ($response['signals'] ?? null);
+        // Vendor Signal uses organization: {id, name}; Agent/SummaryReport use organization_id.
+        $rows = $get ? [$response[$singular] ?? null] : ($response[$family] ?? null);
         if (! is_array($rows) || ! array_is_list($rows)) {
-            return ['error' => 'Huntress returned an unrecognized signals shape'];
+            return ['error' => 'Huntress returned an unrecognized collection shape'];
         }
         $result = [];
         foreach ($rows as $row) {
-            if (! is_array($row) || ! is_int($row['organization']['id'] ?? null)) {
-                return ['error' => 'Huntress returned an unrecognized signal organization'];
+            $rowOrg = $family === 'signals' ? ($row['organization']['id'] ?? null) : ($row['organization_id'] ?? null);
+            if (! is_array($row) || ! is_int($rowOrg)) {
+                return ['error' => 'Huntress returned an unrecognized row organization'];
             }
-            $rowOrg = $row['organization']['id'];
             if ($org !== null && $rowOrg !== $org) {
-                return ['error' => 'Huntress returned a signal outside the requested organization'];
+                return ['error' => 'Huntress returned a row outside the requested organization'];
             }
             if (! $mapped->has($rowOrg)) {
                 if ($get) {
-                    return ['error' => 'Signal organization is not mapped to a PSA client'];
+                    return ['error' => 'Row organization is not mapped to a PSA client'];
                 }
 
                 continue;
             }
-            $result[] = $this->sanitizeStructure('Huntress signal', $row);
+            $result[] = $this->sanitizeStructure('Huntress '.$singular, $row);
         }
 
-        return $get ? ['signal' => $result[0]] : ['count' => count($result), 'signals' => $result, 'next_page_token' => $this->nextPageToken($response)];
+        return $get ? [$singular => $result[0]] : ['count' => count($result), $family => $result, 'next_page_token' => $this->nextPageToken($response)];
     }
 
     private function siemQuery(array $input, ?int $clientId): array
