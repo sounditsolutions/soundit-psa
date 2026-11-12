@@ -393,6 +393,12 @@ class McpStaffController extends Controller
         'huntress_list_organizations',
         'huntress_get_organization',
 
+        // Card PpytyQ4A: never discard malformed scope on the account-only VPN list.
+        'huntress_list_known_vpns',
+        // Card PpytyQ4A: preserve the required SIEM client scope before dispatch.
+        'huntress_siem_query',
+        // Card PpytyQ4A: preserve the required remote-access client scope before dispatch.
+        'huntress_list_remote_access_connections',
         // Card PpytyQ4A: preserve the optional client fence on the log-source list.
         'huntress_list_siem_log_sources',
         // Card PpytyQ4A: preserve the optional client fence on log-source lookup.

@@ -72,7 +72,7 @@ class HuntressIdentityReadsTest extends TestCase
             $result = $this->runTool($get, $input);
             $this->assertArrayHasKey('error', $result);
             $this->assertStringContainsString('403', $result['error']);
-            $this->assertStringContainsString("Charlie can widen the key's scope", $result['error']);
+            $this->assertStringContainsString('Huntress HTTP 403: the Huntress API key in Settings may lack access to this endpoint.', $result['error']);
             $this->assertStringNotContainsString('https://', $result['error']);
             $this->assertStringNotContainsString('api.huntress.io', $result['error']);
         }

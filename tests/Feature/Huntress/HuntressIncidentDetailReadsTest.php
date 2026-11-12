@@ -80,7 +80,7 @@ class HuntressIncidentDetailReadsTest extends TestCase
             $this->assertCount(0, $this->history);
             $this->bind(42, $family, $get, 403);
             $error = app(HuntressReadOnlyToolset::class)->execute('huntress_'.$tool, $input)['error'];
-            $this->assertStringContainsString("Charlie can widen the key's scope", $error);
+            $this->assertStringContainsString('Huntress HTTP 403: the Huntress API key in Settings may lack access to this endpoint.', $error);
             $this->assertStringNotContainsString('https://', $error);
         }
     }
@@ -140,6 +140,19 @@ class HuntressIncidentDetailReadsTest extends TestCase
         $this->assertTrue(array_is_list($result['remediations']));
         $this->assertSame(31, $result['remediations'][30]['id']);
         $this->assertCount(2, $this->history);
+    }
+
+    public function test_empty_remediation_filters_refuse_before_transport(): void
+    {
+        $client = Client::factory()->create(['huntress_organization_id' => 42]);
+        foreach (['types', 'statuses'] as $filter) {
+            $this->bind(42, 'remediations', false);
+            $result = app(HuntressReadOnlyToolset::class)->execute('huntress_list_incident_remediations', [
+                'incident_report_id' => 7, 'client_id' => $client->id, $filter => [],
+            ]);
+            $this->assertSame($filter.' must not be empty', $result['error'] ?? null);
+            $this->assertCount(0, $this->history);
+        }
     }
 
     public function test_invalid_remediation_enums_refuse_before_transport(): void

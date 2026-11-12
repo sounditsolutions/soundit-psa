@@ -62,6 +62,30 @@ class HuntressFullReadToolsetTest extends TestCase
         $this->assertArrayHasKey('event.provider', $result['logs'][0]);
     }
 
+    public function test_post_refuses_non_siem_endpoints_before_transport(): void
+    {
+        $stack = HandlerStack::create(new MockHandler([new Response(200, [], '{"logs":[],"pagination":{}}')]));
+        $stack->push(Middleware::history($this->history));
+        $client = new HuntressClient([], new HttpClient(['base_uri' => 'https://huntress.example/v1/', 'handler' => $stack]));
+        foreach (['agents', 'siem/query/x'] as $endpoint) {
+            try {
+                $client->post($endpoint, []);
+                $this->fail('Non-SIEM POST must be refused');
+            } catch (\InvalidArgumentException $e) {
+                $this->assertSame('Read-only POST is restricted to siem/query', $e->getMessage());
+            }
+            $this->assertCount(0, $this->history);
+        }
+        $body = ['esql' => 'FROM logs', 'range_start' => '2026-01-01T00:00:00Z', 'range_end' => '2026-01-02T00:00:00Z'];
+        $client->post('siem/query', $body);
+        $this->assertCount(1, $this->history);
+        $request = $this->history[0]['request'];
+        $this->assertSame('POST', $request->getMethod());
+        $this->assertSame('/v1/siem/query', $request->getUri()->getPath());
+        $this->assertSame('', $request->getUri()->getQuery());
+        $this->assertSame($body, json_decode((string) $request->getBody(), true));
+    }
+
     public function test_siem_refuses_foreign_row_without_partial_results(): void
     {
         $result = $this->runQuery([], [['organization_id' => 42], ['organization_id' => 99]]);
@@ -73,7 +97,7 @@ class HuntressFullReadToolsetTest extends TestCase
     {
         $result = $this->runQuery();
         $this->assertSame(0, $result['count']);
-        $this->assertStringContainsString('huntress_list_siem_log_sources', $result['note']);
+        $this->assertSame('0 rows returned for this organization, range and pipeline. A misconfigured or absent log source also yields 0; check huntress_list_siem_log_sources. This is not an all-clear.', $result['note']);
     }
 
     public function test_siem_fence_refuses_unsafe_sources_without_transport(): void
@@ -113,7 +137,7 @@ class HuntressFullReadToolsetTest extends TestCase
         }
     }
 
-    public function test_siem_hostile_vendor_errors_are_redacted(): void
+    public function test_siem_hostile_vendor_errors_are_omitted(): void
     {
         foreach ([
             'See https://api.huntress.io/v1/siem/query?key=synthetic',
@@ -122,7 +146,8 @@ class HuntressFullReadToolsetTest extends TestCase
             'syntheticLongKey0123456789abcdef0123456789',
         ] as $hostile) {
             $result = $this->runQuery([], [], 422, $hostile);
-            $this->assertStringContainsString('422', $result['error']);
+            $this->assertSame('Huntress HTTP 422: '.\App\Services\Huntress\HuntressClientException::class, $result['error']);
+            $this->assertStringNotContainsString($hostile, $result['error']);
             foreach (['https://', 'api.huntress.io', 'Authorization', 'c3ludGhldGlj', 'synthetic-private-key', 'syntheticLongKey'] as $secret) {
                 $this->assertStringNotContainsString($secret, $result['error']);
             }
@@ -135,11 +160,12 @@ class HuntressFullReadToolsetTest extends TestCase
             $result = $this->runQuery([], [], $status);
             $this->assertArrayHasKey('error', $result);
             $this->assertStringContainsString((string) $status, $result['error']);
-            $this->assertStringContainsString('Invalid ESQL: Invalid expression', $result['error']);
+            $this->assertStringNotContainsString('Invalid ESQL: Invalid expression', $result['error']);
+            $this->assertStringContainsString(\App\Services\Huntress\HuntressClientException::class, $result['error']);
             $this->assertStringNotContainsString('https://', $result['error']);
             $this->assertStringNotContainsString('api.huntress.io', $result['error']);
             if ($status === 403) {
-                $this->assertStringContainsString("Charlie can widen the key's scope", $result['error']);
+                $this->assertStringContainsString('Huntress HTTP 403: the Huntress API key in Settings may lack access to this endpoint.', $result['error']);
             }
             if ($status === 404) {
                 $this->assertStringContainsString('SIEM query is not enabled', $result['error']);

@@ -69,6 +69,10 @@ class HuntressClient
     /** Read-only SIEM query transport; the vendor requires a JSON request body. */
     public function post(string $endpoint, array $json): array
     {
+        if ($endpoint !== 'siem/query') {
+            throw new \InvalidArgumentException('Read-only POST is restricted to siem/query');
+        }
+
         return $this->request('POST', $endpoint, ['json' => $json]);
     }
 

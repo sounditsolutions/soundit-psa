@@ -472,6 +472,9 @@ trait HuntressExpandedReads
                         if (! is_array($input[$filter]) || ! array_is_list($input[$filter])) {
                             return ['error' => $filter.' must be an array'];
                         }
+                        if ($input[$filter] === []) {
+                            return ['error' => $filter.' must not be empty'];
+                        }
                         foreach ($input[$filter] as $value) {
                             if (! in_array($value, $enum, true)) {
                                 return ['error' => 'Invalid '.$filter.' value'];
@@ -581,7 +584,7 @@ trait HuntressExpandedReads
         }
         $result = ['count' => count($logs), 'logs' => $logs, 'next_page_token' => $this->nextPageToken($response), 'esql_sent' => $sent];
         if ($logs === []) {
-            $result['note'] = '0 rows matched this organization and range. A misconfigured or absent log source also yields 0; check huntress_list_siem_log_sources. This is not an all-clear.';
+            $result['note'] = '0 rows returned for this organization, range and pipeline. A misconfigured or absent log source also yields 0; check huntress_list_siem_log_sources. This is not an all-clear.';
         }
 
         return $result;
@@ -607,21 +610,9 @@ trait HuntressExpandedReads
         $previous = $e->getPrevious();
         $response = $previous instanceof RequestException ? $previous->getResponse() : null;
         $status = $response?->getStatusCode() ?? $e->getCode();
-        $body = $response ? json_decode((string) $response->getBody(), true) : null;
-        $detail = $e::class;
-        if (is_array($body) && is_string($body['error'] ?? null)) {
-            // Redact before truncation, so a truncated credential cannot escape matching.
-            $safe = preg_replace([
-                '~https?://[^\s<>"\']+~i',
-                '~\bAuthorization\s*:\s*[^\r\n]+~i',
-                '~\b(?:api[_ -]?key|api[_ -]?secret|token|secret|key)\s*[:=]\s*[^\s,;]+~i',
-                '~\b[A-Za-z0-9_+/=-]{32,}\b~',
-            ], '[redacted]', $body['error']);
-            $detail = $this->textSanitizer->sanitizeNullable('Huntress API error', $safe, 300);
-        }
-        $error = 'Huntress HTTP '.$status.': '.$detail;
+        $error = 'Huntress HTTP '.$status.': '.$e::class;
         if ($status === 403) {
-            $error .= "; the Huntress API key in Settings lacks access to this endpoint; Charlie can widen the key's scope";
+            $error = 'Huntress HTTP 403: the Huntress API key in Settings may lack access to this endpoint. '.$e::class;
         }
         if ($status === 404 && $siem) {
             $error .= '; SIEM query is not enabled for this account';

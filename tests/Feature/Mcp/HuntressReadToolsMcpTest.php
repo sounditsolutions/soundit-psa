@@ -178,7 +178,30 @@ class HuntressReadToolsMcpTest extends TestCase
         ]);
     }
 
+    public static function expandedSpecialScopeTools(): array
+    {
+        return [['huntress_list_known_vpns'], ['huntress_siem_query'], ['huntress_list_remote_access_connections']];
+    }
+
+    #[DataProvider('expandedSpecialScopeTools')]
+    public function test_special_scope_read_preserves_valid_client_at_dispatch(string $tool): void
+    {
+        $this->configureHuntress();
+        $client = Client::factory()->create(['huntress_organization_id' => 42]);
+        $executor = Mockery::mock(HuntressReadOnlyToolset::class);
+        $executor->shouldReceive('execute')->once()->with($tool, [], $client->id)
+            ->andReturn(['scope_control' => 'client']);
+        app()->instance(HuntressReadOnlyToolset::class, $executor);
+        $token = $this->token([$tool]);
+        $this->assertContains($tool, array_column($this->listTools($token), 'name'));
+        $response = $this->callTool($token, $tool, ['client_id' => $client->id]);
+        $response->assertOk();
+        $this->assertFalse($response->json('result.isError'));
+        $this->assertSame('client', $this->decodedResult($response)['scope_control']);
+    }
+
     #[DataProvider('expandedOptionalClientTools')]
+    #[DataProvider('expandedSpecialScopeTools')]
     public function test_expanded_read_refuses_malformed_client_before_dispatch(string $tool): void
     {
         $this->configureHuntress();
