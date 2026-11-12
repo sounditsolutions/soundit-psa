@@ -85,6 +85,40 @@ class HuntressIncidentDetailReadsTest extends TestCase
         }
     }
 
+    public function test_parent_failures_stop_before_children_and_malformed_children_scream(): void
+    {
+        $client = Client::factory()->create(['huntress_organization_id' => 42]);
+        Client::factory()->create(['huntress_organization_id' => 43]);
+        foreach (['list_incident_comments', 'list_incident_remediations', 'get_incident_remediation'] as $tool) {
+            $get = str_starts_with($tool, 'get_');
+            $family = $tool === 'list_incident_comments' ? 'comments' : 'remediations';
+            $input = ['client_id' => $client->id, 'incident_report_id' => 7, 'remediation_id' => 9];
+            $this->bind(43, $family, $get);
+            $result = app(HuntressReadOnlyToolset::class)->execute('huntress_'.$tool, $input);
+            $this->assertStringContainsString('outside the mapped scope', $result['error']);
+            $this->assertCount(1, $this->history);
+
+            foreach ([
+                [new Response(403, [], '{"error":"Forbidden"}'), 1, 'HTTP 403'],
+                [new Response(200, [], '{"incident_report":{}}'), 1, 'outside the mapped scope'],
+                [new Response(200, [], '{"incident_report":{"organization_id":"42"}}'), 1, 'outside the mapped scope'],
+                [new Response(200, [], '{"unexpected":[]}'), 2, 'unrecognized'],
+                [new Response(200, [], json_encode($get ? ['remediation' => ['id' => 'bad']] : [$family => [['id' => 'bad']]])), 2, 'unrecognized'],
+            ] as [$response, $count, $message]) {
+                $this->history = [];
+                $responses = $count === 1 ? [$response] : [new Response(200, [], '{"incident_report":{"id":7,"organization_id":42}}'), $response];
+                $stack = HandlerStack::create(new MockHandler($responses));
+                $stack->push(Middleware::history($this->history));
+                app()->instance(HuntressClient::class, new HuntressClient([], new HttpClient(['base_uri' => 'https://huntress.example/v1/', 'handler' => $stack])));
+                $result = app(HuntressReadOnlyToolset::class)->execute('huntress_'.$tool, $input);
+                $this->assertStringContainsString($message, $result['error']);
+                $this->assertStringNotContainsString('https://', $result['error']);
+                $this->assertCount($count, $this->history);
+                $this->assertSame('/v1/incident_reports/7', $this->history[0]['request']->getUri()->getPath());
+            }
+        }
+    }
+
     public function test_invalid_remediation_enums_refuse_before_transport(): void
     {
         foreach (['types' => ['wrong'], 'statuses' => ['wrong']] as $key => $values) {
