@@ -161,7 +161,12 @@ trait HuntressExpandedReads
                 }
                 $filters['escalation_id'] = ['type' => 'integer'];
             }
-            $definitions[] = ['name' => 'huntress_list_'.$plural, 'description' => 'List Huntress '.$plural.' in mapped organizations, optionally for one client.',
+            $description = 'List Huntress '.$plural.' in mapped organizations, optionally for one client.';
+            if ($plural === 'unwanted_access_rules') {
+                // Matches signalRead: every non-Organization scope fails closed, scoped or not.
+                $description .= ' Only rules applied to a mapped organization are returned; account-level and other rule scopes are dropped and counted on every call, scoped or not.';
+            }
+            $definitions[] = ['name' => 'huntress_list_'.$plural, 'description' => $description,
                 'input_schema' => ['type' => 'object', 'properties' => $scope + $filters + ['limit' => ['type' => 'integer'], 'page_token' => ['type' => 'string']], 'required' => []]];
             $definitions[] = ['name' => 'huntress_get_'.$singular, 'description' => 'Read one Huntress '.$singular.' in a mapped organization.',
                 'input_schema' => ['type' => 'object', 'properties' => $scope + ['id' => ['type' => 'integer']], 'required' => ['id']]];
