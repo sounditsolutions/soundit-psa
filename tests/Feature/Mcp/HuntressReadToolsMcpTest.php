@@ -5,11 +5,13 @@ namespace Tests\Feature\Mcp;
 use App\Models\Client;
 use App\Models\Setting;
 use App\Services\Huntress\HuntressClient;
+use App\Services\Huntress\HuntressReadOnlyToolset;
 use App\Support\McpConfig;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -149,6 +151,93 @@ class HuntressReadToolsMcpTest extends TestCase
         $result = $this->decodedResult($response);
         $this->assertSame(42, $result['id']);
         $this->assertSame($client->id, $result['psa_client_id']);
+    }
+
+    public static function expandedOptionalClientTools(): array
+    {
+        return array_map(fn (string $tool) => [$tool], [
+            'huntress_list_siem_log_sources',
+            'huntress_get_siem_log_source',
+            'huntress_list_signals',
+            'huntress_get_signal',
+            'huntress_list_identities',
+            'huntress_get_identity',
+            'huntress_list_unwanted_access_rules',
+            'huntress_get_unwanted_access_rule',
+            'huntress_list_agents',
+            'huntress_get_agent',
+            'huntress_list_external_ports',
+            'huntress_get_external_port',
+            'huntress_list_reports',
+            'huntress_get_report',
+            'huntress_list_platform_actions',
+            'huntress_get_platform_action',
+            'huntress_list_incident_comments',
+            'huntress_list_incident_remediations',
+            'huntress_get_incident_remediation',
+        ]);
+    }
+
+    public static function expandedSpecialScopeTools(): array
+    {
+        return [['huntress_list_known_vpns'], ['huntress_siem_query'], ['huntress_list_remote_access_connections']];
+    }
+
+    #[DataProvider('expandedSpecialScopeTools')]
+    public function test_special_scope_read_preserves_valid_client_at_dispatch(string $tool): void
+    {
+        $this->configureHuntress();
+        $client = Client::factory()->create(['huntress_organization_id' => 42]);
+        $executor = Mockery::mock(HuntressReadOnlyToolset::class);
+        $executor->shouldReceive('execute')->once()->with($tool, [], $client->id)
+            ->andReturn(['scope_control' => 'client']);
+        app()->instance(HuntressReadOnlyToolset::class, $executor);
+        $token = $this->token([$tool]);
+        $this->assertContains($tool, array_column($this->listTools($token), 'name'));
+        $response = $this->callTool($token, $tool, ['client_id' => $client->id]);
+        $response->assertOk();
+        $this->assertFalse($response->json('result.isError'));
+        $this->assertSame('client', $this->decodedResult($response)['scope_control']);
+    }
+
+    #[DataProvider('expandedOptionalClientTools')]
+    #[DataProvider('expandedSpecialScopeTools')]
+    public function test_expanded_read_refuses_malformed_client_before_dispatch(string $tool): void
+    {
+        $this->configureHuntress();
+        $executor = Mockery::mock(HuntressReadOnlyToolset::class);
+        $executor->shouldNotReceive('execute');
+        app()->instance(HuntressReadOnlyToolset::class, $executor);
+        $token = $this->token([$tool]);
+
+        foreach (['abc', 0, -1, [], null, '1.5'] as $malformed) {
+            $response = $this->callTool($token, $tool, ['client_id' => $malformed]);
+            $response->assertOk();
+            $this->assertTrue($response->json('result.isError'));
+            $this->assertStringContainsString('not a positive integer', (string) $response->json('result.content.0.text'));
+        }
+    }
+
+    #[DataProvider('expandedOptionalClientTools')]
+    public function test_expanded_read_preserves_valid_and_omitted_client_at_dispatch(string $tool): void
+    {
+        $this->configureHuntress();
+        $client = Client::factory()->create(['huntress_organization_id' => 42]);
+        $executor = Mockery::mock(HuntressReadOnlyToolset::class);
+        $executor->shouldReceive('execute')->once()->with($tool, [], $client->id)
+            ->andReturn(['scope_control' => 'client']);
+        $executor->shouldReceive('execute')->once()->with($tool, [], null)
+            ->andReturn(['scope_control' => 'omitted']);
+        app()->instance(HuntressReadOnlyToolset::class, $executor);
+        $token = $this->token([$tool]);
+        $this->assertContains($tool, array_column($this->listTools($token), 'name'));
+
+        foreach ([[['client_id' => $client->id], 'client'], [[], 'omitted']] as [$arguments, $expected]) {
+            $response = $this->callTool($token, $tool, $arguments);
+            $response->assertOk();
+            $this->assertFalse($response->json('result.isError'));
+            $this->assertSame($expected, $this->decodedResult($response)['scope_control']);
+        }
     }
 
     public function test_a_malformed_client_id_is_refused_rather_than_widened_to_the_whole_account(): void

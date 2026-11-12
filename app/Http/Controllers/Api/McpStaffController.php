@@ -393,6 +393,51 @@ class McpStaffController extends Controller
         'huntress_list_organizations',
         'huntress_get_organization',
 
+        // Card PpytyQ4A: never discard malformed scope on the account-only VPN list.
+        'huntress_list_known_vpns',
+        // Card PpytyQ4A: preserve the required SIEM client scope before dispatch.
+        'huntress_siem_query',
+        // Card PpytyQ4A: preserve the required remote-access client scope before dispatch.
+        'huntress_list_remote_access_connections',
+        // Card PpytyQ4A: preserve the optional client fence on the log-source list.
+        'huntress_list_siem_log_sources',
+        // Card PpytyQ4A: preserve the optional client fence on log-source lookup.
+        'huntress_get_siem_log_source',
+        // Card PpytyQ4A: preserve the optional client fence on the signals list.
+        'huntress_list_signals',
+        // Card PpytyQ4A: preserve the optional client fence on signal lookup.
+        'huntress_get_signal',
+        // Card PpytyQ4A: preserve the optional client fence on the identities list.
+        'huntress_list_identities',
+        // Card PpytyQ4A: preserve the optional client fence on identity lookup.
+        'huntress_get_identity',
+        // Card PpytyQ4A: preserve the optional client fence on the rules list.
+        'huntress_list_unwanted_access_rules',
+        // Card PpytyQ4A: preserve the optional client fence on rule lookup.
+        'huntress_get_unwanted_access_rule',
+        // Card PpytyQ4A: preserve the optional client fence on the agents list.
+        'huntress_list_agents',
+        // Card PpytyQ4A: preserve the optional client fence on agent lookup.
+        'huntress_get_agent',
+        // Card PpytyQ4A: preserve the optional client fence on the ports list.
+        'huntress_list_external_ports',
+        // Card PpytyQ4A: preserve the optional client fence on port lookup.
+        'huntress_get_external_port',
+        // Card PpytyQ4A: preserve the optional client fence on the reports list.
+        'huntress_list_reports',
+        // Card PpytyQ4A: preserve the optional client fence on report lookup.
+        'huntress_get_report',
+        // Card PpytyQ4A: preserve the optional client fence on the platform actions list.
+        'huntress_list_platform_actions',
+        // Card PpytyQ4A: preserve the optional client fence on platform action lookup.
+        'huntress_get_platform_action',
+        // Card PpytyQ4A: preserve the optional parent-client fence on comments.
+        'huntress_list_incident_comments',
+        // Card PpytyQ4A: preserve the optional parent-client fence on remediations.
+        'huntress_list_incident_remediations',
+        // Card PpytyQ4A: preserve the optional parent-client fence on remediation lookup.
+        'huntress_get_incident_remediation',
+
         // Card 6abdcac2: tactical_list_clients_sites gained an OPTIONAL client_id that
         // resolves through clients.tactical_site_id. Omitted, it lists every client's
         // mapping, so a malformed client_id collapsing to null would widen exactly as

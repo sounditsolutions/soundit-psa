@@ -11,8 +11,12 @@ use Illuminate\Support\Facades\Log;
 /**
  * Huntress P1 read tools for the staff MCP surface (bd psa-shej, epic psa-ppl9).
  *
- * Six general (account-scoped) read tools: list/get incident_reports, list/get
- * escalations, list/get organizations. Modeled on TacticalReadOnlyToolset and wired
+ * Huntress read tools, all registered as general (requiresClient() is false): the original
+ * list/get incident_reports, list/get escalations and list/get organizations, plus the
+ * expanded reads in HuntressExpandedReads (SIEM query and log sources, incident comments
+ * and remediations, signals, agents, reports, platform actions, identities, unwanted
+ * access rules, external ports, known VPNs, remote access connections). The resolve-
+ * escalation write is not here. Modeled on TacticalReadOnlyToolset and wired
  * into the Chet data surface (ChetDataSurfaceTools + ChetDataSurfaceToolExecutor).
  *
  * DATA-BOUNDARY RULE (the Huntress account can be shared across MSPs):
@@ -31,6 +35,8 @@ use Illuminate\Support\Facades\Log;
  */
 class HuntressReadOnlyToolset
 {
+    use HuntressExpandedReads;
+
     /** Max rows per organizations page this tool requests (pageParams max; the API allows 500). */
     private const ORG_LIST_MAX_LIMIT = 100;
 
@@ -57,6 +63,7 @@ class HuntressReadOnlyToolset
     public static function definitions(): array
     {
         return [
+            ...self::expandedDefinitions(),
             [
                 'name' => 'huntress_list_incident_reports',
                 'description' => 'List Huntress incident reports for organizations mapped to a PSA client. Filter by organization_id, status, severity, platform, agent_id, or indicator_type. Returns one page plus next_page_token; malware/incident bodies are on the get tool, not the list.',
@@ -159,7 +166,8 @@ class HuntressReadOnlyToolset
 
     public static function handles(string $toolName): bool
     {
-        return in_array($toolName, self::GENERAL_TOOL_NAMES, true);
+        return in_array($toolName, self::GENERAL_TOOL_NAMES, true)
+            || in_array($toolName, array_column(self::expandedDefinitions(), 'name'), true);
     }
 
     public static function requiresClient(string $toolName): bool
@@ -178,6 +186,28 @@ class HuntressReadOnlyToolset
         }
 
         return match ($toolName) {
+            'huntress_list_remote_access_connections' => $this->remoteAccessRead($input, $clientId),
+            'huntress_list_external_ports' => $this->signalRead($input, $clientId, false, 'external_ports'),
+            'huntress_get_external_port' => $this->signalRead($input, $clientId, true, 'external_ports'),
+            'huntress_list_known_vpns' => $this->knownVpnRead($input, $clientId),
+            'huntress_list_unwanted_access_rules' => $this->signalRead($input, $clientId, false, 'unwanted_access_rules'),
+            'huntress_get_unwanted_access_rule' => $this->signalRead($input, $clientId, true, 'unwanted_access_rules'),
+            'huntress_list_identities' => $this->signalRead($input, $clientId, false, 'identities'),
+            'huntress_get_identity' => $this->signalRead($input, $clientId, true, 'identities'),
+            'huntress_list_siem_log_sources' => $this->signalRead($input, $clientId, false, 'log_sources'),
+            'huntress_get_siem_log_source' => $this->signalRead($input, $clientId, true, 'log_sources'),
+            'huntress_list_incident_comments' => $this->incidentDetailRead($input, $clientId, 'comments'),
+            'huntress_list_incident_remediations' => $this->incidentDetailRead($input, $clientId, 'remediations'),
+            'huntress_get_incident_remediation' => $this->incidentDetailRead($input, $clientId, 'remediations', true),
+            'huntress_list_platform_actions' => $this->signalRead($input, $clientId, false, 'platform_actions'),
+            'huntress_get_platform_action' => $this->signalRead($input, $clientId, true, 'platform_actions'),
+            'huntress_siem_query' => $this->siemQuery($input, $clientId),
+            'huntress_list_agents' => $this->signalRead($input, $clientId, false, 'agents'),
+            'huntress_get_agent' => $this->signalRead($input, $clientId, true, 'agents'),
+            'huntress_list_reports' => $this->signalRead($input, $clientId, false, 'reports'),
+            'huntress_get_report' => $this->signalRead($input, $clientId, true, 'reports'),
+            'huntress_list_signals' => $this->signalRead($input, $clientId, false),
+            'huntress_get_signal' => $this->signalRead($input, $clientId, true),
             'huntress_list_incident_reports' => $this->listIncidentReports($input, $clientId),
             'huntress_get_incident_report' => $this->getIncidentReport($input),
             'huntress_list_escalations' => $this->listEscalations($input, $clientId),
