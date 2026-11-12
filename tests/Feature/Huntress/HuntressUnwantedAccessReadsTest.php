@@ -85,6 +85,13 @@ class HuntressUnwantedAccessReadsTest extends TestCase
             $this->assertSame([], $result['unwanted_access_rules']);
             $this->assertSame(1, $result['dropped_unclassified']);
             $this->assertStringContainsString('incomplete', $result['note']);
+            if (($scope['id'] ?? null) !== 99) {
+                // Account and other non-Organization scopes are dropped on a client-scoped call too, not only unscoped.
+                $id = $this->bind(['unwanted_access_rules' => [$row]]);
+                $result = $this->runTool(false, ['client_id' => $id]);
+                $this->assertSame([], $result['unwanted_access_rules']);
+                $this->assertSame(1, $result['dropped_unclassified']);
+            }
             $this->bind(['unwanted_access_rule' => $row]);
             $this->assertArrayHasKey('error', $this->runTool(true, ['id' => 8]));
         }
