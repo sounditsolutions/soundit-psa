@@ -10,7 +10,7 @@ trait HuntressExpandedReads
 {
     private static function expandedDefinitions(): array
     {
-        return [[
+        return [...self::signalDefinitions(), [
             'name' => 'huntress_siem_query',
             'description' => 'Query Huntress SIEM logs for one mapped PSA client. The organization filter is inserted before all other stages. Zero matches is not an all-clear; check log sources too. Requires the SIEM feature.',
             'input_schema' => [
@@ -26,6 +26,93 @@ trait HuntressExpandedReads
                 'required' => ['client_id', 'esql', 'range_start', 'range_end'],
             ],
         ]];
+    }
+
+    private static function signalDefinitions(): array
+    {
+        $scope = ['client_id' => ['type' => 'integer'], 'organization_id' => ['type' => 'integer']];
+        $filters = [];
+        // Vendor Swagger getV1Signals parameters; types/statuses are literal comma-separated strings.
+        foreach (['sort_field', 'sort_direction', 'investigated_at_min', 'investigated_at_max', 'entity_type', 'entity_id', 'types', 'statuses', 'page_token'] as $name) {
+            $filters[$name] = ['type' => 'string'];
+        }
+
+        return [
+            ['name' => 'huntress_list_signals', 'description' => 'List Huntress signals in mapped organizations, optionally for one client. Types and statuses filters are comma-separated strings.',
+                'input_schema' => ['type' => 'object', 'properties' => $scope + $filters + ['limit' => ['type' => 'integer']], 'required' => []]],
+            ['name' => 'huntress_get_signal', 'description' => 'Read one Huntress signal in a mapped organization.',
+                'input_schema' => ['type' => 'object', 'properties' => $scope + ['id' => ['type' => 'integer']], 'required' => ['id']]],
+        ];
+    }
+
+    private function signalRead(array $input, ?int $clientId, bool $get): array
+    {
+        foreach (['client_id', 'organization_id'] as $key) {
+            if (array_key_exists($key, $input) && $this->positiveInt($input[$key]) === null) {
+                return ['error' => $key.' must be a positive integer'];
+            }
+        }
+        $clientId ??= $this->positiveInt($input['client_id'] ?? null);
+        $org = $this->scopedOrgId($input, $clientId);
+        if (is_array($org)) {
+            return $org;
+        }
+        $mapped = $this->mappedClientsByOrgId();
+        if ($org !== null && ! $mapped->has($org)) {
+            return ['error' => 'Organization is not mapped to a PSA client'];
+        }
+        $params = [];
+        $endpoint = 'signals';
+        if ($get) {
+            $id = $this->positiveInt($input['id'] ?? null);
+            if ($id === null) {
+                return ['error' => 'id must be a positive integer'];
+            }
+            $endpoint .= '/'.$id;
+        } else {
+            $params = $this->pageParams($input, default: 10, max: 500);
+            foreach (['sort_field', 'sort_direction', 'investigated_at_min', 'investigated_at_max', 'entity_type', 'entity_id', 'types', 'statuses'] as $filter) {
+                if (isset($input[$filter])) {
+                    if (! is_string($input[$filter])) {
+                        return ['error' => $filter.' must be a string'];
+                    }
+                    $params[$filter] = $input[$filter];
+                }
+            }
+            if ($org !== null) {
+                $params['organization_id'] = $org;
+            }
+        }
+        try {
+            $response = $this->client()->get($endpoint, $params);
+        } catch (HuntressClientException $e) {
+            return $this->expandedApiError($e);
+        }
+        // Vendor Signal schema uses organization: {id, name}, not organization_id.
+        $rows = $get ? [$response['signal'] ?? null] : ($response['signals'] ?? null);
+        if (! is_array($rows) || ! array_is_list($rows)) {
+            return ['error' => 'Huntress returned an unrecognized signals shape'];
+        }
+        $result = [];
+        foreach ($rows as $row) {
+            if (! is_array($row) || ! is_int($row['organization']['id'] ?? null)) {
+                return ['error' => 'Huntress returned an unrecognized signal organization'];
+            }
+            $rowOrg = $row['organization']['id'];
+            if ($org !== null && $rowOrg !== $org) {
+                return ['error' => 'Huntress returned a signal outside the requested organization'];
+            }
+            if (! $mapped->has($rowOrg)) {
+                if ($get) {
+                    return ['error' => 'Signal organization is not mapped to a PSA client'];
+                }
+
+                continue;
+            }
+            $result[] = $this->sanitizeStructure('Huntress signal', $row);
+        }
+
+        return $get ? ['signal' => $result[0]] : ['count' => count($result), 'signals' => $result, 'next_page_token' => $this->nextPageToken($response)];
     }
 
     private function siemQuery(array $input, ?int $clientId): array

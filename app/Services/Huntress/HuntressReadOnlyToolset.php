@@ -183,6 +183,8 @@ class HuntressReadOnlyToolset
 
         return match ($toolName) {
             'huntress_siem_query' => $this->siemQuery($input, $clientId),
+            'huntress_list_signals' => $this->signalRead($input, $clientId, false),
+            'huntress_get_signal' => $this->signalRead($input, $clientId, true),
             'huntress_list_incident_reports' => $this->listIncidentReports($input, $clientId),
             'huntress_get_incident_report' => $this->getIncidentReport($input),
             'huntress_list_escalations' => $this->listEscalations($input, $clientId),
