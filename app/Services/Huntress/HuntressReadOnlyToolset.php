@@ -182,6 +182,8 @@ class HuntressReadOnlyToolset
         }
 
         return match ($toolName) {
+            'huntress_list_identities' => $this->signalRead($input, $clientId, false, 'identities'),
+            'huntress_get_identity' => $this->signalRead($input, $clientId, true, 'identities'),
             'huntress_list_siem_log_sources' => $this->signalRead($input, $clientId, false, 'log_sources'),
             'huntress_get_siem_log_source' => $this->signalRead($input, $clientId, true, 'log_sources'),
             'huntress_list_incident_comments' => $this->incidentDetailRead($input, $clientId, 'comments'),

@@ -58,6 +58,7 @@ trait HuntressExpandedReads
     }
 
     private const ENDPOINT_FILTERS = [
+        'identities' => ['sort_field', 'sort_direction', 'tenant_type', 'risk_level'],
         'log_sources' => ['type_code'],
         'misconfigured_log_sources' => [],
         'platform_actions' => ['sort_field', 'sort_direction', 'status', 'severity', 'subtype'],
@@ -70,11 +71,17 @@ trait HuntressExpandedReads
     {
         $definitions = [];
         // Vendor getV1Agents/getV1Reports: scalar string filters and common pagination.
-        foreach (['agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'] as $plural => $singular) {
+        foreach (['identities' => 'identity', 'agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'] as $plural => $singular) {
             $scope = ['client_id' => ['type' => 'integer'], 'organization_id' => ['type' => 'integer']];
             $filters = [];
             foreach (self::ENDPOINT_FILTERS[$plural] as $filter) {
                 $filters[$filter] = ['type' => 'string'];
+            }
+            if ($plural === 'identities') {
+                foreach (['billable', 'enabled', 'external', 'mfa_enabled'] as $filter) {
+                    $filters[$filter] = ['type' => 'boolean'];
+                }
+                $filters['escalation_id'] = ['type' => 'integer'];
             }
             $definitions[] = ['name' => 'huntress_list_'.$plural, 'description' => 'List Huntress '.$plural.' in mapped organizations, optionally for one client.',
                 'input_schema' => ['type' => 'object', 'properties' => $scope + $filters + ['limit' => ['type' => 'integer'], 'page_token' => ['type' => 'string']], 'required' => []]];
@@ -97,7 +104,7 @@ trait HuntressExpandedReads
                 $family = 'misconfigured_log_sources';
             }
         }
-        $singular = ['log_sources' => 'log_source', 'misconfigured_log_sources' => 'log_source', 'signals' => 'signal', 'agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'][$family];
+        $singular = ['identities' => 'identity', 'log_sources' => 'log_source', 'misconfigured_log_sources' => 'log_source', 'signals' => 'signal', 'agents' => 'agent', 'reports' => 'report', 'platform_actions' => 'platform_action'][$family];
         foreach (['client_id', 'organization_id'] as $key) {
             if (array_key_exists($key, $input) && $this->positiveInt($input[$key]) === null) {
                 return ['error' => $key.' must be a positive integer'];
@@ -132,6 +139,24 @@ trait HuntressExpandedReads
                         return ['error' => $filter.' must be a string'];
                     }
                     $params[$filter] = $input[$filter];
+                }
+            }
+            if ($family === 'identities') {
+                foreach (['billable', 'enabled', 'external', 'mfa_enabled'] as $filter) {
+                    if (array_key_exists($filter, $input)) {
+                        if (! is_bool($input[$filter])) {
+                            return ['error' => $filter.' must be a boolean'];
+                        }
+                        // Swagger boolean parameters have no encoding override.
+                        $params[$filter] = $input[$filter] ? 'true' : 'false';
+                    }
+                }
+                if (array_key_exists('escalation_id', $input)) {
+                    $value = $this->positiveInt($input['escalation_id']);
+                    if ($value === null) {
+                        return ['error' => 'escalation_id must be a positive integer'];
+                    }
+                    $params['escalation_id'] = $value;
                 }
             }
             if ($family === 'log_sources' && array_key_exists('only_for_account', $input)) {
@@ -181,8 +206,13 @@ trait HuntressExpandedReads
 
                 continue;
             }
-            $rowOrg = in_array($family, ['signals', 'log_sources', 'misconfigured_log_sources'], true) ? ($row['organization']['id'] ?? null) : ($row['organization_id'] ?? null);
+            $rowOrg = in_array($family, ['identities', 'signals', 'log_sources', 'misconfigured_log_sources'], true) ? ($row['organization']['id'] ?? null) : ($row['organization_id'] ?? null);
             if (! is_array($row) || ! is_int($rowOrg)) {
+                // Identity.account is never a substitute for organization.id (Forge STOP3).
+                if ($family === 'identities' && ! $get) {
+                    continue;
+                }
+
                 return ['error' => 'Huntress returned an unrecognized row organization'];
             }
             if ($org !== null && $rowOrg !== $org) {
