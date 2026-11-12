@@ -195,7 +195,10 @@ class ClientController extends Controller
 
     public function people(Request $request, Client $client)
     {
-        $query = Person::active()
+        $status = $request->query('status');
+        $status = in_array($status, ['inactive', 'all'], true) ? $status : 'active';
+
+        $query = Person::withStatus($status)
             ->with('client')
             ->where('client_id', $client->id)
             ->search($request->query('search'));
@@ -236,6 +239,7 @@ class ClientController extends Controller
             'peopleSearch' => $request->query('search'),
             'peopleClientId' => $request->query('client_id'),
             'peoplePersonType' => $request->query('person_type'),
+            'peopleStatus' => $status,
         ]);
     }
 

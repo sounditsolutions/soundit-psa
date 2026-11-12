@@ -30,7 +30,10 @@ class PersonController extends Controller
 
     public function index(Request $request)
     {
-        $query = Person::active()
+        $status = $request->query('status');
+        $status = in_array($status, ['inactive', 'all'], true) ? $status : 'active';
+
+        $query = Person::withStatus($status)
             ->with('client')
             ->search($request->query('search'));
 
@@ -56,6 +59,7 @@ class PersonController extends Controller
             'search' => $request->query('search'),
             'clientId' => $request->query('client_id'),
             'personType' => $request->query('person_type'),
+            'status' => $status,
         ]);
     }
 

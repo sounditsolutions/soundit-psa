@@ -3,9 +3,11 @@
      Optional: $listRoute (string, default 'people.index'), $prefilter (array, default [])
                $columns (array, default null = all columns), $showFilters (bool, default true),
                $showBulkActions (bool, default true)
+               $status ('active'|'inactive'|'all', default 'active')
      Column keys: checkbox, name, email, phone, mobile, client
 --}}
 @php
+    $status = $status ?? 'active';
     $listRoute = $listRoute ?? 'people.index';
     $prefilter = $prefilter ?? [];
     $showFilters = $showFilters ?? true;
@@ -31,7 +33,7 @@
                 <input type="text" name="search" class="form-control" placeholder="Search by name, email, or phone..."
                        value="{{ $search }}" autofocus>
                 <button class="btn btn-primary" type="submit"><i class="bi bi-search"></i></button>
-                @if($search || $clientId || $personType)
+                @if($search || $clientId || $personType || $status !== 'active')
                     <a href="{{ route($listRoute, $prefilter) }}" class="btn btn-outline-secondary" title="Clear"><i class="bi bi-x-lg"></i></a>
                 @endif
             </div>
@@ -54,13 +56,20 @@
                 @endforeach
             </select>
         </div>
+        <div class="col-auto">
+            <select name="status" class="form-select" aria-label="Status" onchange="this.form.submit()">
+                <option value="active" {{ $status === 'active' ? 'selected' : '' }}>Active</option>
+                <option value="inactive" {{ $status === 'inactive' ? 'selected' : '' }}>Inactive</option>
+                <option value="all" {{ $status === 'all' ? 'selected' : '' }}>All</option>
+            </select>
+        </div>
     </div>
 </form>
 @endif
 
 @if($people->isEmpty())
     <div class="alert alert-info">
-        @if($search || $clientId || $personType)
+        @if($search || $clientId || $personType || $status !== 'active')
             No contacts match your filters.
         @else
             No contacts found.
@@ -104,12 +113,17 @@
                             <tr>
                                 @if($showBulkActions && (!$columns || in_array('checkbox', $columns)))
                                 <td>
+                                    @if($person->is_active)
                                     <input class="form-check-input bulk-check" type="checkbox" name="person_ids[]" value="{{ $person->id }}">
+                                    @endif
                                 </td>
                                 @endif
                                 @if(!$columns || in_array('name', $columns))
                                 <td>
                                     <x-person-badge :person="$person" :size="24" />
+                                    @if(!$person->is_active)
+                                        <span class="badge bg-secondary ms-1">Inactive</span>
+                                    @endif
                                     @if($person->is_primary)
                                         <span class="badge bg-warning text-dark ms-1">Primary</span>
                                     @endif
@@ -166,6 +180,9 @@
                     <div class="data-row">
                         <div class="fw-semibold mb-1">
                             <x-person-badge :person="$person" :size="24" />
+                            @if(!$person->is_active)
+                                <span class="badge bg-secondary ms-1">Inactive</span>
+                            @endif
                             @if($person->is_primary)
                                 <span class="badge bg-warning text-dark ms-1">Primary</span>
                             @endif

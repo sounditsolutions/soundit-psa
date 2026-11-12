@@ -148,6 +148,15 @@ class Person extends Authenticatable
         return $query->where('is_active', true);
     }
 
+    public function scopeWithStatus(Builder $query, ?string $status): Builder
+    {
+        return match ($status) {
+            'all' => $query,
+            'inactive' => $query->where('is_active', false),
+            default => $query->active(),
+        };
+    }
+
     public function scopeBillable(Builder $query): Builder
     {
         return $query->where('person_type', PersonType::User->value);
