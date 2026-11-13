@@ -29,6 +29,11 @@ trait FakesCarbonMcp
     /** The CallToolResult tools/call answers with; null is a plain text success. */
     protected ?array $carbonCallResult = null;
 
+    /** Optional tools/call-only HTTP status/result queue; existing fakes stay unchanged. */
+    protected array $carbonCallSequence = [];
+
+    protected int $carbonCallAttempts = 0;
+
     protected const REFRESH = 'RT-CANARY-carbon-4e1f-refresh';
 
     protected const ROTATED = 'RT-CANARY-carbon-rotated-9a0c';
@@ -113,6 +118,14 @@ trait FakesCarbonMcp
                 }
                 $firstPage = $this->carbonFirstPage;
                 $method = $request->data()['method'] ?? null;
+                if ($method === 'tools/call') {
+                    $this->carbonCallAttempts++;
+                    if ($this->carbonCallSequence !== []) {
+                        [$status, $result] = array_shift($this->carbonCallSequence);
+
+                        return Http::response(['jsonrpc' => '2.0', 'id' => $request->data()['id'], 'result' => $result], $status);
+                    }
+                }
                 if ($this->carbonCallNoResponse && $method === 'tools/call') {
                     return (Http::failedConnection('cURL error 28: Operation timed out'))($request);
                 }

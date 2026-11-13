@@ -324,6 +324,14 @@ Schedule::command('cipp:sync-mcp-catalog')
     ->runInBackground()
     ->when(fn () => \App\Support\CippConfig::isMcpCatalogSyncEnabled());
 
+// Carbon hardware requests — hourly read-only status read of open requests. Runs only
+// while the hardware tenant switch and Carbon MCP are on; the client's ordering switch is checked per row.
+Schedule::command('carbon:sync-order-status')
+    ->hourly()
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->when(fn () => \App\Support\CarbonHardwareConfig::isEnabled());
+
 // Carbon Connect MCP tool catalogue (card PEYvh4NL) — daily refresh of the tools Carbon
 // publishes, so one that appears or disappears is picked up without a deploy. Runs only
 // while Carbon MCP is switched on AND signed in.
