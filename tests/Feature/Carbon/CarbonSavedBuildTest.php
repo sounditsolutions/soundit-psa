@@ -175,15 +175,31 @@ class CarbonSavedBuildTest extends TestCase
         foreach ($cases as $name => $configs) {
             $out[$name] = [['configs' => $configs]];
         }
-        // Product-level status (#8364): the captured get_product reads show 'active' on both parts in use.
-        $out['product inactive'] = [['status' => 'inactive']];
-        $out['product discontinued'] = [['status' => 'discontinued']];
-        $out['product null status'] = [['status' => null]];
-        $out['product status case'] = [['status' => 'Active']];
         $out['requiredConfigs'] = [['requiredConfigs' => null]];
         $out['isConfigurable'] = [['isConfigurable' => false]];
 
         return $out;
+    }
+
+    public static function inactiveProducts(): array
+    {
+        // Product-level status (#8364): the captured get_product reads show 'active' on both parts in use.
+        return ['product inactive' => [['status' => 'inactive']], 'product discontinued' => [['status' => 'discontinued']],
+            'product null status' => [['status' => null]], 'product status case' => [['status' => 'Active']]];
+    }
+
+    #[DataProvider('inactiveProducts')]
+    public function test_inactive_product_refuses_with_not_active_line(array $changes): void
+    {
+        // #8369: a status refusal has its own staff line and never names part type.
+        $this->product = array_replace($this->product, $changes);
+        try {
+            $this->add();
+            $this->fail('Inactive product accepted');
+        } catch (ValidationException $e) {
+            $this->assertSame([__('carbon_hardware.not_active')], $e->errors()['hardware']);
+        }
+        $this->assertDatabaseCount('client_hardware_models', 0);
     }
 
     #[DataProvider('invalidBuilds')]
@@ -206,7 +222,7 @@ class CarbonSavedBuildTest extends TestCase
             $this->add();
             $this->fail('Product without status accepted');
         } catch (ValidationException $e) {
-            $this->assertSame([__('carbon_hardware.unconfirmed')], $e->errors()['hardware']);
+            $this->assertSame([__('carbon_hardware.not_active')], $e->errors()['hardware']);
         }
         $this->assertDatabaseCount('client_hardware_models', 0);
     }
@@ -219,7 +235,7 @@ class CarbonSavedBuildTest extends TestCase
             $this->add();
             $this->fail('Inactive plain part accepted');
         } catch (ValidationException $e) {
-            $this->assertSame([__('carbon_hardware.unconfirmed')], $e->errors()['hardware']);
+            $this->assertSame([__('carbon_hardware.not_active')], $e->errors()['hardware']);
         }
         $this->assertDatabaseCount('client_hardware_models', 0);
     }
@@ -227,6 +243,11 @@ class CarbonSavedBuildTest extends TestCase
     public function test_unconfirmed_staff_line_names_plain_parts_and_saved_fixed_builds(): void
     {
         $this->assertSame("couldn't confirm this part is a plain part or a saved fixed build", __('carbon_hardware.unconfirmed'));
+    }
+
+    public function test_not_active_staff_line_is_the_ruled_text(): void
+    {
+        $this->assertSame("Carbon doesn't list this part as active", __('carbon_hardware.not_active'));
     }
 
     public function test_numeric_key_objects_follow_the_existing_associative_decode(): void
@@ -263,7 +284,7 @@ class CarbonSavedBuildTest extends TestCase
         } catch (ValidationException $e) {
             $this->assertSame([__('carbon_hardware.portal_unavailable')], $e->errors()['hardware']);
         }
-        $reason = ['membership' => 'components_moved', 'order' => 'components_moved', 'price' => 'price_moved', 'null_price' => 'no_cached_price', 'refused' => 'unconfirmed', 'quantity' => 'unconfirmed', 'status' => 'unconfirmed', 'exception' => null][$case];
+        $reason = ['membership' => 'components_moved', 'order' => 'components_moved', 'price' => 'price_moved', 'null_price' => 'no_cached_price', 'refused' => 'unconfirmed', 'quantity' => 'unconfirmed', 'status' => 'not_active', 'exception' => null][$case];
         $expected = $reason === null ? [] : [['level' => 'warning', 'message' => '[CarbonHardwareOrder] Saved build refused at submit',
             'context' => ['reason' => $reason, 'model_id' => $model->id, 'client_id' => $this->client->id]]];
         $this->assertSame($expected, $this->orderLogs());

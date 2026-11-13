@@ -33,6 +33,7 @@ return [
     'unavailable' => 'Hardware ordering is switched off or Carbon is not connected.',
     'unmapped' => 'Map an existing Carbon customer before maintaining this approved list.',
     'unconfirmed' => "couldn't confirm this part is a plain part or a saved fixed build",
+    'not_active' => "Carbon doesn't list this part as active",
     'margin_confirm' => 'Confirm the sell price below the cached Carbon price to save.',
     'margin_warning' => 'The cached Carbon price is at or above the sell price. Review pricing.',
     'unknown' => 'Unknown',

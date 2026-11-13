@@ -95,10 +95,15 @@ class CarbonHardwareService
         // CarbonMcpClient decodes JSON objects as associative arrays. A product must
         // have named fields; a JSON list cannot satisfy this contract.
         if (($result['isError'] ?? false) === true || ! is_array($data) || array_is_list($data)
-            || ($data['mfgPartNo'] ?? null) !== $part
-            // Product-level status must read exactly 'active'; a missing status is unknown and refuses.
-            || ($data['status'] ?? null) !== 'active'
-            || ! (is_int($data['price'] ?? null) || is_float($data['price'] ?? null)) || (float) $data['price'] <= 0
+            || ($data['mfgPartNo'] ?? null) !== $part) {
+            $this->refuse('unconfirmed');
+        }
+        // Product-level status must read exactly 'active'; a missing status is unknown and refuses.
+        // A status refusal has its own staff line (not_active), so it never names part type.
+        if (($data['status'] ?? null) !== 'active') {
+            $this->refuse('not_active');
+        }
+        if (! (is_int($data['price'] ?? null) || is_float($data['price'] ?? null)) || (float) $data['price'] <= 0
             || array_key_exists('requiredConfigs', $data)
             || array_key_exists('isConfigurable', $data)) {
             $this->refuse('unconfirmed');
