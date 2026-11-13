@@ -10,6 +10,7 @@ use App\Models\Setting;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Carbon\CarbonHardwareOrderService;
+use App\Services\Carbon\CarbonHardwareService;
 use App\Services\Carbon\CarbonMcpClient;
 use App\Services\Carbon\CarbonMcpConnector;
 use App\Services\Carbon\CarbonMcpException;
@@ -49,6 +50,15 @@ class CarbonPortalHardwareTest extends TestCase
         $model = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-LAPTOP', 'label' => 'Synthetic Laptop', 'sell_price' => '200.01', 'carbon_price' => '123.45']);
         $this->input = ['idempotency_key' => (string) Str::uuid(), 'lines' => [['model_id' => $model->id, 'quantity' => 2]]];
         $this->actingAs($this->person, 'portal');
+        // These tests pin the draft leg. The plain-part submit re-read is pinned in
+        // CarbonSavedBuildTest, so here it answers active without a vendor call.
+        $this->app->instance(CarbonHardwareService::class, new class(app(CarbonMcpClient::class)) extends CarbonHardwareService
+        {
+            public function product(string $part): array
+            {
+                return ['mfgPartNo' => $part, 'status' => 'active', 'price' => 123.45, 'carbon_component_ids' => null];
+            }
+        });
     }
 
     // synthetic, response shape unverified (REST Order schema)

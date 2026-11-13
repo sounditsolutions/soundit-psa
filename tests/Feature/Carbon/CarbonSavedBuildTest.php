@@ -338,14 +338,59 @@ class CarbonSavedBuildTest extends TestCase
         $this->assertSame('Add a plain part or a saved fixed build to the client approved list using a read-only Carbon product lookup.', $add[0]['description']);
     }
 
-    public function test_plain_part_has_null_ids_and_no_submit_read_or_components(): void
+    public function test_plain_part_has_null_ids_one_submit_read_and_no_components(): void
     {
         unset($this->product['configs']);
         $model = $this->add()->fresh();
         $this->assertNull($model->carbon_component_ids);
         app(CarbonHardwareOrderService::class)->submit($this->person, $this->input($model));
-        $this->assertCount(1, $this->calls('get_product')); // add only
+        $this->assertCount(2, $this->calls('get_product')); // add, then the submit re-read
+        $this->assertSame([], $this->orderLogs());
         $this->assertSame([['mfgPartNo' => 'SYNTH-BUILD', 'quantity' => 2]], $this->calls('create_draft_order')[0][0]['params']['arguments']['items']);
+    }
+
+    public static function plainSubmitCases(): array
+    {
+        return [
+            'inactive' => [['status' => 'inactive'], 'not_active'],
+            'discontinued' => [['status' => 'discontinued'], 'not_active'],
+            'missing status' => [['status' => null], 'not_active'],
+            'cased Active' => [['status' => 'Active'], 'not_active'],
+            'part mismatch' => [['mfgPartNo' => 'SYNTH-OTHER'], 'unconfirmed'],
+            'read fails' => [null, null],
+        ];
+    }
+
+    #[DataProvider('plainSubmitCases')]
+    public function test_plain_part_refused_at_submit_before_any_reservation_or_draft(?array $changes, ?string $reason): void
+    {
+        unset($this->product['configs']);
+        // Seed stored approval so this test can be red independently of the accept implementation.
+        $model = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-BUILD', 'label' => 'Synthetic plain', 'sell_price' => '200.00', 'carbon_price' => '123.45']);
+        if ($changes === null) {
+            $this->readFails = true;
+        } else {
+            foreach ($changes as $key => $value) {
+                if ($value === null) {
+                    unset($this->product[$key]);
+                } else {
+                    $this->product[$key] = $value;
+                }
+            }
+        }
+        try {
+            app(CarbonHardwareOrderService::class)->submit($this->person, $this->input($model));
+            $this->fail('Plain part accepted at submit');
+        } catch (ValidationException $e) {
+            $this->assertSame([__('carbon_hardware.portal_unavailable')], $e->errors()['hardware']);
+        }
+        $expected = $reason === null ? [] : [['level' => 'warning', 'message' => '[CarbonHardwareOrder] Plain part refused at submit',
+            'context' => ['reason' => $reason, 'model_id' => $model->id, 'client_id' => $this->client->id]]];
+        $this->assertSame($expected, $this->orderLogs());
+        $this->assertDatabaseCount('client_hardware_orders', 0);
+        $this->assertDatabaseCount('tickets', 0);
+        $this->assertCount(0, $this->calls('create_draft_order'));
+        $this->assertGreaterThanOrEqual(1, $this->calls('get_product')->count());
     }
 
     public function test_component_migration_is_nullable_and_reverses_only_its_column(): void
