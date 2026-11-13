@@ -7,6 +7,7 @@ use App\Models\Client;
 use App\Models\Person;
 use App\Models\Setting;
 use App\Services\Carbon\CarbonHardwareOrderService;
+use App\Services\Carbon\CarbonHardwareRefusal;
 use App\Services\Carbon\CarbonHardwareService;
 use App\Services\Mcp\StaffCarbonHardwareTools;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -33,6 +34,9 @@ class CarbonSavedBuildTest extends TestCase
     private bool $readFails = false;
 
     private ?\Closure $duringRead = null;
+
+    /** Per-part replies for multi-line orders; null means every read answers $product. */
+    private ?array $byPart = null;
 
     private array $logs = [];
 
@@ -64,7 +68,7 @@ class CarbonSavedBuildTest extends TestCase
                     if ($this->duringRead) {
                         ($this->duringRead)();
                     }
-                    $result = ['structuredContent' => $this->product];
+                    $result = ['structuredContent' => $this->byPart[$request['params']['arguments']['mfgPartNo']] ?? $this->product];
                 } else {
                     $result = ['structuredContent' => ['confirmationCode' => 'SYNTH-CODE']];
                 }
@@ -313,7 +317,7 @@ class CarbonSavedBuildTest extends TestCase
         $this->assertDatabaseCount('client_hardware_orders', 0);
         $this->assertDatabaseCount('tickets', 0);
         $this->assertCount(0, $this->calls('create_draft_order'));
-        $this->assertGreaterThanOrEqual(1, $this->calls('get_product')->count());
+        $this->assertCount(1, $this->calls('get_product')); // exactly one read for the one line
     }
 
     public function test_unknown_model_keeps_invalid_request_without_read_or_log(): void
@@ -357,6 +361,10 @@ class CarbonSavedBuildTest extends TestCase
             'missing status' => [['status' => null], 'not_active'],
             'cased Active' => [['status' => 'Active'], 'not_active'],
             'part mismatch' => [['mfgPartNo' => 'SYNTH-OTHER'], 'unconfirmed'],
+            'price refused' => [['price' => 0], 'unconfirmed'],
+            'components appear' => [['configs' => [self::config(81001)]], 'components_moved'],
+            'price moved' => [['price' => 123.46], 'price_moved'],
+            'no cached price' => [[], 'no_cached_price'],
             'read fails' => [null, null],
         ];
     }
@@ -366,7 +374,7 @@ class CarbonSavedBuildTest extends TestCase
     {
         unset($this->product['configs']);
         // Seed stored approval so this test can be red independently of the accept implementation.
-        $model = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-BUILD', 'label' => 'Synthetic plain', 'sell_price' => '200.00', 'carbon_price' => '123.45']);
+        $model = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-BUILD', 'label' => 'Synthetic plain', 'sell_price' => '200.00', 'carbon_price' => $reason === 'no_cached_price' ? null : '123.45']);
         if ($changes === null) {
             $this->readFails = true;
         } else {
@@ -390,7 +398,105 @@ class CarbonSavedBuildTest extends TestCase
         $this->assertDatabaseCount('client_hardware_orders', 0);
         $this->assertDatabaseCount('tickets', 0);
         $this->assertCount(0, $this->calls('create_draft_order'));
-        $this->assertGreaterThanOrEqual(1, $this->calls('get_product')->count());
+        $this->assertCount(1, $this->calls('get_product')); // exactly one read for the one line
+    }
+
+    public static function twoLineCases(): array
+    {
+        return [
+            'plain good, plain refused' => [false, false, 'second'],
+            'plain refused, plain good' => [false, false, 'first'],
+            'saved good, plain refused' => [true, false, 'second'],
+            'plain good, saved refused' => [false, true, 'second'],
+        ];
+    }
+
+    #[DataProvider('twoLineCases')]
+    public function test_two_line_order_reads_each_line_once_and_a_refused_line_stops_it(bool $firstSaved, bool $secondSaved, string $refused): void
+    {
+        $saved = $this->product;
+        $plain = $this->product;
+        unset($plain['configs']);
+        $first = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-ONE', 'label' => 'Synthetic one', 'sell_price' => '200.00', 'carbon_price' => '123.45', 'carbon_component_ids' => $firstSaved ? [81001, 81002] : null]);
+        $second = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-TWO', 'label' => 'Synthetic two', 'sell_price' => '200.00', 'carbon_price' => '123.45', 'carbon_component_ids' => $secondSaved ? [81001, 81002] : null]);
+        $replies = [
+            'SYNTH-ONE' => ['mfgPartNo' => 'SYNTH-ONE', 'status' => $refused === 'first' ? 'discontinued' : 'active'] + ($firstSaved ? $saved : $plain),
+            'SYNTH-TWO' => ['mfgPartNo' => 'SYNTH-TWO', 'status' => $refused === 'second' ? 'discontinued' : 'active'] + ($secondSaved ? $saved : $plain),
+        ];
+        $this->byPart = $replies;
+        $input = ['idempotency_key' => (string) Str::uuid(), 'lines' => [['model_id' => $first->id, 'quantity' => 1], ['model_id' => $second->id, 'quantity' => 1]]];
+        try {
+            app(CarbonHardwareOrderService::class)->submit($this->person, $input);
+            $this->fail('Order with a refused line accepted');
+        } catch (ValidationException $e) {
+            $this->assertSame([__('carbon_hardware.portal_unavailable')], $e->errors()['hardware']);
+        }
+        $bad = $refused === 'first' ? $first : $second;
+        $this->assertSame([['level' => 'warning', 'message' => '[CarbonHardwareOrder] '.($bad->carbon_component_ids !== null ? 'Saved build' : 'Plain part').' refused at submit',
+            'context' => ['reason' => 'not_active', 'model_id' => $bad->id, 'client_id' => $this->client->id]]], $this->orderLogs());
+        // Lines are read in order and the refusal stops the loop: a refused first line means the second is never read.
+        $parts = $this->calls('get_product')->map(fn ($r) => $r[0]['params']['arguments']['mfgPartNo'])->all();
+        $this->assertSame($refused === 'first' ? ['SYNTH-ONE'] : ['SYNTH-ONE', 'SYNTH-TWO'], $parts);
+        $this->assertDatabaseCount('client_hardware_orders', 0);
+        $this->assertDatabaseCount('tickets', 0);
+        $this->assertCount(0, $this->calls('create_draft_order'));
+    }
+
+    public function test_two_good_lines_are_each_read_exactly_once(): void
+    {
+        $saved = $this->product;
+        $plain = $this->product;
+        unset($plain['configs']);
+        $first = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-ONE', 'label' => 'Synthetic one', 'sell_price' => '200.00', 'carbon_price' => '123.45']);
+        $second = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-TWO', 'label' => 'Synthetic two', 'sell_price' => '200.00', 'carbon_price' => '123.45', 'carbon_component_ids' => [81001, 81002]]);
+        $replies = ['SYNTH-ONE' => ['mfgPartNo' => 'SYNTH-ONE'] + $plain, 'SYNTH-TWO' => ['mfgPartNo' => 'SYNTH-TWO'] + $saved];
+        $this->byPart = $replies;
+        $input = ['idempotency_key' => (string) Str::uuid(), 'lines' => [['model_id' => $first->id, 'quantity' => 1], ['model_id' => $second->id, 'quantity' => 1]]];
+        $order = app(CarbonHardwareOrderService::class)->submit($this->person, $input);
+        $this->assertSame('submitted', $order->status);
+        $this->assertSame(['SYNTH-ONE', 'SYNTH-TWO'], $this->calls('get_product')->map(fn ($r) => $r[0]['params']['arguments']['mfgPartNo'])->all());
+        $this->assertSame([], $this->orderLogs());
+        $this->assertSame([['mfgPartNo' => 'SYNTH-ONE', 'quantity' => 1], ['mfgPartNo' => 'SYNTH-TWO', 'quantity' => 1, 'components' => [['id' => 81001], ['id' => 81002]]]],
+            $this->calls('create_draft_order')[0][0]['params']['arguments']['items']);
+    }
+
+    public function test_log_reason_comes_from_the_refusal_key_not_the_translated_text(): void
+    {
+        // Give not_active and unconfirmed the same text: the reason must still follow the key.
+        app('translator')->addLines(['carbon_hardware.not_active' => 'Same text', 'carbon_hardware.unconfirmed' => 'Same text'], 'en');
+        unset($this->product['configs']);
+        $this->product['status'] = 'inactive';
+        $model = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-BUILD', 'label' => 'Synthetic plain', 'sell_price' => '200.00', 'carbon_price' => '123.45']);
+        try {
+            app(CarbonHardwareOrderService::class)->submit($this->person, $this->input($model));
+            $this->fail('Inactive plain part accepted');
+        } catch (ValidationException $e) {
+        }
+        $this->assertSame('not_active', $this->orderLogs()[0]['context']['reason'] ?? null);
+        $this->product['status'] = 'active';
+        $this->product['price'] = 0;
+        $this->logs = [];
+        try {
+            app(CarbonHardwareOrderService::class)->submit($this->person, $this->input($model));
+            $this->fail('Refused plain part accepted');
+        } catch (ValidationException $e) {
+        }
+        $this->assertSame('unconfirmed', $this->orderLogs()[0]['context']['reason'] ?? null);
+    }
+
+    public function test_service_refusal_stays_a_plain_validation_exception(): void
+    {
+        // Staff alerts print class_basename() of the caught exception; carrying the key must not change the class.
+        unset($this->product['configs']);
+        $this->product['status'] = 'inactive';
+        try {
+            app(CarbonHardwareService::class)->product('SYNTH-BUILD');
+            $this->fail('Inactive part accepted');
+        } catch (ValidationException $e) {
+            $this->assertSame(ValidationException::class, get_class($e));
+            $this->assertSame('not_active', CarbonHardwareRefusal::keyOf($e));
+        }
+        $this->assertNull(CarbonHardwareRefusal::keyOf(ValidationException::withMessages(['hardware' => 'Synthetic'])));
     }
 
     public function test_component_migration_is_nullable_and_reverses_only_its_column(): void

@@ -6,7 +6,6 @@ use App\Models\Client;
 use App\Models\ClientHardwareModel;
 use App\Support\CarbonHardwareConfig;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\ValidationException;
 
 class CarbonHardwareService
 {
@@ -14,7 +13,7 @@ class CarbonHardwareService
 
     private function refuse(string $key): never
     {
-        throw ValidationException::withMessages(['hardware' => __('carbon_hardware.'.$key)]);
+        throw CarbonHardwareRefusal::forKey($key);
     }
 
     public function assertAvailable(Client $client): void
