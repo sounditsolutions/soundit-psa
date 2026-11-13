@@ -107,8 +107,9 @@ class CarbonHardwareOrderService
                     };
                 } catch (CarbonMcpException) {
                     $this->refuse('portal_unavailable');
-                } catch (ValidationException) {
-                    $drift = 'unconfirmed';
+                } catch (ValidationException $e) {
+                    // In this catch a product-status refusal logs not_active; any other product() refusal logs unconfirmed.
+                    $drift = in_array(__('carbon_hardware.not_active'), $e->errors()['hardware'] ?? [], true) ? 'not_active' : 'unconfirmed';
                 }
                 if ($drift !== null) {
                     // Saved build not confirmed at submit: one warning log, then portal_unavailable.
