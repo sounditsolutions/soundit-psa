@@ -87,7 +87,7 @@ class CarbonHardwareService
         });
     }
 
-    /** Saved builds carry only required, single-component choices; other configurations refuse. */
+    /** Saved builds carry only required, single-component, single-unit choices; other configurations refuse. */
     public function product(string $part): array
     {
         $result = $this->carbon->callTool('get_product', ['mfgPartNo' => $part]);
@@ -122,6 +122,8 @@ class CarbonHardwareService
                 }
                 $component = $config['components'][0];
                 if (! is_array($component) || ! is_int($component['id'] ?? null) || $component['id'] <= 0
+                    // Draft lines send {id} only, so the saved component must be a single unit.
+                    || ($component['quantity'] ?? null) !== 1
                     || ($component['noteRequired'] ?? null) === true
                     || (array_key_exists('status', $component) && $component['status'] !== 'active')) {
                     $this->refuse('unconfirmed');

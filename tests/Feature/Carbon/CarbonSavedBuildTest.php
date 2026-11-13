@@ -162,11 +162,14 @@ class CarbonSavedBuildTest extends TestCase
         foreach (['optional' => ['isRequired' => false], 'truthy' => ['isRequired' => 1], 'zero components' => ['components' => []], 'two components' => ['components' => [$valid['components'][0], $valid['components'][0]]], 'component map' => ['components' => ['choice' => $valid['components'][0]]]] as $name => $change) {
             $cases[$name] = [array_replace($valid, $change)];
         }
-        foreach (['string id' => ['id' => '81001'], 'zero id' => ['id' => 0], 'negative id' => ['id' => -1], 'note' => ['noteRequired' => true], 'inactive' => ['status' => 'inactive'], 'null status' => ['status' => null]] as $name => $change) {
+        foreach (['string id' => ['id' => '81001'], 'zero id' => ['id' => 0], 'negative id' => ['id' => -1], 'note' => ['noteRequired' => true], 'inactive' => ['status' => 'inactive'], 'null status' => ['status' => null], 'quantity two' => ['quantity' => 2], 'zero quantity' => ['quantity' => 0], 'string quantity' => ['quantity' => '1'], 'float quantity' => ['quantity' => 1.0], 'null quantity' => ['quantity' => null]] as $name => $change) {
             $config = $valid;
             $config['components'][0] = array_replace($config['components'][0], $change);
             $cases[$name] = [$config];
         }
+        $config = $valid;
+        unset($config['components'][0]['quantity']);
+        $cases['no quantity'] = [$config];
         $out = [];
         foreach ($cases as $name => $configs) {
             $out[$name] = [['configs' => $configs]];
@@ -200,7 +203,7 @@ class CarbonSavedBuildTest extends TestCase
 
     public static function driftCases(): array
     {
-        return array_map(fn ($v) => [$v], ['membership', 'order', 'price', 'null_price', 'refused', 'exception']);
+        return array_map(fn ($v) => [$v], ['membership', 'order', 'price', 'null_price', 'refused', 'quantity', 'exception']);
     }
 
     #[DataProvider('driftCases')]
@@ -214,6 +217,7 @@ class CarbonSavedBuildTest extends TestCase
             'price' => $this->product['price'] = 123.46,
             'null_price' => null,
             'refused' => $this->product['configs'][0]['isRequired'] = false,
+            'quantity' => $this->product['configs'][0]['components'][0]['quantity'] = 2,
             'exception' => $this->readFails = true,
         };
         try {
@@ -223,7 +227,7 @@ class CarbonSavedBuildTest extends TestCase
             // Vendor-side: the selection is valid and reloading never helps (ruling 6af66d95).
             $this->assertSame([__('carbon_hardware.portal_unavailable')], $e->errors()['hardware']);
         }
-        $reason = ['membership' => 'components_moved', 'order' => 'components_moved', 'price' => 'price_moved', 'null_price' => 'no_cached_price', 'refused' => 'unconfirmed', 'exception' => null][$case];
+        $reason = ['membership' => 'components_moved', 'order' => 'components_moved', 'price' => 'price_moved', 'null_price' => 'no_cached_price', 'refused' => 'unconfirmed', 'quantity' => 'unconfirmed', 'exception' => null][$case];
         $expected = $reason === null ? [] : [['level' => 'warning', 'message' => '[CarbonHardwareOrder] Saved build refused at submit',
             'context' => ['reason' => $reason, 'model_id' => $model->id, 'client_id' => $this->client->id]]];
         $this->assertSame($expected, $this->orderLogs());
