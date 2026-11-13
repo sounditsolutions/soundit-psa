@@ -11,7 +11,7 @@ class ClientHardwareModel extends Model
 
     protected function casts(): array
     {
-        return ['sell_price' => 'decimal:2', 'carbon_price' => 'decimal:2', 'synced_at' => 'datetime'];
+        return ['sell_price' => 'decimal:2', 'carbon_price' => 'decimal:2', 'carbon_component_ids' => 'array', 'synced_at' => 'datetime'];
     }
 
     public function client(): BelongsTo
