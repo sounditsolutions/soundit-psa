@@ -8,6 +8,7 @@ use App\Services\Carbon\CarbonMcpClient;
 use App\Services\Carbon\CarbonOrderStatusService;
 use App\Support\CarbonHardwareConfig;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -17,16 +18,23 @@ class CarbonSyncOrderStatus extends Command
 
     protected $description = 'Read Carbon status for open hardware requests';
 
+    private const DEFERRED = 'carbon-order-status-deferred';
+
     public function handle(CarbonMcpClient $client, CarbonOrderStatusService $parser): int
     {
         if (! CarbonHardwareConfig::isEnabled()) {
             return self::SUCCESS;
         }
 
+        // A row whose read threw is read after the others for a day, so one bad row cannot stall the rest.
+        $deferred = array_filter((array) Cache::get(self::DEFERRED, []), fn ($until) => is_int($until) && $until > now()->getTimestamp());
+        $ids = array_keys($deferred);
+
         $orders = ClientHardwareOrder::where('status', 'submitted')
             ->whereNotNull('confirmation_code')
             ->whereIn('client_id', Client::where('carbon_hardware_ordering_enabled', true)->select('id'))
             ->where(fn ($q) => $q->whereNull('carbon_status')->orWhereIn('carbon_status', CarbonOrderStatusService::OPEN))
+            ->when($ids !== [], fn ($q) => $q->orderByRaw('id IN ('.implode(',', array_fill(0, count($ids), '?')).')', $ids))
             ->orderByRaw('carbon_status_checked_at IS NOT NULL')
             ->orderBy('carbon_status_checked_at')->orderBy('id')->limit(25)->get();
 
@@ -35,6 +43,8 @@ class CarbonSyncOrderStatus extends Command
                 $reply = $client->callTool('get_order', ['confirmationCode' => $order->confirmation_code]);
             } catch (\Throwable $e) {
                 Log::warning('[CarbonOrderStatus] Status not read', ['order_id' => $order->id, 'exception' => class_basename($e)]);
+                $deferred[$order->id] = now()->addDay()->getTimestamp();
+                Cache::put(self::DEFERRED, $deferred, now()->addDay());
 
                 return self::FAILURE;
             }

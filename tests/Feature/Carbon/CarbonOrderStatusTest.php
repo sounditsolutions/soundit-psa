@@ -176,6 +176,25 @@ class CarbonOrderStatusTest extends TestCase
         $this->warning($first, 'exception', 'CarbonMcpException');
     }
 
+    public function test_row_whose_read_throws_is_read_after_the_others_on_later_runs(): void
+    {
+        $bad = $this->order(['confirmation_code' => 'SYNTH-ORDER-BAD']);
+        $good = $this->order();
+        $before = $bad->getAttributes();
+        $this->carbonCallSequence = [[400, []]];
+        $this->artisan('carbon:sync-order-status')->assertFailed();
+        $this->assertNull($good->refresh()->carbon_status);
+        $this->carbonCallSequence = [[200, self::reply()], [400, []]];
+        $this->artisan('carbon:sync-order-status')->assertFailed();
+        $codes = $this->calls()->map(fn ($pair) => $pair[0]['params']['arguments']['confirmationCode'])->all();
+        $this->assertSame(['SYNTH-ORDER-BAD', 'SYNTH-ORDER-1', 'SYNTH-ORDER-BAD'], $codes);
+        $this->assertSame('draft', $good->refresh()->carbon_status);
+        $this->assertNotNull($good->carbon_status_checked_at);
+        $this->assertSame($before, $bad->refresh()->getAttributes());
+        $ours = array_values(array_filter($this->logs, fn ($log) => $log[1] === '[CarbonOrderStatus] Status not read'));
+        $this->assertSame(array_fill(0, 2, ['warning', '[CarbonOrderStatus] Status not read', ['order_id' => $bad->id, 'exception' => 'CarbonMcpException']]), $ours);
+    }
+
     public function test_other_throwable_stops_without_leaking_its_message(): void
     {
         $first = $this->order();

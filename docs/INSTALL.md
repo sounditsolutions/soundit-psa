@@ -427,7 +427,7 @@ These commands execute automatically based on their schedule:
 | `cipp:sync-devices` | Daily at 05:59 | Sync Intune devices + Defender state to assets from CIPP (only if device sync enabled + tenants mapped) |
 | `assets:refresh-health` | Daily at 06:30 | Recompute cached asset health scores (0-100) and the AI explanation from the overnight-synced signals (RMM, alerts, backup, patch, M365, tickets). Flags: `--no-ai` (deterministic explanation only), `--client=ID`, `--stale-hours=N`, `--limit=N`. |
 | `cipp:sync-mcp-catalog` | Weekly Sunday at 06:05 | Sync the dynamic CIPP MCP tool catalog for staff MCP token grants (default off; only runs when CIPP MCP catalog auto-sync is enabled) |
-| `carbon:sync-order-status` | Hourly | Read up to 25 open hardware requests, oldest checked first; requires the tenant hardware switch, Carbon live and the client's ordering switch. No overlapping scheduled runs. |
+| `carbon:sync-order-status` | Hourly | Read up to 25 open hardware requests, oldest checked first; requires the tenant hardware switch, Carbon live and the client's ordering switch. A read that throws stops that run, and for the next 24 hours that request is read after the others (kept in the default cache store; the row itself is unchanged). No overlapping scheduled runs. |
 | `carbon:sync-mcp-catalog` | Daily at 06:07 | Sync the Carbon Connect MCP tool catalogue for staff MCP token grants (only runs while **Offer Carbon tools on MCP** is on and Carbon is signed in) |
 | `billing:generate` | Daily at 06:00 | Generate recurring invoices |
 | `tickets:close-resolved` | Daily at 06:00 | Auto-close resolved tickets after configured number of days |
