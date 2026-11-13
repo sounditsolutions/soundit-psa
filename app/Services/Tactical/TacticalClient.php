@@ -1436,7 +1436,7 @@ class TacticalClient
             downloadUrl: $url,
             installScript: $command,
             instructions: $platform === 'windows' && $command !== null
-                ? 'Open PowerShell as Administrator and paste the command. It downloads the exact installer into a new temporary folder before installing and enrolling. A download alone does not register the computer; ask your technician to verify check-in.'
+                ? 'Open PowerShell as Administrator and paste the command. It downloads the exact installer into a new temporary folder before installing and enrolling. A download alone does not register the computer; ask us to verify check-in.'
                 : self::installerInstructions($target['plat'], $command !== null),
             expectedFilename: $windows['filename'] ?? null,
         );
@@ -1457,7 +1457,7 @@ class TacticalClient
             $target = $this->parseInstallTarget($siteId, 'windows');
             $ids = $target !== null ? $this->lookupSiteIds($target['client'], $target['site']) : null;
             if ($target === null || $ids === null) {
-                throw new InstallerGenerationException('Installer site is unavailable. Contact your technician.');
+                throw new InstallerGenerationException('Installer site is unavailable. Contact us.');
             }
             $response = $this->http->request('POST', 'agents/installer/', [
                 'json' => [
@@ -1490,10 +1490,10 @@ class TacticalClient
             $error = json_decode($body, true);
             $message = is_string($error) ? $error : null;
             if (is_array($error) && array_key_exists('ret', $error)) {
-                throw new InstallerGenerationException('The upstream installer service could not generate the guided setup. Use the manual fallback or contact your technician.');
+                throw new InstallerGenerationException('The upstream installer service could not generate the guided setup. Use the manual fallback or contact us.');
             }
             if ($response->getStatusCode() === 406) {
-                throw new InstallerGenerationException('The upstream installer request was not accepted. Use the manual fallback or contact your technician.');
+                throw new InstallerGenerationException('The upstream installer request was not accepted. Use the manual fallback or contact us.');
             }
             if (in_array($message, [
                 "Not available in insecure mode. Please use the 'Manual' method.",
@@ -1505,7 +1505,7 @@ class TacticalClient
                 || ! in_array($type, ['application/octet-stream', 'application/x-msdownload', 'application/x-msdos-program', 'application/vnd.microsoft.portable-executable'], true)
                 || strlen($body) < 1024 || strlen($body) > 32 * 1024 * 1024
                 || ! str_starts_with($body, 'MZ')) {
-                throw new InstallerGenerationException('The installer could not be validated. Use the manual fallback or contact your technician.');
+                throw new InstallerGenerationException('The installer could not be validated. Use the manual fallback or contact us.');
             }
 
             return $body;
@@ -1513,7 +1513,7 @@ class TacticalClient
             throw $e;
         } catch (\Throwable) {
             // No raw transport message, response or chained exception: token-bearing.
-            throw new InstallerGenerationException('The installer could not be prepared. Use the manual fallback or contact your technician.');
+            throw new InstallerGenerationException('The installer could not be prepared. Use the manual fallback or contact us.');
         } finally {
             if (is_resource($sink)) {
                 fclose($sink);
@@ -1663,7 +1663,7 @@ class TacticalClient
     private static function installerInstructions(string $tacticalPlatform, bool $hasCommand): string
     {
         if (! $hasCommand) {
-            return 'Download the installer, then contact your IT support team to complete '
+            return 'Download the installer, then contact us to complete '
                 .'enrollment — this download does not register the device on its own.';
         }
 
