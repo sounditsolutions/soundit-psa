@@ -30,6 +30,8 @@ class CarbonSavedBuildTest extends TestCase
 
     private bool $readFails = false;
 
+    private ?\Closure $duringRead = null;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -51,6 +53,9 @@ class CarbonSavedBuildTest extends TestCase
                     $this->assertDatabaseCount('tickets', 0);
                     if ($this->readFails) {
                         return Http::response('', 503);
+                    }
+                    if ($this->duringRead) {
+                        ($this->duringRead)();
                     }
                     $result = ['structuredContent' => $this->product];
                 } else {
@@ -88,7 +93,11 @@ class CarbonSavedBuildTest extends TestCase
 
     public function test_saved_build_stores_ordered_ids_and_sends_exact_components_once(): void
     {
-        $model = $this->add()->fresh();
+        try {
+            $model = $this->add()->fresh();
+        } catch (ValidationException $e) {
+            $this->fail('Qualifying saved build refused: '.json_encode($e->errors()));
+        }
         $this->assertSame([81001, 81002], $model->carbon_component_ids);
         $this->assertSame('123.45', $model->carbon_price);
         $input = $this->input($model);
@@ -101,6 +110,35 @@ class CarbonSavedBuildTest extends TestCase
         $this->assertSame([['mfgPartNo' => 'SYNTH-BUILD', 'quantity' => 2, 'components' => [['id' => 81001], ['id' => 81002]]]], $this->calls('create_draft_order')[0][0]['params']['arguments']['items']);
         $this->assertDatabaseCount('tickets', 1);
         $this->assertSame(realpath(app_path('Services/Carbon/CarbonHardwareOrderService.php')), (new \ReflectionClass(CarbonHardwareOrderService::class))->getFileName());
+    }
+
+    public function test_staff_approval_change_during_read_refuses_without_reservation(): void
+    {
+        $model = $this->add()->fresh();
+        $this->duringRead = fn () => $model->update(['carbon_component_ids' => [81003]]);
+        try {
+            app(CarbonHardwareOrderService::class)->submit($this->person, $this->input($model));
+            $this->fail('Approval changed during read was accepted');
+        } catch (ValidationException $e) {
+            $this->assertSame([__('carbon_hardware.invalid_request')], $e->errors()['hardware']);
+        }
+        $this->assertDatabaseCount('client_hardware_orders', 0);
+        $this->assertDatabaseCount('tickets', 0);
+        $this->assertCount(0, $this->calls('create_draft_order'));
+    }
+
+    public function test_component_details_and_cost_stay_out_of_portal_and_ticket(): void
+    {
+        Setting::setValue('portal_enabled', '1');
+        $model = $this->add()->fresh();
+        $this->actingAs($this->person, 'portal')->get(route('portal.hardware'))
+            ->assertOk()->assertSee('$200.00')->assertDontSee('123.45')->assertDontSee('81001')->assertDontSee('81002')->assertDontSee('Synthetic component');
+        $order = app(CarbonHardwareOrderService::class)->submit($this->person, $this->input($model));
+        $description = \App\Models\Ticket::findOrFail($order->ticket_id)->description;
+        $this->assertStringContainsString('$200.00', $description);
+        foreach (['123.45', '81001', '81002', 'Synthetic component'] as $private) {
+            $this->assertStringNotContainsString($private, $description);
+        }
     }
 
     public static function invalidBuilds(): array
