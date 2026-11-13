@@ -195,7 +195,7 @@ class TacticalSetupVoiceTest extends TestCase
         }
     }
 
-    /** Fixed-phrase sweep over every file a person reads during device setup. */
+    /** Fixed-phrase sweep over the setup files listed below. */
     public function test_no_setup_source_names_a_third_party(): void
     {
         foreach ([
