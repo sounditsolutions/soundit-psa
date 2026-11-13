@@ -5,19 +5,25 @@ namespace App\Services\Carbon;
 use Illuminate\Validation\ValidationException;
 
 /**
- * A CarbonHardwareService refusal. Callers see an ordinary ValidationException under
- * 'hardware'; $key carries the lang key so a caller can classify the refusal without
- * comparing translated text.
+ * Builds CarbonHardwareService refusals. The thrown exception is a plain ValidationException
+ * under 'hardware' (its class name reaches staff text); the lang key is held beside it so a
+ * caller can classify the refusal without comparing translated text.
  */
-class CarbonHardwareRefusal extends ValidationException
+final class CarbonHardwareRefusal
 {
-    public string $key = '';
+    private static ?\WeakMap $keys = null;
 
-    public static function forKey(string $key): self
+    public static function forKey(string $key): ValidationException
     {
-        $e = static::withMessages(['hardware' => __('carbon_hardware.'.$key)]);
-        $e->key = $key;
+        $e = ValidationException::withMessages(['hardware' => __('carbon_hardware.'.$key)]);
+        self::$keys ??= new \WeakMap;
+        self::$keys[$e] = $key;
 
         return $e;
+    }
+
+    public static function keyOf(\Throwable $e): ?string
+    {
+        return self::$keys[$e] ?? null;
     }
 }

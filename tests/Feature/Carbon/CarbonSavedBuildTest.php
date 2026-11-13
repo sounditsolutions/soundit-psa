@@ -7,6 +7,7 @@ use App\Models\Client;
 use App\Models\Person;
 use App\Models\Setting;
 use App\Services\Carbon\CarbonHardwareOrderService;
+use App\Services\Carbon\CarbonHardwareRefusal;
 use App\Services\Carbon\CarbonHardwareService;
 use App\Services\Mcp\StaffCarbonHardwareTools;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -481,6 +482,21 @@ class CarbonSavedBuildTest extends TestCase
         } catch (ValidationException $e) {
         }
         $this->assertSame('unconfirmed', $this->orderLogs()[0]['context']['reason'] ?? null);
+    }
+
+    public function test_service_refusal_stays_a_plain_validation_exception(): void
+    {
+        // Staff alerts print class_basename() of the caught exception; carrying the key must not change the class.
+        unset($this->product['configs']);
+        $this->product['status'] = 'inactive';
+        try {
+            app(CarbonHardwareService::class)->product('SYNTH-BUILD');
+            $this->fail('Inactive part accepted');
+        } catch (ValidationException $e) {
+            $this->assertSame(ValidationException::class, get_class($e));
+            $this->assertSame('not_active', CarbonHardwareRefusal::keyOf($e));
+        }
+        $this->assertNull(CarbonHardwareRefusal::keyOf(ValidationException::withMessages(['hardware' => 'Synthetic'])));
     }
 
     public function test_component_migration_is_nullable_and_reverses_only_its_column(): void

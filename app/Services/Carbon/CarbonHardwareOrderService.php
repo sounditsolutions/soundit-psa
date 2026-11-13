@@ -112,7 +112,7 @@ class CarbonHardwareOrderService
             } catch (ValidationException $e) {
                 // The reason comes from the refusal key, never from matching translated text;
                 // any other product() refusal logs unconfirmed.
-                $drift = $e instanceof CarbonHardwareRefusal && $e->key === 'not_active' ? 'not_active' : 'unconfirmed';
+                $drift = CarbonHardwareRefusal::keyOf($e) === 'not_active' ? 'not_active' : 'unconfirmed';
             }
             if ($drift !== null) {
                 // Line not confirmed at submit: one warning log, then portal_unavailable.
