@@ -136,13 +136,17 @@ class CarbonPortalHardwareTest extends TestCase
         $this->assertSame('unread', ClientHardwareOrder::sole()->status);
         $this->assertDatabaseCount('tickets', 1);
         $this->assertUnreadTicketKeepsCarbonStaffOnly(ClientHardwareOrder::sole());
+        $this->get(route('portal.hardware'))->assertOk()->assertSee('<td>Submitted — we&#039;ll confirm</td>', false)
+            ->assertDontSee('confirmation pending');
     }
 
     private function assertUnreadTicketKeepsCarbonStaffOnly(ClientHardwareOrder $order): void
     {
         $ticket = Ticket::findOrFail($order->ticket_id);
         $this->assertStringNotContainsString('Carbon', $ticket->description);
-        $this->assertStringContainsString(__('carbon_hardware.unread'), $ticket->description);
+        $lines = explode("\n", $ticket->description);
+        $this->assertSame('Submitted — confirmation pending', end($lines));
+        $this->assertStringNotContainsString(__('carbon_hardware.unread'), $ticket->description);
         $private = $ticket->notes()->where('is_private', true)->pluck('body')->all();
         $this->assertSame([__('carbon_hardware.check_carbon')], $private);
         $this->assertStringContainsString('Carbon', $private[0]);

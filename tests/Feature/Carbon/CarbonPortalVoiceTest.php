@@ -14,6 +14,7 @@ class CarbonPortalVoiceTest extends TestCase
         $this->assertSame("Nothing is charged now; we'll confirm the final price.", __('carbon_hardware.not_charged'));
         $this->assertSame("Request recorded — we'll confirm", __('carbon_hardware.pending'));
         $this->assertSame("Submitted — we'll confirm", __('carbon_hardware.unread'));
+        $this->assertSame('Submitted — confirmation pending', __('carbon_hardware.ticket_unread'));
     }
 
     public function test_no_hardware_string_names_a_third_party_provider(): void
