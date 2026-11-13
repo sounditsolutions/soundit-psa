@@ -8,8 +8,10 @@ use App\Services\Portal\InstallerInfo;
 use App\Services\Tactical\TacticalClient;
 use App\Services\Tactical\WindowsInstallerCommand;
 use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery;
@@ -92,6 +94,14 @@ class TacticalSetupVoiceTest extends TestCase
             ->assertDontSee('IT support team');
     }
 
+    public function test_invalid_link_on_command_post_says_contact_us(): void
+    {
+        $this->post('/setup/'.str_repeat('0', 22).'/command', [
+            'platform' => 'windows', 'method' => 'manual', 'goarch' => 'amd64',
+        ])->assertOk()
+            ->assertSee('This setup link is not valid. Contact us.', false);
+    }
+
     public function test_manual_windows_command_page_speaks_as_us(): void
     {
         [$client, $mock] = $this->portal();
@@ -170,10 +180,27 @@ class TacticalSetupVoiceTest extends TestCase
         }
     }
 
+    public function test_transport_failure_says_contact_us(): void
+    {
+        $stack = HandlerStack::create(new MockHandler([
+            new Response(200, [], json_encode([['id' => 3, 'name' => 'Acme', 'sites' => [['id' => 5, 'name' => 'Main']]]])),
+            new ConnectException('synthetic transport failure', new Request('POST', 'agents/installer/')),
+        ]));
+        $client = new TacticalClient(new GuzzleClient(['base_uri' => 'https://tactical.example.test/', 'handler' => $stack]));
+        try {
+            $client->generateWindowsInstaller('Acme|Main', 'amd64');
+            $this->fail('A transport failure must refuse');
+        } catch (\App\Services\Tactical\InstallerGenerationException $e) {
+            $this->assertSame('The installer could not be prepared. Use the manual fallback or contact us.', $e->getMessage());
+        }
+    }
+
     /** Fixed-phrase sweep over every file a person reads during device setup. */
     public function test_no_setup_source_names_a_third_party(): void
     {
         foreach ([
+            'resources/views/portal/install/show.blade.php',
+            'resources/views/portal/install/invalid.blade.php',
             'resources/views/portal/install/tactical.blade.php',
             'app/Http/Controllers/Portal/PortalInstallController.php',
             'app/Services/Tactical/TacticalClient.php',
