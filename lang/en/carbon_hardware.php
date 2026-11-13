@@ -1,14 +1,6 @@
 <?php
 
 return [
-    // DRAFT client-facing status copy; pending Charlie's approval.
-    'carbon_draft' => 'Awaiting review',
-    // [FORGE CHOICE] Plain wording for the remaining Carbon states.
-    'carbon_quote' => 'Quoted',
-    'carbon_payment_authorized' => 'Approved',
-    'carbon_paid' => 'Paid',
-    'carbon_partial_refund' => 'Partly refunded',
-    'carbon_canceled' => 'Canceled',
     'title' => 'Hardware',
     'portal_unavailable' => "Hardware ordering isn't available right now. Open a ticket if you need hardware.",
     'portal_unmapped' => "Hardware ordering isn't set up for your account yet. Open a ticket if you need hardware now.",

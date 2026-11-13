@@ -24,7 +24,9 @@ class CarbonOrderStatusTest extends TestCase
     use RefreshDatabase;
 
     private Client $client;
+
     private Person $person;
+
     private array $logs = [];
 
     protected function setUp(): void
@@ -73,7 +75,7 @@ class CarbonOrderStatusTest extends TestCase
         $this->assertSame([['warning', '[CarbonOrderStatus] Status not read', ['order_id' => $order->id, $key => $value]]], $this->logs);
     }
 
-    public function test_draft_is_shown_with_one_read_and_only_two_columns_changed(): void
+    public function test_draft_is_stored_with_one_read_and_only_two_columns_changed(): void
     {
         $order = $this->order();
         $before = $order->getAttributes();
@@ -88,7 +90,7 @@ class CarbonOrderStatusTest extends TestCase
         }
         $this->assertCount(1, $this->calls());
         $this->assertSame(['name' => 'get_order', 'arguments' => ['confirmationCode' => 'SYNTH-ORDER-1']], $this->calls()[0][0]['params']);
-        $page = $this->actingAs($this->person, 'portal')->get(route('portal.hardware'))->assertOk()->assertSee('Awaiting review');
+        $page = $this->actingAs($this->person, 'portal')->get(route('portal.hardware'))->assertOk();
         foreach (['SYNTH-CUSTOMER-CANARY', 'SYNTH-LOCATION-CANARY'] as $canary) {
             $page->assertDontSee($canary);
             $this->assertStringNotContainsString($canary, json_encode([$this->logs, $order->getAttributes()]));
@@ -99,6 +101,7 @@ class CarbonOrderStatusTest extends TestCase
     public static function refused(): array
     {
         $reply = self::reply();
+
         return [
             'code_mismatch' => [self::reply(['confirmationCode' => 'SYNTH-OTHER']), 'code_mismatch'],
             'status_type' => [self::reply(['status' => 123]), 'status_type'],
@@ -224,10 +227,28 @@ class CarbonOrderStatusTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_null_carbon_status_keeps_submission_label(): void
+    public function test_stored_carbon_status_is_not_shown_to_clients(): void
     {
-        $this->order();
-        $this->actingAs($this->person, 'portal')->get(route('portal.hardware'))->assertOk()->assertSee('<td>Submitted</td>', false)->assertDontSee('Awaiting review');
+        $this->order(['carbon_status' => 'paid']);
+        $this->actingAs($this->person, 'portal')->get(route('portal.hardware'))->assertOk()->assertSee('Your requests')->assertSee('<td>Submitted</td>', false)->assertDontSee('paid');
+        Http::assertNothingSent();
+    }
+
+    public function test_hourly_schedule_is_gated_and_non_overlapping(): void
+    {
+        $events = collect(app(\Illuminate\Console\Scheduling\Schedule::class)->events())
+            ->filter(fn ($event) => str_contains((string) $event->command, 'carbon:sync-order-status'));
+        $this->assertCount(1, $events);
+        $event = $events->first();
+        $this->assertSame('0 * * * *', $event->expression);
+        $this->assertTrue($event->withoutOverlapping);
+        $this->assertTrue($event->runInBackground);
+        $this->assertTrue($event->filtersPass(app()));
+        Setting::setValue('carbon_hardware_ordering_enabled', '0');
+        $this->assertFalse($event->filtersPass(app()));
+        Setting::setValue('carbon_hardware_ordering_enabled', '1');
+        Setting::setValue('carbon_mcp_enabled', '0');
+        $this->assertFalse($event->filtersPass(app()));
         Http::assertNothingSent();
     }
 
