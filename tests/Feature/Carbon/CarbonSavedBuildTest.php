@@ -175,6 +175,11 @@ class CarbonSavedBuildTest extends TestCase
         foreach ($cases as $name => $configs) {
             $out[$name] = [['configs' => $configs]];
         }
+        // Product-level status (#8364): the captured get_product reads show 'active' on both parts in use.
+        $out['product inactive'] = [['status' => 'inactive']];
+        $out['product discontinued'] = [['status' => 'discontinued']];
+        $out['product null status'] = [['status' => null]];
+        $out['product status case'] = [['status' => 'Active']];
         $out['requiredConfigs'] = [['requiredConfigs' => null]];
         $out['isConfigurable'] = [['isConfigurable' => false]];
 
@@ -194,6 +199,36 @@ class CarbonSavedBuildTest extends TestCase
         $this->assertDatabaseCount('client_hardware_models', 0);
     }
 
+    public function test_product_without_status_refuses_with_existing_copy(): void
+    {
+        unset($this->product['status']);
+        try {
+            $this->add();
+            $this->fail('Product without status accepted');
+        } catch (ValidationException $e) {
+            $this->assertSame([__('carbon_hardware.unconfirmed')], $e->errors()['hardware']);
+        }
+        $this->assertDatabaseCount('client_hardware_models', 0);
+    }
+
+    public function test_plain_part_with_inactive_status_refuses(): void
+    {
+        unset($this->product['configs']);
+        $this->product['status'] = 'inactive';
+        try {
+            $this->add();
+            $this->fail('Inactive plain part accepted');
+        } catch (ValidationException $e) {
+            $this->assertSame([__('carbon_hardware.unconfirmed')], $e->errors()['hardware']);
+        }
+        $this->assertDatabaseCount('client_hardware_models', 0);
+    }
+
+    public function test_unconfirmed_staff_line_names_plain_parts_and_saved_fixed_builds(): void
+    {
+        $this->assertSame("couldn't confirm this part is a plain part or a saved fixed build", __('carbon_hardware.unconfirmed'));
+    }
+
     public function test_numeric_key_objects_follow_the_existing_associative_decode(): void
     {
         $config = self::config(81001);
@@ -204,7 +239,7 @@ class CarbonSavedBuildTest extends TestCase
 
     public static function driftCases(): array
     {
-        return array_map(fn ($v) => [$v], ['membership', 'order', 'price', 'null_price', 'refused', 'quantity', 'exception']);
+        return array_map(fn ($v) => [$v], ['membership', 'order', 'price', 'null_price', 'refused', 'quantity', 'status', 'exception']);
     }
 
     #[DataProvider('driftCases')]
@@ -219,6 +254,7 @@ class CarbonSavedBuildTest extends TestCase
             'null_price' => null,
             'refused' => $this->product['configs'][0]['isRequired'] = false,
             'quantity' => $this->product['configs'][0]['components'][0]['quantity'] = 2,
+            'status' => $this->product['status'] = 'inactive',
             'exception' => $this->readFails = true,
         };
         try {
@@ -227,7 +263,7 @@ class CarbonSavedBuildTest extends TestCase
         } catch (ValidationException $e) {
             $this->assertSame([__('carbon_hardware.portal_unavailable')], $e->errors()['hardware']);
         }
-        $reason = ['membership' => 'components_moved', 'order' => 'components_moved', 'price' => 'price_moved', 'null_price' => 'no_cached_price', 'refused' => 'unconfirmed', 'quantity' => 'unconfirmed', 'exception' => null][$case];
+        $reason = ['membership' => 'components_moved', 'order' => 'components_moved', 'price' => 'price_moved', 'null_price' => 'no_cached_price', 'refused' => 'unconfirmed', 'quantity' => 'unconfirmed', 'status' => 'unconfirmed', 'exception' => null][$case];
         $expected = $reason === null ? [] : [['level' => 'warning', 'message' => '[CarbonHardwareOrder] Saved build refused at submit',
             'context' => ['reason' => $reason, 'model_id' => $model->id, 'client_id' => $this->client->id]]];
         $this->assertSame($expected, $this->orderLogs());
@@ -246,7 +282,7 @@ class CarbonSavedBuildTest extends TestCase
             app(CarbonHardwareOrderService::class)->submit($this->person, $input);
             $this->fail('Unknown model accepted');
         } catch (ValidationException $e) {
-            // The list changed: reloading helps (ruling 6af66d95).
+            // Unknown model id: invalid_request, no read, no log.
             $this->assertSame([__('carbon_hardware.invalid_request')], $e->errors()['hardware']);
         }
         $this->assertCount(0, $this->calls('get_product'));
