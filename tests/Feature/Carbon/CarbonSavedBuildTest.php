@@ -225,7 +225,6 @@ class CarbonSavedBuildTest extends TestCase
             app(CarbonHardwareOrderService::class)->submit($this->person, $this->input($model));
             $this->fail('Changed build accepted');
         } catch (ValidationException $e) {
-            // Vendor-side: the selection is valid and reloading never helps (ruling 6af66d95).
             $this->assertSame([__('carbon_hardware.portal_unavailable')], $e->errors()['hardware']);
         }
         $reason = ['membership' => 'components_moved', 'order' => 'components_moved', 'price' => 'price_moved', 'null_price' => 'no_cached_price', 'refused' => 'unconfirmed', 'quantity' => 'unconfirmed', 'exception' => null][$case];
