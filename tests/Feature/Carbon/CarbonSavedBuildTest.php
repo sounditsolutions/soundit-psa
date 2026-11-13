@@ -69,7 +69,8 @@ class CarbonSavedBuildTest extends TestCase
                     $result = ['structuredContent' => ['confirmationCode' => 'SYNTH-CODE']];
                 }
 
-                return Http::response(['jsonrpc' => '2.0', 'id' => $request['id'], 'result' => $result]);
+                // Keep 1.0 as JSON 1.0 so a float quantity reaches the associative decode as a float.
+                return Http::response(json_encode(['jsonrpc' => '2.0', 'id' => $request['id'], 'result' => $result], JSON_PRESERVE_ZERO_FRACTION), 200, ['Content-Type' => 'application/json']);
             }
 
             return $base['https://api.carbonsys.com/mcp']($request);
