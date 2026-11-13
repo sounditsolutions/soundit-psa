@@ -202,6 +202,28 @@ class CarbonSavedBuildTest extends TestCase
         $this->assertDatabaseCount('client_hardware_models', 0);
     }
 
+    public static function guardOrder(): array
+    {
+        return [
+            'inactive with a config refusal reports status' => [['status' => 'inactive', 'requiredConfigs' => []], 'not_active'],
+            'inactive with a bad price reports status' => [['status' => 'inactive', 'price' => 0], 'not_active'],
+            'another part reported inactive stays unconfirmed' => [['mfgPartNo' => 'SYNTH-OTHER', 'status' => 'discontinued'], 'unconfirmed'],
+        ];
+    }
+
+    #[DataProvider('guardOrder')]
+    public function test_status_is_checked_after_the_part_and_before_price_and_configs(array $changes, string $key): void
+    {
+        $this->product = array_replace($this->product, $changes);
+        try {
+            $this->add();
+            $this->fail('Refused product accepted');
+        } catch (ValidationException $e) {
+            $this->assertSame([__('carbon_hardware.'.$key)], $e->errors()['hardware']);
+        }
+        $this->assertDatabaseCount('client_hardware_models', 0);
+    }
+
     #[DataProvider('invalidBuilds')]
     public function test_invalid_build_refuses_with_existing_copy(array $changes): void
     {
@@ -215,7 +237,7 @@ class CarbonSavedBuildTest extends TestCase
         $this->assertDatabaseCount('client_hardware_models', 0);
     }
 
-    public function test_product_without_status_refuses_with_existing_copy(): void
+    public function test_product_without_status_refuses_with_not_active_line(): void
     {
         unset($this->product['status']);
         try {

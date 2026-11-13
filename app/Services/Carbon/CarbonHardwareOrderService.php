@@ -108,7 +108,7 @@ class CarbonHardwareOrderService
                 } catch (CarbonMcpException) {
                     $this->refuse('portal_unavailable');
                 } catch (ValidationException $e) {
-                    // A product-status refusal logs its own reason; every other refusal stays unconfirmed.
+                    // In this catch a product-status refusal logs not_active; any other product() refusal logs unconfirmed.
                     $drift = in_array(__('carbon_hardware.not_active'), $e->errors()['hardware'] ?? [], true) ? 'not_active' : 'unconfirmed';
                 }
                 if ($drift !== null) {
