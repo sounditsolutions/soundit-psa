@@ -327,6 +327,12 @@ Schedule::command('cipp:sync-mcp-catalog')
 // Carbon Connect MCP tool catalogue (card PEYvh4NL) — daily refresh of the tools Carbon
 // publishes, so one that appears or disappears is picked up without a deploy. Runs only
 // while Carbon MCP is switched on AND signed in.
+Schedule::command('carbon:sync-order-status')
+    ->hourly()
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->when(fn () => \App\Support\CarbonHardwareConfig::isEnabled());
+
 Schedule::command('carbon:sync-mcp-catalog')
     ->dailyAt('06:07')
     ->withoutOverlapping()

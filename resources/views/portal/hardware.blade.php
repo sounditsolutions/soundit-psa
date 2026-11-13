@@ -57,7 +57,7 @@
                 @if($order->ticket_id && ($portalPerson->company_wide_access || $portalPerson->id === $order->person_id))
                     <a href="{{ route('portal.tickets.show', $order->ticket_id) }}">#{{ $order->ticket_id }}</a>
                 @endif
-            </td><td class="text-end">${{ number_format((float) $order->estimated_total, 2) }}</td><td>{{ __('carbon_hardware.'.$order->status) }}</td></tr>
+            </td><td class="text-end">${{ number_format((float) $order->estimated_total, 2) }}</td><td>{{ __('carbon_hardware.'.($order->carbon_status !== null ? 'carbon_'.$order->carbon_status : $order->status)) }}</td></tr>
         @empty
             <tr><td colspan="4">{{ __('carbon_hardware.no_orders') }}</td></tr>
         @endforelse</tbody>

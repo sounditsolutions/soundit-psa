@@ -10,6 +10,6 @@ class ClientHardwareOrder extends Model
 
     protected function casts(): array
     {
-        return ['lines' => 'array', 'response_keys' => 'array', 'estimated_total' => 'decimal:2'];
+        return ['carbon_status_checked_at' => 'datetime', 'lines' => 'array', 'response_keys' => 'array', 'estimated_total' => 'decimal:2'];
     }
 }
