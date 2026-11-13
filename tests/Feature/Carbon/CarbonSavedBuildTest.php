@@ -4,7 +4,6 @@ namespace Tests\Feature\Carbon;
 
 use App\Enums\PersonType;
 use App\Models\Client;
-use App\Models\ClientHardwareOrder;
 use App\Models\Person;
 use App\Models\Setting;
 use App\Services\Carbon\CarbonHardwareOrderService;
@@ -24,8 +23,11 @@ class CarbonSavedBuildTest extends TestCase
     use RefreshDatabase;
 
     private Client $client;
+
     private Person $person;
+
     private array $product;
+
     private bool $readFails = false;
 
     protected function setUp(): void
@@ -54,8 +56,10 @@ class CarbonSavedBuildTest extends TestCase
                 } else {
                     $result = ['structuredContent' => ['confirmationCode' => 'SYNTH-CODE']];
                 }
+
                 return Http::response(['jsonrpc' => '2.0', 'id' => $request['id'], 'result' => $result]);
             }
+
             return $base['https://api.carbonsys.com/mcp']($request);
         }]);
     }
@@ -117,6 +121,7 @@ class CarbonSavedBuildTest extends TestCase
         }
         $out['requiredConfigs'] = [['requiredConfigs' => null]];
         $out['isConfigurable'] = [['isConfigurable' => false]];
+
         return $out;
     }
 

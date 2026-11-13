@@ -87,7 +87,7 @@ class CarbonHardwareService
         });
     }
 
-    /** The r2 ruled contract deliberately refuses even false/null/empty configuration keys. */
+    /** Saved builds carry only required, single-component choices; other configurations refuse. */
     public function product(string $part): array
     {
         $result = $this->carbon->callTool('get_product', ['mfgPartNo' => $part]);
@@ -97,7 +97,6 @@ class CarbonHardwareService
         if (($result['isError'] ?? false) === true || ! is_array($data) || array_is_list($data)
             || ($data['mfgPartNo'] ?? null) !== $part
             || ! (is_int($data['price'] ?? null) || is_float($data['price'] ?? null)) || (float) $data['price'] <= 0
-            || array_key_exists('configs', $data)
             || array_key_exists('requiredConfigs', $data)
             || array_key_exists('isConfigurable', $data)) {
             $this->refuse('unconfirmed');
@@ -105,6 +104,32 @@ class CarbonHardwareService
         if (! is_finite((float) $data['price']) || (float) $data['price'] > 99999999.99) {
             $this->refuse('unconfirmed');
         }
+
+        $ids = null;
+        if (array_key_exists('configs', $data)) {
+            // Captured get_product contract: mcp-capture-20261109/04-get_product.
+            // List-shaped PHP arrays after the existing associative decode: numeric-key
+            // JSON objects that decode identically qualify too (Forge STOP1 ruling).
+            if (! is_array($data['configs']) || ! array_is_list($data['configs']) || $data['configs'] === []) {
+                $this->refuse('unconfirmed');
+            }
+            $ids = [];
+            foreach ($data['configs'] as $config) {
+                if (! is_array($config) || ($config['isRequired'] ?? null) !== true
+                    || ! is_array($config['components'] ?? null) || ! array_is_list($config['components'])
+                    || count($config['components']) !== 1) {
+                    $this->refuse('unconfirmed');
+                }
+                $component = $config['components'][0];
+                if (! is_array($component) || ! is_int($component['id'] ?? null) || $component['id'] <= 0
+                    || ($component['noteRequired'] ?? null) === true
+                    || (array_key_exists('status', $component) && $component['status'] !== 'active')) {
+                    $this->refuse('unconfirmed');
+                }
+                $ids[] = $component['id'];
+            }
+        }
+        $data['carbon_component_ids'] = $ids;
 
         return $data;
     }
@@ -135,6 +160,7 @@ class CarbonHardwareService
                 'label' => is_string($product['title'] ?? null) ? mb_substr($product['title'], 0, 255) : $part,
                 'sell_price' => $sell,
                 'carbon_price' => $cost,
+                'carbon_component_ids' => $product['carbon_component_ids'],
                 // Ruled: availability shows unknown. get_product inventory is not stored.
                 'availability' => 'unknown',
                 'synced_at' => now(),

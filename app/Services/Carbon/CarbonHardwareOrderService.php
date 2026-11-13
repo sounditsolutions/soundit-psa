@@ -89,8 +89,30 @@ class CarbonHardwareOrderService
             'endUserPoNumber' => 'nullable|string|max:255'])->fails()) {
             $this->refuse('invalid_request');
         }
-        // Serialize reservation with staff edits. The durable reservation commits BEFORE HTTP.
-        [$order, $arguments, $created] = DB::transaction(function () use ($client, $person, $input) {
+        $checked = [];
+        foreach ($input['lines'] as $line) {
+            $model = $client->hardwareModels()->find($line['model_id']);
+            if (! $model) {
+                $this->refuse('invalid_request');
+            }
+            $checked[$model->id] = [$model->mfg_part_no, $model->carbon_component_ids, $model->carbon_price];
+            if ($model->carbon_component_ids !== null) {
+                try {
+                    $product = app(CarbonHardwareService::class)->product($model->mfg_part_no);
+                } catch (CarbonMcpException) {
+                    $this->refuse('portal_unavailable');
+                } catch (ValidationException) {
+                    $this->refuse('invalid_request');
+                }
+                if ($product['carbon_component_ids'] !== $model->carbon_component_ids
+                    || $model->carbon_price === null
+                    || bccomp(number_format((float) $product['price'], 2, '.', ''), $model->carbon_price, 2) !== 0) {
+                    $this->refuse('invalid_request');
+                }
+            }
+        }
+        // Serialize reservation with staff edits. The durable reservation commits BEFORE draft HTTP.
+        [$order, $arguments, $created] = DB::transaction(function () use ($client, $person, $input, $checked) {
             $client = Client::lockForUpdate()->findOrFail($client->id);
             if ($reason = $this->reason($client, $person)) {
                 $this->refuse($reason);
@@ -106,13 +128,18 @@ class CarbonHardwareOrderService
             $total = '0.00';
             foreach ($input['lines'] as $line) {
                 $model = $client->hardwareModels()->find($line['model_id']);
-                if (! $model) {
+                // Staff may remove/re-add an approval while the vendor read is in flight.
+                if (! $model || ($checked[$model->id] ?? null) !== [$model->mfg_part_no, $model->carbon_component_ids, $model->carbon_price]) {
                     $this->refuse('invalid_request');
                 }
                 $quantity = (int) $line['quantity'];
                 $total = bcadd($total, bcmul($model->sell_price, (string) $quantity, 2), 2);
                 $lines[] = ['mfgPartNo' => $model->mfg_part_no, 'label' => $model->label, 'quantity' => $quantity, 'sell_price' => $model->sell_price];
-                $items[] = ['mfgPartNo' => $model->mfg_part_no, 'quantity' => $quantity];
+                $item = ['mfgPartNo' => $model->mfg_part_no, 'quantity' => $quantity];
+                if ($model->carbon_component_ids !== null) {
+                    $item['components'] = array_map(fn (int $id) => ['id' => $id], $model->carbon_component_ids);
+                }
+                $items[] = $item;
             }
             if (bccomp($total, '99999999.99', 2) > 0) {
                 $this->refuse('invalid_request');
