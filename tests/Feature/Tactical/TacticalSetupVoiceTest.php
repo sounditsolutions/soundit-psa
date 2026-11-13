@@ -87,6 +87,16 @@ class TacticalSetupVoiceTest extends TestCase
         $this->assertNoThirdParty($page->getContent());
     }
 
+    public function test_technician_note_names_whose_note_it_is(): void
+    {
+        [$client] = $this->portal();
+        $page = $this->get('/setup/'.$client->portal_install_token)->assertOk();
+        $page->assertSee('<summary>Note for our technicians</summary>', false);
+        $page->assertSee("Signature, publisher/UAC prompts and clean-machine enrollment need a technician's check.", false);
+        $page->assertDontSee('Technician note');
+        $page->assertDontSee('operator verification');
+    }
+
     public function test_invalid_link_says_contact_us(): void
     {
         $this->get('/setup/'.str_repeat('0', 22))->assertOk()

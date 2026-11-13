@@ -195,7 +195,7 @@ class CarbonHardwareOrderService
             }
             $description[] = __('carbon_hardware.estimate').': '.$this->money($order->estimated_total);
             $description[] = __('carbon_hardware.ship_to').': '.implode(', ', array_filter($arguments['shippingAddress']));
-            $description[] = $read ? __('carbon_hardware.confirmation', ['code' => $code]) : __('carbon_hardware.unread');
+            $description[] = $read ? __('carbon_hardware.confirmation', ['code' => $code]) : __('carbon_hardware.ticket_unread');
             $ticket = $this->tickets->createTicket(['client_id' => $order->client_id, 'contact_id' => $order->person_id,
                 'subject' => __('carbon_hardware.ticket_subject'), 'description' => implode("\n", $description),
                 'source' => TicketSource::Portal, 'type' => TicketType::ServiceRequest, 'priority' => TicketPriority::P3,

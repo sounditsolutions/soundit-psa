@@ -32,8 +32,8 @@
         </label>
         <button class="btn btn-accent mt-2" type="submit">Download guided Windows setup</button>
     </form>
-    <details class="mt-3"><summary>Technician note</summary>
-        Antivirus sandboxes can execute the dynamic EXE and enroll a sandbox device. Verify the real computer's identity and intended-site check-in rather than assuming the first new record is this computer. Signature, publisher/UAC prompts and clean-machine enrollment require operator verification.
+    <details class="mt-3"><summary>Note for our technicians</summary>
+        Antivirus sandboxes can execute the dynamic EXE and enroll a sandbox device. Verify the real computer's identity and intended-site check-in rather than assuming the first new record is this computer. Signature, publisher/UAC prompts and clean-machine enrollment need a technician's check.
     </details>
     <hr>
     <h3 class="h5">Ordered manual fallback</h3>

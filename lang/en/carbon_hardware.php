@@ -24,6 +24,7 @@ return [
     'pending' => 'Request recorded — we\'ll confirm',
     'submitted' => 'Submitted',
     'unread' => 'Submitted — we\'ll confirm',
+    'ticket_unread' => 'Submitted — confirmation pending',
     'ticket' => 'Ticket',
     'status' => 'Status',
     'date' => 'Submitted',
