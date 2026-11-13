@@ -116,6 +116,21 @@ class CarbonHardwareOrderService
                     Log::warning('[CarbonHardwareOrder] Saved build refused at submit', ['reason' => $drift, 'model_id' => $model->id, 'client_id' => $client->id]);
                     $this->refuse('portal_unavailable');
                 }
+            } else {
+                // Plain parts are re-read at submit too: a part Carbon no longer lists as active
+                // (or that product() no longer confirms) refuses before any reservation.
+                $drift = null;
+                try {
+                    app(CarbonHardwareService::class)->product($model->mfg_part_no);
+                } catch (CarbonMcpException) {
+                    $this->refuse('portal_unavailable');
+                } catch (ValidationException $e) {
+                    $drift = in_array(__('carbon_hardware.not_active'), $e->errors()['hardware'] ?? [], true) ? 'not_active' : 'unconfirmed';
+                }
+                if ($drift !== null) {
+                    Log::warning('[CarbonHardwareOrder] Plain part refused at submit', ['reason' => $drift, 'model_id' => $model->id, 'client_id' => $client->id]);
+                    $this->refuse('portal_unavailable');
+                }
             }
         }
         // Serialize reservation with staff edits. The durable reservation commits BEFORE draft HTTP.
