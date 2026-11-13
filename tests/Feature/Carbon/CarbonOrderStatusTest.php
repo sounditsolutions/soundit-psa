@@ -228,6 +228,27 @@ class CarbonOrderStatusTest extends TestCase
         $this->assertSame(array_map(fn ($row) => ['order_id' => $row->id, 'exception' => 'CarbonMcpException'], [$badA, $badB, $badA, $badB, $badB]), $ours);
     }
 
+    public function test_listed_row_alternating_throw_and_refused_stays_behind_the_others(): void
+    {
+        $bad = $this->order(['confirmation_code' => 'SYNTH-ORDER-BAD']);
+        $good = $this->order();
+        $refused = array_replace(self::reply(['confirmationCode' => 'SYNTH-ORDER-BAD']), ['isError' => true]);
+        $runs = [
+            [[[400, []]], false],
+            [[[200, self::reply()], [200, $refused]], true],
+            [[[200, self::reply()], [400, []]], false],
+        ];
+        foreach ($runs as [$sequence, $ok]) {
+            $this->travel(5)->minutes();
+            $this->carbonCallSequence = $sequence;
+            $this->artisan('carbon:sync-order-status')->assertExitCode($ok ? 0 : 1)->run();
+        }
+        $codes = $this->calls()->map(fn ($pair) => $pair[0]['params']['arguments']['confirmationCode'])->all();
+        $this->assertSame(['SYNTH-ORDER-BAD', 'SYNTH-ORDER-1', 'SYNTH-ORDER-BAD', 'SYNTH-ORDER-1', 'SYNTH-ORDER-BAD'], $codes);
+        $this->assertNull($bad->refresh()->carbon_status_checked_at);
+        $this->assertSame([$bad->id], array_keys(Cache::get('carbon-order-status-deferred')));
+    }
+
     public function test_other_throwable_stops_without_leaking_its_message(): void
     {
         $first = $this->order();

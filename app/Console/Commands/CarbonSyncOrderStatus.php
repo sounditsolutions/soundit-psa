@@ -27,7 +27,7 @@ class CarbonSyncOrderStatus extends Command
         }
 
         // A row whose read threw is read after the others, least recently failed first, until a read of it
-        // does not throw; the list is dropped a day after it last changed.
+        // returns a status; the list is dropped a day after it last changed.
         $deferred = array_filter((array) Cache::get(self::DEFERRED, []), 'is_int');
         ksort($deferred);
         asort($deferred);
@@ -54,11 +54,11 @@ class CarbonSyncOrderStatus extends Command
 
                 return self::FAILURE;
             }
-            if (isset($deferred[$order->id])) {
+            $status = $parser->parse($reply, $order->confirmation_code, $order->id);
+            if ($status !== null && isset($deferred[$order->id])) {
                 unset($deferred[$order->id]);
                 Cache::put(self::DEFERRED, $deferred, now()->addDay());
             }
-            $status = $parser->parse($reply, $order->confirmation_code, $order->id);
             if ($status !== null) {
                 // Compare-and-set avoids overwriting a concurrently checked row. Only these two columns change.
                 DB::table('client_hardware_orders')->where('id', $order->id)
