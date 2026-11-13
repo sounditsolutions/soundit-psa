@@ -8,9 +8,11 @@ use App\Models\Person;
 use App\Models\Setting;
 use App\Services\Carbon\CarbonHardwareOrderService;
 use App\Services\Carbon\CarbonHardwareService;
+use App\Services\Mcp\StaffCarbonHardwareTools;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -32,11 +34,16 @@ class CarbonSavedBuildTest extends TestCase
 
     private ?\Closure $duringRead = null;
 
+    private array $logs = [];
+
     protected function setUp(): void
     {
         parent::setUp();
         Cache::flush();
         Http::preventStrayRequests();
+        Log::listen(function ($event): void {
+            $this->logs[] = ['level' => $event->level, 'message' => $event->message, 'context' => $event->context];
+        });
         $this->seedConnected();
         Setting::setValue('carbon_hardware_ordering_enabled', '1');
         Setting::setValue('carbon_hardware_country', 'CAN');
@@ -86,6 +93,11 @@ class CarbonSavedBuildTest extends TestCase
         return ['idempotency_key' => (string) Str::uuid(), 'lines' => [['model_id' => $model->id, 'quantity' => 2]]];
     }
 
+    private function orderLogs(): array
+    {
+        return array_values(array_filter($this->logs, fn ($l) => str_starts_with($l['message'], '[CarbonHardwareOrder]')));
+    }
+
     private function calls(string $name)
     {
         return Http::recorded(fn ($r) => ($r['method'] ?? null) === 'tools/call' && $r['params']['name'] === $name)->values();
@@ -125,6 +137,8 @@ class CarbonSavedBuildTest extends TestCase
         $this->assertDatabaseCount('client_hardware_orders', 0);
         $this->assertDatabaseCount('tickets', 0);
         $this->assertCount(0, $this->calls('create_draft_order'));
+        // Staff changed the list: reloading helps, so no vendor-side warning.
+        $this->assertSame([], $this->orderLogs());
     }
 
     public function test_component_details_and_cost_stay_out_of_portal_and_ticket(): void
@@ -186,18 +200,19 @@ class CarbonSavedBuildTest extends TestCase
 
     public static function driftCases(): array
     {
-        return array_map(fn ($v) => [$v], ['membership', 'order', 'price', 'refused', 'exception']);
+        return array_map(fn ($v) => [$v], ['membership', 'order', 'price', 'null_price', 'refused', 'exception']);
     }
 
     #[DataProvider('driftCases')]
     public function test_drift_refuses_before_any_reservation_or_draft(string $case): void
     {
         // Seed stored approval so this test can be red independently of the accept implementation.
-        $model = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-BUILD', 'label' => 'Synthetic Build', 'sell_price' => '200.00', 'carbon_price' => '123.45', 'carbon_component_ids' => [81001, 81002]]);
+        $model = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-BUILD', 'label' => 'Synthetic Build', 'sell_price' => '200.00', 'carbon_price' => $case === 'null_price' ? null : '123.45', 'carbon_component_ids' => [81001, 81002]]);
         match ($case) {
             'membership' => $this->product['configs'][1]['components'][0]['id'] = 81003,
             'order' => $this->product['configs'] = array_reverse($this->product['configs']),
             'price' => $this->product['price'] = 123.46,
+            'null_price' => null,
             'refused' => $this->product['configs'][0]['isRequired'] = false,
             'exception' => $this->readFails = true,
         };
@@ -205,12 +220,39 @@ class CarbonSavedBuildTest extends TestCase
             app(CarbonHardwareOrderService::class)->submit($this->person, $this->input($model));
             $this->fail('Changed build accepted');
         } catch (ValidationException $e) {
-            $this->assertSame([__('carbon_hardware.'.($case === 'exception' ? 'portal_unavailable' : 'invalid_request'))], $e->errors()['hardware']);
+            // Vendor-side: the selection is valid and reloading never helps (ruling 6af66d95).
+            $this->assertSame([__('carbon_hardware.portal_unavailable')], $e->errors()['hardware']);
         }
+        $reason = ['membership' => 'components_moved', 'order' => 'components_moved', 'price' => 'price_moved', 'null_price' => 'no_cached_price', 'refused' => 'unconfirmed', 'exception' => null][$case];
+        $expected = $reason === null ? [] : [['level' => 'warning', 'message' => '[CarbonHardwareOrder] Saved build refused at submit',
+            'context' => ['reason' => $reason, 'model_id' => $model->id, 'client_id' => $this->client->id]]];
+        $this->assertSame($expected, $this->orderLogs());
         $this->assertDatabaseCount('client_hardware_orders', 0);
         $this->assertDatabaseCount('tickets', 0);
         $this->assertCount(0, $this->calls('create_draft_order'));
         $this->assertGreaterThanOrEqual(1, $this->calls('get_product')->count());
+    }
+
+    public function test_unknown_model_keeps_invalid_request_without_read_or_log(): void
+    {
+        $model = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-BUILD', 'label' => 'Synthetic Build', 'sell_price' => '200.00', 'carbon_price' => '123.45', 'carbon_component_ids' => [81001, 81002]]);
+        $input = $this->input($model);
+        $input['lines'][0]['model_id'] = $model->id + 1000;
+        try {
+            app(CarbonHardwareOrderService::class)->submit($this->person, $input);
+            $this->fail('Unknown model accepted');
+        } catch (ValidationException $e) {
+            // The list changed: reloading helps (ruling 6af66d95).
+            $this->assertSame([__('carbon_hardware.invalid_request')], $e->errors()['hardware']);
+        }
+        $this->assertCount(0, $this->calls('get_product'));
+        $this->assertSame([], $this->orderLogs());
+    }
+
+    public function test_add_tool_description_names_plain_parts_and_saved_fixed_builds(): void
+    {
+        $add = array_values(array_filter(StaffCarbonHardwareTools::definitions(), fn ($d) => $d['name'] === 'hardware_add_approved_model'));
+        $this->assertSame('Add a plain part or a saved fixed build to the client approved list using a read-only Carbon product lookup.', $add[0]['description']);
     }
 
     public function test_plain_part_has_null_ids_and_no_submit_read_or_components(): void

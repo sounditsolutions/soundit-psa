@@ -99,15 +99,21 @@ class CarbonHardwareOrderService
             if ($model->carbon_component_ids !== null) {
                 try {
                     $product = app(CarbonHardwareService::class)->product($model->mfg_part_no);
+                    $drift = match (true) {
+                        $product['carbon_component_ids'] !== $model->carbon_component_ids => 'components_moved',
+                        $model->carbon_price === null => 'no_cached_price',
+                        bccomp(number_format((float) $product['price'], 2, '.', ''), $model->carbon_price, 2) !== 0 => 'price_moved',
+                        default => null,
+                    };
                 } catch (CarbonMcpException) {
                     $this->refuse('portal_unavailable');
                 } catch (ValidationException) {
-                    $this->refuse('invalid_request');
+                    $drift = 'unconfirmed';
                 }
-                if ($product['carbon_component_ids'] !== $model->carbon_component_ids
-                    || $model->carbon_price === null
-                    || bccomp(number_format((float) $product['price'], 2, '.', ''), $model->carbon_price, 2) !== 0) {
-                    $this->refuse('invalid_request');
+                if ($drift !== null) {
+                    // Vendor-side: the client's selection is valid and reloading never helps. Staff see the reason.
+                    Log::warning('[CarbonHardwareOrder] Saved build refused at submit', ['reason' => $drift, 'model_id' => $model->id, 'client_id' => $client->id]);
+                    $this->refuse('portal_unavailable');
                 }
             }
         }

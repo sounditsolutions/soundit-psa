@@ -18,7 +18,7 @@ final class StaffCarbonHardwareTools
         $definitions = [];
         foreach ([
             ['hardware_list_approved_models', 'List the client approved hardware models with cached staff cost and sell prices.', [], []],
-            ['hardware_add_approved_model', 'Add a non-configurable part to the client approved list using a read-only Carbon product lookup.', ['mfg_part_no' => $part, 'sell_price' => $sell, 'confirm_below_cost' => $confirm], ['mfg_part_no', 'sell_price']],
+            ['hardware_add_approved_model', 'Add a plain part or a saved fixed build to the client approved list using a read-only Carbon product lookup.', ['mfg_part_no' => $part, 'sell_price' => $sell, 'confirm_below_cost' => $confirm], ['mfg_part_no', 'sell_price']],
             ['hardware_remove_approved_model', 'Remove a model from the client approved hardware list.', ['model_id' => $model], ['model_id']],
             ['hardware_set_sell_price', 'Set the sell price of a client approved model; below-cost prices require explicit confirmation.', ['model_id' => $model, 'sell_price' => $sell, 'confirm_below_cost' => $confirm], ['model_id', 'sell_price']],
         ] as [$name, $description, $properties, $required]) {

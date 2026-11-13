@@ -109,7 +109,7 @@ class CarbonHardwareService
         if (array_key_exists('configs', $data)) {
             // Captured get_product contract: mcp-capture-20261109/04-get_product.
             // List-shaped PHP arrays after the existing associative decode: numeric-key
-            // JSON objects that decode identically qualify too (Forge STOP1 ruling).
+            // JSON objects that decode identically qualify too (a Forge brief correction at STOP1, not a ruling).
             if (! is_array($data['configs']) || ! array_is_list($data['configs']) || $data['configs'] === []) {
                 $this->refuse('unconfirmed');
             }
