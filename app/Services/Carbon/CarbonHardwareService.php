@@ -96,6 +96,8 @@ class CarbonHardwareService
         // have named fields; a JSON list cannot satisfy this contract.
         if (($result['isError'] ?? false) === true || ! is_array($data) || array_is_list($data)
             || ($data['mfgPartNo'] ?? null) !== $part
+            // Product-level status must read exactly 'active'; a missing status is unknown and refuses.
+            || ($data['status'] ?? null) !== 'active'
             || ! (is_int($data['price'] ?? null) || is_float($data['price'] ?? null)) || (float) $data['price'] <= 0
             || array_key_exists('requiredConfigs', $data)
             || array_key_exists('isConfigurable', $data)) {

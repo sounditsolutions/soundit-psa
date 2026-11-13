@@ -32,7 +32,7 @@ return [
     'not_live' => 'Connect Carbon and enable Carbon MCP before enabling client hardware ordering.',
     'unavailable' => 'Hardware ordering is switched off or Carbon is not connected.',
     'unmapped' => 'Map an existing Carbon customer before maintaining this approved list.',
-    'unconfirmed' => "couldn't confirm this part needs no configuration",
+    'unconfirmed' => "couldn't confirm this part is a plain part or a saved fixed build",
     'margin_confirm' => 'Confirm the sell price below the cached Carbon price to save.',
     'margin_warning' => 'The cached Carbon price is at or above the sell price. Review pricing.',
     'unknown' => 'Unknown',
