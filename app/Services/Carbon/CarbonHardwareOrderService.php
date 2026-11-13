@@ -111,7 +111,7 @@ class CarbonHardwareOrderService
                     $drift = 'unconfirmed';
                 }
                 if ($drift !== null) {
-                    // Vendor-side: the client's selection is valid and reloading never helps. Staff see the reason.
+                    // Saved build not confirmed at submit: one warning log, then portal_unavailable.
                     Log::warning('[CarbonHardwareOrder] Saved build refused at submit', ['reason' => $drift, 'model_id' => $model->id, 'client_id' => $client->id]);
                     $this->refuse('portal_unavailable');
                 }
