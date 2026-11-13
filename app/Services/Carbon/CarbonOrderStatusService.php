@@ -10,7 +10,7 @@ class CarbonOrderStatusService
 
     public const STATUSES = ['draft', 'quote', 'payment_authorized', 'paid', 'partial_refund', 'canceled'];
 
-    // get_order: one read-only capture, keys/types only (Jeeves 6af701b4).
+    // get_order: one read-only capture, keys/types only (per the reviewer's ruling).
     // structuredContent is deliberately refused until its shape is ruled.
     public function parse(array $reply, string $code, int $orderId): ?string
     {
