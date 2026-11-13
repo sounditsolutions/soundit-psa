@@ -96,41 +96,29 @@ class CarbonHardwareOrderService
                 $this->refuse('invalid_request');
             }
             $checked[$model->id] = [$model->mfg_part_no, $model->carbon_component_ids, $model->carbon_price];
-            if ($model->carbon_component_ids !== null) {
-                try {
-                    $product = app(CarbonHardwareService::class)->product($model->mfg_part_no);
-                    $drift = match (true) {
-                        $product['carbon_component_ids'] !== $model->carbon_component_ids => 'components_moved',
-                        $model->carbon_price === null => 'no_cached_price',
-                        bccomp(number_format((float) $product['price'], 2, '.', ''), $model->carbon_price, 2) !== 0 => 'price_moved',
-                        default => null,
-                    };
-                } catch (CarbonMcpException) {
-                    $this->refuse('portal_unavailable');
-                } catch (ValidationException $e) {
-                    // In this catch a product-status refusal logs not_active; any other product() refusal logs unconfirmed.
-                    $drift = in_array(__('carbon_hardware.not_active'), $e->errors()['hardware'] ?? [], true) ? 'not_active' : 'unconfirmed';
-                }
-                if ($drift !== null) {
-                    // Saved build not confirmed at submit: one warning log, then portal_unavailable.
-                    Log::warning('[CarbonHardwareOrder] Saved build refused at submit', ['reason' => $drift, 'model_id' => $model->id, 'client_id' => $client->id]);
-                    $this->refuse('portal_unavailable');
-                }
-            } else {
-                // Plain parts are re-read at submit too: a part Carbon no longer lists as active
-                // (or that product() no longer confirms) refuses before any reservation.
-                $drift = null;
-                try {
-                    app(CarbonHardwareService::class)->product($model->mfg_part_no);
-                } catch (CarbonMcpException) {
-                    $this->refuse('portal_unavailable');
-                } catch (ValidationException $e) {
-                    $drift = in_array(__('carbon_hardware.not_active'), $e->errors()['hardware'] ?? [], true) ? 'not_active' : 'unconfirmed';
-                }
-                if ($drift !== null) {
-                    Log::warning('[CarbonHardwareOrder] Plain part refused at submit', ['reason' => $drift, 'model_id' => $model->id, 'client_id' => $client->id]);
-                    $this->refuse('portal_unavailable');
-                }
+            // Every line is re-read once at submit; plain parts and saved builds share one drift rule.
+            $drift = null;
+            try {
+                $product = app(CarbonHardwareService::class)->product($model->mfg_part_no);
+                $drift = match (true) {
+                    // A plain part (null ids) that now reads with components is no longer what was approved.
+                    $product['carbon_component_ids'] !== $model->carbon_component_ids => 'components_moved',
+                    $model->carbon_price === null => 'no_cached_price',
+                    bccomp(number_format((float) $product['price'], 2, '.', ''), $model->carbon_price, 2) !== 0 => 'price_moved',
+                    default => null,
+                };
+            } catch (CarbonMcpException) {
+                $this->refuse('portal_unavailable');
+            } catch (ValidationException $e) {
+                // The reason comes from the refusal key, never from matching translated text;
+                // any other product() refusal logs unconfirmed.
+                $drift = $e instanceof CarbonHardwareRefusal && $e->key === 'not_active' ? 'not_active' : 'unconfirmed';
+            }
+            if ($drift !== null) {
+                // Line not confirmed at submit: one warning log, then portal_unavailable.
+                $message = $model->carbon_component_ids !== null ? 'Saved build refused at submit' : 'Plain part refused at submit';
+                Log::warning('[CarbonHardwareOrder] '.$message, ['reason' => $drift, 'model_id' => $model->id, 'client_id' => $client->id]);
+                $this->refuse('portal_unavailable');
             }
         }
         // Serialize reservation with staff edits. The durable reservation commits BEFORE draft HTTP.

@@ -56,7 +56,8 @@ class CarbonPortalHardwareTest extends TestCase
         {
             public function product(string $part): array
             {
-                return ['mfgPartNo' => $part, 'status' => 'active', 'price' => 123.45, 'carbon_component_ids' => null];
+                // Each part reads back at its stored cost, so the submit price rule passes.
+                return ['mfgPartNo' => $part, 'status' => 'active', 'price' => $part === 'SYNTH-DOCK' ? 900.00 : 123.45, 'carbon_component_ids' => null];
             }
         });
     }
