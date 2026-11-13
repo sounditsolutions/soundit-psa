@@ -26,15 +26,21 @@ class CarbonSyncOrderStatus extends Command
             return self::SUCCESS;
         }
 
-        // A row whose read threw is read after the others for a day, so one bad row cannot stall the rest.
-        $deferred = array_filter((array) Cache::get(self::DEFERRED, []), fn ($until) => is_int($until) && $until > now()->getTimestamp());
-        $ids = array_keys($deferred);
+        // A row whose read threw is read after the others, least recently failed first, until a read of it
+        // does not throw; the list is dropped a day after it last changed.
+        $deferred = array_filter((array) Cache::get(self::DEFERRED, []), 'is_int');
+        ksort($deferred);
+        asort($deferred);
+        $rank = [];
+        foreach (array_keys($deferred) as $i => $id) {
+            array_push($rank, (int) $id, $i + 1);
+        }
 
         $orders = ClientHardwareOrder::where('status', 'submitted')
             ->whereNotNull('confirmation_code')
             ->whereIn('client_id', Client::where('carbon_hardware_ordering_enabled', true)->select('id'))
             ->where(fn ($q) => $q->whereNull('carbon_status')->orWhereIn('carbon_status', CarbonOrderStatusService::OPEN))
-            ->when($ids !== [], fn ($q) => $q->orderByRaw('id IN ('.implode(',', array_fill(0, count($ids), '?')).')', $ids))
+            ->when($rank !== [], fn ($q) => $q->orderByRaw('CASE id'.str_repeat(' WHEN ? THEN ?', count($deferred)).' ELSE 0 END', $rank))
             ->orderByRaw('carbon_status_checked_at IS NOT NULL')
             ->orderBy('carbon_status_checked_at')->orderBy('id')->limit(25)->get();
 
@@ -43,10 +49,14 @@ class CarbonSyncOrderStatus extends Command
                 $reply = $client->callTool('get_order', ['confirmationCode' => $order->confirmation_code]);
             } catch (\Throwable $e) {
                 Log::warning('[CarbonOrderStatus] Status not read', ['order_id' => $order->id, 'exception' => class_basename($e)]);
-                $deferred[$order->id] = now()->addDay()->getTimestamp();
+                $deferred[$order->id] = now()->getTimestamp();
                 Cache::put(self::DEFERRED, $deferred, now()->addDay());
 
                 return self::FAILURE;
+            }
+            if (isset($deferred[$order->id])) {
+                unset($deferred[$order->id]);
+                Cache::put(self::DEFERRED, $deferred, now()->addDay());
             }
             $status = $parser->parse($reply, $order->confirmation_code, $order->id);
             if ($status !== null) {

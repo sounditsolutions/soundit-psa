@@ -195,6 +195,39 @@ class CarbonOrderStatusTest extends TestCase
         $this->assertSame(array_fill(0, 2, ['warning', '[CarbonOrderStatus] Status not read', ['order_id' => $bad->id, 'exception' => 'CarbonMcpException']]), $ours);
     }
 
+    public function test_rows_whose_reads_keep_throwing_take_turns_after_the_others(): void
+    {
+        $badA = $this->order(['confirmation_code' => 'SYNTH-ORDER-BAD-A']);
+        $badB = $this->order(['confirmation_code' => 'SYNTH-ORDER-BAD-B']);
+        $this->order();
+        $runs = [
+            [[400, []]],
+            [[400, []]],
+            [[200, self::reply()], [400, []]],
+            [[200, self::reply()], [400, []]],
+            [[200, self::reply()], [200, self::reply(['confirmationCode' => 'SYNTH-ORDER-BAD-A'])], [400, []]],
+        ];
+        foreach ($runs as $sequence) {
+            $this->travel(5)->minutes();
+            $this->carbonCallSequence = $sequence;
+            $this->artisan('carbon:sync-order-status')->assertFailed();
+        }
+        $codes = $this->calls()->map(fn ($pair) => $pair[0]['params']['arguments']['confirmationCode'])->all();
+        $this->assertSame([
+            'SYNTH-ORDER-BAD-A',
+            'SYNTH-ORDER-BAD-B',
+            'SYNTH-ORDER-1', 'SYNTH-ORDER-BAD-A',
+            'SYNTH-ORDER-1', 'SYNTH-ORDER-BAD-B',
+            'SYNTH-ORDER-1', 'SYNTH-ORDER-BAD-A', 'SYNTH-ORDER-BAD-B',
+        ], $codes);
+        $this->assertSame('draft', $badA->refresh()->carbon_status);
+        $this->assertNull($badB->refresh()->carbon_status);
+        $this->assertNull($badB->carbon_status_checked_at);
+        $this->assertSame([$badB->id], array_keys(Cache::get('carbon-order-status-deferred')));
+        $ours = array_column(array_filter($this->logs, fn ($log) => $log[1] === '[CarbonOrderStatus] Status not read'), 2);
+        $this->assertSame(array_map(fn ($row) => ['order_id' => $row->id, 'exception' => 'CarbonMcpException'], [$badA, $badB, $badA, $badB, $badB]), $ours);
+    }
+
     public function test_other_throwable_stops_without_leaking_its_message(): void
     {
         $first = $this->order();
