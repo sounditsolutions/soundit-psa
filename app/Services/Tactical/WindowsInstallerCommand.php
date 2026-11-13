@@ -49,8 +49,8 @@ final class WindowsInstallerCommand
             .'if (-not (Test-Path -LiteralPath $agent -PathType Leaf)) { throw \'Agent missing\' }; '
             ."& \$agent @({$args}) *> \$null; "
             .'if ($LASTEXITCODE -ne 0) { throw \'Enrollment failed\' }; '
-            .'Write-Host \'Setup finished. Ask your technician to verify this computer and intended-site check-in.\' '
-            .'} catch { Write-Host \'Setup stopped. Do not rerun or share this command. Contact your technician for help; download, installation or enrollment could not be completed.\' '
+            .'Write-Host \'Setup finished. Ask us to verify this computer and intended-site check-in.\' '
+            .'} catch { Write-Host \'Setup stopped. Do not rerun or share this command. Contact us for help; download, installation or enrollment could not be completed.\' '
             .'} finally { if ($file -and (Test-Path -LiteralPath $file)) { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue }; '
             .'if ($dir -and (Test-Path -LiteralPath $dir)) { Remove-Item -LiteralPath $dir -ErrorAction SilentlyContinue } } }';
 

@@ -36,7 +36,7 @@ class PortalInstallController extends Controller
     {
         $client = $this->service->findByToken($token);
         if (! $client) {
-            return $this->invalidPage('This setup link is not valid. Contact your IT support team.');
+            return $this->invalidPage('This setup link is not valid. Contact us.');
         }
 
         $platforms = $this->service->supportedPlatforms($client);
@@ -72,7 +72,7 @@ class PortalInstallController extends Controller
     {
         $client = $this->service->findByToken($token);
         if (! $client) {
-            return $this->invalidPage('This setup link is not valid. Contact your IT support team.');
+            return $this->invalidPage('This setup link is not valid. Contact us.');
         }
 
         $platform = (string) $request->input('platform');
@@ -104,7 +104,7 @@ class PortalInstallController extends Controller
                 } catch (\App\Services\Tactical\InstallerGenerationException $e) {
                     return $this->renderPage($client, $token, array_fill_keys($supported, null), 'windows', $e->getMessage());
                 } catch (\Throwable) {
-                    return $this->renderPage($client, $token, array_fill_keys($supported, null), 'windows', 'The installer could not be prepared. Use the manual fallback or contact your technician.');
+                    return $this->renderPage($client, $token, array_fill_keys($supported, null), 'windows', 'The installer could not be prepared. Use the manual fallback or contact us.');
                 }
 
                 return response()->streamDownload(static function () use ($binary): void {

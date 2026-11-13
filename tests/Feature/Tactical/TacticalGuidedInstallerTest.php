@@ -133,13 +133,13 @@ class TacticalGuidedInstallerTest extends TestCase
 
     public static function invalidBinaries(): array
     {
-        $invalid = 'The installer could not be validated. Use the manual fallback or contact your technician.';
+        $invalid = 'The installer could not be validated. Use the manual fallback or contact us.';
         $insecure = "Not available in insecure mode. Please use the 'Manual' method.";
         $generator = 'Something went wrong. Check debug error log for exact error message';
 
         return [
-            'negotiation refusal' => [406, 'application/json', '{"detail":"sensitive upstream text"}', 'The upstream installer request was not accepted. Use the manual fallback or contact your technician.'],
-            'generator ret never echoed' => [200, 'application/octet-stream', '{"ret":"--auth private-token https://example.test/?secret=value"}', 'The upstream installer service could not generate the guided setup. Use the manual fallback or contact your technician.'],
+            'negotiation refusal' => [406, 'application/json', '{"detail":"sensitive upstream text"}', 'The upstream installer request was not accepted. Use the manual fallback or contact us.'],
+            'generator ret never echoed' => [200, 'application/octet-stream', '{"ret":"--auth private-token https://example.test/?secret=value"}', 'The upstream installer service could not generate the guided setup. Use the manual fallback or contact us.'],
             'error returned as binary' => [200, 'application/octet-stream', str_repeat('error', 300), $invalid],
             'tiny MZ' => [200, 'application/octet-stream', 'MZ', $invalid],
             'wrong type' => [200, 'text/html', 'MZ'.str_repeat('x', 2048), $invalid],
