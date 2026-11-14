@@ -16,7 +16,7 @@ class CarbonSyncOrderStatus extends Command
 {
     protected $signature = 'carbon:sync-order-status';
 
-    protected $description = 'Read Carbon status for open hardware requests';
+    protected $description = 'Read Carbon hardware request status';
 
     private const DEFERRED = 'carbon-order-status-deferred';
 
@@ -26,7 +26,7 @@ class CarbonSyncOrderStatus extends Command
             return self::SUCCESS;
         }
 
-        // A row whose read threw is read after the others, least recently failed first, until a read of it
+        // Within each status group, a row whose read threw is read after the others, least recently failed first, until a read of it
         // returns a status; the list is dropped a day after it last changed.
         $deferred = array_filter((array) Cache::get(self::DEFERRED, []), 'is_int');
         ksort($deferred);
@@ -39,7 +39,11 @@ class CarbonSyncOrderStatus extends Command
         $orders = ClientHardwareOrder::where('status', 'submitted')
             ->whereNotNull('confirmation_code')
             ->whereIn('client_id', Client::where('carbon_hardware_ordering_enabled', true)->select('id'))
-            ->where(fn ($q) => $q->whereNull('carbon_status')->orWhereIn('carbon_status', CarbonOrderStatusService::OPEN))
+            ->where(fn ($q) => $q->whereNull('carbon_status')->orWhereIn('carbon_status', CarbonOrderStatusService::OPEN)
+                ->orWhere(fn ($q) => $q->whereIn('carbon_status', ['paid', 'partial_refund'])
+                    ->where('carbon_status_checked_at', '<=', now()->subDay())
+                    ->where('created_at', '>', now()->subDays(90))))
+            ->orderByRaw("CASE WHEN carbon_status IN ('paid', 'partial_refund') THEN 1 ELSE 0 END")
             ->when($rank !== [], fn ($q) => $q->orderByRaw('CASE id'.str_repeat(' WHEN ? THEN ?', count($deferred)).' ELSE 0 END', $rank))
             ->orderByRaw('carbon_status_checked_at IS NOT NULL')
             ->orderBy('carbon_status_checked_at')->orderBy('id')->limit(25)->get();

@@ -289,6 +289,98 @@ class CarbonOrderStatusTest extends TestCase
         }
     }
 
+    public static function settledReads(): array
+    {
+        return [
+            'paid canceled' => ['paid', 'canceled'],
+            'paid refunded' => ['paid', 'partial_refund'],
+            'refunded canceled' => ['partial_refund', 'canceled'],
+        ];
+    }
+
+    #[DataProvider('settledReads')]
+    public function test_settled_reread_stores_status_and_waits_since_success(string $stored, string $reply): void
+    {
+        $this->freezeTime();
+        $order = $this->order(['carbon_status' => $stored, 'carbon_status_checked_at' => now()->subHours(25), 'created_at' => now()->subDays(89)]);
+        $this->carbonCallResult = self::reply(['status' => $reply]);
+        $this->artisan('carbon:sync-order-status')->assertSuccessful();
+        $this->assertCount(1, $this->calls());
+        $this->assertSame($reply, $order->refresh()->carbon_status);
+        $this->assertSame(now()->toDateTimeString(), $order->carbon_status_checked_at->toDateTimeString());
+        $this->travel(23)->hours();
+        $this->artisan('carbon:sync-order-status')->assertSuccessful();
+        $this->assertCount(1, $this->calls());
+    }
+
+    public static function settledExclusions(): array
+    {
+        return [
+            'paid recent' => ['paid', 23, 10],
+            'refunded recent' => ['partial_refund', 23, 10],
+            'paid old' => ['paid', 25, 91],
+            'refunded old' => ['partial_refund', 25, 91],
+            'at age bound' => ['paid', 25, 90],
+            'canceled' => ['canceled', 25, 10],
+        ];
+    }
+
+    #[DataProvider('settledExclusions')]
+    public function test_settled_reread_exclusions_with_eligible_control(string $status, int $hours, int $days): void
+    {
+        $this->freezeTime();
+        $excluded = $this->order(['carbon_status' => $status, 'carbon_status_checked_at' => now()->subHours($hours), 'created_at' => now()->subDays($days)]);
+        $before = $excluded->getAttributes();
+        $control = $this->order(['confirmation_code' => 'SYNTH-CONTROL', 'carbon_status' => 'paid', 'carbon_status_checked_at' => now()->subDay()]);
+        $this->carbonCallResult = self::reply(['confirmationCode' => 'SYNTH-CONTROL', 'status' => 'partial_refund']);
+        $this->artisan('carbon:sync-order-status')->assertSuccessful();
+        $this->assertSame(['SYNTH-CONTROL'], $this->calls()->map(fn ($pair) => $pair[0]['params']['arguments']['confirmationCode'])->all());
+        $this->assertSame($before, $excluded->refresh()->getAttributes());
+        $this->assertSame('partial_refund', $control->refresh()->carbon_status);
+    }
+
+    public function test_settled_reread_is_after_open_rows_including_deferred_at_cap(): void
+    {
+        $this->freezeTime();
+        $paid = $this->order(['confirmation_code' => 'SYNTH-PAID', 'carbon_status' => 'paid', 'carbon_status_checked_at' => now()->subDays(2)]);
+        $open = [];
+        for ($i = 0; $i < 26; $i++) {
+            $open[] = $this->order(['confirmation_code' => 'SYNTH-OPEN-'.$i, 'carbon_status' => 'quote', 'carbon_status_checked_at' => now()]);
+        }
+        Cache::put('carbon-order-status-deferred', [$open[24]->id => now()->getTimestamp(), $open[25]->id => now()->getTimestamp()], now()->addDay());
+        $this->carbonCallResult = array_replace(self::reply(), ['isError' => true]);
+        $this->artisan('carbon:sync-order-status')->assertSuccessful();
+        $this->assertSame(array_map(fn ($row) => $row->confirmation_code, array_slice($open, 0, 25)), $this->calls()->map(fn ($pair) => $pair[0]['params']['arguments']['confirmationCode'])->all());
+        $this->assertSame('paid', $paid->refresh()->carbon_status);
+        foreach ($open as $row) {
+            $row->update(['carbon_status' => 'canceled']);
+        }
+        $this->carbonCallResult = self::reply(['confirmationCode' => 'SYNTH-PAID', 'status' => 'partial_refund']);
+        $this->artisan('carbon:sync-order-status')->assertSuccessful();
+        $this->assertCount(26, $this->calls());
+        $this->assertSame('partial_refund', $paid->refresh()->carbon_status);
+    }
+
+    public function test_settled_refusal_is_retried_next_run_after_every_open_row(): void
+    {
+        $this->freezeTime();
+        $paid = $this->order(['confirmation_code' => 'SYNTH-PAID', 'carbon_status' => 'paid', 'carbon_status_checked_at' => now()->subDays(2)]);
+        $before = $paid->getAttributes();
+        $deferred = $this->order(['confirmation_code' => 'SYNTH-DEFERRED', 'carbon_status' => 'quote']);
+        $this->order(['confirmation_code' => 'SYNTH-OPEN']);
+        Cache::put('carbon-order-status-deferred', [$deferred->id => now()->getTimestamp()], now()->addDay());
+        $this->carbonCallResult = array_replace(self::reply(), ['isError' => true]);
+        for ($i = 0; $i < 2; $i++) {
+            $this->artisan('carbon:sync-order-status')->assertSuccessful();
+            $this->assertSame($before, $paid->refresh()->getAttributes());
+            $this->travel(1)->hours();
+        }
+        $this->assertSame(array_merge(...array_fill(0, 2, ['SYNTH-OPEN', 'SYNTH-DEFERRED', 'SYNTH-PAID'])), $this->calls()->map(fn ($pair) => $pair[0]['params']['arguments']['confirmationCode'])->all());
+        foreach ($this->calls() as [$request]) {
+            $this->assertSame('get_order', $request['params']['name']);
+        }
+    }
+
     public function test_switches_off_send_nothing(): void
     {
         $this->order();
