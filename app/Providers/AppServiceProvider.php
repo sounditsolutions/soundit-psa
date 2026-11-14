@@ -41,11 +41,14 @@ use App\Support\MeshConfig;
 use App\Support\ServosityConfig;
 use App\Support\StripeConfig;
 use App\Support\ZorusConfig;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
 use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
 use SocialiteProviders\Manager\SocialiteWasCalled;
@@ -270,6 +273,21 @@ class AppServiceProvider extends ServiceProvider
         // Keeps prospects structurally out of login and the reset broker.
         Auth::provider('portal-eloquent', function ($app, array $config) {
             return new PortalUserProvider($app['hash'], $config['model']);
+        });
+
+        // Portal guest limiters (routes/portal.php). Named limiters keep their
+        // own counters: a plain throttle:N,M on these routes would share one
+        // per-address counter with the sign-in POSTs, so page views would use
+        // up sign-in tries again.
+        RateLimiter::for('portal-page', fn (Request $request) => Limit::perMinute(60)->by($request->ip()));
+        RateLimiter::for('portal-login', function (Request $request) {
+            $email = $request->input('email');
+            $email = is_string($email) ? mb_strtolower(trim($email)) : '';
+
+            return [
+                Limit::perMinute(5)->by('email:'.$email.'|'.$request->ip()),
+                Limit::perMinute(20)->by('address:'.$request->ip()),
+            ];
         });
 
         // Register model observers

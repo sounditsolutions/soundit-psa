@@ -23,20 +23,33 @@ use Illuminate\Support\Facades\Route;
 */
 
 // ── Guest routes (login, password reset) ──
+//
+// Three limiters, each with its own counter (the limiters are defined in
+// AppServiceProvider::boot):
+//  - portal-page: viewing a form, 60 a minute per address. A page view does
+//    not use up a sign-in try.
+//  - portal-login: POST /login, 5 a minute per email and address, plus 20 a
+//    minute per address alone, so one person's mistakes do not lock out the
+//    rest of their office.
+//  - throttle:6,1: the other POSTs, and the verify-access link (it acts on a
+//    link; it is not a page view), 6 a minute per address.
 
-Route::middleware(['portal.enabled', 'throttle:6,1'])->group(function () {
-    Route::get('/login', [PortalAuthController::class, 'showLogin'])->name('portal.login');
-    Route::post('/login', [PortalAuthController::class, 'login']);
+Route::middleware('portal.enabled')->group(function () {
+    Route::middleware('throttle:portal-page')->group(function () {
+        Route::get('/login', [PortalAuthController::class, 'showLogin'])->name('portal.login');
+        Route::get('/forgot-password', [PortalAuthController::class, 'showForgotPassword'])->name('portal.password.request');
+        Route::get('/reset-password/{token}', [PortalAuthController::class, 'showResetForm'])->name('portal.password.reset');
+        Route::get('/request-access', [PortalAuthController::class, 'showRequestAccess'])->name('portal.request-access');
+    });
 
-    Route::get('/forgot-password', [PortalAuthController::class, 'showForgotPassword'])->name('portal.password.request');
-    Route::post('/forgot-password', [PortalAuthController::class, 'sendResetLink'])->name('portal.password.email');
+    Route::post('/login', [PortalAuthController::class, 'login'])->middleware('throttle:portal-login');
 
-    Route::get('/reset-password/{token}', [PortalAuthController::class, 'showResetForm'])->name('portal.password.reset');
-    Route::post('/reset-password', [PortalAuthController::class, 'resetPassword'])->name('portal.password.update');
-
-    Route::get('/request-access', [PortalAuthController::class, 'showRequestAccess'])->name('portal.request-access');
-    Route::post('/request-access', [PortalAuthController::class, 'sendAccessLink']);
-    Route::get('/verify-access/{person}', [PortalAuthController::class, 'verifyAccess'])->name('portal.verify-access');
+    Route::middleware('throttle:6,1')->group(function () {
+        Route::post('/forgot-password', [PortalAuthController::class, 'sendResetLink'])->name('portal.password.email');
+        Route::post('/reset-password', [PortalAuthController::class, 'resetPassword'])->name('portal.password.update');
+        Route::post('/request-access', [PortalAuthController::class, 'sendAccessLink']);
+        Route::get('/verify-access/{person}', [PortalAuthController::class, 'verifyAccess'])->name('portal.verify-access');
+    });
 });
 
 Route::middleware('portal.enabled')->group(function () {
