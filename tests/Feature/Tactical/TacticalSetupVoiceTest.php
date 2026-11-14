@@ -104,7 +104,7 @@ class TacticalSetupVoiceTest extends TestCase
         $page = $this->get('/setup/'.$client->portal_install_token)->assertOk();
         // The one <details> whose <summary> is the note holds, whitespace-normalized, exactly
         // that summary and these three sentences in this order.
-        $doc = new \DOMDocument();
+        $doc = new \DOMDocument;
         $previous = libxml_use_internal_errors(true);
         $doc->loadHTML('<?xml encoding="UTF-8">'.$page->getContent());
         libxml_clear_errors();
