@@ -22,11 +22,14 @@ use Tests\TestCase;
  *  - the other POSTs and GET /verify-access/{person}: 6 a minute per address
  *    (portal-guest).
  *
- * Each test exhausts one limiter and shows the others still answer, so a
- * limiter that shared a counter with another one would fail here.
+ * Each limit is checked on its own, and some tests use up one limiter and
+ * then show another still answers: sign-in tries against page views and the
+ * other forms, the other POSTs against page views, page views against a
+ * password-reset request, and a plain throttled route against all three.
  *
- * All requests come from one direct address (no trusted proxy), in the
- * 192.0.2.0/24 documentation block; emails use example.test.
+ * Requests come straight from addresses in the 192.0.2.0/24 documentation
+ * block (no trusted proxy); a test that needs a second allowance switches
+ * address. Emails use example.test.
  */
 class PortalSignInLimitsTest extends TestCase
 {
@@ -71,7 +74,12 @@ class PortalSignInLimitsTest extends TestCase
         $this->signIn('someone@example.test')->assertStatus(429);
     }
 
-    public function test_each_form_page_allows_60_views_a_minute_per_address(): void
+    /**
+     * The four form pages share one portal-page counter per address. Each
+     * page is checked here from its own address, so this test shows the
+     * limit of 60, not that the pages share it.
+     */
+    public function test_the_page_limit_is_60_views_a_minute_per_address(): void
     {
         foreach (['/portal/login', '/portal/forgot-password', '/portal/request-access', '/portal/reset-password/sometoken'] as $i => $path) {
             $this->fromAddress('192.0.2.'.(40 + $i));
@@ -145,8 +153,8 @@ class PortalSignInLimitsTest extends TestCase
     }
 
     /**
-     * A plain throttle:60,1 on the pages would share the 6-a-minute POSTs'
-     * per-address counter: ten page views would then refuse a password reset.
+     * If the pages shared portal-guest's 6-a-minute counter, these twelve page
+     * views would make the password-reset request below answer 429.
      */
     public function test_page_views_do_not_use_up_the_other_forms_tries(): void
     {
