@@ -50,7 +50,7 @@ class PortalRealVisitorAddressTest extends TestCase
 
     private const DIRECT_CALLER = '192.0.2.50';
 
-    /** Inside 2a06:98c0::/29, the published v6 range Workers send from. */
+    /** Inside 2a06:98c0::/29, a published Cloudflare v6 range. */
     private const CLOUDFLARE_APPENDED = '2a06:98c0::1';
 
     protected function setUp(): void
@@ -133,10 +133,10 @@ class PortalRealVisitorAddressTest extends TestCase
 
     /**
      * A request that starts on Cloudflare's network (a Worker): the edge
-     * appends an address that is itself inside Cloudflare's ranges. Only the
-     * connecting hop is trusted, so the appended entry (which differs from the
-     * connecting edge here) is the address and the caller-written entry to its
-     * left is not used.
+     * appends an address that is itself inside Cloudflare's ranges. The header
+     * is cut to that appended entry before Symfony reads it, so it (which
+     * differs from the connecting edge here) is the address and the
+     * caller-written entry to its left is not used.
      */
     public function test_a_forged_entry_left_of_a_cloudflare_appended_address_is_ignored(): void
     {

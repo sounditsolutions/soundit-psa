@@ -9,8 +9,8 @@
 | Cloudflare edge, not the visitor. App\Http\Middleware\TrustCloudflareHop
 | trusts one hop only: when the connecting address is in this list, the
 | visitor is the right-most X-Forwarded-For entry (the one that hop
-| appended). The header is cut to that entry before it is read, so entries a
-| caller wrote are never used; if that entry equals the connecting address or
+| appended). The header is cut to that entry before it is read, so entries to
+| its left are never used; if that entry equals the connecting address or
 | is not a valid IP, the address is the connecting address. The app cannot
 | tell this site's edge from any other Cloudflare address, so a connection
 | that reaches the origin directly from Cloudflare's network is trusted the
@@ -26,7 +26,9 @@
 | $proxy_add_x_forwarded_for or $remote_addr), that is the Cloudflare edge:
 | visitors behind one edge share an allowance again, but none can choose an
 | address. A proxy that passes the header through unchanged (nginx's
-| proxy_pass default) lets any caller that reaches it choose its address.
+| proxy_pass default) keeps the entry Cloudflare appended for a request that
+| came through Cloudflare, but lets a caller that reaches the proxy without
+| passing through Cloudflare choose its address.
 |
 | Never put a catch-all range (0.0.0.0/0, ::/0) here: that would let any
 | caller set its own address. A bare '*' matches no address in

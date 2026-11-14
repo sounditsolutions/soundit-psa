@@ -374,9 +374,12 @@ connecting address is a trusted proxy: `127.0.0.1` plus Cloudflare's
 published ranges, listed in `config/trustedproxy.php`. It trusts that one
 hop only: the address is the right-most `X-Forwarded-For` entry, the one
 the proxy appended (limits below). Rate limits keyed by address (guest
-throttles, the API token guess limiter, and the throttles on signed-in
-portal pages such as ticket replies and shop orders, which the throttle
-keys by address because a portal sign-in is not the default staff guard)
+throttles, the API token guess limiter, every `throttle:120,1` in
+`routes/api.php` (webhooks, MCP, Teams, Tier2Tickets, Huntress), none of
+which signs a user in, and the
+throttles on signed-in portal pages such as ticket replies and shop orders,
+which the throttle keys by address because a portal sign-in is not the
+default staff guard)
 and the request addresses the app stores (audit
 logs, token last-used address, signature evidence) use that visitor
 address. Limits keyed by token or key are unchanged, and nginx's own access
@@ -390,7 +393,7 @@ A request that reaches the origin through this site's Cloudflare edge is
 counted under the address that edge appended, not one the caller wrote,
 including a request that starts on Cloudflare's network (for example
 someone else's Cloudflare Worker fetching the site). The header is cut to
-its right-most entry before it is read, so entries a caller wrote are never
+its right-most entry before it is read, so entries to its left are never
 used; if that entry equals the connecting address or is not a valid IP, the
 address is the connecting address. One limit applies: the app cannot tell
 this site's edge from any other Cloudflare address, so a connection that
@@ -406,8 +409,10 @@ or sets the address it received the request from (for nginx,
 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` or
 `$remote_addr`), that is the Cloudflare edge: visitors behind one edge share
 an allowance again, but none can choose an address. A proxy that passes the
-header through unchanged (nginx's `proxy_pass` default) lets any caller that
-reaches it choose its address.
+header through unchanged (nginx's `proxy_pass` default) keeps the entry
+Cloudflare appended for a request that came through Cloudflare, but lets a
+caller that reaches the proxy without passing through Cloudflare choose its
+address.
 
 ### SSL with Let's Encrypt (if not using Cloudflare)
 

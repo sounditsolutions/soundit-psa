@@ -25,7 +25,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // visitor is the right-most X-Forwarded-For entry. Only
         // X-Forwarded-For is read: scheme, host, port and prefix are never
         // taken from forwarded headers. (Before this change a proxy at
-        // 127.0.0.1 could also set those; the site has no local proxy.)
+        // 127.0.0.1 could also set those.)
         $middleware->replace(\Illuminate\Http\Middleware\TrustProxies::class, \App\Http\Middleware\TrustCloudflareHop::class);
         $middleware->trustProxies(headers: \Illuminate\Http\Request::HEADER_X_FORWARDED_FOR);
         $middleware->web(append: [
