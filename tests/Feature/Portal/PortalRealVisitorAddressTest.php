@@ -33,8 +33,9 @@ use Tests\TestCase;
  *  - scheme, host and path prefix are not taken from forwarded headers.
  *
  * Addresses: the edges are synthetic hosts inside Cloudflare's published
- * ranges; visitors, forged entries and the direct caller use the
- * 192.0.2.0/24 documentation block.
+ * ranges; visitors and the direct caller use the 192.0.2.0/24
+ * documentation block, and forged entries use that block or the
+ * 198.51.100.0/24 documentation block.
  */
 class PortalRealVisitorAddressTest extends TestCase
 {
