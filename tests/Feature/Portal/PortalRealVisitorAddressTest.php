@@ -265,4 +265,39 @@ class PortalRealVisitorAddressTest extends TestCase
         $this->fromAddress(self::EDGE_V4, self::VISITOR_B)
             ->post('/portal/login', ['email' => 'a@example.test', 'password' => 'not-a-real-passphrase'])->assertRedirect();
     }
+
+    /**
+     * A caller outside the trusted ranges that sends a different
+     * X-Forwarded-For on every request still meets the page limit: the
+     * header is not its address.
+     */
+    public function test_an_outside_caller_changing_the_header_still_meets_the_page_limit(): void
+    {
+        for ($n = 1; $n <= 60; $n++) {
+            $this->fromAddress(self::DIRECT_CALLER, '198.51.100.'.$n)->get('/portal/login')->assertOk();
+        }
+        $this->fromAddress(self::DIRECT_CALLER, '198.51.100.200')->get('/portal/login')->assertStatus(429);
+    }
+
+    /** The same for the 6-a-minute form limit. */
+    public function test_an_outside_caller_changing_the_header_still_meets_the_form_limit(): void
+    {
+        for ($n = 1; $n <= 6; $n++) {
+            $this->fromAddress(self::DIRECT_CALLER, '198.51.100.'.$n)
+                ->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertRedirect();
+        }
+        $this->fromAddress(self::DIRECT_CALLER, '198.51.100.200')
+            ->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertStatus(429);
+    }
+
+    /** The same for the 5-a-minute per-email sign-in limit. */
+    public function test_an_outside_caller_changing_the_header_still_meets_the_per_email_limit(): void
+    {
+        for ($n = 1; $n <= 5; $n++) {
+            $this->fromAddress(self::DIRECT_CALLER, '198.51.100.'.$n)
+                ->post('/portal/login', ['email' => 'a@example.test', 'password' => 'not-a-real-passphrase'])->assertRedirect();
+        }
+        $this->fromAddress(self::DIRECT_CALLER, '198.51.100.200')
+            ->post('/portal/login', ['email' => 'a@example.test', 'password' => 'not-a-real-passphrase'])->assertStatus(429);
+    }
 }

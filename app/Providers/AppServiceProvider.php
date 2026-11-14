@@ -288,9 +288,11 @@ class AppServiceProvider extends ServiceProvider
             // The per-email key is the typed email: trimmed, cut to its first
             // 255 characters, lower-cased, and folded to plain letters, because
             // the account lookup's database collation treats case and accents
-            // as the same letter. A character with no plain spelling is kept
-            // as typed, so emails in other scripts keep counters of their own.
-            // The fold is close to that matching, not exact; the 20-a-minute
+            // as the same letter. A letter with no plain spelling is kept as
+            // typed, so emails in other scripts keep counters of their own; any
+            // other character with no plain spelling is dropped. The result is
+            // lower-cased again, because the fold can produce a capital. The
+            // fold is close to that matching, not exact; the 20-a-minute
             // address limit below applies either way.
             $email = $request->input('email');
             $email = is_string($email) ? mb_strtolower(mb_substr(trim($email), 0, 255)) : '';
@@ -301,8 +303,13 @@ class AppServiceProvider extends ServiceProvider
             $email = preg_replace_callback('/[^\x00-\x7F]/u', function (array $m) {
                 $plain = Str::ascii($m[0]);
 
-                return $plain !== '' ? $plain : $m[0];
+                if ($plain !== '') {
+                    return $plain;
+                }
+
+                return preg_match('/\p{L}/u', $m[0]) === 1 ? $m[0] : '';
             }, $email) ?? $email;
+            $email = mb_strtolower($email);
 
             return [
                 Limit::perMinute(5)->by('email:'.$email.'|'.$request->ip()),

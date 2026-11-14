@@ -116,7 +116,8 @@ class PortalSignInLimitsTest extends TestCase
 
     /**
      * The typed email is folded: accented and plain spellings share one 5.
-     * Without the fold each spelling would get its own 5. (The test database
+     * Without the fold, lower-casing alone would join only the spellings that
+     * differ by case; the others would each count apart. (The test database
      * matches emails byte for byte, so this shows the key only, not what the
      * production collation matches.)
      */
@@ -180,6 +181,46 @@ class PortalSignInLimitsTest extends TestCase
         $this->signIn("\u{5F20}\u{4F1F}@example.test")->assertStatus(429);
 
         $this->signIn("\u{674E}\u{5A1C}@example.test")->assertRedirect();
+    }
+
+    /**
+     * A letter that does not decompose but has a plain spelling (l with a
+     * stroke) folds to that spelling, so it shares the plain spelling's 5.
+     */
+    public function test_a_letter_with_a_plain_spelling_and_no_decomposition_folds_to_it(): void
+    {
+        foreach (["\u{0142}ena@example.test", 'lena@example.test', "\u{0141}ena@example.test", 'lena@example.test'] as $email) {
+            $this->signIn($email)->assertRedirect();
+        }
+        $this->signIn("\u{0142}ena@example.test")->assertRedirect();
+        $this->signIn('lena@example.test')->assertStatus(429);
+    }
+
+    /**
+     * A capital that only appears once the email is decomposed (a
+     * double-struck H becomes H) is lower-cased again, so it shares the plain
+     * spelling's 5.
+     */
+    public function test_a_capital_produced_by_the_fold_is_lower_cased(): void
+    {
+        foreach (["\u{210D}ank@example.test", 'hank@example.test', "\u{210D}ank@example.test", 'hank@example.test'] as $email) {
+            $this->signIn($email)->assertRedirect();
+        }
+        $this->signIn("\u{210D}ank@example.test")->assertRedirect();
+        $this->signIn('hank@example.test')->assertStatus(429);
+    }
+
+    /**
+     * A character that is not a letter and has no plain spelling (a soft
+     * hyphen) is dropped from the key, so it shares the plain spelling's 5.
+     */
+    public function test_a_non_letter_with_no_plain_spelling_is_dropped(): void
+    {
+        foreach (["an\u{00AD}na@example.test", 'anna@example.test', "an\u{00AD}na@example.test", 'anna@example.test'] as $email) {
+            $this->signIn($email)->assertRedirect();
+        }
+        $this->signIn("an\u{00AD}na@example.test")->assertRedirect();
+        $this->signIn('anna@example.test')->assertStatus(429);
     }
 
     /**
@@ -368,12 +409,15 @@ class PortalSignInLimitsTest extends TestCase
         $this->fromAddress('192.0.2.63')->signIn('user21@example.test')->assertRedirect();
     }
 
-    /** With the portal switched off, every guest route answers 404, the limited ones included. */
+    /** With the portal switched off, every guest route answers 404: the four pages, the four POSTs and the verify-access link. */
     public function test_the_guest_routes_answer_404_when_the_portal_is_off(): void
     {
         Setting::setValue('portal_enabled', '0');
 
         $this->get('/portal/login')->assertNotFound();
+        $this->get('/portal/forgot-password')->assertNotFound();
+        $this->get('/portal/reset-password/sometoken')->assertNotFound();
+        $this->get('/portal/request-access')->assertNotFound();
         $this->signIn('a@example.test')->assertNotFound();
         $this->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertNotFound();
         $this->post('/portal/request-access', ['email' => 'x@example.test'])->assertNotFound();
