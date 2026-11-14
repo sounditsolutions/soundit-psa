@@ -22,9 +22,11 @@ use Tests\TestCase;
  *  - the other POSTs and GET /verify-access/{person}: 6 a minute per address
  *    (portal-guest).
  *
- * Each limit is checked on its own, and some tests use up one limiter and
- * then show another still answers: sign-in tries against page views and the
- * other forms, the other POSTs against page views, page views against a
+ * Each limit is checked on its own. Some tests run one limiter out and then
+ * show another still answers: sign-in tries against page views and the other
+ * forms, and the other POSTs against page views. Others spend only part of
+ * one allowance, enough that a counter shared with it would refuse, and show
+ * the other still answers: page views against sign-in tries and against a
  * password-reset request, and a plain throttled route against all three.
  *
  * Requests come straight from addresses in the 192.0.2.0/24 documentation
@@ -146,9 +148,9 @@ class PortalSignInLimitsTest extends TestCase
     }
 
     /**
-     * A full-width letter and a letter whose accent sits on a letter the
-     * plain fold cannot map both fold to the plain letter, so they share the
-     * plain spelling's 5.
+     * A full-width letter, and an accented letter that has no plain spelling
+     * of its own until its accent is split off, both fold to the plain letter,
+     * so they share the plain spelling's 5.
      */
     public function test_the_per_email_limit_folds_full_width_and_decomposable_letters(): void
     {
@@ -167,16 +169,33 @@ class PortalSignInLimitsTest extends TestCase
     }
 
     /**
-     * Only the first 255 characters of the email are keyed, so two long
-     * emails that differ after that share one 5.
+     * A letter with no plain spelling is kept as typed, not dropped, so two
+     * emails written in other scripts keep counters of their own.
+     */
+    public function test_letters_with_no_plain_spelling_keep_separate_counters(): void
+    {
+        for ($i = 1; $i <= 5; $i++) {
+            $this->signIn("\u{5F20}\u{4F1F}@example.test")->assertRedirect();
+        }
+        $this->signIn("\u{5F20}\u{4F1F}@example.test")->assertStatus(429);
+
+        $this->signIn("\u{674E}\u{5A1C}@example.test")->assertRedirect();
+    }
+
+    /**
+     * Only the first 255 characters of the email are keyed: emails that
+     * share their first 255 characters and differ at the 256th share one 5,
+     * and an email that differs at the 255th has a counter of its own.
      */
     public function test_a_very_long_email_is_keyed_on_its_first_255_characters(): void
     {
-        $prefix = str_repeat('a', 300);
+        $prefix = str_repeat('a', 255);
         for ($i = 1; $i <= 5; $i++) {
             $this->signIn($prefix.$i.'@example.test')->assertRedirect();
         }
         $this->signIn($prefix.'6@example.test')->assertStatus(429);
+
+        $this->signIn(str_repeat('a', 254).'b@example.test')->assertRedirect();
     }
 
     public function test_sign_in_allows_twenty_tries_a_minute_per_address_across_emails(): void
@@ -311,9 +330,14 @@ class PortalSignInLimitsTest extends TestCase
         $this->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertStatus(429);
     }
 
-    /** Each limit lasts a minute: 30 seconds after it is used up it still refuses; after the minute it answers again. */
+    /**
+     * Each limit lasts a full minute from its first counted request: 59
+     * seconds later it still refuses; at 60 seconds it answers again. Time is
+     * frozen so every request counts from the same second.
+     */
     public function test_each_limit_lasts_a_full_minute(): void
     {
+        $this->freezeSecond();
         $this->fromAddress('192.0.2.60');
         for ($n = 1; $n <= 60; $n++) {
             $this->get('/portal/login');
@@ -331,13 +355,13 @@ class PortalSignInLimitsTest extends TestCase
             $this->signIn("user{$n}@example.test");
         }
 
-        $this->travel(30)->seconds();
+        $this->travel(59)->seconds();
         $this->fromAddress('192.0.2.60')->get('/portal/login')->assertStatus(429);
         $this->fromAddress('192.0.2.61')->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertStatus(429);
         $this->fromAddress('192.0.2.62')->signIn('a@example.test')->assertStatus(429);
         $this->fromAddress('192.0.2.63')->signIn('user21@example.test')->assertStatus(429);
 
-        $this->travel(31)->seconds();
+        $this->travel(1)->seconds();
         $this->fromAddress('192.0.2.60')->get('/portal/login')->assertOk();
         $this->fromAddress('192.0.2.61')->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertRedirect();
         $this->fromAddress('192.0.2.62')->signIn('a@example.test')->assertRedirect();
