@@ -27,9 +27,8 @@ use Tests\TestCase;
  *  - behind a real edge, a forged left-hand header entry is ignored (the
  *    address is the one the edge appended), including when the appended
  *    entry is itself a Cloudflare address, as for a Worker's request;
- *  - the documented limit: an appended entry equal to the connecting
- *    address, or not a valid IP, is skipped and the entry to its left is
- *    used;
+ *  - an appended entry equal to the connecting address, or not a valid IP,
+ *    resolves to the connecting address, never to an entry the caller wrote;
  *  - the trusted list is exactly 127.0.0.1 plus the 22 published ranges;
  *  - scheme, host and path prefix are not taken from forwarded headers.
  *
@@ -193,17 +192,32 @@ class PortalRealVisitorAddressTest extends TestCase
     }
 
     /**
-     * Documented limit (config/trustedproxy.php, INSTALL.md): Symfony skips
-     * every entry equal to the trusted connecting address, and every entry
-     * that is not a valid IP, before taking the right-most survivor, so in
-     * those cases the entry to the left of the appended one is the address.
+     * The appended entry equals the connecting address. Symfony drops every
+     * entry equal to a trusted proxy, so without the right-most cut the
+     * caller's own entry to its left became the address.
      */
-    public function test_documented_limit_an_appended_entry_equal_to_the_hop_or_not_an_ip_is_skipped(): void
+    public function test_an_appended_entry_equal_to_the_connecting_address_resolves_to_that_address(): void
     {
-        $this->fromAddress(self::EDGE_V6, '192.0.2.99, '.self::EDGE_V6)->get('/__test/visitor-address')
-            ->assertOk()->assertSeeText('192.0.2.99', false);
+        $this->fromAddress(self::EDGE_V4, '192.0.2.77, '.self::EDGE_V4)->get('/__test/visitor-address')
+            ->assertOk()->assertSeeText(self::EDGE_V4, false)->assertDontSeeText('192.0.2.77', false);
 
-        $this->fromAddress(self::EDGE_V4, '192.0.2.99, not-an-address')->get('/__test/visitor-address')
-            ->assertOk()->assertSeeText('192.0.2.99', false);
+        $this->fromAddress(self::EDGE_V6, '192.0.2.99, '.self::EDGE_V6)->get('/__test/visitor-address')
+            ->assertOk()->assertSeeText(self::EDGE_V6, false)->assertDontSeeText('192.0.2.99', false);
+    }
+
+    /** An appended entry that is not an address resolves to the connecting address, not the entry to its left. */
+    public function test_an_appended_entry_that_is_not_an_address_resolves_to_the_connecting_address(): void
+    {
+        $this->fromAddress(self::EDGE_V4, '192.0.2.77, garbage')->get('/__test/visitor-address')
+            ->assertOk()->assertSeeText(self::EDGE_V4, false)->assertDontSeeText('192.0.2.77', false);
+    }
+
+    /** With the appended entry equal to the connecting address, rotating the left entry buys no fresh allowance. */
+    public function test_rotating_the_left_entry_beside_a_same_hop_entry_buys_no_allowance(): void
+    {
+        for ($i = 1; $i <= 6; $i++) {
+            $this->fromAddress(self::EDGE_V4, '192.0.2.'.(100 + $i).', '.self::EDGE_V4)->get('/portal/login')->assertOk();
+        }
+        $this->fromAddress(self::EDGE_V4, '192.0.2.200, '.self::EDGE_V4)->get('/portal/login')->assertStatus(429);
     }
 }

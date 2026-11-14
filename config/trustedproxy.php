@@ -9,14 +9,13 @@
 | Cloudflare edge, not the visitor. App\Http\Middleware\TrustCloudflareHop
 | trusts one hop only: when the connecting address is in this list, the
 | visitor is the right-most X-Forwarded-For entry (the one that hop
-| appended). Symfony skips an entry equal to the connecting address or not a
-| valid IP, so if the appended entry is one of those, the entry to its left
-| (which the caller may have written) is used. Otherwise, for a request that
-| came through this site's Cloudflare edge, entries a caller wrote are not
-| used. The app cannot tell this site's edge from any other Cloudflare
-| address: a connection made straight to the origin from Cloudflare's network
-| (for example a Worker's TCP socket, or Spectrum) can write the header and
-| choose its address.
+| appended). The header is cut to that entry before it is read, so entries a
+| caller wrote are never used; if that entry equals the connecting address or
+| is not a valid IP, the address is the connecting address. The app cannot
+| tell this site's edge from any other Cloudflare address, so a connection
+| that reaches the origin directly from Cloudflare's network is trusted the
+| same way and can choose its address. Only authenticating the origin
+| connection closes that.
 | Every other request keeps its connecting address and its header is
 | ignored. Only X-Forwarded-For is trusted (see bootstrap/app.php); scheme,
 | host and port are not taken from headers.

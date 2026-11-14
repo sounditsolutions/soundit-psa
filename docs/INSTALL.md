@@ -389,14 +389,14 @@ file.
 A request that reaches the origin through this site's Cloudflare edge is
 counted under the address that edge appended, not one the caller wrote,
 including a request that starts on Cloudflare's network (for example
-someone else's Cloudflare Worker fetching the site). Two limits apply.
-Symfony skips an appended entry that equals the connecting address or is
-not a valid IP, and then the entry to its left, which the caller may have
-written, is used. And the app cannot tell this site's edge from any other
-Cloudflare address: the origin still answers direct requests, so a
-connection made straight to the origin from Cloudflare's network (for
-example a Worker's TCP socket, or Spectrum) can write any
-`X-Forwarded-For` and choose its address. Requests from any address outside
+someone else's Cloudflare Worker fetching the site). The header is cut to
+its right-most entry before it is read, so entries a caller wrote are never
+used; if that entry equals the connecting address or is not a valid IP, the
+address is the connecting address. One limit applies: the app cannot tell
+this site's edge from any other Cloudflare address, so a connection that
+reaches the origin directly from Cloudflare's network is trusted the same
+way and can choose its address. Only authenticating the origin connection
+closes that. Requests from any address outside
 the list keep their connecting address and their `X-Forwarded-For` is
 ignored. Locking the origin to Cloudflare's ranges (a firewall or
 web-server setting) closes direct access from other addresses, but not from

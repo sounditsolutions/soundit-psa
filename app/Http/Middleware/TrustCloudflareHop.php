@@ -12,15 +12,13 @@ use Symfony\Component\HttpFoundation\IpUtils;
  * X-Forwarded-For entry, the one that hop appended.
  *
  * The framework's TrustProxies trusts the whole list, and Symfony drops every
- * trusted entry from the X-Forwarded-For chain before taking the right-most
- * survivor. With Cloudflare's ranges in the list, a request that starts on
- * Cloudflare's network (for example a Worker) would have the entry the edge
- * appended for it dropped as a proxy hop, and an entry the caller wrote
- * itself would become the address. Trusting only the connecting address
- * keeps the appended entry, unless it equals the connecting address or is
- * not a valid IP: Symfony skips those too, and the entry to its left is
- * used. Whether the connecting address is this site's own edge is not
- * checked (see config/trustedproxy.php).
+ * trusted entry, and every entry that is not a valid IP, from the
+ * X-Forwarded-For chain before taking the right-most survivor. So when the
+ * connecting address is listed, the header is first cut down to its
+ * right-most entry, and no entry a caller wrote reaches Symfony. If that
+ * entry equals the connecting address or is not a valid IP, the address is
+ * the connecting address. Whether the connecting address is this site's own
+ * edge is not checked (see config/trustedproxy.php).
  *
  * Only X-Forwarded-For is trusted (bootstrap/app.php). Never '*'. A
  * connecting address outside the list trusts nothing, so its header is
@@ -36,7 +34,23 @@ class TrustCloudflareHop extends TrustProxies
         $listed = (array) config('trustedproxy.proxies', []);
 
         if (is_string($remote) && $remote !== '' && $listed !== [] && IpUtils::checkIp($remote, $listed)) {
+            $this->keepOnlyTheAppendedEntry($request);
             $this->setTrustedProxyIpAddressesToTheCallingIp($request);
         }
+    }
+
+    /**
+     * Cut X-Forwarded-For to its right-most entry: the one the connecting hop
+     * appended. Every entry to its left came from the caller.
+     */
+    private function keepOnlyTheAppendedEntry(Request $request): void
+    {
+        $lines = $request->headers->all('x-forwarded-for');
+        if ($lines === []) {
+            return;
+        }
+
+        $entries = explode(',', (string) end($lines));
+        $request->headers->set('X-Forwarded-For', trim((string) end($entries)));
     }
 }
