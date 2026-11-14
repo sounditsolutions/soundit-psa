@@ -102,8 +102,14 @@ class TacticalSetupVoiceTest extends TestCase
     {
         [$client] = $this->portal();
         $page = $this->get('/setup/'.$client->portal_install_token)->assertOk();
-        $page->assertSee('Antivirus sandboxes can execute the dynamic EXE and enroll a sandbox device.', false);
-        $page->assertSee("Verify the real computer's identity and intended-site check-in rather than assuming the first new record is this computer.", false);
+        // Inside the note, in order, between its summary and its last sentence.
+        $page->assertSeeInOrder([
+            '<summary>Note for our technicians</summary>',
+            'Antivirus sandboxes can execute the dynamic EXE and enroll a sandbox device.'
+                ." Verify the real computer's identity and intended-site check-in rather than assuming the first new record is this computer."
+                ." Signature, publisher/UAC prompts and clean-machine enrollment need a technician's check.",
+            '</details>',
+        ], false);
     }
 
     public function test_invalid_link_says_contact_us(): void
@@ -215,7 +221,7 @@ class TacticalSetupVoiceTest extends TestCase
         } catch (\App\Services\Tactical\InstallerGenerationException $e) {
             $this->assertSame('The installer could not be prepared. Use the manual fallback or contact us.', $e->getMessage());
         }
-        // The refusal must come from the installer POST failing, not from anything earlier in the try.
+        // The installer POST is reached and fails; nothing earlier in the try refuses first.
         $this->assertSame(0, $queue->count());
         $this->assertCount(2, $history);
         $this->assertSame('POST', $history[1]['request']->getMethod());
