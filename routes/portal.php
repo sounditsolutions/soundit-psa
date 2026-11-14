@@ -31,8 +31,12 @@ use Illuminate\Support\Facades\Route;
 //  - portal-login: POST /login, 5 a minute per email and address, plus 20 a
 //    minute per address alone, so one person's mistakes do not lock out the
 //    rest of their office.
-//  - throttle:6,1: the other POSTs, and the verify-access link (it acts on a
+//  - portal-guest: the other POSTs, and the verify-access link (it acts on a
 //    link; it is not a page view), 6 a minute per address.
+// Named limiters keep their own counters. A plain throttle:N,M keys a
+// signed-out caller by address alone, so it would share one counter with
+// every other plain throttle the same address hits (the API's 120 a minute
+// included).
 
 Route::middleware('portal.enabled')->group(function () {
     Route::middleware('throttle:portal-page')->group(function () {
@@ -44,7 +48,7 @@ Route::middleware('portal.enabled')->group(function () {
 
     Route::post('/login', [PortalAuthController::class, 'login'])->middleware('throttle:portal-login');
 
-    Route::middleware('throttle:6,1')->group(function () {
+    Route::middleware('throttle:portal-guest')->group(function () {
         Route::post('/forgot-password', [PortalAuthController::class, 'sendResetLink'])->name('portal.password.email');
         Route::post('/reset-password', [PortalAuthController::class, 'resetPassword'])->name('portal.password.update');
         Route::post('/request-access', [PortalAuthController::class, 'sendAccessLink']);

@@ -6,6 +6,7 @@ use App\Models\Setting;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
@@ -18,7 +19,8 @@ use Tests\TestCase;
  *    form: 60 a minute per address (portal-page);
  *  - POST /login: 5 a minute per email and address, plus 20 a minute per
  *    address alone (portal-login);
- *  - the other POSTs and GET /verify-access/{person}: 6 a minute per address.
+ *  - the other POSTs and GET /verify-access/{person}: 6 a minute per address
+ *    (portal-guest).
  *
  * Each test exhausts one limiter and shows the others still answer, so a
  * limiter that shared a counter with another one would fail here.
@@ -175,5 +177,29 @@ class PortalSignInLimitsTest extends TestCase
         }
 
         $this->signIn('a@example.test')->assertStatus(429)->assertSee('Too Many Requests');
+    }
+
+    /**
+     * A plain throttle:N,M keys a signed-out caller by address alone, so every
+     * such route shares one counter per address. Requests to another throttled
+     * route (here a test route under throttle:120,1, as the API routes are)
+     * must not use up the portal's sign-in allowance.
+     */
+    public function test_requests_to_another_throttled_route_do_not_use_up_the_portal_allowance(): void
+    {
+        Route::middleware('throttle:120,1')->get('/_limits-test/other', fn () => 'ok');
+
+        for ($n = 1; $n <= 30; $n++) {
+            $this->get('/_limits-test/other')->assertOk();
+        }
+
+        $this->get('/portal/login')->assertOk();
+        $this->get('/portal/forgot-password')->assertOk();
+        $this->get('/portal/request-access')->assertOk();
+        $this->signIn('someone@example.test')->assertRedirect()->assertSessionHasErrors('email');
+        $this->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertRedirect();
+        $this->post('/portal/request-access', ['email' => 'x@example.test'])->assertRedirect();
+        $this->get(URL::temporarySignedRoute('portal.verify-access', now()->addHour(), ['person' => 999999]))
+            ->assertRedirect(route('portal.login'));
     }
 }

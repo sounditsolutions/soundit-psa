@@ -276,10 +276,12 @@ class AppServiceProvider extends ServiceProvider
         });
 
         // Portal guest limiters (routes/portal.php). Named limiters keep their
-        // own counters: a plain throttle:N,M on these routes would share one
-        // per-address counter with the sign-in POSTs, so page views would use
-        // up sign-in tries again.
+        // own counters: a plain throttle:N,M keys a signed-out caller by
+        // address alone, so it shares one counter with every other plain
+        // throttle that address hits, and page views would use up sign-in
+        // tries again.
         RateLimiter::for('portal-page', fn (Request $request) => Limit::perMinute(60)->by($request->ip()));
+        RateLimiter::for('portal-guest', fn (Request $request) => Limit::perMinute(6)->by($request->ip()));
         RateLimiter::for('portal-login', function (Request $request) {
             $email = $request->input('email');
             $email = is_string($email) ? mb_strtolower(trim($email)) : '';
