@@ -17,7 +17,10 @@ use Symfony\Component\HttpFoundation\IpUtils;
  * Cloudflare's network (for example a Worker) would have the entry the edge
  * appended for it dropped as a proxy hop, and an entry the caller wrote
  * itself would become the address. Trusting only the connecting address
- * keeps the appended entry.
+ * keeps the appended entry, unless it equals the connecting address or is
+ * not a valid IP: Symfony skips those too, and the entry to its left is
+ * used. Whether the connecting address is this site's own edge is not
+ * checked (see config/trustedproxy.php).
  *
  * Only X-Forwarded-For is trusted (bootstrap/app.php). Never '*'. A
  * connecting address outside the list trusts nothing, so its header is

@@ -9,18 +9,31 @@
 | Cloudflare edge, not the visitor. App\Http\Middleware\TrustCloudflareHop
 | trusts one hop only: when the connecting address is in this list, the
 | visitor is the right-most X-Forwarded-For entry (the one that hop
-| appended); entries further left are never used, so a caller cannot choose
-| its address by writing the header, even from Cloudflare's own network.
+| appended). Symfony skips an entry equal to the connecting address or not a
+| valid IP, so if the appended entry is one of those, the entry to its left
+| (which the caller may have written) is used. Otherwise, for a request that
+| came through this site's Cloudflare edge, entries a caller wrote are not
+| used. The app cannot tell this site's edge from any other Cloudflare
+| address: a connection made straight to the origin from Cloudflare's network
+| (for example a Worker's TCP socket, or Spectrum) can write the header and
+| choose its address.
 | Every other request keeps its connecting address and its header is
 | ignored. Only X-Forwarded-For is trusted (see bootstrap/app.php); scheme,
 | host and port are not taken from headers.
 |
 | 127.0.0.1 stays for a local reverse proxy. With a local proxy in front of
 | PHP and Cloudflare in front of that, the one trusted hop is the local
-| proxy, so the address becomes the Cloudflare edge it appended: visitors
-| behind one edge share an allowance again, but none can choose an
-| address. Never put '*' or a catch-all range here: that would let any
-| caller set its own address.
+| proxy, so the address is the right-most entry that proxy delivers. If it
+| appends or sets the address it received the request from (nginx:
+| $proxy_add_x_forwarded_for or $remote_addr), that is the Cloudflare edge:
+| visitors behind one edge share an allowance again, but none can choose an
+| address. A proxy that passes the header through unchanged (nginx's
+| proxy_pass default) lets any caller that reaches it choose its address.
+|
+| Never put a catch-all range (0.0.0.0/0, ::/0) here: that would let any
+| caller set its own address. A bare '*' matches no address in
+| TrustCloudflareHop, so it would trust nothing and every visitor behind
+| Cloudflare would share the edge's allowance again.
 |
 | Refreshing the list: Cloudflare publishes its ranges at
 | https://www.cloudflare.com/ips-v4 and https://www.cloudflare.com/ips-v6.
