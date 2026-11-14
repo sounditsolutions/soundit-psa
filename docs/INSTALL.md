@@ -395,12 +395,9 @@ used; if that entry equals the connecting address or is not a valid IP, the
 address is the connecting address. One limit applies: the app cannot tell
 this site's edge from any other Cloudflare address, so a connection that
 reaches the origin directly from Cloudflare's network is trusted the same
-way and can choose its address. Only authenticating the origin connection
-closes that. Requests from any address outside
+way and can choose its address. Requests from any address outside
 the list keep their connecting address and their `X-Forwarded-For` is
-ignored. Locking the origin to Cloudflare's ranges (a firewall or
-web-server setting) closes direct access from other addresses, but not from
-Cloudflare's own network.
+ignored.
 
 With a local reverse proxy on `127.0.0.1` in front of PHP and Cloudflare in
 front of that, the one trusted hop is the local proxy, so the address is the

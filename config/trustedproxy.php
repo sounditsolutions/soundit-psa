@@ -14,8 +14,7 @@
 | is not a valid IP, the address is the connecting address. The app cannot
 | tell this site's edge from any other Cloudflare address, so a connection
 | that reaches the origin directly from Cloudflare's network is trusted the
-| same way and can choose its address. Only authenticating the origin
-| connection closes that.
+| same way and can choose its address.
 | Every other request keeps its connecting address and its header is
 | ignored. Only X-Forwarded-For is trusted (see bootstrap/app.php); scheme,
 | host and port are not taken from headers.
