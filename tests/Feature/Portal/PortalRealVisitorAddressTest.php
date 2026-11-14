@@ -17,14 +17,18 @@ use Tests\TestCase;
  * shared one allowance (the portal sign-in pages' throttle:6,1 answered 429
  * after very few tries).
  *
- * config/trustedproxy.php now trusts 127.0.0.1 plus Cloudflare's published
- * ranges, and bootstrap/app.php reads X-Forwarded-For only. These tests pin:
+ * config/trustedproxy.php lists 127.0.0.1 plus Cloudflare's published
+ * ranges; TrustCloudflareHop trusts only the connecting address, and only
+ * when it is in that list; bootstrap/app.php reads X-Forwarded-For only.
+ * These tests pin:
  *  - two visitors behind the same edge get separate sign-in allowances;
  *  - a caller outside the trusted ranges cannot choose its address with the
  *    header;
  *  - behind a real edge, a forged left-hand header entry is ignored (the
- *    address is the one the edge appended);
- *  - scheme and host are not taken from forwarded headers.
+ *    address is the one the edge appended), including when the appended
+ *    entry is itself a Cloudflare address, as for a Worker's request;
+ *  - the trusted list is exactly 127.0.0.1 plus the 22 published ranges;
+ *  - scheme, host and path prefix are not taken from forwarded headers.
  *
  * Addresses: the edges are synthetic hosts inside Cloudflare's published
  * ranges; visitors, forged entries and the direct caller use the
@@ -43,6 +47,9 @@ class PortalRealVisitorAddressTest extends TestCase
     private const VISITOR_B = '192.0.2.20';
 
     private const DIRECT_CALLER = '192.0.2.50';
+
+    /** Inside 2a06:98c0::/29, the published v6 range Workers send from. */
+    private const CLOUDFLARE_APPENDED = '2a06:98c0::1';
 
     protected function setUp(): void
     {
@@ -120,5 +127,64 @@ class PortalRealVisitorAddressTest extends TestCase
         $response->assertDontSee(':8443', false);
         $this->assertFalse(request()->isSecure());
         $this->assertSame('localhost', request()->getHost());
+    }
+
+    /**
+     * A request that starts on Cloudflare's network (a Worker): the edge
+     * appends an address that is itself inside Cloudflare's ranges. Only the
+     * connecting hop is trusted, so the appended entry is the address and the
+     * caller-written entry to its left is never used.
+     */
+    public function test_a_forged_entry_left_of_a_cloudflare_appended_address_is_ignored(): void
+    {
+        $this->fromAddress(self::EDGE_V4, '192.0.2.77, '.self::CLOUDFLARE_APPENDED)->get('/__test/visitor-address')
+            ->assertOk()->assertSeeText(self::CLOUDFLARE_APPENDED, false);
+
+        // Rotating the forged entry does not buy a fresh sign-in allowance.
+        for ($i = 1; $i <= 6; $i++) {
+            $this->fromAddress(self::EDGE_V4, '192.0.2.'.(100 + $i).', '.self::CLOUDFLARE_APPENDED)->get('/portal/login')->assertOk();
+        }
+        $this->fromAddress(self::EDGE_V4, '192.0.2.200, '.self::CLOUDFLARE_APPENDED)->get('/portal/login')->assertStatus(429);
+    }
+
+    /** Any change to the list is a deliberate edit of this test as well. */
+    public function test_the_trusted_list_is_exactly_localhost_plus_cloudflares_published_ranges(): void
+    {
+        $this->assertSame([
+            '127.0.0.1',
+            '173.245.48.0/20',
+            '103.21.244.0/22',
+            '103.22.200.0/22',
+            '103.31.4.0/22',
+            '141.101.64.0/18',
+            '108.162.192.0/18',
+            '190.93.240.0/20',
+            '188.114.96.0/20',
+            '197.234.240.0/22',
+            '198.41.128.0/17',
+            '162.158.0.0/15',
+            '104.16.0.0/13',
+            '104.24.0.0/14',
+            '172.64.0.0/13',
+            '131.0.72.0/22',
+            '2400:cb00::/32',
+            '2606:4700::/32',
+            '2803:f800::/32',
+            '2405:b500::/32',
+            '2405:8100::/32',
+            '2a06:98c0::/29',
+            '2c0f:f248::/32',
+        ], config('trustedproxy.proxies'));
+    }
+
+    public function test_a_forged_path_prefix_does_not_change_generated_urls(): void
+    {
+        $this->fromAddress(self::EDGE_V4, self::VISITOR_A)
+            ->withHeader('X-Forwarded-Prefix', '/forgedprefix');
+
+        $response = $this->get('/portal/login')->assertOk();
+        $response->assertDontSee('forgedprefix', false);
+        $this->assertStringNotContainsString('forgedprefix', url('/portal/login'));
+        $this->assertSame('', request()->getBaseUrl());
     }
 }

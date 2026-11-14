@@ -371,17 +371,29 @@ sudo systemctl reload nginx
 
 The app reads the visitor's address from `X-Forwarded-For` only when the
 connecting address is a trusted proxy: `127.0.0.1` plus Cloudflare's
-published ranges, listed in `config/trustedproxy.php`. Every guest and API
-token rate limit, and every logged or stored request address (audit logs,
-token last-used address, signature evidence), uses that visitor address.
-No nginx `real_ip` setting is needed for this. Cloudflare's ranges change
-rarely; compare the list with https://www.cloudflare.com/ips-v4 and
-https://www.cloudflare.com/ips-v6 when upgrading, and run
-`php artisan config:cache` after any change to the file.
+published ranges, listed in `config/trustedproxy.php`. It trusts that one
+hop only: the address is the right-most `X-Forwarded-For` entry, the one
+the proxy appended. Rate limits keyed by address (guest throttles and the
+API token guess limiter) and the request addresses the app stores (audit
+logs, token last-used address, signature evidence) use that visitor
+address. Limits keyed by token or key are unchanged, and nginx's own access
+log still shows the Cloudflare edge. No nginx `real_ip` setting is needed
+for the app. Cloudflare's ranges change rarely; compare the list with
+https://www.cloudflare.com/ips-v4 and https://www.cloudflare.com/ips-v6
+when upgrading, and run `php artisan config:cache` after any change to the
+file.
 
-If the site is not behind Cloudflare, the Cloudflare entries are harmless:
-requests from any other address keep their connecting address and their
-`X-Forwarded-For` is ignored.
+A request sent from Cloudflare's own network (for example through someone
+else's Cloudflare Worker) is counted under the address Cloudflare appended
+for it, not one the caller wrote. Requests from any address outside the
+list keep their connecting address and their `X-Forwarded-For` is ignored.
+The origin still answers direct requests; only locking the origin to
+Cloudflare (a firewall or web-server setting) closes direct access.
+
+With a local reverse proxy on `127.0.0.1` in front of PHP and Cloudflare in
+front of that, the one trusted hop is the local proxy, so the address is the
+Cloudflare edge: visitors behind one edge share an allowance again, but none
+can choose an address.
 
 ### SSL with Let's Encrypt (if not using Cloudflare)
 
