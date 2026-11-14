@@ -170,17 +170,15 @@ class PortalSignInLimitsTest extends TestCase
     }
 
     /**
-     * A letter with no plain spelling is kept as typed, not dropped, so two
-     * emails written in other scripts keep counters of their own.
+     * A letter with no plain spelling is dropped, like any other character
+     * with none, so two emails written only in such letters share one 5.
      */
-    public function test_letters_with_no_plain_spelling_keep_separate_counters(): void
+    public function test_letters_with_no_plain_spelling_are_dropped(): void
     {
         for ($i = 1; $i <= 5; $i++) {
             $this->signIn("\u{5F20}\u{4F1F}@example.test")->assertRedirect();
         }
-        $this->signIn("\u{5F20}\u{4F1F}@example.test")->assertStatus(429);
-
-        $this->signIn("\u{674E}\u{5A1C}@example.test")->assertRedirect();
+        $this->signIn("\u{674E}\u{5A1C}@example.test")->assertStatus(429);
     }
 
     /**
