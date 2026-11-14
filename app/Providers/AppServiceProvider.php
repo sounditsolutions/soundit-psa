@@ -298,7 +298,7 @@ class AppServiceProvider extends ServiceProvider
             if (is_string($decomposed)) {
                 $email = preg_replace('/\p{Mn}+/u', '', $decomposed) ?? $email;
             }
-            $email = preg_replace_callback('/[^\x00-\x7F]/u', fn (array $m) => Str::ascii($m[0]), $email) ?? $email;
+            $email = Str::ascii($email);
             $email = mb_strtolower($email);
 
             return [

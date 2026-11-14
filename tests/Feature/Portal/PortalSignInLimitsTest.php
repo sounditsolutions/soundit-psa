@@ -170,15 +170,16 @@ class PortalSignInLimitsTest extends TestCase
     }
 
     /**
-     * A letter with no plain spelling is dropped, like any other character
-     * with none, so two emails written only in such letters share one 5.
+     * A letter with no plain spelling is dropped from the key, so a spelling
+     * with such a letter added shares the plain spelling's 5.
      */
-    public function test_letters_with_no_plain_spelling_are_dropped(): void
+    public function test_a_letter_with_no_plain_spelling_is_dropped(): void
     {
-        for ($i = 1; $i <= 5; $i++) {
-            $this->signIn("\u{5F20}\u{4F1F}@example.test")->assertRedirect();
+        foreach (["an\u{5F20}na@example.test", 'anna@example.test', "an\u{5F20}na@example.test", 'anna@example.test'] as $email) {
+            $this->signIn($email)->assertRedirect();
         }
-        $this->signIn("\u{674E}\u{5A1C}@example.test")->assertStatus(429);
+        $this->signIn("an\u{5F20}na@example.test")->assertRedirect();
+        $this->signIn('anna@example.test')->assertStatus(429);
     }
 
     /**
