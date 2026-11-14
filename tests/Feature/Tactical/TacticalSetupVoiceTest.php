@@ -102,14 +102,23 @@ class TacticalSetupVoiceTest extends TestCase
     {
         [$client] = $this->portal();
         $page = $this->get('/setup/'.$client->portal_install_token)->assertOk();
-        // Inside the note, in order, between its summary and its last sentence.
-        $page->assertSeeInOrder([
-            '<summary>Note for our technicians</summary>',
-            'Antivirus sandboxes can execute the dynamic EXE and enroll a sandbox device.'
+        // The one <details> whose <summary> is the note holds, whitespace-normalized, exactly
+        // that summary and these three sentences in this order.
+        $doc = new \DOMDocument();
+        $previous = libxml_use_internal_errors(true);
+        $doc->loadHTML('<?xml encoding="UTF-8">'.$page->getContent());
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+        $xpath = new \DOMXPath($doc);
+        $notes = $xpath->query('//details[summary[normalize-space()="Note for our technicians"]]');
+        $this->assertSame(1, $notes->length);
+        $this->assertSame(
+            'Note for our technicians'
+                .' Antivirus sandboxes can execute the dynamic EXE and enroll a sandbox device.'
                 ." Verify the real computer's identity and intended-site check-in rather than assuming the first new record is this computer."
                 ." Signature, publisher/UAC prompts and clean-machine enrollment need a technician's check.",
-            '</details>',
-        ], false);
+            $xpath->evaluate('normalize-space(.)', $notes->item(0)),
+        );
     }
 
     public function test_invalid_link_says_contact_us(): void
