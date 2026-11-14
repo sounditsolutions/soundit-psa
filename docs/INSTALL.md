@@ -367,6 +367,22 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
+### Visitor addresses behind Cloudflare
+
+The app reads the visitor's address from `X-Forwarded-For` only when the
+connecting address is a trusted proxy: `127.0.0.1` plus Cloudflare's
+published ranges, listed in `config/trustedproxy.php`. Every guest and API
+token rate limit, and every logged or stored request address (audit logs,
+token last-used address, signature evidence), uses that visitor address.
+No nginx `real_ip` setting is needed for this. Cloudflare's ranges change
+rarely; compare the list with https://www.cloudflare.com/ips-v4 and
+https://www.cloudflare.com/ips-v6 when upgrading, and run
+`php artisan config:cache` after any change to the file.
+
+If the site is not behind Cloudflare, the Cloudflare entries are harmless:
+requests from any other address keep their connecting address and their
+`X-Forwarded-For` is ignored.
+
 ### SSL with Let's Encrypt (if not using Cloudflare)
 
 ```bash
