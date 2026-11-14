@@ -51,6 +51,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Support\Str;
 use SocialiteProviders\Manager\SocialiteWasCalled;
 use SocialiteProviders\Microsoft\MicrosoftExtendSocialite;
 
@@ -283,8 +284,13 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('portal-page', fn (Request $request) => Limit::perMinute(60)->by($request->ip()));
         RateLimiter::for('portal-guest', fn (Request $request) => Limit::perMinute(6)->by($request->ip()));
         RateLimiter::for('portal-login', function (Request $request) {
+            // The per-email key is lower-cased and folded to plain letters,
+            // because the account lookup's database collation treats case
+            // and accents as the same letter. The fold is close to that
+            // matching, not exact; the 20-a-minute address limit below
+            // applies either way.
             $email = $request->input('email');
-            $email = is_string($email) ? mb_strtolower(trim($email)) : '';
+            $email = is_string($email) ? Str::ascii(mb_strtolower(trim($email))) : '';
 
             return [
                 Limit::perMinute(5)->by('email:'.$email.'|'.$request->ip()),

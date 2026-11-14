@@ -112,6 +112,38 @@ class PortalSignInLimitsTest extends TestCase
         $this->signIn('a@example.test ')->assertStatus(429);
     }
 
+    /**
+     * The account lookup's collation treats accented and plain letters as one,
+     * so the per-email key folds them too: these spellings share one 5.
+     * Without the fold each spelling would get its own 5.
+     */
+    public function test_the_per_email_limit_folds_accented_letters(): void
+    {
+        foreach (['josé@example.test', 'jose@example.test', 'JOSÉ@example.test', 'jösé@example.test', 'jose@exámple.test'] as $email) {
+            $this->signIn($email)->assertRedirect();
+        }
+        $this->signIn('jose@example.test')->assertStatus(429);
+
+        // Another email from the same address is still counted on its own.
+        $this->signIn('maria@example.test')->assertRedirect();
+    }
+
+    /**
+     * An email that is not a string (here an array) is keyed as an empty
+     * email. The form refuses it with a validation error, not a server
+     * error, and it gets 5 tries a minute per address like any other email.
+     */
+    public function test_a_non_string_email_gets_the_same_five_tries(): void
+    {
+        for ($i = 1; $i <= 5; $i++) {
+            $this->post('/portal/login', ['email' => ['a@example.test'], 'password' => 'x'])
+                ->assertRedirect()->assertSessionHasErrors('email');
+        }
+        $this->post('/portal/login', ['email' => ['a@example.test'], 'password' => 'x'])->assertStatus(429);
+
+        $this->signIn('a@example.test')->assertRedirect();
+    }
+
     public function test_sign_in_allows_twenty_tries_a_minute_per_address_across_emails(): void
     {
         for ($i = 1; $i <= 20; $i++) {
