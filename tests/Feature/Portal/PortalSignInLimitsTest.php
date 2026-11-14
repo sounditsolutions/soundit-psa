@@ -113,10 +113,10 @@ class PortalSignInLimitsTest extends TestCase
     }
 
     /**
-     * With no stored account to match, the typed email is folded: accented
-     * and plain spellings share one 5. Without the fold each spelling would
-     * get its own 5. (The test database matches emails byte for byte, so this
-     * shows the key only, not what the production collation matches.)
+     * The typed email is folded: accented and plain spellings share one 5.
+     * Without the fold each spelling would get its own 5. (The test database
+     * matches emails byte for byte, so this shows the key only, not what the
+     * production collation matches.)
      */
     public function test_the_per_email_limit_folds_accented_letters(): void
     {
@@ -143,6 +143,27 @@ class PortalSignInLimitsTest extends TestCase
         $this->post('/portal/login', ['email' => ['a@example.test'], 'password' => 'x'])->assertStatus(429);
 
         $this->signIn('a@example.test')->assertRedirect();
+    }
+
+    /**
+     * A full-width letter and a letter whose accent sits on a letter the
+     * plain fold cannot map both fold to the plain letter, so they share the
+     * plain spelling's 5.
+     */
+    public function test_the_per_email_limit_folds_full_width_and_decomposable_letters(): void
+    {
+        foreach (["\u{FF4A}ose@example.test", 'jose@example.test', "\u{1E31}ate@example.test", 'kate@example.test'] as $email) {
+            $this->signIn($email)->assertRedirect();
+        }
+        $this->signIn('jose@example.test')->assertRedirect();
+        $this->signIn('jose@example.test')->assertRedirect();
+        $this->signIn("\u{FF4A}ose@example.test")->assertRedirect();
+        $this->signIn('jose@example.test')->assertStatus(429);
+
+        $this->signIn('kate@example.test')->assertRedirect();
+        $this->signIn('kate@example.test')->assertRedirect();
+        $this->signIn("\u{1E31}ate@example.test")->assertRedirect();
+        $this->signIn('kate@example.test')->assertStatus(429);
     }
 
     /**
@@ -257,5 +278,82 @@ class PortalSignInLimitsTest extends TestCase
         $this->post('/portal/request-access', ['email' => 'x@example.test'])->assertRedirect();
         $this->get(URL::temporarySignedRoute('portal.verify-access', now()->addHour(), ['person' => 999999]))
             ->assertRedirect(route('portal.login'));
+    }
+
+    /**
+     * Four page views on each of four pages, then 44 more on one: the four
+     * pages share one 60, so a counter per path would let the 61st through.
+     */
+    public function test_the_four_pages_share_one_60(): void
+    {
+        $pages = ['/portal/login', '/portal/forgot-password', '/portal/request-access', '/portal/reset-password/sometoken'];
+        foreach ($pages as $path) {
+            for ($n = 1; $n <= 4; $n++) {
+                $this->get($path)->assertOk();
+            }
+        }
+        for ($n = 1; $n <= 44; $n++) {
+            $this->get('/portal/login')->assertOk();
+        }
+        $this->get('/portal/forgot-password')->assertStatus(429);
+    }
+
+    /** The other POSTs and the verify-access link share one 6: a counter per path would let the 7th through. */
+    public function test_the_other_posts_and_the_verify_access_link_share_one_6(): void
+    {
+        $this->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertRedirect();
+        $this->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertRedirect();
+        $this->post('/portal/request-access', ['email' => 'x@example.test'])->assertRedirect();
+        $this->post('/portal/request-access', ['email' => 'x@example.test'])->assertRedirect();
+        $this->post('/portal/reset-password', ['token' => 't', 'email' => 'x@example.test', 'password' => 'p', 'password_confirmation' => 'p'])->assertRedirect();
+        $this->get(URL::temporarySignedRoute('portal.verify-access', now()->addHour(), ['person' => 999999]))->assertRedirect(route('portal.login'));
+
+        $this->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertStatus(429);
+    }
+
+    /** Each limit lasts a minute: 30 seconds after it is used up it still refuses; after the minute it answers again. */
+    public function test_each_limit_lasts_a_full_minute(): void
+    {
+        $this->fromAddress('192.0.2.60');
+        for ($n = 1; $n <= 60; $n++) {
+            $this->get('/portal/login');
+        }
+        $this->fromAddress('192.0.2.61');
+        for ($n = 1; $n <= 6; $n++) {
+            $this->post('/portal/forgot-password', ['email' => 'x@example.test']);
+        }
+        $this->fromAddress('192.0.2.62');
+        for ($n = 1; $n <= 5; $n++) {
+            $this->signIn('a@example.test');
+        }
+        $this->fromAddress('192.0.2.63');
+        for ($n = 1; $n <= 20; $n++) {
+            $this->signIn("user{$n}@example.test");
+        }
+
+        $this->travel(30)->seconds();
+        $this->fromAddress('192.0.2.60')->get('/portal/login')->assertStatus(429);
+        $this->fromAddress('192.0.2.61')->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertStatus(429);
+        $this->fromAddress('192.0.2.62')->signIn('a@example.test')->assertStatus(429);
+        $this->fromAddress('192.0.2.63')->signIn('user21@example.test')->assertStatus(429);
+
+        $this->travel(31)->seconds();
+        $this->fromAddress('192.0.2.60')->get('/portal/login')->assertOk();
+        $this->fromAddress('192.0.2.61')->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertRedirect();
+        $this->fromAddress('192.0.2.62')->signIn('a@example.test')->assertRedirect();
+        $this->fromAddress('192.0.2.63')->signIn('user21@example.test')->assertRedirect();
+    }
+
+    /** With the portal switched off, every guest route answers 404, the limited ones included. */
+    public function test_the_guest_routes_answer_404_when_the_portal_is_off(): void
+    {
+        Setting::setValue('portal_enabled', '0');
+
+        $this->get('/portal/login')->assertNotFound();
+        $this->signIn('a@example.test')->assertNotFound();
+        $this->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertNotFound();
+        $this->post('/portal/request-access', ['email' => 'x@example.test'])->assertNotFound();
+        $this->post('/portal/reset-password', ['token' => 't', 'email' => 'x@example.test', 'password' => 'p', 'password_confirmation' => 'p'])->assertNotFound();
+        $this->get(URL::temporarySignedRoute('portal.verify-access', now()->addHour(), ['person' => 999999]))->assertNotFound();
     }
 }

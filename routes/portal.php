@@ -28,9 +28,9 @@ use Illuminate\Support\Facades\Route;
 // AppServiceProvider::boot):
 //  - portal-page: viewing a form, 60 a minute per address. A page view does
 //    not use up a sign-in try.
-//  - portal-login: POST /login, 5 a minute per email and address, plus 20 a
-//    minute per address alone, so one person's mistakes do not lock out the
-//    rest of their office.
+//  - portal-login: POST /login, 5 a minute per email as typed (with case,
+//    spaces and accents folded) and address, plus 20 a minute per address
+//    alone, so one person's mistakes do not lock out the rest of their office.
 //  - portal-guest: the other POSTs, and the verify-access link (it acts on a
 //    link; it is not a page view), 6 a minute per address.
 // Named limiters keep their own counters. A plain throttle:N,M keys a

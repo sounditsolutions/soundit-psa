@@ -232,4 +232,37 @@ class PortalRealVisitorAddressTest extends TestCase
         }
         $this->fromAddress(self::EDGE_V4, '192.0.2.200, '.self::EDGE_V4)->signInAttempt(0)->assertStatus(429);
     }
+
+    /**
+     * Behind one edge, two visitors have separate page, form and per-email
+     * allowances, and a visitor who changes the forged left-hand entry of
+     * the header gets no fresh allowance on any of them.
+     */
+    public function test_behind_one_edge_each_limiter_counts_per_visitor_and_ignores_the_forged_entry(): void
+    {
+        $url = '/portal/login';
+        for ($n = 1; $n <= 60; $n++) {
+            $this->fromAddress(self::EDGE_V4, '192.0.2.'.(100 + $n % 50).', '.self::VISITOR_A)->get($url)->assertOk();
+        }
+        $this->fromAddress(self::EDGE_V4, '192.0.2.250, '.self::VISITOR_A)->get($url)->assertStatus(429);
+        $this->fromAddress(self::EDGE_V4, self::VISITOR_B)->get($url)->assertOk();
+
+        for ($n = 1; $n <= 6; $n++) {
+            $this->fromAddress(self::EDGE_V4, '192.0.2.'.(100 + $n).', '.self::VISITOR_A)
+                ->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertRedirect();
+        }
+        $this->fromAddress(self::EDGE_V4, '192.0.2.250, '.self::VISITOR_A)
+            ->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertStatus(429);
+        $this->fromAddress(self::EDGE_V4, self::VISITOR_B)
+            ->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertRedirect();
+
+        for ($n = 1; $n <= 5; $n++) {
+            $this->fromAddress(self::EDGE_V4, '192.0.2.'.(100 + $n).', '.self::VISITOR_A)
+                ->post('/portal/login', ['email' => 'a@example.test', 'password' => 'not-a-real-passphrase'])->assertRedirect();
+        }
+        $this->fromAddress(self::EDGE_V4, '192.0.2.250, '.self::VISITOR_A)
+            ->post('/portal/login', ['email' => 'a@example.test', 'password' => 'not-a-real-passphrase'])->assertStatus(429);
+        $this->fromAddress(self::EDGE_V4, self::VISITOR_B)
+            ->post('/portal/login', ['email' => 'a@example.test', 'password' => 'not-a-real-passphrase'])->assertRedirect();
+    }
 }

@@ -52,6 +52,7 @@ use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
+use Normalizer;
 use SocialiteProviders\Manager\SocialiteWasCalled;
 use SocialiteProviders\Microsoft\MicrosoftExtendSocialite;
 
@@ -284,19 +285,18 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('portal-page', fn (Request $request) => Limit::perMinute(60)->by($request->ip()));
         RateLimiter::for('portal-guest', fn (Request $request) => Limit::perMinute(6)->by($request->ip()));
         RateLimiter::for('portal-login', function (Request $request) {
-            // The per-email key is built from the stored email when one
-            // matches, so every spelling the account lookup's collation
-            // treats as that address shares one count. Otherwise the typed
-            // email is used, lower-cased and folded to plain letters. Only
-            // the first 255 characters are kept, which bounds the cost of
-            // the lookup and the fold; the column holds no longer email.
+            // The per-email key is the typed email: trimmed, cut to its first
+            // 255 characters, lower-cased, and folded to plain letters, because
+            // the account lookup's database collation treats case and accents
+            // as the same letter. The fold is close to that matching, not
+            // exact; the 20-a-minute address limit below applies either way.
             $email = $request->input('email');
-            $email = is_string($email) ? mb_substr(trim($email), 0, 255) : '';
-            if ($email !== '') {
-                $stored = Person::query()->where('email', $email)->orderBy('id')->value('email');
-                $email = is_string($stored) ? $stored : $email;
+            $email = is_string($email) ? mb_strtolower(mb_substr(trim($email), 0, 255)) : '';
+            $decomposed = Normalizer::normalize($email, Normalizer::FORM_KD);
+            if (is_string($decomposed)) {
+                $email = preg_replace('/\p{Mn}+/u', '', $decomposed) ?? $email;
             }
-            $email = Str::ascii(mb_strtolower($email));
+            $email = Str::ascii($email);
 
             return [
                 Limit::perMinute(5)->by('email:'.$email.'|'.$request->ip()),
