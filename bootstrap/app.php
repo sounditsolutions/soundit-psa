@@ -19,7 +19,15 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->prepend(\App\Http\Middleware\SigningResponseHeaders::class);
-        $middleware->trustProxies(at: '127.0.0.1');
+        // Trusted proxy addresses live in config/trustedproxy.php (127.0.0.1
+        // plus Cloudflare's published ranges). TrustCloudflareHop trusts only
+        // the connecting address, and only when it is in that list, so the
+        // visitor is the right-most X-Forwarded-For entry. Only
+        // X-Forwarded-For is read: scheme, host, port and prefix are never
+        // taken from forwarded headers. (Before this change a proxy at
+        // 127.0.0.1 could also set those; the site has no local proxy.)
+        $middleware->replace(\Illuminate\Http\Middleware\TrustProxies::class, \App\Http\Middleware\TrustCloudflareHop::class);
+        $middleware->trustProxies(headers: \Illuminate\Http\Request::HEADER_X_FORWARDED_FOR);
         $middleware->web(append: [
             \App\Http\Middleware\CheckStorageHealth::class,
         ]);
