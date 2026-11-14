@@ -465,6 +465,67 @@ class CarbonOrderStatusTest extends TestCase
         $this->assertSame($before, $bad->refresh()->getAttributes());
     }
 
+    #[DataProvider('settledStatuses')]
+    public function test_refused_settled_row_follows_unfailed_settled_row(string $status): void
+    {
+        $this->freezeTime();
+        $bad = $this->order(['carbon_status' => $status, 'carbon_status_checked_at' => now()->subDays(3), 'confirmation_code' => 'SYNTH-BAD']);
+        $before = $bad->getAttributes();
+        $this->carbonCallResult = ['isError' => true];
+        $this->artisan('carbon:sync-order-status')->assertSuccessful();
+        $this->order(['carbon_status' => $status, 'carbon_status_checked_at' => now()->subDays(2)]);
+        $this->travel(1)->hours();
+        $this->carbonCallSequence = [[200, self::reply(['status' => $status])], [200, ['isError' => true]]];
+        $this->artisan('carbon:sync-order-status')->assertSuccessful();
+        $this->assertSame(['SYNTH-BAD', 'SYNTH-ORDER-1', 'SYNTH-BAD'], $this->calls()->map(fn ($p) => $p[0]['params']['arguments']['confirmationCode'])->all());
+        $this->assertSame($before, $bad->refresh()->getAttributes());
+        $this->assertSame([$bad->id => now()->getTimestamp()], Cache::get('carbon-order-status-deferred'));
+    }
+
+    public function test_success_with_unchanged_failed_list_does_not_write_it(): void
+    {
+        $this->order();
+        Cache::put('carbon-order-status-deferred', [], now()->addDay());
+        $writes = [];
+        Event::listen(\Illuminate\Cache\Events\KeyWritten::class, function ($event) use (&$writes) {
+            if ($event->key === 'carbon-order-status-deferred') {
+                $writes[] = $event->value;
+            }
+        });
+        $this->artisan('carbon:sync-order-status')->assertSuccessful();
+        $this->assertCount(1, $this->calls());
+        $this->assertSame([], $writes);
+        $this->assertSame([], Cache::get('carbon-order-status-deferred'));
+        Cache::put('carbon-order-status-deferred', [], now()->addDay());
+        $this->assertSame([[]], $writes);
+    }
+
+    public function test_pruned_list_is_saved_even_without_a_selected_read(): void
+    {
+        $row = $this->order(['carbon_status' => 'canceled']);
+        Cache::put('carbon-order-status-deferred', [$row->id => now()->getTimestamp()], now()->addDay());
+        $this->artisan('carbon:sync-order-status')->assertSuccessful();
+        $this->assertSame([], Cache::get('carbon-order-status-deferred'));
+        Http::assertNothingSent();
+        $this->order();
+        $this->artisan('carbon:sync-order-status')->assertSuccessful();
+        $this->assertCount(1, $this->calls());
+    }
+
+    #[DataProvider('settledStatuses')]
+    public function test_exactly_24_hours_is_eligible_but_one_second_less_is_not(string $status): void
+    {
+        $this->travelTo(now()->startOfSecond());
+        $eligible = $this->order(['carbon_status' => $status, 'carbon_status_checked_at' => now()->subDay()]);
+        $recent = $this->order(['confirmation_code' => 'SYNTH-RECENT', 'carbon_status' => $status, 'carbon_status_checked_at' => now()->subDay()->addSecond()]);
+        $before = $recent->getAttributes();
+        $this->carbonCallResult = self::reply(['status' => $status]);
+        $this->artisan('carbon:sync-order-status')->assertSuccessful();
+        $this->assertSame(['SYNTH-ORDER-1'], $this->calls()->map(fn ($p) => $p[0]['params']['arguments']['confirmationCode'])->all());
+        $this->assertSame(now()->toDateTimeString(), $eligible->refresh()->carbon_status_checked_at->toDateTimeString());
+        $this->assertSame($before, $recent->refresh()->getAttributes());
+    }
+
     public static function pruneReasons(): array
     {
         return array_map(fn ($reason) => [$reason], ['settled', 'canceled', 'old', 'deleted', 'disabled', 'unsubmitted', 'no_code']);

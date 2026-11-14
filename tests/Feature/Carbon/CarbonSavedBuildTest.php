@@ -33,6 +33,8 @@ class CarbonSavedBuildTest extends TestCase
 
     private bool $readFails = false;
 
+    private bool $readIsError = false;
+
     private ?\Closure $duringRead = null;
 
     /** Per-part replies for multi-line orders; null means every read answers $product. */
@@ -68,7 +70,7 @@ class CarbonSavedBuildTest extends TestCase
                     if ($this->duringRead) {
                         ($this->duringRead)();
                     }
-                    $result = ['structuredContent' => $this->byPart[$request['params']['arguments']['mfgPartNo']] ?? $this->product];
+                    $result = ['isError' => $this->readIsError, 'structuredContent' => $this->byPart[$request['params']['arguments']['mfgPartNo']] ?? $this->product];
                 } else {
                     $result = ['structuredContent' => ['confirmationCode' => 'SYNTH-CODE']];
                 }
@@ -189,7 +191,8 @@ class CarbonSavedBuildTest extends TestCase
     {
         // Product-level status (#8364): the captured get_product reads show 'active' on both parts in use.
         return ['product inactive' => [['status' => 'inactive']], 'product discontinued' => [['status' => 'discontinued']],
-            'product null status' => [['status' => null]], 'product status case' => [['status' => 'Active']]];
+            'product null status' => [['status' => null]], 'product status case' => [['status' => 'Active']],
+            'product boolean status' => [['status' => true]]];
     }
 
     #[DataProvider('inactiveProducts')]
@@ -206,12 +209,28 @@ class CarbonSavedBuildTest extends TestCase
         $this->assertDatabaseCount('client_hardware_models', 0);
     }
 
+    public function test_error_result_precedes_inactive_status(): void
+    {
+        $this->readIsError = true;
+        $this->product['status'] = 'inactive';
+        try {
+            $this->add();
+            $this->fail('Error result accepted');
+        } catch (ValidationException $e) {
+            $this->assertSame([__('carbon_hardware.unconfirmed')], $e->errors()['hardware']);
+            $this->assertSame('unconfirmed', CarbonHardwareRefusal::keyOf($e));
+        }
+        $this->assertDatabaseCount('client_hardware_models', 0);
+    }
+
     public static function guardOrder(): array
     {
         return [
             'inactive with a config refusal reports status' => [['status' => 'inactive', 'requiredConfigs' => []], 'not_active'],
             'inactive with a bad price reports status' => [['status' => 'inactive', 'price' => 0], 'not_active'],
-            'another part reported inactive stays unconfirmed' => [['mfgPartNo' => 'SYNTH-OTHER', 'status' => 'discontinued'], 'unconfirmed'],
+            'inactive with a nonnumeric price reports status' => [['status' => 'inactive', 'price' => 'unknown'], 'not_active'],
+            'inactive with isConfigurable present reports status' => [['status' => 'inactive', 'isConfigurable' => false], 'not_active'],
+            'another part reported discontinued stays unconfirmed' => [['mfgPartNo' => 'SYNTH-OTHER', 'status' => 'discontinued'], 'unconfirmed'],
         ];
     }
 
@@ -282,6 +301,49 @@ class CarbonSavedBuildTest extends TestCase
         $config['components'] = (object) $config['components'];
         $this->product['configs'] = (object) [$config];
         $this->assertSame([81001], $this->add()->fresh()->carbon_component_ids);
+    }
+
+    public static function submitRefusalCases(): array
+    {
+        return [
+            'missing status' => ['missing', 'not_active'],
+            'null status' => ['null', 'not_active'],
+            'part mismatch' => ['part', 'unconfirmed'],
+            'error result' => ['error', 'unconfirmed'],
+            'nonnumeric price' => ['price', 'unconfirmed'],
+            'requiredConfigs present' => ['required', 'unconfirmed'],
+            'isConfigurable present' => ['configurable', 'unconfirmed'],
+        ];
+    }
+
+    #[DataProvider('submitRefusalCases')]
+    public function test_submit_catch_classifies_product_refusals(string $case, string $reason): void
+    {
+        $model = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-BUILD', 'label' => 'Synthetic Build', 'sell_price' => '200.00', 'carbon_price' => '123.45', 'carbon_component_ids' => [81001, 81002]]);
+        if ($case === 'missing') {
+            unset($this->product['status']);
+        } else {
+            match ($case) {
+                'null' => $this->product['status'] = null,
+                'part' => $this->product['mfgPartNo'] = 'SYNTH-OTHER',
+                'error' => $this->readIsError = true,
+                'price' => $this->product['price'] = 'unknown',
+                'required' => $this->product['requiredConfigs'] = [],
+                'configurable' => $this->product['isConfigurable'] = false,
+            };
+        }
+        try {
+            app(CarbonHardwareOrderService::class)->submit($this->person, $this->input($model));
+            $this->fail('Product refusal accepted at submit');
+        } catch (ValidationException $e) {
+            $this->assertSame([__('carbon_hardware.portal_unavailable')], $e->errors()['hardware']);
+        }
+        $this->assertSame([['level' => 'warning', 'message' => '[CarbonHardwareOrder] Saved build refused at submit',
+            'context' => ['reason' => $reason, 'model_id' => $model->id, 'client_id' => $this->client->id]]], $this->orderLogs());
+        $this->assertDatabaseCount('client_hardware_orders', 0);
+        $this->assertDatabaseCount('tickets', 0);
+        $this->assertCount(0, $this->calls('create_draft_order'));
+        $this->assertCount(1, $this->calls('get_product'));
     }
 
     public static function driftCases(): array
@@ -437,6 +499,48 @@ class CarbonSavedBuildTest extends TestCase
         // Lines are read in order and the refusal stops the loop: a refused first line means the second is never read.
         $parts = $this->calls('get_product')->map(fn ($r) => $r[0]['params']['arguments']['mfgPartNo'])->all();
         $this->assertSame($refused === 'first' ? ['SYNTH-ONE'] : ['SYNTH-ONE', 'SYNTH-TWO'], $parts);
+        $this->assertDatabaseCount('client_hardware_orders', 0);
+        $this->assertDatabaseCount('tickets', 0);
+        $this->assertCount(0, $this->calls('create_draft_order'));
+    }
+
+    public static function laterDriftCases(): array
+    {
+        $cases = [];
+        foreach ([false, true] as $saved) {
+            foreach (['components_moved', 'no_cached_price', 'price_moved'] as $reason) {
+                $cases[($saved ? 'saved ' : 'plain ').$reason] = [$saved, $reason];
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('laterDriftCases')]
+    public function test_second_line_drift_refuses_before_reservation(bool $saved, string $reason): void
+    {
+        $plain = $this->product;
+        unset($plain['configs']);
+        $first = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-ONE', 'label' => 'Synthetic one', 'sell_price' => '200.00', 'carbon_price' => '123.45']);
+        $second = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-TWO', 'label' => 'Synthetic two', 'sell_price' => '200.00',
+            'carbon_price' => $reason === 'no_cached_price' ? null : '123.45', 'carbon_component_ids' => $saved ? [81001, 81002] : null]);
+        $reply = $saved ? $this->product : $plain;
+        if ($reason === 'components_moved') {
+            $reply['configs'] = [self::config(81003)];
+        } elseif ($reason === 'price_moved') {
+            $reply['price'] = 123.46;
+        }
+        $this->byPart = ['SYNTH-ONE' => ['mfgPartNo' => 'SYNTH-ONE'] + $plain, 'SYNTH-TWO' => ['mfgPartNo' => 'SYNTH-TWO'] + $reply];
+        $input = ['idempotency_key' => (string) Str::uuid(), 'lines' => [['model_id' => $first->id, 'quantity' => 1], ['model_id' => $second->id, 'quantity' => 1]]];
+        try {
+            app(CarbonHardwareOrderService::class)->submit($this->person, $input);
+            $this->fail('Second-line drift accepted');
+        } catch (ValidationException $e) {
+            $this->assertSame([__('carbon_hardware.portal_unavailable')], $e->errors()['hardware']);
+        }
+        $this->assertSame([['level' => 'warning', 'message' => '[CarbonHardwareOrder] '.($saved ? 'Saved build' : 'Plain part').' refused at submit',
+            'context' => ['reason' => $reason, 'model_id' => $second->id, 'client_id' => $this->client->id]]], $this->orderLogs());
+        $this->assertSame(['SYNTH-ONE', 'SYNTH-TWO'], $this->calls('get_product')->map(fn ($r) => $r[0]['params']['arguments']['mfgPartNo'])->all());
         $this->assertDatabaseCount('client_hardware_orders', 0);
         $this->assertDatabaseCount('tickets', 0);
         $this->assertCount(0, $this->calls('create_draft_order'));
