@@ -189,7 +189,9 @@ class PortalSignInLimitsTest extends TestCase
     {
         Route::middleware('throttle:120,1')->get('/_limits-test/other', fn () => 'ok');
 
-        for ($n = 1; $n <= 30; $n++) {
+        // 60 is the page limit: a page limiter that shared this counter
+        // would refuse the first page view below.
+        for ($n = 1; $n <= 60; $n++) {
             $this->get('/_limits-test/other')->assertOk();
         }
 
