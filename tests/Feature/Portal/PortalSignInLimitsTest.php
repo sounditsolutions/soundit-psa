@@ -113,9 +113,10 @@ class PortalSignInLimitsTest extends TestCase
     }
 
     /**
-     * The account lookup's collation treats accented and plain letters as one,
-     * so the per-email key folds them too: these spellings share one 5.
-     * Without the fold each spelling would get its own 5.
+     * With no stored account to match, the typed email is folded: accented
+     * and plain spellings share one 5. Without the fold each spelling would
+     * get its own 5. (The test database matches emails byte for byte, so this
+     * shows the key only, not what the production collation matches.)
      */
     public function test_the_per_email_limit_folds_accented_letters(): void
     {
@@ -142,6 +143,19 @@ class PortalSignInLimitsTest extends TestCase
         $this->post('/portal/login', ['email' => ['a@example.test'], 'password' => 'x'])->assertStatus(429);
 
         $this->signIn('a@example.test')->assertRedirect();
+    }
+
+    /**
+     * Only the first 255 characters of the email are keyed, so two long
+     * emails that differ after that share one 5.
+     */
+    public function test_a_very_long_email_is_keyed_on_its_first_255_characters(): void
+    {
+        $prefix = str_repeat('a', 300);
+        for ($i = 1; $i <= 5; $i++) {
+            $this->signIn($prefix.$i.'@example.test')->assertRedirect();
+        }
+        $this->signIn($prefix.'6@example.test')->assertStatus(429);
     }
 
     public function test_sign_in_allows_twenty_tries_a_minute_per_address_across_emails(): void

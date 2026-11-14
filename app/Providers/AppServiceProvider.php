@@ -284,13 +284,19 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('portal-page', fn (Request $request) => Limit::perMinute(60)->by($request->ip()));
         RateLimiter::for('portal-guest', fn (Request $request) => Limit::perMinute(6)->by($request->ip()));
         RateLimiter::for('portal-login', function (Request $request) {
-            // The per-email key is lower-cased and folded to plain letters,
-            // because the account lookup's database collation treats case
-            // and accents as the same letter. The fold is close to that
-            // matching, not exact; the 20-a-minute address limit below
-            // applies either way.
+            // The per-email key is built from the stored email when one
+            // matches, so every spelling the account lookup's collation
+            // treats as that address shares one count. Otherwise the typed
+            // email is used, lower-cased and folded to plain letters. Only
+            // the first 255 characters are kept, which bounds the cost of
+            // the lookup and the fold; the column holds no longer email.
             $email = $request->input('email');
-            $email = is_string($email) ? Str::ascii(mb_strtolower(trim($email))) : '';
+            $email = is_string($email) ? mb_substr(trim($email), 0, 255) : '';
+            if ($email !== '') {
+                $stored = Person::query()->where('email', $email)->orderBy('id')->value('email');
+                $email = is_string($stored) ? $stored : $email;
+            }
+            $email = Str::ascii(mb_strtolower($email));
 
             return [
                 Limit::perMinute(5)->by('email:'.$email.'|'.$request->ip()),
