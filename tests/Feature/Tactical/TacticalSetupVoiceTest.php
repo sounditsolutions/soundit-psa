@@ -11,6 +11,7 @@ use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -95,6 +96,29 @@ class TacticalSetupVoiceTest extends TestCase
         $page->assertSee("Signature, publisher/UAC prompts and clean-machine enrollment need a technician's check.", false);
         $page->assertDontSee('Technician note');
         $page->assertDontSee('operator verification');
+    }
+
+    public function test_technician_note_keeps_its_two_middle_sentences(): void
+    {
+        [$client] = $this->portal();
+        $page = $this->get('/setup/'.$client->portal_install_token)->assertOk();
+        // The one <details> whose <summary> is the note holds, whitespace-normalized, exactly
+        // that summary and these three sentences in this order.
+        $doc = new \DOMDocument;
+        $previous = libxml_use_internal_errors(true);
+        $doc->loadHTML('<?xml encoding="UTF-8">'.$page->getContent());
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+        $xpath = new \DOMXPath($doc);
+        $notes = $xpath->query('//details[summary[normalize-space()="Note for our technicians"]]');
+        $this->assertSame(1, $notes->length);
+        $this->assertSame(
+            'Note for our technicians'
+                .' Antivirus sandboxes can execute the dynamic EXE and enroll a sandbox device.'
+                ." Verify the real computer's identity and intended-site check-in rather than assuming the first new record is this computer."
+                ." Signature, publisher/UAC prompts and clean-machine enrollment need a technician's check.",
+            $xpath->evaluate('normalize-space(.)', $notes->item(0)),
+        );
     }
 
     public function test_invalid_link_says_contact_us(): void
@@ -192,10 +216,13 @@ class TacticalSetupVoiceTest extends TestCase
 
     public function test_transport_failure_says_contact_us(): void
     {
-        $stack = HandlerStack::create(new MockHandler([
+        $queue = new MockHandler([
             new Response(200, [], json_encode([['id' => 3, 'name' => 'Acme', 'sites' => [['id' => 5, 'name' => 'Main']]]])),
             new ConnectException('synthetic transport failure', new Request('POST', 'agents/installer/')),
-        ]));
+        ]);
+        $history = [];
+        $stack = HandlerStack::create($queue);
+        $stack->push(Middleware::history($history));
         $client = new TacticalClient(new GuzzleClient(['base_uri' => 'https://tactical.example.test/', 'handler' => $stack]));
         try {
             $client->generateWindowsInstaller('Acme|Main', 'amd64');
@@ -203,6 +230,12 @@ class TacticalSetupVoiceTest extends TestCase
         } catch (\App\Services\Tactical\InstallerGenerationException $e) {
             $this->assertSame('The installer could not be prepared. Use the manual fallback or contact us.', $e->getMessage());
         }
+        // The installer POST is reached and fails; nothing earlier in the try refuses first.
+        $this->assertSame(0, $queue->count());
+        $this->assertCount(2, $history);
+        $this->assertSame('POST', $history[1]['request']->getMethod());
+        $this->assertSame('/agents/installer/', $history[1]['request']->getUri()->getPath());
+        $this->assertInstanceOf(ConnectException::class, $history[1]['error']);
     }
 
     /** Fixed-phrase sweep over the setup files listed below. */
@@ -215,6 +248,9 @@ class TacticalSetupVoiceTest extends TestCase
             'app/Http/Controllers/Portal/PortalInstallController.php',
             'app/Services/Tactical/TacticalClient.php',
             'app/Services/Tactical/WindowsInstallerCommand.php',
+            'app/Services/Portal/PortalInstallService.php',
+            'app/Services/Level/LevelClient.php',
+            'app/Services/Ninja/NinjaClient.php',
         ] as $path) {
             $this->assertNoThirdParty(file_get_contents(base_path($path)));
         }
