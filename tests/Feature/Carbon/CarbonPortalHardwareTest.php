@@ -50,8 +50,8 @@ class CarbonPortalHardwareTest extends TestCase
         $model = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-LAPTOP', 'label' => 'Synthetic Laptop', 'sell_price' => '200.01', 'carbon_price' => '123.45']);
         $this->input = ['idempotency_key' => (string) Str::uuid(), 'lines' => [['model_id' => $model->id, 'quantity' => 2]]];
         $this->actingAs($this->person, 'portal');
-        // These tests pin the draft leg. The plain-part submit re-read is pinned in
-        // CarbonSavedBuildTest, so here it answers active without a vendor call.
+        // Default to an active-product stub with a read counter. Tests using
+        // realProductRead() replace it with the real parser under HTTP fakes.
         $this->app->instance(CarbonHardwareService::class, new class(app(CarbonMcpClient::class)) extends CarbonHardwareService
         {
             public int $reads = 0;
@@ -88,7 +88,7 @@ class CarbonPortalHardwareTest extends TestCase
         $this->assertSame($sent, count(Http::recorded()));
     }
 
-    /** Use the real product parser and reserve transport failures for the draft leg. */
+    /** Use the real product parser with optional read refusal or draft HTTP failure. */
     private function realProductRead(?string $refusal = null, ?int $draftStatus = null): void
     {
         $this->app->forgetInstance(CarbonHardwareService::class);
@@ -121,12 +121,20 @@ class CarbonPortalHardwareTest extends TestCase
     public function test_plain_read_refusal_reaches_portal_session_without_order_or_ticket(string $refusal): void
     {
         $this->realProductRead($refusal);
+        $records = $this->recordLogs();
         $this->from(route('portal.hardware'))->post(route('portal.hardware.store'), $this->input)
             ->assertRedirect(route('portal.hardware'))
             ->assertSessionHasErrors(['hardware' => __('carbon_hardware.portal_unavailable')]);
         $this->assertDatabaseCount('client_hardware_orders', 0);
         $this->assertDatabaseCount('tickets', 0);
         $this->assertSame(['get_product'], $this->calls()->map(fn ($p) => $p[0]['params']['name'])->all());
+        $orderLogs = array_values(array_filter(iterator_to_array($records), fn ($event) => str_starts_with($event->message, '[CarbonHardwareOrder]')));
+        $this->assertCount($refusal === 'inactive' ? 1 : 0, $orderLogs);
+        if ($refusal === 'inactive') {
+            $this->assertSame('warning', $orderLogs[0]->level);
+            $this->assertSame('[CarbonHardwareOrder] Plain part refused at submit', $orderLogs[0]->message);
+            $this->assertSame(['reason' => 'not_active', 'model_id' => $this->input['lines'][0]['model_id'], 'client_id' => $this->client->id], $orderLogs[0]->context);
+        }
     }
 
     // synthetic, response shape unverified (REST Order schema)
@@ -513,6 +521,7 @@ class CarbonPortalHardwareTest extends TestCase
     public function test_any_throwable_after_the_draft_is_unread_with_ticket_and_not_resent(): void
     {
         $this->realProductRead();
+        $this->carbonCallResult = ['content' => [['type' => 'text', 'text' => 'synthetic']], 'structuredContent' => ['confirmationCode' => 'SYNTH-CODE', 'status' => 'draft']];
         $this->app->bind(CarbonMcpClient::class, fn ($app) => new class($app->make(CarbonMcpConnector::class)) extends CarbonMcpClient
         {
             public function createDraftOrderOnce(array $arguments): array

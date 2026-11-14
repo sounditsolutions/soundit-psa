@@ -4,6 +4,7 @@ namespace Tests\Feature\Carbon;
 
 use App\Enums\PersonType;
 use App\Models\Client;
+use App\Models\ClientHardwareOrder;
 use App\Models\Person;
 use App\Models\Setting;
 use App\Services\Carbon\CarbonHardwareOrderService;
@@ -70,7 +71,7 @@ class CarbonSavedBuildTest extends TestCase
                     if ($this->duringRead) {
                         ($this->duringRead)();
                     }
-                    $result = ['isError' => $this->readIsError, 'structuredContent' => $this->byPart[$request['params']['arguments']['mfgPartNo']] ?? $this->product];
+                    $result = ($this->readIsError ? ['isError' => true] : []) + ['structuredContent' => $this->byPart[$request['params']['arguments']['mfgPartNo']] ?? $this->product];
                 } else {
                     $result = ['structuredContent' => ['confirmationCode' => 'SYNTH-CODE']];
                 }
@@ -530,6 +531,8 @@ class CarbonSavedBuildTest extends TestCase
         } elseif ($reason === 'price_moved') {
             $reply['price'] = 123.46;
         }
+        $reservations = new \ArrayObject;
+        ClientHardwareOrder::creating(fn ($order) => $reservations->append($order->idempotency_key));
         $this->byPart = ['SYNTH-ONE' => ['mfgPartNo' => 'SYNTH-ONE'] + $plain, 'SYNTH-TWO' => ['mfgPartNo' => 'SYNTH-TWO'] + $reply];
         $input = ['idempotency_key' => (string) Str::uuid(), 'lines' => [['model_id' => $first->id, 'quantity' => 1], ['model_id' => $second->id, 'quantity' => 1]]];
         try {
@@ -538,6 +541,7 @@ class CarbonSavedBuildTest extends TestCase
         } catch (ValidationException $e) {
             $this->assertSame([__('carbon_hardware.portal_unavailable')], $e->errors()['hardware']);
         }
+        $this->assertCount(0, $reservations);
         $this->assertSame([['level' => 'warning', 'message' => '[CarbonHardwareOrder] '.($saved ? 'Saved build' : 'Plain part').' refused at submit',
             'context' => ['reason' => $reason, 'model_id' => $second->id, 'client_id' => $this->client->id]]], $this->orderLogs());
         $this->assertSame(['SYNTH-ONE', 'SYNTH-TWO'], $this->calls('get_product')->map(fn ($r) => $r[0]['params']['arguments']['mfgPartNo'])->all());
