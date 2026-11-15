@@ -223,7 +223,7 @@ class CarbonPortalHardwareTest extends TestCase
         $this->assertSame('unread', ClientHardwareOrder::sole()->status);
         $this->assertSame(['get_product', 'create_draft_order'], $this->calls()->map(fn ($p) => $p[0]['params']['name'])->all());
         $this->assertSame(1, $this->carbonCallAttempts); // draft timeout; successful read uses the separate callback
-        $this->assertSame([], $this->orderLogMessages($records));
+        $this->assertCount(0, $records);
         $this->assertDatabaseCount('tickets', 1);
         $this->assertUnreadTicketKeepsCarbonStaffOnly(ClientHardwareOrder::sole());
         $this->get(route('portal.hardware'))->assertOk()->assertSee('<td>Submitted — we&#039;ll confirm</td>', false)
@@ -254,7 +254,7 @@ class CarbonPortalHardwareTest extends TestCase
         $this->submit();
         $this->assertSame($sent, count(Http::recorded()));
         $this->assertSame(['get_product', 'create_draft_order'], $this->calls()->map(fn ($p) => $p[0]['params']['name'])->all());
-        $this->assertSame([], $this->orderLogMessages($records));
+        $this->assertCount(0, $records);
     }
 
     public static function refusals(): array
@@ -620,13 +620,6 @@ class CarbonPortalHardwareTest extends TestCase
         $this->assertSame('unread', $order->status);
         $this->assertCount(1, $records);
         $this->assertSame(['exception' => 'ConnectionException', 'order_id' => $order->id], $records[0]->context);
-    }
-
-    /** Messages of the [CarbonHardwareOrder] records captured by recordLogs(). */
-    private function orderLogMessages(\ArrayObject $records): array
-    {
-        return array_values(array_map(fn ($event) => $event->message,
-            array_filter($records->getArrayCopy(), fn ($event) => str_starts_with($event->message, '[CarbonHardwareOrder]'))));
     }
 
     /** Records written through Laravel's logger during the test. */

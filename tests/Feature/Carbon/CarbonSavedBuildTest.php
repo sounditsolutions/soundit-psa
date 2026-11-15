@@ -312,7 +312,7 @@ class CarbonSavedBuildTest extends TestCase
             'part mismatch' => ['part', 'unconfirmed'],
             'error result' => ['error', 'unconfirmed'],
             'nonnumeric price' => ['price', 'unconfirmed'],
-            // A numeric string passes the <= 0 check, so only the type check refuses it.
+            // '123.45' passes the <= 0 and upper-bound checks, so only the type check refuses this row.
             'numeric-string price' => ['price_string', 'unconfirmed'],
             'requiredConfigs present' => ['required', 'unconfirmed'],
             'isConfigurable present' => ['configurable', 'unconfirmed'],
