@@ -96,6 +96,20 @@ class CarbonHardwareRefreshTest extends TestCase
             $this->readFails = true;
         }
         $before = $model->fresh()->getRawOriginal();
+        if ($reason === 'failed') {
+            $writes = [];
+            \Illuminate\Support\Facades\DB::listen(function ($query) use (&$writes) {
+                if (preg_match('/^\s*(update|insert|delete)\b/i', $query->sql) && str_contains($query->sql, 'client_hardware_models')) {
+                    $writes[] = $query->sql;
+                }
+            });
+            $result = app(StaffCarbonHardwareExecutor::class)->execute('hardware_refresh_approved_model', ['model_id' => $model->id], $this->client->id);
+            $this->assertSame(['error' => 'Hardware operation failed.', 'status' => 0, 'class' => 'CarbonMcpException'], $result);
+            $this->assertSame([], $writes);
+            $this->assertSame($before, $model->fresh()->getRawOriginal());
+
+            return;
+        }
         try {
             $this->refresh($model);
             $this->fail('Refresh accepted refusal fixture');
@@ -125,6 +139,27 @@ class CarbonHardwareRefreshTest extends TestCase
     }
 
     #[DataProvider('availability')]
+    public function test_availability_checked_before_product(string $reason): void
+    {
+        $model = $this->model();
+        $before = $model->fresh()->getRawOriginal();
+        $reads = $this->reads;
+        if ($reason === 'unmapped') {
+            $this->client->forceFill(['carbon_customer_id' => null])->save();
+        } else {
+            Setting::setValue('carbon_hardware_ordering_enabled', '0');
+        }
+        try {
+            $this->refresh($model);
+            $this->fail('First availability check omitted');
+        } catch (ValidationException $e) {
+            $this->assertSame([__('carbon_hardware.'.$reason)], $e->errors()['hardware']);
+        }
+        $this->assertSame($reads, $this->reads);
+        $this->assertSame($before, $model->fresh()->getRawOriginal());
+    }
+
+    #[DataProvider('availability')]
     public function test_availability_rechecked_after_product(string $reason): void
     {
         $model = $this->model();
@@ -149,7 +184,7 @@ class CarbonHardwareRefreshTest extends TestCase
         $this->assertSame($before, $model->fresh()->getRawOriginal());
     }
 
-    public function test_locked_components_and_sell_are_used(): void
+    public function test_components_and_sell_are_reread_after_the_product_read(): void
     {
         $model = $this->model();
         $this->duringRead = fn () => $model->update(['carbon_component_ids' => [81003]]);
@@ -175,12 +210,14 @@ class CarbonHardwareRefreshTest extends TestCase
         $before = $model->fresh()->getRawOriginal();
         $other = Client::factory()->create(['name' => 'Synthetic Other Lab']);
         $other->forceFill(['carbon_customer_id' => 91002])->save();
+        $reads = $this->reads;
         try {
             app(CarbonHardwareService::class)->refresh($other, $model->id);
             $this->fail('Tenant scope dropped');
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             $this->assertSame($before, $model->fresh()->getRawOriginal());
         }
+        $this->assertSame($reads, $this->reads);
     }
 
     public function test_executor_and_web_show_changed_and_unchanged_costs(): void
@@ -200,18 +237,27 @@ class CarbonHardwareRefreshTest extends TestCase
 
     public static function tokenGrants(): array
     {
-        return ['sell only' => [['hardware_set_sell_price']], 'legacy' => [null]];
+        return ['sell only' => [['hardware_set_sell_price'], false], 'legacy' => [null, false], 'explicit refresh' => [['hardware_refresh_approved_model'], true]];
     }
 
     #[DataProvider('tokenGrants')]
-    public function test_refresh_is_ungranted_for_sell_only_and_legacy_tokens(?array $grants): void
+    public function test_refresh_requires_explicit_name_grant(?array $grants, bool $allowed): void
     {
         $model = $this->model();
         $before = $model->fresh()->getRawOriginal();
         $reads = $this->reads;
+        $this->product['price'] = 150;
         $token = McpConfig::rotateStaffToken($grants);
         $response = $this->withToken($token)->postJson('/api/mcp/staff', ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/call', 'params' => ['name' => 'hardware_refresh_approved_model', 'arguments' => ['client_id' => $this->client->id, 'model_id' => $model->id]]]);
+        if ($allowed) {
+            $this->assertFalse($response->json('result.isError'), $response->getContent());
+            $this->assertSame($reads + 1, $this->reads);
+            $this->assertSame('150.00', $model->fresh()->carbon_price);
+
+            return;
+        }
         $this->assertTrue($response->json('result.isError'), $response->getContent());
+        $this->assertStringStartsWith('Tool not allowed for this token: hardware_refresh_approved_model ', $response->json('result.content.0.text'));
         $this->assertSame($reads, $this->reads);
         $this->assertSame($before, $model->fresh()->getRawOriginal());
     }
@@ -239,7 +285,10 @@ class CarbonHardwareRefreshTest extends TestCase
         $this->assertSame(['price_moved'], $reasons);
         $this->assertDatabaseCount('client_hardware_orders', 0);
         $this->refresh($model);
+        // Synthetic confirmation shape used by CarbonPortalHardwareTest, from the captured draft contract.
+        $this->carbonCallResult = ['structuredContent' => ['confirmationCode' => 'SYNTH-REFRESH-ORDER']];
         $order = app(\App\Services\Carbon\CarbonHardwareOrderService::class)->submit($person, $input);
+        $this->assertSame('submitted', $order->status);
         $this->assertNotNull($order->ticket_id);
         $this->assertSame('200.00', $order->estimated_total);
         $this->assertDatabaseCount('client_hardware_orders', 1);
