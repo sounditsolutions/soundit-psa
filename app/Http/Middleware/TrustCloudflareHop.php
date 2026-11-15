@@ -15,7 +15,7 @@ use Symfony\Component\HttpFoundation\IpUtils;
  * trusted entry, and every entry that is not a valid IP, from the
  * X-Forwarded-For chain before taking the right-most survivor. So when the
  * connecting address is listed, the header is first cut down to its
- * right-most entry, and no entry a caller wrote reaches Symfony. If that
+ * right-most entry, and no entry to its left reaches Symfony. If that
  * entry equals the connecting address or is not a valid IP, the address is
  * the connecting address. Whether the connecting address is this site's own
  * edge is not checked (see config/trustedproxy.php).
@@ -41,7 +41,7 @@ class TrustCloudflareHop extends TrustProxies
 
     /**
      * Cut X-Forwarded-For to its right-most entry: the one the connecting hop
-     * appended. Every entry to its left came from the caller.
+     * appended.
      */
     private function keepOnlyTheAppendedEntry(Request $request): void
     {

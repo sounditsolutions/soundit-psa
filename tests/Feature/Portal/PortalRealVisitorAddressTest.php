@@ -33,8 +33,9 @@ use Tests\TestCase;
  *  - scheme, host and path prefix are not taken from forwarded headers.
  *
  * Addresses: the edges are synthetic hosts inside Cloudflare's published
- * ranges; visitors, forged entries and the direct caller use the
- * 192.0.2.0/24 documentation block.
+ * ranges; visitors and the direct caller use the 192.0.2.0/24
+ * documentation block, and forged entries use that block or the
+ * 198.51.100.0/24 documentation block.
  */
 class PortalRealVisitorAddressTest extends TestCase
 {
@@ -50,7 +51,7 @@ class PortalRealVisitorAddressTest extends TestCase
 
     private const DIRECT_CALLER = '192.0.2.50';
 
-    /** Inside 2a06:98c0::/29, the published v6 range Workers send from. */
+    /** Inside 2a06:98c0::/29, a published Cloudflare v6 range. */
     private const CLOUDFLARE_APPENDED = '2a06:98c0::1';
 
     protected function setUp(): void
@@ -61,6 +62,18 @@ class PortalRealVisitorAddressTest extends TestCase
         Setting::setValue('portal_enabled', '1');
 
         Route::middleware('web')->get('/__test/visitor-address', fn (Request $r) => response($r->ip() ?? ''));
+    }
+
+    /** POST /portal/login allows 20 a minute per address (routes/portal.php, portal-login). */
+    private const ADDRESS_SIGN_IN_LIMIT = 20;
+
+    /**
+     * One failed sign-in. Each attempt uses a different email, so only the
+     * per-address limit can answer 429, never the per-email one.
+     */
+    private function signInAttempt(int $i): \Illuminate\Testing\TestResponse
+    {
+        return $this->post('/portal/login', ['email' => "probe{$i}@example.test", 'password' => 'not-a-real-passphrase']);
     }
 
     private function fromAddress(string $remote, ?string $forwardedFor = null): static
@@ -74,15 +87,15 @@ class PortalRealVisitorAddressTest extends TestCase
         return $this;
     }
 
-    /** The card's done-when: visitor A uses up the allowance, visitor B behind the same edge still gets in. */
+    /** The card's done-when: visitor A uses up the sign-in allowance, visitor B behind the same edge still gets to try. */
     public function test_two_visitors_behind_one_cloudflare_edge_have_separate_sign_in_allowances(): void
     {
-        for ($i = 1; $i <= 6; $i++) {
-            $this->fromAddress(self::EDGE_V4, self::VISITOR_A)->get('/portal/login')->assertOk();
+        for ($i = 1; $i <= self::ADDRESS_SIGN_IN_LIMIT; $i++) {
+            $this->fromAddress(self::EDGE_V4, self::VISITOR_A)->signInAttempt($i)->assertRedirect();
         }
-        $this->fromAddress(self::EDGE_V4, self::VISITOR_A)->get('/portal/login')->assertStatus(429);
+        $this->fromAddress(self::EDGE_V4, self::VISITOR_A)->signInAttempt(0)->assertStatus(429);
 
-        $this->fromAddress(self::EDGE_V4, self::VISITOR_B)->get('/portal/login')->assertOk();
+        $this->fromAddress(self::EDGE_V4, self::VISITOR_B)->signInAttempt(0)->assertRedirect();
     }
 
     public function test_a_cloudflare_edge_resolves_to_the_visitor_it_forwarded_for_v4_and_v6(): void
@@ -98,10 +111,10 @@ class PortalRealVisitorAddressTest extends TestCase
             ->assertOk()->assertSeeText(self::DIRECT_CALLER, false);
 
         // Rotating the header does not buy a fresh allowance.
-        for ($i = 1; $i <= 6; $i++) {
-            $this->fromAddress(self::DIRECT_CALLER, '192.0.2.'.(100 + $i))->get('/portal/login')->assertOk();
+        for ($i = 1; $i <= self::ADDRESS_SIGN_IN_LIMIT; $i++) {
+            $this->fromAddress(self::DIRECT_CALLER, '192.0.2.'.(100 + $i))->signInAttempt($i)->assertRedirect();
         }
-        $this->fromAddress(self::DIRECT_CALLER, '192.0.2.200')->get('/portal/login')->assertStatus(429);
+        $this->fromAddress(self::DIRECT_CALLER, '192.0.2.200')->signInAttempt(0)->assertStatus(429);
     }
 
     public function test_behind_a_real_edge_a_forged_left_hand_entry_is_ignored(): void
@@ -111,10 +124,10 @@ class PortalRealVisitorAddressTest extends TestCase
         $this->fromAddress(self::EDGE_V4, '192.0.2.77, '.self::VISITOR_A)->get('/__test/visitor-address')
             ->assertOk()->assertSeeText(self::VISITOR_A, false);
 
-        for ($i = 1; $i <= 6; $i++) {
-            $this->fromAddress(self::EDGE_V4, '192.0.2.'.(100 + $i).', '.self::VISITOR_A)->get('/portal/login')->assertOk();
+        for ($i = 1; $i <= self::ADDRESS_SIGN_IN_LIMIT; $i++) {
+            $this->fromAddress(self::EDGE_V4, '192.0.2.'.(100 + $i).', '.self::VISITOR_A)->signInAttempt($i)->assertRedirect();
         }
-        $this->fromAddress(self::EDGE_V4, '192.0.2.200, '.self::VISITOR_A)->get('/portal/login')->assertStatus(429);
+        $this->fromAddress(self::EDGE_V4, '192.0.2.200, '.self::VISITOR_A)->signInAttempt(0)->assertStatus(429);
     }
 
     public function test_scheme_and_host_are_not_taken_from_forwarded_headers(): void
@@ -133,10 +146,10 @@ class PortalRealVisitorAddressTest extends TestCase
 
     /**
      * A request that starts on Cloudflare's network (a Worker): the edge
-     * appends an address that is itself inside Cloudflare's ranges. Only the
-     * connecting hop is trusted, so the appended entry (which differs from the
-     * connecting edge here) is the address and the caller-written entry to its
-     * left is not used.
+     * appends an address that is itself inside Cloudflare's ranges. The header
+     * is cut to that appended entry before Symfony reads it, so it (which
+     * differs from the connecting edge here) is the address and the
+     * caller-written entry to its left is not used.
      */
     public function test_a_forged_entry_left_of_a_cloudflare_appended_address_is_ignored(): void
     {
@@ -144,10 +157,10 @@ class PortalRealVisitorAddressTest extends TestCase
             ->assertOk()->assertSeeText(self::CLOUDFLARE_APPENDED, false);
 
         // Rotating the forged entry does not buy a fresh sign-in allowance.
-        for ($i = 1; $i <= 6; $i++) {
-            $this->fromAddress(self::EDGE_V4, '192.0.2.'.(100 + $i).', '.self::CLOUDFLARE_APPENDED)->get('/portal/login')->assertOk();
+        for ($i = 1; $i <= self::ADDRESS_SIGN_IN_LIMIT; $i++) {
+            $this->fromAddress(self::EDGE_V4, '192.0.2.'.(100 + $i).', '.self::CLOUDFLARE_APPENDED)->signInAttempt($i)->assertRedirect();
         }
-        $this->fromAddress(self::EDGE_V4, '192.0.2.200, '.self::CLOUDFLARE_APPENDED)->get('/portal/login')->assertStatus(429);
+        $this->fromAddress(self::EDGE_V4, '192.0.2.200, '.self::CLOUDFLARE_APPENDED)->signInAttempt(0)->assertStatus(429);
     }
 
     /** Any change to the list is a deliberate edit of this test as well. */
@@ -215,9 +228,77 @@ class PortalRealVisitorAddressTest extends TestCase
     /** With the appended entry equal to the connecting address, rotating the left entry buys no fresh allowance. */
     public function test_rotating_the_left_entry_beside_a_same_hop_entry_buys_no_allowance(): void
     {
-        for ($i = 1; $i <= 6; $i++) {
-            $this->fromAddress(self::EDGE_V4, '192.0.2.'.(100 + $i).', '.self::EDGE_V4)->get('/portal/login')->assertOk();
+        for ($i = 1; $i <= self::ADDRESS_SIGN_IN_LIMIT; $i++) {
+            $this->fromAddress(self::EDGE_V4, '192.0.2.'.(100 + $i).', '.self::EDGE_V4)->signInAttempt($i)->assertRedirect();
         }
-        $this->fromAddress(self::EDGE_V4, '192.0.2.200, '.self::EDGE_V4)->get('/portal/login')->assertStatus(429);
+        $this->fromAddress(self::EDGE_V4, '192.0.2.200, '.self::EDGE_V4)->signInAttempt(0)->assertStatus(429);
+    }
+
+    /**
+     * Behind one edge, two visitors have separate page, form and per-email
+     * allowances, and a visitor who changes the forged left-hand entry of
+     * the header gets no fresh allowance on any of them.
+     */
+    public function test_behind_one_edge_each_limiter_counts_per_visitor_and_ignores_the_forged_entry(): void
+    {
+        $url = '/portal/login';
+        for ($n = 1; $n <= 60; $n++) {
+            $this->fromAddress(self::EDGE_V4, '192.0.2.'.(100 + $n % 50).', '.self::VISITOR_A)->get($url)->assertOk();
+        }
+        $this->fromAddress(self::EDGE_V4, '192.0.2.250, '.self::VISITOR_A)->get($url)->assertStatus(429);
+        $this->fromAddress(self::EDGE_V4, self::VISITOR_B)->get($url)->assertOk();
+
+        for ($n = 1; $n <= 6; $n++) {
+            $this->fromAddress(self::EDGE_V4, '192.0.2.'.(100 + $n).', '.self::VISITOR_A)
+                ->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertRedirect();
+        }
+        $this->fromAddress(self::EDGE_V4, '192.0.2.250, '.self::VISITOR_A)
+            ->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertStatus(429);
+        $this->fromAddress(self::EDGE_V4, self::VISITOR_B)
+            ->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertRedirect();
+
+        for ($n = 1; $n <= 5; $n++) {
+            $this->fromAddress(self::EDGE_V4, '192.0.2.'.(100 + $n).', '.self::VISITOR_A)
+                ->post('/portal/login', ['email' => 'a@example.test', 'password' => 'not-a-real-passphrase'])->assertRedirect();
+        }
+        $this->fromAddress(self::EDGE_V4, '192.0.2.250, '.self::VISITOR_A)
+            ->post('/portal/login', ['email' => 'a@example.test', 'password' => 'not-a-real-passphrase'])->assertStatus(429);
+        $this->fromAddress(self::EDGE_V4, self::VISITOR_B)
+            ->post('/portal/login', ['email' => 'a@example.test', 'password' => 'not-a-real-passphrase'])->assertRedirect();
+    }
+
+    /**
+     * A caller outside the trusted ranges that sends a different
+     * X-Forwarded-For on every request still meets the page limit: the
+     * header is not its address.
+     */
+    public function test_an_outside_caller_changing_the_header_still_meets_the_page_limit(): void
+    {
+        for ($n = 1; $n <= 60; $n++) {
+            $this->fromAddress(self::DIRECT_CALLER, '198.51.100.'.$n)->get('/portal/login')->assertOk();
+        }
+        $this->fromAddress(self::DIRECT_CALLER, '198.51.100.200')->get('/portal/login')->assertStatus(429);
+    }
+
+    /** The same for the 6-a-minute form limit. */
+    public function test_an_outside_caller_changing_the_header_still_meets_the_form_limit(): void
+    {
+        for ($n = 1; $n <= 6; $n++) {
+            $this->fromAddress(self::DIRECT_CALLER, '198.51.100.'.$n)
+                ->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertRedirect();
+        }
+        $this->fromAddress(self::DIRECT_CALLER, '198.51.100.200')
+            ->post('/portal/forgot-password', ['email' => 'x@example.test'])->assertStatus(429);
+    }
+
+    /** The same for the 5-a-minute per-email sign-in limit. */
+    public function test_an_outside_caller_changing_the_header_still_meets_the_per_email_limit(): void
+    {
+        for ($n = 1; $n <= 5; $n++) {
+            $this->fromAddress(self::DIRECT_CALLER, '198.51.100.'.$n)
+                ->post('/portal/login', ['email' => 'a@example.test', 'password' => 'not-a-real-passphrase'])->assertRedirect();
+        }
+        $this->fromAddress(self::DIRECT_CALLER, '198.51.100.200')
+            ->post('/portal/login', ['email' => 'a@example.test', 'password' => 'not-a-real-passphrase'])->assertStatus(429);
     }
 }

@@ -41,13 +41,18 @@ use App\Support\MeshConfig;
 use App\Support\ServosityConfig;
 use App\Support\StripeConfig;
 use App\Support\ZorusConfig;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
 use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Support\Str;
+use Normalizer;
 use SocialiteProviders\Manager\SocialiteWasCalled;
 use SocialiteProviders\Microsoft\MicrosoftExtendSocialite;
 
@@ -270,6 +275,36 @@ class AppServiceProvider extends ServiceProvider
         // Keeps prospects structurally out of login and the reset broker.
         Auth::provider('portal-eloquent', function ($app, array $config) {
             return new PortalUserProvider($app['hash'], $config['model']);
+        });
+
+        // Portal guest limiters (routes/portal.php). Named limiters keep their
+        // own counters: a plain throttle:N,M keys a signed-out caller by
+        // address alone, so it shares one counter with every other plain
+        // throttle that address hits, and page views would use up sign-in
+        // tries again.
+        RateLimiter::for('portal-page', fn (Request $request) => Limit::perMinute(60)->by($request->ip()));
+        RateLimiter::for('portal-guest', fn (Request $request) => Limit::perMinute(6)->by($request->ip()));
+        RateLimiter::for('portal-login', function (Request $request) {
+            // The per-email key is the typed email: trimmed, cut to its first
+            // 255 characters, lower-cased, and folded to plain letters, because
+            // the account lookup's database collation treats case and accents
+            // as the same letter. A character with no plain spelling is
+            // dropped. The result is lower-cased again, because the fold can
+            // produce a capital. The fold is close to that matching, not
+            // exact; the 20-a-minute address limit below applies either way.
+            $email = $request->input('email');
+            $email = is_string($email) ? mb_strtolower(mb_substr(trim($email), 0, 255)) : '';
+            $decomposed = Normalizer::normalize($email, Normalizer::FORM_KD);
+            if (is_string($decomposed)) {
+                $email = preg_replace('/\p{Mn}+/u', '', $decomposed) ?? $email;
+            }
+            $email = Str::ascii($email);
+            $email = mb_strtolower($email);
+
+            return [
+                Limit::perMinute(5)->by('email:'.$email.'|'.$request->ip()),
+                Limit::perMinute(20)->by('address:'.$request->ip()),
+            ];
         });
 
         // Register model observers
