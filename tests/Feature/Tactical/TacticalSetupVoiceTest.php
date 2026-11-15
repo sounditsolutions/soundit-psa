@@ -234,10 +234,11 @@ class TacticalSetupVoiceTest extends TestCase
         // ConnectException only when no other request reaches the queue before it. The sentinel
         // is a second ConnectException. A request that takes it is recorded in history (with the
         // error), so the installer count and the last-entry check see a request after the failed
-        // POST. Only the queue count sees an extra request before the POST whose failure the
-        // product absorbs: the POST then takes the sentinel and still looks like the one failed
-        // request. An empty queue throws before history records anything, so without the
-        // sentinel a request after the queue ran out would go unseen.
+        // POST. An extra request before the POST that is not itself an installer POST, and whose
+        // failure the product absorbs, is seen only by the queue count: the POST then takes the
+        // sentinel and still looks like the one failed request. An empty queue throws before
+        // history records anything, so without the sentinel a request sent after the queue ran
+        // out, whose error the product absorbs, would go unseen.
         $queue = new MockHandler([
             new ConnectException('synthetic transport failure', new Request('POST', 'agents/installer/')),
             new ConnectException('sentinel: must stay queued', new Request('POST', 'agents/installer/')),
