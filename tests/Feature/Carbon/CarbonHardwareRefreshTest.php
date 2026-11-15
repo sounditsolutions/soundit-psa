@@ -303,7 +303,7 @@ class CarbonHardwareRefreshTest extends TestCase
         $this->assertSame(['price_moved'], $reasons);
         $this->assertDatabaseCount('client_hardware_orders', 0);
         $this->refresh($model);
-        // Synthetic confirmation shape used by CarbonPortalHardwareTest, from the captured draft contract.
+        // Synthetic confirmation shape, as in CarbonSavedBuildTest; not a captured draft response.
         $this->carbonCallResult = ['structuredContent' => ['confirmationCode' => 'SYNTH-REFRESH-ORDER']];
         $order = app(\App\Services\Carbon\CarbonHardwareOrderService::class)->submit($person, $input);
         $this->assertSame('submitted', $order->status);
