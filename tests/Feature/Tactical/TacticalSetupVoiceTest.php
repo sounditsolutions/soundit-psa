@@ -112,6 +112,18 @@ class TacticalSetupVoiceTest extends TestCase
         $xpath = new \DOMXPath($doc);
         $notes = $xpath->query('//details[summary[normalize-space()="Note for our technicians"]]');
         $this->assertSame(1, $notes->length);
+        // A <span hidden> or <template> wrapper around the sentences adds no text, so the text
+        // check alone misses it. The note's only element child must be its <summary>: this rules
+        // out element wrappers inside the note, and any element in the note body fails it. It
+        // does not see a wrapper around the whole <details>, or a class, style or hidden
+        // attribute on the <details> or the <summary>.
+        $children = [];
+        foreach ($notes->item(0)->childNodes as $child) {
+            if ($child instanceof \DOMElement) {
+                $children[] = $child->nodeName;
+            }
+        }
+        $this->assertSame(['summary'], $children);
         $this->assertSame(
             'Note for our technicians'
                 .' Antivirus sandboxes can execute the dynamic EXE and enroll a sandbox device.'
@@ -216,12 +228,31 @@ class TacticalSetupVoiceTest extends TestCase
 
     public function test_transport_failure_says_contact_us(): void
     {
+        // The site lookup's clients/ GET is answered by path, not by queue position, so an extra
+        // lookup does not shift which request fails; the lookup count below sees it instead.
+        // Every other request takes the next queue entry, so the installer POST gets the first
+        // ConnectException only when no other request reaches the queue before it. The sentinel
+        // is a second ConnectException. A request that takes it is recorded in history (with the
+        // error), so the last-entry check sees a request after the failed POST, and the installer
+        // count also sees it when it is another installer POST. An extra request before the POST
+        // that is not itself an installer POST, and whose failure the product absorbs, is seen
+        // only by the queue count: the POST then takes the sentinel and still looks like the one
+        // failed request. An empty queue throws before history records anything, so without the
+        // sentinel a request sent after the queue ran out, whose error the product absorbs, would
+        // go unseen.
         $queue = new MockHandler([
-            new Response(200, [], json_encode([['id' => 3, 'name' => 'Acme', 'sites' => [['id' => 5, 'name' => 'Main']]]])),
             new ConnectException('synthetic transport failure', new Request('POST', 'agents/installer/')),
+            new ConnectException('sentinel: must stay queued', new Request('POST', 'agents/installer/')),
         ]);
+        $clients = json_encode([['id' => 3, 'name' => 'Acme', 'sites' => [['id' => 5, 'name' => 'Main']]]]);
         $history = [];
-        $stack = HandlerStack::create($queue);
+        $stack = HandlerStack::create(function ($request, array $options) use ($queue, $clients) {
+            if ($request->getMethod() === 'GET' && $request->getUri()->getPath() === '/clients/') {
+                return \GuzzleHttp\Promise\Create::promiseFor(new Response(200, [], $clients));
+            }
+
+            return $queue($request, $options);
+        });
         $stack->push(Middleware::history($history));
         $client = new TacticalClient(new GuzzleClient(['base_uri' => 'https://tactical.example.test/', 'handler' => $stack]));
         try {
@@ -230,12 +261,19 @@ class TacticalSetupVoiceTest extends TestCase
         } catch (\App\Services\Tactical\InstallerGenerationException $e) {
             $this->assertSame('The installer could not be prepared. Use the manual fallback or contact us.', $e->getMessage());
         }
-        // The installer POST is reached and fails; nothing earlier in the try refuses first.
-        $this->assertSame(0, $queue->count());
-        $this->assertCount(2, $history);
-        $this->assertSame('POST', $history[1]['request']->getMethod());
-        $this->assertSame('/agents/installer/', $history[1]['request']->getUri()->getPath());
-        $this->assertInstanceOf(ConnectException::class, $history[1]['error']);
+        // No second request took a queue entry: the sentinel is still queued.
+        $this->assertSame(1, $queue->count());
+        // The installer POST, found by method and path, was sent once and failed in transport.
+        $installer = array_values(array_filter($history, fn ($entry) => $entry['request']->getMethod() === 'POST'
+            && $entry['request']->getUri()->getPath() === '/agents/installer/'));
+        $this->assertCount(1, $installer);
+        $this->assertInstanceOf(ConnectException::class, $installer[0]['error']);
+        // A clients/ GET does not use the queue, so this catches one sent after the failed POST.
+        $this->assertSame($installer[0], end($history));
+        // The site lookup was sent once.
+        $lookups = array_filter($history, fn ($entry) => $entry['request']->getMethod() === 'GET'
+            && $entry['request']->getUri()->getPath() === '/clients/');
+        $this->assertCount(1, $lookups);
     }
 
     /** Fixed-phrase sweep over the setup files listed below. */
