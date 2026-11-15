@@ -1,8 +1,15 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Client hardware: approved list and Carbon customer (staff)</title>
-<link rel="stylesheet" href="../_tokens.css"><link rel="stylesheet" href="_hw.css"></head>
+<link rel="stylesheet" href="../_tokens.css"><link rel="stylesheet" href="_hw.css">
+<style>
+/* layouts.app success alert: Bootstrap geometry with app.css brand colours. */
+.alert.alert-success { position: relative; width: 100%; border: 1px solid var(--psa-colors-signal-gold); background: color-mix(in srgb, var(--psa-colors-signal-gold) 10%, transparent); color: var(--psa-colors-navy); padding: 16px 48px 16px 16px; margin-bottom: 16px; border-radius: 6px; font-size: 16px; line-height: 24px; }
+.alert .btn-close { position: absolute; top: 0; right: 0; padding: 16px; width: 48px; height: 56px; border: 0; background: transparent; color: #000; opacity: .5; font-size: 24px; line-height: 24px; cursor: pointer; }
+.alert .btn-close:hover { opacity: .75; }
+.alert .btn-close:focus-visible { outline: 3px solid var(--psa-colors-navy); }
+</style></head>
 <body><main>
-<p class="note" role="status">Carbon price updated from 800.00 to 812.00.</p>
+<div class="alert alert-success alert-dismissible fade show" role="alert">Carbon price updated from 800.00 to 812.00.<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close" onclick="this.parentElement.remove()">×</button></div>
 <p class="caption">Staff &gt; Clients &gt; Example Dental Co. &gt; Hardware tab (new). Sample data only. Staff see both prices; the client sees only the sell price.</p>
 <h4>Example Dental Co.</h4>
 <div class="tabs"><span>Overview</span><span>Tickets</span><span>Assets</span><span>People</span><span>Contracts</span><span class="on">Hardware</span></div>
