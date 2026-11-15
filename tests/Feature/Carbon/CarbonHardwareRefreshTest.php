@@ -73,11 +73,11 @@ class CarbonHardwareRefreshTest extends TestCase
 
     public static function refusals(): array
     {
-        return [['margin_confirm'], ['components_moved'], ['not_active'], ['unconfirmed'], ['failed']];
+        return [['margin_confirm'], ['components_moved'], ['not_active'], ['unconfirmed'], ['failed'], 'price under half a cent' => ['unconfirmed', 0.004]];
     }
 
     #[DataProvider('refusals')]
-    public function test_refusal_leaves_entire_row_unchanged(string $reason): void
+    public function test_refusal_leaves_entire_row_unchanged(string $reason, ?float $price = null): void
     {
         $model = $this->model();
         if ($reason === 'margin_confirm') {
@@ -89,8 +89,11 @@ class CarbonHardwareRefreshTest extends TestCase
         if ($reason === 'not_active') {
             $this->product['status'] = 'inactive';
         }
-        if ($reason === 'unconfirmed') {
+        if ($reason === 'unconfirmed' && $price === null) {
             unset($this->product['price']);
+        }
+        if ($price !== null) {
+            $this->product['price'] = $price;
         }
         if ($reason === 'failed') {
             $this->readFails = true;

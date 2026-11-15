@@ -88,6 +88,7 @@ class CarbonHardwareTest extends TestCase
             'part mismatch' => [['mfgPartNo' => 'SYNTH-OTHER']],
             'price nonnumeric' => [['price' => 'unknown']],
             'price zero' => [['price' => 0]],
+            'price under half a cent' => [['price' => 0.004]],
             'price numeric string' => [['price' => '123.45']],
             'price exponent string' => [['price' => '1e2']],
         ];
