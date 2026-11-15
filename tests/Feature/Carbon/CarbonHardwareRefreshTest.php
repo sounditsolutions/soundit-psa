@@ -73,7 +73,7 @@ class CarbonHardwareRefreshTest extends TestCase
 
     public static function refusals(): array
     {
-        return [['margin_confirm'], ['components_moved'], ['not_active'], ['unconfirmed'], ['failed'], 'price under half a cent' => ['unconfirmed', 0.004]];
+        return [['margin_confirm'], ['components_moved'], ['not_active'], ['unconfirmed'], ['failed'], 'price under half a cent' => ['unconfirmed', 0.004], 'price just under half a cent' => ['unconfirmed', 0.0049]];
     }
 
     #[DataProvider('refusals')]

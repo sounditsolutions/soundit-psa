@@ -89,6 +89,7 @@ class CarbonHardwareTest extends TestCase
             'price nonnumeric' => [['price' => 'unknown']],
             'price zero' => [['price' => 0]],
             'price under half a cent' => [['price' => 0.004]],
+            'price just under half a cent' => [['price' => 0.0049]],
             'price numeric string' => [['price' => '123.45']],
             'price exponent string' => [['price' => '1e2']],
         ];
@@ -105,6 +106,14 @@ class CarbonHardwareTest extends TestCase
             $this->assertSame([__('carbon_hardware.unconfirmed')], $e->errors()['hardware']);
         }
         $this->assertDatabaseCount('client_hardware_models', 0);
+    }
+
+    public function test_price_of_half_a_cent_is_accepted_and_cached_as_one_cent(): void
+    {
+        $this->productFixture(['price' => 0.005]);
+        $model = $this->add();
+        $this->assertSame('0.01', $model->carbon_price);
+        $this->assertSame('0.01', $model->fresh()->carbon_price);
     }
 
     public function test_missing_structured_content_refuses(): void
