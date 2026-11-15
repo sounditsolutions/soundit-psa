@@ -220,6 +220,24 @@ class CarbonHardwareRefreshTest extends TestCase
         $this->assertSame($reads, $this->reads);
     }
 
+    public function test_executor_requires_model_id_without_reads_or_writes(): void
+    {
+        $model = $this->model();
+        $before = $model->fresh()->getRawOriginal();
+        $this->reads = 0;
+        $writes = [];
+        \Illuminate\Support\Facades\DB::listen(function ($query) use (&$writes) {
+            if (preg_match('/^\s*(update|insert|delete)\b/i', $query->sql) && str_contains($query->sql, 'client_hardware_models')) {
+                $writes[] = $query->sql;
+            }
+        });
+        $result = app(StaffCarbonHardwareExecutor::class)->execute('hardware_refresh_approved_model', [], $this->client->id);
+        $this->assertSame(['error' => 'The model id field is required.'], $result);
+        $this->assertSame(0, $this->reads);
+        $this->assertSame([], $writes);
+        $this->assertSame($before, $model->fresh()->getRawOriginal());
+    }
+
     public function test_executor_and_web_show_changed_and_unchanged_costs(): void
     {
         $model = $this->model();
@@ -302,6 +320,28 @@ class CarbonHardwareRefreshTest extends TestCase
         $this->assertStringContainsString(route('clients.hardware.model', [$this->client, 'refresh']), $html);
         $this->assertSame(1, substr_count($html, 'Refresh Carbon price'));
         $this->assertStringContainsString('id="refresh-confirm-'.$model->id.'"', $html);
+    }
+
+    public static function refreshButtonAvailability(): array
+    {
+        return ['enabled and mapped' => [true, true, false], 'switch off' => [false, true, true], 'unmapped' => [true, false, true]];
+    }
+
+    #[DataProvider('refreshButtonAvailability')]
+    public function test_refresh_button_disabled_when_unavailable(bool $enabled, bool $mapped, bool $disabled): void
+    {
+        $model = $this->model();
+        if (! $mapped) {
+            $this->client->forceFill(['carbon_customer_id' => null])->save();
+        }
+        $html = view('clients.partials.hardware', ['client' => $this->client, 'hardwareModels' => collect([$model]), 'hardwareEnabled' => $enabled, 'hardwareLookupError' => null, 'hardwareCustomers' => []])->render();
+        $document = new \DOMDocument;
+        @$document->loadHTML($html);
+        $xpath = new \DOMXPath($document);
+        $buttons = $xpath->query('//form[@action="'.route('clients.hardware.model', [$this->client, 'refresh']).'"]//button');
+        $this->assertSame(1, $buttons->length);
+        $this->assertSame(__('carbon_hardware.refresh'), trim($buttons->item(0)->textContent));
+        $this->assertSame($disabled, $buttons->item(0)->hasAttribute('disabled'));
     }
 
     public function test_group_matches_sell_not_read(): void
