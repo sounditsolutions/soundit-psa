@@ -176,6 +176,30 @@ class CarbonHardwareService
         });
     }
 
+    public function refresh(Client $client, int $modelId, bool $confirmed = false): array
+    {
+        $this->assertAvailable($client);
+        $part = $client->hardwareModels()->findOrFail($modelId)->mfg_part_no;
+        $product = $this->product($part);
+        $cost = number_format((float) $product['price'], 2, '.', '');
+
+        return DB::transaction(function () use ($client, $modelId, $confirmed, $product, $cost) {
+            $locked = Client::query()->lockForUpdate()->findOrFail($client->id);
+            $this->assertAvailable($locked);
+            $model = $locked->hardwareModels()->lockForUpdate()->findOrFail($modelId);
+            if ($model->carbon_component_ids !== $product['carbon_component_ids']) {
+                $this->refuse('components_moved');
+            }
+            $this->confirmMargin($model->sell_price, $cost, $confirmed);
+            $old = $model->carbon_price;
+            $model->carbon_price = $cost;
+            $model->synced_at = now();
+            $model->save();
+
+            return ['model' => $model->toArray(), 'old_cost' => $old, 'new_cost' => $cost];
+        });
+    }
+
     public function price(Client $client, int $modelId, string $sell, bool $confirmed = false): ClientHardwareModel
     {
         return DB::transaction(function () use ($client, $modelId, $sell, $confirmed) {

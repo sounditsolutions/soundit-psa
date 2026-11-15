@@ -62,7 +62,17 @@
                     </td>
                     <td>{{ $model->carbon_price !== null && (float) $model->sell_price > 0 ? number_format(((float) $model->sell_price - (float) $model->carbon_price) / (float) $model->sell_price * 100, 1).'%' : __('carbon_hardware.unknown') }}</td>
                     <td>{{ __('carbon_hardware.'.($model->availability ?? 'unknown')) }}</td>
-                    <td><form method="POST" action="{{ route('clients.hardware.model', [$client, 'remove']) }}">@csrf
+                    <td>
+                        <form method="POST" action="{{ route('clients.hardware.model', [$client, 'refresh']) }}" class="mb-2">
+                            @csrf
+                            <input type="hidden" name="model_id" value="{{ $model->id }}">
+                            <div class="form-check small">
+                                <input class="form-check-input" id="refresh-confirm-{{ $model->id }}" type="checkbox" name="confirm_below_cost" value="1">
+                                <label class="form-check-label" for="refresh-confirm-{{ $model->id }}">{{ __('carbon_hardware.confirm') }}</label>
+                            </div>
+                            <button class="btn btn-outline-primary btn-sm" @disabled(!$hardwareEnabled || !$client->carbon_customer_id)>{{ __('carbon_hardware.refresh') }}</button>
+                        </form>
+                        <form method="POST" action="{{ route('clients.hardware.model', [$client, 'remove']) }}">@csrf
                         <input type="hidden" name="model_id" value="{{ $model->id }}">
                         <button class="btn btn-outline-danger btn-sm" @disabled(!$hardwareEnabled || !$client->carbon_customer_id)>{{ __('carbon_hardware.remove') }}</button>
                     </form></td>

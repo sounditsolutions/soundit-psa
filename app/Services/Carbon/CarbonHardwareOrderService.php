@@ -170,7 +170,8 @@ class CarbonHardwareOrderService
         try {
             $result = $this->carbon->createDraftOrderOnce($arguments);
         } catch (CarbonMcpException) {
-            // Ambiguous delivery remains reserved, including preflight auth failures.
+            // Every Carbon exception from the draft call, including the 401 draft auth failure, leaves the
+            // reservation in place and the order unread. The draft is never re-sent; staff check Carbon.
         } catch (\Throwable $e) {
             // Any other exception from the draft call is also unread: the draft may have gone out,
             // so it is never retried. Class and order id only, never the message text.
