@@ -622,7 +622,6 @@ class CarbonPortalHardwareTest extends TestCase
         $this->assertSame(['exception' => 'ConnectionException', 'order_id' => $order->id], $records[0]->context);
     }
 
-    /** Records written through Laravel's logger during the test. */
     /** Messages of the [CarbonHardwareOrder] records captured by recordLogs(). */
     private function orderLogMessages(\ArrayObject $records): array
     {
@@ -630,6 +629,7 @@ class CarbonPortalHardwareTest extends TestCase
             array_filter($records->getArrayCopy(), fn ($event) => str_starts_with($event->message, '[CarbonHardwareOrder]'))));
     }
 
+    /** Records written through Laravel's logger during the test. */
     private function recordLogs(): \ArrayObject
     {
         $records = new \ArrayObject;
