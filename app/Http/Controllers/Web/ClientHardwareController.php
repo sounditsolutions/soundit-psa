@@ -61,7 +61,7 @@ class ClientHardwareController extends Controller
         if ($operation === 'refresh' && ! isset($result['error'])) {
             $message = $result['old_cost'] === $result['new_cost']
                 ? __('carbon_hardware.price_unchanged', ['price' => $result['new_cost']])
-                : __('carbon_hardware.price_updated', ['old' => $result['old_cost'] ?? 'Unknown', 'new' => $result['new_cost']]);
+                : __('carbon_hardware.price_updated', ['old' => $result['old_cost'] ?? __('carbon_hardware.unknown'), 'new' => $result['new_cost']]);
 
             return back()->with('success', $message);
         }
