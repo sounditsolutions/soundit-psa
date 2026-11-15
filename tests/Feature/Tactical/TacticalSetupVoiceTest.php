@@ -114,8 +114,9 @@ class TacticalSetupVoiceTest extends TestCase
         $this->assertSame(1, $notes->length);
         // A <span hidden> or <template> wrapper around the sentences adds no text, so the text
         // check alone misses it. The note's only element child must be its <summary>: this rules
-        // out element wrappers only, and any element in the note body fails it. It does not see
-        // a class, style or hidden attribute on the <details> or the <summary>.
+        // out element wrappers inside the note, and any element in the note body fails it. It
+        // does not see a wrapper around the whole <details>, or a class, style or hidden
+        // attribute on the <details> or the <summary>.
         $children = [];
         foreach ($notes->item(0)->childNodes as $child) {
             if ($child instanceof \DOMElement) {
@@ -228,11 +229,15 @@ class TacticalSetupVoiceTest extends TestCase
     public function test_transport_failure_says_contact_us(): void
     {
         // The site lookup's clients/ GET is answered by path, not by queue position, so an extra
-        // lookup request does not shift which request fails. Every other request takes the next
-        // queue entry: the installer POST gets the ConnectException. The sentinel is a second
-        // ConnectException, which the product maps to the same refusal, so only the queue count
-        // shows a second request after the failed POST. An empty queue throws before history
-        // records anything, so without the sentinel that request would go unseen.
+        // lookup does not shift which request fails; the lookup count below sees it instead.
+        // Every other request takes the next queue entry, so the installer POST gets the first
+        // ConnectException only when no other request reaches the queue before it. The sentinel
+        // is a second ConnectException. A request that takes it is recorded in history (with the
+        // error), so the installer count and the last-entry check see a request after the failed
+        // POST. Only the queue count sees an extra request before the POST whose failure the
+        // product absorbs: the POST then takes the sentinel and still looks like the one failed
+        // request. An empty queue throws before history records anything, so without the
+        // sentinel a request after the queue ran out would go unseen.
         $queue = new MockHandler([
             new ConnectException('synthetic transport failure', new Request('POST', 'agents/installer/')),
             new ConnectException('sentinel: must stay queued', new Request('POST', 'agents/installer/')),
@@ -263,6 +268,10 @@ class TacticalSetupVoiceTest extends TestCase
         $this->assertInstanceOf(ConnectException::class, $installer[0]['error']);
         // A clients/ GET does not use the queue, so this catches one sent after the failed POST.
         $this->assertSame($installer[0], end($history));
+        // The site lookup was sent once.
+        $lookups = array_filter($history, fn ($entry) => $entry['request']->getMethod() === 'GET'
+            && $entry['request']->getUri()->getPath() === '/clients/');
+        $this->assertCount(1, $lookups);
     }
 
     /** Fixed-phrase sweep over the setup files listed below. */
