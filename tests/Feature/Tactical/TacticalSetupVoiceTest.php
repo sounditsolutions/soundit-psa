@@ -112,6 +112,15 @@ class TacticalSetupVoiceTest extends TestCase
         $xpath = new \DOMXPath($doc);
         $notes = $xpath->query('//details[summary[normalize-space()="Note for our technicians"]]');
         $this->assertSame(1, $notes->length);
+        // Text nodes alone cannot show the sentences are visible: a <span hidden> or <template>
+        // wrapper adds no text. So the note's only element child is its <summary>.
+        $children = [];
+        foreach ($notes->item(0)->childNodes as $child) {
+            if ($child instanceof \DOMElement) {
+                $children[] = $child->nodeName;
+            }
+        }
+        $this->assertSame(['summary'], $children);
         $this->assertSame(
             'Note for our technicians'
                 .' Antivirus sandboxes can execute the dynamic EXE and enroll a sandbox device.'
@@ -219,6 +228,9 @@ class TacticalSetupVoiceTest extends TestCase
         $queue = new MockHandler([
             new Response(200, [], json_encode([['id' => 3, 'name' => 'Acme', 'sites' => [['id' => 5, 'name' => 'Main']]]])),
             new ConnectException('synthetic transport failure', new Request('POST', 'agents/installer/')),
+            // Sentinel: an empty queue throws before history records anything, so a doubled
+            // installer POST (or any extra request) would otherwise go unseen.
+            new Response(599, [], 'sentinel: must stay queued'),
         ]);
         $history = [];
         $stack = HandlerStack::create($queue);
@@ -230,12 +242,14 @@ class TacticalSetupVoiceTest extends TestCase
         } catch (\App\Services\Tactical\InstallerGenerationException $e) {
             $this->assertSame('The installer could not be prepared. Use the manual fallback or contact us.', $e->getMessage());
         }
-        // The installer POST is reached and fails; nothing earlier in the try refuses first.
-        $this->assertSame(0, $queue->count());
-        $this->assertCount(2, $history);
-        $this->assertSame('POST', $history[1]['request']->getMethod());
-        $this->assertSame('/agents/installer/', $history[1]['request']->getUri()->getPath());
-        $this->assertInstanceOf(ConnectException::class, $history[1]['error']);
+        // The installer POST is reached and fails; nothing earlier in the try refuses first,
+        // and nothing is sent after it: the sentinel is still queued.
+        $this->assertSame(1, $queue->count());
+        $installer = array_values(array_filter($history, fn ($entry) => $entry['request']->getMethod() === 'POST'
+            && $entry['request']->getUri()->getPath() === '/agents/installer/'));
+        $this->assertCount(1, $installer);
+        $this->assertInstanceOf(ConnectException::class, $installer[0]['error']);
+        $this->assertSame($installer[0], end($history));
     }
 
     /** Fixed-phrase sweep over the setup files listed below. */
