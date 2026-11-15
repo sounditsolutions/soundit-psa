@@ -14,7 +14,7 @@ final class StaffCarbonHardwareTools
         $part = ['type' => 'string', 'description' => 'Exact manufacturer part number.'];
         $model = ['type' => 'integer', 'minimum' => 1, 'description' => 'Approved model id within this client.'];
         $sell = ['type' => 'string', 'pattern' => '^\\d{1,8}(\\.\\d{1,2})?$', 'description' => 'Sell price in dollars, at most two decimal places.'];
-        $confirm = ['type' => 'boolean', 'description' => 'Explicit confirmation to save below the cached Carbon price.'];
+        $confirm = ['type' => 'boolean', 'description' => 'Explicit confirmation to save below the Carbon price.'];
         $definitions = [];
         foreach ([
             ['hardware_list_approved_models', 'List the client approved hardware models with cached staff cost and sell prices.', [], []],
