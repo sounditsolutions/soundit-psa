@@ -54,9 +54,17 @@ class ClientHardwareController extends Controller
 
     public function model(Request $request, Client $client, string $operation)
     {
-        $names = ['add' => 'hardware_add_approved_model', 'price' => 'hardware_set_sell_price', 'remove' => 'hardware_remove_approved_model'];
+        $names = ['refresh' => 'hardware_refresh_approved_model', 'add' => 'hardware_add_approved_model', 'price' => 'hardware_set_sell_price', 'remove' => 'hardware_remove_approved_model'];
         abort_unless(isset($names[$operation]), 404);
         $result = app(\App\Services\Mcp\StaffCarbonHardwareExecutor::class)->execute($names[$operation], $request->only(['mfg_part_no', 'model_id', 'sell_price', 'confirm_below_cost']), $client->id);
+
+        if ($operation === 'refresh' && ! isset($result['error'])) {
+            $message = $result['old_cost'] === $result['new_cost']
+                ? __('carbon_hardware.price_unchanged', ['price' => $result['new_cost']])
+                : __('carbon_hardware.price_updated', ['old' => $result['old_cost'] ?? 'Unknown', 'new' => $result['new_cost']]);
+
+            return back()->with('success', $message);
+        }
 
         return back()->with(isset($result['error']) ? 'error' : 'success', $result['error'] ?? __('carbon_hardware.saved'));
     }
