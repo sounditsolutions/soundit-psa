@@ -183,7 +183,7 @@ class CarbonHardwareService
         try {
             $product = $this->product($part);
         } catch (CarbonMcpException $e) {
-            $this->refuse('unavailable');
+            $this->refuse('failed');
         }
         $cost = number_format((float) $product['price'], 2, '.', '');
 

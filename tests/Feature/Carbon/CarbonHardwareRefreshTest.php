@@ -73,7 +73,7 @@ class CarbonHardwareRefreshTest extends TestCase
 
     public static function refusals(): array
     {
-        return [['margin_confirm'], ['components_moved'], ['not_active'], ['unconfirmed'], ['unavailable']];
+        return [['margin_confirm'], ['components_moved'], ['not_active'], ['unconfirmed'], ['failed']];
     }
 
     #[DataProvider('refusals')]
@@ -92,7 +92,7 @@ class CarbonHardwareRefreshTest extends TestCase
         if ($reason === 'unconfirmed') {
             unset($this->product['price']);
         }
-        if ($reason === 'unavailable') {
+        if ($reason === 'failed') {
             $this->readFails = true;
         }
         $before = $model->fresh()->getRawOriginal();
