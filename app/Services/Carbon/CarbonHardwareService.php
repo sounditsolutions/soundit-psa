@@ -180,11 +180,7 @@ class CarbonHardwareService
     {
         $this->assertAvailable($client);
         $part = $client->hardwareModels()->findOrFail($modelId)->mfg_part_no;
-        try {
-            $product = $this->product($part);
-        } catch (CarbonMcpException $e) {
-            $this->refuse('failed');
-        }
+        $product = $this->product($part);
         $cost = number_format((float) $product['price'], 2, '.', '');
 
         return DB::transaction(function () use ($client, $modelId, $confirmed, $product, $cost) {
