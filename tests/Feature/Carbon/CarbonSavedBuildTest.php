@@ -312,6 +312,8 @@ class CarbonSavedBuildTest extends TestCase
             'part mismatch' => ['part', 'unconfirmed'],
             'error result' => ['error', 'unconfirmed'],
             'nonnumeric price' => ['price', 'unconfirmed'],
+            // '123.45' passes the <= 0 and upper-bound checks, so only the type check refuses this row.
+            'numeric-string price' => ['price_string', 'unconfirmed'],
             'requiredConfigs present' => ['required', 'unconfirmed'],
             'isConfigurable present' => ['configurable', 'unconfirmed'],
         ];
@@ -329,6 +331,7 @@ class CarbonSavedBuildTest extends TestCase
                 'part' => $this->product['mfgPartNo'] = 'SYNTH-OTHER',
                 'error' => $this->readIsError = true,
                 'price' => $this->product['price'] = 'unknown',
+                'price_string' => $this->product['price'] = '123.45',
                 'required' => $this->product['requiredConfigs'] = [],
                 'configurable' => $this->product['isConfigurable'] = false,
             };
@@ -548,6 +551,31 @@ class CarbonSavedBuildTest extends TestCase
         $this->assertDatabaseCount('client_hardware_orders', 0);
         $this->assertDatabaseCount('tickets', 0);
         $this->assertCount(0, $this->calls('create_draft_order'));
+    }
+
+    public static function savedOrPlain(): array
+    {
+        return ['plain' => [false], 'saved' => [true]];
+    }
+
+    #[DataProvider('savedOrPlain')]
+    public function test_the_reservation_listener_records_a_good_two_line_submit(bool $saved): void
+    {
+        // Positive control for the listener in test_second_line_drift_refuses_before_reservation:
+        // the same set-up with a good second line reserves, and the listener sees exactly that one row.
+        $plain = $this->product;
+        unset($plain['configs']);
+        $first = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-ONE', 'label' => 'Synthetic one', 'sell_price' => '200.00', 'carbon_price' => '123.45']);
+        $second = $this->client->hardwareModels()->create(['mfg_part_no' => 'SYNTH-TWO', 'label' => 'Synthetic two', 'sell_price' => '200.00',
+            'carbon_price' => '123.45', 'carbon_component_ids' => $saved ? [81001, 81002] : null]);
+        $reservations = new \ArrayObject;
+        ClientHardwareOrder::creating(fn ($order) => $reservations->append($order->idempotency_key));
+        $this->byPart = ['SYNTH-ONE' => ['mfgPartNo' => 'SYNTH-ONE'] + $plain, 'SYNTH-TWO' => ['mfgPartNo' => 'SYNTH-TWO'] + ($saved ? $this->product : $plain)];
+        $input = ['idempotency_key' => (string) Str::uuid(), 'lines' => [['model_id' => $first->id, 'quantity' => 1], ['model_id' => $second->id, 'quantity' => 1]]];
+        $order = app(CarbonHardwareOrderService::class)->submit($this->person, $input);
+        $this->assertSame('submitted', $order->status);
+        $this->assertSame([$input['idempotency_key']], $reservations->getArrayCopy());
+        $this->assertDatabaseCount('client_hardware_orders', 1);
     }
 
     public function test_two_good_lines_are_each_read_exactly_once(): void

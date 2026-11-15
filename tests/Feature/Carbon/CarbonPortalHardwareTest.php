@@ -215,6 +215,7 @@ class CarbonPortalHardwareTest extends TestCase
     {
         $this->realProductRead();
         $this->carbonCallNoResponse = true;
+        $records = $this->recordLogs();
         $this->submit();
         $sent = count(Http::recorded());
         $this->submit();
@@ -222,6 +223,7 @@ class CarbonPortalHardwareTest extends TestCase
         $this->assertSame('unread', ClientHardwareOrder::sole()->status);
         $this->assertSame(['get_product', 'create_draft_order'], $this->calls()->map(fn ($p) => $p[0]['params']['name'])->all());
         $this->assertSame(1, $this->carbonCallAttempts); // draft timeout; successful read uses the separate callback
+        $this->assertCount(0, $records);
         $this->assertDatabaseCount('tickets', 1);
         $this->assertUnreadTicketKeepsCarbonStaffOnly(ClientHardwareOrder::sole());
         $this->get(route('portal.hardware'))->assertOk()->assertSee('<td>Submitted — we&#039;ll confirm</td>', false)
@@ -244,6 +246,7 @@ class CarbonPortalHardwareTest extends TestCase
     public function test_401_draft_is_sent_once_and_resubmit_sends_nothing(): void
     {
         $this->realProductRead(draftStatus: 401);
+        $records = $this->recordLogs();
         $this->submit();
         $this->assertSame('unread', ClientHardwareOrder::sole()->status);
         $this->assertUnreadTicketKeepsCarbonStaffOnly(ClientHardwareOrder::sole());
@@ -251,6 +254,7 @@ class CarbonPortalHardwareTest extends TestCase
         $this->submit();
         $this->assertSame($sent, count(Http::recorded()));
         $this->assertSame(['get_product', 'create_draft_order'], $this->calls()->map(fn ($p) => $p[0]['params']['name'])->all());
+        $this->assertCount(0, $records);
     }
 
     public static function refusals(): array
