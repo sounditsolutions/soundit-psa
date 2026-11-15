@@ -107,7 +107,10 @@ class CarbonHardwareService
             || array_key_exists('isConfigurable', $data)) {
             $this->refuse('unconfirmed');
         }
-        if (! is_finite((float) $data['price']) || (float) $data['price'] > 99999999.99) {
+        // The last clause refuses a price that number_format() rounds to 0.00 at two places, the
+        // same expression add() and refresh() store; a cached cost of 0.00 voids the margin check.
+        if (! is_finite((float) $data['price']) || (float) $data['price'] > 99999999.99
+            || number_format((float) $data['price'], 2, '.', '') === '0.00') {
             $this->refuse('unconfirmed');
         }
 
