@@ -107,7 +107,8 @@ class CarbonHardwareService
             || array_key_exists('isConfigurable', $data)) {
             $this->refuse('unconfirmed');
         }
-        // A positive price below half a cent caches as 0.00, which voids the margin check.
+        // The last clause refuses a price that number_format() rounds to 0.00 at two places, the
+        // same expression add() and refresh() store; a cached cost of 0.00 voids the margin check.
         if (! is_finite((float) $data['price']) || (float) $data['price'] > 99999999.99
             || number_format((float) $data['price'], 2, '.', '') === '0.00') {
             $this->refuse('unconfirmed');
