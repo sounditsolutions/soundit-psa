@@ -210,6 +210,21 @@ class PortalSignInLimitsTest extends TestCase
     }
 
     /**
+     * A combining mark is dropped from the key once the email is decomposed,
+     * so a spelling with a mark added shares the plain spelling's 5. The mark
+     * here (a nasal sign) is one the plain-letter step would otherwise spell
+     * as letters, so only the mark step keeps it out of the key.
+     */
+    public function test_a_combining_mark_is_dropped_from_the_key(): void
+    {
+        foreach (["al\u{0981}pha@example.test", 'alpha@example.test', "al\u{0981}pha@example.test", 'alpha@example.test'] as $email) {
+            $this->signIn($email)->assertRedirect();
+        }
+        $this->signIn("al\u{0981}pha@example.test")->assertRedirect();
+        $this->signIn('alpha@example.test')->assertStatus(429);
+    }
+
+    /**
      * A character that is not a letter and has no plain spelling (a soft
      * hyphen) is dropped from the key, so it shares the plain spelling's 5.
      */
