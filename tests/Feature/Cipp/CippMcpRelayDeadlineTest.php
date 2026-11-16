@@ -10,6 +10,8 @@ use App\Services\Cipp\CippClientException;
 use App\Services\Cipp\CippMcpAuthException;
 use App\Services\Cipp\CippMcpClient;
 use App\Services\Cipp\CippMcpConnector;
+use App\Services\Cipp\CippMcpToolRelay;
+use App\Services\Cipp\CippTenantScope;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
@@ -49,6 +51,9 @@ class CippMcpRelayDeadlineTest extends TestCase
     /** @var array<int, string> */
     private array $logs = [];
 
+    /** @var array<int, array{message: string, context: array<string, mixed>}> */
+    private array $logEntries = [];
+
     private bool $faked = false;
 
     private ?\Closure $signInHandler = null;
@@ -65,6 +70,7 @@ class CippMcpRelayDeadlineTest extends TestCase
         CippClient::setClockForTesting(fn (): float => $this->now);
         Event::listen(MessageLogged::class, function (MessageLogged $e): void {
             $this->logs[] = $e->message;
+            $this->logEntries[] = ['message' => $e->message, 'context' => $e->context];
         });
     }
 
@@ -319,10 +325,29 @@ class CippMcpRelayDeadlineTest extends TestCase
 
         $this->mcpClient()->callTool('ListUsers', ['tenantFilter' => 'example.test']);
 
+        // Base 9e8c54f8: sign-in timeout(15), ExecMCP timeout(60), and neither sets
+        // connect_timeout, so both keep the HTTP client's default 10.
         [$signIn] = $this->sentTo('login.microsoftonline.com');
         [$exec] = $this->sentTo('/api/ExecMCP');
         $this->assertSame(15, $signIn['timeout']);
+        $this->assertSame(10, $signIn['connect_timeout']);
         $this->assertSame(60, $exec['timeout']);
+        $this->assertSame(10, $exec['connect_timeout']);
+    }
+
+    public function test_without_a_deadline_the_delegated_refresh_and_list_tools_caps_are_unchanged(): void
+    {
+        $this->connectDelegated();
+        $this->fakeRelay(exec: fn () => Http::response(['jsonrpc' => '2.0', 'id' => 1, 'result' => ['tools' => []]]));
+
+        $this->mcpClient(withConnector: true)->listTools();
+
+        [$signIn] = $this->sentTo('login.microsoftonline.com');
+        [$list] = $this->sentTo('/api/ExecMCP');
+        $this->assertSame(15, $signIn['timeout']);
+        $this->assertSame(10, $signIn['connect_timeout']);
+        $this->assertSame(60, $list['timeout']);
+        $this->assertSame(10, $list['connect_timeout']);
     }
 
     // --- points 1 and 3: one deadline from cippDispatch, even without REST -----
@@ -375,7 +400,10 @@ class CippMcpRelayDeadlineTest extends TestCase
         $this->assertSame(250.0 + CippClient::READ_BUDGET_SECONDS, $rest->readDeadline());
         $this->assertSame(250.0 + CippClient::READ_BUDGET_SECONDS, CippClient::freshReadDeadline());
         $this->assertSame(250.0, CippClient::monotonicNow());
-        $this->assertStringContainsString('within '.CippClient::READ_BUDGET_SECONDS.' s', self::SENTENCE);
+        // The sentence production builds from the constant, not this file's copy.
+        $production = CippClient::readDeadlineFailure()->getMessage();
+        $this->assertStringContainsString('within '.CippClient::READ_BUDGET_SECONDS.' s', $production);
+        $this->assertSame(self::SENTENCE, $production);
     }
 
     // --- points 4 and 5, condition 1: what the caller gets ----------------------
@@ -502,6 +530,7 @@ class CippMcpRelayDeadlineTest extends TestCase
             $this->assertSame(self::SENTENCE, $e->getMessage());
         }
         $this->assertFalse($this->signInFailureLogged());
+        $this->assertFalse($this->appSignInFailureCached(), 'a deadline-cut sign-in is not remembered');
 
         // Not remembered: the next read signs in again instead of being refused.
         $this->sent = [];
@@ -545,6 +574,10 @@ class CippMcpRelayDeadlineTest extends TestCase
         }
         $this->assertFalse($this->signInFailureLogged());
         $this->assertNull(Setting::getValue(CippMcpConnector::FAILED_CODE));
+        $this->assertFalse(
+            Cache::store()->has('cipp_mcp_sign_in_failed:'.sha1('tenant-1|mcp-client|delegated|2026-01-01T00:00:00+00:00')),
+            'a deadline-cut delegated refresh is not remembered',
+        );
 
         $this->sent = [];
         $this->fakeRelay();
@@ -565,7 +598,8 @@ class CippMcpRelayDeadlineTest extends TestCase
             // 20 s left: the sign-in ran with its full 15 s cap.
             $relay->callTool('ListUsers', ['tenantFilter' => 'example.test'], 120.0);
             $this->fail('Expected the sign-in failure');
-        } catch (CippMcpAuthException $e) {
+        } catch (CippClientException $e) {
+            $this->assertInstanceOf(CippMcpAuthException::class, $e);
             $this->assertFalse(CippClient::isDeadlineFailure($e));
         }
         $this->assertTrue($this->signInFailureLogged());
@@ -612,5 +646,205 @@ class CippMcpRelayDeadlineTest extends TestCase
 
         $this->assertSame([], $result);
         $this->assertStringNotContainsString('AADSTS', json_encode($result));
+
+        // ...and it is in the log: the client's sign-in failure and the Assistant's
+        // fail-over line both carry it in their context, never in the answer.
+        $logged = array_values(array_filter(
+            $this->logEntries,
+            fn (array $entry): bool => str_contains((string) json_encode($entry['context']), 'AADSTS7000215 synthetic'),
+        ));
+        $this->assertNotSame([], $logged, 'the sign-in error detail reached the log');
+        $this->assertContains('[CippMcpClient] Token request failed', array_column($logged, 'message'));
+    }
+
+    // --- r1 survivors (Jeeves's probes P7 to P9) --------------------------------
+
+    public function test_a_relay_timeout_with_budget_left_sends_no_rest_request(): void
+    {
+        $client = $this->configureBoth();
+        // A REST answer is queued, so a fallback would be sent and recorded.
+        $this->bindRest([new Response(200, [], '[]')]);
+        $this->fakeRelay(exec: function ($request) {
+            // 12 s of the 20 still left when ExecMCP times out below its cap.
+            $this->now = 108.0;
+
+            return $this->curlFailure($request, 28, 'Operation timed out after 8000 milliseconds with 0 bytes received');
+        });
+
+        $this->assertSame(['error' => 'CIPP query failed: '.self::SENTENCE], $this->listUsers($client));
+        $this->assertSame([], $this->restHistory, 'no REST read after a relay timeout, even with budget left');
+    }
+
+    public function test_a_delegated_refresh_with_half_a_millisecond_left_sends_nothing(): void
+    {
+        $this->connectDelegated();
+        $this->fakeRelay();
+
+        try {
+            $this->mcpClient(withConnector: true)->callTool('ListUsers', ['tenantFilter' => 'example.test'], 100.0005);
+            $this->fail('Expected the deadline failure');
+        } catch (CippClientException $e) {
+            $this->assertNotInstanceOf(CippMcpAuthException::class, $e);
+            $this->assertTrue(CippClient::isDeadlineFailure($e));
+        }
+
+        $this->assertSame([], $this->sent);
+    }
+
+    public function test_the_relay_called_directly_carries_its_deadline_into_its_own_tenant_check(): void
+    {
+        $client = $this->configureBoth();
+        Client::factory()->create(['cipp_tenant_domain' => 'other.example.test']);
+        $this->bindRest([new Response(200, [], json_encode($this->tenantRows()))]);
+        $this->fakeRelay();
+
+        $relay = app(CippMcpToolRelay::class);
+        $this->assertSame([], $relay->execute('cipp_list_users', [], $client, $client->id, 107.0));
+
+        $this->assertCount(1, $this->restHistory, 'the tenant list went over REST');
+        $this->assertSame('/api/ListTenants', $this->restHistory[0]['request']->getUri()->getPath());
+        $this->assertEqualsWithDelta(7.0, $this->restHistory[0]['options']['timeout'], 1e-9);
+    }
+
+    // --- ruling A: the tenant list's MCP failover (CippTenantScope) ------------
+
+    /** Invoke-ListTenants rows (customerId, defaultDomainName), synthetic identities. */
+    private function tenantRows(): array
+    {
+        return [
+            ['customerId' => '22222222-2222-4222-8222-222222222222', 'defaultDomainName' => 'example.test'],
+            ['customerId' => '33333333-3333-4333-8333-333333333333', 'defaultDomainName' => 'other.example.test'],
+        ];
+    }
+
+    private function execTenantList()
+    {
+        $text = json_encode(json_encode($this->tenantRows()));
+
+        return Http::response(
+            'data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":'.$text.'}]}}'."\n\n",
+            200,
+            ['Content-Type' => 'text/event-stream'],
+        );
+    }
+
+    /**
+     * Cold tenant list, a REST secret that no longer decrypts and a second mapped
+     * client: the tenant check can only ask ListTenants over MCP.
+     */
+    private function tenantListOverMcpOnly(): Client
+    {
+        $client = $this->configureBoth(restSecretReadable: false);
+        Client::factory()->create(['cipp_tenant_domain' => 'other.example.test']);
+
+        return $client;
+    }
+
+    private function unreadableWithTimeout(Client $client): string
+    {
+        return 'PSA could not read a usable CIPP tenant list, so it cannot check PSA client '.$client->id.'\'s CIPP tenant\'s other domains against other PSA clients\' mappings, and this read was not run. '.self::SENTENCE.'.';
+    }
+
+    private function appSignInFailureCached(): bool
+    {
+        return Cache::store()->has('cipp_mcp_sign_in_failed:'.sha1('tenant-1|mcp-client|app'));
+    }
+
+    public function test_the_tenant_list_mcp_failover_is_sent_with_what_is_left(): void
+    {
+        $client = $this->tenantListOverMcpOnly();
+        $this->fakeRelay(
+            signIn: function () {
+                $this->now += 2;
+
+                return Http::response(['access_token' => 'synthetic-token', 'expires_in' => 3600]);
+            },
+            exec: fn () => $this->execTenantList(),
+        );
+
+        $this->assertSame('example.test', CippTenantScope::resolve($client, $client->id, 107.0));
+
+        [$signIn] = $this->sentTo('login.microsoftonline.com');
+        [$exec] = $this->sentTo('/api/ExecMCP');
+        $this->assertStringContainsString('tools=ListTenants', $exec['url']);
+        $this->assertEqualsWithDelta(7.0, $signIn['timeout'], 1e-9);
+        $this->assertEqualsWithDelta(7.0, $signIn['connect_timeout'], 1e-9);
+        $this->assertEqualsWithDelta(5.0, $exec['timeout'], 1e-9);
+        $this->assertEqualsWithDelta(5.0, $exec['connect_timeout'], 1e-9);
+    }
+
+    public function test_an_exec_mcp_timeout_on_the_tenant_list_failover_is_the_deadline_sentence(): void
+    {
+        $client = $this->tenantListOverMcpOnly();
+        $this->fakeRelay(exec: function ($request) {
+            // 3 s of the 7 still left when ExecMCP times out below its cap.
+            $this->now = 104.0;
+
+            return $this->curlFailure($request, 28, 'Operation timed out after 4000 milliseconds with 0 bytes received');
+        });
+
+        $result = CippTenantScope::resolve($client, $client->id, 107.0);
+
+        $this->assertSame(['error' => $this->unreadableWithTimeout($client)], $result);
+        $this->assertStringNotContainsString('sign-in failed', $result['error']);
+        $this->assertFalse($this->appSignInFailureCached());
+    }
+
+    public function test_a_sign_in_timeout_on_the_tenant_list_failover_is_the_deadline_sentence(): void
+    {
+        $client = $this->tenantListOverMcpOnly();
+        $this->fakeRelay(signIn: function ($request) {
+            // 4 s of the 7 still left when the sign-in times out below its cap.
+            $this->now = 103.0;
+
+            return $this->curlFailure($request, 28, 'Operation timed out after 3000 milliseconds with 0 bytes received');
+        });
+
+        $result = CippTenantScope::resolve($client, $client->id, 107.0);
+
+        $this->assertSame(['error' => $this->unreadableWithTimeout($client)], $result);
+        $this->assertStringNotContainsString('sign-in failed', $result['error']);
+        $this->assertFalse($this->appSignInFailureCached(), 'a deadline-cut sign-in is not remembered');
+        $this->assertSame([], $this->sentTo('/api/ExecMCP'));
+    }
+
+    public function test_a_spent_deadline_sends_no_tenant_list_failover(): void
+    {
+        $client = $this->tenantListOverMcpOnly();
+        $this->fakeRelay(exec: fn () => $this->execTenantList());
+
+        $result = CippTenantScope::resolve($client, $client->id, 100.0);
+
+        $this->assertSame(['error' => $this->unreadableWithTimeout($client)], $result);
+        $this->assertSame([], $this->sent);
+    }
+
+    public function test_a_refused_connection_on_the_tenant_list_failover_keeps_todays_cause(): void
+    {
+        $client = $this->tenantListOverMcpOnly();
+        $this->fakeRelay(exec: fn ($request) => $this->curlFailure($request, 7, 'Failed to connect to cipp.example.test port 443: Connection refused'));
+
+        $result = CippTenantScope::resolve($client, $client->id, 107.0);
+
+        $error = (string) ($result['error'] ?? '');
+        $this->assertStringContainsString('(PSA could not read its CIPP REST API settings; the CIPP MCP request failed)', $error);
+        $this->assertStringNotContainsString(self::SENTENCE, $error);
+        $this->assertStringNotContainsString('sign-in failed', $error);
+    }
+
+    public function test_the_tenant_list_failover_without_a_deadline_keeps_the_fixed_caps(): void
+    {
+        $client = $this->tenantListOverMcpOnly();
+        $this->fakeRelay(exec: fn () => $this->execTenantList());
+
+        // CippMcpDynamicToolExecutor resolves with no deadline.
+        $this->assertSame('example.test', CippTenantScope::resolve($client, $client->id));
+
+        [$signIn] = $this->sentTo('login.microsoftonline.com');
+        [$exec] = $this->sentTo('/api/ExecMCP');
+        $this->assertSame(15, $signIn['timeout']);
+        $this->assertSame(10, $signIn['connect_timeout']);
+        $this->assertSame(60, $exec['timeout']);
+        $this->assertSame(10, $exec['connect_timeout']);
     }
 }

@@ -133,7 +133,7 @@ class CippMcpToolRelay
         } catch (\Throwable $e) {
             if (CippClient::isDeadlineFailure($e)) {
                 // Our own sentence, never the cURL text: nothing upstream to fence.
-                Log::warning('[CippMcpToolRelay] CIPP MCP query hit the read deadline', [
+                Log::warning('[CippMcpToolRelay] CIPP MCP query: the read deadline was spent', [
                     'tool' => $toolName,
                     'exec_mcp_tool' => $prepared['tool'] ?? null,
                 ]);

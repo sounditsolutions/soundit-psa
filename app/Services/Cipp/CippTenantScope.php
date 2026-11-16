@@ -294,7 +294,7 @@ final class CippTenantScope
         $message .= ", so it cannot check PSA client {$clientId}'s CIPP tenant's other domains against other PSA clients' mappings, and this read was not run.";
 
         if ($failure !== null && ($failure['timeout'] ?? false)) {
-            $message .= ' CIPP did not answer within 20 s (upstream timeout; this read is safe to retry).';
+            $message .= ' CIPP did not answer within '.CippClient::READ_BUDGET_SECONDS.' s (upstream timeout; this read is safe to retry).';
         }
 
         if ($failure !== null && $failure['signIn']) {
@@ -392,13 +392,20 @@ final class CippTenantScope
 
             if ($mcpEnabled) {
                 try {
-                    $rows = app(CippMcpClient::class)->callTool('ListTenants', []);
+                    $rows = app(CippMcpClient::class)->callTool('ListTenants', [], $deadline);
                 } catch (CippMcpAuthException $e) {
                     self::logReadFailure('MCP', $e);
                     $signIn = true;
                     $causes[] = 'CIPP MCP sign-in failed';
                 } catch (\Throwable $e) {
                     self::logReadFailure('MCP', $e);
+                    if (CippClient::isDeadlineFailure($e)) {
+                        // The same budget the REST read had (card Cn86O1kp), spent
+                        // before the sign-in or ExecMCP was sent or cut short by it
+                        // (cURL errno 28 below the request's cap). Reported as the REST
+                        // deadline is above: a timeout, no cause, no sign-in diagnosis.
+                        return [null, ['cause' => '', 'signIn' => false, 'timeout' => true]];
+                    }
                     $causes[] = 'the CIPP MCP request failed';
                 }
             } elseif ($causes === []) {

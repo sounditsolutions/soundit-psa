@@ -96,8 +96,9 @@ trait HandlesCippTools
         // A REST client that cannot be built (a cipp_client_secret that no longer
         // decrypts) must not block the MCP relay or the tenant list's MCP failover
         // (#4580): it is reported only when REST is the transport left to answer.
-        // The deadline does not depend on that client, so the relay is bounded even
-        // then (card Cn86O1kp): it is never null from here.
+        // The deadline does not depend on that client, so the relay's HTTP requests,
+        // and the tenant check's, are bounded by it even then (card Cn86O1kp): it is
+        // never null from here.
         $clientError = null;
         try {
             $deadline = app(CippClient::class)->readDeadline();
