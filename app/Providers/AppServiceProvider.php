@@ -297,10 +297,12 @@ class AppServiceProvider extends ServiceProvider
             // be longer than 255 characters (one ligature or compatibility
             // form can decompose to several letters).
             //
-            // ASCII control characters inside the email are already plain,
-            // so they stay in the key (a tab becomes a space). An email with
-            // one in it fails the `email` rule before any password is
-            // checked.
+            // ASCII control characters: the fold drops most of them, turns a
+            // tab, line feed or carriage return into a space, and keeps two
+            // (0x10 and 0x13). Most emails with one in them fail the `email`
+            // rule before any password is checked, but not all (a NUL in the
+            // local part passes); one that passes is counted under its folded
+            // key.
             //
             // For a request, the global TrimStrings middleware has already
             // trimmed the email; trim() is kept for callers that do not pass
