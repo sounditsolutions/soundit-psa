@@ -15,6 +15,7 @@ use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class HuntressFullReadToolsetTest extends TestCase
@@ -262,6 +263,21 @@ class HuntressFullReadToolsetTest extends TestCase
         $this->assertSame(self::REASON_LEAD."\n".self::REASON_OPEN."\n".mb_substr($reason, 0, 200)."\n".self::REASON_CLOSE, $result['error']);
     }
 
+    public function test_siem_422_reason_cap_holds_after_nfkc_expansion(): void
+    {
+        // U+FDFA folds under NFKC to 18 characters; the cap must hold on the folded text.
+        // Transport is the Guzzle mock in failWith(); any Http facade call is refused as stray.
+        Http::fake([])->preventStrayRequests();
+        $result = $this->failWith($this->esql422('Invalid ESQL: '.str_repeat("\u{FDFA}", 200)));
+        $lines = explode("\n", $result['error']);
+        $this->assertCount(4, $lines);
+        $this->assertSame(self::REASON_LEAD, $lines[0]);
+        $this->assertSame(self::REASON_OPEN, $lines[1]);
+        $this->assertSame(self::REASON_CLOSE, $lines[3]);
+        $this->assertLessThanOrEqual(200, mb_strlen($lines[2]), 'characters between the fence lines');
+        $this->assertStringNotContainsString("\u{FDFA}", $lines[2]);
+    }
+
     public function test_siem_422_reason_is_redacted_inside_the_fence(): void
     {
         $result = $this->failWith($this->esql422('Invalid ESQL: Unknown field: api_key=synthetic-private-key'));
@@ -330,6 +346,20 @@ class HuntressFullReadToolsetTest extends TestCase
             $this->assertSame('Huntress SIEM query could not reach Huntress: '.HuntressClientException::class, $result['error'], $why);
             $this->assertStringNotContainsString('timed out', $result['error'], $why);
             $this->assertStringNotContainsString('narrow', $result['error'], $why);
+        }
+    }
+
+    public function test_non_siem_no_response_keeps_status_and_class(): void
+    {
+        Http::fake([])->preventStrayRequests();
+        foreach ([
+            'timeout' => ['errno' => 28, 'error' => 'Operation timed out after 30001 milliseconds with 0 bytes received'],
+            'refused' => ['errno' => 7, 'error' => 'Failed to connect to huntress.example port 443: Connection refused'],
+        ] as $why => $context) {
+            $result = $this->failWith($this->connectFailure($context), 'huntress_list_known_vpns');
+            $this->assertSame($this->bare(0), $result['error'], $why);
+            $this->assertStringNotContainsString('could not reach', $result['error'], $why);
+            $this->assertStringNotContainsString('timed out', $result['error'], $why);
         }
     }
 
