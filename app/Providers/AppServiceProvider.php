@@ -293,9 +293,11 @@ class AppServiceProvider extends ServiceProvider
             // produce a capital. The fold is close to that matching, not
             // exact; the 20-a-minute address limit below applies either way.
             //
-            // The cut to 255 comes before the decomposition, so the key can
-            // be longer than 255 characters (one ligature or compatibility
-            // form can decompose to several letters).
+            // The cut to 255 comes before the decomposition and the
+            // plain-letter step, so the key can be longer than 255 characters
+            // (one ligature or compatibility form can decompose to several
+            // letters, and the plain-letter step can spell one character as
+            // several, such as small gamma as "gh" or sharp s as "ss").
             //
             // ASCII control characters: the fold drops most of them, turns a
             // tab, line feed or carriage return into a space, and keeps two

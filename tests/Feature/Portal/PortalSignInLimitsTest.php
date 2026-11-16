@@ -198,8 +198,10 @@ class PortalSignInLimitsTest extends TestCase
     /**
      * The email is lower-cased before the fold as well as after it, because
      * the plain-letter step can spell a capital and its small letter
-     * differently (Greek capital gamma as "g", small gamma as "gh"). Both
-     * cases of the letter share one 5.
+     * differently (Greek capital gamma as "G", small gamma as "gh"). The
+     * second lower-casing would turn that "G" into "g", which still differs
+     * from "gh"; lower-casing first gives both cases "gh", so they share one
+     * 5.
      */
     public function test_a_capital_is_lower_cased_before_the_fold(): void
     {
