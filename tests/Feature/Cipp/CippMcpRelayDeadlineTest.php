@@ -70,7 +70,7 @@ class CippMcpRelayDeadlineTest extends TestCase
         CippClient::setClockForTesting(fn (): float => $this->now);
         Event::listen(MessageLogged::class, function (MessageLogged $e): void {
             $this->logs[] = $e->message;
-            $this->logEntries[] = ['message' => $e->message, 'context' => $e->context];
+            $this->logEntries[] = ['level' => $e->level, 'message' => $e->message, 'context' => $e->context];
         });
     }
 
@@ -859,13 +859,17 @@ class CippMcpRelayDeadlineTest extends TestCase
 
     // --- #8401 follow-ups -------------------------------------------------------
 
-    /** @return array<int, string> the relay's own deadline log lines, in order */
-    private function relayDeadlineLines(): array
+    /** @return array<int, array{level: string, message: string}> the relay's own deadline log records, in order */
+    private function relayDeadlineRecords(): array
     {
-        return array_values(array_filter(
-            $this->logs,
-            fn (string $message): bool => str_starts_with($message, '[CippMcpToolRelay] CIPP MCP query: '),
-        ));
+        $records = [];
+        foreach ($this->logEntries as $entry) {
+            if (str_starts_with($entry['message'], '[CippMcpToolRelay] CIPP MCP query: ')) {
+                $records[] = ['level' => $entry['level'], 'message' => $entry['message']];
+            }
+        }
+
+        return $records;
     }
 
     /** (c) Control: a delegated refresh that times out on its full 15 s cap is a sign-in failure. */
@@ -906,7 +910,7 @@ class CippMcpRelayDeadlineTest extends TestCase
         $this->assertSame([], $this->sent);
     }
 
-    /** r2-1: the errno-28 arm logs what it measured: a request cut short. */
+    /** r2-1: the errno-28 arm logs what it measured, at warning: a request cut short. */
     public function test_a_relay_request_cut_short_logs_cut_short_by_the_read_deadline(): void
     {
         $client = $this->configureBoth();
@@ -919,10 +923,13 @@ class CippMcpRelayDeadlineTest extends TestCase
         $result = app(CippMcpToolRelay::class)->execute('cipp_list_users', [], $client, $client->id, 120.0);
 
         $this->assertSame(['error' => 'CIPP query failed: '.self::SENTENCE], $result);
-        $this->assertSame(['[CippMcpToolRelay] CIPP MCP query: cut short by the read deadline'], $this->relayDeadlineLines());
+        $this->assertSame(
+            [['level' => 'warning', 'message' => '[CippMcpToolRelay] CIPP MCP query: cut short by the read deadline']],
+            $this->relayDeadlineRecords(),
+        );
     }
 
-    /** r2-1: the spent-before-send arm keeps its line; it read the clock. */
+    /** r2-1: the spent-before-send arm keeps its line, at warning; it read the clock. */
     public function test_a_relay_deadline_spent_before_sending_logs_the_read_deadline_was_spent(): void
     {
         $client = $this->configureBoth();
@@ -936,10 +943,18 @@ class CippMcpRelayDeadlineTest extends TestCase
 
         $this->assertSame(['error' => 'CIPP query failed: '.self::SENTENCE], $result);
         $this->assertSame([], $this->sentTo('/api/ExecMCP'));
-        $this->assertSame(['[CippMcpToolRelay] CIPP MCP query: the read deadline was spent'], $this->relayDeadlineLines());
+        $this->assertSame(
+            [['level' => 'warning', 'message' => '[CippMcpToolRelay] CIPP MCP query: the read deadline was spent']],
+            $this->relayDeadlineRecords(),
+        );
     }
 
-    /** r2-4: one builder; a budget other than 20 tells a literal from the parameter. */
+    /**
+     * r2-4: one builder. A budget other than 20 tells a literal from the
+     * parameter; the source scan fails if any other site under app/ (such as
+     * readDeadlineFailure() or the tenant check's refusal) writes the sentence
+     * itself instead of calling readDeadlineSentence().
+     */
     public function test_the_deadline_sentence_has_one_builder(): void
     {
         $this->assertSame(
@@ -949,6 +964,26 @@ class CippMcpRelayDeadlineTest extends TestCase
         $this->assertSame(CippClient::readDeadlineSentence(CippClient::READ_BUDGET_SECONDS), CippClient::readDeadlineSentence());
         $this->assertSame(CippClient::readDeadlineSentence(), CippClient::readDeadlineFailure()->getMessage());
         $this->assertSame(self::SENTENCE, CippClient::readDeadlineSentence());
+
+        // The sentence's fixed text occurs once under app/, inside the builder.
+        $builder = new \ReflectionMethod(CippClient::class, 'readDeadlineSentence');
+        $builderFile = (string) $builder->getFileName();
+        $hits = [];
+        $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator(app_path(), \FilesystemIterator::SKIP_DOTS));
+        foreach ($files as $file) {
+            if ($file->getExtension() !== 'php') {
+                continue;
+            }
+            foreach ((array) file($file->getPathname()) as $index => $line) {
+                if (str_contains((string) $line, 'did not answer within')) {
+                    $hits[] = [$file->getPathname(), $index + 1];
+                }
+            }
+        }
+        $this->assertCount(1, $hits, 'the sentence text is written once under app/: '.json_encode($hits));
+        $this->assertSame($builderFile, $hits[0][0]);
+        $this->assertGreaterThanOrEqual($builder->getStartLine(), $hits[0][1]);
+        $this->assertLessThanOrEqual($builder->getEndLine(), $hits[0][1]);
 
         // The tenant check's refusal ends with the same builder's sentence.
         $client = $this->tenantListOverMcpOnly();
@@ -978,7 +1013,11 @@ class CippMcpRelayDeadlineTest extends TestCase
         $this->assertSame([], $this->sentTo('/api/ExecMCP'));
     }
 
-    /** r2-7: previous is kept for the log; the agent-facing text carries no cURL text. */
+    /**
+     * r2-7: the ConnectionException is kept only as the exception's previous; the
+     * relay reads its class to pick its log line, and its message is not logged.
+     * The agent-facing text carries no cURL text.
+     */
     public function test_a_deadline_cut_carries_no_curl_text_to_the_agent(): void
     {
         $curl = 'Operation timed out after 8000 milliseconds with 0 bytes received';

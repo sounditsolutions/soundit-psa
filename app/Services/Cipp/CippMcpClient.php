@@ -148,7 +148,9 @@ class CippMcpClient
      * It can also throw the read deadline failure below, which is not a sign-in
      * failure, and anything the token cache throws (reading or writing the token
      * or the failure marker) or, on the delegated path, reading the connector
-     * generation from the settings store throws; those are not caught.
+     * generation from the settings store throws; those are not caught. An
+     * exception thrown by the logger from the unguarded Log::error on a failure
+     * path also escapes, in place of CippMcpAuthException.
      *
      * Under a read deadline the sign-in gets min(15 s, what is left). A sign-in the
      * deadline cut short (no budget to send, or a timeout with less than the full
@@ -254,7 +256,9 @@ class CippMcpClient
      * send the refresh, or cURL errno 28 cut it short below its 15 s cap), or
      * throws CippMcpAuthException. Exceptions from the token cache (reading or
      * writing the token or the failure marker) and from reading the connector
-     * generation are not caught here and escape as they are. The connector bookkeeping
+     * generation are not caught here and escape as they are, and so does an
+     * exception thrown by the logger from the unguarded Log::error on the failure
+     * path, in place of CippMcpAuthException. The connector bookkeeping
      * (rotated refresh token, expiry, episode open/close, alert resolve and its ticket note) is best-effort: each
      * step runs in its own guard (bookkeep()), and a step that throws is logged by
      * exception class only and never rethrown. On success the minted token is

@@ -523,7 +523,9 @@ class CippClient
     /**
      * The #8355 sentence as a tagged failure (isDeadlineFailure()). Shared with the
      * MCP relay, which passes no prefix, so the message carries no vendor or cURL
-     * text; a ConnectionException passed as $previous is kept for the log only.
+     * text. A ConnectionException passed as $previous is kept only as the
+     * exception's previous; the relay reads its class to pick its log line, and
+     * its message is not logged.
      */
     public static function readDeadlineFailure(string $prefix = '', int $code = 0, ?\Throwable $previous = null): CippClientException
     {
