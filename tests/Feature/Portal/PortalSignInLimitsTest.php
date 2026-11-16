@@ -123,13 +123,13 @@ class PortalSignInLimitsTest extends TestCase
      */
     public function test_the_per_email_limit_folds_accented_letters(): void
     {
-        foreach (['josé@example.test', 'jose@example.test', 'JOSÉ@example.test', 'jösé@example.test', 'jose@exámple.test'] as $email) {
+        foreach (['café@example.test', 'cafe@example.test', 'CAFÉ@example.test', 'cäfé@example.test', 'cafe@exámple.test'] as $email) {
             $this->signIn($email)->assertRedirect();
         }
-        $this->signIn('jose@example.test')->assertStatus(429);
+        $this->signIn('cafe@example.test')->assertStatus(429);
 
         // Another email from the same address is still counted on its own.
-        $this->signIn('maria@example.test')->assertRedirect();
+        $this->signIn('other@example.test')->assertRedirect();
     }
 
     /**
@@ -155,18 +155,18 @@ class PortalSignInLimitsTest extends TestCase
      */
     public function test_the_per_email_limit_folds_full_width_and_decomposable_letters(): void
     {
-        foreach (["\u{FF4A}ose@example.test", 'jose@example.test', "\u{1E31}ate@example.test", 'kate@example.test'] as $email) {
+        foreach (["\u{FF43}afe@example.test", 'cafe@example.test', "\u{1E31}iosk@example.test", 'kiosk@example.test'] as $email) {
             $this->signIn($email)->assertRedirect();
         }
-        $this->signIn('jose@example.test')->assertRedirect();
-        $this->signIn('jose@example.test')->assertRedirect();
-        $this->signIn("\u{FF4A}ose@example.test")->assertRedirect();
-        $this->signIn('jose@example.test')->assertStatus(429);
+        $this->signIn('cafe@example.test')->assertRedirect();
+        $this->signIn('cafe@example.test')->assertRedirect();
+        $this->signIn("\u{FF43}afe@example.test")->assertRedirect();
+        $this->signIn('cafe@example.test')->assertStatus(429);
 
-        $this->signIn('kate@example.test')->assertRedirect();
-        $this->signIn('kate@example.test')->assertRedirect();
-        $this->signIn("\u{1E31}ate@example.test")->assertRedirect();
-        $this->signIn('kate@example.test')->assertStatus(429);
+        $this->signIn('kiosk@example.test')->assertRedirect();
+        $this->signIn('kiosk@example.test')->assertRedirect();
+        $this->signIn("\u{1E31}iosk@example.test")->assertRedirect();
+        $this->signIn('kiosk@example.test')->assertStatus(429);
     }
 
     /**
@@ -175,11 +175,11 @@ class PortalSignInLimitsTest extends TestCase
      */
     public function test_a_letter_with_no_plain_spelling_is_dropped(): void
     {
-        foreach (["an\u{5F20}na@example.test", 'anna@example.test', "an\u{5F20}na@example.test", 'anna@example.test'] as $email) {
+        foreach (["al\u{5F20}pha@example.test", 'alpha@example.test', "al\u{5F20}pha@example.test", 'alpha@example.test'] as $email) {
             $this->signIn($email)->assertRedirect();
         }
-        $this->signIn("an\u{5F20}na@example.test")->assertRedirect();
-        $this->signIn('anna@example.test')->assertStatus(429);
+        $this->signIn("al\u{5F20}pha@example.test")->assertRedirect();
+        $this->signIn('alpha@example.test')->assertStatus(429);
     }
 
     /**
@@ -188,11 +188,11 @@ class PortalSignInLimitsTest extends TestCase
      */
     public function test_a_letter_with_a_plain_spelling_and_no_decomposition_folds_to_it(): void
     {
-        foreach (["\u{0142}ena@example.test", 'lena@example.test', "\u{0141}ena@example.test", 'lena@example.test'] as $email) {
+        foreach (["\u{0142}edger@example.test", 'ledger@example.test', "\u{0141}edger@example.test", 'ledger@example.test'] as $email) {
             $this->signIn($email)->assertRedirect();
         }
-        $this->signIn("\u{0142}ena@example.test")->assertRedirect();
-        $this->signIn('lena@example.test')->assertStatus(429);
+        $this->signIn("\u{0142}edger@example.test")->assertRedirect();
+        $this->signIn('ledger@example.test')->assertStatus(429);
     }
 
     /**
@@ -202,11 +202,11 @@ class PortalSignInLimitsTest extends TestCase
      */
     public function test_a_capital_produced_by_the_fold_is_lower_cased(): void
     {
-        foreach (["\u{210D}ank@example.test", 'hank@example.test', "\u{210D}ank@example.test", 'hank@example.test'] as $email) {
+        foreach (["\u{210D}arbor@example.test", 'harbor@example.test', "\u{210D}arbor@example.test", 'harbor@example.test'] as $email) {
             $this->signIn($email)->assertRedirect();
         }
-        $this->signIn("\u{210D}ank@example.test")->assertRedirect();
-        $this->signIn('hank@example.test')->assertStatus(429);
+        $this->signIn("\u{210D}arbor@example.test")->assertRedirect();
+        $this->signIn('harbor@example.test')->assertStatus(429);
     }
 
     /**
@@ -230,11 +230,11 @@ class PortalSignInLimitsTest extends TestCase
      */
     public function test_a_non_letter_with_no_plain_spelling_is_dropped(): void
     {
-        foreach (["an\u{00AD}na@example.test", 'anna@example.test', "an\u{00AD}na@example.test", 'anna@example.test'] as $email) {
+        foreach (["al\u{00AD}pha@example.test", 'alpha@example.test', "al\u{00AD}pha@example.test", 'alpha@example.test'] as $email) {
             $this->signIn($email)->assertRedirect();
         }
-        $this->signIn("an\u{00AD}na@example.test")->assertRedirect();
-        $this->signIn('anna@example.test')->assertStatus(429);
+        $this->signIn("al\u{00AD}pha@example.test")->assertRedirect();
+        $this->signIn('alpha@example.test')->assertStatus(429);
     }
 
     /**
@@ -261,6 +261,33 @@ class PortalSignInLimitsTest extends TestCase
         $this->signIn('user21@example.test')->assertStatus(429);
 
         $this->fromAddress(self::OTHER_ADDRESS)->signIn('user21@example.test')->assertRedirect();
+    }
+
+    /**
+     * A sign-in refused by the 20-a-minute address limit still counts
+     * against that email's 5 (the stricter direction, kept on purpose). The
+     * address limit fills at second 0 and the email's tries are refused at
+     * second 30, so at second 60 the address limit has ended and the email's
+     * 5 have not: that email is still refused, another email answers.
+     */
+    public function test_a_sign_in_refused_by_the_address_limit_still_counts_against_the_email(): void
+    {
+        $this->freezeSecond();
+        for ($i = 1; $i <= 20; $i++) {
+            $this->signIn("user{$i}@example.test")->assertRedirect();
+        }
+
+        $this->travel(30)->seconds();
+        for ($i = 1; $i <= 5; $i++) {
+            $this->signIn('a@example.test')->assertStatus(429);
+        }
+
+        $this->travel(30)->seconds();
+        $this->signIn('b@example.test')->assertRedirect();
+        $this->signIn('a@example.test')->assertStatus(429);
+
+        $this->travel(30)->seconds();
+        $this->signIn('a@example.test')->assertRedirect();
     }
 
     public function test_used_up_sign_in_tries_do_not_block_the_page_or_the_other_forms(): void
