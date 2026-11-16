@@ -196,6 +196,21 @@ class PortalSignInLimitsTest extends TestCase
     }
 
     /**
+     * The email is lower-cased before the fold as well as after it, because
+     * the plain-letter step can spell a capital and its small letter
+     * differently (Greek capital gamma as "g", small gamma as "gh"). Both
+     * cases of the letter share one 5.
+     */
+    public function test_a_capital_is_lower_cased_before_the_fold(): void
+    {
+        foreach (["al\u{0393}pha@example.test", "al\u{03B3}pha@example.test", "al\u{0393}pha@example.test", "al\u{03B3}pha@example.test"] as $email) {
+            $this->signIn($email)->assertRedirect();
+        }
+        $this->signIn("al\u{0393}pha@example.test")->assertRedirect();
+        $this->signIn("al\u{03B3}pha@example.test")->assertStatus(429);
+    }
+
+    /**
      * A capital that only appears once the email is decomposed (a
      * double-struck H becomes H) is lower-cased again, so it shares the plain
      * spelling's 5.
