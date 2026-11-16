@@ -40,8 +40,11 @@ class TrustCloudflareHop extends TrustProxies
     }
 
     /**
-     * Cut X-Forwarded-For to its right-most entry: the one the connecting hop
-     * appended.
+     * Cut X-Forwarded-For to its right-most entry as received. That is the
+     * entry the connecting hop appended only when that hop appends one; with
+     * a local proxy that passes the header through, or a caller that
+     * connects from Cloudflare's network, it need not be (see
+     * config/trustedproxy.php).
      */
     private function keepOnlyTheAppendedEntry(Request $request): void
     {

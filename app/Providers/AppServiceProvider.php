@@ -292,6 +292,24 @@ class AppServiceProvider extends ServiceProvider
             // dropped. The result is lower-cased again, because the fold can
             // produce a capital. The fold is close to that matching, not
             // exact; the 20-a-minute address limit below applies either way.
+            //
+            // The cut to 255 comes before the decomposition, so the key can
+            // be longer than 255 characters (one ligature or compatibility
+            // form can decompose to several letters).
+            //
+            // ASCII control characters inside the email are already plain,
+            // so they stay in the key (a tab becomes a space). An email with
+            // one in it fails the `email` rule before any password is
+            // checked.
+            //
+            // For a request, the global TrimStrings middleware has already
+            // trimmed the email; trim() is kept for callers that do not pass
+            // through that middleware.
+            //
+            // Both limits are counted with the cache store's increment. On
+            // the file store that reads the count and writes it back with no
+            // lock held across the two, so parallel requests can undercount
+            // these limits, as they can every other limit on that store.
             $email = $request->input('email');
             $email = is_string($email) ? mb_strtolower(mb_substr(trim($email), 0, 255)) : '';
             $decomposed = Normalizer::normalize($email, Normalizer::FORM_KD);

@@ -29,16 +29,21 @@ use Illuminate\Support\Facades\Route;
 //  - portal-page: viewing a form, 60 a minute per address. A page view does
 //    not use up a sign-in try.
 //  - portal-login: POST /login, 5 a minute per email as typed (its first 255
-//    characters, with case, surrounding spaces and accents folded and any
-//    character with no plain spelling dropped) and address, plus 20 a minute
-//    per address alone, so one person's mistakes do not lock out the rest
-//    of their office.
+//    characters, with case, surrounding spaces and accents folded, full-width
+//    forms and letters from other alphabets respelled in plain letters, and
+//    any character with no plain spelling dropped) and address, plus 20 a
+//    minute per address alone, so one person's mistakes do not lock out the
+//    rest of their office.
 //  - portal-guest: the other POSTs, and the verify-access link (it acts on a
 //    link; it is not a page view), 6 a minute per address.
 // Named limiters keep their own counters. A plain throttle:N,M keys a
 // signed-out caller by address alone, so it would share one counter with
 // every other plain throttle the same address hits (the API's 120 a minute
-// included).
+// included). The signed-in POSTs below still use plain throttles, and those
+// key a signed-in portal user by address too (they read the default guard,
+// not the portal's), so they share that counter: once an address has made 3
+// requests under plain throttles inside the window, the three throttle:3,5
+// routes (prepaid purchase, hardware, shop) refuse it.
 
 Route::middleware('portal.enabled')->group(function () {
     Route::middleware('throttle:portal-page')->group(function () {
