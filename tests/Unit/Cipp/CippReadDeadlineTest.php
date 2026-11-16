@@ -455,7 +455,7 @@ class CippReadDeadlineTest extends TestCase
         \App\Models\Client::factory()->create(['cipp_tenant_domain' => 'other.example.test']);
         $mcp = \Mockery::mock(\App\Services\Cipp\CippMcpClient::class);
         // Invoke-ListTenants: customerId and defaultDomainName, synthetic identities.
-        $mcp->shouldReceive('callTool')->once()->with('ListTenants', [])->andReturn([
+        $mcp->shouldReceive('callTool')->once()->with('ListTenants', [], \Mockery::type('float'))->andReturn([
             ['customerId' => '22222222-2222-4222-8222-222222222222', 'defaultDomainName' => 'example.test'],
             ['customerId' => '33333333-3333-4333-8333-333333333333', 'defaultDomainName' => 'other.example.test'],
         ]);

@@ -4,6 +4,7 @@ namespace App\Services\Cipp;
 
 use App\Support\SafeUrlInspector;
 use Illuminate\Contracts\Cache\Repository as CacheInterface;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -22,6 +23,11 @@ class CippMcpClient
      */
     public const SIGN_IN_FAILURE_TTL = 60;
 
+    /** Per-request caps; under a read deadline each is min(cap, what is left). */
+    private const SIGN_IN_TIMEOUT = 15;
+
+    private const EXEC_MCP_TIMEOUT = 60;
+
     /** @var callable */
     private $resolver;
 
@@ -37,26 +43,51 @@ class CippMcpClient
     /**
      * Call one official CIPP ExecMCP tool through JSON-RPC over HTTP.
      *
+     * $deadline (CippClient::monotonicNow() seconds) bounds the sign-in AND the
+     * ExecMCP call together: each request's timeout and connect_timeout is
+     * min(its cap, what is left), and with under 1 ms left nothing is sent. A
+     * request the deadline cut short (no budget left to send it, or cURL errno 28
+     * while it ran below its cap) throws the #8355 sentence
+     * (CippClient::readDeadlineFailure()), which carries no cURL text. A request
+     * that times out on its full cap is not cut short by the deadline: the app
+     * sign-in then throws CippMcpAuthException carrying the cURL text (the
+     * delegated refresh, the exception class only), and ExecMCP rethrows the
+     * ConnectionException with its cURL text. null keeps the fixed caps (15 s
+     * sign-in, 60 s ExecMCP), with connect_timeout left at the HTTP client's 10 s
+     * default, for callers outside an interactive read.
+     *
      * @return array<int|string, mixed>
      */
-    public function callTool(string $toolName, array $arguments = []): array
+    public function callTool(string $toolName, array $arguments = [], ?float $deadline = null): array
     {
         $execMcpUrl = $this->execMcpUrl();
+        $safeOptions = $this->safeRequestOptions($execMcpUrl);
+        $token = $this->getToken($deadline);
+        $timeout = $this->requestTimeout($deadline, self::EXEC_MCP_TIMEOUT);
 
-        $response = Http::timeout(60)
-            ->accept('text/event-stream')
-            ->withOptions($this->safeRequestOptions($execMcpUrl))
-            ->withToken($this->getToken())
-            ->withQueryParameters(['tools' => $toolName])
-            ->post($execMcpUrl, [
-                'jsonrpc' => '2.0',
-                'id' => 1,
-                'method' => 'tools/call',
-                'params' => [
-                    'name' => $toolName,
-                    'arguments' => $arguments,
-                ],
-            ]);
+        try {
+            $response = Http::timeout($timeout)
+                ->when($deadline !== null, fn ($request) => $request->connectTimeout($timeout))
+                ->accept('text/event-stream')
+                ->withOptions($safeOptions)
+                ->withToken($token)
+                ->withQueryParameters(['tools' => $toolName])
+                ->post($execMcpUrl, [
+                    'jsonrpc' => '2.0',
+                    'id' => 1,
+                    'method' => 'tools/call',
+                    'params' => [
+                        'name' => $toolName,
+                        'arguments' => $arguments,
+                    ],
+                ]);
+        } catch (ConnectionException $e) {
+            if ($this->deadlineCut($e, $deadline, $timeout, self::EXEC_MCP_TIMEOUT)) {
+                throw CippClient::readDeadlineFailure('', 0, $e);
+            }
+
+            throw $e;
+        }
 
         if ($response->status() === 401) {
             throw new CippMcpAuthException("CIPP MCP {$toolName} was refused: HTTP 401 ".mb_substr($response->body(), 0, 500));
@@ -81,7 +112,7 @@ class CippMcpClient
         $response = Http::timeout(60)
             ->acceptJson()
             ->withOptions($this->safeRequestOptions($execMcpUrl))
-            ->withToken($this->getToken())
+            ->withToken($this->getToken(null))
             ->post($execMcpUrl, [
                 'jsonrpc' => '2.0',
                 'id' => 1,
@@ -104,14 +135,22 @@ class CippMcpClient
      *
      * With a delegated connector (CIPP v11+; see CippMcpConnector) it is minted from
      * the stored refresh token. Without one this is the pre-v11 app-only
-     * client_credentials sign-in, unchanged. Either way every failure is a
+     * client_credentials sign-in, unchanged. Either way every sign-in failure is a
      * CippMcpAuthException, which the curated reads fail over to REST on, and a
      * failed token request is remembered for SIGN_IN_FAILURE_TTL seconds (#4393).
+     * The one other throw is the read deadline failure below, which is not a
+     * sign-in failure.
+     *
+     * Under a read deadline the sign-in gets min(15 s, what is left). A sign-in the
+     * deadline cut short (no budget to send, or a timeout with less than the full
+     * 15 s) is NOT a sign-in failure: it is not remembered, not logged as one, and
+     * throws the #8355 deadline failure rather than CippMcpAuthException, so the
+     * read does not fail over to REST with nothing left (card Cn86O1kp, C2).
      */
-    private function getToken(): string
+    private function getToken(?float $deadline = null): string
     {
         if ($this->connectorIsConnected()) {
-            return $this->getDelegatedToken();
+            return $this->getDelegatedToken($deadline);
         }
 
         $tenantId = (string) ($this->config['tenant_id'] ?? '');
@@ -132,10 +171,12 @@ class CippMcpClient
         $this->refuseIfRecentlyFailed($failedKey);
 
         $tokenUrl = "https://login.microsoftonline.com/{$tenantId}/oauth2/v2.0/token";
+        $timeout = $this->requestTimeout($deadline, self::SIGN_IN_TIMEOUT);
 
         try {
             $response = Http::asForm()
-                ->timeout(15)
+                ->timeout($timeout)
+                ->when($deadline !== null, fn ($request) => $request->connectTimeout($timeout))
                 ->post($tokenUrl, [
                     'grant_type' => 'client_credentials',
                     'client_id' => $clientId,
@@ -143,6 +184,13 @@ class CippMcpClient
                     'scope' => "api://{$clientId}/.default",
                 ])
                 ->throw();
+        } catch (ConnectionException $e) {
+            if ($this->deadlineCut($e, $deadline, $timeout, self::SIGN_IN_TIMEOUT)) {
+                throw CippClient::readDeadlineFailure('', 0, $e);
+            }
+            $this->rememberSignInFailure($failedKey);
+            Log::error('[CippMcpClient] Token request failed', ['error' => $e->getMessage()]);
+            throw new CippMcpAuthException("CIPP MCP OAuth token request failed: {$e->getMessage()}", (int) $e->getCode(), $e);
         } catch (RequestException $e) {
             $this->rememberSignInFailure($failedKey);
             Log::error('[CippMcpClient] Token request failed', ['error' => $e->getMessage()]);
@@ -192,9 +240,11 @@ class CippMcpClient
      * persisted; a failure is reported to the connector (one alert per episode)
      * and surfaces as CippMcpAuthException carrying the vendor error CODE only.
      *
-     * Invariant: this method returns a token or throws CippMcpAuthException, and
-     * nothing else. The connector bookkeeping (rotated refresh token, expiry,
-     * episode open/close, alert resolve and its ticket note) is best-effort: each
+     * Invariant: this method returns a token, throws the read deadline failure
+     * (CippClient::readDeadlineFailure(): under a deadline, nothing was left to
+     * send the refresh, or cURL errno 28 cut it short below its 15 s cap), or
+     * throws CippMcpAuthException, and nothing else. The connector bookkeeping
+     * (rotated refresh token, expiry, episode open/close, alert resolve and its ticket note) is best-effort: each
      * step runs in its own guard (bookkeep()), and a step that throws is logged by
      * exception class only and never rethrown. On success the minted token is
      * cached BEFORE any bookkeeping, so a failed settings or alert write can
@@ -203,7 +253,7 @@ class CippMcpClient
      * The client secret is read live through CippMcpConnector::clientAuthFields():
      * once an admin removes the stored secret, no refresh sends one.
      */
-    private function getDelegatedToken(): string
+    private function getDelegatedToken(?float $deadline = null): string
     {
         /** @var CippMcpConnector $connector */
         $connector = $this->connector;
@@ -244,14 +294,23 @@ class CippMcpClient
             throw new CippMcpAuthException('CIPP MCP connector refresh could not start: stored_secret_unreadable');
         }
 
+        $timeout = $this->requestTimeout($deadline, self::SIGN_IN_TIMEOUT);
+
         try {
-            $response = Http::asForm()->timeout(15)->post(CippMcpConnector::tokenUrl($tenantId), $fields + [
-                'grant_type' => 'refresh_token',
-                'refresh_token' => (string) $refreshToken,
-                'scope' => $scope,
-            ]);
+            $response = Http::asForm()
+                ->timeout($timeout)
+                ->when($deadline !== null, fn ($request) => $request->connectTimeout($timeout))
+                ->post(CippMcpConnector::tokenUrl($tenantId), $fields + [
+                    'grant_type' => 'refresh_token',
+                    'refresh_token' => (string) $refreshToken,
+                    'scope' => $scope,
+                ]);
             $failure = $response->failed() ? CippMcpConnector::errorCode($response) : null;
         } catch (\Throwable $e) {
+            if ($e instanceof ConnectionException && $this->deadlineCut($e, $deadline, $timeout, self::SIGN_IN_TIMEOUT)) {
+                // Cut short by the read deadline: not a refresh failure (C2).
+                throw CippClient::readDeadlineFailure('', 0, $e);
+            }
             $response = null;
             $failure = 'unreachable ('.class_basename($e).')';
         }
@@ -302,6 +361,43 @@ class CippMcpClient
                 // A failing logger must not turn bookkeeping into a failed read either.
             }
         }
+    }
+
+    /**
+     * The timeout for one request: its cap, or under a deadline min(cap, what is
+     * left). With under 1 ms left it refuses before sending, because cURL treats a
+     * sub-millisecond timeout as unbounded (the CippClient::deadlineOptions() rule).
+     */
+    private function requestTimeout(?float $deadline, int $cap): float|int
+    {
+        if ($deadline === null) {
+            return $cap;
+        }
+
+        $remaining = $deadline - CippClient::monotonicNow();
+        if ($remaining < 0.001) {
+            throw CippClient::readDeadlineFailure();
+        }
+
+        return min($cap, $remaining);
+    }
+
+    /**
+     * Whether a failed request was cut short by the read deadline: there was one,
+     * the request ran with less than its full cap, and it ended on a real timeout
+     * (cURL errno 28). DNS failures, refused connections and HTTP errors are not.
+     */
+    private function deadlineCut(ConnectionException $e, ?float $deadline, float|int $timeout, int $cap): bool
+    {
+        return $deadline !== null && $timeout < $cap && self::isTimeout($e);
+    }
+
+    private static function isTimeout(ConnectionException $e): bool
+    {
+        $previous = $e->getPrevious();
+
+        return ($previous instanceof \GuzzleHttp\Exception\ConnectException || $previous instanceof \GuzzleHttp\Exception\RequestException)
+            && (int) ($previous->getHandlerContext()['errno'] ?? 0) === 28;
     }
 
     private function signInFailedKey(string $tenantId, string $clientId, string $mode): string

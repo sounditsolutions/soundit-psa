@@ -3391,7 +3391,7 @@ class AssistantToolExecutor
         return '[Assistant]';
     }
 
-    protected function cippMcpRelay(string $toolName, array $input): ?array
+    protected function cippMcpRelay(string $toolName, array $input, ?float $deadline): ?array
     {
         if ($toolName === 'cipp_compare_user_access') {
             return null;
@@ -3427,7 +3427,7 @@ class AssistantToolExecutor
         }
 
         try {
-            return app(CippMcpToolRelay::class)->execute($toolName, $input, $this->client, $this->clientId);
+            return app(CippMcpToolRelay::class)->execute($toolName, $input, $this->client, $this->clientId, $deadline);
         } catch (CippMcpAuthException $e) {
             // The MCP transport could not sign in, so CIPP did not run the query. Every
             // tool the relay maps also has a REST body in HandlesCippTools, and

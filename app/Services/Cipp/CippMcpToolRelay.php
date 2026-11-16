@@ -101,8 +101,13 @@ class CippMcpToolRelay
      *                              rethrown, not turned into an error row, because
      *                              CIPP did not run the query and the caller can
      *                              ask it over REST instead.
+     *
+     * $deadline is the read's one deadline (CippClient::monotonicNow() seconds),
+     * carried into the tenant check, the relay sign-in and the ExecMCP call. A
+     * call it cut short answers with the #8355 sentence and is not handed to REST:
+     * CIPP may have run the query and the budget is spent (card Cn86O1kp).
      */
-    public function execute(string $toolName, array $input, ?Client $client, ?int $clientId): array
+    public function execute(string $toolName, array $input, ?Client $client, ?int $clientId, ?float $deadline = null): array
     {
         $unknownArguments = $this->unknownArguments($toolName, $input);
         if ($unknownArguments !== []) {
@@ -111,7 +116,7 @@ class CippMcpToolRelay
 
         // The same resolver HandlesCippTools::cippDispatch() already consulted (card
         // 6abdcac2): the relay must not be safe only because of who calls it.
-        $tenantDomain = CippTenantScope::resolve($client, $clientId);
+        $tenantDomain = CippTenantScope::resolve($client, $clientId, $deadline);
         if (is_array($tenantDomain)) {
             return $tenantDomain;
         }
@@ -122,10 +127,20 @@ class CippMcpToolRelay
         }
 
         try {
-            $rows = $this->client->callTool($prepared['tool'], $prepared['arguments']);
+            $rows = $this->client->callTool($prepared['tool'], $prepared['arguments'], $deadline);
         } catch (CippMcpAuthException $e) {
             throw $e;
         } catch (\Throwable $e) {
+            if (CippClient::isDeadlineFailure($e)) {
+                // Our own sentence, never the cURL text: nothing upstream to fence.
+                Log::warning('[CippMcpToolRelay] CIPP MCP query: the read deadline was spent', [
+                    'tool' => $toolName,
+                    'exec_mcp_tool' => $prepared['tool'] ?? null,
+                ]);
+
+                return ['error' => 'CIPP query failed: '.$e->getMessage()];
+            }
+
             Log::warning('[CippMcpToolRelay] CIPP MCP query failed', [
                 'tool' => $toolName,
                 'exec_mcp_tool' => $prepared['tool'] ?? null,

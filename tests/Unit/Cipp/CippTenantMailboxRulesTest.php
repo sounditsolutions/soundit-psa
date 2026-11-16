@@ -77,7 +77,7 @@ class CippTenantMailboxRulesTest extends TestCase
             // ListMailboxRules takes tenantFilter and UseReportDB and NOTHING else —
             // it has no user parameter at all. The per-mailbox sibling
             // cipp_list_mailbox_rules maps to ListUserMailboxRules instead.
-            ->with('ListMailboxRules', Mockery::any())
+            ->with('ListMailboxRules', Mockery::any(), null)
             ->andReturn([]);
 
         $relay = new CippMcpToolRelay($mcp, app(ChetDataSurfaceTextSanitizer::class));

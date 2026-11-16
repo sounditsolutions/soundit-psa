@@ -40,9 +40,10 @@ trait HandlesCippTools
      * relay is not in play (the default — direct CippClient HTTP path). The
      * Assistant overrides this to delegate to CippMcpToolRelay when enabled, and
      * returns null — so the direct path answers — when the relay cannot sign in
-     * (CippMcpAuthException).
+     * (CippMcpAuthException). $deadline is the read's one deadline; an override
+     * passes it to the relay so sign-in and ExecMCP share it with REST.
      */
-    protected function cippMcpRelay(string $toolName, array $input): ?array
+    protected function cippMcpRelay(string $toolName, array $input, ?float $deadline): ?array
     {
         return null;
     }
@@ -95,12 +96,15 @@ trait HandlesCippTools
         // A REST client that cannot be built (a cipp_client_secret that no longer
         // decrypts) must not block the MCP relay or the tenant list's MCP failover
         // (#4580): it is reported only when REST is the transport left to answer.
-        $deadline = null;
+        // The deadline does not depend on that client, so the relay's HTTP requests,
+        // and the tenant check's, are bounded by it even then (card Cn86O1kp): it is
+        // never null from here.
         $clientError = null;
         try {
             $deadline = app(CippClient::class)->readDeadline();
         } catch (\Throwable $e) {
             $clientError = $e;
+            $deadline = CippClient::freshReadDeadline();
         }
 
         $tenantDomain = CippTenantScope::resolve($this->cippScopeClient(), $this->clientId, $deadline);
@@ -108,7 +112,7 @@ trait HandlesCippTools
             return $tenantDomain;
         }
 
-        $relay = $this->cippMcpRelay($toolName, $input);
+        $relay = $this->cippMcpRelay($toolName, $input, $deadline);
         if ($relay !== null) {
             return $relay;
         }

@@ -447,14 +447,41 @@ class CippClient
         return $token;
     }
 
+    /** The interactive read budget (#8355), in seconds. The one place the 20 s lives. */
+    public const READ_BUDGET_SECONDS = 20;
+
+    /** Test seam for the one monotonic clock; null is the real clock. */
+    private static ?\Closure $clock = null;
+
     public function readDeadline(): float
     {
-        return $this->monotonicTime() + 20;
+        return $this->monotonicTime() + self::READ_BUDGET_SECONDS;
+    }
+
+    /**
+     * The same deadline as readDeadline(), for when no CippClient can be built (a
+     * cipp_client_secret that no longer decrypts): the MCP relay is still bounded.
+     */
+    public static function freshReadDeadline(): float
+    {
+        return self::monotonicNow() + self::READ_BUDGET_SECONDS;
+    }
+
+    /** The clock every CIPP read deadline is measured on (REST and MCP relay). */
+    public static function monotonicNow(): float
+    {
+        return self::$clock !== null ? (float) (self::$clock)() : hrtime(true) / 1e9;
+    }
+
+    /** Tests only: drive monotonicNow() and, through it, monotonicTime(). */
+    public static function setClockForTesting(?callable $clock): void
+    {
+        self::$clock = $clock === null ? null : \Closure::fromCallable($clock);
     }
 
     protected function monotonicTime(): float
     {
-        return hrtime(true) / 1e9;
+        return self::monotonicNow();
     }
 
     private function deadlineOptions(?float $deadline, float $cap = 60, ?GuzzleException $lastError = null): array
@@ -484,7 +511,16 @@ class CippClient
     {
         $prefix = $e === null ? '' : 'CIPP API error: '.self::failureDetail($e).'; ';
 
-        $failure = new CippClientException($prefix.'CIPP did not answer within 20 s (upstream timeout; this read is safe to retry)', (int) ($e?->getCode() ?? 0), $e);
+        return self::readDeadlineFailure($prefix, (int) ($e?->getCode() ?? 0), $e);
+    }
+
+    /**
+     * The #8355 sentence as a tagged failure (isDeadlineFailure()). Shared with the
+     * MCP relay, which passes no prefix: it carries no vendor text.
+     */
+    public static function readDeadlineFailure(string $prefix = '', int $code = 0, ?\Throwable $previous = null): CippClientException
+    {
+        $failure = new CippClientException($prefix.'CIPP did not answer within '.self::READ_BUDGET_SECONDS.' s (upstream timeout; this read is safe to retry)', $code, $previous);
         self::$deadlineFailures ??= new \WeakMap;
         self::$deadlineFailures[$failure] = true;
 
