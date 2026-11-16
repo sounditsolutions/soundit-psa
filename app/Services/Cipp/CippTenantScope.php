@@ -294,7 +294,7 @@ final class CippTenantScope
         $message .= ", so it cannot check PSA client {$clientId}'s CIPP tenant's other domains against other PSA clients' mappings, and this read was not run.";
 
         if ($failure !== null && ($failure['timeout'] ?? false)) {
-            $message .= ' CIPP did not answer within '.CippClient::READ_BUDGET_SECONDS.' s (upstream timeout; this read is safe to retry).';
+            $message .= ' '.CippClient::readDeadlineSentence().'.';
         }
 
         if ($failure !== null && $failure['signIn']) {

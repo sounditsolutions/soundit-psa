@@ -31,8 +31,8 @@ use Tests\TestCase;
  *
  * Synthetic throughout: Http::fake() with preventStrayRequests() for the relay,
  * a Guzzle MockHandler with a history seam for REST, and the one clock seam
- * (CippClient::setClockForTesting()), which drives both CippClient::monotonicNow()
- * and CippClient::monotonicTime(). Time passes only when a stub moves $this->now.
+ * (CippClient::setClockForTesting()), which drives CippClient::monotonicNow(),
+ * the only clock. Time passes only when a stub moves $this->now.
  */
 class CippMcpRelayDeadlineTest extends TestCase
 {

@@ -21,6 +21,13 @@ class CippReadDeadlineTest extends TestCase
 
     private array $history = [];
 
+    protected function tearDown(): void
+    {
+        CippClient::setClockForTesting(null);
+
+        parent::tearDown();
+    }
+
     private function client(array $queue, bool $cached = true): CippClient
     {
         $stack = HandlerStack::create(new MockHandler($queue));
@@ -43,11 +50,8 @@ class CippReadDeadlineTest extends TestCase
             {
                 parent::__construct($config, $cache, $http);
                 $this->fake = $http;
-            }
-
-            protected function monotonicTime(): float
-            {
-                return $this->clock;
+                // The one clock seam (monotonicNow()), driven by this double's $clock.
+                CippClient::setClockForTesting(fn (): float => $this->clock);
             }
 
             protected function tokenClient(): Client
