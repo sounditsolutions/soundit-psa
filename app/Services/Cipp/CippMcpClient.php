@@ -48,13 +48,20 @@ class CippMcpClient
      * min(its cap, what is left), and with under 1 ms left nothing is sent. A
      * request the deadline cut short (no budget left to send it, or cURL errno 28
      * while it ran below its cap) throws the #8355 sentence
-     * (CippClient::readDeadlineFailure()), which carries no cURL text. A request
+     * (CippClient::readDeadlineFailure()); the message carries no cURL text, and
+     * the ConnectionException is kept only as its previous exception. A request
      * that times out on its full cap is not cut short by the deadline: the app
      * sign-in then throws CippMcpAuthException carrying the cURL text (the
      * delegated refresh, the exception class only), and ExecMCP rethrows the
      * ConnectionException with its cURL text. null keeps the fixed caps (15 s
      * sign-in, 60 s ExecMCP), with connect_timeout left at the HTTP client's 10 s
      * default, for callers outside an interactive read.
+     *
+     * Outside the deadline: the DNS lookups that pin the ExecMCP host
+     * (safeRequestOptions(), and SafeUrlInspector::reject() before it) run
+     * before any request and are not bounded by $deadline. The default resolver
+     * (gethostbynamel) takes no timeout argument, so the system resolver's own
+     * timeout applies to them, not what is left of the read deadline.
      *
      * @return array<int|string, mixed>
      */
@@ -138,8 +145,14 @@ class CippMcpClient
      * client_credentials sign-in, unchanged. Either way every sign-in failure is a
      * CippMcpAuthException, which the curated reads fail over to REST on, and a
      * failed token request is remembered for SIGN_IN_FAILURE_TTL seconds (#4393).
-     * The one other throw is the read deadline failure below, which is not a
-     * sign-in failure.
+     * It can also throw the read deadline failure below, which is not a sign-in
+     * failure, and anything the token cache throws (reading or writing the token
+     * or the failure marker) or, on the delegated path, reading the connector
+     * generation from the settings store throws; those are not caught. An
+     * exception thrown by the logger from the unguarded Log::error on a failure
+     * path also escapes, in place of CippMcpAuthException. So does one thrown by
+     * the logger from the unguarded Log::warning in connectorIsConnected() (the
+     * connector state could not be read), in place of the app-only fallback.
      *
      * Under a read deadline the sign-in gets min(15 s, what is left). A sign-in the
      * deadline cut short (no budget to send, or a timeout with less than the full
@@ -240,10 +253,14 @@ class CippMcpClient
      * persisted; a failure is reported to the connector (one alert per episode)
      * and surfaces as CippMcpAuthException carrying the vendor error CODE only.
      *
-     * Invariant: this method returns a token, throws the read deadline failure
+     * This method returns a token, throws the read deadline failure
      * (CippClient::readDeadlineFailure(): under a deadline, nothing was left to
      * send the refresh, or cURL errno 28 cut it short below its 15 s cap), or
-     * throws CippMcpAuthException, and nothing else. The connector bookkeeping
+     * throws CippMcpAuthException. Exceptions from the token cache (reading or
+     * writing the token or the failure marker) and from reading the connector
+     * generation are not caught here and escape as they are, and so does an
+     * exception thrown by the logger from the unguarded Log::error on the failure
+     * path, in place of CippMcpAuthException. The connector bookkeeping
      * (rotated refresh token, expiry, episode open/close, alert resolve and its ticket note) is best-effort: each
      * step runs in its own guard (bookkeep()), and a step that throws is logged by
      * exception class only and never rethrown. On success the minted token is

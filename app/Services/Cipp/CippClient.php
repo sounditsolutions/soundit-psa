@@ -422,7 +422,7 @@ class CippClient
                 ],
             ]);
         } catch (GuzzleException $e) {
-            if ($deadline !== null && $deadline - $this->monotonicTime() < 0.001) {
+            if ($deadline !== null && $deadline - self::monotonicNow() < 0.001) {
                 throw $this->deadlineFailure($lastError);
             }
             $detail = self::failureDetail($e);
@@ -430,7 +430,7 @@ class CippClient
             throw new CippClientException("CIPP OAuth token request failed: {$detail}", $e->getCode(), $e);
         }
 
-        if ($deadline !== null && $this->monotonicTime() >= $deadline) {
+        if ($deadline !== null && self::monotonicNow() >= $deadline) {
             throw $this->deadlineFailure($lastError);
         }
         $data = json_decode((string) $response->getBody(), true);
@@ -455,7 +455,7 @@ class CippClient
 
     public function readDeadline(): float
     {
-        return $this->monotonicTime() + self::READ_BUDGET_SECONDS;
+        return self::monotonicNow() + self::READ_BUDGET_SECONDS;
     }
 
     /**
@@ -473,15 +473,10 @@ class CippClient
         return self::$clock !== null ? (float) (self::$clock)() : hrtime(true) / 1e9;
     }
 
-    /** Tests only: drive monotonicNow() and, through it, monotonicTime(). */
+    /** Tests only: drive monotonicNow(), the one clock seam. */
     public static function setClockForTesting(?callable $clock): void
     {
         self::$clock = $clock === null ? null : \Closure::fromCallable($clock);
-    }
-
-    protected function monotonicTime(): float
-    {
-        return self::monotonicNow();
     }
 
     private function deadlineOptions(?float $deadline, float $cap = 60, ?GuzzleException $lastError = null): array
@@ -489,7 +484,7 @@ class CippClient
         if ($deadline === null) {
             return [];
         }
-        $remaining = $deadline - $this->monotonicTime();
+        $remaining = $deadline - self::monotonicNow();
         // Curl truncates sub-millisecond timeouts to zero (unbounded).
         if ($remaining < 0.001) {
             throw $this->deadlineFailure($lastError);
@@ -515,12 +510,26 @@ class CippClient
     }
 
     /**
+     * The #8355 sentence, built in this one place for every site that states it
+     * (readDeadlineFailure() and the tenant check's refusal). $budget defaults to
+     * READ_BUDGET_SECONDS; it is a parameter so a test can tell the constant from
+     * a literal.
+     */
+    public static function readDeadlineSentence(int $budget = self::READ_BUDGET_SECONDS): string
+    {
+        return 'CIPP did not answer within '.$budget.' s (upstream timeout; this read is safe to retry)';
+    }
+
+    /**
      * The #8355 sentence as a tagged failure (isDeadlineFailure()). Shared with the
-     * MCP relay, which passes no prefix: it carries no vendor text.
+     * MCP relay, which passes no prefix, so the message carries no vendor or cURL
+     * text. A ConnectionException passed as $previous is kept only as the
+     * exception's previous; the relay reads its class to pick its log line, and
+     * its message is not logged.
      */
     public static function readDeadlineFailure(string $prefix = '', int $code = 0, ?\Throwable $previous = null): CippClientException
     {
-        $failure = new CippClientException($prefix.'CIPP did not answer within '.self::READ_BUDGET_SECONDS.' s (upstream timeout; this read is safe to retry)', $code, $previous);
+        $failure = new CippClientException($prefix.self::readDeadlineSentence(), $code, $previous);
         self::$deadlineFailures ??= new \WeakMap;
         self::$deadlineFailures[$failure] = true;
 
@@ -600,7 +609,7 @@ class CippClient
         while ($attempts < $maxAttempts) {
             $attempts++;
 
-            if ($deadline !== null && $this->monotonicTime() >= $deadline) {
+            if ($deadline !== null && self::monotonicNow() >= $deadline) {
                 throw $this->deadlineFailure($lastError);
             }
             $token = $this->getToken($deadline, $lastError);
@@ -612,7 +621,7 @@ class CippClient
 
             try {
                 $response = $this->http->request($method, $endpoint, $attemptOptions);
-                if ($deadline !== null && $this->monotonicTime() >= $deadline) {
+                if ($deadline !== null && self::monotonicNow() >= $deadline) {
                     throw $this->deadlineFailure($lastError);
                 }
 
@@ -620,7 +629,7 @@ class CippClient
             } catch (GuzzleException $e) {
                 $code = $e->getCode();
                 $lastError = $e;
-                if ($deadline !== null && $this->monotonicTime() >= $deadline) {
+                if ($deadline !== null && self::monotonicNow() >= $deadline) {
                     throw $this->deadlineFailure($e);
                 }
                 $this->deadlineOptions($deadline, 60, $lastError);
@@ -646,7 +655,7 @@ class CippClient
                             $retryAfter = max(0, $date - time());
                         }
                     }
-                    if ($deadline !== null && $retryAfter >= $deadline - $this->monotonicTime()) {
+                    if ($deadline !== null && $retryAfter >= $deadline - self::monotonicNow()) {
                         throw new CippClientException('CIPP API error: '.self::failureDetail($e), $code, $e);
                     }
                     Log::info("[CippClient] Rate limited on {$endpoint}, retrying in {$retryAfter}s");

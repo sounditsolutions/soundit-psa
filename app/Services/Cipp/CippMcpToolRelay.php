@@ -4,6 +4,7 @@ namespace App\Services\Cipp;
 
 use App\Models\Client;
 use App\Services\Chet\ChetDataSurfaceTextSanitizer;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -133,7 +134,14 @@ class CippMcpToolRelay
         } catch (\Throwable $e) {
             if (CippClient::isDeadlineFailure($e)) {
                 // Our own sentence, never the cURL text: nothing upstream to fence.
-                Log::warning('[CippMcpToolRelay] CIPP MCP query: the read deadline was spent', [
+                // Each arm's line claims only what that arm measured. A cURL
+                // timeout below the request's cap (kept as previous) was cut short
+                // by the deadline; with no previous, the clock read under 1 ms
+                // left before a request was sent, so the deadline was spent.
+                $line = $e->getPrevious() instanceof ConnectionException
+                    ? 'cut short by the read deadline'
+                    : 'the read deadline was spent';
+                Log::warning('[CippMcpToolRelay] CIPP MCP query: '.$line, [
                     'tool' => $toolName,
                     'exec_mcp_tool' => $prepared['tool'] ?? null,
                 ]);
