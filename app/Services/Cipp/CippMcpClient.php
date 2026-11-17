@@ -150,7 +150,9 @@ class CippMcpClient
      * or the failure marker) or, on the delegated path, reading the connector
      * generation from the settings store throws; those are not caught. An
      * exception thrown by the logger from the unguarded Log::error on a failure
-     * path also escapes, in place of CippMcpAuthException.
+     * path also escapes, in place of CippMcpAuthException. So does one thrown by
+     * the logger from the unguarded Log::warning in connectorIsConnected() (the
+     * connector state could not be read), in place of the app-only fallback.
      *
      * Under a read deadline the sign-in gets min(15 s, what is left). A sign-in the
      * deadline cut short (no budget to send, or a timeout with less than the full

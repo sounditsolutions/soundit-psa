@@ -51,7 +51,7 @@ class CippMcpRelayDeadlineTest extends TestCase
     /** @var array<int, string> */
     private array $logs = [];
 
-    /** @var array<int, array{message: string, context: array<string, mixed>}> */
+    /** @var array<int, array{level: string, message: string, context: array<string, mixed>}> */
     private array $logEntries = [];
 
     private bool $faked = false;
@@ -573,6 +573,7 @@ class CippMcpRelayDeadlineTest extends TestCase
         } catch (CippClientException $e) {
             $this->assertNotInstanceOf(CippMcpAuthException::class, $e);
             $this->assertTrue(CippClient::isDeadlineFailure($e));
+            $this->assertSame(CippClient::readDeadlineSentence(), $e->getMessage(), 'the message carries no cURL text');
         }
         $this->assertFalse($this->signInFailureLogged());
         $this->assertSame(['refresh_token'], array_column($this->sentTo('login.microsoftonline.com'), 'grant_type'), 'the delegated grant ran');
@@ -951,9 +952,10 @@ class CippMcpRelayDeadlineTest extends TestCase
 
     /**
      * r2-4: one builder. A budget other than 20 tells a literal from the
-     * parameter; the source scan fails if any other site under app/ (such as
-     * readDeadlineFailure() or the tenant check's refusal) writes the sentence
-     * itself instead of calling readDeadlineSentence().
+     * parameter. The source scan fails if any other line of a PHP file under
+     * app/ (such as one in readDeadlineFailure() or the tenant check's refusal)
+     * contains the exact text `did not answer within`; a copy split across
+     * strings or lines, or built by sprintf, is not caught.
      */
     public function test_the_deadline_sentence_has_one_builder(): void
     {
@@ -967,16 +969,20 @@ class CippMcpRelayDeadlineTest extends TestCase
 
         // The sentence's fixed text occurs once under app/, inside the builder.
         $builder = new \ReflectionMethod(CippClient::class, 'readDeadlineSentence');
-        $builderFile = (string) $builder->getFileName();
+        $relative = fn (string $path): string => ltrim(substr($path, strlen(base_path())), DIRECTORY_SEPARATOR);
+        $builderFile = $relative((string) $builder->getFileName());
         $hits = [];
         $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator(app_path(), \FilesystemIterator::SKIP_DOTS));
         foreach ($files as $file) {
             if ($file->getExtension() !== 'php') {
                 continue;
             }
-            foreach ((array) file($file->getPathname()) as $index => $line) {
-                if (str_contains((string) $line, 'did not answer within')) {
-                    $hits[] = [$file->getPathname(), $index + 1];
+            $path = $relative($file->getPathname());
+            $lines = file($file->getPathname());
+            $this->assertNotFalse($lines, 'unreadable: '.$path);
+            foreach ($lines as $index => $line) {
+                if (str_contains($line, 'did not answer within')) {
+                    $hits[] = [$path, $index + 1];
                 }
             }
         }
