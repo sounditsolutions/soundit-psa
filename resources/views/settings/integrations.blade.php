@@ -2254,28 +2254,32 @@
                 <form method="POST" action="{{ route('settings.integrations.huntress.update') }}">
                     @csrf
 
-                    <div class="row">
-                        <div class="col-md-6 mb-3">
-                            <label for="huntress_api_key" class="form-label">API key</label>
-                            <input type="password"
-                                   class="form-control"
-                                   id="huntress_api_key"
-                                   name="api_key"
-                                   value=""
-                                   placeholder="{{ ($huntressKeyStored ?? false) ? '••••••••' : 'Enter user API key' }}">
-                            <div class="form-text">{{ ($huntressKeyStored ?? false) ? 'Saved. Encrypted at rest. Leave blank to keep the saved value.' : 'Encrypted at rest.' }}</div>
+                    @if(auth()->user()?->isAdmin())
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="huntress_api_key" class="form-label">API key</label>
+                                <input type="password"
+                                       class="form-control"
+                                       id="huntress_api_key"
+                                       name="api_key"
+                                       value=""
+                                       placeholder="{{ ($huntressKeyStored ?? false) ? '••••••••' : 'Enter user API key' }}">
+                                <div class="form-text">{{ ($huntressKeyStored ?? false) ? 'Saved. Encrypted at rest. Leave blank to keep the saved value.' : 'Encrypted at rest.' }}</div>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label for="huntress_api_secret" class="form-label">API secret</label>
+                                <input type="password"
+                                       class="form-control"
+                                       id="huntress_api_secret"
+                                       name="api_secret"
+                                       value=""
+                                       placeholder="{{ ($huntressSecretStored ?? false) ? '••••••••' : 'Enter user API secret' }}">
+                                <div class="form-text">{{ ($huntressSecretStored ?? false) ? 'Saved. Encrypted at rest. Leave blank to keep the saved value.' : 'Encrypted at rest.' }}</div>
+                            </div>
                         </div>
-                        <div class="col-md-6 mb-3">
-                            <label for="huntress_api_secret" class="form-label">API secret</label>
-                            <input type="password"
-                                   class="form-control"
-                                   id="huntress_api_secret"
-                                   name="api_secret"
-                                   value=""
-                                   placeholder="{{ ($huntressSecretStored ?? false) ? '••••••••' : 'Enter user API secret' }}">
-                            <div class="form-text">{{ ($huntressSecretStored ?? false) ? 'Saved. Encrypted at rest. Leave blank to keep the saved value.' : 'Encrypted at rest.' }}</div>
-                        </div>
-                    </div>
+                    @else
+                        <p class="small text-muted mb-3" id="huntress-key-admin-only">An administrator enters this key.</p>
+                    @endif
 
                     <p class="small mb-3" id="huntress-resolve-status" role="status">
                         @if(! ($huntressConfigured ?? false))

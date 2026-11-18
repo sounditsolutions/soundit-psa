@@ -25,7 +25,9 @@ use Tests\TestCase;
  * approved words; the notice and tick box show while either half of the
  * earlier pair is stored, the tick box to administrators only; clearing
  * removes both halves and nothing else; a non-admin clear is refused 403 and
- * saves nothing; a submit naming the retired user inputs writes nothing to
+ * saves nothing; the API key and API secret inputs render to administrators
+ * only, and a non-admin submit carrying either half is refused 403 and saves
+ * nothing; a submit naming the retired user inputs writes nothing to
  * the earlier pair; and the remedy location names labels the page renders.
  *
  * WHAT THEY DO NOT
@@ -289,10 +291,79 @@ class HuntressUserKeyPairSettingsTest extends TestCase
 
         $this->assertSame($before, DB::table('settings')->orderBy('key')->pluck('value', 'key')->all(), 'a refused non-admin submit changed a stored setting');
         $this->assertSame(self::KEY, HuntressConfig::get('user_api_key'));
+    }
 
-        // The main pair stays editable by the same user, as before.
-        $this->save(['api_key' => 'synthetic-tech-key'], $this->tech())->assertSessionHasNoErrors();
-        $this->assertSame('synthetic-tech-key', HuntressConfig::get('api_key'));
+    // ---- the API key pair: administrators only ----
+
+    /** @return array<string, array{0: UserRole}> */
+    public static function nonAdminRoles(): array
+    {
+        return [
+            'tech' => [UserRole::Tech],
+            'contractor' => [UserRole::Contractor],
+            'billing' => [UserRole::Billing],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('nonAdminRoles')]
+    public function test_a_non_admin_submit_carrying_the_pair_is_refused_and_saves_nothing(UserRole $role): void
+    {
+        $user = User::factory()->create(['role' => $role, 'is_active' => true]);
+        $this->storeMainPair();
+        $before = DB::table('settings')->orderBy('key')->pluck('value', 'key')->all();
+
+        $this->save(['api_key' => 'synthetic-new-key', 'api_secret' => 'synthetic-new-secret'], $user)->assertForbidden();
+        $this->save(['api_key' => 'synthetic-new-key'], $user)->assertForbidden();
+        $this->save(['api_secret' => 'synthetic-new-secret'], $user)->assertForbidden();
+
+        $this->assertSame($before, DB::table('settings')->orderBy('key')->pluck('value', 'key')->all(), 'a refused non-admin submit changed a stored setting');
+        $this->assertSame(['api_key' => 'synthetic-main-key', 'api_secret' => 'synthetic-main-secret'], HuntressConfig::writeCredentials());
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('nonAdminRoles')]
+    public function test_a_non_admin_submit_with_no_stored_pair_saves_nothing(UserRole $role): void
+    {
+        $user = User::factory()->create(['role' => $role, 'is_active' => true]);
+        $before = DB::table('settings')->orderBy('key')->pluck('value', 'key')->all();
+
+        $this->save(['api_key' => 'synthetic-new-key', 'api_secret' => 'synthetic-new-secret'], $user)->assertForbidden();
+
+        $this->assertSame($before, DB::table('settings')->orderBy('key')->pluck('value', 'key')->all());
+        $this->assertFalse(HuntressConfig::isConfigured());
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('nonAdminRoles')]
+    public function test_the_key_inputs_are_absent_for_a_non_admin(UserRole $role): void
+    {
+        $user = User::factory()->create(['role' => $role, 'is_active' => true]);
+        $this->storeMainPair();
+
+        $card = $this->card($this->page($user));
+
+        $this->assertStringNotContainsString('name="api_key"', $card);
+        $this->assertStringNotContainsString('name="api_secret"', $card);
+        $this->assertStringContainsString('An administrator enters this key.', $card);
+        $this->assertStringContainsString('id="huntress-resolve-status"', $card, 'the status lines still render to a non-admin');
+    }
+
+    public function test_an_admin_sees_the_inputs_and_not_the_admin_only_line(): void
+    {
+        $card = $this->card($this->page());
+
+        $this->assertStringContainsString('name="api_key"', $card);
+        $this->assertStringContainsString('name="api_secret"', $card);
+        $this->assertStringNotContainsString('An administrator enters this key.', $card);
+    }
+
+    public function test_an_admin_save_of_a_new_pair_still_works(): void
+    {
+        $this->storeMainPair();
+
+        $this->save(['api_key' => 'synthetic-admin-key', 'api_secret' => 'synthetic-admin-secret'])
+            ->assertRedirect(route('settings.integrations'))
+            ->assertSessionHas('success', 'Huntress credentials saved.');
+
+        $this->assertSame(['api_key' => 'synthetic-admin-key', 'api_secret' => 'synthetic-admin-secret'], HuntressConfig::writeCredentials());
     }
 
     public function test_a_submit_naming_the_retired_user_inputs_writes_nothing_to_the_earlier_pair(): void

@@ -130,7 +130,7 @@ class StaffHuntressActionToolExecutor
      * The cockpit sentence for a Huntress 403 on the resolve POST. A 4xx
      * refusal wrote nothing upstream (see upstreamFailureMayHaveCommitted()).
      */
-    public const RESOLVE_FORBIDDEN_MESSAGE = 'Huntress refused the resolve (HTTP 403 Forbidden): the Huntress user that the resolve key belongs to may not be allowed to resolve escalations; check that user\'s role in Huntress. Nothing was changed.';
+    public const RESOLVE_FORBIDDEN_MESSAGE = 'Huntress refused the resolve (HTTP 403): the Huntress user whose API key the PSA uses for resolve may not be allowed to resolve escalations. Check that user\'s role in Huntress. Nothing was changed.';
 
     /** The 201 resolution_method values an id-only `{}` call may legitimately produce. */
     private const SAFE_RESOLUTION_METHODS = ['direct', 'dismiss'];

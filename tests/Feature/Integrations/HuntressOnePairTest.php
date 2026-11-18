@@ -248,7 +248,7 @@ class HuntressOnePairTest extends TestCase
 
         $this->assertSame('gate_declined', $result->status);
         $this->assertSame(
-            "Huntress refused the resolve (HTTP 403 Forbidden): the Huntress user that the resolve key belongs to may not be allowed to resolve escalations; check that user's role in Huntress. Nothing was changed.",
+            "Huntress refused the resolve (HTTP 403): the Huntress user whose API key the PSA uses for resolve may not be allowed to resolve escalations. Check that user's role in Huntress. Nothing was changed.",
             $result->message,
         );
         $this->assertCount(1, $history, 'exactly one resolve POST was sent');

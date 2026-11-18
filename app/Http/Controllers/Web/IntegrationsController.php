@@ -2075,6 +2075,14 @@ class IntegrationsController extends Controller
             abort(403, 'Administrator access required.');
         }
 
+        if ((! empty($validated['api_key']) || ! empty($validated['api_secret'])) && ! $request->user()?->isAdmin()) {
+            // The API key pair signs escalation resolution as well as reads,
+            // so only an administrator may set it. The two inputs are rendered
+            // to administrators only; a non-admin submit carrying either half
+            // is refused before anything saves, the same rule as the clear tick.
+            abort(403, 'Administrator access required.');
+        }
+
         if (! empty($validated['api_key'])) {
             Setting::setEncrypted('huntress_api_key', $validated['api_key']);
         }
