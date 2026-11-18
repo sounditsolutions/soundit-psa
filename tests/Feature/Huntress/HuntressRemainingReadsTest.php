@@ -51,9 +51,11 @@ class HuntressRemainingReadsTest extends TestCase
     {
         $tool = app(HuntressReadOnlyToolset::class);
         $name = 'huntress_list_remote_access_connections';
+        // Measured 2026-11-18 on GET remote_access/connections: top-level key `hosts`; row keys
+        // agent, client_type, host, port (int), first_seen_at, last_seen_at. Values are synthetic.
         $row = ['agent' => 'synthetic-host', 'client_type' => 'synthetic', 'host' => 'example.test', 'port' => 443, 'first_seen_at' => '2026-01-01T00:00:00Z', 'last_seen_at' => '2026-01-02T00:00:00Z'];
         foreach ([0, 1, 500] as $count) {
-            $id = $this->bind(['connections' => array_fill(0, $count, $row)]);
+            $id = $this->bind(['hosts' => array_fill(0, $count, $row)]);
             $result = $tool->execute($name, ['client_id' => $id, 'last_seen_at_min' => '2026-01-01T00:00:00Z', 'limit' => 1, 'page_token' => 'ignored']);
             $this->assertSame($count, $result['count']);
             $this->assertSame(500, $result['capped_at']);
@@ -70,28 +72,58 @@ class HuntressRemainingReadsTest extends TestCase
             if ($count > 0) {
                 $this->assertStringContainsString('UNTRUSTED HUNTRESS', $result['connections'][0]['agent']);
                 $this->assertStringContainsString('UNTRUSTED HUNTRESS', $result['connections'][$count - 1]['agent']);
+                $this->assertStringContainsString('UNTRUSTED HUNTRESS', $result['connections'][0]['host']);
+                $this->assertSame(443, $result['connections'][0]['port']);
             }
             $this->wire('remote_access/connections', ['organization_id' => 42, 'last_seen_at_min' => '2026-01-01T00:00:00Z']);
         }
         foreach ([[], ['organization_id' => 42], ['client_id' => $id, 'organization_id' => 99], ['client_id' => $id, 'last_seen_at_min' => '2026-02-30T00:00:00Z'], ['client_id' => null]] as $input) {
-            $this->bind(['connections' => []]);
+            $this->bind(['hosts' => []]);
             $this->assertArrayHasKey('error', $tool->execute($name, $input));
             $this->assertCount(0, $this->history);
         }
         $unmapped = Client::factory()->create(['huntress_organization_id' => null]);
-        $this->bind(['connections' => []]);
+        $this->bind(['hosts' => []]);
         $this->assertArrayHasKey('error', $tool->execute($name, ['client_id' => $unmapped->id]));
         $this->assertCount(0, $this->history);
-        $this->bind(['connections' => []]);
+        $this->bind(['hosts' => []]);
         $this->assertSame(0, $tool->execute($name, [], $id)['count']);
         $this->wire('remote_access/connections', ['organization_id' => 42]);
-        $this->bind(['connections' => 'bad']);
+        $this->bind(['hosts' => 'bad']);
         $this->assertArrayHasKey('error', $tool->execute($name, ['client_id' => $id]));
+        // `hosts` as a JSON object (keyed rows), not a list: still the collection-shape refusal.
+        $this->bind(['hosts' => ['a' => $row]]);
+        $this->assertSame(['error' => 'Huntress returned an unrecognized collection shape'], $tool->execute($name, ['client_id' => $id]));
+        $this->bind(['hosts' => [$row, 'bad']]);
+        $this->assertSame(['error' => 'Huntress returned an unrecognized remote access host shape'], $tool->execute($name, ['client_id' => $id]));
         $this->bind(['error' => 'Forbidden'], 403);
         $result = $tool->execute($name, ['client_id' => $id]);
         $this->assertStringContainsString('403', $result['error']);
         $this->assertStringContainsString('Huntress HTTP 403: the Huntress API key in Settings may lack access to this endpoint; the key carries its Huntress user\'s permissions, so check that user\'s role.', $result['error']);
         $this->assertStringNotContainsString('https://', $result['error']);
+    }
+
+    public function test_remote_access_fences_strings_nested_in_a_host_row(): void
+    {
+        $row = ['agent' => ['hostname' => 'synthetic-nested'], 'client_type' => 'synthetic', 'host' => 'example.test', 'port' => 443, 'first_seen_at' => '2026-01-01T00:00:00Z', 'last_seen_at' => '2026-01-02T00:00:00Z'];
+        $id = $this->bind(['hosts' => [$row]]);
+        $result = app(HuntressReadOnlyToolset::class)->execute('huntress_list_remote_access_connections', ['client_id' => $id]);
+        $this->assertSame(1, $result['count']);
+        $this->assertStringContainsString('UNTRUSTED HUNTRESS', $result['connections'][0]['agent']['hostname']);
+        $this->assertStringContainsString('synthetic-nested', $result['connections'][0]['agent']['hostname']);
+    }
+
+    public function test_remote_access_old_connections_key_now_refuses(): void
+    {
+        // The vendor sends `hosts`; a body keyed `connections` is not the measured shape: fail closed.
+        $tool = app(HuntressReadOnlyToolset::class);
+        $row = ['agent' => 'synthetic-host', 'client_type' => 'synthetic', 'host' => 'example.test', 'port' => 443, 'first_seen_at' => '2026-01-01T00:00:00Z', 'last_seen_at' => '2026-01-02T00:00:00Z'];
+        foreach ([['connections' => [$row]], ['connections' => []], ['connections' => [$row], 'hosts' => 'bad']] as $body) {
+            $id = $this->bind($body);
+            $result = $tool->execute('huntress_list_remote_access_connections', ['client_id' => $id]);
+            $this->assertSame(['error' => 'Huntress returned an unrecognized collection shape'], $result);
+            $this->wire('remote_access/connections', ['organization_id' => 42]);
+        }
     }
 
     public function test_external_ports(): void
