@@ -110,4 +110,94 @@ class HuntressLogSourceReadsTest extends TestCase
             $this->assertCount(0, $this->history);
         }
     }
+
+    /** Measured 2026-11-18 LogSource row: organization is {id, name}, or null on an account-level source. Values are synthetic. */
+    private function source(int $id, mixed $organization): array
+    {
+        return ['id' => $id, 'name' => 'Synthetic source '.$id, 'type_code' => 'meraki_cloud', 'status' => 'active', 'organization' => $organization];
+    }
+
+    public function test_unscoped_list_drops_and_counts_a_null_organization_source(): void
+    {
+        $id = $this->bind(['log_sources' => [
+            $this->source(1, ['id' => 42, 'name' => 'Synthetic organization']),
+            $this->source(2, null),
+            $this->source(3, ['id' => 42, 'name' => 'Synthetic organization']),
+        ], 'pagination' => ['next_page_token' => 'next']]);
+        $result = $this->runTool(false, ['limit' => 500]);
+        $this->assertArrayNotHasKey('error', $result);
+        $this->assertSame(2, $result['count']);
+        $this->assertSame(1, $result['dropped_unclassified']);
+        $this->assertSame([1, 3], array_column($result['log_sources'], 'id'));
+        $this->assertSame([42, 42], array_column(array_column($result['log_sources'], 'organization'), 'id'));
+        $this->assertSame('next', $result['next_page_token']);
+        $this->assertStringContainsString('no organization (account-level) are dropped and counted', $result['note']);
+        $this->assertStringContainsString('not shown', $result['note']);
+        $this->assertCount(1, $this->history);
+        parse_str($this->history[0]['request']->getUri()->getQuery(), $query);
+        $this->assertEquals(['limit' => '500'], $query);
+
+        // A call scoped to one client never attributes the null row to that client either.
+        $this->bind(['log_sources' => [$this->source(1, ['id' => 42, 'name' => 'Synthetic organization']), $this->source(2, null)]]);
+        $result = $this->runTool(false, ['client_id' => $id]);
+        $this->assertSame(1, $result['count']);
+        $this->assertSame(1, $result['dropped_unclassified']);
+        $this->assertSame([1], array_column($result['log_sources'], 'id'));
+    }
+
+    public function test_only_for_account_returns_no_rows_and_counts_the_account_level_sources(): void
+    {
+        $this->bind(['log_sources' => [$this->source(2, null)]]);
+        $result = $this->runTool(false, ['only_for_account' => true]);
+        $this->assertArrayNotHasKey('error', $result);
+        $this->assertSame(0, $result['count']);
+        $this->assertSame([], $result['log_sources']);
+        $this->assertSame(1, $result['dropped_unclassified']);
+        $this->assertStringContainsString('account-level', $result['note']);
+        $this->assertStringContainsString('not shown', $result['note']);
+        parse_str($this->history[0]['request']->getUri()->getQuery(), $query);
+        $this->assertEquals(['limit' => '10', 'only_for_account' => 'true'], $query);
+
+        $this->bind(['log_sources' => [$this->source(2, null), $this->source(4, null), $this->source(5, null)]]);
+        $result = $this->runTool(false, ['only_for_account' => true]);
+        $this->assertSame(0, $result['count']);
+        $this->assertSame(3, $result['dropped_unclassified']);
+    }
+
+    public function test_a_present_but_malformed_organization_still_refuses_the_read(): void
+    {
+        $good = $this->source(1, ['id' => 42, 'name' => 'Synthetic organization']);
+        $malformed = [['id' => '42', 'name' => 'Synthetic organization'], ['name' => 'Synthetic organization'], ['id' => null], 'Synthetic organization', [42], [], 42, false];
+        foreach ($malformed as $organization) {
+            $this->bind(['log_sources' => [$good, $this->source(2, $organization)]]);
+            $this->assertSame(['error' => 'Huntress returned an unrecognized row organization'], $this->runTool(false, []), json_encode($organization));
+        }
+        // [FORGE CHOICE] organization key absent is malformed, not account-level: still refused.
+        $absent = $this->source(2, null);
+        unset($absent['organization']);
+        $this->bind(['log_sources' => [$good, $absent]]);
+        $this->assertSame(['error' => 'Huntress returned an unrecognized row organization'], $this->runTool(false, []));
+        // A get of one null-organization source and a misconfigured row with null organization keep refusing.
+        $id = $this->bind(['log_source' => $this->source(2, null)]);
+        $this->assertSame(['error' => 'Huntress returned an unrecognized row organization'], $this->runTool(true, ['id' => 2]));
+        $this->bind(['misconfigured_log_sources' => [['organization' => null, 'agent_id' => 7, 'hostname' => 'Synthetic host', 'status' => 'unresolved', 'misconfigured_policies' => []]]]);
+        $this->assertSame(['error' => 'Huntress returned an unrecognized row organization'], $this->runTool(false, ['misconfigured' => true, 'client_id' => $id]));
+    }
+
+    public function test_scoped_list_is_unchanged(): void
+    {
+        $other = Client::factory()->create(['huntress_organization_id' => 43]);
+        $id = $this->bind(['log_sources' => [$this->source(1, ['id' => 42, 'name' => 'Synthetic organization'])]]);
+        $result = $this->runTool(false, ['client_id' => $id]);
+        $this->assertSame(1, $result['count']);
+        $this->assertSame([1], array_column($result['log_sources'], 'id'));
+        $this->assertStringContainsString('UNTRUSTED HUNTRESS', $result['log_sources'][0]['name']);
+        parse_str($this->history[0]['request']->getUri()->getQuery(), $query);
+        $this->assertEquals(['limit' => '10', 'organization_id' => '42'], $query);
+        // A row of another mapped organization on a scoped call refuses; it is never dropped.
+        $this->bind(['log_sources' => [$this->source(1, ['id' => 42, 'name' => 'Synthetic organization']), $this->source(9, ['id' => 43, 'name' => 'Synthetic organization'])]]);
+        $this->assertSame(['error' => 'Huntress returned a row outside the requested organization'], $this->runTool(false, ['client_id' => $id]));
+        $this->bind(['log_sources' => [$this->source(9, ['id' => 43, 'name' => 'Synthetic organization'])]]);
+        $this->assertSame([9], array_column($this->runTool(false, ['client_id' => $other->id])['log_sources'], 'id'));
+    }
 }
