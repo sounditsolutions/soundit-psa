@@ -2295,6 +2295,8 @@
                         <div class="border rounded p-2 px-3 mb-3 small" id="huntress-earlier-user-pair" role="status">
                             @if($huntressEarlierUserPairLoneHalf ?? false)
                                 <p class="mb-1"><i class="bi bi-exclamation-triangle-fill text-warning me-1" aria-hidden="true"></i><strong>Part of an earlier user API key pair is still stored.</strong> It is not used: resolve uses the API key and API secret above. An administrator can clear it here.</p>
+                            @elseif(! ($huntressConfigured ?? false))
+                                <p class="mb-1"><i class="bi bi-exclamation-triangle-fill text-warning me-1" aria-hidden="true"></i><strong>An earlier user API key pair is still stored.</strong> Resolve is unavailable until an API key and API secret are saved above. Once they are, resolve uses the earlier pair, not the key above, until an administrator clears it here.</p>
                             @else
                                 <p class="mb-1"><i class="bi bi-exclamation-triangle-fill text-warning me-1" aria-hidden="true"></i><strong>Earlier user API key still in use for resolve.</strong> This install saved a separate user API key pair for escalation resolution before the card moved to one key pair. Resolve keeps using that earlier pair until an administrator clears it here. Saving a new API key and API secret above changes reads only. Nothing has been deleted.</p>
                             @endif

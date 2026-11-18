@@ -238,6 +238,31 @@ class HuntressUserKeyPairSettingsTest extends TestCase
         $this->assertStringNotContainsString('Part of an earlier user API key pair is still stored.', $card);
     }
 
+    public function test_the_earlier_pair_with_no_main_pair_shows_the_user_only_notice(): void
+    {
+        $this->storeEarlierPair();
+
+        $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+
+        $this->assertStringContainsString('Escalation resolution:</strong> unavailable until an API key and API secret are saved.', $card, 'precondition: no main pair');
+        $this->assertStringContainsString('An earlier user API key pair is still stored.</strong> Resolve is unavailable until an API key and API secret are saved above. Once they are, resolve uses the earlier pair, not the key above, until an administrator clears it here.', $card);
+        $this->assertStringNotContainsString('still in use for resolve', $card, 'the full-pair heading is false while resolve is unavailable');
+        $this->assertStringNotContainsString('Part of an earlier user API key pair is still stored.', $card);
+        $this->assertStringContainsString('>Clear the earlier user API key pair</label>', $card);
+        $this->assertStringContainsString('Removes both halves when you save. Resolve then uses the API key and API secret above.', $card);
+    }
+
+    public function test_the_both_pairs_state_keeps_the_full_pair_notice(): void
+    {
+        $this->storeMainPair();
+        $this->storeEarlierPair();
+
+        $card = $this->card($this->page());
+
+        $this->assertStringContainsString('<strong>Earlier user API key still in use for resolve.</strong> This install saved a separate user API key pair for escalation resolution before the card moved to one key pair. Resolve keeps using that earlier pair until an administrator clears it here. Saving a new API key and API secret above changes reads only. Nothing has been deleted.</p>', $card);
+        $this->assertStringNotContainsString('An earlier user API key pair is still stored.', $card);
+    }
+
     public function test_the_lone_half_tick_box_is_not_rendered_to_a_non_admin(): void
     {
         $this->storeMainPair();
