@@ -221,7 +221,8 @@ class HuntressUserKeyPairSettingsTest extends TestCase
             $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
 
             $this->assertStringContainsString('Escalation resolution:</strong> uses this key.', $card, $half);
-            $this->assertStringContainsString('Part of an earlier user API key pair is still stored.</strong> It is not used: resolve uses the API key and API secret above. An administrator can clear it here.', $card, $half);
+            $this->assertStringContainsString('<strong>Part of an earlier user API key pair is still stored.</strong> It is not used. An administrator can clear it here.</p>', $card, $half);
+            $this->assertStringNotContainsString('resolve uses the API key and API secret above. An administrator', $card, $half);
             $this->assertStringNotContainsString('Earlier user API key still in use for resolve.', $card, "{$half}: the full-pair notice is false for a lone half");
             $this->assertStringContainsString('name="clear_user_api_key_pair"', $card, 'a lone half must stay clearable');
         }
@@ -261,6 +262,81 @@ class HuntressUserKeyPairSettingsTest extends TestCase
 
         $this->assertStringContainsString('<strong>Earlier user API key still in use for resolve.</strong> This install saved a separate user API key pair for escalation resolution before the card moved to one key pair. Resolve keeps using that earlier pair until an administrator clears it here. Saving a new API key and API secret above changes reads only. Nothing has been deleted.</p>', $card);
         $this->assertStringNotContainsString('An earlier user API key pair is still stored.', $card);
+    }
+
+    public function test_a_lone_earlier_half_with_no_main_pair_shows_the_lone_half_notice_not_the_user_only_notice(): void
+    {
+        foreach (['huntress_user_api_key', 'huntress_user_api_secret'] as $half) {
+            Setting::query()->delete();
+            Setting::setEncrypted($half, self::SECRET_VALUE);
+
+            $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+
+            $this->assertStringContainsString('Escalation resolution:</strong> unavailable until an API key and API secret are saved.', $card, "{$half}: precondition: no main pair");
+            $this->assertStringContainsString('<strong>Part of an earlier user API key pair is still stored.</strong> It is not used. An administrator can clear it here.</p>', $card, $half);
+            $this->assertStringNotContainsString('An earlier user API key pair is still stored.', $card, "{$half}: a lone half is not a pair, so the user-only notice is false");
+            $this->assertStringNotContainsString('still in use for resolve', $card, $half);
+        }
+    }
+
+    public function test_the_earlier_pair_whole_with_one_main_half_shows_the_user_only_notice(): void
+    {
+        $this->storeEarlierPair();
+        Setting::setEncrypted('huntress_api_key', 'synthetic-main-key');
+
+        $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+
+        $this->assertStringContainsString('Escalation resolution:</strong> unavailable until an API key and API secret are saved.', $card, 'precondition: one main half is not a main pair');
+        $this->assertStringContainsString('<strong>An earlier user API key pair is still stored.</strong> Resolve is unavailable until an API key and API secret are saved above. Once they are, resolve uses the earlier pair, not the key above, until an administrator clears it here.</p>', $card);
+        $this->assertStringNotContainsString('still in use for resolve', $card, 'the full-pair notice is false while resolve is unavailable');
+        $this->assertStringNotContainsString('Part of an earlier user API key pair is still stored.', $card);
+    }
+
+    // ---- status line while the integration is switched off ----
+
+    private const SWITCHED_OFF_LINE = '<i class="bi bi-dash-circle text-secondary me-1" aria-hidden="true"></i><strong>Escalation resolution:</strong> unavailable while the Huntress integration is switched off. Any note below about an earlier key describes what resolve uses once it is switched on.';
+
+    public function test_switched_off_with_the_main_pair_only_the_status_line_says_unavailable_not_uses_this_key(): void
+    {
+        Setting::setValue('huntress_enabled', '0');
+        $card = $this->card($this->page());
+        $this->assertStringContainsString('<strong>Escalation resolution:</strong> unavailable until an API key and API secret are saved.', $card, 'no pair: the first branch still wins while switched off');
+        $this->assertStringNotContainsString('switched off', $card);
+
+        $this->storeMainPair();
+        $card = $this->card($this->page());
+
+        $this->assertStringContainsString(self::SWITCHED_OFF_LINE, $card);
+        $this->assertStringNotContainsString('uses this key', $card);
+        $this->assertStringNotContainsString('id="huntress-earlier-user-pair"', $card);
+    }
+
+    public function test_switched_off_with_both_pairs_the_status_line_says_unavailable_and_the_notice_is_unchanged(): void
+    {
+        Setting::setValue('huntress_enabled', '0');
+        $this->storeMainPair();
+        $this->storeEarlierPair();
+
+        $card = $this->card($this->page());
+
+        $this->assertStringContainsString(self::SWITCHED_OFF_LINE, $card);
+        $this->assertStringNotContainsString('uses the earlier user API key pair (see below)', $card);
+        $this->assertStringNotContainsString('uses this key', $card);
+        $this->assertStringContainsString('<strong>Earlier user API key still in use for resolve.</strong> This install saved a separate user API key pair for escalation resolution before the card moved to one key pair. Resolve keeps using that earlier pair until an administrator clears it here. Saving a new API key and API secret above changes reads only. Nothing has been deleted.</p>', $card);
+    }
+
+    public function test_switched_on_the_status_line_is_unchanged(): void
+    {
+        Setting::setValue('huntress_enabled', '1');
+        $this->storeMainPair();
+        $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+        $this->assertStringContainsString('Escalation resolution:</strong> uses this key.', $card);
+        $this->assertStringNotContainsString('switched off', $card);
+
+        $this->storeEarlierPair();
+        $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+        $this->assertStringContainsString('Escalation resolution:</strong> uses the earlier user API key pair (see below), not this key, until an administrator clears it.', $card);
+        $this->assertStringNotContainsString('switched off', $card);
     }
 
     public function test_the_lone_half_tick_box_is_not_rendered_to_a_non_admin(): void

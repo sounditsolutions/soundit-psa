@@ -2284,6 +2284,8 @@
                     <p class="small mb-3" id="huntress-resolve-status" role="status">
                         @if(! ($huntressConfigured ?? false))
                             <i class="bi bi-dash-circle text-secondary me-1" aria-hidden="true"></i><strong>Escalation resolution:</strong> unavailable until an API key and API secret are saved. Once saved, who may use it is set per MCP token on Settings &gt; MCP tokens.
+                        @elseif(! $huntressEnabled)
+                            <i class="bi bi-dash-circle text-secondary me-1" aria-hidden="true"></i><strong>Escalation resolution:</strong> unavailable while the Huntress integration is switched off. Any note below about an earlier key describes what resolve uses once it is switched on.
                         @elseif($huntressResolveUsesEarlierPair ?? false)
                             <i class="bi bi-check-circle-fill text-success me-1" aria-hidden="true"></i><strong>Escalation resolution:</strong> uses the earlier user API key pair (see below), not this key, until an administrator clears it. Available only to MCP tokens granted it on Settings &gt; MCP tokens, and every resolve waits for a person's approval in the cockpit.
                         @else
@@ -2294,7 +2296,7 @@
                     @if($huntressEarlierUserPairStored ?? false)
                         <div class="border rounded p-2 px-3 mb-3 small" id="huntress-earlier-user-pair" role="status">
                             @if($huntressEarlierUserPairLoneHalf ?? false)
-                                <p class="mb-1"><i class="bi bi-exclamation-triangle-fill text-warning me-1" aria-hidden="true"></i><strong>Part of an earlier user API key pair is still stored.</strong> It is not used: resolve uses the API key and API secret above. An administrator can clear it here.</p>
+                                <p class="mb-1"><i class="bi bi-exclamation-triangle-fill text-warning me-1" aria-hidden="true"></i><strong>Part of an earlier user API key pair is still stored.</strong> It is not used. An administrator can clear it here.</p>
                             @elseif(! ($huntressConfigured ?? false))
                                 <p class="mb-1"><i class="bi bi-exclamation-triangle-fill text-warning me-1" aria-hidden="true"></i><strong>An earlier user API key pair is still stored.</strong> Resolve is unavailable until an API key and API secret are saved above. Once they are, resolve uses the earlier pair, not the key above, until an administrator clears it here.</p>
                             @else
