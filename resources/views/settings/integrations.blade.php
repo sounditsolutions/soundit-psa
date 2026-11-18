@@ -2306,7 +2306,7 @@
                                 <div class="form-check">
                                     <input class="form-check-input" type="checkbox" name="clear_user_api_key_pair" value="1" id="huntress_clear_user_api_key_pair">
                                     <label class="form-check-label" for="huntress_clear_user_api_key_pair">Clear the earlier user API key pair</label>
-                                    <small class="text-muted d-block">Removes both halves when you save. Resolve then uses the API key and API secret above.</small>
+                                    <small class="text-muted d-block">Removes both halves when you save. After that, resolve depends only on the API key and API secret above.</small>
                                 </div>
                             @endif
                         </div>

@@ -208,7 +208,7 @@ class HuntressUserKeyPairSettingsTest extends TestCase
         $this->assertStringNotContainsString('uses this key.', $card);
         $this->assertStringContainsString('Earlier user API key still in use for resolve.</strong> This install saved a separate user API key pair for escalation resolution before the card moved to one key pair. Resolve keeps using that earlier pair until an administrator clears it here. Saving a new API key and API secret above changes reads only. Nothing has been deleted.', $card);
         $this->assertStringContainsString('>Clear the earlier user API key pair</label>', $card);
-        $this->assertStringContainsString('Removes both halves when you save. Resolve then uses the API key and API secret above.', $card);
+        $this->assertStringContainsString('Removes both halves when you save. After that, resolve depends only on the API key and API secret above.', $card);
     }
 
     public function test_a_lone_earlier_half_shows_the_lone_half_notice_and_the_status_line_says_this_key(): void
@@ -250,7 +250,7 @@ class HuntressUserKeyPairSettingsTest extends TestCase
         $this->assertStringNotContainsString('still in use for resolve', $card, 'the full-pair heading is false while resolve is unavailable');
         $this->assertStringNotContainsString('Part of an earlier user API key pair is still stored.', $card);
         $this->assertStringContainsString('>Clear the earlier user API key pair</label>', $card);
-        $this->assertStringContainsString('Removes both halves when you save. Resolve then uses the API key and API secret above.', $card);
+        $this->assertStringContainsString('Removes both halves when you save. After that, resolve depends only on the API key and API secret above.', $card);
     }
 
     public function test_the_both_pairs_state_keeps_the_full_pair_notice(): void
@@ -276,6 +276,8 @@ class HuntressUserKeyPairSettingsTest extends TestCase
             $this->assertStringContainsString('<strong>Part of an earlier user API key pair is still stored.</strong> It is not used. An administrator can clear it here.</p>', $card, $half);
             $this->assertStringNotContainsString('An earlier user API key pair is still stored.', $card, "{$half}: a lone half is not a pair, so the user-only notice is false");
             $this->assertStringNotContainsString('still in use for resolve', $card, $half);
+            $this->assertStringContainsString('Removes both halves when you save. After that, resolve depends only on the API key and API secret above.', $card, "{$half}: the tick-box help line");
+            $this->assertStringNotContainsString('Resolve then uses the API key and API secret above.', $card, "{$half}: with no main pair, clearing leaves resolve unavailable, so the old help line is false");
         }
     }
 
