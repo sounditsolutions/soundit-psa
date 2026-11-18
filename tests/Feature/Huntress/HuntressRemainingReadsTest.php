@@ -91,6 +91,9 @@ class HuntressRemainingReadsTest extends TestCase
         $this->wire('remote_access/connections', ['organization_id' => 42]);
         $this->bind(['hosts' => 'bad']);
         $this->assertArrayHasKey('error', $tool->execute($name, ['client_id' => $id]));
+        // `hosts` as a JSON object (keyed rows), not a list: still the collection-shape refusal.
+        $this->bind(['hosts' => ['a' => $row]]);
+        $this->assertSame(['error' => 'Huntress returned an unrecognized collection shape'], $tool->execute($name, ['client_id' => $id]));
         $this->bind(['hosts' => [$row, 'bad']]);
         $this->assertSame(['error' => 'Huntress returned an unrecognized remote access host shape'], $tool->execute($name, ['client_id' => $id]));
         $this->bind(['error' => 'Forbidden'], 403);

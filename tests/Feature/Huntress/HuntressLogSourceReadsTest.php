@@ -119,7 +119,7 @@ class HuntressLogSourceReadsTest extends TestCase
 
     public function test_unscoped_list_drops_and_counts_a_null_organization_source(): void
     {
-        $id = $this->bind(['log_sources' => [
+        $this->bind(['log_sources' => [
             $this->source(1, ['id' => 42, 'name' => 'Synthetic organization']),
             $this->source(2, null),
             $this->source(3, ['id' => 42, 'name' => 'Synthetic organization']),
@@ -136,13 +136,6 @@ class HuntressLogSourceReadsTest extends TestCase
         $this->assertCount(1, $this->history);
         parse_str($this->history[0]['request']->getUri()->getQuery(), $query);
         $this->assertEquals(['limit' => '500'], $query);
-
-        // A call scoped to one client never attributes the null row to that client either.
-        $this->bind(['log_sources' => [$this->source(1, ['id' => 42, 'name' => 'Synthetic organization']), $this->source(2, null)]]);
-        $result = $this->runTool(false, ['client_id' => $id]);
-        $this->assertSame(1, $result['count']);
-        $this->assertSame(1, $result['dropped_unclassified']);
-        $this->assertSame([1], array_column($result['log_sources'], 'id'));
     }
 
     public function test_only_for_account_returns_no_rows_and_counts_the_account_level_sources(): void
@@ -180,16 +173,26 @@ class HuntressLogSourceReadsTest extends TestCase
         // A get of one null-organization source and a misconfigured row with null organization keep refusing.
         $id = $this->bind(['log_source' => $this->source(2, null)]);
         $this->assertSame(['error' => 'Huntress returned an unrecognized row organization'], $this->runTool(true, ['id' => 2]));
-        $this->bind(['misconfigured_log_sources' => [['organization' => null, 'agent_id' => 7, 'hostname' => 'Synthetic host', 'status' => 'unresolved', 'misconfigured_policies' => []]]]);
-        $this->assertSame(['error' => 'Huntress returned an unrecognized row organization'], $this->runTool(false, ['misconfigured' => true, 'client_id' => $id]));
+        foreach ([['client_id' => $id], []] as $scope) {
+            $this->bind(['misconfigured_log_sources' => [['organization' => null, 'agent_id' => 7, 'hostname' => 'Synthetic host', 'status' => 'unresolved', 'misconfigured_policies' => []]]]);
+            $this->assertSame(['error' => 'Huntress returned an unrecognized row organization'], $this->runTool(false, ['misconfigured' => true] + $scope), json_encode($scope));
+        }
     }
 
-    public function test_scoped_list_is_unchanged(): void
+    /**
+     * A scoped call (client_id or organization_id) keeps its rows, its organization_id
+     * parameter and its refusals. What changed: its output now also carries the log-source
+     * note and a dropped_unclassified of 0, because the null-organization drop applies to
+     * unscoped lists only.
+     */
+    public function test_scoped_list_keeps_its_scope_and_refusals(): void
     {
         $other = Client::factory()->create(['huntress_organization_id' => 43]);
         $id = $this->bind(['log_sources' => [$this->source(1, ['id' => 42, 'name' => 'Synthetic organization'])]]);
         $result = $this->runTool(false, ['client_id' => $id]);
         $this->assertSame(1, $result['count']);
+        $this->assertSame(0, $result['dropped_unclassified']);
+        $this->assertSame('Log sources with no organization (account-level) are dropped and counted in dropped_unclassified; they are not shown.', $result['note']);
         $this->assertSame([1], array_column($result['log_sources'], 'id'));
         $this->assertStringContainsString('UNTRUSTED HUNTRESS', $result['log_sources'][0]['name']);
         parse_str($this->history[0]['request']->getUri()->getQuery(), $query);
@@ -199,5 +202,11 @@ class HuntressLogSourceReadsTest extends TestCase
         $this->assertSame(['error' => 'Huntress returned a row outside the requested organization'], $this->runTool(false, ['client_id' => $id]));
         $this->bind(['log_sources' => [$this->source(9, ['id' => 43, 'name' => 'Synthetic organization'])]]);
         $this->assertSame([9], array_column($this->runTool(false, ['client_id' => $other->id])['log_sources'], 'id'));
+        // A null-organization row on a scoped call means the vendor did not honour the filter:
+        // it refuses, as before; it is never dropped and counted.
+        foreach ([['client_id' => $id], ['organization_id' => 42]] as $scope) {
+            $this->bind(['log_sources' => [$this->source(1, ['id' => 42, 'name' => 'Synthetic organization']), $this->source(2, null)]]);
+            $this->assertSame(['error' => 'Huntress returned an unrecognized row organization'], $this->runTool(false, $scope), json_encode($scope));
+        }
     }
 }

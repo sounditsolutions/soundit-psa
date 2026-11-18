@@ -379,8 +379,9 @@ trait HuntressExpandedReads
 
                 continue;
             }
-            if ($family === 'log_sources' && ! $get && is_array($row) && array_key_exists('organization', $row) && $row['organization'] === null) {
+            if ($family === 'log_sources' && ! $get && $org === null && is_array($row) && array_key_exists('organization', $row) && $row['organization'] === null) {
                 // Measured: an account-level source carries organization: null. Never attributed to a client.
+                // Unscoped lists only: on a scoped call a null-organization row means the filter was not honoured, so it refuses below.
                 $dropped++;
 
                 continue;
