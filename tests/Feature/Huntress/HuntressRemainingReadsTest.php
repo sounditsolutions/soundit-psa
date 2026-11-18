@@ -103,6 +103,16 @@ class HuntressRemainingReadsTest extends TestCase
         $this->assertStringNotContainsString('https://', $result['error']);
     }
 
+    public function test_remote_access_fences_strings_nested_in_a_host_row(): void
+    {
+        $row = ['agent' => ['hostname' => 'synthetic-nested'], 'client_type' => 'synthetic', 'host' => 'example.test', 'port' => 443, 'first_seen_at' => '2026-01-01T00:00:00Z', 'last_seen_at' => '2026-01-02T00:00:00Z'];
+        $id = $this->bind(['hosts' => [$row]]);
+        $result = app(HuntressReadOnlyToolset::class)->execute('huntress_list_remote_access_connections', ['client_id' => $id]);
+        $this->assertSame(1, $result['count']);
+        $this->assertStringContainsString('UNTRUSTED HUNTRESS', $result['connections'][0]['agent']['hostname']);
+        $this->assertStringContainsString('synthetic-nested', $result['connections'][0]['agent']['hostname']);
+    }
+
     public function test_remote_access_old_connections_key_now_refuses(): void
     {
         // The vendor sends `hosts`; a body keyed `connections` is not the measured shape: fail closed.

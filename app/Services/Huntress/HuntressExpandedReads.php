@@ -107,7 +107,7 @@ trait HuntressExpandedReads
         $scope = ['client_id' => ['type' => 'integer'], 'organization_id' => ['type' => 'integer']];
 
         return [
-            ['name' => 'huntress_list_siem_log_sources', 'description' => 'List Huntress SIEM log sources in mapped organizations, optionally selecting misconfigured sources. type_code and only_for_account are refused together with misconfigured=true.',
+            ['name' => 'huntress_list_siem_log_sources', 'description' => 'List Huntress SIEM log sources in mapped organizations, optionally selecting misconfigured sources. type_code and only_for_account are refused together with misconfigured=true. On a list with no client or organization scope, sources with no organization (account-level) are left out and counted in dropped_unclassified, so only_for_account=true returns no rows.',
                 'input_schema' => ['type' => 'object', 'properties' => $scope + ['misconfigured' => ['type' => 'boolean'], 'only_for_account' => ['type' => 'boolean'], 'type_code' => ['type' => 'string'], 'limit' => ['type' => 'integer'], 'page_token' => ['type' => 'string']], 'required' => []]],
             ['name' => 'huntress_get_siem_log_source', 'description' => 'Read one Huntress SIEM log source in a mapped organization.',
                 'input_schema' => ['type' => 'object', 'properties' => $scope + ['id' => ['type' => 'integer']], 'required' => ['id']]],
@@ -381,7 +381,7 @@ trait HuntressExpandedReads
             }
             if ($family === 'log_sources' && ! $get && $org === null && is_array($row) && array_key_exists('organization', $row) && $row['organization'] === null) {
                 // Measured: an account-level source carries organization: null. Never attributed to a client.
-                // Unscoped lists only: on a scoped call a null-organization row means the filter was not honoured, so it refuses below.
+                // Unscoped lists only: on a scoped call a null-organization row is not attributed to the requested organization, so it refuses below.
                 $dropped++;
 
                 continue;
@@ -414,7 +414,7 @@ trait HuntressExpandedReads
             $output['note'] = 'Only classifiable mapped Organization rules are shown; other scopes and unmapped rules are dropped and counted. This list may be incomplete.';
         }
 
-        if ($family === 'log_sources' && ! $get) {
+        if ($family === 'log_sources' && ! $get && $org === null) {
             $output['dropped_unclassified'] = $dropped;
             $output['note'] = 'Log sources with no organization (account-level) are dropped and counted in dropped_unclassified; they are not shown.';
         }
