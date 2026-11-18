@@ -10,6 +10,7 @@ use App\Services\Huntress\HuntressWriteScopeException;
 use App\Support\HuntressConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
@@ -41,6 +42,15 @@ class HuntressUserKeyPairSettingsTest extends TestCase
     private const KEY = 'synthetic-user-key-fixture-value';
 
     private const SECRET_VALUE = 'synthetic-user-secret-fixture-value';
+
+    /** The help line under the clear tick box, in every state that renders the box. */
+    private const HELP_LINE = '<small class="text-muted d-block">Removes both halves when you save. After that, resolve depends only on the API key and API secret above.</small>';
+
+    /** The user-only notice: the earlier pair is whole and the main pair is not. */
+    private const USER_ONLY_NOTICE = '<strong>An earlier user API key pair is still stored.</strong> Resolve is unavailable until an API key and API secret are saved above. Once they are, resolve uses the earlier pair, not the key above, until an administrator clears it here.</p>';
+
+    /** The retired help-line sentence: false with no main pair, so it is shown in no state. */
+    private const OLD_HELP_SENTENCE = 'Resolve then uses the API key and API secret above.';
 
     private function admin(): User
     {
@@ -264,6 +274,12 @@ class HuntressUserKeyPairSettingsTest extends TestCase
         $this->assertStringNotContainsString('An earlier user API key pair is still stored.', $card);
     }
 
+    /**
+     * A lone earlier half with no main pair: which NOTICE renders. The
+     * lone-half check comes before the user-only branch, so the lone-half
+     * notice shows and the user-only and full-pair notices do not. The tick
+     * box's help line in this state is pinned by the next test.
+     */
     public function test_a_lone_earlier_half_with_no_main_pair_shows_the_lone_half_notice_not_the_user_only_notice(): void
     {
         foreach (['huntress_user_api_key', 'huntress_user_api_secret'] as $half) {
@@ -276,8 +292,26 @@ class HuntressUserKeyPairSettingsTest extends TestCase
             $this->assertStringContainsString('<strong>Part of an earlier user API key pair is still stored.</strong> It is not used. An administrator can clear it here.</p>', $card, $half);
             $this->assertStringNotContainsString('An earlier user API key pair is still stored.', $card, "{$half}: a lone half is not a pair, so the user-only notice is false");
             $this->assertStringNotContainsString('still in use for resolve', $card, $half);
+        }
+    }
+
+    /**
+     * A lone earlier half with no main pair: the tick box's HELP LINE. With
+     * no main pair, clearing leaves resolve unavailable, so the help line is
+     * the new one and the old "Resolve then uses the API key and API secret
+     * above." is not on the card, not even appended after the new line.
+     */
+    public function test_a_lone_earlier_half_with_no_main_pair_shows_the_new_help_line_and_not_the_old_one(): void
+    {
+        foreach (['huntress_user_api_key', 'huntress_user_api_secret'] as $half) {
+            Setting::query()->delete();
+            Setting::setEncrypted($half, self::SECRET_VALUE);
+
+            $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+
+            $this->assertStringContainsString('name="clear_user_api_key_pair"', $card, "{$half}: precondition: the tick box renders");
             $this->assertStringContainsString('Removes both halves when you save. After that, resolve depends only on the API key and API secret above.', $card, "{$half}: the tick-box help line");
-            $this->assertStringNotContainsString('Resolve then uses the API key and API secret above.', $card, "{$half}: with no main pair, clearing leaves resolve unavailable, so the old help line is false");
+            $this->assertStringNotContainsString(self::OLD_HELP_SENTENCE, $card, "{$half}: with no main pair, clearing leaves resolve unavailable, so the old help line is false");
         }
     }
 
@@ -285,6 +319,24 @@ class HuntressUserKeyPairSettingsTest extends TestCase
     {
         $this->storeEarlierPair();
         Setting::setEncrypted('huntress_api_key', 'synthetic-main-key');
+
+        $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+
+        $this->assertStringContainsString('Escalation resolution:</strong> unavailable until an API key and API secret are saved.', $card, 'precondition: one main half is not a main pair');
+        $this->assertStringContainsString('<strong>An earlier user API key pair is still stored.</strong> Resolve is unavailable until an API key and API secret are saved above. Once they are, resolve uses the earlier pair, not the key above, until an administrator clears it here.</p>', $card);
+        $this->assertStringNotContainsString('still in use for resolve', $card, 'the full-pair notice is false while resolve is unavailable');
+        $this->assertStringNotContainsString('Part of an earlier user API key pair is still stored.', $card);
+    }
+
+    /**
+     * The other lone main half: only the main API SECRET stored. The
+     * user-only notice is keyed on both main halves ($huntressConfigured),
+     * so it still renders; a branch keyed on the raw secret row would not.
+     */
+    public function test_the_earlier_pair_whole_with_only_the_main_secret_shows_the_user_only_notice(): void
+    {
+        $this->storeEarlierPair();
+        Setting::setEncrypted('huntress_api_secret', 'synthetic-main-secret');
 
         $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
 
@@ -341,6 +393,101 @@ class HuntressUserKeyPairSettingsTest extends TestCase
         $this->assertStringNotContainsString('switched off', $card);
     }
 
+    /**
+     * Switched off, a lone earlier half beside the main pair: the status line
+     * says switched off, and the notice is still the lone-half notice (the
+     * notice block does not read the switch).
+     */
+    public function test_switched_off_with_a_lone_earlier_half_and_the_main_pair_shows_the_switched_off_line_and_the_lone_half_notice(): void
+    {
+        Http::preventStrayRequests();
+        foreach (['huntress_user_api_key', 'huntress_user_api_secret'] as $half) {
+            Setting::query()->delete();
+            Setting::setValue('huntress_enabled', '0');
+            $this->storeMainPair();
+            Setting::setEncrypted($half, self::SECRET_VALUE);
+
+            $card = $this->card($this->page());
+
+            $this->assertStringContainsString(self::SWITCHED_OFF_LINE, $card, $half);
+            $this->assertStringNotContainsString('uses this key', $card, $half);
+            $this->assertStringContainsString('<strong>Part of an earlier user API key pair is still stored.</strong> It is not used. An administrator can clear it here.</p>', $card, $half);
+            $this->assertStringNotContainsString('still in use for resolve', $card, $half);
+            $this->assertStringNotContainsString('An earlier user API key pair is still stored.', $card, $half);
+        }
+    }
+
+    /**
+     * Switched off, a lone earlier half and no main pair: the first status
+     * branch ("unavailable until … saved") still wins, and the notice is the
+     * lone-half notice.
+     */
+    public function test_switched_off_with_a_lone_earlier_half_and_no_main_pair_shows_the_unsaved_line_and_the_lone_half_notice(): void
+    {
+        Http::preventStrayRequests();
+        foreach (['huntress_user_api_key', 'huntress_user_api_secret'] as $half) {
+            Setting::query()->delete();
+            Setting::setValue('huntress_enabled', '0');
+            Setting::setEncrypted($half, self::SECRET_VALUE);
+
+            $card = $this->card($this->page());
+
+            $this->assertStringContainsString('<strong>Escalation resolution:</strong> unavailable until an API key and API secret are saved.', $card, $half);
+            $this->assertStringNotContainsString('switched off', $card, $half);
+            $this->assertStringContainsString('<strong>Part of an earlier user API key pair is still stored.</strong> It is not used. An administrator can clear it here.</p>', $card, $half);
+            $this->assertStringNotContainsString('An earlier user API key pair is still stored.', $card, $half);
+        }
+    }
+
+    /**
+     * Switched off, the earlier pair whole and ONE main half (the user-only
+     * state): the first status branch still wins and the user-only notice
+     * renders, for either main half.
+     */
+    public function test_switched_off_with_the_earlier_pair_and_one_main_half_shows_the_unsaved_line_and_the_user_only_notice(): void
+    {
+        Http::preventStrayRequests();
+        foreach (['huntress_api_key' => 'synthetic-main-key', 'huntress_api_secret' => 'synthetic-main-secret'] as $mainHalf => $value) {
+            Setting::query()->delete();
+            Setting::setValue('huntress_enabled', '0');
+            $this->storeEarlierPair();
+            Setting::setEncrypted($mainHalf, $value);
+
+            $card = $this->card($this->page());
+
+            $this->assertStringContainsString('<strong>Escalation resolution:</strong> unavailable until an API key and API secret are saved.', $card, $mainHalf);
+            $this->assertStringNotContainsString('switched off', $card, $mainHalf);
+            $this->assertStringContainsString(self::USER_ONLY_NOTICE, $card, $mainHalf);
+            $this->assertStringNotContainsString('still in use for resolve', $card, $mainHalf);
+            $this->assertStringNotContainsString('Part of an earlier user API key pair is still stored.', $card, $mainHalf);
+        }
+    }
+
+    /**
+     * Switched off, the earlier pair whole, NO main pair: what the card shows
+     * today, kept as shipped by ruling. The status line is the first branch,
+     * "unavailable until an API key and API secret are saved" (true: resolve
+     * is unavailable), not the switched-off line, and the notice is the
+     * user-only notice. This state is reached only by a hand-made toggle
+     * request: the switch renders only when a main pair is saved.
+     */
+    public function test_switched_off_with_the_earlier_pair_and_no_main_pair_shows_the_unsaved_line_and_the_user_only_notice(): void
+    {
+        Http::preventStrayRequests();
+        Setting::setValue('huntress_enabled', '0');
+        $this->storeEarlierPair();
+
+        $html = $this->page();
+        $card = $this->card($html);
+
+        $this->assertStringContainsString('<i class="bi bi-dash-circle text-secondary me-1" aria-hidden="true"></i><strong>Escalation resolution:</strong> unavailable until an API key and API secret are saved. Once saved, who may use it is set per MCP token on Settings &gt; MCP tokens.', $card);
+        $this->assertStringNotContainsString('switched off', $card);
+        $this->assertStringContainsString(self::USER_ONLY_NOTICE, $card);
+        $this->assertStringNotContainsString('still in use for resolve', $card);
+        $this->assertStringNotContainsString('Part of an earlier user API key pair is still stored.', $card);
+        $this->assertStringNotContainsString('id="huntress_enabled"', $html, 'the state: the switch does not render without a main pair');
+    }
+
     public function test_the_lone_half_tick_box_is_not_rendered_to_a_non_admin(): void
     {
         $this->storeMainPair();
@@ -350,6 +497,7 @@ class HuntressUserKeyPairSettingsTest extends TestCase
         $this->assertStringContainsString('Part of an earlier user API key pair is still stored.', $techCard, 'precondition: the lone-half notice rendered to the non-admin');
         $this->assertStringNotContainsString('name="clear_user_api_key_pair"', $techCard);
         $this->assertStringNotContainsString('Clear the earlier user API key pair', $techCard);
+        $this->assertStringNotContainsString('Removes both halves when you save.', $techCard, 'the tick-box help line is administrator-only too');
 
         $this->assertStringContainsString('name="clear_user_api_key_pair"', $this->card($this->page()), 'positive control: an admin gets the box');
     }
@@ -367,6 +515,163 @@ class HuntressUserKeyPairSettingsTest extends TestCase
 
             $this->assertStringContainsString('id="huntress-earlier-user-pair"', $card, implode('+', $keys).': the notice still renders');
             $this->assertStringContainsString('name="clear_user_api_key_pair"', $card, implode('+', $keys).': an undecryptable row stays clearable');
+        }
+    }
+
+    /**
+     * An earlier-pair row that cannot be decrypted counts as STORED for the
+     * notice and the clear tick box: the notice keys on the raw rows, not on
+     * a decrypt. Each half alone and both, with and without a main pair.
+     */
+    public function test_an_undecryptable_earlier_row_still_shows_the_notice_and_the_tick_box_in_each_state(): void
+    {
+        Http::preventStrayRequests();
+        foreach ([true, false] as $withMain) {
+            foreach ([['huntress_user_api_key'], ['huntress_user_api_secret'], ['huntress_user_api_key', 'huntress_user_api_secret']] as $keys) {
+                $label = implode('+', $keys).($withMain ? ', main pair' : ', no main pair');
+                Setting::query()->delete();
+                if ($withMain) {
+                    $this->storeMainPair();
+                }
+                foreach ($keys as $key) {
+                    DB::table('settings')->insert(['key' => $key, 'value' => 'synthetic-not-ciphertext', 'created_at' => now(), 'updated_at' => now()]);
+                }
+
+                $card = $this->card($this->page());
+
+                $this->assertStringContainsString('id="huntress-earlier-user-pair"', $card, "{$label}: the notice renders");
+                $this->assertStringContainsString('name="clear_user_api_key_pair"', $card, "{$label}: the row stays clearable");
+                $this->assertSame(1, substr_count($card, self::HELP_LINE), "{$label}: the tick-box help line");
+                $this->assertStringNotContainsString(self::OLD_HELP_SENTENCE, $card, "{$label}: the retired help sentence");
+            }
+        }
+    }
+
+    // ---- which notice wins: the two render-only choices ----
+
+    /**
+     * Choice 1: the lone-half check comes BEFORE the user-only branch. A
+     * lone earlier half shows the lone-half notice whatever the main pair is:
+     * none, key only, secret only, or both.
+     */
+    public function test_the_lone_half_check_wins_over_the_user_only_branch_in_every_main_pair_state(): void
+    {
+        Http::preventStrayRequests();
+        $mainStates = [
+            'no main pair' => [],
+            'main key only' => ['huntress_api_key' => 'synthetic-main-key'],
+            'main secret only' => ['huntress_api_secret' => 'synthetic-main-secret'],
+            'main pair' => ['huntress_api_key' => 'synthetic-main-key', 'huntress_api_secret' => 'synthetic-main-secret'],
+        ];
+        foreach ($mainStates as $state => $main) {
+            foreach (['huntress_user_api_key', 'huntress_user_api_secret'] as $half) {
+                Setting::query()->delete();
+                foreach ($main as $key => $value) {
+                    Setting::setEncrypted($key, $value);
+                }
+                Setting::setEncrypted($half, self::SECRET_VALUE);
+
+                $card = $this->card($this->page());
+
+                $this->assertStringContainsString('<strong>Part of an earlier user API key pair is still stored.</strong> It is not used. An administrator can clear it here.</p>', $card, "{$state}, {$half}");
+                $this->assertStringNotContainsString('An earlier user API key pair is still stored.', $card, "{$state}, {$half}: the user-only notice is false for a lone half");
+                $this->assertStringNotContainsString('still in use for resolve', $card, "{$state}, {$half}");
+            }
+        }
+    }
+
+    /**
+     * Choice 2: the user-only branch is keyed on BOTH main halves
+     * ($huntressConfigured), not on either raw main row. With the earlier
+     * pair whole: no main half, the key alone, or the secret alone each show
+     * the user-only notice; both main halves show the full-pair notice.
+     */
+    public function test_the_user_only_branch_is_keyed_on_both_main_halves_not_either_raw_row(): void
+    {
+        Http::preventStrayRequests();
+        $mainStates = [
+            'no main pair' => [[], true],
+            'main key only' => [['huntress_api_key' => 'synthetic-main-key'], true],
+            'main secret only' => [['huntress_api_secret' => 'synthetic-main-secret'], true],
+            'main pair' => [['huntress_api_key' => 'synthetic-main-key', 'huntress_api_secret' => 'synthetic-main-secret'], false],
+        ];
+        foreach ($mainStates as $state => [$main, $userOnly]) {
+            Setting::query()->delete();
+            $this->storeEarlierPair();
+            foreach ($main as $key => $value) {
+                Setting::setEncrypted($key, $value);
+            }
+
+            $card = $this->card($this->page());
+
+            if ($userOnly) {
+                $this->assertStringContainsString(self::USER_ONLY_NOTICE, $card, "{$state}: the user-only notice");
+                $this->assertStringNotContainsString('still in use for resolve', $card, "{$state}: the full-pair notice is false while resolve is unavailable");
+            } else {
+                $this->assertStringContainsString('<strong>Earlier user API key still in use for resolve.</strong>', $card, "{$state}: the full-pair notice");
+                $this->assertStringNotContainsString('An earlier user API key pair is still stored.', $card, "{$state}: the user-only notice is false once both main halves are saved");
+            }
+            $this->assertStringNotContainsString('Part of an earlier user API key pair is still stored.', $card, $state);
+        }
+    }
+
+    // ---- the tick box's help line ----
+
+    /**
+     * Every state that renders the clear tick box (to an administrator) shows
+     * the help line exactly once, and the retired sentence in none of them.
+     */
+    public function test_the_help_line_shows_exactly_once_and_the_old_sentence_never_in_every_tick_box_state(): void
+    {
+        Http::preventStrayRequests();
+        $states = [
+            'both pairs' => fn () => [$this->storeMainPair(), $this->storeEarlierPair()],
+            'both pairs, switched off' => fn () => [Setting::setValue('huntress_enabled', '0'), $this->storeMainPair(), $this->storeEarlierPair()],
+            'earlier pair, no main pair' => fn () => $this->storeEarlierPair(),
+            'earlier pair, main key only' => fn () => [$this->storeEarlierPair(), Setting::setEncrypted('huntress_api_key', 'synthetic-main-key')],
+            'earlier pair, main secret only' => fn () => [$this->storeEarlierPair(), Setting::setEncrypted('huntress_api_secret', 'synthetic-main-secret')],
+            'lone key half, main pair' => fn () => [$this->storeMainPair(), Setting::setEncrypted('huntress_user_api_key', self::KEY)],
+            'lone secret half, main pair' => fn () => [$this->storeMainPair(), Setting::setEncrypted('huntress_user_api_secret', self::SECRET_VALUE)],
+            'lone key half, no main pair' => fn () => Setting::setEncrypted('huntress_user_api_key', self::KEY),
+            'lone secret half, no main pair' => fn () => Setting::setEncrypted('huntress_user_api_secret', self::SECRET_VALUE),
+            'lone half, main pair, switched off' => fn () => [Setting::setValue('huntress_enabled', '0'), $this->storeMainPair(), Setting::setEncrypted('huntress_user_api_key', self::KEY)],
+        ];
+        foreach ($states as $state => $arrange) {
+            Setting::query()->delete();
+            $arrange();
+
+            $card = $this->card($this->page());
+
+            $this->assertSame(1, substr_count($card, 'name="clear_user_api_key_pair"'), "{$state}: precondition: the tick box renders once");
+            $this->assertSame(1, substr_count($card, self::HELP_LINE), "{$state}: the help line, exactly once");
+            $this->assertSame(1, substr_count($card, 'Removes both halves when you save.'), "{$state}: the help line's text, exactly once");
+            $this->assertStringNotContainsString(self::OLD_HELP_SENTENCE, $card, "{$state}: the retired help sentence");
+        }
+    }
+
+    /**
+     * A non-administrator gets the notice but neither the tick box nor its
+     * help line, in each notice state.
+     */
+    public function test_the_help_line_is_not_rendered_to_a_non_admin_in_any_notice_state(): void
+    {
+        Http::preventStrayRequests();
+        $states = [
+            'both pairs' => [fn () => [$this->storeMainPair(), $this->storeEarlierPair()], 'Earlier user API key still in use for resolve.'],
+            'earlier pair, no main pair' => [fn () => $this->storeEarlierPair(), 'An earlier user API key pair is still stored.'],
+            'lone half, main pair' => [fn () => [$this->storeMainPair(), Setting::setEncrypted('huntress_user_api_key', self::KEY)], 'Part of an earlier user API key pair is still stored.'],
+            'lone half, no main pair' => [fn () => Setting::setEncrypted('huntress_user_api_secret', self::SECRET_VALUE), 'Part of an earlier user API key pair is still stored.'],
+        ];
+        foreach ($states as $state => [$arrange, $notice]) {
+            Setting::query()->delete();
+            $arrange();
+
+            $techCard = $this->card($this->page($this->tech()));
+
+            $this->assertStringContainsString($notice, $techCard, "{$state}: precondition: the notice rendered to the non-admin");
+            $this->assertStringNotContainsString('name="clear_user_api_key_pair"', $techCard, $state);
+            $this->assertStringNotContainsString('Removes both halves when you save.', $techCard, "{$state}: the help line is administrator-only");
+            $this->assertStringNotContainsString(self::OLD_HELP_SENTENCE, $techCard, $state);
         }
     }
 
@@ -394,6 +699,7 @@ class HuntressUserKeyPairSettingsTest extends TestCase
         $this->assertStringContainsString('Earlier user API key still in use for resolve.', $techCard, 'precondition: the notice rendered to the non-admin');
         $this->assertStringNotContainsString('name="clear_user_api_key_pair"', $techCard);
         $this->assertStringNotContainsString('Clear the earlier user API key pair', $techCard);
+        $this->assertStringNotContainsString('Removes both halves when you save.', $techCard, 'the tick-box help line is administrator-only too');
     }
 
     public function test_the_clear_control_removes_both_halves_and_nothing_else(): void
