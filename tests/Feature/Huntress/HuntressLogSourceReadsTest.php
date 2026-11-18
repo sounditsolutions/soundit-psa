@@ -138,6 +138,23 @@ class HuntressLogSourceReadsTest extends TestCase
         $this->assertEquals(['limit' => '500'], $query);
     }
 
+    public function test_unscoped_list_with_no_dropped_source_still_carries_the_count_and_note(): void
+    {
+        $this->bind(['log_sources' => [$this->source(1, ['id' => 42, 'name' => 'Synthetic organization'])]]);
+        $result = $this->runTool(false, []);
+        $this->assertArrayNotHasKey('error', $result);
+        $this->assertSame(1, $result['count']);
+        $this->assertSame(0, $result['dropped_unclassified']);
+        $this->assertSame('Log sources with no organization (account-level) are dropped and counted in dropped_unclassified; they are not shown.', $result['note']);
+    }
+
+    public function test_list_description_states_where_a_null_organization_source_is_dropped_and_where_it_fails(): void
+    {
+        $description = collect(HuntressReadOnlyToolset::definitions())->firstWhere('name', 'huntress_list_siem_log_sources')['description'];
+        $this->assertStringContainsString('On a list with no client or organization scope and without misconfigured=true, sources whose organization is null (account-level) are left out and counted in dropped_unclassified. With misconfigured=true, or on a list scoped to a client or organization, such a source makes the call fail.', $description);
+        $this->assertStringNotContainsString('returns no rows', $description);
+    }
+
     public function test_only_for_account_returns_no_rows_and_counts_the_account_level_sources(): void
     {
         $this->bind(['log_sources' => [$this->source(2, null)]]);

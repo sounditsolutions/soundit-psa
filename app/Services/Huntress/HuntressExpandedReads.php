@@ -107,7 +107,7 @@ trait HuntressExpandedReads
         $scope = ['client_id' => ['type' => 'integer'], 'organization_id' => ['type' => 'integer']];
 
         return [
-            ['name' => 'huntress_list_siem_log_sources', 'description' => 'List Huntress SIEM log sources in mapped organizations, optionally selecting misconfigured sources. type_code and only_for_account are refused together with misconfigured=true. On a list with no client or organization scope, sources with no organization (account-level) are left out and counted in dropped_unclassified, so only_for_account=true returns no rows.',
+            ['name' => 'huntress_list_siem_log_sources', 'description' => 'List Huntress SIEM log sources in mapped organizations, optionally selecting misconfigured sources. type_code and only_for_account are refused together with misconfigured=true. On a list with no client or organization scope and without misconfigured=true, sources whose organization is null (account-level) are left out and counted in dropped_unclassified. With misconfigured=true, or on a list scoped to a client or organization, such a source makes the call fail.',
                 'input_schema' => ['type' => 'object', 'properties' => $scope + ['misconfigured' => ['type' => 'boolean'], 'only_for_account' => ['type' => 'boolean'], 'type_code' => ['type' => 'string'], 'limit' => ['type' => 'integer'], 'page_token' => ['type' => 'string']], 'required' => []]],
             ['name' => 'huntress_get_siem_log_source', 'description' => 'Read one Huntress SIEM log source in a mapped organization.',
                 'input_schema' => ['type' => 'object', 'properties' => $scope + ['id' => ['type' => 'integer']], 'required' => ['id']]],
