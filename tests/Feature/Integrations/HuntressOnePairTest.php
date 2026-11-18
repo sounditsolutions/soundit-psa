@@ -324,6 +324,48 @@ class HuntressOnePairTest extends TestCase
         $this->assertNotContains('huntress_stage_resolve_escalation', $names);
     }
 
+    // ── dispatch: a switched-off install ───────────────────────────────────────
+
+    /**
+     * Dispatch asks isEnabled() itself, not only publish and approval: a
+     * stage call that reaches the executor while the integration is switched
+     * off is refused, stages nothing and sends nothing: on that leg the read
+     * client gets no getEscalation call (counted, so a gate that only refuses
+     * after the live read still fails here) and the write client no resolve.
+     * Positive control: the same call with the integration on, on a fresh read
+     * double, reads the escalation once and stages one run.
+     */
+    public function test_dispatch_with_the_integration_switched_off_refuses_and_stages_nothing(): void
+    {
+        $this->storeMain();
+        $actor = User::factory()->create(['name' => 'AI Actor']);
+        Setting::setValue('triage_system_user_id', (string) $actor->id);
+        $fixture = $this->fixture();
+        $offReads = 0;
+        $this->mockRead($offReads);
+        $this->mockWriteNeverCalled();
+        // The executor's own arguments: the MCP controller passes client_id separately.
+        $arguments = array_diff_key($this->stageArguments($fixture), ['client_id' => true]);
+
+        Setting::setValue('huntress_enabled', '0');
+        $this->app->forgetInstance(StaffHuntressActionToolExecutor::class);
+        $result = app(StaffHuntressActionToolExecutor::class)->execute('huntress_stage_resolve_escalation', $arguments, $fixture['client']->id, 'opsbot');
+
+        $this->assertSame('Huntress is not configured', $result['error'] ?? null);
+        $this->assertSame(0, TechnicianRun::count(), 'a switched-off dispatch staged a run');
+        $this->assertSame(0, $offReads, 'a switched-off dispatch read the escalation from Huntress');
+
+        $onReads = 0;
+        $this->mockRead($onReads);
+        Setting::setValue('huntress_enabled', '1');
+        $this->app->forgetInstance(StaffHuntressActionToolExecutor::class);
+        $result = app(StaffHuntressActionToolExecutor::class)->execute('huntress_stage_resolve_escalation', $arguments, $fixture['client']->id, 'opsbot');
+
+        $this->assertArrayNotHasKey('error', $result, 'positive control: the same call stages while switched on: '.json_encode($result));
+        $this->assertSame(1, TechnicianRun::count(), 'positive control: one run staged while switched on');
+        $this->assertSame(1, $onReads, 'positive control: the switched-on stage reads the escalation once');
+    }
+
     // ── fixtures ───────────────────────────────────────────────────────────────
 
     /** Stage one resolve through the MCP surface; returns the run and the approver. */
@@ -371,15 +413,20 @@ class HuntressOnePairTest extends TestCase
         $this->app->instance(HuntressWriteClient::class, $mock);
     }
 
-    private function mockRead(): void
+    /** @param int $getEscalationCalls incremented on each getEscalation call */
+    private function mockRead(int &$getEscalationCalls = 0): void
     {
         $mock = Mockery::mock(HuntressClient::class);
         $mock->shouldReceive('withClampedBackoff')->andReturnSelf();
-        $mock->shouldReceive('getEscalation')->andReturn([
-            'id' => 900, 'status' => 'sent', 'resolved_at' => null, 'severity' => 'high',
-            'type' => 'identity', 'subtype' => 'synthetic', 'subject' => 'Synthetic escalation',
-            'organizations' => [['id' => self::ORG_ID, 'name' => 'Example Org']],
-        ]);
+        $mock->shouldReceive('getEscalation')->andReturnUsing(function () use (&$getEscalationCalls) {
+            $getEscalationCalls++;
+
+            return [
+                'id' => 900, 'status' => 'sent', 'resolved_at' => null, 'severity' => 'high',
+                'type' => 'identity', 'subtype' => 'synthetic', 'subject' => 'Synthetic escalation',
+                'organizations' => [['id' => self::ORG_ID, 'name' => 'Example Org']],
+            ];
+        });
         $this->app->instance(HuntressClient::class, $mock);
     }
 
