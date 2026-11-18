@@ -2241,8 +2241,9 @@
                 <div class="alert alert-light border small mb-3">
                     <strong>Setup:</strong>
                     <ol class="mb-0 ps-3 mt-1">
-                        <li>In Huntress, go to <strong>Account &rarr; API Credentials</strong> and generate an API key.</li>
-                        <li>Enter the API Key and API Secret below and click <strong>Save</strong>, then <strong>Test Connection</strong>.</li>
+                        <li>In Huntress, create a <strong>user API key</strong> for the Huntress user the PSA should act as. (Huntress has deprecated the account-level API key.)</li>
+                        <li>The key carries that user's permissions in Huntress. A read-only user's key gives reads only. Resolving SOC escalations needs a user whose role may resolve them.</li>
+                        <li>Enter the API key and API secret below and click <strong>Save</strong>, then <strong>Test Connection</strong>.</li>
                         <li>Click <strong>Organization Mapping</strong> to map Huntress organizations to your clients. Use <strong>Auto-Match by Name</strong> for bulk matching.</li>
                         <li>Only mapped organizations will have their licenses synced. Unmapped organizations are ignored.</li>
                     </ol>
@@ -2255,75 +2256,49 @@
 
                     <div class="row">
                         <div class="col-md-6 mb-3">
-                            <label for="huntress_api_key" class="form-label">API Key</label>
+                            <label for="huntress_api_key" class="form-label">API key</label>
                             <input type="password"
                                    class="form-control"
                                    id="huntress_api_key"
                                    name="api_key"
                                    value=""
-                                   placeholder="{{ ($huntressConfigured ?? false) ? '••••••••' : 'Enter API key' }}">
+                                   placeholder="{{ ($huntressKeyStored ?? false) ? '••••••••' : 'Enter user API key' }}">
+                            <div class="form-text">{{ ($huntressKeyStored ?? false) ? 'Saved. Encrypted at rest. Leave blank to keep the saved value.' : 'Encrypted at rest.' }}</div>
                         </div>
                         <div class="col-md-6 mb-3">
-                            <label for="huntress_api_secret" class="form-label">API Secret</label>
+                            <label for="huntress_api_secret" class="form-label">API secret</label>
                             <input type="password"
                                    class="form-control"
                                    id="huntress_api_secret"
                                    name="api_secret"
                                    value=""
-                                   placeholder="{{ ($huntressConfigured ?? false) ? '••••••••' : 'Enter API secret' }}">
+                                   placeholder="{{ ($huntressSecretStored ?? false) ? '••••••••' : 'Enter user API secret' }}">
+                            <div class="form-text">{{ ($huntressSecretStored ?? false) ? 'Saved. Encrypted at rest. Leave blank to keep the saved value.' : 'Encrypted at rest.' }}</div>
                         </div>
                     </div>
 
-                    <div class="border-top pt-3 mb-3" id="huntress-user-key-pair">
-                        <h6 class="mb-1">Escalation resolution (write) credential</h6>
-                        <p class="text-muted small mb-2">A separate <strong>user-based</strong> Huntress API key pair, used only to resolve SOC escalations. The account API key above is read-only and is never used for writes.</p>
-                        <p class="small mb-2" id="huntress-write-status" role="status">
-                            @if($huntressWriteConfigured ?? false)
-                                <i class="bi bi-check-circle-fill text-success me-1" aria-hidden="true"></i><strong>Write enabled:</strong> a user API key pair is saved, so escalation resolution can be used where it has been granted.
-                            @else
-                                <i class="bi bi-dash-circle text-secondary me-1" aria-hidden="true"></i><strong>Write not enabled:</strong> escalation resolution is unavailable until a User API key and User API secret are saved here.
-                            @endif
-                        </p>
-                        @if(auth()->user()?->isAdmin())
-                        <div class="row">
-                            <div class="col-md-6 mb-2">
-                                <label for="huntress_user_api_key" class="form-label">User API key</label>
-                                <input type="password"
-                                       class="form-control"
-                                       id="huntress_user_api_key"
-                                       name="user_api_key"
-                                       value=""
-                                       maxlength="500"
-                                       autocomplete="new-password"
-                                       placeholder="{{ ($huntressUserKeyStored ?? false) ? '••••••••' : 'Enter user API key' }}">
-                                <div class="form-text">{{ ($huntressUserKeyStored ?? false) ? 'Saved. ' : '' }}Encrypted at rest. Leave blank to keep the saved value.</div>
-                            </div>
-                            <div class="col-md-6 mb-2">
-                                <label for="huntress_user_api_secret" class="form-label">User API secret</label>
-                                <input type="password"
-                                       class="form-control"
-                                       id="huntress_user_api_secret"
-                                       name="user_api_secret"
-                                       value=""
-                                       maxlength="500"
-                                       autocomplete="new-password"
-                                       placeholder="{{ ($huntressUserSecretStored ?? false) ? '••••••••' : 'Enter user API secret' }}">
-                                <div class="form-text">{{ ($huntressUserSecretStored ?? false) ? 'Saved. ' : '' }}Encrypted at rest. Leave blank to keep the saved value.</div>
-                            </div>
-                        </div>
-                        @if(($huntressUserKeyStored ?? false) || ($huntressUserSecretStored ?? false))
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" name="clear_user_api_key_pair" value="1" id="huntress_clear_user_api_key_pair">
-                                <label class="form-check-label small" for="huntress_clear_user_api_key_pair">Clear the saved user API key pair</label>
-                                <small class="text-muted d-block">Removes both halves when you save; escalation resolution then becomes unavailable.</small>
-                            </div>
-                        @endif
-                        @error('user_api_key')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
-                        @error('user_api_secret')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
+                    <p class="small mb-3" id="huntress-resolve-status" role="status">
+                        @if(! ($huntressConfigured ?? false))
+                            <i class="bi bi-dash-circle text-secondary me-1" aria-hidden="true"></i><strong>Escalation resolution:</strong> unavailable until an API key and API secret are saved. Once saved, who may use it is set per MCP token on Settings &gt; MCP tokens.
+                        @elseif($huntressResolveUsesEarlierPair ?? false)
+                            <i class="bi bi-check-circle-fill text-success me-1" aria-hidden="true"></i><strong>Escalation resolution:</strong> uses the earlier user API key pair (see below), not this key, until an administrator clears it. Available only to MCP tokens granted it on Settings &gt; MCP tokens, and every resolve waits for a person's approval in the cockpit.
                         @else
-                        <p class="text-muted small mb-0">An administrator enters this pair.</p>
+                            <i class="bi bi-check-circle-fill text-success me-1" aria-hidden="true"></i><strong>Escalation resolution:</strong> uses this key. Available only to MCP tokens granted it on Settings &gt; MCP tokens, and every resolve waits for a person's approval in the cockpit. Huntress refuses it unless this key's user may resolve escalations.
                         @endif
-                    </div>
+                    </p>
+
+                    @if($huntressEarlierUserPairStored ?? false)
+                        <div class="border rounded p-2 px-3 mb-3 small" id="huntress-earlier-user-pair" role="status">
+                            <p class="mb-1"><i class="bi bi-exclamation-triangle-fill text-warning me-1" aria-hidden="true"></i><strong>Earlier user API key still in use for resolve.</strong> This install saved a separate user API key pair for escalation resolution before the card moved to one key pair. Resolve keeps using that earlier pair until an administrator clears it here. Saving a new API key and API secret above changes reads only. Nothing has been deleted.</p>
+                            @if(auth()->user()?->isAdmin())
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="clear_user_api_key_pair" value="1" id="huntress_clear_user_api_key_pair">
+                                    <label class="form-check-label" for="huntress_clear_user_api_key_pair">Clear the earlier user API key pair</label>
+                                    <small class="text-muted d-block">Removes both halves when you save. Resolve then uses the API key and API secret above.</small>
+                                </div>
+                            @endif
+                        </div>
+                    @endif
 
                     <div class="d-flex gap-2">
                         <button type="submit" class="btn btn-primary btn-sm">Save Huntress Settings</button>

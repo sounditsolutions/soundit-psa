@@ -110,7 +110,7 @@ class HuntressPlatformReadsTest extends TestCase
             $this->assertCount(0, $this->history);
             $this->assertArrayHasKey('error', $this->runRead($get, [$this->row([42])], ['client_id' => 'bad']));
             $this->assertCount(0, $this->history);
-            $this->assertStringContainsString('Huntress HTTP 403: the Huntress API key in Settings may lack access to this endpoint.', $this->runRead($get, [], [], 403)['error']);
+            $this->assertStringContainsString('Huntress HTTP 403: the Huntress API key in Settings may lack access to this endpoint; the key carries its Huntress user\'s permissions, so check that user\'s role.', $this->runRead($get, [], [], 403)['error']);
             foreach ([['id' => 7], ['organizations' => [['name' => 'Unknown']]]] as $bad) {
                 $this->assertArrayHasKey('error', $this->runRead($get, [$bad]));
             }

@@ -9,12 +9,11 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * The Huntress WRITE lane — deliberately a separate class from the GET-only
- * HuntressClient, on a separate credential class: the spec documents the
- * default account API key as read-only, and escalation resolution requires a
- * user-based API key (`huntress_user_api_key` / `huntress_user_api_secret`).
- * This client NEVER falls back to the read pair — an instance holding only
- * read credentials fails closed rather than discovering at the vendor that
- * the account key happened to be over-scoped.
+ * HuntressClient. It is built from HuntressConfig::writeCredentials()
+ * (`api_key` / `api_secret`): the same pair the reads use, or an earlier
+ * user pair while both of its halves are still stored. A user API key carries
+ * its Huntress user's permissions, so Huntress itself refuses the resolve when
+ * that user may not resolve escalations. Without a pair it sends nothing.
  *
  * One verb: POST /v1/escalations/{id}/resolution with the LITERAL empty JSON
  * object `{}`. The parameterised body (`determination`, `scope`,
@@ -56,7 +55,7 @@ class HuntressWriteClient
     /**
      * @param  Client|null  $http  Injectable transport (test seam). When null the
      *                             default Basic-auth Guzzle client is built from
-     *                             the USER-key config pair.
+     *                             the `api_key` / `api_secret` config pair.
      */
     public function __construct(
         private readonly array $config,
@@ -66,16 +65,16 @@ class HuntressWriteClient
             'base_uri' => 'https://api.huntress.io/v1/',
             'timeout' => 30,
             'auth' => [
-                $this->config['user_api_key'] ?? '',
-                $this->config['user_api_secret'] ?? '',
+                $this->config['api_key'] ?? '',
+                $this->config['api_secret'] ?? '',
             ],
         ]);
     }
 
     public function isConfigured(): bool
     {
-        return ! empty($this->config['user_api_key'])
-            && ! empty($this->config['user_api_secret']);
+        return ! empty($this->config['api_key'])
+            && ! empty($this->config['api_secret']);
     }
 
     /**
@@ -99,7 +98,7 @@ class HuntressWriteClient
     {
         if (! $this->isConfigured()) {
             throw new HuntressWriteScopeException(
-                'Huntress write credential (user-based API key) is not configured; nothing was sent. Save the pair in '.\App\Support\HuntressConfig::WRITE_CREDENTIAL_LOCATION.'.'
+                'Huntress API key pair is not configured; nothing was sent. Save the pair in '.\App\Support\HuntressConfig::WRITE_CREDENTIAL_LOCATION.'.'
             );
         }
 

@@ -170,7 +170,7 @@ class HuntressFullReadToolsetTest extends TestCase
             $this->assertStringNotContainsString('https://', $result['error']);
             $this->assertStringNotContainsString('api.huntress.io', $result['error']);
             if ($status === 403) {
-                $this->assertStringContainsString('Huntress HTTP 403: the Huntress API key in Settings may lack access to this endpoint.', $result['error']);
+                $this->assertStringContainsString('Huntress HTTP 403: the Huntress API key in Settings may lack access to this endpoint; the key carries its Huntress user\'s permissions, so check that user\'s role.', $result['error']);
             }
             if ($status === 404) {
                 $this->assertStringContainsString('SIEM query is not enabled', $result['error']);

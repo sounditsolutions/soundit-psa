@@ -644,7 +644,7 @@ trait HuntressExpandedReads
         $status = $response?->getStatusCode() ?? $e->getCode();
         $error = 'Huntress HTTP '.$status.': '.$e::class;
         if ($status === 403) {
-            $error = 'Huntress HTTP 403: the Huntress API key in Settings may lack access to this endpoint. '.$e::class;
+            $error = 'Huntress HTTP 403: the Huntress API key in Settings may lack access to this endpoint; the key carries its Huntress user\'s permissions, so check that user\'s role. '.$e::class;
         }
         if ($status === 404 && $siem) {
             $error .= '; SIEM query is not enabled for this account';

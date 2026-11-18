@@ -91,7 +91,7 @@ class McpToolsListResilienceTest extends TestCase
         // liveClientScopedToolDefinitions(), which tools/list assembles twice.
         // huntress_enabled defaults ON, so each assembly pays the switch read plus
         // the huntress_api_key read (isConfigured() short-circuits on the empty
-        // key; isWriteConfigured() is never reached while unconfigured) — +2 x 2
+        // key; the user-pair check, since removed, was never reached while unconfigured) — +2 x 2
         // assemblies = +4 flat, independent of catalog size.
         //
         // Raised 90 -> 94 for the PowerDMARC read surface (issue #689):

@@ -126,6 +126,12 @@ class StaffHuntressActionToolExecutor
         'resolution_method',
     ];
 
+    /**
+     * The cockpit sentence for a Huntress 403 on the resolve POST. A 4xx
+     * refusal wrote nothing upstream (see upstreamFailureMayHaveCommitted()).
+     */
+    public const RESOLVE_FORBIDDEN_MESSAGE = 'Huntress refused the resolve (HTTP 403 Forbidden): the Huntress user that the resolve key belongs to may not be allowed to resolve escalations; check that user\'s role in Huntress. Nothing was changed.';
+
     /** The 201 resolution_method values an id-only `{}` call may legitimately produce. */
     private const SAFE_RESOLUTION_METHODS = ['direct', 'dismiss'];
 
@@ -176,10 +182,6 @@ class StaffHuntressActionToolExecutor
     {
         if (! HuntressConfig::isEnabled() || ! HuntressConfig::isConfigured()) {
             return ['error' => 'Huntress is not configured'];
-        }
-
-        if (! HuntressConfig::isWriteConfigured()) {
-            return ['error' => 'Huntress write credential (user-based API key) is not configured; escalation resolution is unavailable until the pair is saved in '.HuntressConfig::WRITE_CREDENTIAL_LOCATION.'.'];
         }
 
         if (isset(self::STAGED_TO_DIRECT[$name])) {
@@ -584,11 +586,11 @@ class StaffHuntressActionToolExecutor
             $contentHash = (string) $run->content_hash;
             $approverLabel = $this->approverLabel($approverId);
 
-            if (! HuntressConfig::isEnabled() || ! HuntressConfig::isConfigured() || ! HuntressConfig::isWriteConfigured()) {
-                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $contentHash, "{$targetKey}: Huntress write lane not configured; approval refused before upstream call.", $approverLabel, $run->id, $approverId);
+            if (! HuntressConfig::isEnabled() || ! HuntressConfig::isConfigured()) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $contentHash, "{$targetKey}: Huntress is not enabled or its API key pair is not saved; approval refused before upstream call.", $approverLabel, $run->id, $approverId);
                 $run->releaseClaim();
 
-                return new TechnicianApprovalResult('gate_declined', message: 'Huntress write credential is not configured — nothing was resolved.');
+                return new TechnicianApprovalResult('gate_declined', message: 'Huntress is not enabled or its API key and API secret are not saved — nothing was resolved.');
             }
 
             if (TechnicianConfig::killSwitchEngaged()) {
@@ -660,7 +662,7 @@ class StaffHuntressActionToolExecutor
                 return new TechnicianApprovalResult('gate_declined', message: "Huntress refused: escalation {$escalationId} cannot be resolved through the API — resolve it in the Huntress console. Nothing was changed.");
             } catch (HuntressWriteScopeException $e) {
                 // Refused INSIDE the write client BEFORE any HTTP (missing
-                // user-key credential, non-positive id): nothing reached
+                // credential, non-positive id): nothing reached
                 // Huntress, so "nothing was resolved" is a fact here and the
                 // run may safely return to AwaitingApproval.
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Refused before sending — ".mb_substr($e->getMessage(), 0, 300), $approverLabel, $run->id, $approverId);
@@ -675,6 +677,10 @@ class StaffHuntressActionToolExecutor
                     // legitimate.
                     $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $contentHash, "{$targetKey}: Huntress rejected the resolve call: ".self::failureDetail($e), $approverLabel, $run->id, $approverId);
                     $run->releaseClaim();
+
+                    if ((int) $e->getCode() === 403) {
+                        return new TechnicianApprovalResult('gate_declined', message: self::RESOLVE_FORBIDDEN_MESSAGE);
+                    }
 
                     return new TechnicianApprovalResult('gate_declined', message: 'Huntress rejected the resolve call — nothing was resolved. Try again.');
                 }
