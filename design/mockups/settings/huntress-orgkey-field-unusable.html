@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Huntress EDR / ITDR, org key field: stored value not usable</title>
+<link rel="stylesheet" href="../_tokens.css">
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--psa-colors-canvas); color: var(--psa-colors-ink); font-family: var(--psa-typography-body-font-family); font-size: 0.9rem; line-height: var(--psa-typography-body-line-height); }
+main { padding: var(--psa-spacing-lg); display: grid; gap: var(--psa-spacing-lg); max-width: 1180px; }
+main.two { grid-template-columns: 1fr 1fr; max-width: none; }
+.card { background: var(--psa-colors-surface); border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-md); overflow: hidden; }
+.card-header { background: var(--psa-colors-navy); color: var(--psa-colors-surface); font-family: var(--psa-typography-title-font-family); font-size: var(--psa-typography-title-font-size); font-weight: var(--psa-typography-title-font-weight); letter-spacing: var(--psa-typography-title-letter-spacing); text-transform: uppercase; padding: var(--psa-spacing-md); display: flex; justify-content: space-between; align-items: center; gap: var(--psa-spacing-sm); }
+.card-header svg { vertical-align: -3px; margin-right: var(--psa-spacing-sm); }
+.card-body { padding: var(--psa-spacing-md); }
+.muted { color: var(--psa-colors-muted-ink); }
+.small { font-size: 0.85rem; }
+.badge { border-radius: var(--psa-rounded-pill); padding: 2px var(--psa-spacing-sm); font-family: var(--psa-typography-body-font-family); font-size: 0.75rem; font-weight: 600; text-transform: uppercase; white-space: nowrap; }
+.b-ok { background: var(--psa-colors-success); color: var(--psa-colors-surface); }
+.b-none { background: var(--psa-colors-neutral); color: var(--psa-colors-surface); }
+.setup { border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-sm); background: var(--psa-colors-canvas); padding: var(--psa-spacing-sm) var(--psa-spacing-md); margin-bottom: var(--psa-spacing-md); font-size: 0.85rem; }
+.setup ol { margin: var(--psa-spacing-xs) 0 0; padding-left: 1.2rem; }
+.setup hr { border: 0; border-top: 1px solid var(--psa-colors-border); margin: var(--psa-spacing-sm) 0; }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--psa-spacing-md); }
+.field { margin-bottom: var(--psa-spacing-md); }
+label { display: block; margin-bottom: var(--psa-spacing-xs); font-weight: var(--psa-typography-label-font-weight); color: var(--psa-colors-navy); }
+input[type=password], input[type=text], input[type=number] { width: 100%; padding: var(--psa-spacing-sm); background: var(--psa-colors-surface); color: var(--psa-colors-ink); border: 1px solid var(--psa-colors-field-border); border-radius: var(--psa-rounded-sm); font: inherit; }
+input::placeholder { color: var(--psa-colors-muted-ink); }
+input[type=checkbox] { accent-color: var(--psa-colors-navy); width: 1rem; height: 1rem; vertical-align: -2px; margin-right: var(--psa-spacing-xs); }
+.hint { font-size: 0.8rem; color: var(--psa-colors-muted-ink); margin-top: var(--psa-spacing-xs); }
+.status { display: flex; gap: var(--psa-spacing-sm); align-items: flex-start; font-size: 0.85rem; margin: 0 0 var(--psa-spacing-md); }
+.status .dot { flex: none; width: 0.9rem; height: 0.9rem; border-radius: 50%; margin-top: 3px; }
+.dot.ok { background: var(--psa-colors-success); }
+.dot.off { background: var(--psa-colors-neutral); }
+.dot.warn { background: var(--psa-colors-warning); }
+.btns { display: flex; flex-wrap: wrap; gap: var(--psa-spacing-sm); }
+button { padding: 6px var(--psa-spacing-md); border: 1px solid var(--psa-colors-navy); border-radius: var(--psa-rounded-sm); background: var(--psa-colors-surface); color: var(--psa-colors-navy); font: inherit; font-size: 0.85rem; }
+button.primary { background: var(--psa-colors-navy); color: var(--psa-colors-surface); }
+button.ok { border-color: var(--psa-colors-success); color: var(--psa-colors-success); }
+button:hover, button:active { background: var(--psa-colors-navy-light); color: var(--psa-colors-surface); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--psa-colors-navy-light); outline-offset: 2px; }
+.section { border-top: 1px solid var(--psa-colors-border); margin-top: var(--psa-spacing-md); padding-top: var(--psa-spacing-md); }
+h6 { font-family: var(--psa-typography-title-font-family); font-size: 0.95rem; color: var(--psa-colors-navy); margin: 0 0 var(--psa-spacing-xs); }
+p { margin: 0 0 var(--psa-spacing-sm); }
+code { font-size: 0.8rem; color: var(--psa-colors-navy-deep); }
+.notice { border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-sm); padding: var(--psa-spacing-sm) var(--psa-spacing-md); margin-bottom: var(--psa-spacing-md); font-size: 0.85rem; background: var(--psa-colors-surface); }
+.danger { color: var(--psa-colors-danger); font-size: 0.8rem; margin-top: var(--psa-spacing-xs); }
+@media (max-width: 600px) {
+  main, main.two { padding: var(--psa-spacing-sm); grid-template-columns: 1fr; gap: var(--psa-spacing-md); }
+  .row { grid-template-columns: 1fr; gap: 0; }
+  .card-header { flex-wrap: wrap; }
+}
+</style>
+</head>
+<body>
+<main>
+
+<article class="card">
+<header class="card-header"><span><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1 L14 3.5 V8 C14 11.5 11.4 14 8 15 C4.6 14 2 11.5 2 8 V3.5 Z" fill="none" stroke="var(--psa-colors-signal-gold)" stroke-width="1.6"/><path d="M5.3 8.2 L7.2 10 L10.8 6.2" fill="none" stroke="var(--psa-colors-signal-gold)" stroke-width="1.6"/></svg>Huntress EDR / ITDR</span><span class="badge b-ok">Connected</span></header>
+<div class="card-body">
+<p class="muted small">Syncs EDR, ITDR, and SAT license counts from Huntress for billing. Runs daily at 05:00 or on demand.</p>
+
+<div class="setup">
+  <strong>Setup:</strong>
+  <ol>
+    <li>In Huntress, create a <strong>user API key</strong> for the Huntress user the PSA should act as. (Huntress has deprecated the account-level API key.)</li>
+    <li>The key carries that user's permissions in Huntress. A read-only user's key gives reads only. Resolving SOC escalations needs a user whose role may resolve them.</li>
+    <li>Enter the API key and API secret below and click <strong>Save</strong>, then <strong>Test Connection</strong>.</li>
+    <li>Click <strong>Organization Mapping</strong> to map Huntress organizations to your clients. Use <strong>Auto-Match by Name</strong> for bulk matching.</li>
+    <li>Only mapped organizations will have their licenses synced. Unmapped organizations are ignored.</li>
+  </ol>
+  <hr>
+  <strong>Shared Huntress accounts:</strong> If multiple MSPs share a Huntress account, each MSP maps only their own clients' organizations. Unmapped orgs are skipped during sync.
+</div>
+
+
+<div class="row">
+  <div class="field"><label for="kx">API key</label><input type="password" id="kx" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;">
+    <div class="hint">Saved. Encrypted at rest. Leave blank to keep the saved value.</div></div>
+  <div class="field"><label for="sx">API secret</label><input type="password" id="sx" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;">
+    <div class="hint">Saved. Encrypted at rest. Leave blank to keep the saved value.</div></div>
+</div>
+<div class="row">
+  <div class="field"><label for="ok">Tactical client custom field ID (org key)</label><input type="number" min="1" step="1" id="ok" value="">
+    <div class="danger" role="alert">Stored value <code>0042x</code> is not a usable field ID. Leaving this field blank when saving clears it; enter a valid ID to replace it.</div>
+    <div class="hint">The CLIENT-model custom field in your Tactical RMM that holds each client's Huntress organization key, read by the Huntress deploy scripts. You create this field yourself, so its ID is whatever your instance assigned &mdash; find it in Tactical under Settings &rarr; Global Settings &rarr; Custom Fields. Leave blank and writes to it are refused rather than guessed.</div></div>
+  <div></div>
+</div>
+<p class="status" role="status"><span class="dot ok" aria-hidden="true"></span><span><strong>Escalation resolution:</strong> uses this key. Available only to MCP tokens granted it on <strong>Settings &gt; MCP tokens</strong>, and every resolve waits for a person's approval in the cockpit. Huntress refuses it unless this key's user may resolve escalations.</span></p>
+
+<div class="btns"><button class="primary" type="button">Save Huntress Settings</button><button type="button">Test Connection</button></div>
+
+
+<div class="section">
+  <h6>Signed webhook linking</h6>
+  <p class="muted small">Separate from API sync and ConnectWise incident intake. Saving credentials does not enable linking unless you select the switch below. Configure the Huntress endpoint only after your administrator approves activation.</p>
+  <div class="field"><label for="wx">Webhook signing secret</label><input type="password" id="wx" placeholder="Enter Svix signing secret">
+    <div class="hint">Encrypted at rest. Leave blank to preserve the stored secret.</div></div>
+  <div class="field"><label for="ax">Expected Huntress account ID</label><input type="text" id="ax" value="">
+    <div class="hint">Use the numeric <code>account.id</code> from <code>GET https://api.huntress.io/v1/account</code>, authenticated with your Huntress API key and secret (HTTP Basic auth). This is the top-level account, not an organization ID, and is not shown on the Huntress webhook page. Detect uses your saved API credentials and fills this field without saving settings or enabling linking. Saving a new account ID or enabling linking verifies it against the API; mismatches are rejected. An unchanged account can still be disabled without API access.</div><button type="button" style="margin-top:6px">Detect account ID</button></div>
+  <div class="field"><label style="font-weight:400;color:var(--psa-colors-ink)"><input type="checkbox"> Webhook linking enabled</label>
+    <div class="hint">Requires a signing secret and expected account ID. Off by default.</div></div>
+  <button class="primary" type="button">Save Webhook Settings</button>
+</div>
+
+
+<div class="section btns"><button type="button">Organization Mapping</button><button class="ok" type="button">Sync Licenses Now</button></div>
+<div class="section"><label style="font-weight:400;color:var(--psa-colors-ink)"><input type="checkbox" checked> Integration enabled</label></div>
+
+</div></article>
+
+</main>
+</body>
+</html>
