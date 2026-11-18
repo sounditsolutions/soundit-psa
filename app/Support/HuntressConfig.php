@@ -18,8 +18,8 @@ class HuntressConfig
 
     /**
      * Setting holding the Tactical RMM CLIENT-scoped custom field id that carries a
-     * client's Huntress organization key, which the Huntress deploy scripts pass to
-     * the installer.
+     * client's Huntress organization key, for the Huntress deploy scripts to pass to
+     * the installer (they derive it from the client name until switched).
      *
      * A setting rather than a constant for the same reason as
      * ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING: the operator creates this

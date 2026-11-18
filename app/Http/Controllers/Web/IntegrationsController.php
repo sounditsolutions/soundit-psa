@@ -2105,7 +2105,15 @@ class IntegrationsController extends Controller
             abort(403, 'Administrator access required.');
         }
 
-        // Saved only after both 403 refusals above, so a refused submit writes
+        if ($request->has('tactical_org_key_field_id') && ! $request->user()?->isAdmin()) {
+            // The field id chooses which Tactical field huntress_org_key writes, so
+            // only an administrator may set or clear it. The input is rendered
+            // read-only and unnamed to non-admins; a non-admin submit carrying it
+            // is refused before anything saves, the same rule as the key pair.
+            abort(403, 'Administrator access required.');
+        }
+
+        // Saved only after the 403 refusals above, so a refused submit writes
         // nothing. Not a secret, so unlike the key pair a BLANK submit CLEARS it
         // (re-arming the fail-closed refusal), while an OMITTED key leaves it alone,
         // so a credentials-only POST cannot erase it. Stored canonically, so what is

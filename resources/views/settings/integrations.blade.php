@@ -2284,11 +2284,22 @@
                     <div class="row">
                         <div class="col-md-6 mb-3">
                             <label for="huntress_tactical_org_key_field_id" class="form-label">Tactical client custom field ID (org key)</label>
-                            <input type="number" min="1" step="1"
-                                   class="form-control @error('tactical_org_key_field_id') is-invalid @enderror"
-                                   id="huntress_tactical_org_key_field_id"
-                                   name="tactical_org_key_field_id"
-                                   value="{{ old('tactical_org_key_field_id', $huntressOrgKeyFieldId ?? '') }}">
+                            @if(auth()->user()?->isAdmin())
+                                <input type="number" min="1" step="1"
+                                       class="form-control @error('tactical_org_key_field_id') is-invalid @enderror"
+                                       id="huntress_tactical_org_key_field_id"
+                                       name="tactical_org_key_field_id"
+                                       value="{{ old('tactical_org_key_field_id', $huntressOrgKeyFieldId ?? '') }}">
+                            @else
+                                {{-- Read-only and unnamed for non-administrators: the field id chooses
+                                     which Tactical field huntress_org_key writes, so only an
+                                     administrator may change it (updateHuntress refuses with 403). --}}
+                                <input type="number" class="form-control" readonly
+                                       id="huntress_tactical_org_key_field_id"
+                                       aria-describedby="huntress-org-key-admin-only"
+                                       value="{{ $huntressOrgKeyFieldId ?? '' }}">
+                                <div class="form-text" id="huntress-org-key-admin-only">An administrator sets this.</div>
+                            @endif
                             @error('tactical_org_key_field_id')
                                 <div class="invalid-feedback">{{ $message }}</div>
                             @enderror
@@ -2300,8 +2311,9 @@
                             @endif
                             <div class="form-text">
                                 The CLIENT-model custom field in your Tactical RMM that holds each client's
-                                Huntress organization key, read by the Huntress deploy scripts. You create this
-                                field yourself, so its ID is whatever your instance assigned &mdash; find it in
+                                Huntress organization key, for the Huntress deploy scripts to read once they are
+                                switched to it. You create this field yourself, so its ID is whatever your
+                                instance assigned &mdash; find it in
                                 Tactical under Settings &rarr; Global Settings &rarr; Custom Fields. Leave blank
                                 and writes to it are refused rather than guessed.
                             </div>

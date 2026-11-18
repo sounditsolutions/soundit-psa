@@ -84,7 +84,7 @@ code { font-size: 0.8rem; color: var(--psa-colors-navy-deep); }
 <div class="row">
   <div class="field"><label for="ok">Tactical client custom field ID (org key)</label><input type="number" min="1" step="1" id="ok" value="">
     <div class="danger" role="alert">Stored value <code>0042x</code> is not a usable field ID. Leaving this field blank when saving clears it; enter a valid ID to replace it.</div>
-    <div class="hint">The CLIENT-model custom field in your Tactical RMM that holds each client's Huntress organization key, read by the Huntress deploy scripts. You create this field yourself, so its ID is whatever your instance assigned &mdash; find it in Tactical under Settings &rarr; Global Settings &rarr; Custom Fields. Leave blank and writes to it are refused rather than guessed.</div></div>
+    <div class="hint">The CLIENT-model custom field in your Tactical RMM that holds each client's Huntress organization key, for the Huntress deploy scripts to read once they are switched to it. You create this field yourself, so its ID is whatever your instance assigned &mdash; find it in Tactical under Settings &rarr; Global Settings &rarr; Custom Fields. Leave blank and writes to it are refused rather than guessed.</div></div>
   <div></div>
 </div>
 <p class="status" role="status"><span class="dot ok" aria-hidden="true"></span><span><strong>Escalation resolution:</strong> uses this key. Available only to MCP tokens granted it on <strong>Settings &gt; MCP tokens</strong>, and every resolve waits for a person's approval in the cockpit. Huntress refuses it unless this key's user may resolve escalations.</span></p>

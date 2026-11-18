@@ -181,8 +181,9 @@ class StaffTacticalAdminToolExecutor
      */
     private const CLIENT_CUSTOM_FIELD_ALLOWLIST = [
         'controld_org_id' => ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING,
-        // Read by the Huntress deploy scripts as the installer's org key, so a
-        // client rename cannot make Huntress create a duplicate organization.
+        // For the Huntress deploy scripts to pass to the installer (they derive it
+        // from the client name until switched), so a client rename cannot make
+        // Huntress create a duplicate organization.
         'huntress_org_key' => HuntressConfig::TACTICAL_CLIENT_ORG_KEY_FIELD_SETTING,
     ];
 
@@ -3636,7 +3637,7 @@ class StaffTacticalAdminToolExecutor
                 : "The Control D integration is disabled in PSA (setting 'controld_enabled'), and '{$fieldKey}' is its deploy trigger; no upstream call was made.",
             'huntress_org_key' => HuntressConfig::isEnabled()
                 ? null
-                : "The Huntress integration is disabled in PSA (setting 'huntress_enabled'), and '{$fieldKey}' is the org key its deploy scripts install with; no upstream call was made.",
+                : "The Huntress integration is disabled in PSA (setting 'huntress_enabled'), and '{$fieldKey}' is the org key for its deploy scripts; no upstream call was made.",
             default => "No integration master switch is wired up for '{$fieldKey}'; no upstream call was made.",
         };
     }

@@ -136,6 +136,63 @@ class HuntressOrgKeyFieldSettingsTest extends TestCase
         $this->assertNull($this->raw());
     }
 
+    public function test_a_non_admin_submit_carrying_only_the_field_id_is_refused_and_saves_nothing(): void
+    {
+        Setting::setValue(HuntressConfig::TACTICAL_CLIENT_ORG_KEY_FIELD_SETTING, '42');
+        $tech = User::factory()->create(['role' => UserRole::Tech, 'is_active' => true]);
+
+        $this->actingAs($tech)
+            ->post(route('settings.integrations.huntress.update'), [
+                'tactical_org_key_field_id' => '51',
+            ])
+            ->assertForbidden();
+
+        $this->assertSame('42', $this->raw());
+    }
+
+    public function test_a_non_admin_blank_field_id_submit_is_refused_and_clears_nothing(): void
+    {
+        Setting::setValue(HuntressConfig::TACTICAL_CLIENT_ORG_KEY_FIELD_SETTING, '42');
+        $tech = User::factory()->create(['role' => UserRole::Tech, 'is_active' => true]);
+
+        $this->actingAs($tech)
+            ->post(route('settings.integrations.huntress.update'), [
+                'tactical_org_key_field_id' => '',
+            ])
+            ->assertForbidden();
+
+        $this->assertSame('42', $this->raw());
+    }
+
+    public function test_an_admin_submit_carrying_only_the_field_id_saves_it(): void
+    {
+        $this->save(['tactical_org_key_field_id' => '51'])
+            ->assertRedirect(route('settings.integrations'))
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame('51', $this->raw());
+    }
+
+    public function test_a_non_admin_sees_the_field_id_read_only_with_no_submittable_input(): void
+    {
+        Setting::setValue(HuntressConfig::TACTICAL_CLIENT_ORG_KEY_FIELD_SETTING, '42');
+        $tech = User::factory()->create(['role' => UserRole::Tech, 'is_active' => true]);
+
+        $this->actingAs($tech)->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertSee('id="huntress-org-key-admin-only"', false)
+            ->assertSee('An administrator sets this.')
+            ->assertDontSee('name="tactical_org_key_field_id"', false);
+    }
+
+    public function test_an_admin_sees_the_editable_input_and_not_the_admin_only_note(): void
+    {
+        $this->actingAs($this->admin())->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertSee('name="tactical_org_key_field_id"', false)
+            ->assertDontSee('id="huntress-org-key-admin-only"', false);
+    }
+
     public function test_an_edge_whitespace_value_reads_back_trimmed(): void
     {
         Setting::setValue(HuntressConfig::TACTICAL_CLIENT_ORG_KEY_FIELD_SETTING, ' 51 ');
