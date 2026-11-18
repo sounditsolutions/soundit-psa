@@ -23,6 +23,7 @@ use App\Services\Tactical\TacticalScriptSyncService;
 use App\Services\Technician\TechnicianApprovalResult;
 use App\Support\CometConfig;
 use App\Support\ControlDConfig;
+use App\Support\HuntressConfig;
 use App\Support\ServosityConfig;
 use App\Support\TacticalConfig;
 use App\Support\TechnicianConfig;
@@ -180,6 +181,9 @@ class StaffTacticalAdminToolExecutor
      */
     private const CLIENT_CUSTOM_FIELD_ALLOWLIST = [
         'controld_org_id' => ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING,
+        // Read by the Huntress deploy scripts as the installer's org key, so a
+        // client rename cannot make Huntress create a duplicate organization.
+        'huntress_org_key' => HuntressConfig::TACTICAL_CLIENT_ORG_KEY_FIELD_SETTING,
     ];
 
     /** @var array<string, string> */
@@ -3630,6 +3634,9 @@ class StaffTacticalAdminToolExecutor
             'controld_org_id' => ControlDConfig::isEnabled()
                 ? null
                 : "The Control D integration is disabled in PSA (setting 'controld_enabled'), and '{$fieldKey}' is its deploy trigger; no upstream call was made.",
+            'huntress_org_key' => HuntressConfig::isEnabled()
+                ? null
+                : "The Huntress integration is disabled in PSA (setting 'huntress_enabled'), and '{$fieldKey}' is the org key its deploy scripts install with; no upstream call was made.",
             default => "No integration master switch is wired up for '{$fieldKey}'; no upstream call was made.",
         };
     }
@@ -3642,6 +3649,7 @@ class StaffTacticalAdminToolExecutor
     {
         return match ($fieldKey) {
             'controld_org_id' => ControlDConfig::tacticalClientOrgFieldId(),
+            'huntress_org_key' => HuntressConfig::tacticalClientOrgKeyFieldId(),
             default => null,
         };
     }
@@ -6339,7 +6347,7 @@ class StaffTacticalAdminToolExecutor
     {
         return array_merge(self::reasonProperties(), [
             'ticket_id' => ['type' => 'integer', 'description' => 'PSA ticket this change belongs to. The proposal is staged against it for approval.'],
-            'field_key' => ['type' => 'string', 'description' => 'Allowlisted CLIENT-scoped key: controld_org_id.'],
+            'field_key' => ['type' => 'string', 'description' => 'Allowlisted CLIENT-scoped key: controld_org_id or huntress_org_key.'],
             'value' => ['type' => 'string', 'description' => 'Value to write. It is shown to the approver and sent upstream, but withheld from MCP and Technician audits.'],
         ]);
     }

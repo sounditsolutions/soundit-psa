@@ -17,6 +17,7 @@ use App\Services\Tactical\TacticalClient;
 use App\Services\Tactical\TacticalClientException;
 use App\Services\Technician\TechnicianApprovalService;
 use App\Support\ControlDConfig;
+use App\Support\HuntressConfig;
 use App\Support\McpConfig;
 use App\Support\McpToolModes;
 use App\Support\McpToolRegistry;
@@ -971,5 +972,150 @@ class TacticalSetClientCustomFieldTest extends TestCase
             $run->fresh()->state,
             'a declined approval must release the claim, not consume the proposal',
         );
+    }
+
+    // ---- huntress_org_key (card 6afe0780) -------------------------------------
+
+    private const HUNTRESS_FIELD_ID = 51;
+
+    private function configureHuntressField(): void
+    {
+        Setting::setValue(HuntressConfig::TACTICAL_CLIENT_ORG_KEY_FIELD_SETTING, (string) self::HUNTRESS_FIELD_ID);
+    }
+
+    /** @return array<string, mixed> */
+    private function huntressArgs(array $fixture, array $overrides = []): array
+    {
+        return $this->stageArgs($fixture, array_merge([
+            'field_key' => 'huntress_org_key',
+            'value' => 'acmeorgkey',
+            'reason' => 'Pin the Huntress org key so a client rename cannot fork the org.',
+        ], $overrides));
+    }
+
+    public function test_huntress_org_key_is_allowlisted_and_writes_its_own_configured_field(): void
+    {
+        $this->configureTactical();
+        $this->configureHuntressField();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+
+        // The Huntress field id, never the Control D one configured beside it.
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->once()->andReturn($this->upstreamClients());
+        $client->shouldReceive('setClientCustomField')->once()->with(7, self::HUNTRESS_FIELD_ID, 'acmeorgkey');
+
+        $response = $this->callTool(
+            $this->token(['tactical_set_client_custom_field:immediate']),
+            'tactical_set_client_custom_field',
+            $this->huntressArgs($fixture, ['staged' => false]),
+        );
+
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $this->assertTrue($this->decodedResult($response)['success']);
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_huntress_org_key_stages_with_its_field_key_and_hides_the_value_from_redacted_params(): void
+    {
+        $this->configureTactical();
+        $this->configureHuntressField();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->andReturn($this->upstreamClients());
+        $client->shouldNotReceive('setClientCustomField');
+
+        $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->huntressArgs($fixture));
+
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+        $this->assertSame('huntress_org_key', $run->proposed_meta['redacted_params']['field_key']);
+        $this->assertArrayNotHasKey('value', $run->proposed_meta['redacted_params']);
+        $this->assertStringContainsString('(field #'.self::HUNTRESS_FIELD_ID.')', $run->proposed_content);
+    }
+
+    /** @return array<string, array{0: ?string}> */
+    public static function huntressFieldIdRefusalProvider(): array
+    {
+        return [
+            'unset' => [null],
+            'blank' => [''],
+            'zero' => ['0'],
+            'signed' => ['+51'],
+            'padded with a leading zero' => ['051'],
+            'too large for the platform int' => ['9223372036854775808'],
+        ];
+    }
+
+    #[DataProvider('huntressFieldIdRefusalProvider')]
+    public function test_huntress_org_key_refuses_before_any_upstream_read_when_its_field_id_is_unusable(?string $stored): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        if ($stored !== null) {
+            Setting::setValue(HuntressConfig::TACTICAL_CLIENT_ORG_KEY_FIELD_SETTING, $stored);
+        }
+        $fixture = $this->fixture();
+
+        // The Control D field id IS configured (configureTactical): an unset
+        // Huntress id must not borrow it.
+        $upstreamReads = 0;
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->andReturnUsing(function () use (&$upstreamReads): array {
+            $upstreamReads++;
+
+            return $this->upstreamClients();
+        });
+        $client->shouldNotReceive('setClientCustomField');
+
+        $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->huntressArgs($fixture));
+
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('is not configured', $text);
+        $this->assertStringContainsString(HuntressConfig::TACTICAL_CLIENT_ORG_KEY_FIELD_SETTING, $text);
+        $this->assertSame(0, $upstreamReads);
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_the_huntress_master_switch_refuses_huntress_org_key_but_not_controld_org_id(): void
+    {
+        $this->configureTactical();
+        $this->configureHuntressField();
+        $this->configureAiActor();
+        $fixture = $this->fixture();
+        Setting::setValue('huntress_enabled', '0');
+
+        $upstreamReads = 0;
+        $client = $this->mockTactical();
+        $client->shouldReceive('getClients')->andReturnUsing(function () use (&$upstreamReads): array {
+            $upstreamReads++;
+
+            return $this->upstreamClients();
+        });
+        $client->shouldNotReceive('setClientCustomField');
+
+        $response = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->huntressArgs($fixture));
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('Huntress integration is disabled', $text);
+        $this->assertStringContainsString('huntress_enabled', $text);
+        $this->assertSame(0, $upstreamReads);
+
+        // Each key answers to its own integration's switch only.
+        $controld = $this->callTool($this->grantedToken(), 'tactical_set_client_custom_field', $this->stageArgs($fixture));
+        $this->assertFalse((bool) $controld->json('result.isError'), (string) $controld->json('result.content.0.text'));
+    }
+
+    public function test_the_tool_schema_names_both_client_keys(): void
+    {
+        $canonical = collect(StaffTacticalAdminToolExecutor::definitions())
+            ->firstWhere('name', 'tactical_set_client_custom_field');
+
+        $description = $canonical['input_schema']['properties']['field_key']['description'];
+        $this->assertStringContainsString('controld_org_id', $description);
+        $this->assertStringContainsString('huntress_org_key', $description);
     }
 }
