@@ -211,16 +211,60 @@ class HuntressUserKeyPairSettingsTest extends TestCase
         $this->assertStringContainsString('Removes both halves when you save. Resolve then uses the API key and API secret above.', $card);
     }
 
-    public function test_a_lone_earlier_half_shows_the_notice_but_the_status_line_says_this_key(): void
+    public function test_a_lone_earlier_half_shows_the_lone_half_notice_and_the_status_line_says_this_key(): void
+    {
+        foreach (['huntress_user_api_key', 'huntress_user_api_secret'] as $half) {
+            Setting::query()->delete();
+            $this->storeMainPair();
+            Setting::setEncrypted($half, self::SECRET_VALUE);
+
+            $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+
+            $this->assertStringContainsString('Escalation resolution:</strong> uses this key.', $card, $half);
+            $this->assertStringContainsString('Part of an earlier user API key pair is still stored.</strong> It is not used: resolve uses the API key and API secret above. An administrator can clear it here.', $card, $half);
+            $this->assertStringNotContainsString('Earlier user API key still in use for resolve.', $card, "{$half}: the full-pair notice is false for a lone half");
+            $this->assertStringContainsString('name="clear_user_api_key_pair"', $card, 'a lone half must stay clearable');
+        }
+    }
+
+    public function test_the_full_pair_notice_does_not_carry_the_lone_half_text(): void
     {
         $this->storeMainPair();
-        Setting::setEncrypted('huntress_user_api_secret', self::SECRET_VALUE);
+        $this->storeEarlierPair();
 
-        $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+        $card = $this->card($this->page());
 
-        $this->assertStringContainsString('Escalation resolution:</strong> uses this key.', $card);
         $this->assertStringContainsString('Earlier user API key still in use for resolve.', $card);
-        $this->assertStringContainsString('name="clear_user_api_key_pair"', $card, 'a lone half must stay clearable');
+        $this->assertStringNotContainsString('Part of an earlier user API key pair is still stored.', $card);
+    }
+
+    public function test_the_lone_half_tick_box_is_not_rendered_to_a_non_admin(): void
+    {
+        $this->storeMainPair();
+        Setting::setEncrypted('huntress_user_api_key', self::KEY);
+
+        $techCard = $this->card($this->page($this->tech()));
+        $this->assertStringContainsString('Part of an earlier user API key pair is still stored.', $techCard, 'precondition: the lone-half notice rendered to the non-admin');
+        $this->assertStringNotContainsString('name="clear_user_api_key_pair"', $techCard);
+        $this->assertStringNotContainsString('Clear the earlier user API key pair', $techCard);
+
+        $this->assertStringContainsString('name="clear_user_api_key_pair"', $this->card($this->page()), 'positive control: an admin gets the box');
+    }
+
+    public function test_the_page_still_renders_when_an_earlier_row_cannot_be_decrypted(): void
+    {
+        $this->storeMainPair();
+        foreach ([['huntress_user_api_key', 'huntress_user_api_secret'], ['huntress_user_api_key']] as $keys) {
+            Setting::whereIn('key', ['huntress_user_api_key', 'huntress_user_api_secret'])->delete();
+            foreach ($keys as $key) {
+                DB::table('settings')->insert(['key' => $key, 'value' => 'synthetic-not-ciphertext', 'created_at' => now(), 'updated_at' => now()]);
+            }
+
+            $card = $this->card($this->page());
+
+            $this->assertStringContainsString('id="huntress-earlier-user-pair"', $card, implode('+', $keys).': the notice still renders');
+            $this->assertStringContainsString('name="clear_user_api_key_pair"', $card, implode('+', $keys).': an undecryptable row stays clearable');
+        }
     }
 
     public function test_no_notice_and_no_tick_box_without_an_earlier_half(): void
@@ -353,6 +397,33 @@ class HuntressUserKeyPairSettingsTest extends TestCase
         $this->assertStringContainsString('name="api_key"', $card);
         $this->assertStringContainsString('name="api_secret"', $card);
         $this->assertStringNotContainsString('An administrator enters this key.', $card);
+    }
+
+    public function test_an_over_length_key_or_secret_is_refused_and_saves_nothing(): void
+    {
+        $this->storeMainPair();
+        $before = DB::table('settings')->orderBy('key')->pluck('value', 'key')->all();
+        $long = str_repeat('k', 501);
+
+        $this->save(['api_key' => $long, 'api_secret' => 'synthetic-new-secret'])->assertSessionHasErrors('api_key');
+        $this->save(['api_key' => 'synthetic-new-key', 'api_secret' => $long])->assertSessionHasErrors('api_secret');
+
+        $this->assertSame($before, DB::table('settings')->orderBy('key')->pluck('value', 'key')->all(), 'an over-length submit changed a stored setting');
+    }
+
+    public function test_a_failed_save_does_not_flash_either_value_back(): void
+    {
+        $long = str_repeat('s', 501);
+
+        $this->save(['api_key' => 'synthetic-flash-key', 'api_secret' => $long])->assertSessionHasErrors('api_secret');
+        $this->assertNull(session()->getOldInput('api_key'), 'the API key was flashed into the session');
+        $this->assertNull(session()->getOldInput('api_secret'), 'the API secret was flashed into the session');
+        $this->assertStringNotContainsString('synthetic-flash-key', serialize(session()->all()));
+
+        $this->save(['api_key' => $long, 'api_secret' => 'synthetic-flash-secret'])->assertSessionHasErrors('api_key');
+        $this->assertNull(session()->getOldInput('api_key'));
+        $this->assertNull(session()->getOldInput('api_secret'));
+        $this->assertStringNotContainsString('synthetic-flash-secret', serialize(session()->all()));
     }
 
     public function test_an_admin_save_of_a_new_pair_still_works(): void

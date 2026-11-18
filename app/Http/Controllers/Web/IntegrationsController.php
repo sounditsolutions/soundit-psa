@@ -178,6 +178,10 @@ class IntegrationsController extends Controller
         // while either half is stored; the status line names it as the
         // resolve key only while both halves are (HuntressConfig::writeCredentials()).
         $huntressEarlierUserPairStored = HuntressConfig::hasEarlierUserPairResidue();
+        // Exactly one half stored (raw rows, no decrypt): not a pair, never
+        // used; the notice says so and keeps the clear control.
+        $huntressEarlierUserPairLoneHalf = filled(Setting::getValue('huntress_user_api_key'))
+            !== filled(Setting::getValue('huntress_user_api_secret'));
         try {
             $huntressResolveUsesEarlierPair = HuntressConfig::hasEarlierUserPair();
         } catch (\Illuminate\Contracts\Encryption\DecryptException) {
@@ -619,7 +623,7 @@ class IntegrationsController extends Controller
             'meshHasApiKey', 'meshKeyUnusable', 'meshBaseUrl', 'meshConnected', 'meshEnabled',
             'huntressConfigured', 'huntressConnected', 'huntressEnabled',
             'huntressWebhookSecretStored', 'huntressWebhookAccountId', 'huntressWebhooksEnabled',
-            'huntressKeyStored', 'huntressSecretStored', 'huntressEarlierUserPairStored', 'huntressResolveUsesEarlierPair',
+            'huntressKeyStored', 'huntressSecretStored', 'huntressEarlierUserPairStored', 'huntressEarlierUserPairLoneHalf', 'huntressResolveUsesEarlierPair',
             'unifiConfigured', 'unifiConnected', 'unifiBaseUrl', 'unifiEnabled',
             'powerdmarcConfigured', 'powerdmarcConnected', 'powerdmarcBaseUrl', 'powerdmarcMsspBaseUrl', 'powerdmarcMsspWalkSeconds', 'powerdmarcEnabled',
             'servosityConfigured', 'servosityConnected', 'servosityConnectedAt', 'servosityEnabled',

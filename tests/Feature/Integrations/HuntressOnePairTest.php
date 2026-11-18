@@ -282,7 +282,87 @@ class HuntressOnePairTest extends TestCase
         $this->assertSame('Huntress rejected the resolve call — nothing was resolved. Try again.', $result->message);
     }
 
+    // ── the approval gate re-checks the state at approve time ──────────────────
+
+    public function test_an_approval_after_the_integration_is_switched_off_is_declined_and_sends_nothing(): void
+    {
+        $this->storeMain();
+        [$run, $actor] = $this->stageARun();
+
+        Setting::setValue('huntress_enabled', '0');
+
+        $this->assertApprovalDeclinedAndNothingSent($run, $actor);
+    }
+
+    public function test_an_approval_after_the_main_pair_is_removed_is_declined_and_sends_nothing(): void
+    {
+        // The earlier pair stays stored, so writeCredentials() still has a
+        // pair to sign with: only the approve-time isConfigured() check stops it.
+        $this->storeMain();
+        $this->storeEarlier();
+        [$run, $actor] = $this->stageARun();
+
+        Setting::whereIn('key', ['huntress_api_key', 'huntress_api_secret'])->delete();
+        $this->assertSame(['api_key' => 'synthetic-earlier-key', 'api_secret' => 'synthetic-earlier-secret'], HuntressConfig::writeCredentials(), 'precondition: a signing pair is still stored');
+
+        $this->assertApprovalDeclinedAndNothingSent($run, $actor);
+    }
+
+    // ── publish: a switched-off install ────────────────────────────────────────
+
+    public function test_a_switched_off_install_does_not_list_resolve_to_a_granted_token(): void
+    {
+        $this->storeMain();
+        $this->assertTrue($this->resolveIsPublishedToAGrantedToken(), 'precondition: resolve is listed while the integration is on');
+
+        Setting::setValue('huntress_enabled', '0');
+
+        $token = $this->token(['huntress_resolve_escalation:staged', 'huntress_stage_resolve_escalation']);
+        $names = $this->listedNames($token);
+        $this->assertNotEmpty($names, 'precondition: the token lists tools');
+        $this->assertNotContains('huntress_resolve_escalation', $names);
+        $this->assertNotContains('huntress_stage_resolve_escalation', $names);
+    }
+
     // ── fixtures ───────────────────────────────────────────────────────────────
+
+    /** Stage one resolve through the MCP surface; returns the run and the approver. */
+    private function stageARun(): array
+    {
+        $actor = User::factory()->create(['name' => 'AI Actor']);
+        Setting::setValue('triage_system_user_id', (string) $actor->id);
+        $fixture = $this->fixture();
+
+        $this->mockRead();
+        $this->mockWriteNeverCalled();
+        $stage = $this->callTool($this->token(['huntress_stage_resolve_escalation']), 'huntress_stage_resolve_escalation', $this->stageArguments($fixture));
+        $this->assertFalse((bool) $stage->json('result.isError'), (string) $stage->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail(json_decode((string) $stage->json('result.content.0.text'), true)['run_id']);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->state, 'precondition: the run is staged');
+
+        return [$run, $actor];
+    }
+
+    /** Approve against the real write client on a Guzzle mock that would answer 201; expect a decline and no request. */
+    private function assertApprovalDeclinedAndNothingSent(TechnicianRun $run, User $actor): void
+    {
+        $history = [];
+        $stack = HandlerStack::create(new MockHandler([new Response(201, [], json_encode(['id' => 900, 'status' => 'resolved', 'resolution_method' => 'direct']))]));
+        $stack->push(Middleware::history($history));
+        $this->app->instance(HuntressWriteClient::class, new HuntressWriteClient(
+            ['api_key' => 'synthetic-any-key', 'api_secret' => 'synthetic-any-secret'],
+            new GuzzleClient(['base_uri' => 'https://api.huntress.io/v1/', 'handler' => $stack]),
+        ));
+        $this->mockRead();
+        $this->app->forgetInstance(StaffHuntressActionToolExecutor::class);
+
+        $result = app(StaffHuntressActionToolExecutor::class)->approveStagedRun($run, $actor->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame('Huntress is not enabled or its API key and API secret are not saved — nothing was resolved.', $result->message);
+        $this->assertCount(0, $history, 'a request was sent to Huntress');
+        $this->assertSame(0, TechnicianRun::where('state', TechnicianRunState::Done)->count());
+    }
 
     private function mockWriteNeverCalled(): void
     {
