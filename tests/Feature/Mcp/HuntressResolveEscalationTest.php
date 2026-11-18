@@ -43,13 +43,11 @@ class HuntressResolveEscalationTest extends TestCase
 
     private const ORG_ID = 42;
 
-    private function configureHuntress(bool $writeKey = true): void
+    private function configureHuntress(bool $pair = true): void
     {
-        Setting::setEncrypted('huntress_api_key', 'k');
-        Setting::setEncrypted('huntress_api_secret', 's');
-        if ($writeKey) {
-            Setting::setEncrypted('huntress_user_api_key', 'uk');
-            Setting::setEncrypted('huntress_user_api_secret', 'us');
+        if ($pair) {
+            Setting::setEncrypted('huntress_api_key', 'k');
+            Setting::setEncrypted('huntress_api_secret', 's');
         }
     }
 
@@ -171,18 +169,17 @@ class HuntressResolveEscalationTest extends TestCase
 
     // ── surface & grants ────────────────────────────────────────────────────────
 
-    public function test_registry_grantable_explicit_grant_only_and_dormant_without_write_key(): void
+    public function test_registry_grantable_explicit_grant_only_and_dormant_without_the_key_pair(): void
     {
-        $this->configureHuntress(writeKey: false);
+        $this->configureHuntress(pair: false);
 
         $this->assertContains('huntress_resolve_escalation', McpToolRegistry::allToolNames());
 
-        // Without the user-based write key the tool is not live — even granted.
+        // Without the API key pair the tool is not live — even granted.
         $granted = $this->token(['huntress_resolve_escalation:staged']);
-        $this->assertNotContains('huntress_resolve_escalation', array_column($this->listTools($granted), 'name'), 'dormant until the write key is configured');
+        $this->assertNotContains('huntress_resolve_escalation', array_column($this->listTools($granted), 'name'), 'dormant until the key pair is saved');
 
-        Setting::setEncrypted('huntress_user_api_key', 'uk');
-        Setting::setEncrypted('huntress_user_api_secret', 'us');
+        $this->configureHuntress();
         $names = array_column($this->listTools($this->token(['huntress_resolve_escalation:staged'])), 'name');
         $this->assertContains('huntress_resolve_escalation', $names);
         $this->assertNotContains('huntress_stage_resolve_escalation', $names, 'the staged alias is absorbed into the unified definition');
@@ -846,7 +843,7 @@ class HuntressResolveEscalationTest extends TestCase
 
     public function test_write_lane_unconfigured_refuses_at_dispatch_even_if_called(): void
     {
-        $this->configureHuntress(writeKey: false);
+        $this->configureHuntress(pair: false);
         $this->configureAiActor();
         $fixture = $this->fixture();
         $this->mockWriteClientNeverCalled();
@@ -857,7 +854,7 @@ class HuntressResolveEscalationTest extends TestCase
         // the unit boundary here.
         $executor = app(\App\Services\Mcp\StaffHuntressActionToolExecutor::class);
         $result = $executor->execute('huntress_stage_resolve_escalation', $this->stageArguments($fixture), $fixture['client']->id, 'opsbot');
-        $this->assertStringContainsString('write credential', (string) ($result['error'] ?? ''));
+        $this->assertSame('Huntress is not configured', $result['error'] ?? null);
         $this->assertSame(0, TechnicianRun::count());
     }
 

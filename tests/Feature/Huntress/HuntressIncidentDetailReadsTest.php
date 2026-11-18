@@ -80,7 +80,7 @@ class HuntressIncidentDetailReadsTest extends TestCase
             $this->assertCount(0, $this->history);
             $this->bind(42, $family, $get, 403);
             $error = app(HuntressReadOnlyToolset::class)->execute('huntress_'.$tool, $input)['error'];
-            $this->assertStringContainsString('Huntress HTTP 403: the Huntress API key in Settings may lack access to this endpoint.', $error);
+            $this->assertStringContainsString('Huntress HTTP 403: the Huntress API key in Settings may lack access to this endpoint; the key carries its Huntress user\'s permissions, so check that user\'s role.', $error);
             $this->assertStringNotContainsString('https://', $error);
         }
     }

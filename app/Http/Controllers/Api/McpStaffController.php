@@ -3414,9 +3414,8 @@ class McpStaffController extends Controller
 
         // Huntress escalation actions: EXPLICIT-GRANT-ONLY, never inherited by
         // the legacy full-surface token — resolving a SOC escalation is a
-        // security record change and rides a write credential the operator
-        // added deliberately; the per-tool grant is the operator's decision
-        // point. Mirrors the CIPP-write and calendar gates.
+        // security record change; the per-tool grant is the operator's
+        // decision point. Mirrors the CIPP-write and calendar gates.
         if ($this->isHuntressActionTool($toolName)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }

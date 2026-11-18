@@ -166,10 +166,10 @@ class McpToolSurface
             $cippRestLive ? McpToolRegistry::cippAdminTools() : [],
             \App\Services\Triage\TriageToolDefinitions::isTacticalAvailable() ? McpToolRegistry::tacticalActionTools() : [],
             // Huntress escalation actions: gated on exactly the predicate
-            // StaffHuntressActionToolExecutor refuses on — integration on,
-            // read pair configured, AND the separate user-based write key
-            // present (psa-wzjzz: publish and dispatch answer one question).
-            HuntressConfig::isEnabled() && HuntressConfig::isConfigured() && HuntressConfig::isWriteConfigured()
+            // StaffHuntressActionToolExecutor refuses on — integration on and
+            // the API key pair saved (psa-wzjzz: publish and dispatch answer
+            // one question). Who may call them is the per-action token grant.
+            HuntressConfig::isEnabled() && HuntressConfig::isConfigured()
                 ? McpToolRegistry::huntressActionTools()
                 : [],
             // Mesh allow-list writes: gated on exactly the predicate

@@ -8,11 +8,13 @@ use App\Models\User;
 class HuntressConfig
 {
     /**
-     * Where an operator enters the escalation-resolve write credential: the
-     * user-based key pair inputs in the Huntress card on the Integrations page.
-     * One constant so every remedy message names the same, real field.
+     * Where an operator enters the Huntress API key pair: the "API key" and
+     * "API secret" inputs in the Huntress card on the Integrations page. Reads
+     * and escalation resolution use that one pair (resolve uses an earlier
+     * user pair instead while both of its halves are still stored; see
+     * writeCredentials()). One constant so every remedy names the real field.
      */
-    public const WRITE_CREDENTIAL_LOCATION = 'Settings > Integrations > Huntress EDR / ITDR > User API key and User API secret';
+    public const WRITE_CREDENTIAL_LOCATION = 'Settings > Integrations > Huntress EDR / ITDR > API key and API secret';
 
     public static function get(string $key): ?string
     {
@@ -57,16 +59,49 @@ class HuntressConfig
     }
 
     /**
-     * Phase 3: the escalation-resolve write lane is configured. This is a
-     * SEPARATE credential class — the spec documents the default account API
-     * key as read-only; resolution needs a user-based API key. The write
-     * client never falls back to the read pair, so an instance with only
-     * Phase 1 credentials keeps the write surface unpublished (fail closed).
+     * True while BOTH halves of the earlier, separate user API key pair are
+     * still stored. That pair predates the card's move to one key pair; it is
+     * no longer entered anywhere, only kept until an administrator clears it.
+     * A lone half is not a pair.
      */
-    public static function isWriteConfigured(): bool
+    public static function hasEarlierUserPair(): bool
     {
         return ! empty(self::get('user_api_key'))
             && ! empty(self::get('user_api_secret'));
+    }
+
+    /**
+     * True when either half of the earlier user pair is still stored (raw
+     * row present, no decrypt). Drives the card's notice and clear control,
+     * so a lone half can still be cleared.
+     */
+    public static function hasEarlierUserPairResidue(): bool
+    {
+        return filled(Setting::getValue('huntress_user_api_key'))
+            || filled(Setting::getValue('huntress_user_api_secret'));
+    }
+
+    /**
+     * The pair escalation resolution signs with, derived from what is stored
+     * (nothing else decides it): the earlier user pair while both of its
+     * halves are stored, otherwise the main API key pair. Who may call
+     * resolve at all is the per-action grant on the MCP token.
+     *
+     * @return array{api_key: ?string, api_secret: ?string}
+     */
+    public static function writeCredentials(): array
+    {
+        if (self::hasEarlierUserPair()) {
+            return [
+                'api_key' => self::get('user_api_key'),
+                'api_secret' => self::get('user_api_secret'),
+            ];
+        }
+
+        return [
+            'api_key' => self::get('api_key'),
+            'api_secret' => self::get('api_secret'),
+        ];
     }
 
     /**

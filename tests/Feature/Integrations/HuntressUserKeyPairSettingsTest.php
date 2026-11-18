@@ -7,31 +7,32 @@ use App\Models\Setting;
 use App\Models\User;
 use App\Services\Huntress\HuntressWriteClient;
 use App\Services\Huntress\HuntressWriteScopeException;
-use App\Services\Mcp\StaffHuntressActionToolExecutor;
 use App\Support\HuntressConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 /**
- * Settings > Integrations > Huntress: the user-based API key pair that the
- * escalation-resolve write lane reads (HuntressConfig::isWriteConfigured),
- * issues #1023 and #581.
+ * Settings > Integrations > Huntress: one API key pair for reads and
+ * escalation resolution, and the admin-only control that clears an earlier,
+ * separate user API key pair (issues #1023 and #581 introduced that pair).
  *
  * WHAT THESE CONTROLS PIN
  * -----------------------
- * The pair can be entered through the real form route and is stored
- * encrypted (the raw row is not the plaintext; getEncrypted returns it); the
- * page never renders a stored value back; a blank submit keeps the stored
- * pair; the explicit clear control removes both halves; validation refuses
- * over-length, a lone half, and clear-plus-new; non-admins cannot write it;
- * the status line reads both states; and both remedy messages name the field
- * that the page actually renders.
+ * The card renders one "API key" / "API secret" pair and no user-pair inputs;
+ * the pair round-trips encrypted and is never rendered back; a blank submit
+ * keeps it; the field hint and the status line read the stored state in the
+ * approved words; the notice and tick box show while either half of the
+ * earlier pair is stored, the tick box to administrators only; clearing
+ * removes both halves and nothing else; a non-admin clear is refused 403 and
+ * saves nothing; the API key and API secret inputs render to administrators
+ * only, and a non-admin submit carrying either half is refused 403 and saves
+ * nothing; a submit naming the retired user inputs writes nothing to
+ * the earlier pair; and the remedy location names labels the page renders.
  *
  * WHAT THEY DO NOT
  * ----------------
- * No Huntress call is made, and nothing here says the vendor accepts a
- * user-based key for resolution. All values are synthetic.
+ * No Huntress call is made. All values are synthetic.
  */
 class HuntressUserKeyPairSettingsTest extends TestCase
 {
@@ -46,6 +47,11 @@ class HuntressUserKeyPairSettingsTest extends TestCase
         return User::factory()->create(['role' => UserRole::Admin, 'is_active' => true]);
     }
 
+    private function tech(): User
+    {
+        return User::factory()->create(['role' => UserRole::Tech, 'is_active' => true]);
+    }
+
     private function save(array $fields, ?User $as = null)
     {
         return $this->actingAs($as ?? $this->admin())
@@ -58,287 +64,515 @@ class HuntressUserKeyPairSettingsTest extends TestCase
         return DB::table('settings')->where('key', $key)->value('value');
     }
 
-    private function storePair(string $key = self::KEY, string $secret = self::SECRET_VALUE): void
+    private function storeEarlierPair(string $key = self::KEY, string $secret = self::SECRET_VALUE): void
     {
         Setting::setEncrypted('huntress_user_api_key', $key);
         Setting::setEncrypted('huntress_user_api_secret', $secret);
     }
 
-    // ---- round trip ----
+    private function storeMainPair(): void
+    {
+        Setting::setEncrypted('huntress_api_key', 'synthetic-main-key');
+        Setting::setEncrypted('huntress_api_secret', 'synthetic-main-secret');
+    }
+
+    private function page(?User $as = null): string
+    {
+        $response = $this->actingAs($as ?? $this->admin())->get(route('settings.integrations'));
+        $response->assertOk();
+
+        return $response->getContent();
+    }
+
+    /** The Huntress API card from its header to its Save button. */
+    private function card(string $html): string
+    {
+        $start = strpos($html, 'Huntress EDR / ITDR');
+        $this->assertNotFalse($start, 'precondition failed: the Huntress card did not render');
+        $end = strpos($html, 'Save Huntress Settings', $start);
+        $this->assertNotFalse($end);
+
+        return substr($html, $start, $end - $start);
+    }
+
+    // ---- one pair on the card ----
+
+    public function test_the_card_renders_one_pair_and_no_user_pair_inputs(): void
+    {
+        $card = $this->card($this->page());
+
+        $this->assertStringContainsString('>API key</label>', $card);
+        $this->assertStringContainsString('>API secret</label>', $card);
+        $this->assertStringContainsString('name="api_key"', $card);
+        $this->assertStringContainsString('name="api_secret"', $card);
+        $this->assertStringNotContainsString('name="user_api_key"', $card);
+        $this->assertStringNotContainsString('name="user_api_secret"', $card);
+        $this->assertStringNotContainsString('Escalation resolution (write) credential', $card);
+        $this->assertStringNotContainsString('User API key</label>', $card);
+    }
+
+    public function test_the_setup_text_says_create_a_user_api_key_and_what_it_carries(): void
+    {
+        $card = $this->card($this->page());
+
+        $this->assertStringContainsString('In Huntress, create a <strong>user API key</strong> for the Huntress user the PSA should act as. (Huntress has deprecated the account-level API key.)', $card);
+        $this->assertStringContainsString("The key carries that user's permissions in Huntress. A read-only user's key gives reads only. Resolving SOC escalations needs a user whose role may resolve them.", html_entity_decode($card, ENT_QUOTES));
+        $this->assertStringNotContainsString('Account &rarr; API Credentials', $card);
+    }
+
+    // ---- round trip, never echoed, blank keeps ----
 
     public function test_the_pair_round_trips_encrypted_through_the_form(): void
     {
-        $response = $this->save(['user_api_key' => self::KEY, 'user_api_secret' => self::SECRET_VALUE]);
+        $this->save(['api_key' => self::KEY, 'api_secret' => self::SECRET_VALUE])
+            ->assertRedirect(route('settings.integrations'))
+            ->assertSessionHasNoErrors();
 
-        $response->assertRedirect(route('settings.integrations'));
-        $response->assertSessionHasNoErrors();
-
-        $rawKey = $this->raw('huntress_user_api_key');
-        $rawSecret = $this->raw('huntress_user_api_secret');
-        $this->assertNotNull($rawKey, 'the user API key row was not written');
-        $this->assertNotNull($rawSecret, 'the user API secret row was not written');
-        $this->assertStringNotContainsString(self::KEY, $rawKey, 'the user API key is stored in plaintext');
-        $this->assertStringNotContainsString(self::SECRET_VALUE, $rawSecret, 'the user API secret is stored in plaintext');
-
-        $this->assertSame(self::KEY, Setting::getEncrypted('huntress_user_api_key'));
-        $this->assertSame(self::SECRET_VALUE, Setting::getEncrypted('huntress_user_api_secret'));
-        $this->assertSame(self::KEY, HuntressConfig::get('user_api_key'));
-        $this->assertSame(self::SECRET_VALUE, HuntressConfig::get('user_api_secret'));
-        $this->assertTrue(HuntressConfig::isWriteConfigured());
+        $this->assertStringNotContainsString(self::KEY, (string) $this->raw('huntress_api_key'), 'the API key is stored in plaintext');
+        $this->assertStringNotContainsString(self::SECRET_VALUE, (string) $this->raw('huntress_api_secret'), 'the API secret is stored in plaintext');
+        $this->assertSame(self::KEY, HuntressConfig::get('api_key'));
+        $this->assertSame(self::SECRET_VALUE, HuntressConfig::get('api_secret'));
+        $this->assertTrue(HuntressConfig::isConfigured());
     }
 
-    public function test_saving_the_user_pair_leaves_the_read_pair_untouched(): void
+    public function test_the_page_never_renders_a_stored_value(): void
     {
-        Setting::setEncrypted('huntress_api_key', 'synthetic-read-key');
-        Setting::setEncrypted('huntress_api_secret', 'synthetic-read-secret');
+        Setting::setEncrypted('huntress_api_key', self::KEY);
+        Setting::setEncrypted('huntress_api_secret', self::SECRET_VALUE);
+        $this->storeEarlierPair('synthetic-earlier-key', 'synthetic-earlier-secret');
 
-        $this->save(['user_api_key' => self::KEY, 'user_api_secret' => self::SECRET_VALUE])->assertSessionHasNoErrors();
+        $html = $this->page();
+        $this->card($html); // precondition: the card rendered
 
-        $this->assertSame('synthetic-read-key', HuntressConfig::get('api_key'));
-        $this->assertSame('synthetic-read-secret', HuntressConfig::get('api_secret'));
+        foreach ([self::KEY, self::SECRET_VALUE, 'synthetic-earlier-key', 'synthetic-earlier-secret', $this->raw('huntress_api_key'), $this->raw('huntress_user_api_key')] as $value) {
+            $this->assertStringNotContainsString($value, $html, 'a stored value or its ciphertext was rendered into the page');
+        }
     }
-
-    // ---- never echoed ----
-
-    public function test_the_page_renders_both_inputs_and_never_the_stored_values(): void
-    {
-        $this->storePair();
-
-        $response = $this->actingAs($this->admin())->get(route('settings.integrations'));
-
-        $response->assertOk();
-        // Precondition: the inputs really rendered, so an absence below is
-        // not the absence of the whole block.
-        $response->assertSee('name="user_api_key"', false);
-        $response->assertSee('name="user_api_secret"', false);
-        $response->assertSee('id="huntress_user_api_key"', false);
-
-        $html = $response->getContent();
-        $this->assertStringNotContainsString(self::KEY, $html, 'the stored user API key was rendered into the page');
-        $this->assertStringNotContainsString(self::SECRET_VALUE, $html, 'the stored user API secret was rendered into the page');
-        $this->assertStringNotContainsString($this->raw('huntress_user_api_key'), $html, 'the ciphertext was rendered into the page');
-    }
-
-    public function test_a_saved_pair_shows_the_saved_hint_and_mask(): void
-    {
-        $this->storePair();
-
-        $html = $this->actingAs($this->admin())->get(route('settings.integrations'))->getContent();
-        $block = $this->userPairBlock($html);
-
-        $this->assertSame(2, substr_count($block, 'Saved. Encrypted at rest.'), 'each saved half must show the saved hint');
-        $this->assertStringContainsString('placeholder="••••••••"', $block);
-        $this->assertStringContainsString('name="clear_user_api_key_pair"', $block);
-    }
-
-    public function test_an_unsaved_pair_shows_no_saved_hint_and_no_clear_control(): void
-    {
-        $block = $this->userPairBlock($this->actingAs($this->admin())->get(route('settings.integrations'))->getContent());
-
-        $this->assertStringNotContainsString('Saved. ', $block);
-        $this->assertStringContainsString('placeholder="Enter user API key"', $block);
-        $this->assertStringNotContainsString('name="clear_user_api_key_pair"', $block);
-    }
-
-    // ---- blank keeps, clear clears ----
 
     public function test_a_blank_submit_keeps_the_stored_pair(): void
     {
-        $this->storePair();
-        $before = [$this->raw('huntress_user_api_key'), $this->raw('huntress_user_api_secret')];
+        $this->storeMainPair();
+        $before = [$this->raw('huntress_api_key'), $this->raw('huntress_api_secret')];
 
-        $this->save(['user_api_key' => '', 'user_api_secret' => ''])->assertSessionHasNoErrors();
+        $this->save(['api_key' => '', 'api_secret' => ''])->assertSessionHasNoErrors();
         $this->save([])->assertSessionHasNoErrors();
-        $this->save(['user_api_key' => '••••••••', 'user_api_secret' => '••••••••'])->assertSessionHasNoErrors();
 
-        $this->assertSame($before, [$this->raw('huntress_user_api_key'), $this->raw('huntress_user_api_secret')], 'a blank or masked submit rewrote the stored pair');
-        $this->assertSame(self::KEY, HuntressConfig::get('user_api_key'));
-        $this->assertSame(self::SECRET_VALUE, HuntressConfig::get('user_api_secret'));
+        $this->assertSame($before, [$this->raw('huntress_api_key'), $this->raw('huntress_api_secret')], 'a blank submit rewrote the stored pair');
     }
 
-    public function test_one_new_half_replaces_only_that_half(): void
+    // ---- field hint ----
+
+    public function test_the_field_hint_reads_the_stored_state(): void
     {
-        $this->storePair();
+        $card = $this->card($this->page());
+        $this->assertSame(2, substr_count($card, '<div class="form-text">Encrypted at rest.</div>'), 'nothing saved: the hint has no value to keep');
+        $this->assertStringNotContainsString('Leave blank to keep the saved value.', $card);
+        $this->assertStringContainsString('placeholder="Enter user API key"', $card);
+        $this->assertStringContainsString('placeholder="Enter user API secret"', $card);
 
-        $this->save(['user_api_secret' => 'synthetic-rotated-secret'])->assertSessionHasNoErrors();
-
-        $this->assertSame(self::KEY, HuntressConfig::get('user_api_key'));
-        $this->assertSame('synthetic-rotated-secret', HuntressConfig::get('user_api_secret'));
-    }
-
-    public function test_the_clear_control_removes_both_halves(): void
-    {
-        $this->storePair();
-        Setting::setEncrypted('huntress_api_key', 'synthetic-read-key');
-
-        $this->save(['clear_user_api_key_pair' => '1'])->assertSessionHasNoErrors();
-
-        $this->assertNull($this->raw('huntress_user_api_key'));
-        $this->assertNull($this->raw('huntress_user_api_secret'));
-        $this->assertFalse(HuntressConfig::isWriteConfigured());
-        $this->assertSame('synthetic-read-key', HuntressConfig::get('api_key'), 'clearing the user pair must not touch the read key');
-    }
-
-    // ---- validation ----
-
-    public function test_over_length_values_are_refused_and_nothing_is_saved(): void
-    {
-        $this->save(['user_api_key' => str_repeat('k', 501), 'user_api_secret' => self::SECRET_VALUE])
-            ->assertSessionHasErrors('user_api_key');
-        $this->save(['user_api_key' => self::KEY, 'user_api_secret' => str_repeat('s', 501)])
-            ->assertSessionHasErrors('user_api_secret');
-
-        $this->assertNull($this->raw('huntress_user_api_key'));
-        $this->assertNull($this->raw('huntress_user_api_secret'));
-    }
-
-    public function test_a_value_at_the_limit_is_accepted(): void
-    {
-        $this->save(['user_api_key' => str_repeat('k', 500), 'user_api_secret' => str_repeat('s', 500)])
-            ->assertSessionHasNoErrors();
-
-        $this->assertSame(str_repeat('k', 500), HuntressConfig::get('user_api_key'));
-    }
-
-    public function test_a_lone_half_is_refused_when_nothing_is_stored(): void
-    {
-        $this->save(['user_api_key' => self::KEY])->assertSessionHasErrors('user_api_secret');
-        $this->save(['user_api_secret' => self::SECRET_VALUE])->assertSessionHasErrors('user_api_key');
-
-        $this->assertNull($this->raw('huntress_user_api_key'), 'a refused lone half was saved');
-        $this->assertNull($this->raw('huntress_user_api_secret'), 'a refused lone half was saved');
-    }
-
-    public function test_a_refused_lone_half_saves_nothing_else_from_the_submit(): void
-    {
-        $this->save(['api_key' => 'synthetic-read-key', 'user_api_key' => self::KEY])
-            ->assertSessionHasErrors('user_api_secret');
-
-        $this->assertNull($this->raw('huntress_api_key'), 'a refused submit still saved the read key');
-    }
-
-    public function test_a_stored_lone_half_does_not_block_a_save_that_leaves_the_user_pair_alone(): void
-    {
-        Setting::setEncrypted('huntress_user_api_key', self::KEY);
-        $tech = User::factory()->create(['role' => UserRole::Tech, 'is_active' => true]);
-
-        $this->save(['api_key' => 'synthetic-read-key'], $tech)
-            ->assertSessionHasNoErrors()
-            ->assertSessionHas('success', 'Huntress credentials saved.');
-        $this->assertSame('synthetic-read-key', HuntressConfig::get('api_key'), 'a stored lone half blocked the read-pair save');
-
-        $this->save([])->assertSessionHasNoErrors();
-        $this->assertSame(self::KEY, HuntressConfig::get('user_api_key'), 'a blank save rewrote the stored half');
-        $this->assertNull($this->raw('huntress_user_api_secret'));
-    }
-
-    public function test_clear_together_with_a_new_value_is_refused(): void
-    {
-        $this->storePair();
-
-        $this->save(['clear_user_api_key_pair' => '1', 'user_api_key' => 'synthetic-new-key', 'user_api_secret' => 'synthetic-new-secret'])
-            ->assertSessionHasErrors('user_api_key');
-
-        $this->assertSame(self::KEY, HuntressConfig::get('user_api_key'));
-        $this->assertSame(self::SECRET_VALUE, HuntressConfig::get('user_api_secret'));
-    }
-
-    public function test_a_failed_save_does_not_flash_the_pair(): void
-    {
-        $this->save(['user_api_key' => self::KEY, 'user_api_secret' => str_repeat('s', 501), 'api_key' => str_repeat('r', 501)])
-            ->assertSessionHasErrors('user_api_secret');
-
-        // Precondition: something WAS flashed, so absence below is protection.
-        $this->assertNotNull(session('_old_input'), 'precondition failed: nothing was flashed');
-        $this->assertArrayNotHasKey('user_api_key', session('_old_input'));
-        $this->assertArrayNotHasKey('user_api_secret', session('_old_input'));
-    }
-
-    public function test_a_non_admin_cannot_write_or_clear_the_pair(): void
-    {
-        $tech = User::factory()->create(['role' => UserRole::Tech, 'is_active' => true]);
-
-        $this->save(['user_api_key' => self::KEY, 'user_api_secret' => self::SECRET_VALUE], $tech)->assertForbidden();
-        $this->assertNull($this->raw('huntress_user_api_key'));
-
-        $this->storePair();
-        $this->save(['clear_user_api_key_pair' => '1'], $tech)->assertForbidden();
-        $this->assertSame(self::KEY, HuntressConfig::get('user_api_key'));
-
-        // The read pair stays editable by the same user, as before.
-        $this->save(['api_key' => 'synthetic-read-key'], $tech)->assertSessionHasNoErrors();
-        $this->assertSame('synthetic-read-key', HuntressConfig::get('api_key'));
+        $this->storeMainPair();
+        $card = $this->card($this->page());
+        $this->assertSame(2, substr_count($card, 'Saved. Encrypted at rest. Leave blank to keep the saved value.'));
+        $this->assertSame(2, substr_count($card, 'placeholder="••••••••"'));
     }
 
     // ---- status line ----
 
-    public function test_the_status_line_reads_write_enabled_when_the_pair_is_saved(): void
+    public function test_the_status_line_when_no_pair_is_saved(): void
     {
-        $this->storePair();
+        $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
 
-        $block = $this->userPairBlock($this->actingAs($this->admin())->get(route('settings.integrations'))->getContent());
-
-        $this->assertStringContainsString('Write enabled:', $block);
-        $this->assertStringNotContainsString('Write not enabled:', $block);
+        $this->assertStringContainsString('Escalation resolution:</strong> unavailable until an API key and API secret are saved. Once saved, who may use it is set per MCP token on Settings > MCP tokens.', $card);
+        $this->assertStringNotContainsString('uses this key', $card);
     }
 
-    public function test_the_status_line_says_what_to_enter_when_the_pair_is_absent(): void
+    public function test_the_status_line_when_the_pair_is_saved(): void
     {
-        Setting::setEncrypted('huntress_user_api_key', self::KEY); // half a pair is not write-enabled
+        $this->storeMainPair();
 
-        $block = $this->userPairBlock($this->actingAs($this->admin())->get(route('settings.integrations'))->getContent());
+        $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
 
-        $this->assertStringContainsString('Write not enabled:', $block);
-        $this->assertStringContainsString('until a User API key and User API secret are saved here', $block);
-        $this->assertStringNotContainsString('Write enabled:', $block);
+        $this->assertStringContainsString("Escalation resolution:</strong> uses this key. Available only to MCP tokens granted it on Settings > MCP tokens, and every resolve waits for a person's approval in the cockpit. Huntress refuses it unless this key's user may resolve escalations.", $card);
+        $this->assertStringNotContainsString('unavailable until', $card);
+        $this->assertStringNotContainsString('Earlier user API key still in use', $card);
+    }
+
+    public function test_the_status_line_and_notice_while_the_earlier_pair_is_stored(): void
+    {
+        $this->storeMainPair();
+        $this->storeEarlierPair();
+
+        $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+
+        $this->assertStringContainsString("Escalation resolution:</strong> uses the earlier user API key pair (see below), not this key, until an administrator clears it. Available only to MCP tokens granted it on Settings > MCP tokens, and every resolve waits for a person's approval in the cockpit.", $card);
+        $this->assertStringNotContainsString('uses this key.', $card);
+        $this->assertStringContainsString('Earlier user API key still in use for resolve.</strong> This install saved a separate user API key pair for escalation resolution before the card moved to one key pair. Resolve keeps using that earlier pair until an administrator clears it here. Saving a new API key and API secret above changes reads only. Nothing has been deleted.', $card);
+        $this->assertStringContainsString('>Clear the earlier user API key pair</label>', $card);
+        $this->assertStringContainsString('Removes both halves when you save. After that, resolve depends only on the API key and API secret above.', $card);
+    }
+
+    public function test_a_lone_earlier_half_shows_the_lone_half_notice_and_the_status_line_says_this_key(): void
+    {
+        foreach (['huntress_user_api_key', 'huntress_user_api_secret'] as $half) {
+            Setting::query()->delete();
+            $this->storeMainPair();
+            Setting::setEncrypted($half, self::SECRET_VALUE);
+
+            $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+
+            $this->assertStringContainsString('Escalation resolution:</strong> uses this key.', $card, $half);
+            $this->assertStringContainsString('<strong>Part of an earlier user API key pair is still stored.</strong> It is not used. An administrator can clear it here.</p>', $card, $half);
+            $this->assertStringNotContainsString('resolve uses the API key and API secret above. An administrator', $card, $half);
+            $this->assertStringNotContainsString('Earlier user API key still in use for resolve.', $card, "{$half}: the full-pair notice is false for a lone half");
+            $this->assertStringContainsString('name="clear_user_api_key_pair"', $card, 'a lone half must stay clearable');
+        }
+    }
+
+    public function test_the_full_pair_notice_does_not_carry_the_lone_half_text(): void
+    {
+        $this->storeMainPair();
+        $this->storeEarlierPair();
+
+        $card = $this->card($this->page());
+
+        $this->assertStringContainsString('Earlier user API key still in use for resolve.', $card);
+        $this->assertStringNotContainsString('Part of an earlier user API key pair is still stored.', $card);
+    }
+
+    public function test_the_earlier_pair_with_no_main_pair_shows_the_user_only_notice(): void
+    {
+        $this->storeEarlierPair();
+
+        $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+
+        $this->assertStringContainsString('Escalation resolution:</strong> unavailable until an API key and API secret are saved.', $card, 'precondition: no main pair');
+        $this->assertStringContainsString('An earlier user API key pair is still stored.</strong> Resolve is unavailable until an API key and API secret are saved above. Once they are, resolve uses the earlier pair, not the key above, until an administrator clears it here.', $card);
+        $this->assertStringNotContainsString('still in use for resolve', $card, 'the full-pair heading is false while resolve is unavailable');
+        $this->assertStringNotContainsString('Part of an earlier user API key pair is still stored.', $card);
+        $this->assertStringContainsString('>Clear the earlier user API key pair</label>', $card);
+        $this->assertStringContainsString('Removes both halves when you save. After that, resolve depends only on the API key and API secret above.', $card);
+    }
+
+    public function test_the_both_pairs_state_keeps_the_full_pair_notice(): void
+    {
+        $this->storeMainPair();
+        $this->storeEarlierPair();
+
+        $card = $this->card($this->page());
+
+        $this->assertStringContainsString('<strong>Earlier user API key still in use for resolve.</strong> This install saved a separate user API key pair for escalation resolution before the card moved to one key pair. Resolve keeps using that earlier pair until an administrator clears it here. Saving a new API key and API secret above changes reads only. Nothing has been deleted.</p>', $card);
+        $this->assertStringNotContainsString('An earlier user API key pair is still stored.', $card);
+    }
+
+    public function test_a_lone_earlier_half_with_no_main_pair_shows_the_lone_half_notice_not_the_user_only_notice(): void
+    {
+        foreach (['huntress_user_api_key', 'huntress_user_api_secret'] as $half) {
+            Setting::query()->delete();
+            Setting::setEncrypted($half, self::SECRET_VALUE);
+
+            $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+
+            $this->assertStringContainsString('Escalation resolution:</strong> unavailable until an API key and API secret are saved.', $card, "{$half}: precondition: no main pair");
+            $this->assertStringContainsString('<strong>Part of an earlier user API key pair is still stored.</strong> It is not used. An administrator can clear it here.</p>', $card, $half);
+            $this->assertStringNotContainsString('An earlier user API key pair is still stored.', $card, "{$half}: a lone half is not a pair, so the user-only notice is false");
+            $this->assertStringNotContainsString('still in use for resolve', $card, $half);
+            $this->assertStringContainsString('Removes both halves when you save. After that, resolve depends only on the API key and API secret above.', $card, "{$half}: the tick-box help line");
+            $this->assertStringNotContainsString('Resolve then uses the API key and API secret above.', $card, "{$half}: with no main pair, clearing leaves resolve unavailable, so the old help line is false");
+        }
+    }
+
+    public function test_the_earlier_pair_whole_with_one_main_half_shows_the_user_only_notice(): void
+    {
+        $this->storeEarlierPair();
+        Setting::setEncrypted('huntress_api_key', 'synthetic-main-key');
+
+        $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+
+        $this->assertStringContainsString('Escalation resolution:</strong> unavailable until an API key and API secret are saved.', $card, 'precondition: one main half is not a main pair');
+        $this->assertStringContainsString('<strong>An earlier user API key pair is still stored.</strong> Resolve is unavailable until an API key and API secret are saved above. Once they are, resolve uses the earlier pair, not the key above, until an administrator clears it here.</p>', $card);
+        $this->assertStringNotContainsString('still in use for resolve', $card, 'the full-pair notice is false while resolve is unavailable');
+        $this->assertStringNotContainsString('Part of an earlier user API key pair is still stored.', $card);
+    }
+
+    // ---- status line while the integration is switched off ----
+
+    private const SWITCHED_OFF_LINE = '<i class="bi bi-dash-circle text-secondary me-1" aria-hidden="true"></i><strong>Escalation resolution:</strong> unavailable while the Huntress integration is switched off. Any note below about an earlier key describes what resolve uses once it is switched on.';
+
+    public function test_switched_off_with_the_main_pair_only_the_status_line_says_unavailable_not_uses_this_key(): void
+    {
+        Setting::setValue('huntress_enabled', '0');
+        $card = $this->card($this->page());
+        $this->assertStringContainsString('<strong>Escalation resolution:</strong> unavailable until an API key and API secret are saved.', $card, 'no pair: the first branch still wins while switched off');
+        $this->assertStringNotContainsString('switched off', $card);
+
+        $this->storeMainPair();
+        $card = $this->card($this->page());
+
+        $this->assertStringContainsString(self::SWITCHED_OFF_LINE, $card);
+        $this->assertStringNotContainsString('uses this key', $card);
+        $this->assertStringNotContainsString('id="huntress-earlier-user-pair"', $card);
+    }
+
+    public function test_switched_off_with_both_pairs_the_status_line_says_unavailable_and_the_notice_is_unchanged(): void
+    {
+        Setting::setValue('huntress_enabled', '0');
+        $this->storeMainPair();
+        $this->storeEarlierPair();
+
+        $card = $this->card($this->page());
+
+        $this->assertStringContainsString(self::SWITCHED_OFF_LINE, $card);
+        $this->assertStringNotContainsString('uses the earlier user API key pair (see below)', $card);
+        $this->assertStringNotContainsString('uses this key', $card);
+        $this->assertStringContainsString('<strong>Earlier user API key still in use for resolve.</strong> This install saved a separate user API key pair for escalation resolution before the card moved to one key pair. Resolve keeps using that earlier pair until an administrator clears it here. Saving a new API key and API secret above changes reads only. Nothing has been deleted.</p>', $card);
+    }
+
+    public function test_switched_on_the_status_line_is_unchanged(): void
+    {
+        Setting::setValue('huntress_enabled', '1');
+        $this->storeMainPair();
+        $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+        $this->assertStringContainsString('Escalation resolution:</strong> uses this key.', $card);
+        $this->assertStringNotContainsString('switched off', $card);
+
+        $this->storeEarlierPair();
+        $card = html_entity_decode($this->card($this->page()), ENT_QUOTES);
+        $this->assertStringContainsString('Escalation resolution:</strong> uses the earlier user API key pair (see below), not this key, until an administrator clears it.', $card);
+        $this->assertStringNotContainsString('switched off', $card);
+    }
+
+    public function test_the_lone_half_tick_box_is_not_rendered_to_a_non_admin(): void
+    {
+        $this->storeMainPair();
+        Setting::setEncrypted('huntress_user_api_key', self::KEY);
+
+        $techCard = $this->card($this->page($this->tech()));
+        $this->assertStringContainsString('Part of an earlier user API key pair is still stored.', $techCard, 'precondition: the lone-half notice rendered to the non-admin');
+        $this->assertStringNotContainsString('name="clear_user_api_key_pair"', $techCard);
+        $this->assertStringNotContainsString('Clear the earlier user API key pair', $techCard);
+
+        $this->assertStringContainsString('name="clear_user_api_key_pair"', $this->card($this->page()), 'positive control: an admin gets the box');
+    }
+
+    public function test_the_page_still_renders_when_an_earlier_row_cannot_be_decrypted(): void
+    {
+        $this->storeMainPair();
+        foreach ([['huntress_user_api_key', 'huntress_user_api_secret'], ['huntress_user_api_key']] as $keys) {
+            Setting::whereIn('key', ['huntress_user_api_key', 'huntress_user_api_secret'])->delete();
+            foreach ($keys as $key) {
+                DB::table('settings')->insert(['key' => $key, 'value' => 'synthetic-not-ciphertext', 'created_at' => now(), 'updated_at' => now()]);
+            }
+
+            $card = $this->card($this->page());
+
+            $this->assertStringContainsString('id="huntress-earlier-user-pair"', $card, implode('+', $keys).': the notice still renders');
+            $this->assertStringContainsString('name="clear_user_api_key_pair"', $card, implode('+', $keys).': an undecryptable row stays clearable');
+        }
+    }
+
+    public function test_no_notice_and_no_tick_box_without_an_earlier_half(): void
+    {
+        $this->storeMainPair();
+
+        $card = $this->card($this->page());
+
+        $this->assertStringNotContainsString('id="huntress-earlier-user-pair"', $card);
+        $this->assertStringNotContainsString('name="clear_user_api_key_pair"', $card);
+    }
+
+    // ---- clear: admin only ----
+
+    public function test_the_tick_box_is_rendered_to_administrators_only(): void
+    {
+        $this->storeMainPair();
+        $this->storeEarlierPair();
+
+        $adminCard = $this->card($this->page());
+        $this->assertStringContainsString('name="clear_user_api_key_pair"', $adminCard);
+
+        $techCard = $this->card($this->page($this->tech()));
+        $this->assertStringContainsString('Earlier user API key still in use for resolve.', $techCard, 'precondition: the notice rendered to the non-admin');
+        $this->assertStringNotContainsString('name="clear_user_api_key_pair"', $techCard);
+        $this->assertStringNotContainsString('Clear the earlier user API key pair', $techCard);
+    }
+
+    public function test_the_clear_control_removes_both_halves_and_nothing_else(): void
+    {
+        $this->storeMainPair();
+        $this->storeEarlierPair();
+        $mainBefore = [$this->raw('huntress_api_key'), $this->raw('huntress_api_secret')];
+
+        $this->save(['clear_user_api_key_pair' => '1'])
+            ->assertSessionHasNoErrors()
+            ->assertSessionHas('success', 'Huntress credentials saved. The earlier user API key pair was cleared.');
+
+        $this->assertNull($this->raw('huntress_user_api_key'));
+        $this->assertNull($this->raw('huntress_user_api_secret'));
+        $this->assertFalse(HuntressConfig::hasEarlierUserPair());
+        $this->assertSame($mainBefore, [$this->raw('huntress_api_key'), $this->raw('huntress_api_secret')], 'clearing the earlier pair must not touch the main pair');
+    }
+
+    public function test_one_save_may_carry_a_new_pair_and_the_clear_tick(): void
+    {
+        $this->storeMainPair();
+        $this->storeEarlierPair();
+
+        $this->save(['api_key' => 'synthetic-new-key', 'api_secret' => 'synthetic-new-secret', 'clear_user_api_key_pair' => '1'])
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame('synthetic-new-key', HuntressConfig::get('api_key'));
+        $this->assertSame('synthetic-new-secret', HuntressConfig::get('api_secret'));
+        $this->assertNull($this->raw('huntress_user_api_key'));
+        $this->assertNull($this->raw('huntress_user_api_secret'));
+        $this->assertSame(['api_key' => 'synthetic-new-key', 'api_secret' => 'synthetic-new-secret'], HuntressConfig::writeCredentials());
+    }
+
+    public function test_a_non_admin_clear_is_refused_and_saves_nothing(): void
+    {
+        $this->storeMainPair();
+        $this->storeEarlierPair();
+        $before = DB::table('settings')->orderBy('key')->pluck('value', 'key')->all();
+
+        $this->save(['clear_user_api_key_pair' => '1'], $this->tech())->assertForbidden();
+        $this->save(['api_key' => 'synthetic-new-key', 'api_secret' => 'synthetic-new-secret', 'clear_user_api_key_pair' => '1'], $this->tech())->assertForbidden();
+
+        $this->assertSame($before, DB::table('settings')->orderBy('key')->pluck('value', 'key')->all(), 'a refused non-admin submit changed a stored setting');
+        $this->assertSame(self::KEY, HuntressConfig::get('user_api_key'));
+    }
+
+    // ---- the API key pair: administrators only ----
+
+    /** @return array<string, array{0: UserRole}> */
+    public static function nonAdminRoles(): array
+    {
+        return [
+            'tech' => [UserRole::Tech],
+            'contractor' => [UserRole::Contractor],
+            'billing' => [UserRole::Billing],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('nonAdminRoles')]
+    public function test_a_non_admin_submit_carrying_the_pair_is_refused_and_saves_nothing(UserRole $role): void
+    {
+        $user = User::factory()->create(['role' => $role, 'is_active' => true]);
+        $this->storeMainPair();
+        $before = DB::table('settings')->orderBy('key')->pluck('value', 'key')->all();
+
+        $this->save(['api_key' => 'synthetic-new-key', 'api_secret' => 'synthetic-new-secret'], $user)->assertForbidden();
+        $this->save(['api_key' => 'synthetic-new-key'], $user)->assertForbidden();
+        $this->save(['api_secret' => 'synthetic-new-secret'], $user)->assertForbidden();
+
+        $this->assertSame($before, DB::table('settings')->orderBy('key')->pluck('value', 'key')->all(), 'a refused non-admin submit changed a stored setting');
+        $this->assertSame(['api_key' => 'synthetic-main-key', 'api_secret' => 'synthetic-main-secret'], HuntressConfig::writeCredentials());
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('nonAdminRoles')]
+    public function test_a_non_admin_submit_with_no_stored_pair_saves_nothing(UserRole $role): void
+    {
+        $user = User::factory()->create(['role' => $role, 'is_active' => true]);
+        $before = DB::table('settings')->orderBy('key')->pluck('value', 'key')->all();
+
+        $this->save(['api_key' => 'synthetic-new-key', 'api_secret' => 'synthetic-new-secret'], $user)->assertForbidden();
+
+        $this->assertSame($before, DB::table('settings')->orderBy('key')->pluck('value', 'key')->all());
+        $this->assertFalse(HuntressConfig::isConfigured());
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('nonAdminRoles')]
+    public function test_the_key_inputs_are_absent_for_a_non_admin(UserRole $role): void
+    {
+        $user = User::factory()->create(['role' => $role, 'is_active' => true]);
+        $this->storeMainPair();
+
+        $card = $this->card($this->page($user));
+
+        $this->assertStringNotContainsString('name="api_key"', $card);
+        $this->assertStringNotContainsString('name="api_secret"', $card);
+        $this->assertStringContainsString('An administrator enters this key.', $card);
+        $this->assertStringContainsString('id="huntress-resolve-status"', $card, 'the status lines still render to a non-admin');
+    }
+
+    public function test_an_admin_sees_the_inputs_and_not_the_admin_only_line(): void
+    {
+        $card = $this->card($this->page());
+
+        $this->assertStringContainsString('name="api_key"', $card);
+        $this->assertStringContainsString('name="api_secret"', $card);
+        $this->assertStringNotContainsString('An administrator enters this key.', $card);
+    }
+
+    public function test_an_over_length_key_or_secret_is_refused_and_saves_nothing(): void
+    {
+        $this->storeMainPair();
+        $before = DB::table('settings')->orderBy('key')->pluck('value', 'key')->all();
+        $long = str_repeat('k', 501);
+
+        $this->save(['api_key' => $long, 'api_secret' => 'synthetic-new-secret'])->assertSessionHasErrors('api_key');
+        $this->save(['api_key' => 'synthetic-new-key', 'api_secret' => $long])->assertSessionHasErrors('api_secret');
+
+        $this->assertSame($before, DB::table('settings')->orderBy('key')->pluck('value', 'key')->all(), 'an over-length submit changed a stored setting');
+    }
+
+    public function test_a_failed_save_does_not_flash_either_value_back(): void
+    {
+        $long = str_repeat('s', 501);
+
+        $this->save(['api_key' => 'synthetic-flash-key', 'api_secret' => $long])->assertSessionHasErrors('api_secret');
+        $this->assertNull(session()->getOldInput('api_key'), 'the API key was flashed into the session');
+        $this->assertNull(session()->getOldInput('api_secret'), 'the API secret was flashed into the session');
+        $this->assertStringNotContainsString('synthetic-flash-key', serialize(session()->all()));
+
+        $this->save(['api_key' => $long, 'api_secret' => 'synthetic-flash-secret'])->assertSessionHasErrors('api_key');
+        $this->assertNull(session()->getOldInput('api_key'));
+        $this->assertNull(session()->getOldInput('api_secret'));
+        $this->assertStringNotContainsString('synthetic-flash-secret', serialize(session()->all()));
+    }
+
+    public function test_an_admin_save_of_a_new_pair_still_works(): void
+    {
+        $this->storeMainPair();
+
+        $this->save(['api_key' => 'synthetic-admin-key', 'api_secret' => 'synthetic-admin-secret'])
+            ->assertRedirect(route('settings.integrations'))
+            ->assertSessionHas('success', 'Huntress credentials saved.');
+
+        $this->assertSame(['api_key' => 'synthetic-admin-key', 'api_secret' => 'synthetic-admin-secret'], HuntressConfig::writeCredentials());
+    }
+
+    public function test_a_submit_naming_the_retired_user_inputs_writes_nothing_to_the_earlier_pair(): void
+    {
+        $this->save(['user_api_key' => self::KEY, 'user_api_secret' => self::SECRET_VALUE])->assertSessionHasNoErrors();
+        $this->assertNull($this->raw('huntress_user_api_key'));
+        $this->assertNull($this->raw('huntress_user_api_secret'));
+
+        $this->storeEarlierPair();
+        $before = [$this->raw('huntress_user_api_key'), $this->raw('huntress_user_api_secret')];
+        $this->save(['user_api_key' => 'synthetic-other', 'user_api_secret' => 'synthetic-other'])->assertSessionHasNoErrors();
+        $this->assertSame($before, [$this->raw('huntress_user_api_key'), $this->raw('huntress_user_api_secret')], 'a retired input overwrote the earlier pair');
     }
 
     // ---- remedy messages name the real field ----
 
     public function test_the_remedy_location_names_labels_the_page_renders(): void
     {
-        $html = $this->actingAs($this->admin())->get(route('settings.integrations'))->getContent();
+        $card = $this->card($this->page());
 
-        $this->assertSame('Settings > Integrations > Huntress EDR / ITDR > User API key and User API secret', HuntressConfig::WRITE_CREDENTIAL_LOCATION);
-        $this->assertStringContainsString('Huntress EDR / ITDR', $html);
-        $this->assertStringContainsString('>User API key</label>', $html);
-        $this->assertStringContainsString('>User API secret</label>', $html);
+        $this->assertSame('Settings > Integrations > Huntress EDR / ITDR > API key and API secret', HuntressConfig::WRITE_CREDENTIAL_LOCATION);
+        $this->assertStringContainsString('>API key</label>', $card);
+        $this->assertStringContainsString('>API secret</label>', $card);
     }
 
-    public function test_the_executor_remedy_points_at_the_user_pair_field(): void
-    {
-        Setting::setEncrypted('huntress_api_key', 'synthetic-read-key');
-        Setting::setEncrypted('huntress_api_secret', 'synthetic-read-secret');
-
-        $result = app(StaffHuntressActionToolExecutor::class)
-            ->execute('huntress_resolve_escalation', ['escalation_id' => 1], 1, 'test');
-
-        $this->assertSame(
-            'Huntress write credential (user-based API key) is not configured; escalation resolution is unavailable until the pair is saved in Settings > Integrations > Huntress EDR / ITDR > User API key and User API secret.',
-            $result['error'] ?? null,
-        );
-    }
-
-    public function test_the_write_client_remedy_points_at_the_user_pair_field(): void
+    public function test_the_write_client_remedy_points_at_the_one_pair(): void
     {
         try {
-            (new HuntressWriteClient(['api_key' => 'synthetic-read-key', 'api_secret' => 'synthetic-read-secret']))->resolveEscalation(1);
+            (new HuntressWriteClient([]))->resolveEscalation(1);
             $this->fail('expected HuntressWriteScopeException');
         } catch (HuntressWriteScopeException $e) {
             $this->assertSame(
-                'Huntress write credential (user-based API key) is not configured; nothing was sent. Save the pair in Settings > Integrations > Huntress EDR / ITDR > User API key and User API secret.',
+                'Huntress API key pair is not configured; nothing was sent. Save the pair in Settings > Integrations > Huntress EDR / ITDR > API key and API secret.',
                 $e->getMessage(),
             );
         }
-    }
-
-    private function userPairBlock(string $html): string
-    {
-        $start = strpos($html, 'id="huntress-user-key-pair"');
-        $this->assertNotFalse($start, 'precondition failed: the user key pair block did not render');
-        $end = strpos($html, 'Save Huntress Settings', $start);
-        $this->assertNotFalse($end);
-
-        return substr($html, $start, $end - $start);
     }
 }

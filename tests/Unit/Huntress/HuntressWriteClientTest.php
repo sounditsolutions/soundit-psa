@@ -36,7 +36,7 @@ class HuntressWriteClientTest extends TestCase
     /**
      * @param  array<int, Response|\Throwable>  $queue
      */
-    private function clientReturning(array $queue, array $config = ['user_api_key' => 'uk', 'user_api_secret' => 'us']): HuntressWriteClient
+    private function clientReturning(array $queue, array $config = ['api_key' => 'uk', 'api_secret' => 'us']): HuntressWriteClient
     {
         $this->history = [];
         $stack = HandlerStack::create(new MockHandler($queue));
@@ -210,20 +210,28 @@ class HuntressWriteClientTest extends TestCase
 
     public function test_missing_write_credentials_fail_closed_before_any_http(): void
     {
-        $client = $this->clientReturning(
-            [new Response(201, [], '{}')],
-            // The READ pair being present must not satisfy the write lane.
-            ['api_key' => 'read-k', 'api_secret' => 'read-s'],
-        );
+        // No pair, a lone half either way, and the retired config key names:
+        // none is a pair, so nothing may be sent.
+        foreach ([
+            [],
+            ['api_key' => 'k'],
+            ['api_secret' => 's'],
+            ['api_key' => '', 'api_secret' => 's'],
+            ['user_api_key' => 'uk', 'user_api_secret' => 'us'],
+        ] as $config) {
+            $client = $this->clientReturning([new Response(201, [], '{}')], $config);
 
-        try {
-            $client->resolveEscalation(55);
-            $this->fail('expected HuntressWriteScopeException');
-        } catch (HuntressWriteScopeException) {
-            // expected
+            try {
+                $client->resolveEscalation(55);
+                $this->fail('expected HuntressWriteScopeException for '.json_encode(array_keys($config)));
+            } catch (HuntressWriteScopeException $e) {
+                $this->assertSame(
+                    'Huntress API key pair is not configured; nothing was sent. Save the pair in Settings > Integrations > Huntress EDR / ITDR > API key and API secret.',
+                    $e->getMessage(),
+                );
+            }
+            $this->assertSame([], $this->history, 'no HTTP request may be sent without a complete key pair: '.json_encode(array_keys($config)));
         }
-
-        $this->assertSame([], $this->history, 'no HTTP request may be sent without the user-based key');
     }
 
     public function test_non_positive_escalation_id_is_refused_before_any_http(): void

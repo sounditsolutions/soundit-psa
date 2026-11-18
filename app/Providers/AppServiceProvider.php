@@ -175,13 +175,11 @@ class AppServiceProvider extends ServiceProvider
             ]);
         });
 
-        // The Huntress WRITE lane rides a separate user-based key pair and
-        // never falls back to the read credentials above (fail closed).
+        // The Huntress WRITE lane signs with HuntressConfig::writeCredentials():
+        // the earlier user pair while both halves are stored, else the same
+        // API key pair the reads use.
         $this->app->singleton(HuntressWriteClient::class, function () {
-            return new HuntressWriteClient([
-                'user_api_key' => HuntressConfig::get('user_api_key'),
-                'user_api_secret' => HuntressConfig::get('user_api_secret'),
-            ]);
+            return new HuntressWriteClient(HuntressConfig::writeCredentials());
         });
 
         // TacticalClient reads its (encrypted) config from Settings in its own

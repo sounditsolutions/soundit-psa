@@ -38,10 +38,10 @@ use Illuminate\Support\Facades\Log;
  * any other field reaches the HTTP body.
  *
  * CREDENTIAL: the same `API-KEY` the read client uses — measured reachable
- * for these routes with the existing production key, so this lane does NOT
- * take a separate credential the way HuntressWriteClient does. It carries a
- * HUMAN identity (`created_by` on every rule it writes resolves to the key
- * owner's mailbox, not a service account), which is why the executor states
+ * for these routes with the existing production key, so this lane takes no
+ * separate credential. It carries a HUMAN identity (`created_by` on every
+ * rule it writes resolves to the key owner's mailbox, not a service
+ * account), which is why the executor states
  * the attributed identity in the approval text (#1018 criterion 6).
  */
 class MeshWriteClient
