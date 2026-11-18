@@ -49,7 +49,7 @@ class HuntressUserKeyPairSettingsTest extends TestCase
     /** The user-only notice: the earlier pair is whole and the main pair is not. */
     private const USER_ONLY_NOTICE = '<strong>An earlier user API key pair is still stored.</strong> Resolve is unavailable until an API key and API secret are saved above. Once they are, resolve uses the earlier pair, not the key above, until an administrator clears it here.</p>';
 
-    /** The retired help-line sentence: false with no main pair, so it is shown in no state. */
+    /** The retired help-line sentence: the help line was replaced by ruling, so this sentence must not appear in any state. */
     private const OLD_HELP_SENTENCE = 'Resolve then uses the API key and API secret above.';
 
     private function admin(): User
@@ -303,6 +303,7 @@ class HuntressUserKeyPairSettingsTest extends TestCase
      */
     public function test_a_lone_earlier_half_with_no_main_pair_shows_the_new_help_line_and_not_the_old_one(): void
     {
+        Http::preventStrayRequests();
         foreach (['huntress_user_api_key', 'huntress_user_api_secret'] as $half) {
             Setting::query()->delete();
             Setting::setEncrypted($half, self::SECRET_VALUE);
@@ -335,6 +336,7 @@ class HuntressUserKeyPairSettingsTest extends TestCase
      */
     public function test_the_earlier_pair_whole_with_only_the_main_secret_shows_the_user_only_notice(): void
     {
+        Http::preventStrayRequests();
         $this->storeEarlierPair();
         Setting::setEncrypted('huntress_api_secret', 'synthetic-main-secret');
 
@@ -468,8 +470,9 @@ class HuntressUserKeyPairSettingsTest extends TestCase
      * today, kept as shipped by ruling. The status line is the first branch,
      * "unavailable until an API key and API secret are saved" (true: resolve
      * is unavailable), not the switched-off line, and the notice is the
-     * user-only notice. This state is reached only by a hand-made toggle
-     * request: the switch renders only when a main pair is saved.
+     * user-only notice. The page offers no switch in this state (the switch
+     * renders only once a main pair is saved), so the state is reached only
+     * by a request the page does not offer, or by a stored setting.
      */
     public function test_switched_off_with_the_earlier_pair_and_no_main_pair_shows_the_unsaved_line_and_the_user_only_notice(): void
     {
@@ -486,6 +489,25 @@ class HuntressUserKeyPairSettingsTest extends TestCase
         $this->assertStringNotContainsString('still in use for resolve', $card);
         $this->assertStringNotContainsString('Part of an earlier user API key pair is still stored.', $card);
         $this->assertStringNotContainsString('id="huntress_enabled"', $html, 'the state: the switch does not render without a main pair');
+    }
+
+    /**
+     * Positive control for the row 3 absence check: with a main pair saved,
+     * the switch renders, switched off and switched on alike, so an absent
+     * id="huntress_enabled" in the row 3 state is the missing main pair and
+     * not a selector that can never match.
+     */
+    public function test_the_switch_renders_once_a_main_pair_is_saved(): void
+    {
+        Http::preventStrayRequests();
+        foreach (['0' => 'switched off', '1' => 'switched on'] as $enabled => $state) {
+            Setting::query()->delete();
+            Setting::setValue('huntress_enabled', (string) $enabled);
+            $this->storeMainPair();
+            $this->storeEarlierPair();
+
+            $this->assertStringContainsString('id="huntress_enabled"', $this->page(), "{$state}: the switch renders with a main pair saved");
+        }
     }
 
     public function test_the_lone_half_tick_box_is_not_rendered_to_a_non_admin(): void
