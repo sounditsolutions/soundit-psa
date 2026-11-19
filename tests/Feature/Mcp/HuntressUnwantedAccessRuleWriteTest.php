@@ -1089,6 +1089,16 @@ class HuntressUnwantedAccessRuleWriteTest extends TestCase
         $this->assertCount(0, $this->writes);
     }
 
+    public function test_the_card_title_ends_with_one_full_stop(): void
+    {
+        $fx = $this->fixture();
+        foreach (['Example Dental Co.' => 'Example Dental Co.', 'Example Dental' => 'Example Dental.'] as $name => $title) {
+            $fx['client']->update(['name' => $name]);
+            $run = $this->stageCreate($fx, ['notes' => $name]);
+            $this->assertSame("Create a Huntress unwanted access rule for {$title}", strtok($run->proposed_content, "\n"));
+        }
+    }
+
     public function test_the_write_client_refuses_a_rule_id_below_one_without_http(): void
     {
         $client = app(HuntressWriteClient::class);

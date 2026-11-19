@@ -611,8 +611,9 @@ class StaffHuntressRuleToolExecutor
     private function display(array $request, Client $client, ?array $current): string
     {
         $verb = ['POST' => 'Create', 'PATCH' => 'Update', 'DELETE' => 'Delete'][$request['method']];
+        $name = (string) $client->name;
         $lines = [
-            "{$verb} a Huntress unwanted access rule for {$client->name}.",
+            "{$verb} a Huntress unwanted access rule for {$name}".(str_ends_with($name, '.') ? '' : '.'),
             'Request as it will be sent: '.$request['method'].' '.$request['path'],
         ];
         $lines[] = $this->fence->fence('REQUEST BODY', $request['body'] === null
