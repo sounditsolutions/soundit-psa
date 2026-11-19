@@ -433,6 +433,53 @@ class HuntressUnwantedAccessRuleWriteTest extends TestCase
         }
     }
 
+    public function test_an_identical_proposal_after_an_approved_run_is_staged_again_not_answered_as_already_executed(): void
+    {
+        $fx = $this->fixture();
+        $token = $this->token([self::CREATE.':staged']);
+        $args = $this->createArgs($fx, ['ticket_id' => $fx['ticket']->id]);
+
+        $first = $this->decoded($this->callTool($token, self::CREATE, $args));
+        $run = TechnicianRun::findOrFail($first['run_id']);
+        // Unknown outcome on approval: the run closes Done, but the rule may not exist.
+        $this->writeQueue->append(new Response(502, [], '{}'));
+        $this->actingAs($this->approver())->post(route('cockpit.approve', $run));
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertCount(1, $this->writes);
+
+        $again = $this->decoded($this->callTool($token, self::CREATE, $args));
+
+        $this->assertTrue($again['success'] ?? false, json_encode($again));
+        $this->assertArrayNotHasKey('idempotent', $again);
+        $this->assertNotSame($run->id, $again['run_id']);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, TechnicianRun::findOrFail($again['run_id'])->state);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state, 'the earlier run is not rewritten');
+        $this->assertCount(1, $this->writes, 'staging again sends nothing');
+
+        $repeat = $this->decoded($this->callTool($token, self::CREATE, $args));
+        $this->assertSame($again['run_id'], $repeat['run_id'], 'a pending identical proposal is answered idempotently');
+        $this->assertTrue($repeat['idempotent'] ?? false);
+    }
+
+    public function test_a_failing_audit_insert_after_a_landed_immediate_write_still_reports_success(): void
+    {
+        $fx = $this->fixture();
+        $this->queueWrite(201, ['unwanted_access_rule' => $this->rule(501)]);
+        $this->queueRead($this->rule(501));
+        TechnicianActionLog::creating(static function (TechnicianActionLog $row): void {
+            if ($row->result_status === 'executed') {
+                throw new \RuntimeException('synthetic audit insert failure');
+            }
+        });
+
+        $result = $this->decoded($this->callTool($this->token([self::CREATE.':immediate']), self::CREATE, $this->createArgs($fx)));
+
+        $this->assertTrue($result['success'] ?? false, json_encode($result));
+        $this->assertArrayNotHasKey('error', $result);
+        $this->assertSame(501, $result['unwanted_access_rule']['id']);
+        $this->assertCount(1, $this->writes);
+    }
+
     public function test_a_vendor_refusal_reports_status_and_class_only(): void
     {
         $fx = $this->fixture();

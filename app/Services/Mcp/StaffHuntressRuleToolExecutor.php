@@ -74,6 +74,8 @@ class StaffHuntressRuleToolExecutor
 
     private const NOTES_MAX = 1000;
 
+    private const MAX_RUN_GENERATIONS = 20;
+
     private const VALUE_MAX = 100;
 
     /** @var array<string, array<int, string>> Argument keys each tool accepts; everything else is refused. */
@@ -349,7 +351,8 @@ class StaffHuntressRuleToolExecutor
                 : "Huntress refused the rule {$request['method']} ({$detail}). Nothing was changed."];
         }
 
-        $this->audit($tool, 'executed', (int) $client->id, $ticket, $hash, $request['target'].': MCP '.$tool.' executed: '.$request['method'].' '.$request['path'].': '.$reason, $actorLabel);
+        // The write landed: a failing audit INSERT must not turn it into an error the agent retries.
+        $this->safeAudit($tool, 'executed', (int) $client->id, $ticket, $hash, $request['target'].': MCP '.$tool.' executed: '.$request['method'].' '.$request['path'].': '.$reason, $actorLabel);
 
         return ['success' => true, 'method' => $request['method'], 'path' => $outcome['path'], 'body_sent' => $request['body']] + $outcome['result'];
     }
@@ -453,8 +456,12 @@ class StaffHuntressRuleToolExecutor
      */
     private function stage(string $tool, string $direct, array $request, Client $client, Ticket $ticket, ?array $current, string $reason, string $hash, string $actorLabel, ?string $tokenLabel): array
     {
+        $slot = $this->runSlot($ticket->id, $tool, $hash);
+        if ($slot === null) {
+            return ['error' => 'This ticket already carries '.self::MAX_RUN_GENERATIONS.' identical Huntress rule proposals; nothing was staged. Raise a new ticket for a further one.'];
+        }
         $live = TechnicianRun::query()
-            ->where('ticket_id', $ticket->id)->where('action_type', $tool)->where('content_hash', $hash)
+            ->where('ticket_id', $ticket->id)->where('action_type', $tool)->where('content_hash', $slot)
             ->where('state', TechnicianRunState::AwaitingApproval->value)->first();
         if ($live !== null) {
             return ['success' => true, 'idempotent' => true, 'ticket_id' => $ticket->id, 'run_id' => $live->id, 'message' => 'Already staged; awaiting approval. Nothing was sent.'];
@@ -483,15 +490,12 @@ class StaffHuntressRuleToolExecutor
             ."\n".$this->fence->fence('AGENT SUPPLIED REASON', $reason);
 
         $run = TechnicianRun::firstOrCreate(
-            ['ticket_id' => $ticket->id, 'action_type' => $tool, 'content_hash' => $hash],
+            ['ticket_id' => $ticket->id, 'action_type' => $tool, 'content_hash' => $slot],
             ['client_id' => $client->id, 'state' => TechnicianRunState::AwaitingApproval, 'proposed_content' => $content, 'proposed_meta' => $meta, 'confidence' => null, 'tokens_used' => 0],
         );
         if (! $run->wasRecentlyCreated) {
             if ($run->state === TechnicianRunState::Executing) {
                 return ['success' => true, 'idempotent' => true, 'ticket_id' => $ticket->id, 'run_id' => $run->id, 'message' => 'This proposal is being executed now; nothing new was staged.'];
-            }
-            if ($run->state === TechnicianRunState::Done) {
-                return ['success' => true, 'idempotent' => true, 'ticket_id' => $ticket->id, 'run_id' => $run->id, 'message' => 'An identical proposal on this ticket was already approved and executed; nothing new was staged.'];
             }
             $run->update(['state' => TechnicianRunState::AwaitingApproval->value, 'proposed_content' => $content, 'proposed_meta' => $meta]);
         }
@@ -499,6 +503,27 @@ class StaffHuntressRuleToolExecutor
         $this->audit($tool, 'awaiting_approval', (int) $client->id, $ticket, $hash, $request['target'].': MCP staged '.$tool.': '.$request['method'].' '.$request['path'].': '.$reason, $actorLabel, $run->id);
 
         return ['success' => true, 'ticket_id' => $ticket->id, 'ticket_display_id' => $ticket->display_id, 'run_id' => $run->id, 'method' => $request['method'], 'path' => $request['path'], 'body' => $request['body'], 'message' => 'Staged for cockpit approval. Nothing was sent.'];
+    }
+
+    /**
+     * The (ticket, action, content_hash) key this proposal may use. A Done run
+     * is the record of an earlier approval, which may have ended with an unknown
+     * outcome or been undone since; it is never answered as "already executed"
+     * and never rewritten. An identical proposal after it takes the next
+     * generation of the key. Null when the generations are exhausted.
+     */
+    private function runSlot(int $ticketId, string $tool, string $baseHash): ?string
+    {
+        for ($generation = 0; $generation < self::MAX_RUN_GENERATIONS; $generation++) {
+            $hash = $generation === 0 ? $baseHash : hash('sha256', $baseHash.':'.$generation);
+            $existing = TechnicianRun::query()
+                ->where('ticket_id', $ticketId)->where('action_type', $tool)->where('content_hash', $hash)->first();
+            if ($existing === null || $existing->state !== TechnicianRunState::Done) {
+                return $hash;
+            }
+        }
+
+        return null;
     }
 
     /**
