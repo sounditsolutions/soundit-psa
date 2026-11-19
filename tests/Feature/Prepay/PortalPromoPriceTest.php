@@ -281,6 +281,18 @@ class PortalPromoPriceTest extends TestCase
         }
     }
 
+    public function test_the_client_note_exists_only_while_the_promo_is_in_force(): void
+    {
+        $sku = $this->sku();
+
+        $this->at('2026-11-27 07:59:59');
+        $this->assertNull($sku->fresh()->portalPromoClientNote());
+        $this->at('2026-11-28 18:00:00');
+        $this->assertSame('$80.00 until Nov 30, 2026 11:59:59 PM PST, then $100.00', $sku->fresh()->portalPromoClientNote());
+        $this->at('2026-12-01 08:00:00');
+        $this->assertNull($sku->fresh()->portalPromoClientNote());
+    }
+
     public function test_a_purchase_one_second_after_the_end_is_charged_the_unit_price(): void
     {
         $contract = $this->contract($this->sku());
