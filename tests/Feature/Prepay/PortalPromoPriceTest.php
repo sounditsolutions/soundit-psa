@@ -309,6 +309,16 @@ class PortalPromoPriceTest extends TestCase
         $this->assertEquals(100.00, (float) $this->onlyLine()->unit_price);
     }
 
+    public function test_a_zero_length_window_is_ignored_even_at_its_own_instant(): void
+    {
+        // end == start is "end not after start": refused even at the one
+        // second where the window test alone would admit it.
+        $sku = $this->sku(['portal_promo_ends_at' => self::START_UTC]);
+        $this->at(self::START_UTC);
+
+        $this->assertEquals(100.00, $sku->portalPrepayUnitPrice());
+    }
+
     // ── Condition 4: no other reader of unit_price sees the promo ──
 
     public function test_the_staff_invoice_form_offers_the_unit_price_during_a_promo(): void
