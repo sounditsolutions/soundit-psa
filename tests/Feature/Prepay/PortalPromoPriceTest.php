@@ -237,6 +237,31 @@ class PortalPromoPriceTest extends TestCase
         $this->assertStringNotContainsString('until', $html);
     }
 
+    public function test_the_contract_picker_and_agreement_page_show_the_price_in_force(): void
+    {
+        $sku = $this->sku();
+        $contract = $this->contract($sku);
+        Contract::create([
+            'client_id' => $contract->client_id,
+            'name' => 'Example Second Agreement',
+            'type' => 'managed',
+            'status' => 'active',
+            'start_date' => '2026-01-01',
+            'prepay_as_amount' => false,
+            'portal_prepay_sku_id' => $sku->id,
+        ]);
+        $person = $this->person($contract);
+        $this->at('2026-11-28 18:00:00');
+
+        // Two purchasable contracts: the picker lists each with its price.
+        $picker = $this->actingAs($person, 'portal')->get(route('portal.prepaid.select'))->assertOk()->getContent();
+        $this->assertStringContainsString('$80.00', $picker);
+        $this->assertStringNotContainsString('$100.00', $picker);
+
+        $agreement = $this->actingAs($person, 'portal')->get(route('portal.contracts.show', $contract))->assertOk()->getContent();
+        $this->assertStringContainsString('Example Prepaid Hour Block — $80.00', $agreement);
+    }
+
     // ── Condition 3: both edges, to the second, compared in UTC ──
 
     public function test_edges_are_inclusive_to_the_second(): void
