@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Staff: SKU form, portal promo price control (saved, and refused)</title>
+<link rel="stylesheet" href="../_tokens.css"><link rel="stylesheet" href="_prepaid.css">
+</head>
+<body>
+<main class="stack" style="max-width:1100px">
+<div>
+<p class="caption">SKUs &gt; Edit. Sample data only: unit price $100.00. State 1: a promo saved and in force.</p>
+<div class="card"><div class="card-body">
+  <div class="grid4" style="margin-bottom:var(--psa-spacing-md)">
+    <div><label>Unit Price ($)</label><input value="100.00"></div>
+    <div><label>Unit Cost ($)</label><input value="40.00"></div>
+    <div><label>Category</label><input value="Prepaid"></div>
+    <div><label>Prepaid Time (min)</label><input value="60"></div>
+  </div>
+  <div class="panel">
+    <label style="margin-bottom:0">Portal promo price</label>
+    <div class="form-text" style="margin-top:0;margin-bottom:var(--psa-spacing-sm)">Applies only when a client buys this SKU as prepaid time in the portal, between the start and end below. Staff invoices, recurring billing and the accounting sync keep the unit price. Times are Pacific (America/Los_Angeles). Leave all three blank for no promo.</div>
+    <div class="grid3">
+      <div><label>Promo price ($)</label><input value="80.00"></div>
+      <div><label>Starts (Pacific)</label><input value="11/27/2026, 12:00:00 AM"></div>
+      <div><label>Ends (Pacific, inclusive)</label><input value="11/30/2026, 11:59:59 PM"></div>
+    </div>
+    <div class="state"><span class="badge b-ok">In force</span> Portal price $80.00 until Nov 30, 2026 11:59:59 PM PST, then $100.00.</div>
+  </div>
+</div></div>
+</div>
+
+<div>
+<p class="caption">State 2: the save is refused. The promo price must be below the unit price, and the end after the start.</p>
+<div class="card"><div class="card-body">
+  <div class="panel" style="margin-bottom:0">
+    <label style="margin-bottom:0">Portal promo price</label>
+    <div class="form-text" style="margin-top:0;margin-bottom:var(--psa-spacing-sm)">Applies only when a client buys this SKU as prepaid time in the portal, between the start and end below. Staff invoices, recurring billing and the accounting sync keep the unit price. Times are Pacific (America/Los_Angeles). Leave all three blank for no promo.</div>
+    <div class="grid3">
+      <div><label>Promo price ($)</label><input class="is-invalid" value="120.00"><div class="invalid">The promo price must be above zero and below the unit price.</div></div>
+      <div><label>Starts (Pacific)</label><input value="11/27/2026, 12:00:00 AM"></div>
+      <div><label>Ends (Pacific, inclusive)</label><input class="is-invalid" value="11/26/2026, 11:59:59 PM"><div class="invalid">The promo end must be after the start.</div></div>
+    </div>
+  </div>
+</div></div>
+</div>
+
+<div>
+<p class="caption">State 3: the three fields are set but the window has not started (or has ended).</p>
+<div class="card"><div class="card-body">
+  <div class="panel" style="margin-bottom:0">
+    <label style="margin-bottom:0">Portal promo price</label>
+    <div class="grid3" style="margin-top:var(--psa-spacing-sm)">
+      <div><label>Promo price ($)</label><input value="80.00"></div>
+      <div><label>Starts (Pacific)</label><input value="11/27/2026, 12:00:00 AM"></div>
+      <div><label>Ends (Pacific, inclusive)</label><input value="11/30/2026, 11:59:59 PM"></div>
+    </div>
+    <div class="state"><span class="badge b-off">Not in force</span> Portal price is $100.00 now. $80.00 from Nov 27, 2026 12:00:00 AM PST to Nov 30, 2026 11:59:59 PM PST.</div>
+  </div>
+</div></div>
+</div>
+</main></body></html>

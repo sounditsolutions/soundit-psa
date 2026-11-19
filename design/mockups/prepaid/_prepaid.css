@@ -1,0 +1,37 @@
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--psa-colors-canvas); color: var(--psa-colors-ink); font-family: var(--psa-typography-body-font-family); font-size: 14px; line-height: var(--psa-typography-body-line-height); }
+main { padding: var(--psa-spacing-md) var(--psa-spacing-lg); max-width: 1280px; }
+.caption { font-family: var(--psa-typography-title-font-family); color: var(--psa-colors-muted-ink); margin: 0 0 var(--psa-spacing-sm); font-size: 13px; }
+.topnav { background: var(--psa-colors-navy); color: var(--psa-colors-surface); display: flex; flex-wrap: wrap; gap: var(--psa-spacing-md); align-items: center; padding: var(--psa-spacing-sm) var(--psa-spacing-lg); font-family: var(--psa-typography-title-font-family); }
+.topnav b { margin-right: var(--psa-spacing-md); }
+.topnav a { color: var(--psa-colors-surface); text-decoration: none; opacity: .85; }
+.back { color: var(--psa-colors-muted-ink); font-size: 13px; text-decoration: none; }
+h4 { font-family: var(--psa-typography-title-font-family); color: var(--psa-colors-navy); margin: var(--psa-spacing-md) 0; font-size: 1.25rem; }
+h4.section-title::after { content: ""; display: block; width: 60px; height: 3px; background: var(--psa-colors-signal-gold); margin-top: var(--psa-spacing-xs); }
+.card { background: var(--psa-colors-surface); border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-md); overflow: hidden; margin-bottom: var(--psa-spacing-md); }
+.card-header { background: var(--psa-colors-navy); color: var(--psa-colors-surface); font-family: var(--psa-typography-title-font-family); font-weight: 600; padding: var(--psa-spacing-sm) var(--psa-spacing-md); text-transform: uppercase; font-size: 13px; letter-spacing: .04em; }
+.card-body { padding: var(--psa-spacing-md); }
+.muted { color: var(--psa-colors-muted-ink); }
+.small { font-size: 12px; }
+table.kv { width: 100%; border-collapse: collapse; }
+table.kv td { padding: var(--psa-spacing-xs) var(--psa-spacing-sm) var(--psa-spacing-xs) 0; vertical-align: top; }
+table.kv td.k { color: var(--psa-colors-muted-ink); width: 140px; }
+table.kv td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.kv tr.total td { border-top: 1px solid var(--psa-colors-border); padding-top: var(--psa-spacing-sm); font-weight: 700; color: var(--psa-colors-navy-deep); }
+.row2 { display: grid; grid-template-columns: 7fr 5fr; gap: var(--psa-spacing-md); align-items: start; }
+@media (max-width: 700px) { .row2 { grid-template-columns: 1fr; } main { padding: var(--psa-spacing-sm); } }
+label { display: block; font-weight: 600; color: var(--psa-colors-navy); margin-bottom: var(--psa-spacing-xs); }
+input, select { font: inherit; border: 1px solid var(--psa-colors-field-border); border-radius: var(--psa-rounded-sm); padding: 6px 10px; background: var(--psa-colors-surface); color: var(--psa-colors-ink); width: 100%; }
+input.is-invalid { border-color: var(--psa-colors-danger); }
+.invalid { color: var(--psa-colors-danger); font-size: 12px; margin-top: 2px; }
+.btn { display: inline-block; border-radius: var(--psa-rounded-sm); padding: 6px 14px; font: inherit; font-weight: 600; border: 1px solid var(--psa-colors-navy); background: var(--psa-colors-navy); color: var(--psa-colors-surface); }
+.btn-accent { background: var(--psa-colors-signal-gold); border-color: var(--psa-colors-signal-gold); color: var(--psa-colors-navy-deep); }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--psa-spacing-md); }
+.grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--psa-spacing-md); }
+.panel { background: var(--psa-colors-canvas); border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-sm); padding: var(--psa-spacing-md); margin-bottom: var(--psa-spacing-md); }
+.form-text { font-size: 12px; color: var(--psa-colors-muted-ink); margin-top: var(--psa-spacing-xs); }
+.badge { display: inline-block; border-radius: var(--psa-rounded-pill); padding: 1px 8px; font-size: 12px; font-weight: 600; }
+.b-ok { background: var(--psa-colors-success); color: var(--psa-colors-surface); }
+.b-off { background: var(--psa-colors-neutral); color: var(--psa-colors-surface); }
+.state { margin-top: var(--psa-spacing-sm); font-size: 13px; }
+.stack > * + * { margin-top: var(--psa-spacing-lg); }
