@@ -12,10 +12,12 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * cipp_list_service_health_issues behind the staff MCP controller's explicit-grant
- * gate. Both transports: the MCP relay when it is switched on, otherwise (or when
- * the relay cannot sign in) the direct CIPP API. A relay sign-in failure or a 401
- * from the relay therefore means two upstream calls: the relay, then the direct
- * API (no direct call is made when the REST client cannot be built). The relay
+ * gate. Both transports: the MCP relay when it is switched on, otherwise the
+ * direct CIPP API. When the relay cannot sign in or ExecMCP refuses the call with
+ * HTTP 401, the direct API answers instead (unless the REST client cannot be
+ * built, when no direct call is made). A failed sign-in may send no request at all
+ * (credentials not configured, or a recent failure still cooling down) or one to
+ * the sign-in endpoint; a 401 comes from ExecMCP after sign-in worked. The relay
  * path is built to the direct leg's measured shape, not measured on a live relay;
  * the relay's reply shape is read from vendor source, not measured.
  */
@@ -57,7 +59,8 @@ class CippServiceHealthToolExecutor
         } catch (\Throwable $e) {
             Log::warning('[MCP] CIPP MCP relay settings could not be read; the relay does not answer this read', [
                 'tool' => $toolName,
-                'error' => mb_substr($e->getMessage(), 0, 300),
+                'exception' => $e::class,
+                'code' => $e->getCode(),
             ]);
 
             return null;
@@ -68,9 +71,10 @@ class CippServiceHealthToolExecutor
         } catch (CippMcpAuthException $e) {
             // CIPP did not run the query; the direct path answers instead when the REST
             // client can be built (HandlesCippTools::cippDispatch()).
-            Log::warning('[MCP] CIPP MCP relay could not sign in; the relay does not answer this read', [
+            Log::warning('[MCP] CIPP MCP relay was refused or could not sign in; the relay does not answer this read', [
                 'tool' => $toolName,
-                'error' => mb_substr($e->getMessage(), 0, 300),
+                'exception' => $e::class,
+                'code' => $e->getCode(),
             ]);
 
             return null;

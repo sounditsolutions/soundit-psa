@@ -8,6 +8,7 @@ use App\Models\Ticket;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Assistant\AssistantToolExecutor;
 use App\Services\Cipp\CippClient;
+use App\Services\Cipp\CippMcpAuthException;
 use App\Services\Cipp\CippMcpClient;
 use App\Services\Mcp\CippServiceHealthToolExecutor;
 use App\Services\Teams\TeamsReadOnlyToolset;
@@ -25,6 +26,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -58,6 +60,9 @@ class CippServiceHealthIssuesTest extends TestCase
 
     /** When set, answers the direct endpoint in place of $restBody. */
     private ?\Closure $restResponder = null;
+
+    /** When set, answers the relay's sign-in endpoint in place of a token. */
+    private ?\Closure $signInResponder = null;
 
     /** When set, the direct leg's Guzzle request fails at the connection with this cURL text. */
     private ?string $restConnectFailure = null;
@@ -100,7 +105,9 @@ class CippServiceHealthIssuesTest extends TestCase
             'https://cipp.example/api/ListServiceHealthIssues*' => fn ($request) => $this->restResponder !== null
                 ? ($this->restResponder)($request)
                 : Http::response(is_string($this->restBody) ? $this->restBody : json_encode($this->restBody)),
-            'login.microsoftonline.com/*' => fn () => Http::response(['access_token' => 'synthetic-mcp-token', 'expires_in' => 3600]),
+            'login.microsoftonline.com/*' => fn () => $this->signInResponder !== null
+                ? ($this->signInResponder)()
+                : Http::response(['access_token' => 'synthetic-mcp-token', 'expires_in' => 3600]),
             'https://cipp.example/api/ExecMCP*' => fn ($request) => $this->relayResponder !== null ? ($this->relayResponder)($request) : Http::response(
                 "event: message\ndata: ".json_encode(['jsonrpc' => '2.0', 'id' => 1, 'result' => ['content' => array_map(fn (string $text): array => ['type' => 'text', 'text' => $text], $this->relayTexts), 'isError' => false]])."\n\n",
                 200,
@@ -1008,7 +1015,7 @@ class CippServiceHealthIssuesTest extends TestCase
         $this->assertCount($relay ? 1 : 0, $this->execMcpCalls());
     }
 
-    /** Pin: every other tool on the same arm still answers with the exception's text, byte-same. */
+    /** Pin: one other tool (cipp_list_licenses) on the same arm still answers with the exception's text, byte-same. */
     public function test_another_tool_on_the_same_arm_answers_exactly_as_before(): void
     {
         $message = 'Synthetic secret could not be decrypted';
@@ -1144,5 +1151,132 @@ class CippServiceHealthIssuesTest extends TestCase
             $this->relayReplies([$lead.$list]);
             $this->assertSame(['error' => 'CIPP returned text that is not JSON for service health issues, not a list of rows.'.self::NOT_EMPTY], $this->callTool(), 'relay '.bin2hex($lead));
         }
+    }
+
+    // ── Round 4: a byte-order mark, other event framings, class-and-code log lines ──
+
+    /** ExecMCP answering with exactly this body. */
+    private function relayBody(string $body): void
+    {
+        $this->relayResponder = fn () => Http::response($body, 200, ['Content-Type' => 'text/event-stream']);
+    }
+
+    public function test_a_relay_body_that_starts_with_a_byte_order_mark_is_refused(): void
+    {
+        $this->enableRelay();
+        $rows = json_encode($this->textReply(json_encode([$this->row()])));
+        $empty = json_encode($this->textReply('[]'));
+        $refused = ['error' => 'CIPP query failed (CippClientException).'.self::NOT_EMPTY];
+
+        foreach ([
+            'rows event, then an empty event' => "\u{FEFF}data: {$rows}\n\ndata: {$empty}\n\n",
+            'one rows event' => "\u{FEFF}data: {$rows}\n\n",
+            'one rows event after an event line' => "\u{FEFF}event: message\ndata: {$rows}\n\n",
+            'one empty event' => "\u{FEFF}data: {$empty}\n\n",
+            'whitespace, then the mark' => "\r\n\u{FEFF}data: {$rows}\n\ndata: {$empty}\n\n",
+        ] as $label => $body) {
+            $this->relayBody($body);
+            $result = $this->callTool();
+            $this->assertSame($refused, $result, $label);
+            $this->assertNotSame('0 issues returned', $result['result'] ?? null, $label);
+        }
+        $this->assertSame([], $this->restCalls());
+    }
+
+    /** Pin: one existing relay tool (cipp_list_licenses) reads a body that starts with a byte-order mark exactly as before. */
+    public function test_an_existing_relay_tool_reads_a_byte_order_mark_body_as_before(): void
+    {
+        $this->enableRelay();
+        $licence = ['skuId' => '44444444-4444-4444-8444-444444444444', 'License' => 'Synthetic licence', 'TotalLicenses' => 10, 'CountUsed' => 3, 'CountAvailable' => 7];
+        $executor = new AssistantToolExecutor(null, $this->client->id);
+
+        $this->relayBody('data: '.json_encode($this->textReply('[]'))."\n\n");
+        $empty = $executor->execute('cipp_list_licenses', []);
+        $this->relayBody("\u{FEFF}data: ".json_encode($this->textReply(json_encode([$licence])))."\n\ndata: ".json_encode($this->textReply('[]'))."\n\n");
+        $marked = $executor->execute('cipp_list_licenses', []);
+
+        $this->assertSame($empty, $marked);
+        $this->assertCount(2, $this->execMcpCalls());
+    }
+
+    /** @return array<string, array{0: string, 1: string}> two data events, framed other than LF and "data: " */
+    public static function otherEventFramings(): array
+    {
+        return [
+            'CRLF' => ["\r\n", 'data: '],
+            'CR only' => ["\r", 'data: '],
+            'LF, no space after data:' => ["\n", 'data:'],
+            'CRLF, no space after data:' => ["\r\n", 'data:'],
+            'CR only, no space after data:' => ["\r", 'data:'],
+        ];
+    }
+
+    #[DataProvider('otherEventFramings')]
+    public function test_two_data_events_are_refused_in_every_framing(string $eol, string $field): void
+    {
+        $this->enableRelay();
+        $rows = json_encode($this->textReply(json_encode([$this->row()])));
+        $empty = json_encode($this->textReply('[]'));
+        $refused = ['error' => 'CIPP\'s MCP relay reply carried more than one data event, so the list may be incomplete and is not shown.'.self::NOT_EMPTY];
+
+        $this->relayBody("event: message{$eol}{$field}{$empty}{$eol}{$eol}event: message{$eol}{$field}{$rows}{$eol}{$eol}");
+        $this->assertSame($refused, $this->callTool());
+
+        $this->relayBody("{$field}{$rows}{$eol}{$eol}{$field}{$empty}{$eol}{$eol}");
+        $this->assertSame($refused, $this->callTool(['issue_id' => 'ZZ900001']));
+
+        $this->relayBody("{$field}{$empty}{$eol}{$eol}{$field}[DONE]{$eol}{$eol}");
+        $this->assertSame('0 issues returned', $this->callTool()['result'] ?? null);
+        $this->assertSame([], $this->restCalls());
+    }
+
+    /** @return \ArrayObject<int, array{message: string, context: array<string, mixed>}> the executor's own [MCP] log lines */
+    private function captureExecutorLogs(): \ArrayObject
+    {
+        $logs = new \ArrayObject;
+        Log::listen(function ($event) use ($logs): void {
+            if (str_starts_with((string) $event->message, '[MCP]')) {
+                $logs[] = ['message' => (string) $event->message, 'context' => $event->context];
+            }
+        });
+
+        return $logs;
+    }
+
+    /** @return array<string, array{0: string}> the relay arms where the executor logs and the direct API answers */
+    public static function relayFallbackArms(): array
+    {
+        return ['sign-in refused' => ['sign-in'], 'ExecMCP 401 after sign-in' => ['401'], 'settings unreadable' => ['settings']];
+    }
+
+    #[DataProvider('relayFallbackArms')]
+    public function test_the_relay_fallback_log_line_is_true_and_carries_class_and_code_only(string $arm): void
+    {
+        $logs = $this->captureExecutorLogs();
+        if ($arm === 'settings') {
+            Setting::setValue('cipp_mcp_client_id', 'synthetic-mcp-client');
+            Setting::setValue('cipp_mcp_client_secret', self::VENDOR_TEXT);
+            Setting::setValue('cipp_mcp_enabled', '1');
+        } else {
+            $this->enableRelay();
+        }
+        if ($arm === 'sign-in') {
+            $this->signInResponder = fn () => Http::response(['error' => 'invalid_client', 'error_description' => self::VENDOR_TEXT], 401);
+        }
+        if ($arm === '401') {
+            $this->relayResponder = fn () => Http::response(self::VENDOR_TEXT, 401);
+        }
+        $this->restBody = [$this->row()];
+
+        $this->assertSame('1 issue returned', $this->callTool()['result'] ?? null);
+        $this->assertCount(1, $this->restCalls());
+
+        $expected = match ($arm) {
+            'settings' => ['message' => '[MCP] CIPP MCP relay settings could not be read; the relay does not answer this read', 'context' => ['tool' => 'cipp_list_service_health_issues', 'exception' => DecryptException::class, 'code' => 0]],
+            'sign-in' => ['message' => '[MCP] CIPP MCP relay was refused or could not sign in; the relay does not answer this read', 'context' => ['tool' => 'cipp_list_service_health_issues', 'exception' => CippMcpAuthException::class, 'code' => 401]],
+            '401' => ['message' => '[MCP] CIPP MCP relay was refused or could not sign in; the relay does not answer this read', 'context' => ['tool' => 'cipp_list_service_health_issues', 'exception' => CippMcpAuthException::class, 'code' => 401]],
+        };
+        $this->assertSame([$expected], $logs->getArrayCopy());
+        $this->assertStringNotContainsString('SYNTHETIC-VENDOR-TEXT', json_encode($logs->getArrayCopy()));
     }
 }

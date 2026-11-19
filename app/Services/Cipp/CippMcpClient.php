@@ -89,6 +89,9 @@ class CippMcpClient
      * Same request and deadline. A failed request throws with its status as the
      * exception code and no response body in the message (401 stays a
      * CippMcpAuthException). Then, in the code's order:
+     *   - a body that starts with a byte-order mark (after the whitespace the event
+     *     readers trim) throws, before anything is counted or read: the readers
+     *     would skip its first line, and with it the first event;
      *   - events: an event-stream body with more than one data event (other than
      *     a [DONE] marker) is a fault, before anything is decoded: only the first
      *     event would be read, and a later one could hold the rows;
@@ -120,6 +123,10 @@ class CippMcpClient
         // Decoded with JSON objects kept as objects, so a JSON list is told apart
         // from an object whose keys happen to be 0, 1, ...
         $body = (string) $response->body();
+        if (str_starts_with(trim($body), "\u{FEFF}")) {
+            throw new CippClientException('CIPP MCP response began with a byte-order mark');
+        }
+
         if ($this->sseDataEventCount($body) > 1) {
             return ['text' => null, 'fault' => 'events'];
         }
