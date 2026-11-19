@@ -237,9 +237,12 @@ class PortalPromoPriceTest extends TestCase
         $this->assertStringNotContainsString('until', $html);
     }
 
-    public function test_the_contract_picker_and_agreement_page_show_the_price_in_force(): void
+    /**
+     * Two purchasable contracts on one SKU, so the picker lists both instead
+     * of redirecting straight to the purchase form.
+     */
+    private function twoContracts(Sku $sku): Contract
     {
-        $sku = $this->sku();
         $contract = $this->contract($sku);
         Contract::create([
             'client_id' => $contract->client_id,
@@ -250,16 +253,95 @@ class PortalPromoPriceTest extends TestCase
             'prepay_as_amount' => false,
             'portal_prepay_sku_id' => $sku->id,
         ]);
+
+        return $contract;
+    }
+
+    public function test_during_a_promo_the_picker_shows_the_promo_and_the_agreement_page_the_unit_price(): void
+    {
+        $contract = $this->twoContracts($this->sku());
         $person = $this->person($contract);
         $this->at('2026-11-28 18:00:00');
 
-        // Two purchasable contracts: the picker lists each with its price.
         $picker = $this->actingAs($person, 'portal')->get(route('portal.prepaid.select'))->assertOk()->getContent();
         $this->assertStringContainsString('$80.00', $picker);
         $this->assertStringNotContainsString('$100.00', $picker);
 
+        // The agreement page line sits with auto top-up, which charges
+        // unit_price: it shows the normal price, never the promo.
         $agreement = $this->actingAs($person, 'portal')->get(route('portal.contracts.show', $contract))->assertOk()->getContent();
-        $this->assertStringContainsString('Example Prepaid Hour Block — $80.00', $agreement);
+        $this->assertStringContainsString('Example Prepaid Hour Block — $100.00', $agreement);
+        $this->assertStringNotContainsString('$80.00', $agreement);
+    }
+
+    public function test_the_picker_one_second_after_the_end_shows_the_unit_price(): void
+    {
+        $contract = $this->twoContracts($this->sku());
+        $this->at('2026-12-01 08:00:00');
+
+        $picker = $this->actingAs($this->person($contract), 'portal')
+            ->get(route('portal.prepaid.select'))->assertOk()->getContent();
+
+        $this->assertStringContainsString('$100.00', $picker);
+        $this->assertStringNotContainsString('$80.00', $picker);
+    }
+
+    // ── The purchase form's Order Summary and script use the price in force ──
+
+    private function purchaseFormAt(string $utc): string
+    {
+        $contract = $this->contract($this->sku());
+        $this->at($utc);
+
+        return $this->actingAs($this->person($contract), 'portal')
+            ->get(route('portal.prepaid.form', $contract))
+            ->assertOk()
+            ->getContent();
+    }
+
+    /**
+     * The Order Summary "Price per unit" cell, its Total, and the script's
+     * unitPrice all carry $price and never $other.
+     */
+    private function assertOrderSummary(string $html, string $price, string $other, string $script): void
+    {
+        $cell = '/Price per unit<\/td>\s*<td class="text-end">\$%s<\/td>/';
+
+        $this->assertMatchesRegularExpression(sprintf($cell, preg_quote($price, '/')), $html, 'Order Summary price per unit');
+        $this->assertDoesNotMatchRegularExpression(sprintf($cell, preg_quote($other, '/')), $html);
+        $this->assertStringContainsString('<strong id="summaryTotal">$'.$price.'</strong>', $html, 'Order Summary total');
+        $this->assertStringNotContainsString('<strong id="summaryTotal">$'.$other.'</strong>', $html);
+        $this->assertStringContainsString('const unitPrice = '.$script.';', $html, 'script unit price');
+    }
+
+    public function test_the_order_summary_and_script_use_the_promo_in_the_window(): void
+    {
+        $this->assertOrderSummary($this->purchaseFormAt('2026-11-28 18:00:00'), '80.00', '100.00', '80');
+    }
+
+    public function test_the_order_summary_and_script_use_the_unit_price_outside_the_window(): void
+    {
+        $this->assertOrderSummary($this->purchaseFormAt('2026-12-01 08:00:00'), '100.00', '80.00', '100');
+    }
+
+    public function test_a_posted_price_under_a_cent_off_is_charged_the_servers_price(): void
+    {
+        $contract = $this->contract($this->sku());
+        $this->at('2026-11-28 18:00:00');
+
+        $this->buy($contract, '80.004', 2)->assertRedirect();
+
+        $line = $this->onlyLine();
+        $this->assertEquals(80.00, (float) $line->unit_price);
+        $this->assertEquals(160.00, (float) $line->amount);
+
+        $invoice = Invoice::firstOrFail();
+        $this->assertEquals(160.00, (float) $invoice->subtotal);
+        $this->assertEquals(160.00, (float) $invoice->total);
+
+        $activity = ContractActivity::where('action', 'portal_prepay_purchase')->firstOrFail();
+        $this->assertEquals(80.00, (float) $activity->changes['unit_price']);
+        $this->assertEquals(160.00, (float) $activity->changes['amount']);
     }
 
     // ── Condition 3: both edges, to the second, compared in UTC ──

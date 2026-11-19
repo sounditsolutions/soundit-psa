@@ -6,8 +6,9 @@ use Illuminate\Support\Facades\Schema;
 
 /**
  * A dated promo price charged only on a portal prepaid-time purchase.
- * Additive and nullable, no defaults, no data change: with all three columns
- * NULL nothing anywhere behaves differently. See Sku::portalPrepayUnitPrice().
+ * Additive and nullable, no defaults, no data change. With all three columns
+ * NULL every price is unchanged; the portal purchase activity record now also
+ * stores unit_price. See Sku::portalPrepayUnitPrice().
  */
 return new class extends Migration
 {

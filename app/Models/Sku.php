@@ -219,9 +219,10 @@ class Sku extends Model
     }
 
     /**
-     * The unit price a portal prepaid-time purchase is charged at $at. This is
-     * the ONLY reader of the promo: staff invoices, auto top-up, recurring
-     * billing and the accounting sync all read unit_price directly.
+     * The unit price at $at (default: now). This is the price a portal prepaid
+     * purchase is charged. Staff invoices, auto top-up, recurring billing and
+     * the accounting item sync read unit_price; an invoice sync sends each
+     * line's own price.
      */
     public function portalPrepayUnitPrice(?CarbonInterface $at = null): float
     {
