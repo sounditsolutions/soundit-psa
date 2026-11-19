@@ -520,7 +520,7 @@ class HuntressUnwantedAccessRuleWriteTest extends TestCase
         $this->assertSame(0, TechnicianRun::count());
     }
 
-    /** @return array<string, array{0: string, 1: string}> field => value, one per case Jeeves named */
+    /** @return array<string, array{0: string, 1: string}> field => value, one per refused case */
     private function unshowableValues(): array
     {
         return [
