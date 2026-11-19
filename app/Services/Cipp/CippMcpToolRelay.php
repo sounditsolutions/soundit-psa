@@ -133,21 +133,12 @@ class CippMcpToolRelay
             return $prepared;
         }
 
-        $serviceHealth = $toolName === CippToolContract::SERVICE_HEALTH_TOOL;
-        if ($serviceHealth && ($tenantRefusal = CippToolContract::serviceHealthTenantRefusal($tenantDomain)) !== null) {
-            return $tenantRefusal;
+        if ($toolName === CippToolContract::SERVICE_HEALTH_TOOL) {
+            return $this->executeServiceHealth($prepared, $tenantDomain, $input, $deadline);
         }
 
         try {
-            // The service health tool alone reads how the reply arrived (envelope,
-            // extra content blocks), because its contract refuses both; every other
-            // tool takes callTool() exactly as before.
-            $reply = $serviceHealth
-                ? $this->client->callToolReply($prepared['tool'], $prepared['arguments'], $deadline)
-                : null;
-            $rows = $reply === null
-                ? $this->client->callTool($prepared['tool'], $prepared['arguments'], $deadline)
-                : $reply['rows'];
+            $rows = $this->client->callTool($prepared['tool'], $prepared['arguments'], $deadline);
         } catch (CippMcpAuthException $e) {
             throw $e;
         } catch (\Throwable $e) {
@@ -186,11 +177,44 @@ class CippMcpToolRelay
         // Shaping — projection, filtering, fencing — is a property of CIPP's response,
         // not of this transport, so it lives in the shared contract and the direct
         // CippClient path runs the identical code (psa-d2hj).
-        if ($reply !== null) {
-            return $this->contract->shapeServiceHealthIssues($rows, $input, $reply['enveloped'], $reply['content_blocks']);
+        return $this->contract->shape($toolName, $rows, $input, $clientId);
+    }
+
+    /**
+     * cipp_list_service_health_issues over the relay. It alone reads the reply
+     * through callToolReply(), which reports how the reply arrived, because its
+     * contract refuses anything but one text block holding a JSON list; every
+     * other tool takes callTool() exactly as before. A failure answers with status
+     * and class only, as the direct leg does; the upstream text goes to the log.
+     *
+     * @param  array{tool: string, arguments: array<string, mixed>}  $prepared
+     * @return array<string, mixed>
+     *
+     * @throws CippMcpAuthException when the relay could not sign in (see execute())
+     */
+    private function executeServiceHealth(array $prepared, string $tenantDomain, array $input, ?float $deadline): array
+    {
+        $tenantRefusal = CippToolContract::serviceHealthTenantRefusal($tenantDomain);
+        if ($tenantRefusal !== null) {
+            return $tenantRefusal;
         }
 
-        return $this->contract->shape($toolName, $rows, $input, $clientId);
+        try {
+            $reply = $this->client->callToolReply($prepared['tool'], $prepared['arguments'], $deadline);
+        } catch (CippMcpAuthException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            Log::warning('[CippMcpToolRelay] CIPP MCP query failed', [
+                'tool' => CippToolContract::SERVICE_HEALTH_TOOL,
+                'exec_mcp_tool' => $prepared['tool'],
+                'exception' => $e::class,
+                'error' => mb_substr($e->getMessage(), 0, 500),
+            ]);
+
+            return CippToolContract::serviceHealthFailure($e);
+        }
+
+        return $this->contract->shapeServiceHealthIssues($reply['text'], $input, $reply['fault']);
     }
 
     /**

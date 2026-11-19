@@ -758,6 +758,12 @@ class CippToolContract
     public const SERVICE_HEALTH_TOOL = 'cipp_list_service_health_issues';
 
     /**
+     * An issue id: letters and digits, 1 to 32 characters. The same pattern bounds
+     * the issue_id argument and the id of every row CIPP returns.
+     */
+    public const SERVICE_HEALTH_ISSUE_ID_PATTERN = '/^[A-Za-z0-9]{1,32}$/D';
+
+    /**
      * The keys each row must carry, with the types the output relies on. Measured on
      * a direct api/ListServiceHealthIssues reply; the producer is
      * Invoke-ListServiceHealthIssues.ps1, whose live-Graph branch returns
@@ -779,6 +785,30 @@ class CippToolContract
         'isResolved' => 'bool',
     ];
 
+    /**
+     * The row values returned as they are, not fenced, so each must match a strict,
+     * bounded pattern; a row whose value does not refuses the whole reply. The two
+     * words are short letter-only tokens (Graph's serviceHealthIssue enums are
+     * camelCase words). The three times are ISO 8601 date-times with seconds, an
+     * optional fraction of up to 7 digits and an optional Z or +hh:mm / -hh:mm, or
+     * empty. Graph documents serviceHealthIssue times as UTC date-times; CIPP may
+     * re-serialise them in PowerShell, so up to 7 fraction digits and a missing or
+     * numeric zone are accepted too. That form is read from documentation and
+     * vendor source, not measured.
+     *
+     * @var array<string, string>
+     */
+    private const SERVICE_HEALTH_ROW_PATTERNS = [
+        'id' => self::SERVICE_HEALTH_ISSUE_ID_PATTERN,
+        'classification' => '/^[A-Za-z]{1,40}$/D',
+        'status' => '/^[A-Za-z]{1,40}$/D',
+        'startDateTime' => self::SERVICE_HEALTH_TIME_PATTERN,
+        'endDateTime' => self::SERVICE_HEALTH_TIME_PATTERN,
+        'lastModifiedDateTime' => self::SERVICE_HEALTH_TIME_PATTERN,
+    ];
+
+    private const SERVICE_HEALTH_TIME_PATTERN = '/^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})?)?$/D';
+
     /** Output field => row key. Exactly these ten; nothing else is returned. */
     private const SERVICE_HEALTH_FIELDS = [
         'id' => 'id',
@@ -796,12 +826,25 @@ class CippToolContract
     /** Free-text output fields, fenced before they reach the agent. */
     private const SERVICE_HEALTH_FENCED = ['title', 'service', 'feature'];
 
-    private const SERVICE_HEALTH_NOT_EMPTY = ' This is NOT an empty result: the issues are unknown.';
+    public const SERVICE_HEALTH_NOT_EMPTY = ' This is NOT an empty result: the issues are unknown.';
+
+    /**
+     * What the relay found wrong with the reply's structure before its one text
+     * block could be read (CippMcpClient::callToolReply()), as refusal text.
+     *
+     * @var array<string, string>
+     */
+    private const SERVICE_HEALTH_RELAY_FAULTS = [
+        'error' => 'CIPP\'s MCP relay marked its reply as an error, so the reply is not read.',
+        'shape' => 'CIPP\'s MCP relay reply did not carry exactly one text content block, so it is not read.',
+        'blocks' => 'CIPP\'s MCP relay reply carried more than one content block, so the list may be incomplete and is not shown.',
+        'envelope' => 'CIPP returned the service health issues inside an envelope, which this tool does not accept.',
+    ];
 
     /**
      * Refused before any call: an argument this tool does not take (a tenant cannot
-     * be passed; it comes from client_id), or an issue_id that is not letters and
-     * digits only.
+     * be passed; it comes from client_id), or an issue_id that is not 1 to 32
+     * letters and digits.
      */
     private static function serviceHealthInputRefusal(array $input): ?string
     {
@@ -810,52 +853,94 @@ class CippToolContract
             return 'Unsupported argument(s) for '.self::SERVICE_HEALTH_TOOL.': '.implode(', ', array_map(fn ($key): string => mb_substr((string) $key, 0, 40), $unknown)).'. The tenant comes from client_id and cannot be passed.';
         }
 
-        if (array_key_exists('issue_id', $input) && ! (is_string($input['issue_id']) && preg_match('/^[A-Za-z0-9]+$/D', $input['issue_id']) === 1)) {
-            return 'issue_id must be letters and digits only; the request was not sent.';
+        if (array_key_exists('issue_id', $input) && ! (is_string($input['issue_id']) && preg_match(self::SERVICE_HEALTH_ISSUE_ID_PATTERN, $input['issue_id']) === 1)) {
+            return 'issue_id must be 1 to 32 letters and digits; the request was not sent.';
         }
 
         return null;
     }
 
     /**
+     * A failed read on either transport, as status and class only: never the
+     * vendor's text, an HTTP body, a JSON-RPC message or cURL text (those go to the
+     * log). A failure the read deadline caused says so with the #8355 sentence.
+     *
+     * @return array{error: string}
+     */
+    public static function serviceHealthFailure(\Throwable $e): array
+    {
+        if (CippClient::isDeadlineFailure($e)) {
+            return ['error' => 'CIPP query failed: '.CippClient::readDeadlineSentence().'.'.self::SERVICE_HEALTH_NOT_EMPTY];
+        }
+
+        $code = (int) $e->getCode();
+        $status = $code >= 100 && $code <= 599 ? ', HTTP '.$code : '';
+
+        return ['error' => 'CIPP query failed ('.class_basename($e).$status.').'.self::SERVICE_HEALTH_NOT_EMPTY];
+    }
+
+    /**
+     * The tool's final answer: any error, from whichever arm, carries the
+     * "NOT an empty result" sentence.
+     *
+     * @param  array<string, mixed>  $result
+     * @return array<string, mixed>
+     */
+    public static function serviceHealthAnswer(array $result): array
+    {
+        if (isset($result['error']) && is_string($result['error']) && ! str_contains($result['error'], trim(self::SERVICE_HEALTH_NOT_EMPTY))) {
+            $result['error'] = rtrim($result['error']).self::SERVICE_HEALTH_NOT_EMPTY;
+        }
+
+        return $result;
+    }
+
+    /**
      * The one shaping step for cipp_list_service_health_issues, on both transports.
      *
-     * $reply is what the transport received, NOT normalized: normalizeRows() would
-     * unwrap an envelope or turn one object into one row, and this tool accepts
-     * neither. Only a flat list of rows passes; every row must carry the measured
-     * keys with the measured types, and one bad row refuses the whole call. Refusals
-     * name the shape and the class of fault, never the vendor's text.
+     * $json is the reply text exactly as the transport received it: the direct
+     * body, or the relay's one text content block. It is decoded with JSON objects
+     * kept as objects, because a decoding into PHP arrays turns {} and {"0": ...}
+     * into arrays that look like lists: only a JSON array is a list, and an empty
+     * text is not one. Every row must be a JSON object carrying the measured keys
+     * with the measured types and the bounded patterns above, and one bad row
+     * refuses the whole call. Refusals name the shape and the class of fault, never
+     * the vendor's text.
      *
-     * $enveloped and $contentBlocks come from the relay (CippMcpClient::callToolReply()).
-     * Relay replies: built to the direct leg's measured shape, not measured on a live
+     * $relayFault is what CippMcpClient::callToolReply() found wrong with the relay
+     * reply's structure (a key of SERVICE_HEALTH_RELAY_FAULTS), if anything. Relay
+     * replies: built to the direct leg's measured shape, not measured on a live
      * relay; the relay's reply shape is read from vendor source, not measured.
      *
      * @return array<string, mixed>
      */
-    public function shapeServiceHealthIssues(mixed $reply, array $input, bool $enveloped = false, int $contentBlocks = 1): array
+    public function shapeServiceHealthIssues(?string $json, array $input, ?string $relayFault = null): array
     {
-        if ($enveloped) {
-            return ['error' => 'CIPP returned the service health issues inside an envelope, which this tool does not accept.'.self::SERVICE_HEALTH_NOT_EMPTY];
+        if ($relayFault !== null) {
+            return ['error' => (self::SERVICE_HEALTH_RELAY_FAULTS[$relayFault] ?? self::SERVICE_HEALTH_RELAY_FAULTS['shape']).self::SERVICE_HEALTH_NOT_EMPTY];
         }
 
-        if ($contentBlocks > 1) {
-            return ['error' => 'CIPP returned more than one content block (a paging cursor), so the list may be incomplete and is not shown.'.self::SERVICE_HEALTH_NOT_EMPTY];
+        $text = trim((string) $json, " \t\n\r");
+        $reply = $text === '' ? null : json_decode($text);
+
+        if (! is_array($reply)) {
+            $class = self::serviceHealthReplyClass($text, $reply);
+
+            return ['error' => ($class === 'envelope'
+                ? self::SERVICE_HEALTH_RELAY_FAULTS['envelope']
+                : 'CIPP returned '.$class.' for service health issues, not a list of rows.').self::SERVICE_HEALTH_NOT_EMPTY];
         }
 
-        if (! is_array($reply) || ! array_is_list($reply)) {
-            $class = is_array($reply) ? 'an object' : (is_null($reply) ? 'no JSON' : 'a '.get_debug_type($reply));
-
-            return ['error' => "CIPP returned {$class} for service health issues, not a list of rows.".self::SERVICE_HEALTH_NOT_EMPTY];
-        }
-
+        $rows = [];
         foreach ($reply as $index => $row) {
-            $fault = $this->serviceHealthRowFault($row);
+            $fault = $row instanceof \stdClass ? $this->serviceHealthRowFault($row = get_object_vars($row)) : 'a value that is not an object';
             if ($fault !== null) {
                 return ['error' => "CIPP returned a service health issue row (row {$index}) with {$fault}, so no issue is shown.".self::SERVICE_HEALTH_NOT_EMPTY];
             }
+            $rows[] = $row;
         }
 
-        $issues = array_map(fn (array $row): array => $this->projectServiceHealthRow($row), $reply);
+        $issues = array_map(fn (array $row): array => $this->projectServiceHealthRow($row), $rows);
         $read = count($issues);
 
         if (array_key_exists('issue_id', $input)) {
@@ -875,6 +960,28 @@ class CippToolContract
         }
 
         return ['issues_read' => $read, 'result' => self::issuesReturned($read), 'issues' => $issues];
+    }
+
+    /** What a reply that is not a list was, in PSA's words, never the vendor's ('envelope' for an envelope). */
+    private static function serviceHealthReplyClass(string $text, mixed $reply): string
+    {
+        if ($text === '') {
+            return 'an empty reply';
+        }
+
+        if ($reply instanceof \stdClass) {
+            foreach (['Results', 'results', 'value', 'Value'] as $key) {
+                if (property_exists($reply, $key)) {
+                    return 'envelope';
+                }
+            }
+
+            return 'a JSON object';
+        }
+
+        return $reply === null && $text !== 'null'
+            ? 'text that is not JSON'
+            : 'a JSON '.get_debug_type($reply).' value';
     }
 
     /**
@@ -898,12 +1005,9 @@ class CippToolContract
         return $count.' '.($count === 1 ? 'issue' : 'issues').' returned';
     }
 
-    private function serviceHealthRowFault(mixed $row): ?string
+    /** @param  array<int|string, mixed>  $row  a JSON object's members */
+    private function serviceHealthRowFault(array $row): ?string
     {
-        if (! is_array($row) || array_is_list($row)) {
-            return 'a value that is not an object';
-        }
-
         foreach (self::SERVICE_HEALTH_ROW_TYPES as $key => $type) {
             if (! array_key_exists($key, $row)) {
                 return "no {$key}";
@@ -917,6 +1021,11 @@ class CippToolContract
             };
             if (! $ok) {
                 return "{$key} of type ".get_debug_type($value).", expected {$type}";
+            }
+
+            $pattern = self::SERVICE_HEALTH_ROW_PATTERNS[$key] ?? null;
+            if ($pattern !== null && is_string($value) && preg_match($pattern, $value) !== 1) {
+                return "a {$key} value outside its expected form";
             }
         }
 

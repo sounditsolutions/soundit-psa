@@ -133,7 +133,8 @@ trait HandlesCippTools
      * One client's M365 service health issues. Direct leg: GET
      * api/ListServiceHealthIssues with TenantFilter = the resolved tenant and no
      * other parameter (never Open or UseReportDB; issue_id is applied to the reply).
-     * The reply is judged as received, not unwrapped, by the shared contract.
+     * The reply body is judged as received, before it is decoded, by the shared
+     * contract; a failure answers with status and class only.
      */
     private function cippListServiceHealthIssues(array $input): array
     {
@@ -146,17 +147,13 @@ trait HandlesCippTools
             try {
                 $reply = app(CippClient::class)->getDecoded('api/ListServiceHealthIssues', ['TenantFilter' => $tenantDomain], $deadline);
             } catch (\Throwable $e) {
-                if (CippClient::isDeadlineFailure($e)) {
-                    return $this->cippFailure('api/ListServiceHealthIssues', $e);
-                }
-
                 // Status and class only: the vendor's text goes to the log, not the caller.
-                Log::warning($this->cippLogPrefix().' CIPP query failed', ['endpoint' => 'api/ListServiceHealthIssues', 'error' => $e->getMessage()]);
+                Log::warning($this->cippLogPrefix().' CIPP query failed', ['endpoint' => 'api/ListServiceHealthIssues', 'exception' => $e::class, 'error' => mb_substr($e->getMessage(), 0, 500)]);
 
-                return ['error' => 'CIPP query failed ('.class_basename($e).($e->getCode() > 0 ? ', HTTP '.$e->getCode() : '').'). This is NOT an empty result: the issues are unknown.'];
+                return CippToolContract::serviceHealthFailure($e);
             }
 
-            return app(CippToolContract::class)->shapeServiceHealthIssues($reply, $input);
+            return app(CippToolContract::class)->shapeServiceHealthIssues($reply['body'], $input);
         });
     }
 

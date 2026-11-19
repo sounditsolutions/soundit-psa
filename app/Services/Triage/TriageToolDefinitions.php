@@ -671,11 +671,11 @@ class TriageToolDefinitions
             ],
             [
                 'name' => 'cipp_list_service_health_issues',
-                'description' => "Read-only list of the Microsoft 365 service health issues (incidents and advisories) for one client's tenant, from CIPP's ListServiceHealthIssues. Returns, per issue: id, title, service, feature, classification, status, start, end, last_updated, resolved. An empty list is reported as a count ('0 issues returned'); it is not a statement about the tenant. Any reply that is not a flat list of complete rows is refused, never shown as a short or empty list.\nOptional issue_id (letters and digits only, exact case-sensitive match, applied to the reply and never sent to CIPP): no match answers not found with the number of issues read.\nTransport: the direct CIPP API reply shape was measured. The MCP relay path is built to the direct leg's measured shape, not measured on a live relay; the relay's reply shape is read from vendor source, not measured.",
+                'description' => "Read-only list of the Microsoft 365 service health issues (incidents and advisories) for one client's tenant, from CIPP's ListServiceHealthIssues. Returns, per issue: id, title, service, feature, classification, status, start, end, last_updated, resolved. An empty list is reported as a count ('0 issues returned'); it is not a statement about the tenant. Any reply that is not a JSON list of complete, well-formed rows is refused, never shown as a short or empty list; over the MCP relay, so is a reply that is not exactly one text block holding that list, and a reply marked as an error.\nOptional issue_id (1 to 32 letters and digits, exact case-sensitive match, applied to the reply and never sent to CIPP): no match answers not found with the number of issues read.\nTransport: the direct CIPP API reply shape was measured. The MCP relay path is built to the direct leg's measured shape, not measured on a live relay; the relay's reply shape is read from vendor source, not measured.",
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
-                        'issue_id' => ['type' => 'string', 'pattern' => '^[A-Za-z0-9]+$', 'description' => 'Optional. One issue id, letters and digits only; exact match.'],
+                        'issue_id' => ['type' => 'string', 'pattern' => '^[A-Za-z0-9]{1,32}$', 'maxLength' => 32, 'description' => 'Optional. One issue id, 1 to 32 letters and digits; exact match.'],
                     ],
                 ],
             ],

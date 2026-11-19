@@ -13,9 +13,10 @@ use Illuminate\Support\Facades\Log;
 /**
  * cipp_list_service_health_issues behind the staff MCP controller's explicit-grant
  * gate. Both transports: the MCP relay when it is switched on, otherwise (or when
- * the relay cannot sign in) the direct CIPP API. The relay path is built to the
- * direct leg's measured shape, not measured on a live relay; the relay's reply
- * shape is read from vendor source, not measured.
+ * the relay cannot sign in) the direct CIPP API. A relay sign-in failure or a 401
+ * from the relay therefore means two upstream calls: the relay, then the direct
+ * API. The relay path is built to the direct leg's measured shape, not measured on
+ * a live relay; the relay's reply shape is read from vendor source, not measured.
  */
 class CippServiceHealthToolExecutor
 {
@@ -23,9 +24,13 @@ class CippServiceHealthToolExecutor
 
     public function __construct(protected ?int $clientId) {}
 
+    /**
+     * Every refusal, from either leg or from the checks before them, ends with the
+     * sentence that it is NOT an empty result.
+     */
     public function execute(array $input): array
     {
-        return $this->cippListServiceHealthIssues($input);
+        return CippToolContract::serviceHealthAnswer($this->cippListServiceHealthIssues($input));
     }
 
     protected function cippScopeClient(): ?Client
