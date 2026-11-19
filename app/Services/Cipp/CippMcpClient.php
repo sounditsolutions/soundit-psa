@@ -67,6 +67,82 @@ class CippMcpClient
      */
     public function callTool(string $toolName, array $arguments = [], ?float $deadline = null): array
     {
+        return $this->decodeJsonRpcPayload($this->sendToolCall($toolName, $arguments, $deadline));
+    }
+
+    /**
+     * callTool() for a caller that must know HOW the rows arrived, not only what
+     * they are. Opt-in: callTool() and every tool that uses it are unchanged.
+     *
+     * Same request, same deadline, same isError / JSON-RPC error / queue-marker
+     * failures. The payload is read from the FIRST text content block only, and is
+     * returned exactly as callTool() would return it for that block (an envelope
+     * unwrapped, non-JSON text as ['text' => ...]), together with:
+     *   - enveloped: whether a Results/results/value/Value envelope was unwrapped;
+     *   - content_blocks: how many content blocks the result carried. ExecMCP adds
+     *     a second block for a non-empty Metadata (its paging cursor), so a count
+     *     above one means the first block may not be the whole answer.
+     *
+     * @return array{rows: array<int|string, mixed>, enveloped: bool, content_blocks: int}
+     */
+    public function callToolReply(string $toolName, array $arguments = [], ?float $deadline = null): array
+    {
+        $payload = $this->firstSseDataPayload($body = $this->sendToolCall($toolName, $arguments, $deadline)) ?? $body;
+        $decoded = json_decode($payload, true);
+
+        if (! is_array($decoded)) {
+            throw new CippClientException('CIPP MCP response was not valid JSON-RPC');
+        }
+
+        if (isset($decoded['error'])) {
+            $message = is_array($decoded['error'])
+                ? (string) ($decoded['error']['message'] ?? json_encode($decoded['error']))
+                : (string) $decoded['error'];
+            throw new CippClientException('CIPP MCP JSON-RPC error: '.$message);
+        }
+
+        $result = $decoded['result'] ?? $decoded;
+        if (! is_array($result)) {
+            return ['rows' => ['value' => $result], 'enveloped' => false, 'content_blocks' => 0];
+        }
+
+        $content = isset($result['content']) && is_array($result['content']) ? $result['content'] : null;
+        $first = $content !== null ? ($content[array_key_first($content) ?? 0] ?? null) : null;
+        $text = is_array($first) && ($first['type'] ?? null) === 'text' && is_string($first['text'] ?? null) ? $first['text'] : null;
+
+        if (($result['isError'] ?? false) === true) {
+            throw new CippClientException('CIPP MCP tool error: '.mb_substr($text !== null && $text !== '' ? $text : 'no error detail provided', 0, 500));
+        }
+
+        $blocks = $content !== null ? count($content) : 0;
+        if ($content === null) {
+            $data = $result;
+        } elseif ($text === null) {
+            return ['rows' => ['text' => ''], 'enveloped' => false, 'content_blocks' => $blocks];
+        } elseif ($text === '') {
+            return ['rows' => [], 'enveloped' => false, 'content_blocks' => $blocks];
+        } else {
+            $data = json_decode($text, true);
+            if (! is_array($data)) {
+                return ['rows' => ['text' => $text], 'enveloped' => false, 'content_blocks' => $blocks];
+            }
+        }
+
+        // The keys unwrapCippEnvelope() unwraps, tested the same way it tests them.
+        $enveloped = false;
+        foreach (['Results', 'results', 'value', 'Value'] as $key) {
+            if (array_key_exists($key, $data) && is_array($data[$key])) {
+                $enveloped = true;
+                break;
+            }
+        }
+
+        return ['rows' => $this->unwrapCippEnvelope($data), 'enveloped' => $enveloped, 'content_blocks' => $blocks];
+    }
+
+    /** The ExecMCP tools/call request shared by callTool() and callToolReply(); returns the body. */
+    private function sendToolCall(string $toolName, array $arguments, ?float $deadline): string
+    {
         $execMcpUrl = $this->execMcpUrl();
         $safeOptions = $this->safeRequestOptions($execMcpUrl);
         $token = $this->getToken($deadline);
@@ -104,7 +180,7 @@ class CippMcpClient
             throw new CippClientException("CIPP MCP {$toolName} failed: HTTP {$response->status()} ".mb_substr($response->body(), 0, 500));
         }
 
-        return $this->decodeJsonRpcPayload((string) $response->body());
+        return (string) $response->body();
     }
 
     /**

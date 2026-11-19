@@ -52,6 +52,24 @@ class CippClient
     }
 
     /**
+     * get() for a caller that judges the reply's shape itself: the decoded JSON
+     * exactly as CIPP sent it. No Results unwrap, and a body that is not JSON is
+     * null rather than []. The queue guard still applies. Opt-in; get() is unchanged.
+     */
+    public function getDecoded(string $endpoint, array $params = [], ?float $deadline = null): mixed
+    {
+        $response = $this->sendRequest('GET', $endpoint, ['query' => $params], 'application/json', deadline: $deadline);
+
+        $data = json_decode((string) $response->getBody(), true);
+
+        if (is_array($data)) {
+            CippQueueGuard::assertNotQueueBacked($data);
+        }
+
+        return $data;
+    }
+
+    /**
      * Make an authenticated GET request and return the raw response bytes.
      *
      * Used for endpoints that return binary payloads (e.g. profile photos).

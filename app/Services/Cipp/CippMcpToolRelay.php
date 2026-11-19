@@ -65,6 +65,10 @@ class CippMcpToolRelay
         'cipp_list_mail_quarantine' => 'ListMailQuarantine',
         'cipp_list_user_mfa_methods' => 'ListMFAUsers',
         'cipp_list_oauth_apps' => 'ListOAuthApps',
+        // Built to the direct leg's measured shape, not measured on a live relay; the
+        // relay's reply shape is read from vendor source, not measured. Only the
+        // tenant is sent (never Open or UseReportDB); see execute().
+        'cipp_list_service_health_issues' => 'ListServiceHealthIssues',
     ];
 
     private const ALLOWED_ARGUMENTS = [
@@ -78,6 +82,8 @@ class CippMcpToolRelay
         'cipp_list_mail_quarantine' => ['recipient'],
         'cipp_list_user_mfa_methods' => ['user_id'],
         'cipp_list_oauth_apps' => ['user_id'],
+        // Applied to the reply in the contract; never sent upstream.
+        'cipp_list_service_health_issues' => ['issue_id'],
     ];
 
     private readonly CippToolContract $contract;
@@ -127,8 +133,21 @@ class CippMcpToolRelay
             return $prepared;
         }
 
+        $serviceHealth = $toolName === CippToolContract::SERVICE_HEALTH_TOOL;
+        if ($serviceHealth && ($tenantRefusal = CippToolContract::serviceHealthTenantRefusal($tenantDomain)) !== null) {
+            return $tenantRefusal;
+        }
+
         try {
-            $rows = $this->client->callTool($prepared['tool'], $prepared['arguments'], $deadline);
+            // The service health tool alone reads how the reply arrived (envelope,
+            // extra content blocks), because its contract refuses both; every other
+            // tool takes callTool() exactly as before.
+            $reply = $serviceHealth
+                ? $this->client->callToolReply($prepared['tool'], $prepared['arguments'], $deadline)
+                : null;
+            $rows = $reply === null
+                ? $this->client->callTool($prepared['tool'], $prepared['arguments'], $deadline)
+                : $reply['rows'];
         } catch (CippMcpAuthException $e) {
             throw $e;
         } catch (\Throwable $e) {
@@ -167,6 +186,10 @@ class CippMcpToolRelay
         // Shaping — projection, filtering, fencing — is a property of CIPP's response,
         // not of this transport, so it lives in the shared contract and the direct
         // CippClient path runs the identical code (psa-d2hj).
+        if ($reply !== null) {
+            return $this->contract->shapeServiceHealthIssues($rows, $input, $reply['enveloped'], $reply['content_blocks']);
+        }
+
         return $this->contract->shape($toolName, $rows, $input, $clientId);
     }
 

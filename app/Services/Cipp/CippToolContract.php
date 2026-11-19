@@ -131,6 +131,10 @@ class CippToolContract
         // The advertised input schema no longer offers user_id, but the executors do
         // not enforce their schema at runtime before dispatch, so the refusal has to
         // live in the code path, not in the documentation.
+        if ($toolName === self::SERVICE_HEALTH_TOOL) {
+            return self::serviceHealthInputRefusal($input);
+        }
+
         if ($toolName === 'cipp_list_oauth_apps' && ! empty($input['user_id'])) {
             return 'Per-user OAuth consent attribution is UNAVAILABLE: CIPP\'s ListOAuthApps drops principalId and '
                 .'consentType, so a consent cannot be tied to a specific user. Do NOT interpret this as "this user '
@@ -747,6 +751,189 @@ class CippToolContract
             'total_returned_by_cipp' => $totalReturned,
             'apps' => array_slice($projected, 0, 50),
         ];
+    }
+
+    // ── Service health issues (one client's tenant, both transports) ──
+
+    public const SERVICE_HEALTH_TOOL = 'cipp_list_service_health_issues';
+
+    /**
+     * The keys each row must carry, with the types the output relies on. Measured on
+     * a direct api/ListServiceHealthIssues reply; the producer is
+     * Invoke-ListServiceHealthIssues.ps1, whose live-Graph branch returns
+     * Body = @($Results) from /admin/serviceAnnouncement/issues (a bare array).
+     * 'string|null' means the key must be present and hold a string or null.
+     *
+     * @var array<string, string>
+     */
+    private const SERVICE_HEALTH_ROW_TYPES = [
+        'id' => 'string',
+        'title' => 'string',
+        'service' => 'string',
+        'feature' => 'string',
+        'classification' => 'string',
+        'status' => 'string',
+        'startDateTime' => 'string',
+        'endDateTime' => 'string|null',
+        'lastModifiedDateTime' => 'string',
+        'isResolved' => 'bool',
+    ];
+
+    /** Output field => row key. Exactly these ten; nothing else is returned. */
+    private const SERVICE_HEALTH_FIELDS = [
+        'id' => 'id',
+        'title' => 'title',
+        'service' => 'service',
+        'feature' => 'feature',
+        'classification' => 'classification',
+        'status' => 'status',
+        'start' => 'startDateTime',
+        'end' => 'endDateTime',
+        'last_updated' => 'lastModifiedDateTime',
+        'resolved' => 'isResolved',
+    ];
+
+    /** Free-text output fields, fenced before they reach the agent. */
+    private const SERVICE_HEALTH_FENCED = ['title', 'service', 'feature'];
+
+    private const SERVICE_HEALTH_NOT_EMPTY = ' This is NOT an empty result: the issues are unknown.';
+
+    /**
+     * Refused before any call: an argument this tool does not take (a tenant cannot
+     * be passed; it comes from client_id), or an issue_id that is not letters and
+     * digits only.
+     */
+    private static function serviceHealthInputRefusal(array $input): ?string
+    {
+        $unknown = array_values(array_diff(array_keys($input), ['client_id', 'issue_id']));
+        if ($unknown !== []) {
+            return 'Unsupported argument(s) for '.self::SERVICE_HEALTH_TOOL.': '.implode(', ', array_map(fn ($key): string => mb_substr((string) $key, 0, 40), $unknown)).'. The tenant comes from client_id and cannot be passed.';
+        }
+
+        if (array_key_exists('issue_id', $input) && ! (is_string($input['issue_id']) && preg_match('/^[A-Za-z0-9]+$/D', $input['issue_id']) === 1)) {
+            return 'issue_id must be letters and digits only; the request was not sent.';
+        }
+
+        return null;
+    }
+
+    /**
+     * The one shaping step for cipp_list_service_health_issues, on both transports.
+     *
+     * $reply is what the transport received, NOT normalized: normalizeRows() would
+     * unwrap an envelope or turn one object into one row, and this tool accepts
+     * neither. Only a flat list of rows passes; every row must carry the measured
+     * keys with the measured types, and one bad row refuses the whole call. Refusals
+     * name the shape and the class of fault, never the vendor's text.
+     *
+     * $enveloped and $contentBlocks come from the relay (CippMcpClient::callToolReply()).
+     * Relay replies: built to the direct leg's measured shape, not measured on a live
+     * relay; the relay's reply shape is read from vendor source, not measured.
+     *
+     * @return array<string, mixed>
+     */
+    public function shapeServiceHealthIssues(mixed $reply, array $input, bool $enveloped = false, int $contentBlocks = 1): array
+    {
+        if ($enveloped) {
+            return ['error' => 'CIPP returned the service health issues inside an envelope, which this tool does not accept.'.self::SERVICE_HEALTH_NOT_EMPTY];
+        }
+
+        if ($contentBlocks > 1) {
+            return ['error' => 'CIPP returned more than one content block (a paging cursor), so the list may be incomplete and is not shown.'.self::SERVICE_HEALTH_NOT_EMPTY];
+        }
+
+        if (! is_array($reply) || ! array_is_list($reply)) {
+            $class = is_array($reply) ? 'an object' : (is_null($reply) ? 'no JSON' : 'a '.get_debug_type($reply));
+
+            return ['error' => "CIPP returned {$class} for service health issues, not a list of rows.".self::SERVICE_HEALTH_NOT_EMPTY];
+        }
+
+        foreach ($reply as $index => $row) {
+            $fault = $this->serviceHealthRowFault($row);
+            if ($fault !== null) {
+                return ['error' => "CIPP returned a service health issue row (row {$index}) with {$fault}, so no issue is shown.".self::SERVICE_HEALTH_NOT_EMPTY];
+            }
+        }
+
+        $issues = array_map(fn (array $row): array => $this->projectServiceHealthRow($row), $reply);
+        $read = count($issues);
+
+        if (array_key_exists('issue_id', $input)) {
+            $wanted = (string) $input['issue_id'];
+            // Exact, case-sensitive match on the id CIPP returned.
+            $matches = array_values(array_filter($issues, fn (array $issue): bool => $issue['id'] === $wanted));
+            if ($matches === []) {
+                return [
+                    'issue_id' => $wanted,
+                    'found' => false,
+                    'issues_read' => $read,
+                    'result' => "issue {$wanted} not found among {$read} ".($read === 1 ? 'issue' : 'issues').' read',
+                ];
+            }
+
+            return ['issue_id' => $wanted, 'found' => true, 'issues_read' => $read, 'result' => self::issuesReturned(count($matches)), 'issues' => $matches];
+        }
+
+        return ['issues_read' => $read, 'result' => self::issuesReturned($read), 'issues' => $issues];
+    }
+
+    /**
+     * A resolved tenant this tool must never send: blank, or CIPP's all-tenants value
+     * (Invoke-ListServiceHealthIssues.ps1 compares with PowerShell -eq, which ignores
+     * case). The tenant comes from the client's stored mapping, so this only fires on
+     * a mapping that names every tenant; it is checked on both legs before sending.
+     */
+    public static function serviceHealthTenantRefusal(string $tenant): ?array
+    {
+        $normalized = mb_strtolower(trim($tenant));
+        if ($normalized === '' || $normalized === 'alltenants') {
+            return ['error' => 'This client\'s CIPP mapping does not name one tenant, so service health issues were not requested.'];
+        }
+
+        return null;
+    }
+
+    private static function issuesReturned(int $count): string
+    {
+        return $count.' '.($count === 1 ? 'issue' : 'issues').' returned';
+    }
+
+    private function serviceHealthRowFault(mixed $row): ?string
+    {
+        if (! is_array($row) || array_is_list($row)) {
+            return 'a value that is not an object';
+        }
+
+        foreach (self::SERVICE_HEALTH_ROW_TYPES as $key => $type) {
+            if (! array_key_exists($key, $row)) {
+                return "no {$key}";
+            }
+
+            $value = $row[$key];
+            $ok = match ($type) {
+                'string' => is_string($value),
+                'string|null' => is_string($value) || $value === null,
+                'bool' => is_bool($value),
+            };
+            if (! $ok) {
+                return "{$key} of type ".get_debug_type($value).", expected {$type}";
+            }
+        }
+
+        return null;
+    }
+
+    /** @return array<string, mixed> */
+    private function projectServiceHealthRow(array $row): array
+    {
+        $issue = [];
+        foreach (self::SERVICE_HEALTH_FIELDS as $field => $key) {
+            $issue[$field] = in_array($field, self::SERVICE_HEALTH_FENCED, true)
+                ? $this->textSanitizer->sanitize($this->fieldLabel(self::SERVICE_HEALTH_TOOL, $field), $row[$key], 1000)
+                : $row[$key];
+        }
+
+        return $issue;
     }
 
     // ── Shared primitives ──

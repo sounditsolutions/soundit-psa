@@ -129,6 +129,37 @@ trait HandlesCippTools
         return $this->cippDispatch('cipp_compare_user_access', $input, fn (string $tenant, float $deadline): array => app(CippCompareUserAccess::class)->compare($tenant, $input, $this->clientId, $deadline));
     }
 
+    /**
+     * One client's M365 service health issues. Direct leg: GET
+     * api/ListServiceHealthIssues with TenantFilter = the resolved tenant and no
+     * other parameter (never Open or UseReportDB; issue_id is applied to the reply).
+     * The reply is judged as received, not unwrapped, by the shared contract.
+     */
+    private function cippListServiceHealthIssues(array $input): array
+    {
+        return $this->cippDispatch(CippToolContract::SERVICE_HEALTH_TOOL, $input, function (string $tenantDomain, float $deadline) use ($input): array {
+            $tenantRefusal = CippToolContract::serviceHealthTenantRefusal($tenantDomain);
+            if ($tenantRefusal !== null) {
+                return $tenantRefusal;
+            }
+
+            try {
+                $reply = app(CippClient::class)->getDecoded('api/ListServiceHealthIssues', ['TenantFilter' => $tenantDomain], $deadline);
+            } catch (\Throwable $e) {
+                if (CippClient::isDeadlineFailure($e)) {
+                    return $this->cippFailure('api/ListServiceHealthIssues', $e);
+                }
+
+                // Status and class only: the vendor's text goes to the log, not the caller.
+                Log::warning($this->cippLogPrefix().' CIPP query failed', ['endpoint' => 'api/ListServiceHealthIssues', 'error' => $e->getMessage()]);
+
+                return ['error' => 'CIPP query failed ('.class_basename($e).($e->getCode() > 0 ? ', HTTP '.$e->getCode() : '').'). This is NOT an empty result: the issues are unknown.'];
+            }
+
+            return app(CippToolContract::class)->shapeServiceHealthIssues($reply, $input);
+        });
+    }
+
     private function cippQuery(string $toolName, array $input, string $endpoint): array
     {
         return $this->cippDispatch($toolName, $input, function (string $tenantDomain, float $deadline) use ($toolName, $input, $endpoint): array {
