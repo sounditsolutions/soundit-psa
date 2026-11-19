@@ -758,8 +758,8 @@ class HuntressUnwantedAccessRuleWriteTest extends TestCase
         $this->queueFault('422');
         $result = $this->approveDirect($run);
         $this->assertSame('gate_declined', $result->status);
-        $this->assertStringStartsWith('Huntress refused the request (HTTP 422)', (string) $result->message);
-        $this->assertStringNotContainsString('synthetic audit insert failure', (string) $result->message);
+        // The whole message: a request was sent, so it must not end in "Nothing was sent."
+        $this->assertSame('Huntress refused the request (HTTP 422): rule POST, HuntressClientException.', $result->message);
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, 'a refusal gives the run back');
         $this->assertCount(1, $this->writes);
     }
@@ -854,8 +854,7 @@ class HuntressUnwantedAccessRuleWriteTest extends TestCase
             $this->assertSame('executed', $this->approveDirect($run)->status);
         });
 
-        $this->assertArrayHasKey('error', $again, json_encode($again));
-        $this->assertStringContainsString('Nothing was staged and nothing was sent', $again['error']);
+        $this->assertSame("Run {$run->id} for this proposal finished while it was being staged again. Nothing was staged and nothing was sent; the same request staged again takes a new run.", $again['error'] ?? null, json_encode($again));
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
         $this->assertSame(1, TechnicianRun::count());
         $this->trapBoth();
@@ -1166,5 +1165,139 @@ class HuntressUnwantedAccessRuleWriteTest extends TestCase
 
         $this->assertStringContainsString('changed state while it was being staged again (now denied)', (string) ($again['error'] ?? ''), json_encode($again));
         $this->assertSame(TechnicianRunState::Denied, $run->fresh()->state);
+    }
+
+    // ── closing commit: a run read as waiting, a throw after the call, unreadable type ──
+
+    public function test_a_run_another_caller_staged_after_the_live_check_is_answered_already_staged_and_not_rewritten(): void
+    {
+        $fx = $this->fixture();
+        $tool = $this->stagedName(self::CREATE);
+        $args = ['country_code' => 'US', 'type' => 'expected', 'ticket_id' => $fx['ticket']->id];
+        $executor = app(\App\Services\Mcp\StaffHuntressRuleToolExecutor::class);
+        $first = null;
+        $armed = true;
+        // The first caller stages the same request between this caller's live check and its firstOrCreate().
+        DB::listen(function ($query) use (&$armed, &$first, $executor, $tool, $args, $fx): void {
+            if ($armed && str_starts_with(strtolower($query->sql), 'select') && str_contains($query->sql, 'technician_runs') && in_array(TechnicianRunState::AwaitingApproval->value, $query->bindings, true)) {
+                $armed = false;
+                $first = $executor->execute($tool, $args + ['reason' => 'first reason'], (int) $fx['client']->id, 'mcp-staff:first', 'first');
+            }
+        });
+
+        $second = $executor->execute($tool, $args + ['reason' => 'second reason'], (int) $fx['client']->id, 'mcp-staff:second', 'second');
+
+        $this->assertTrue($first['success'] ?? false, json_encode($first));
+        $run = TechnicianRun::findOrFail($first['run_id']);
+        $content = $run->proposed_content;
+        $meta = $run->proposed_meta;
+        $this->assertSame(['success' => true, 'idempotent' => true, 'ticket_id' => $fx['ticket']->id, 'run_id' => $run->id, 'message' => 'Already staged; awaiting approval. Nothing was sent.'], $second);
+        $this->assertSame(1, TechnicianRun::count());
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertSame($content, $run->fresh()->proposed_content);
+        $this->assertSame($meta, $run->fresh()->proposed_meta);
+        $this->assertStringContainsString('first reason', $run->fresh()->proposed_content);
+        $this->assertStringNotContainsString('second reason', $run->fresh()->proposed_content);
+        $this->assertSame(['first reason'], $run->fresh()->proposed_meta['reasons']);
+        $this->assertSame('mcp-staff:first', $run->fresh()->proposed_meta['drafted_by']);
+        $this->assertSame(1, TechnicianActionLog::where('action_type', $tool)->count(), 'one audit row: the first caller\'s');
+        $this->assertCount(0, $this->writes);
+    }
+
+    public function test_a_denied_run_revived_by_another_caller_before_the_lock_is_answered_already_staged_and_not_rewritten(): void
+    {
+        $content = null;
+        $audits = null;
+        [$run, $again] = $this->reStageWith(2, fn (TechnicianRun $run) => $this->assertTrue($run->deny()), function (TechnicianRun $run) use (&$content, &$audits): void {
+            // Another caller revived the denied run after this re-stage read it as denied.
+            DB::table('technician_runs')->where('id', $run->id)->update(['state' => TechnicianRunState::AwaitingApproval->value, 'proposed_content' => 'the other caller\'s card']);
+            $content = 'the other caller\'s card';
+            $audits = TechnicianActionLog::count();
+        });
+
+        $this->assertSame(['success' => true, 'idempotent' => true, 'ticket_id' => $run->ticket_id, 'run_id' => $run->id, 'message' => 'Already staged; awaiting approval. Nothing was sent.'], $again);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertSame($content, $run->fresh()->proposed_content);
+        $this->assertSame($audits, TechnicianActionLog::count());
+        $this->assertCount(0, $this->writes);
+    }
+
+    /** The write client with a throw that is not a vendor HTTP error, raised after the request is recorded as sent. */
+    private function throwAfterSending(): void
+    {
+        $stack = HandlerStack::create($this->writeQueue);
+        $stack->push(Middleware::mapResponse(static function (): never {
+            throw new \RuntimeException('synthetic detail that must not reach the caller');
+        }));
+        $stack->push(Middleware::history($this->writes));
+        $this->app->instance(HuntressWriteClient::class, new HuntressWriteClient(['api_key' => 'uk', 'api_secret' => 'us'], new GuzzleClient(['base_uri' => 'https://api.huntress.io/v1/', 'handler' => $stack])));
+    }
+
+    public function test_a_throw_after_the_request_on_the_immediate_lane_is_an_unknown_outcome_with_the_class_only(): void
+    {
+        $fx = $this->fixture();
+        $this->throwAfterSending();
+        $this->queueWrite(201, ['unwanted_access_rule' => $this->rule(501)]);
+
+        $text = (string) $this->callTool($this->token([self::CREATE.':immediate']), self::CREATE, $this->createArgs($fx))->json('result.content.0.text');
+
+        $this->assertSame(['error' => 'Huntress rule POST failed with an unknown outcome (RuntimeException); it may have been applied. Check the rule with huntress_list_unwanted_access_rules before retrying.'], json_decode($text, true), $text);
+        $this->assertStringNotContainsString('synthetic detail', $text);
+        $this->assertStringNotContainsString('Tool execution failed', $text);
+        $this->assertCount(1, $this->writes);
+        $this->assertSame(1, TechnicianActionLog::where('action_type', self::CREATE)->where('result_status', 'error')->count());
+    }
+
+    public function test_a_throw_after_the_request_at_approval_closes_the_run_and_a_second_approval_sends_nothing(): void
+    {
+        $fx = $this->fixture();
+        $run = $this->stageCreate($fx);
+        $this->throwAfterSending();
+        $this->queueWrite(201, ['unwanted_access_rule' => $this->rule(501)]);
+
+        $approve = function () use ($run): string {
+            try {
+                $result = $this->approveDirect($run);
+
+                return $result->status.': '.$result->message;
+            } catch (\Throwable $e) {
+                return 'threw '.$e::class;
+            }
+        };
+
+        $first = $approve();
+        $state = $run->fresh()->state;
+        $this->trapBoth();
+        $second = $approve();
+
+        $this->assertCount(1, $this->writes, "one request across two approvals ({$first} | {$second})");
+        $this->assertSame('executed_with_fault: The Huntress rule POST /v1/unwanted_access_rules failed with an unknown outcome (RuntimeException); it may have been applied. Do NOT re-approve: check the rule in Huntress.', $first);
+        $this->assertSame(TechnicianRunState::Done, $state, 'the claim is not given back');
+        $this->assertSame('already_handled: ', $second);
+    }
+
+    public function test_update_refuses_dates_when_the_rule_type_cannot_be_read_on_a_call_lane_and_at_approval(): void
+    {
+        $fx = $this->fixture();
+        foreach (['no type' => null, 'another type' => 'temporary'] as $label => $type) {
+            $unreadable = $this->rule(501, overrides: ['type' => $type]);
+            $this->queueRead($unreadable);
+            $result = $this->executeDirect(self::UPDATE, ['rule_id' => 501, 'expires_at' => '2026-12-05', 'reason' => 'r'], $fx['client']);
+            $this->assertSame('expires_at must be omitted: rule 501 could not be read as type expected, and dates apply to expected rules only. Nothing was sent.', $result['error'] ?? null, "{$label}: ".json_encode($result));
+
+            // Staged while the rule read as expected; at approval its type cannot be read.
+            $this->readQueue->reset();
+            $this->queueRead($this->rule(501));
+            $run = TechnicianRun::findOrFail($this->executeDirect($this->stagedName(self::UPDATE), ['rule_id' => 501, 'expires_at' => '2026-12-05', 'notes' => $label, 'reason' => 'r', 'ticket_id' => $fx['ticket']->id], $fx['client'])['run_id']);
+            $this->readQueue->reset();
+            $this->queueRead($unreadable);
+            $this->queueWrite(200, ['unwanted_access_rule' => $unreadable]);
+            $approval = $this->approveDirect($run);
+            $this->assertSame('gate_declined', $approval->status, $label);
+            $this->assertSame('expires_at must be omitted: rule 501 could not be read as type expected, and dates apply to expected rules only. Nothing was sent.', $approval->message, $label);
+            $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, $label);
+            $this->writeQueue->reset();
+        }
+        $this->assertCount(0, $this->writes);
     }
 }

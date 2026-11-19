@@ -357,9 +357,11 @@ class StaffHuntressRuleToolExecutor
             $this->audit($tool, 'error', (int) $client->id, $ticket, $hash, $request['target'].': refused before sending: '.$e->getMessage(), $actorLabel);
 
             return ['error' => 'The Huntress rule call was refused before it was sent. Nothing was sent.'];
-        } catch (HuntressClientException $e) {
+        } catch (\Throwable $e) {
+            // Any other throw after perform() is entered may follow a sent request: only a
+            // vendor 4xx (other than 408) is a refusal. The answer carries the class, never the message.
             $detail = self::failureDetail($e);
-            $committed = self::mayHaveCommitted($e);
+            $committed = ! $e instanceof HuntressClientException || self::mayHaveCommitted($e);
             // After the vendor call every audit goes through safeAudit(): a failing INSERT must
             // not replace this answer, and its message must not reach the caller.
             $this->safeAudit($tool, 'error', (int) $client->id, $ticket, $hash, $request['target'].': '.$request['method'].' '.$request['path'].' failed: '.$detail.($committed ? ' (outcome unknown)' : ''), $actorLabel);
@@ -512,6 +514,9 @@ class StaffHuntressRuleToolExecutor
             ['client_id' => $client->id, 'state' => TechnicianRunState::AwaitingApproval, 'proposed_content' => $content, 'proposed_meta' => $meta, 'confidence' => null, 'tokens_used' => 0],
         );
         if (! $run->wasRecentlyCreated) {
+            if ($run->state === TechnicianRunState::AwaitingApproval) {
+                return $this->alreadyStagedAnswer($ticket, $run);
+            }
             if ($run->state === TechnicianRunState::Executing) {
                 return $this->claimedAnswer($ticket, $run);
             }
@@ -520,7 +525,7 @@ class StaffHuntressRuleToolExecutor
             }
             $moved = $this->reviveUnderLock($run, $content, $meta);
             if ($moved === TechnicianRunState::AwaitingApproval->value) {
-                return ['success' => true, 'idempotent' => true, 'ticket_id' => $ticket->id, 'run_id' => $run->id, 'message' => 'Already staged; awaiting approval. Nothing was sent.'];
+                return $this->alreadyStagedAnswer($ticket, $run);
             }
             if ($moved !== null) {
                 return $moved === TechnicianRunState::Executing->value ? $this->claimedAnswer($ticket, $run) : $this->movedAnswer($run, $moved);
@@ -533,12 +538,13 @@ class StaffHuntressRuleToolExecutor
     }
 
     /**
-     * Revive a closed run (Denied, Superseded, ...) to AwaitingApproval, as a
-     * compare-and-swap on the run as read: under a row lock, still the same
-     * state and the same claimed_at. A run approved, revived or claimed since it
-     * was read is left as it is. Null when the revive was written, else the state
-     * the run was found in ('deleted' when the row is gone). The write goes
-     * through the model so the AwaitingApproval notification still fires.
+     * Revive a run read as closed (Denied, Superseded, ...) to AwaitingApproval.
+     * stage() answers a run read as AwaitingApproval, Executing or Done itself and
+     * never calls this for one. Under a row lock the run is written only if it
+     * still has the state and the claimed_at it was read with; otherwise nothing
+     * is written. Null when the revive was written, else the state the run was
+     * found in ('deleted' when the row is gone). The write goes through the model
+     * so the AwaitingApproval notification still fires.
      *
      * @param  array<string, mixed>  $meta
      */
@@ -566,6 +572,12 @@ class StaffHuntressRuleToolExecutor
     }
 
     /** @return array<string, mixed> */
+    private function alreadyStagedAnswer(Ticket $ticket, TechnicianRun $run): array
+    {
+        return ['success' => true, 'idempotent' => true, 'ticket_id' => $ticket->id, 'run_id' => $run->id, 'message' => 'Already staged; awaiting approval. Nothing was sent.'];
+    }
+
+    /** @return array<string, mixed> */
     private function claimedAnswer(Ticket $ticket, TechnicianRun $run): array
     {
         return ['success' => true, 'idempotent' => true, 'ticket_id' => $ticket->id, 'run_id' => $run->id, 'message' => 'This proposal is claimed for execution and has not finished; nothing new was staged and nothing was sent.'];
@@ -574,7 +586,11 @@ class StaffHuntressRuleToolExecutor
     /** @return array<string, mixed> */
     private function movedAnswer(TechnicianRun $run, string $state): array
     {
-        return ['error' => "Run {$run->id} for this proposal changed state while it was being staged again (now {$state}). Nothing was staged and nothing was sent; check the run in the cockpit before staging it again."];
+        if ($state === TechnicianRunState::Done->value) {
+            return ['error' => "Run {$run->id} for this proposal finished while it was being staged again. Nothing was staged and nothing was sent; the same request staged again takes a new run."];
+        }
+
+        return ['error' => "Run {$run->id} for this proposal changed state while it was being staged again (now {$state}). Nothing was staged and nothing was sent."];
     }
 
     /**
@@ -639,11 +655,13 @@ class StaffHuntressRuleToolExecutor
         try {
             return $this->approveClaimed($run, $approverId);
         } catch (\Throwable $e) {
-            // A throw reaching here is from before the request was sent, or from
-            // releaseClaim() after Huntress refused it (HTTP 4xx other than 408): a
-            // HuntressClientException is caught in approveClaimed(), and every arm after
-            // the write call catches its own audit and close failures, so a run whose
-            // write may have landed is never given back for a second send.
+            // A throw reaching here is from before any request was sent (before
+            // perform() is entered, or the audit of a call the write client refused
+            // before sending), or from releaseClaim() after Huntress refused the
+            // request (HTTP 4xx other than 408): every other throw out of perform() is
+            // caught in approveClaimed() and closes the run, and every arm after a
+            // request catches its own audit and close failures, so a run whose write
+            // may have landed is never given back for a second send.
             $run->releaseClaim();
 
             throw $e;
@@ -723,9 +741,11 @@ class StaffHuntressRuleToolExecutor
             $outcome = $this->perform($direct, $request, (int) $client->id, $current);
         } catch (HuntressWriteScopeException $e) {
             return $decline('error', 'The Huntress rule call was refused before it was sent.');
-        } catch (HuntressClientException $e) {
+        } catch (\Throwable $e) {
+            // Any other throw after perform() is entered may follow a sent request: only a
+            // vendor 4xx (other than 408) is a refusal and gives the run back.
             $detail = self::failureDetail($e);
-            if (! self::mayHaveCommitted($e)) {
+            if ($e instanceof HuntressClientException && ! self::mayHaveCommitted($e)) {
                 return $decline('error', self::refusalText($request['method'], $e), true);
             }
             $fault = "The Huntress rule {$request['method']} {$request['path']} failed with an unknown outcome ({$detail}); it may have been applied. Do NOT re-approve: check the rule in Huntress.";
@@ -831,9 +851,12 @@ class StaffHuntressRuleToolExecutor
         return preg_match('/^[1-9][0-9]{0,2}\z/', $parts[1]) === 1 && (int) $parts[1] <= $max;
     }
 
-    /** C-56: class and HTTP status only, never the vendor message. */
+    /** C-56: class and HTTP status only, never the vendor message; class only for any other throw. */
     private static function failureDetail(\Throwable $e): string
     {
+        if (! $e instanceof HuntressClientException) {
+            return class_basename($e);
+        }
         $status = (int) $e->getCode();
 
         return 'Huntress HTTP '.($status > 0 ? $status : 'no response').': '.class_basename($e);
@@ -920,13 +943,13 @@ class StaffHuntressRuleToolExecutor
         return $user?->email ?? $user?->name ?? "approver:{$approverId}";
     }
 
-    /** An audit row after a write landed: a failing INSERT must not hide the outcome. */
+    /** An audit row after the vendor call: a failing INSERT must not hide the outcome. */
     private function safeAudit(string $type, string $status, ?int $clientId, ?Ticket $ticket, string $hash, string $summary, string $actor, ?int $runId = null, ?int $approverId = null): void
     {
         try {
             $this->audit($type, $status, $clientId, $ticket, $hash, $summary, $actor, $runId, $approverId);
         } catch (\Throwable $e) {
-            Log::error('[StaffHuntressRuleToolExecutor] audit row failed after a Huntress rule write', ['run_id' => $runId, 'result_status' => $status, 'exception' => $e::class]);
+            Log::error('[StaffHuntressRuleToolExecutor] audit row failed after a Huntress rule request', ['run_id' => $runId, 'result_status' => $status, 'exception' => $e::class]);
         }
     }
 
