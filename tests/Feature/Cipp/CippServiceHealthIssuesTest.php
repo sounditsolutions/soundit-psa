@@ -20,6 +20,7 @@ use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Promise\Create;
 use Illuminate\Contracts\Cache\Repository as CacheInterface;
+use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Cache;
@@ -957,5 +958,191 @@ class CippServiceHealthIssuesTest extends TestCase
             $this->assertStringEndsWith(self::NOT_EMPTY, $result['error'] ?? '', json_encode($result));
         }
         Http::assertNothingSent();
+    }
+
+    // ── Round 3: a REST client that cannot be built, two SSE events, mutant pins ──
+
+    /** @return array<string, array{0: string, 1: bool}> how the REST client fails, and whether the relay is on (answering 401) */
+    public static function restClientCannotBeBuilt(): array
+    {
+        return [
+            'build throws, relay off' => ['build', false],
+            'build throws, relay 401' => ['build', true],
+            'readDeadline throws, relay off' => ['deadline', false],
+            'readDeadline throws, relay 401' => ['deadline', true],
+        ];
+    }
+
+    /** The REST client cannot be built: its binding throws, or its readDeadline() does, with vendor-like text. */
+    private function breakRestClient(string $how): string
+    {
+        if ($how === 'build') {
+            $this->app->bind(CippClient::class, fn () => throw new DecryptException(self::VENDOR_TEXT.' cipp_client_secret'));
+
+            return 'DecryptException';
+        }
+
+        $rest = \Mockery::mock(CippClient::class);
+        $rest->shouldReceive('readDeadline')->andThrow(new \RuntimeException(self::VENDOR_TEXT.' readDeadline'));
+        $rest->shouldNotReceive('get', 'getDecoded');
+        $this->app->instance(CippClient::class, $rest);
+
+        return 'RuntimeException';
+    }
+
+    #[DataProvider('restClientCannotBeBuilt')]
+    public function test_a_rest_client_that_cannot_be_built_answers_with_class_only(string $how, bool $relay): void
+    {
+        if ($relay) {
+            $this->enableRelay();
+            $this->relayResponder = fn () => Http::response(self::VENDOR_TEXT, 401);
+        }
+        $class = $this->breakRestClient($how);
+        $result = $this->callTool();
+
+        $this->assertSame(['error' => "CIPP query failed ({$class}).".self::NOT_EMPTY], $result);
+        $this->assertNoVendorText($result);
+        $this->assertStringNotContainsString('cipp_client_secret', json_encode($result));
+        $this->assertStringNotContainsString('readDeadline', json_encode($result));
+        $this->assertSame([], $this->restCalls());
+        $this->assertCount($relay ? 1 : 0, $this->execMcpCalls());
+    }
+
+    /** Pin: every other tool on the same arm still answers with the exception's text, byte-same. */
+    public function test_another_tool_on_the_same_arm_answers_exactly_as_before(): void
+    {
+        $message = 'Synthetic secret could not be decrypted';
+        $this->app->bind(CippClient::class, fn () => throw new DecryptException($message));
+        $executor = new AssistantToolExecutor(null, $this->client->id);
+
+        $this->assertSame(['error' => 'CIPP query failed: '.$message], $executor->execute('cipp_list_licenses', []));
+
+        $long = str_repeat('x', 250);
+        $this->app->bind(CippClient::class, fn () => throw new DecryptException($long));
+        $this->assertSame(['error' => 'CIPP query failed: '.str_repeat('x', 200)], $executor->execute('cipp_list_licenses', []));
+        Http::assertNothingSent();
+    }
+
+    /** ExecMCP answering with these JSON-RPC bodies, each its own SSE event. */
+    private function relayEvents(array $jsonRpcs, string $tail = ''): void
+    {
+        $body = implode('', array_map(fn ($rpc): string => 'event: message'."\n".'data: '.(is_string($rpc) ? $rpc : json_encode($rpc))."\n\n", $jsonRpcs)).$tail;
+        $this->relayResponder = fn () => Http::response($body, 200, ['Content-Type' => 'text/event-stream']);
+    }
+
+    private function textReply(string $text): array
+    {
+        return ['jsonrpc' => '2.0', 'id' => 1, 'result' => ['content' => [['type' => 'text', 'text' => $text]], 'isError' => false]];
+    }
+
+    public function test_a_relay_body_with_two_data_events_is_refused_never_read_as_the_first(): void
+    {
+        $this->enableRelay();
+        $rows = json_encode([$this->row()]);
+        $refused = ['error' => 'CIPP\'s MCP relay reply carried more than one data event, so the list may be incomplete and is not shown.'.self::NOT_EMPTY];
+
+        $this->relayEvents([$this->textReply('[]'), $this->textReply($rows)]);
+        $this->assertSame($refused, $this->callTool());
+
+        $this->relayEvents([$this->textReply($rows), $this->textReply('[]')]);
+        $this->assertSame($refused, $this->callTool(['issue_id' => 'ZZ900001']));
+        $this->assertSame([], $this->restCalls());
+    }
+
+    public function test_a_relay_body_with_one_data_event_is_still_answered(): void
+    {
+        $this->enableRelay();
+        $rows = json_encode([$this->row()]);
+
+        $this->relayEvents([$this->textReply($rows)]);
+        $this->assertSame('1 issue returned', $this->callTool()['result'] ?? null);
+
+        $this->relayEvents([$this->textReply('[]')], "event: message\ndata: [DONE]\n\n");
+        $this->assertSame(['issues_read' => 0, 'result' => '0 issues returned', 'issues' => []], $this->callTool());
+    }
+
+    /** Pin: an existing relay tool still reads the first event of a two-event body, exactly as before. */
+    public function test_an_existing_relay_tool_still_reads_the_first_of_two_events(): void
+    {
+        $this->enableRelay();
+        $licence = ['skuId' => '44444444-4444-4444-8444-444444444444', 'License' => 'Synthetic licence', 'TotalLicenses' => 10, 'CountUsed' => 3, 'CountAvailable' => 7];
+        $executor = new AssistantToolExecutor(null, $this->client->id);
+
+        $this->relayEvents([$this->textReply(json_encode([$licence]))]);
+        $one = $executor->execute('cipp_list_licenses', []);
+        $this->relayEvents([$this->textReply(json_encode([$licence])), $this->textReply('[]')]);
+        $two = $executor->execute('cipp_list_licenses', []);
+
+        $this->assertArrayNotHasKey('error', $one, json_encode($one));
+        $this->assertStringContainsString('44444444-4444-4444-8444-444444444444', json_encode($one));
+        $this->assertSame($one, $two);
+    }
+
+    /** @return array<string, array{0: string, 1: string}> K5 / K9: a digit in a word, a time broken at its front */
+    public static function digitWordsAndBrokenYears(): array
+    {
+        return [
+            'classification trailing digit' => ['classification', 'incident1'],
+            'classification leading digit' => ['classification', '1ncident'],
+            'classification all digits' => ['classification', '2026'],
+            'status trailing digit' => ['status', 'serviceRestored0'],
+            'status inner digit' => ['status', 'service9Restored'],
+            'startDateTime letter in year' => ['startDateTime', '20X6-11-01T10:00:00Z'],
+            'startDateTime letters for year' => ['startDateTime', 'abcd-11-01T10:00:00Z'],
+            'endDateTime spaces for year' => ['endDateTime', '    -11-01T12:00:00Z'],
+            'lastModifiedDateTime signs for year' => ['lastModifiedDateTime', '+-+--11-01T12:30:00Z'],
+        ];
+    }
+
+    #[DataProvider('digitWordsAndBrokenYears')]
+    public function test_a_digit_in_a_word_or_a_time_broken_at_its_front_refuses_on_both_legs(string $key, string $value): void
+    {
+        $this->restBody = [$this->row(), $this->row(['id' => 'YY900002', $key => $value])];
+        $direct = $this->callTool();
+        $this->assertRefused($direct);
+        $this->assertStringContainsString("a {$key} value outside its expected form", $direct['error']);
+
+        $this->enableRelay();
+        $this->relayReplies([json_encode([$this->row(), $this->row(['id' => 'YY900002', $key => $value])])]);
+        $relay = $this->callTool();
+        $this->assertRefused($relay);
+        $this->assertStringContainsString("a {$key} value outside its expected form", $relay['error']);
+    }
+
+    /** K15: isError compared strictly; every value but false is an error, including the falsy ones. */
+    public function test_a_falsy_is_error_value_other_than_false_is_still_an_error(): void
+    {
+        $this->enableRelay();
+        foreach (['[]', json_encode([$this->row()])] as $text) {
+            foreach (['0' => 0, '""' => '', 'null' => null, '[]' => [], '"0"' => '0', '0.0' => 0.0] as $label => $flag) {
+                $this->relayRaw(['jsonrpc' => '2.0', 'id' => 1, 'result' => ['content' => [['type' => 'text', 'text' => $text]], 'isError' => $flag]]);
+                $this->assertSame(['error' => 'CIPP\'s MCP relay marked its reply as an error, so the reply is not read.'.self::NOT_EMPTY], $this->callTool(), "isError {$label}");
+            }
+        }
+
+        $this->relayRaw(['jsonrpc' => '2.0', 'id' => 1, 'result' => ['content' => [['type' => 'text', 'text' => '[]']], 'isError' => false]]);
+        $this->assertSame('0 issues returned', $this->callTool()['result'] ?? null);
+        $this->assertSame([], $this->restCalls());
+    }
+
+    /** @return array<string, array{0: string}> K2: bytes before the list */
+    public static function leadingBytes(): array
+    {
+        return ['BOM' => ["\u{FEFF}"], 'NUL' => ["\0"], 'vertical tab' => ["\x0B"], 'form feed' => ["\x0C"], 'BOM after a space' => [" \u{FEFF}"]];
+    }
+
+    #[DataProvider('leadingBytes')]
+    public function test_leading_bytes_before_the_list_are_refused_on_both_legs(string $lead): void
+    {
+        foreach (['[]', json_encode([$this->row()])] as $list) {
+            $this->restBody = $lead.$list;
+            $this->assertSame(['error' => 'CIPP returned text that is not JSON for service health issues, not a list of rows.'.self::NOT_EMPTY], $this->callTool(), 'direct '.bin2hex($lead));
+        }
+
+        $this->enableRelay();
+        foreach (['[]', json_encode([$this->row()])] as $list) {
+            $this->relayReplies([$lead.$list]);
+            $this->assertSame(['error' => 'CIPP returned text that is not JSON for service health issues, not a list of rows.'.self::NOT_EMPTY], $this->callTool(), 'relay '.bin2hex($lead));
+        }
     }
 }

@@ -185,7 +185,7 @@ class CippMcpToolRelay
      * through callToolReply(), which reports how the reply arrived, because its
      * contract refuses anything but one text block holding a JSON list; every
      * other tool takes callTool() exactly as before. A failure answers with status
-     * and class only, as the direct leg does; the upstream text goes to the log.
+     * and class only, as the direct leg does.
      *
      * @param  array{tool: string, arguments: array<string, mixed>}  $prepared
      * @return array<string, mixed>

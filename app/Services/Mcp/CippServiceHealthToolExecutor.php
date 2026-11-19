@@ -15,8 +15,9 @@ use Illuminate\Support\Facades\Log;
  * gate. Both transports: the MCP relay when it is switched on, otherwise (or when
  * the relay cannot sign in) the direct CIPP API. A relay sign-in failure or a 401
  * from the relay therefore means two upstream calls: the relay, then the direct
- * API. The relay path is built to the direct leg's measured shape, not measured on
- * a live relay; the relay's reply shape is read from vendor source, not measured.
+ * API (no direct call is made when the REST client cannot be built). The relay
+ * path is built to the direct leg's measured shape, not measured on a live relay;
+ * the relay's reply shape is read from vendor source, not measured.
  */
 class CippServiceHealthToolExecutor
 {
@@ -54,7 +55,7 @@ class CippServiceHealthToolExecutor
                 return null;
             }
         } catch (\Throwable $e) {
-            Log::warning('[MCP] CIPP MCP relay settings could not be read; serving the read over the REST API', [
+            Log::warning('[MCP] CIPP MCP relay settings could not be read; the relay does not answer this read', [
                 'tool' => $toolName,
                 'error' => mb_substr($e->getMessage(), 0, 300),
             ]);
@@ -65,8 +66,9 @@ class CippServiceHealthToolExecutor
         try {
             return app(CippMcpToolRelay::class)->execute($toolName, $input, $this->cippScopeClient(), $this->clientId, $deadline);
         } catch (CippMcpAuthException $e) {
-            // CIPP did not run the query; the direct path answers instead.
-            Log::warning('[MCP] CIPP MCP relay could not sign in; serving the read over the REST API', [
+            // CIPP did not run the query; the direct path answers instead when the REST
+            // client can be built (HandlesCippTools::cippDispatch()).
+            Log::warning('[MCP] CIPP MCP relay could not sign in; the relay does not answer this read', [
                 'tool' => $toolName,
                 'error' => mb_substr($e->getMessage(), 0, 300),
             ]);

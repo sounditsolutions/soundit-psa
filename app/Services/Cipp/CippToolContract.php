@@ -838,6 +838,7 @@ class CippToolContract
         'error' => 'CIPP\'s MCP relay marked its reply as an error, so the reply is not read.',
         'shape' => 'CIPP\'s MCP relay reply did not carry exactly one text content block, so it is not read.',
         'blocks' => 'CIPP\'s MCP relay reply carried more than one content block, so the list may be incomplete and is not shown.',
+        'events' => 'CIPP\'s MCP relay reply carried more than one data event, so the list may be incomplete and is not shown.',
         'envelope' => 'CIPP returned the service health issues inside an envelope, which this tool does not accept.',
     ];
 
@@ -862,8 +863,8 @@ class CippToolContract
 
     /**
      * A failed read on either transport, as status and class only: never the
-     * vendor's text, an HTTP body, a JSON-RPC message or cURL text (those go to the
-     * log). A failure the read deadline caused says so with the #8355 sentence.
+     * vendor's text, an HTTP body, a JSON-RPC message or cURL text. A failure the
+     * read deadline caused says so with the #8355 sentence.
      *
      * @return array{error: string}
      */

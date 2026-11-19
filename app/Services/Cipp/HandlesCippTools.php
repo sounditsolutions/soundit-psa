@@ -118,7 +118,12 @@ trait HandlesCippTools
         }
 
         if ($clientError !== null) {
-            return $this->cippFailure($toolName, $clientError);
+            $failure = $this->cippFailure($toolName, $clientError);
+
+            // cippFailure() logs the failure for every tool. The service health tool
+            // answers with class only, never the exception's text; every other tool
+            // answers as before.
+            return $toolName === CippToolContract::SERVICE_HEALTH_TOOL ? CippToolContract::serviceHealthFailure($clientError) : $failure;
         }
 
         return $direct($tenantDomain, $deadline);
@@ -134,7 +139,8 @@ trait HandlesCippTools
      * api/ListServiceHealthIssues with TenantFilter = the resolved tenant and no
      * other parameter (never Open or UseReportDB; issue_id is applied to the reply).
      * The reply body is judged as received, before it is decoded, by the shared
-     * contract; a failure answers with status and class only.
+     * contract; a failure answers with status and class only, including when the
+     * REST client cannot be built (see cippDispatch()).
      */
     private function cippListServiceHealthIssues(array $input): array
     {
@@ -147,7 +153,7 @@ trait HandlesCippTools
             try {
                 $reply = app(CippClient::class)->getDecoded('api/ListServiceHealthIssues', ['TenantFilter' => $tenantDomain], $deadline);
             } catch (\Throwable $e) {
-                // Status and class only: the vendor's text goes to the log, not the caller.
+                // Status and class only to the caller, never the exception's text.
                 Log::warning($this->cippLogPrefix().' CIPP query failed', ['endpoint' => 'api/ListServiceHealthIssues', 'exception' => $e::class, 'error' => mb_substr($e->getMessage(), 0, 500)]);
 
                 return CippToolContract::serviceHealthFailure($e);

@@ -88,15 +88,20 @@ class CippMcpClient
      *
      * Same request and deadline. A failed request throws with its status as the
      * exception code and no response body in the message (401 stays a
-     * CippMcpAuthException); a reply that is not JSON-RPC, or carries a JSON-RPC
-     * error, throws. Otherwise 'fault' names what is wrong with the reply's
-     * structure, checked in this order:
+     * CippMcpAuthException). Then, in the code's order:
+     *   - events: an event-stream body with more than one data event (other than
+     *     a [DONE] marker) is a fault, before anything is decoded: only the first
+     *     event would be read, and a later one could hold the rows;
+     *   - a reply that is not a JSON-RPC object throws;
+     *   - a reply carrying a JSON-RPC error throws;
+     *   - shape: no object result;
      *   - error: isError is set to anything but false, whatever the body says;
+     *   - shape: no content list (a JSON array), or an empty one;
      *   - blocks: the content is a list of more than one block (ExecMCP adds a
      *     second block for a non-empty Metadata, its paging cursor);
-     *   - shape: no object result, no content list (a JSON array), or a content
-     *     list that is not exactly one block of type text with a string text.
-     * 'text' is that block's text when there is no fault, else null.
+     *   - shape: the one block is not of type text with a string text.
+     * 'fault' names the first of these found. 'text' is that block's text when
+     * there is no fault, else null.
      *
      * @return array{text: ?string, fault: ?string}
      */
@@ -115,6 +120,10 @@ class CippMcpClient
         // Decoded with JSON objects kept as objects, so a JSON list is told apart
         // from an object whose keys happen to be 0, 1, ...
         $body = (string) $response->body();
+        if ($this->sseDataEventCount($body) > 1) {
+            return ['text' => null, 'fault' => 'events'];
+        }
+
         $decoded = json_decode($this->firstSseDataPayload($body) ?? $body);
 
         if (! $decoded instanceof \stdClass) {
@@ -583,6 +592,30 @@ class CippMcpClient
         }
 
         return $this->unwrapMcpResult($result);
+    }
+
+    /**
+     * How many events in an event-stream body carry data other than a [DONE]
+     * marker, split exactly as firstSseDataPayload() splits them (0 for a body
+     * with no data line). Used by callToolReply() only.
+     */
+    private function sseDataEventCount(string $body): int
+    {
+        $count = 0;
+        foreach (preg_split("/\R\R/", trim($body)) ?: [] as $event) {
+            $data = [];
+            foreach (preg_split("/\R/", $event) ?: [] as $line) {
+                if (str_starts_with($line, 'data:')) {
+                    $data[] = ltrim(mb_substr($line, 5));
+                }
+            }
+
+            if ($data !== [] && implode("\n", $data) !== '[DONE]') {
+                $count++;
+            }
+        }
+
+        return $count;
     }
 
     private function firstSseDataPayload(string $body): ?string
