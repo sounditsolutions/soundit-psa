@@ -205,6 +205,15 @@ class StaffHuntressRuleToolExecutor
             return ['error' => $request.' Nothing was sent.'];
         }
 
+        // The card shows the body through the fence; the wire does not. Refuse any value
+        // the two would render differently, so the approver sees the bytes that are sent.
+        $unsafe = $this->bodyRefusal($request['body']);
+        if ($unsafe !== null) {
+            $this->audit($name, 'rejected', $clientId, null, $hash, $unsafe, $actorLabel);
+
+            return ['error' => $unsafe.' Nothing was sent.'];
+        }
+
         $ticket = null;
         if ($staged || array_key_exists('ticket_id', $arguments)) {
             $ticket = $this->ticketFor($clientId, $arguments['ticket_id'] ?? null);
@@ -257,7 +266,7 @@ class StaffHuntressRuleToolExecutor
             if (str_contains($value, ',')) {
                 return "{$key} must be one value: a comma would create several rules, and Huntress returns only the last. Make one call per value.";
             }
-            if ($key === 'country_code' && ! preg_match('/^[A-Z]{2}$/', $value)) {
+            if ($key === 'country_code' && ! preg_match('/^[A-Z]{2}\z/', $value)) {
                 return 'country_code must be one ISO 3166-1 alpha-2 code in capitals, e.g. US.';
             }
             if ($key === 'ip_address' && ! self::isIpOrCidr($value)) {
@@ -694,11 +703,39 @@ class StaffHuntressRuleToolExecutor
 
     private static function isDate(mixed $value): bool
     {
-        if (! is_string($value) || ! preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $value, $m)) {
+        if (! is_string($value) || ! preg_match('/^(\d{4})-(\d{2})-(\d{2})\z/', $value, $m)) {
             return false;
         }
 
         return checkdate((int) $m[2], (int) $m[3], (int) $m[1]);
+    }
+
+    /**
+     * The refusal for a body string the card could not show exactly as sent, or null.
+     * Checked in this order: invalid UTF-8 first (so nothing later can throw on it),
+     * then a control or format character (Unicode Cc or Cf, newline included), then
+     * any value the prompt fence would change (it folds, strips or defangs).
+     *
+     * @param  array<string, mixed>|null  $body
+     */
+    private function bodyRefusal(?array $body): ?string
+    {
+        foreach ($body ?? [] as $key => $value) {
+            if (! is_string($value)) {
+                continue;
+            }
+            if (! mb_check_encoding($value, 'UTF-8')) {
+                return "{$key} is not valid UTF-8.";
+            }
+            if (preg_match('/[\p{Cc}\p{Cf}]/u', $value) === 1) {
+                return "{$key} contains a control or format character (such as a newline, an escape or a direction override); the approval card could not show it as sent.";
+            }
+            if ($this->fence->neutralizeUntrusted($value) !== $value) {
+                return "{$key} contains text the approval card would show altered (invisible or full-width characters, a role marker or an instruction-override phrase), so the card could not show it as sent.";
+            }
+        }
+
+        return null;
     }
 
     private static function isIpOrCidr(string $value): bool
