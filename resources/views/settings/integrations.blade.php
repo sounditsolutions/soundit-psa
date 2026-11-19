@@ -2306,7 +2306,11 @@
                             @if (isset($huntressOrgKeyFieldIdUnusable))
                                 <div class="form-text text-danger" id="huntress-org-key-field-unusable">
                                     Stored value <code>{{ $huntressOrgKeyFieldIdUnusable }}</code> is not a usable field ID.
-                                    Leaving this field blank when saving clears it; enter a valid ID to replace it.
+                                    @if(auth()->user()?->isAdmin())
+                                        Leaving this field blank when saving clears it; enter a valid ID to replace it.
+                                    @else
+                                        An administrator can clear or replace it.
+                                    @endif
                                 </div>
                             @endif
                             <div class="form-text">

@@ -119,7 +119,22 @@ class HuntressOrgKeyFieldSettingsTest extends TestCase
             ->assertOk()
             ->assertSee('id="huntress-org-key-field-unusable"', false)
             ->assertSee('<code>051</code>', false)
-            ->assertDontSee('value="051"', false);
+            ->assertDontSee('value="051"', false)
+            ->assertSee('Leaving this field blank when saving clears it; enter a valid ID to replace it.')
+            ->assertDontSee('An administrator can clear or replace it.');
+    }
+
+    public function test_a_non_admin_with_an_unusable_stored_value_is_told_an_administrator_fixes_it(): void
+    {
+        Setting::setValue(HuntressConfig::TACTICAL_CLIENT_ORG_KEY_FIELD_SETTING, '0042x');
+        $tech = User::factory()->create(['role' => UserRole::Tech, 'is_active' => true]);
+
+        $this->actingAs($tech)->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertSee('id="huntress-org-key-field-unusable"', false)
+            ->assertSee('<code>0042x</code>', false)
+            ->assertSee('An administrator can clear or replace it.')
+            ->assertDontSee('Leaving this field blank');
     }
 
     public function test_a_non_admin_submit_refused_for_the_key_pair_saves_no_field_id(): void
@@ -178,11 +193,15 @@ class HuntressOrgKeyFieldSettingsTest extends TestCase
         Setting::setValue(HuntressConfig::TACTICAL_CLIENT_ORG_KEY_FIELD_SETTING, '42');
         $tech = User::factory()->create(['role' => UserRole::Tech, 'is_active' => true]);
 
-        $this->actingAs($tech)->get(route('settings.integrations'))
+        $response = $this->actingAs($tech)->get(route('settings.integrations'))
             ->assertOk()
             ->assertSee('id="huntress-org-key-admin-only"', false)
             ->assertSee('An administrator sets this.')
             ->assertDontSee('name="tactical_org_key_field_id"', false);
+
+        $this->assertSame(1, preg_match('/<input\b[^>]*\bid="huntress_tactical_org_key_field_id"[^>]*>/s', $response->getContent(), $m));
+        $this->assertMatchesRegularExpression('/\sreadonly[\s>]/', $m[0]);
+        $this->assertStringContainsString('value="42"', $m[0]);
     }
 
     public function test_an_admin_sees_the_editable_input_and_not_the_admin_only_note(): void
@@ -191,6 +210,11 @@ class HuntressOrgKeyFieldSettingsTest extends TestCase
             ->assertOk()
             ->assertSee('name="tactical_org_key_field_id"', false)
             ->assertDontSee('id="huntress-org-key-admin-only"', false);
+
+        $html = $this->actingAs($this->admin())->get(route('settings.integrations'))->getContent();
+        $this->assertSame(1, preg_match('/<input\b[^>]*\bid="huntress_tactical_org_key_field_id"[^>]*>/s', $html, $m));
+        $this->assertStringNotContainsString('readonly', $m[0]);
+        $this->assertStringNotContainsString('disabled', $m[0]);
     }
 
     public function test_an_edge_whitespace_value_reads_back_trimmed(): void

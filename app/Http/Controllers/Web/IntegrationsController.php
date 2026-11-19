@@ -2108,8 +2108,9 @@ class IntegrationsController extends Controller
         if ($request->has('tactical_org_key_field_id') && ! $request->user()?->isAdmin()) {
             // The field id chooses which Tactical field huntress_org_key writes, so
             // only an administrator may set or clear it. The input is rendered
-            // read-only and unnamed to non-admins; a non-admin submit carrying it
-            // is refused before anything saves, the same rule as the key pair.
+            // read-only and unnamed to non-admins; any non-admin submit carrying
+            // the key is refused before anything saves, blank included (unlike
+            // the key pair, where a blank half passes).
             abort(403, 'Administrator access required.');
         }
 
