@@ -181,6 +181,44 @@ class Sku extends Model
     }
 
     /**
+     * Where a valid promo stands at $at: 'not_started', 'in_force' or 'ended'.
+     * Null when there is no valid promo (empty, or ignored by
+     * hasValidPortalPromo()), so nothing may describe it as applying.
+     */
+    public function portalPromoState(?CarbonInterface $at = null): ?string
+    {
+        if (! $this->hasValidPortalPromo()) {
+            return null;
+        }
+
+        $t = ($at ?? now())->getTimestamp();
+
+        if ($t < $this->portal_promo_starts_at->getTimestamp()) {
+            return 'not_started';
+        }
+
+        return $t > $this->portal_promo_ends_at->getTimestamp() ? 'ended' : 'in_force';
+    }
+
+    /**
+     * The one client-facing line shown under the price while a promo is in
+     * force (portal Purchase Prepaid Time). Kept here so its wording is a
+     * one-line change. Null when no promo is in force at $at.
+     */
+    public function portalPromoClientNote(?CarbonInterface $at = null): ?string
+    {
+        if (! $this->portalPromoInForce($at)) {
+            return null;
+        }
+
+        $promo = '$'.number_format((float) $this->portal_promo_price, 2);
+        $normal = '$'.number_format((float) $this->unit_price, 2);
+        $end = $this->portal_promo_ends_at->copy()->setTimezone(self::PROMO_TIMEZONE)->format('M j, Y g:i:s A T');
+
+        return "{$promo} until {$end}, then {$normal}";
+    }
+
+    /**
      * The unit price a portal prepaid-time purchase is charged at $at. This is
      * the ONLY reader of the promo: staff invoices, auto top-up, recurring
      * billing and the accounting sync all read unit_price directly.

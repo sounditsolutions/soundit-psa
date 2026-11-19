@@ -35,3 +35,4 @@ input.is-invalid { border-color: var(--psa-colors-danger); }
 .b-off { background: var(--psa-colors-neutral); color: var(--psa-colors-surface); }
 .state { margin-top: var(--psa-spacing-sm); font-size: 13px; }
 .stack > * + * { margin-top: var(--psa-spacing-lg); }
+.b-warn { background: var(--psa-colors-warning); color: var(--psa-colors-navy-deep); }

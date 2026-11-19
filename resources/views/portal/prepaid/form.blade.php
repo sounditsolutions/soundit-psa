@@ -33,7 +33,7 @@
                             <td>
                                 <strong>${{ number_format($unitPrice, 2) }}</strong>
                                 <s class="text-muted ms-1">${{ number_format($sku->unit_price, 2) }}</s>
-                                <div class="small text-muted">${{ number_format($unitPrice, 2) }} until {{ $sku->portal_promo_ends_at->copy()->setTimezone(\App\Models\Sku::PROMO_TIMEZONE)->format('M j, Y g:i:s A T') }}, then ${{ number_format($sku->unit_price, 2) }}</div>
+                                <div class="small text-muted">{{ $promoNote }}</div>
                             </td>
                         @else
                             <td>${{ number_format($unitPrice, 2) }}</td>
