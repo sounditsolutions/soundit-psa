@@ -156,9 +156,10 @@ class StaffHuntressActionToolExecutor
         return array_column(self::definitions(), 'name');
     }
 
+    /** This family also dispatches the unwanted-access-rule tools (StaffHuntressRuleToolExecutor). */
     public static function handles(string $toolName): bool
     {
-        return in_array($toolName, self::toolNames(), true);
+        return in_array($toolName, self::toolNames(), true) || StaffHuntressRuleToolExecutor::handles($toolName);
     }
 
     public static function requiresClient(string $toolName): bool
@@ -168,13 +169,13 @@ class StaffHuntressActionToolExecutor
 
     public static function isStagedActionType(string $actionType): bool
     {
-        return array_key_exists($actionType, self::STAGED_TO_DIRECT);
+        return array_key_exists($actionType, self::stagedToDirectMap());
     }
 
     /** @return array<string, string> */
     public static function stagedToDirectMap(): array
     {
-        return self::STAGED_TO_DIRECT;
+        return self::STAGED_TO_DIRECT + StaffHuntressRuleToolExecutor::stagedToDirectMap();
     }
 
     /** @return array<string, mixed> */
@@ -182,6 +183,10 @@ class StaffHuntressActionToolExecutor
     {
         if (! HuntressConfig::isEnabled() || ! HuntressConfig::isConfigured()) {
             return ['error' => 'Huntress is not configured'];
+        }
+
+        if (StaffHuntressRuleToolExecutor::handles($name)) {
+            return app(StaffHuntressRuleToolExecutor::class)->execute($name, $arguments, $clientId, $actorLabel, $tokenLabel);
         }
 
         if (isset(self::STAGED_TO_DIRECT[$name])) {
@@ -525,7 +530,11 @@ class StaffHuntressActionToolExecutor
      */
     public function approveStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
     {
-        if (! self::isStagedActionType($run->action_type) || ! $run->claimForExecution()) {
+        if (StaffHuntressRuleToolExecutor::isStagedActionType($run->action_type)) {
+            return app(StaffHuntressRuleToolExecutor::class)->approveStagedRun($run, $approverId);
+        }
+
+        if (! isset(self::STAGED_TO_DIRECT[$run->action_type]) || ! $run->claimForExecution()) {
             return new TechnicianApprovalResult('already_handled');
         }
 

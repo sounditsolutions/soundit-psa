@@ -160,7 +160,7 @@ class McpToolRegistry
                 'carbon_write' => ['label' => 'Carbon Connect writes and drafts (sensitive)', 'sensitive' => true, 'tools' => $carbonWrites],
                 'tactical_action' => ['label' => 'Tactical endpoint actions (sensitive)', 'sensitive' => true, 'tools' => $tacticalActions],
                 'tactical_admin' => ['label' => 'Tactical admin/provisioning (sensitive)', 'sensitive' => true, 'tools' => $tacticalAdmin],
-                'huntress_action' => ['label' => 'Huntress SOC escalation actions (sensitive)', 'sensitive' => true, 'tools' => $huntressActions],
+                'huntress_action' => ['label' => 'Huntress SOC actions: escalation resolve, unwanted access rules (sensitive)', 'sensitive' => true, 'tools' => $huntressActions],
                 'mesh_read' => ['label' => 'Mesh Email Security allow-list reads (sensitive)', 'sensitive' => true, 'tools' => $meshRead],
                 'mesh_admin' => ['label' => 'Mesh Email Security writes (sensitive)', 'sensitive' => true, 'tools' => $meshAdmin],
                 'controld_onboarding' => ['label' => 'Control D client onboarding (sensitive)', 'sensitive' => true, 'tools' => $controldOnboarding],
@@ -231,7 +231,7 @@ class McpToolRegistry
                 'carbon_write' => ['carbon', 'write', 'Write & draft', 2],
                 'tactical_action' => ['tactical', 'actions', 'Endpoint actions', 2],
                 'tactical_admin' => ['tactical', 'admin', 'Admin & provisioning', 3],
-                'huntress_action' => ['huntress', 'actions', 'SOC escalation actions', 2],
+                'huntress_action' => ['huntress', 'actions', 'SOC actions', 2],
                 // Its own tier under its own integration, not a line in "Other integrations":
                 // an allow rule weakens a customer's mail filtering, and a sensitive write shown
                 // under a bucket labelled for read-only odds and ends is the mislabelled-tier
@@ -523,7 +523,7 @@ class McpToolRegistry
     /** @return array<int, array<string, mixed>> */
     public static function huntressActionTools(): array
     {
-        return StaffHuntressActionToolExecutor::definitions();
+        return [...StaffHuntressActionToolExecutor::definitions(), ...\App\Services\Mcp\StaffHuntressRuleToolExecutor::definitions()];
     }
 
     /** @return array<int, array<string, mixed>> */
