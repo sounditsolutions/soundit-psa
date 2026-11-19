@@ -16,6 +16,24 @@ class HuntressConfig
      */
     public const WRITE_CREDENTIAL_LOCATION = 'Settings > Integrations > Huntress EDR / ITDR > API key and API secret';
 
+    /**
+     * Setting holding the Tactical RMM CLIENT-scoped custom field id that carries a
+     * client's Huntress organization key, for the Huntress deploy scripts to pass to
+     * the installer (they derive it from the client name until switched).
+     *
+     * A setting rather than a constant for the same reason as
+     * ControlDConfig::TACTICAL_CLIENT_ORG_FIELD_SETTING: the operator creates this
+     * field in their own Tactical, on the CLIENT model, so its id is whatever their
+     * instance assigned. An id is instance state, not a fact about the software, and
+     * guessing one writes to some other client field. Unset FAILS CLOSED.
+     *
+     * Why the key is written to Tactical at all: deploying with the client NAME as the
+     * org key makes Huntress create a second organization whenever the name and the
+     * existing org's key differ. Holding the real key per client keeps a rename from
+     * breaking a deploy.
+     */
+    public const TACTICAL_CLIENT_ORG_KEY_FIELD_SETTING = 'huntress_tactical_client_org_key_field_id';
+
     public static function get(string $key): ?string
     {
         return match ($key) {
@@ -27,8 +45,32 @@ class HuntressConfig
             'user_api_key' => Setting::getEncrypted('huntress_user_api_key'),
             'user_api_secret' => Setting::getEncrypted('huntress_user_api_secret'),
             'system_user_id' => Setting::getValue('huntress_system_user_id'),
+            'tactical_client_org_key_field_id' => Setting::getValue(self::TACTICAL_CLIENT_ORG_KEY_FIELD_SETTING),
             default => null,
         };
+    }
+
+    /**
+     * The configured Tactical CLIENT custom field id for the Huntress org key, or
+     * null when it is unset or not exactly a positive integer. Callers must treat
+     * null as a refusal.
+     *
+     * Same contract as ControlDConfig::readInt(): edge whitespace is trimmed; a
+     * signed, padded or fractional form is refused rather than interpreted; a digit
+     * string too large for the platform int is refused (the (int) cast saturates,
+     * so the round trip catches it); zero is refused.
+     */
+    public static function tacticalClientOrgKeyFieldId(): ?int
+    {
+        $raw = trim((string) self::get('tactical_client_org_key_field_id'));
+
+        if (preg_match('/^[1-9][0-9]*$/', $raw) !== 1) {
+            return null;
+        }
+
+        $value = (int) $raw;
+
+        return (string) $value === $raw ? $value : null;
     }
 
     public static function webhooksEnabled(): bool

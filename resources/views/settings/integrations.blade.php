@@ -2281,6 +2281,49 @@
                         <p class="small text-muted mb-3" id="huntress-key-admin-only">An administrator enters this key.</p>
                     @endif
 
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="huntress_tactical_org_key_field_id" class="form-label">Tactical client custom field ID (org key)</label>
+                            @if(auth()->user()?->isAdmin())
+                                <input type="number" min="1" step="1"
+                                       class="form-control @error('tactical_org_key_field_id') is-invalid @enderror"
+                                       id="huntress_tactical_org_key_field_id"
+                                       name="tactical_org_key_field_id"
+                                       value="{{ old('tactical_org_key_field_id', $huntressOrgKeyFieldId ?? '') }}">
+                            @else
+                                {{-- Read-only and unnamed for non-administrators: the field id chooses
+                                     which Tactical field huntress_org_key writes, so only an
+                                     administrator may change it (updateHuntress refuses with 403). --}}
+                                <input type="number" class="form-control" readonly
+                                       id="huntress_tactical_org_key_field_id"
+                                       aria-describedby="huntress-org-key-admin-only"
+                                       value="{{ $huntressOrgKeyFieldId ?? '' }}">
+                                <div class="form-text" id="huntress-org-key-admin-only">An administrator sets this.</div>
+                            @endif
+                            @error('tactical_org_key_field_id')
+                                <div class="invalid-feedback">{{ $message }}</div>
+                            @enderror
+                            @if (isset($huntressOrgKeyFieldIdUnusable))
+                                <div class="form-text text-danger" id="huntress-org-key-field-unusable">
+                                    Stored value <code>{{ $huntressOrgKeyFieldIdUnusable }}</code> is not a usable field ID.
+                                    @if(auth()->user()?->isAdmin())
+                                        Leaving this field blank when saving clears it; enter a valid ID to replace it.
+                                    @else
+                                        An administrator can clear or replace it.
+                                    @endif
+                                </div>
+                            @endif
+                            <div class="form-text">
+                                The CLIENT-model custom field in your Tactical RMM that holds each client's
+                                Huntress organization key, for the Huntress deploy scripts to read once they are
+                                switched to it. You create this field yourself, so its ID is whatever your
+                                instance assigned &mdash; find it in
+                                Tactical under Settings &rarr; Global Settings &rarr; Custom Fields. Leave blank
+                                and writes to it are refused rather than guessed.
+                            </div>
+                        </div>
+                    </div>
+
                     <p class="small mb-3" id="huntress-resolve-status" role="status">
                         @if(! ($huntressConfigured ?? false))
                             <i class="bi bi-dash-circle text-secondary me-1" aria-hidden="true"></i><strong>Escalation resolution:</strong> unavailable until an API key and API secret are saved. Once saved, who may use it is set per MCP token on Settings &gt; MCP tokens.

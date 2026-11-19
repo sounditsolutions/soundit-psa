@@ -188,6 +188,17 @@ class IntegrationsController extends Controller
             $huntressResolveUsesEarlierPair = false;
         }
         $huntressConnected = (bool) $fmtTs(Setting::getValue('huntress_connected_at'));
+        // The Tactical CLIENT field holding each client's Huntress org key. Rendered
+        // from the typed reader, not the raw row, for the reason spelled out on the
+        // Control D numbers below: a number input blanks a value it cannot parse, and
+        // a blank save clears. A stored value the reader refuses renders blank and is
+        // reported beside the field instead.
+        $huntressOrgKeyFieldIdRead = HuntressConfig::tacticalClientOrgKeyFieldId();
+        $huntressOrgKeyFieldId = $huntressOrgKeyFieldIdRead === null ? '' : (string) $huntressOrgKeyFieldIdRead;
+        $huntressOrgKeyFieldIdRaw = trim((string) HuntressConfig::get('tactical_client_org_key_field_id'));
+        $huntressOrgKeyFieldIdUnusable = $huntressOrgKeyFieldIdRaw !== '' && $huntressOrgKeyFieldIdRead === null
+            ? $huntressOrgKeyFieldIdRaw
+            : null;
 
         // UniFi
         $unifiConfigured = UnifiConfig::isConfigured();
@@ -624,6 +635,7 @@ class IntegrationsController extends Controller
             'huntressConfigured', 'huntressConnected', 'huntressEnabled',
             'huntressWebhookSecretStored', 'huntressWebhookAccountId', 'huntressWebhooksEnabled',
             'huntressKeyStored', 'huntressSecretStored', 'huntressEarlierUserPairStored', 'huntressEarlierUserPairLoneHalf', 'huntressResolveUsesEarlierPair',
+            'huntressOrgKeyFieldId', 'huntressOrgKeyFieldIdUnusable',
             'unifiConfigured', 'unifiConnected', 'unifiBaseUrl', 'unifiEnabled',
             'powerdmarcConfigured', 'powerdmarcConnected', 'powerdmarcBaseUrl', 'powerdmarcMsspBaseUrl', 'powerdmarcMsspWalkSeconds', 'powerdmarcEnabled',
             'servosityConfigured', 'servosityConnected', 'servosityConnectedAt', 'servosityEnabled',
@@ -2069,6 +2081,12 @@ class IntegrationsController extends Controller
             // separate user API key pair onto the API key pair above
             // (HuntressConfig::writeCredentials()). Administrators only.
             'clear_user_api_key_pair' => 'nullable|boolean',
+            // The Tactical CLIENT custom field that carries each client's Huntress
+            // org key (tactical_set_client_custom_field, key huntress_org_key). A 0
+            // or negative id is always a typo, so it is refused here, not later.
+            'tactical_org_key_field_id' => 'nullable|integer|min:1',
+        ], [], [
+            'tactical_org_key_field_id' => 'Tactical client custom field ID (Huntress org key)',
         ]);
 
         $clearUserPair = $request->boolean('clear_user_api_key_pair');
@@ -2085,6 +2103,28 @@ class IntegrationsController extends Controller
             // to administrators only; a non-admin submit carrying either half
             // is refused before anything saves, the same rule as the clear tick.
             abort(403, 'Administrator access required.');
+        }
+
+        if ($request->has('tactical_org_key_field_id') && ! $request->user()?->isAdmin()) {
+            // The field id chooses which Tactical field huntress_org_key writes, so
+            // only an administrator may set or clear it. The input is rendered
+            // read-only and unnamed to non-admins; any non-admin submit carrying
+            // the key is refused before anything saves, blank included (unlike
+            // the key pair, where a blank half passes).
+            abort(403, 'Administrator access required.');
+        }
+
+        // Saved only after the 403 refusals above, so a refused submit writes
+        // nothing. Not a secret, so unlike the key pair a BLANK submit CLEARS it
+        // (re-arming the fail-closed refusal), while an OMITTED key leaves it alone,
+        // so a credentials-only POST cannot erase it. Stored canonically, so what is
+        // stored is exactly what HuntressConfig::tacticalClientOrgKeyFieldId() reads.
+        if (array_key_exists('tactical_org_key_field_id', $validated)) {
+            $rawFieldId = trim((string) ($validated['tactical_org_key_field_id'] ?? ''));
+            Setting::setValue(
+                HuntressConfig::TACTICAL_CLIENT_ORG_KEY_FIELD_SETTING,
+                $rawFieldId === '' ? '' : (string) (int) $rawFieldId,
+            );
         }
 
         if (! empty($validated['api_key'])) {
