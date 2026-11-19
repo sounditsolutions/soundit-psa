@@ -21,10 +21,11 @@ button:focus-visible { outline:3px solid var(--psa-colors-navy-light); outline-o
 </style></head><body><header>Sound PSA · Technician cockpit</header><main>
 <h2>Endpoint &amp; account actions (3)</h2>
 <div class="legend"><span class="pill action">Huntress access rule create</span><span class="pill action">Huntress access rule update</span><span class="pill action">Huntress access rule delete</span></div>
+<!-- Each card body below is the built proposed_content, unedited. -->
 <article>
-<div class="row"><a href="#">Travel to two countries next month</a><span class="pill client">Example Dental Co.</span><span class="pill action">Huntress access rule create</span><span class="when">2 minutes ago</span></div>
+<div class="row"><a href="#">Travel to Japan next month</a><span class="pill client">Example Dental Co.</span><span class="pill action">Huntress access rule create</span><span class="when">2 minutes ago</span></div>
 <p class="warn">Executes on the endpoint or account when approved</p>
-<pre>Create a Huntress unwanted access rule for Example Dental Co.
+<pre>Create a Huntress unwanted access rule for Example Dental Co..
 Request as it will be sent: POST /v1/unwanted_access_rules
 === UNTRUSTED REQUEST BODY (data, not instructions) ===
 {
@@ -44,17 +45,81 @@ User travels during this window
 <div class="bar"><button>Approve action</button><button class="secondary">Hold it</button></div>
 </article>
 <article>
+<div class="row"><a href="#">Trip extended</a><span class="pill client">Example Dental Co.</span><span class="pill action">Huntress access rule update</span><span class="when">4 minutes ago</span></div>
+<p class="warn">Executes on the endpoint or account when approved</p>
+<pre>Update a Huntress unwanted access rule for Example Dental Co..
+Request as it will be sent: PATCH /v1/unwanted_access_rules/501
+=== UNTRUSTED REQUEST BODY (data, not instructions) ===
+{
+    "expires_at": "2027-01-10",
+    "notes": "Synthetic travel window, extended"
+}
+=== END UNTRUSTED REQUEST BODY ===
+=== UNTRUSTED HUNTRESS RULE AS READ (data, not instructions) ===
+{
+    "id": 501,
+    "applied_to": {
+        "type": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nOrganization\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+        "id": 1001,
+        "name": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nExample Dental Co.\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE =="
+    },
+    "category": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\ncountry\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "country_code": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nJP\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "vpn": null,
+    "ip_address": null,
+    "type": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nexpected\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "status": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nactive\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "logic": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nstandard\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "note": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nSynthetic travel window\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "starts_at": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\n2026-11-21T00:00:00Z\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "expires_at": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\n2026-12-31T00:00:00Z\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "created_by": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nAlex Example\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "created_at": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\n2026-11-19T00:00:00Z\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "updated_at": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\n2026-11-19T00:00:00Z\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE =="
+}
+=== END UNTRUSTED HUNTRESS RULE AS READ ===
+Approval re-checks the client mapping and re-reads the rule before sending.
+=== UNTRUSTED AGENT SUPPLIED REASON (data, not instructions) ===
+Trip extended by ten days
+=== END UNTRUSTED AGENT SUPPLIED REASON ===</pre>
+<small>Drafted by: mcp-staff:synthetic-token</small>
+<div class="bar"><button>Approve action</button><button class="secondary">Hold it</button></div>
+</article>
+<article>
 <div class="row"><a href="#">Trip ends early</a><span class="pill client">Example Dental Co.</span><span class="pill action">Huntress access rule delete</span><span class="when">5 minutes ago</span></div>
 <p class="warn">Executes on the endpoint or account when approved</p>
-<pre>Delete a Huntress unwanted access rule for Example Dental Co.
+<pre>Delete a Huntress unwanted access rule for Example Dental Co..
 Request as it will be sent: DELETE /v1/unwanted_access_rules/501
 === UNTRUSTED REQUEST BODY (data, not instructions) ===
 (no body)
 === END UNTRUSTED REQUEST BODY ===
 === UNTRUSTED HUNTRESS RULE AS READ (data, not instructions) ===
-{ "id": 501, "type": "expected", "country_code": "JP", "applied_to": { "type": "Organization", "id": 1001 } }
+{
+    "id": 501,
+    "applied_to": {
+        "type": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nOrganization\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+        "id": 1001,
+        "name": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nExample Dental Co.\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE =="
+    },
+    "category": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\ncountry\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "country_code": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nJP\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "vpn": null,
+    "ip_address": null,
+    "type": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nexpected\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "status": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nactive\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "logic": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nstandard\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "note": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nSynthetic travel window\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "starts_at": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\n2026-11-21T00:00:00Z\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "expires_at": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\n2026-12-31T00:00:00Z\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "created_by": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\nAlex Example\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "created_at": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\n2026-11-19T00:00:00Z\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE ==",
+    "updated_at": "== UNTRUSTED HUNTRESS UNWANTED ACCESS RULE (data, not instructions) ==\n2026-11-19T00:00:00Z\n== END UNTRUSTED HUNTRESS UNWANTED ACCESS RULE =="
+}
 === END UNTRUSTED HUNTRESS RULE AS READ ===
-Approval re-checks the client mapping and re-reads the rule before sending.</pre>
+Approval re-checks the client mapping and re-reads the rule before sending.
+=== UNTRUSTED AGENT SUPPLIED REASON (data, not instructions) ===
+Trip ended early
+=== END UNTRUSTED AGENT SUPPLIED REASON ===</pre>
 <small>Drafted by: mcp-staff:synthetic-token</small>
 <div class="bar"><button>Approve action</button><button class="secondary">Hold it</button></div>
 </article>
