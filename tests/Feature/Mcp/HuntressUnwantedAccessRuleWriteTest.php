@@ -11,15 +11,21 @@ use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Huntress\HuntressClient;
 use App\Services\Huntress\HuntressWriteClient;
+use App\Services\Technician\TechnicianApprovalService;
 use App\Support\McpConfig;
 use App\Support\McpToolModes;
 use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Testing\TestResponse;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -560,7 +566,7 @@ class HuntressUnwantedAccessRuleWriteTest extends TestCase
         $this->assertSame(0, TechnicianRun::count());
     }
 
-    public function test_the_body_on_the_approval_card_is_the_body_sent_byte_for_byte(): void
+    public function test_the_body_on_the_approval_card_carries_the_values_sent(): void
     {
         $fx = $this->fixture();
         $token = $this->token([self::CREATE.':staged']);
@@ -618,7 +624,7 @@ class HuntressUnwantedAccessRuleWriteTest extends TestCase
         $this->assertSame('GET by id did not answer 404 after the delete: the rule still reads back. Check it in Huntress.', $result['read_back']);
     }
 
-    public function test_rule_id_with_a_leading_space_or_zero_is_taken_as_the_rule_it_names(): void
+    public function test_rule_id_with_a_leading_space_through_the_mcp_route_or_a_leading_zero_is_taken_as_the_rule_it_names(): void
     {
         $fx = $this->fixture();
         foreach ([' 501', '0501'] as $ruleId) {
@@ -634,18 +640,39 @@ class HuntressUnwantedAccessRuleWriteTest extends TestCase
         }
     }
 
-    public function test_ip_address_is_sent_as_typed_including_a_zero_padded_prefix_and_the_default_routes(): void
+    public function test_ip_address_is_sent_as_typed_for_a_prefix_of_one_to_the_family_maximum(): void
     {
         $fx = $this->fixture();
-        foreach (['192.0.2.1/032', '0.0.0.0/0', '::/0'] as $ip) {
+        foreach (['192.0.2.1', '192.0.2.1/32', '198.51.100.0/1', '2001:db8::/48', '2001:db8::1/128', '2001:db8::/1'] as $ip) {
             $this->writes = [];
             $this->queueWrite(201, ['unwanted_access_rule' => $this->rule(501)]);
             $this->queueRead($this->rule(501));
             $args = array_merge(array_diff_key($this->createArgs($fx), ['country_code' => 1]), ['ip_address' => $ip]);
             $result = $this->decoded($this->callTool($this->token([self::CREATE.':immediate']), self::CREATE, $args));
             $this->assertTrue($result['success'] ?? false, $ip.' '.json_encode($result));
+            $this->assertCount(1, $this->writes, $ip);
             $this->assertSame($ip, json_decode((string) $this->writes[0]['request']->getBody(), true)['ip_address'], $ip);
         }
+    }
+
+    public function test_a_prefix_of_zero_or_with_leading_zeros_or_past_the_maximum_is_refused_on_both_lanes(): void
+    {
+        $fx = $this->fixture();
+        $this->trapBoth();
+        $refused = ['0.0.0.0/0', '::/0', '255.255.255.255/0', '192.0.2.1/00', '192.0.2.1/032', '192.0.2.0/024', '2001:db8::/0128', '2001:db8::/048', '192.0.2.1/33', '2001:db8::/129', '192.0.2.1/', '192.0.2.1/+8', '192.0.2.1/ 8', 'not-an-ip', '999.0.0.1'];
+        foreach ($refused as $ip) {
+            $args = ['ip_address' => $ip, 'type' => 'expected', 'reason' => 'r'];
+            foreach ([self::CREATE => $args, $this->stagedName(self::CREATE) => $args + ['ticket_id' => $fx['ticket']->id]] as $tool => $call) {
+                $result = $this->executeDirect($tool, $call, $fx['client']);
+                $this->assertStringContainsString('ip_address must be one IPv4 or IPv6 address', (string) ($result['error'] ?? ''), "{$ip} {$tool}: ".json_encode($result));
+                $this->assertStringContainsString('Nothing was sent', $result['error'], "{$ip} {$tool}");
+            }
+            $result = $this->decoded($this->callTool($this->token([self::CREATE.':immediate']), self::CREATE, array_merge(array_diff_key($this->createArgs($fx), ['country_code' => 1]), ['ip_address' => $ip])));
+            $this->assertStringContainsString('ip_address must be one', (string) ($result['error'] ?? ''), "{$ip} route");
+        }
+        $this->assertCount(0, $this->writes);
+        $this->assertCount(0, $this->reads);
+        $this->assertSame(0, TechnicianRun::count());
     }
 
     public function test_a_vendor_refusal_reports_status_and_class_only(): void
@@ -654,10 +681,465 @@ class HuntressUnwantedAccessRuleWriteTest extends TestCase
         $this->writeQueue->append(new Response(422, [], json_encode(['error' => 'Synthetic vendor detail https://api.huntress.io/secret'])));
         $result = $this->decoded($this->callTool($this->token([self::CREATE.':immediate']), self::CREATE, $this->createArgs($fx)));
 
-        $this->assertStringContainsString('Huntress HTTP 422', $result['error']);
-        $this->assertStringContainsString('Nothing was changed', $result['error']);
+        $this->assertStringStartsWith('Huntress refused the request (HTTP 422)', $result['error']);
+        $this->assertStringNotContainsString('Nothing was changed', $result['error']);
         $this->assertStringNotContainsString('Synthetic vendor detail', $result['error']);
         $this->assertStringNotContainsString('https://', $result['error']);
         $this->assertCount(0, $this->reads);
+    }
+
+    // ── round 3: audits after the vendor call, re-stage races, guards ──
+
+    private function failAuditOn(string $status): void
+    {
+        TechnicianActionLog::creating(static function (TechnicianActionLog $row) use ($status): void {
+            if ($row->result_status === $status) {
+                throw new \RuntimeException('synthetic audit insert failure');
+            }
+        });
+    }
+
+    private function queueFault(string $kind): void
+    {
+        $kind === 'no response'
+            ? $this->writeQueue->append(new ConnectException('synthetic connect failure', new Request('POST', 'unwanted_access_rules')))
+            : $this->writeQueue->append(new Response((int) $kind, [], '{}'));
+    }
+
+    private function approveDirect(TechnicianRun $run): \App\Services\Technician\TechnicianApprovalResult
+    {
+        return app(TechnicianApprovalService::class)->approveStagedHuntressAction(TechnicianRun::findOrFail($run->id), $this->approver()->id);
+    }
+
+    /** @return array<string, array{0: string}> */
+    public static function unknownOutcomes(): array
+    {
+        return ['502' => ['502'], '408' => ['408'], 'no response' => ['no response']];
+    }
+
+    #[DataProvider('unknownOutcomes')]
+    public function test_an_unknown_outcome_keeps_its_answer_when_the_audit_insert_throws(string $kind): void
+    {
+        $fx = $this->fixture();
+        $this->failAuditOn('error');
+        foreach ([
+            self::CREATE => $this->createArgs($fx),
+            self::UPDATE => ['client_id' => $fx['client']->id, 'rule_id' => 501, 'notes' => 'x', 'reason' => 'r'],
+            self::DELETE => ['client_id' => $fx['client']->id, 'rule_id' => 501, 'reason' => 'r'],
+        ] as $tool => $args) {
+            $this->reads = [];
+            $this->writes = [];
+            if ($tool !== self::CREATE) {
+                $this->queueRead($this->rule(501));
+            }
+            $this->queueFault($kind);
+            $text = (string) $this->callTool($this->token([$tool.':immediate']), $tool, $args)->json('result.content.0.text');
+
+            $this->assertStringContainsString('may have been applied', $text, "{$tool} {$kind}");
+            $this->assertStringContainsString('before retrying', $text, "{$tool} {$kind}");
+            $this->assertStringNotContainsString('synthetic audit insert failure', $text, "{$tool} {$kind}");
+            $this->assertStringNotContainsString('Tool execution failed', $text, "{$tool} {$kind}");
+            $this->assertCount(1, $this->writes, "{$tool} {$kind}: exactly one write sent");
+        }
+    }
+
+    public function test_a_vendor_refusal_keeps_its_answer_when_the_audit_insert_throws_on_both_lanes(): void
+    {
+        $fx = $this->fixture();
+        $this->failAuditOn('error');
+        $this->queueFault('422');
+        $text = (string) $this->callTool($this->token([self::CREATE.':immediate']), self::CREATE, $this->createArgs($fx))->json('result.content.0.text');
+        $this->assertStringContainsString('Huntress refused the request (HTTP 422)', $text);
+        $this->assertStringNotContainsString('synthetic audit insert failure', $text);
+        $this->assertCount(1, $this->writes);
+
+        $this->writes = [];
+        $run = TechnicianRun::findOrFail($this->decoded($this->callTool($this->token([self::CREATE.':staged']), self::CREATE, $this->createArgs($fx, ['ticket_id' => $fx['ticket']->id])))['run_id']);
+        $this->queueFault('422');
+        $result = $this->approveDirect($run);
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertStringStartsWith('Huntress refused the request (HTTP 422)', (string) $result->message);
+        $this->assertStringNotContainsString('synthetic audit insert failure', (string) $result->message);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, 'a refusal gives the run back');
+        $this->assertCount(1, $this->writes);
+    }
+
+    #[DataProvider('unknownOutcomes')]
+    public function test_an_approval_with_an_unknown_outcome_closes_the_run_even_when_the_audit_insert_throws(string $kind): void
+    {
+        $fx = $this->fixture();
+        $run = TechnicianRun::findOrFail($this->decoded($this->callTool($this->token([self::CREATE.':staged']), self::CREATE, $this->createArgs($fx, ['ticket_id' => $fx['ticket']->id])))['run_id']);
+        $this->failAuditOn('error');
+        $this->queueFault($kind);
+
+        $result = $this->approveDirect($run);
+
+        $this->assertSame('executed_with_fault', $result->status, (string) $result->message);
+        $this->assertStringContainsString('may have been applied', (string) $result->message);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertCount(1, $this->writes);
+
+        $this->trapBoth();
+        $this->assertSame('already_handled', $this->approveDirect($run)->status);
+        $this->assertCount(1, $this->writes, 'a second approval sends nothing');
+    }
+
+    public function test_an_approval_of_a_run_another_approval_has_claimed_sends_nothing(): void
+    {
+        $fx = $this->fixture();
+        $run = TechnicianRun::findOrFail($this->decoded($this->callTool($this->token([self::CREATE.':staged']), self::CREATE, $this->createArgs($fx, ['ticket_id' => $fx['ticket']->id])))['run_id']);
+        $this->assertTrue(TechnicianRun::findOrFail($run->id)->claimForExecution());
+        $this->trapBoth();
+
+        $this->assertSame('already_handled', $this->approveDirect($run)->status);
+        $this->assertCount(0, $this->writes);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state);
+    }
+
+    public function test_a_re_stage_of_a_claimed_run_leaves_the_claim_and_sends_nothing(): void
+    {
+        $fx = $this->fixture();
+        $token = $this->token([self::CREATE.':staged']);
+        $args = $this->createArgs($fx, ['ticket_id' => $fx['ticket']->id]);
+        $run = TechnicianRun::findOrFail($this->decoded($this->callTool($token, self::CREATE, $args))['run_id']);
+        $claimant = TechnicianRun::findOrFail($run->id);
+        $this->assertTrue($claimant->claimForExecution());
+        $claimedAt = $run->fresh()->claimed_at;
+
+        $again = $this->decoded($this->callTool($token, self::CREATE, $args));
+
+        $this->assertSame($run->id, $again['run_id'] ?? null, json_encode($again));
+        $this->assertTrue($again['idempotent'] ?? false);
+        $this->assertStringEndsWith('This proposal is claimed for execution and has not finished; nothing new was staged and nothing was sent.', $again['message']);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state);
+        $this->assertTrue($claimedAt->equalTo($run->fresh()->claimed_at));
+        $this->trapBoth();
+        $this->assertSame('already_handled', $this->approveDirect($run)->status);
+        $this->assertCount(0, $this->writes);
+    }
+
+    /**
+     * Stage a create, then run $between at the $nth read of that run inside the next
+     * identical re-stage (1 = runSlot()'s read, 2 = firstOrCreate()'s read). The
+     * interleave is sequential: it stands in for a concurrent request.
+     *
+     * @return array{0: TechnicianRun, 1: array<string, mixed>}
+     */
+    private function reStageWith(int $nth, \Closure $before, \Closure $between): array
+    {
+        $fx = $this->fixture();
+        $args = ['country_code' => 'US', 'type' => 'expected', 'reason' => 'r', 'ticket_id' => $fx['ticket']->id];
+        $tool = $this->stagedName(self::CREATE);
+        $run = TechnicianRun::findOrFail($this->executeDirect($tool, $args, $fx['client'])['run_id']);
+        $before($run);
+        $reads = 0;
+        $armed = true;
+        TechnicianRun::retrieved(function (TechnicianRun $r) use (&$reads, &$armed, $nth, $run, $between): void {
+            if ($armed && $r->id === $run->id && ++$reads === $nth) {
+                $armed = false;
+                $between($run);
+            }
+        });
+        $again = $this->executeDirect($tool, $args, $fx['client']);
+        $armed = false;
+
+        return [$run, $again];
+    }
+
+    public function test_a_run_approved_after_the_re_stage_read_it_is_not_flipped_back(): void
+    {
+        [$run, $again] = $this->reStageWith(1, fn () => null, function (TechnicianRun $run): void {
+            $this->queueWrite(201, ['unwanted_access_rule' => $this->rule(777)]);
+            $this->queueRead($this->rule(777));
+            $this->assertSame('executed', $this->approveDirect($run)->status);
+        });
+
+        $this->assertArrayHasKey('error', $again, json_encode($again));
+        $this->assertStringContainsString('Nothing was staged and nothing was sent', $again['error']);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertSame(1, TechnicianRun::count());
+        $this->trapBoth();
+        $this->assertSame('already_handled', $this->approveDirect($run)->status);
+        $this->assertCount(1, $this->writes, 'one approval, one write');
+    }
+
+    public function test_a_denied_run_revived_and_approved_before_the_update_is_not_flipped_back(): void
+    {
+        [$run, $again] = $this->reStageWith(2, fn (TechnicianRun $run) => $this->assertTrue($run->deny()), function (TechnicianRun $run): void {
+            DB::table('technician_runs')->where('id', $run->id)->update(['state' => TechnicianRunState::AwaitingApproval->value]);
+            $this->queueWrite(201, ['unwanted_access_rule' => $this->rule(777)]);
+            $this->queueRead($this->rule(777));
+            $this->assertSame('executed', $this->approveDirect($run)->status);
+        });
+
+        $this->assertArrayHasKey('error', $again, json_encode($again));
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->trapBoth();
+        $this->assertSame('already_handled', $this->approveDirect($run)->status);
+        $this->assertCount(1, $this->writes, 'one approval, one write');
+    }
+
+    public function test_a_denied_run_revived_and_claimed_before_the_update_keeps_its_claim(): void
+    {
+        $claimant = null;
+        [$run, $again] = $this->reStageWith(2, fn (TechnicianRun $run) => $this->assertTrue($run->deny()), function (TechnicianRun $run) use (&$claimant): void {
+            // Another re-stage revived the run and an approval claimed it; its write is still running.
+            DB::table('technician_runs')->where('id', $run->id)->update(['state' => TechnicianRunState::AwaitingApproval->value]);
+            $claimant = TechnicianRun::findOrFail($run->id);
+            $this->assertTrue($claimant->claimForExecution());
+        });
+        $claimedAt = $run->fresh()->claimed_at;
+
+        $this->assertTrue($again['idempotent'] ?? false, json_encode($again));
+        $this->assertSame('This proposal is claimed for execution and has not finished; nothing new was staged and nothing was sent.', $again['message']);
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state);
+        $this->assertTrue($claimedAt->equalTo($run->fresh()->claimed_at));
+
+        $this->trapBoth();
+        $this->assertSame('already_handled', $this->approveDirect($run)->status, 'a second approval cannot claim it');
+        $this->assertCount(0, $this->writes);
+        $this->assertTrue($claimant->advanceTo(TechnicianRunState::Done), 'the first approval still holds its claim');
+    }
+
+    public function test_a_denied_run_is_revived_with_the_new_card_when_nothing_moves_it(): void
+    {
+        [$run, $again] = $this->reStageWith(99, fn (TechnicianRun $run) => $this->assertTrue($run->deny()), fn () => null);
+
+        $this->assertTrue($again['success'] ?? false, json_encode($again));
+        $this->assertArrayNotHasKey('idempotent', $again);
+        $this->assertSame($run->id, $again['run_id']);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->queueWrite(201, ['unwanted_access_rule' => $this->rule(777)]);
+        $this->queueRead($this->rule(777));
+        $this->assertSame('executed', $this->approveDirect($run)->status);
+        $this->assertCount(1, $this->writes);
+    }
+
+    // ── round 3: scope, kill switch and approval guards ──
+
+    private function stageCreate(array $fx, array $overrides = []): TechnicianRun
+    {
+        $result = $this->decoded($this->callTool($this->token([self::CREATE.':staged']), self::CREATE, $this->createArgs($fx, ['ticket_id' => $fx['ticket']->id] + $overrides)));
+
+        return TechnicianRun::findOrFail($result['run_id']);
+    }
+
+    /** Approval refused: declined, nothing sent, the run back in the queue. */
+    private function assertApprovalDeclined(TechnicianRun $run, string $expected): void
+    {
+        $this->trapBoth();
+        $writes = count($this->writes);
+        $result = $this->approveDirect($run);
+        $this->assertSame('gate_declined', $result->status, (string) $result->message);
+        $this->assertStringContainsString($expected, (string) $result->message);
+        $this->assertStringContainsString('Nothing was sent', (string) $result->message);
+        $this->assertCount($writes, $this->writes);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+    }
+
+    public function test_a_ticket_of_another_client_is_refused_when_staging(): void
+    {
+        $fx = $this->fixture();
+        $other = $this->fixture(43);
+        $this->trapBoth();
+        foreach ([self::CREATE => $this->createArgs($fx), self::DELETE => ['client_id' => $fx['client']->id, 'rule_id' => 501, 'reason' => 'r']] as $tool => $args) {
+            $result = $this->decoded($this->callTool($this->token([$tool.':staged']), $tool, $args + ['ticket_id' => $other['ticket']->id]));
+            $this->assertStringContainsString('Ticket not found or belongs to a different client', (string) ($result['error'] ?? ''), $tool.' '.json_encode($result));
+        }
+        $this->assertCount(0, $this->writes);
+        $this->assertCount(0, $this->reads);
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_approval_refuses_when_the_ticket_or_the_run_no_longer_belongs_to_the_client(): void
+    {
+        $fx = $this->fixture();
+        $other = $this->fixture(43);
+
+        $run = $this->stageCreate($fx);
+        $fx['ticket']->forceFill(['client_id' => $other['client']->id])->save();
+        $this->assertApprovalDeclined($run, 'The client or ticket no longer matches this proposal');
+        $fx['ticket']->forceFill(['client_id' => $fx['client']->id])->save();
+
+        $run = $this->stageCreate($fx, ['notes' => 'second']);
+        DB::table('technician_runs')->where('id', $run->id)->update(['client_id' => $other['client']->id]);
+        $this->assertApprovalDeclined($run, 'The client or ticket no longer matches this proposal');
+        $this->assertCount(0, $this->writes);
+    }
+
+    public function test_the_kill_switch_refuses_every_lane_and_the_approval(): void
+    {
+        $fx = $this->fixture();
+        $run = $this->stageCreate($fx);
+        Setting::setValue('technician_kill_switch', '1');
+        $this->trapBoth();
+        foreach ([':immediate', ':staged'] as $mode) {
+            $result = $this->decoded($this->callTool($this->token([self::CREATE.$mode]), self::CREATE, $this->createArgs($fx, ['ticket_id' => $fx['ticket']->id, 'notes' => 'other'.$mode])));
+            $this->assertStringContainsString('kill-switch engaged', (string) ($result['error'] ?? ''), $mode.' '.json_encode($result));
+        }
+        $this->assertSame(1, TechnicianRun::count());
+        $this->assertApprovalDeclined($run, 'Technician kill-switch engaged');
+        $this->assertCount(0, $this->writes);
+    }
+
+    public function test_approval_refuses_when_huntress_is_disabled_or_has_no_key_pair(): void
+    {
+        $fx = $this->fixture();
+        $run = $this->stageCreate($fx);
+        Setting::setValue('huntress_enabled', '0');
+        $this->assertApprovalDeclined($run, 'Huntress is not enabled or its API key pair is not saved');
+        Setting::setValue('huntress_enabled', '1');
+        Setting::setEncrypted('huntress_api_secret', '');
+        $this->assertApprovalDeclined($run, 'Huntress is not enabled or its API key pair is not saved');
+        $this->assertCount(0, $this->writes);
+    }
+
+    public function test_approval_refuses_a_payload_whose_tool_does_not_match_the_run(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead($this->rule(501));
+        $result = $this->decoded($this->callTool($this->token([self::UPDATE.':staged']), self::UPDATE, ['client_id' => $fx['client']->id, 'rule_id' => 501, 'notes' => 'x', 'ticket_id' => $fx['ticket']->id, 'reason' => 'r']));
+        $run = TechnicianRun::findOrFail($result['run_id']);
+        $meta = $run->proposed_meta;
+        $payload = json_decode(Crypt::decryptString($meta['encrypted_payload']), true);
+        $payload['direct_tool'] = self::DELETE;
+        $meta['encrypted_payload'] = Crypt::encryptString(json_encode($payload));
+        $run->forceFill(['proposed_meta' => $meta])->save();
+
+        $this->queueRead($this->rule(501));
+        $this->queueWrite(202, ['unwanted_access_rule' => $this->rule(501)]);
+        $this->queueRead([], 404);
+        $result = $this->approveDirect($run);
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertStringContainsString('The held payload could not be read', (string) $result->message);
+        $this->assertCount(0, $this->writes);
+    }
+
+    // ── round 3: value limits, dates on unauthorized rules, the card title ──
+
+    public function test_each_value_limit_is_refused_before_any_request(): void
+    {
+        $fx = $this->fixture();
+        $this->trapBoth();
+        $create = ['type' => 'expected', 'reason' => 'r'];
+        $cases = [
+            'reason blank' => [self::CREATE, ['country_code' => 'US', 'type' => 'expected', 'reason' => '   '], 'reason is required'],
+            'reason absent' => [self::DELETE, ['rule_id' => 501], 'reason is required'],
+            'value over 100' => [self::CREATE, $create + ['vpn' => str_repeat('V', 101)], 'vpn must be a non-empty string of at most 100 characters'],
+            'notes over 1000 on create' => [self::CREATE, $create + ['country_code' => 'US', 'notes' => str_repeat('n', 1001)], 'notes must be a string of at most 1000 characters'],
+            'notes over 1000 on update' => [self::UPDATE, ['rule_id' => 501, 'notes' => str_repeat('n', 1001), 'reason' => 'r'], 'notes must be a string of at most 1000 characters'],
+            'no such date' => [self::CREATE, $create + ['country_code' => 'US', 'starts_at' => '2026-02-30'], 'starts_at must be a UTC date YYYY-MM-DD'],
+            'ip on an unauthorized rule' => [self::CREATE, ['ip_address' => '192.0.2.1', 'type' => 'unauthorized', 'reason' => 'r'], 'ip_address rules must be type expected'],
+            'dates on an unauthorized rule' => [self::CREATE, ['country_code' => 'US', 'type' => 'unauthorized', 'expires_at' => '2026-12-01', 'reason' => 'r'], 'expires_at must be omitted for unauthorized rules'],
+            'rule id 0' => [self::DELETE, ['rule_id' => 0, 'reason' => 'r'], 'rule_id is required and must be a positive integer'],
+            'ticket id 0' => [$this->stagedName(self::CREATE), $create + ['country_code' => 'US', 'ticket_id' => 0], 'ticket_id is required for a staged Huntress rule write'],
+        ];
+        foreach ($cases as $label => [$tool, $args, $expected]) {
+            $result = $this->executeDirect($tool, $args, $fx['client']);
+            $this->assertStringContainsString($expected, (string) ($result['error'] ?? ''), "{$label}: ".json_encode($result));
+            $this->assertStringContainsString('Nothing was sent', $result['error'], $label);
+        }
+        $this->assertCount(0, $this->writes);
+        $this->assertCount(0, $this->reads);
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_the_values_at_each_limit_are_sent(): void
+    {
+        $fx = $this->fixture();
+        $this->queueWrite(201, ['unwanted_access_rule' => $this->rule(501)]);
+        $this->queueRead($this->rule(501));
+        $result = $this->executeDirect(self::CREATE, ['vpn' => str_repeat('V', 100), 'type' => 'expected', 'starts_at' => '2028-02-29', 'notes' => str_repeat('n', 1000), 'reason' => 'r'], $fx['client']);
+        $this->assertTrue($result['success'] ?? false, json_encode($result));
+        $this->assertCount(1, $this->writes);
+    }
+
+    public function test_update_refuses_dates_on_a_rule_read_as_unauthorized_on_both_lanes_and_at_approval(): void
+    {
+        $fx = $this->fixture();
+        $unauthorized = $this->rule(501, overrides: ['type' => 'unauthorized', 'starts_at' => null, 'expires_at' => null]);
+        foreach (['starts_at' => '2026-12-01', 'expires_at' => '2026-12-05'] as $date => $value) {
+            foreach ([self::UPDATE => [], $this->stagedName(self::UPDATE) => ['ticket_id' => $fx['ticket']->id]] as $tool => $extra) {
+                $this->queueRead($unauthorized);
+                $result = $this->executeDirect($tool, ['rule_id' => 501, $date => $value, 'reason' => 'r'] + $extra, $fx['client']);
+                $this->assertStringContainsString("{$date} must be omitted: rule 501 is type unauthorized", (string) ($result['error'] ?? ''), "{$tool} {$date}: ".json_encode($result));
+                $this->assertStringContainsString('Nothing was sent', $result['error']);
+            }
+        }
+        $this->assertCount(0, $this->writes);
+        $this->assertSame(0, TechnicianRun::count());
+
+        // A note alone is still sent to an unauthorized rule.
+        $this->queueRead($unauthorized);
+        $this->queueWrite(200, ['unwanted_access_rule' => $unauthorized]);
+        $this->queueRead($unauthorized);
+        $this->assertTrue($this->executeDirect(self::UPDATE, ['rule_id' => 501, 'notes' => 'x', 'reason' => 'r'], $fx['client'])['success'] ?? false);
+        $this->assertCount(1, $this->writes);
+
+        // Staged while the rule read as expected; at approval it reads as unauthorized.
+        $this->writes = [];
+        $this->queueRead($this->rule(501));
+        $run = TechnicianRun::findOrFail($this->executeDirect($this->stagedName(self::UPDATE), ['rule_id' => 501, 'expires_at' => '2026-12-05', 'reason' => 'r', 'ticket_id' => $fx['ticket']->id], $fx['client'])['run_id']);
+        $this->readQueue->reset();
+        $this->queueRead($unauthorized);
+        $this->queueWrite(200, ['unwanted_access_rule' => $unauthorized]);
+        $result = $this->approveDirect($run);
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertStringContainsString('expires_at must be omitted: rule 501 is type unauthorized', (string) $result->message);
+        $this->assertCount(0, $this->writes);
+    }
+
+    public function test_the_write_client_refuses_a_rule_id_below_one_without_http(): void
+    {
+        $client = app(HuntressWriteClient::class);
+        foreach ([fn () => $client->updateUnwantedAccessRule(0, ['notes' => 'x']), fn () => $client->deleteUnwantedAccessRule(-1)] as $i => $call) {
+            try {
+                $call();
+                $this->fail("case {$i} sent");
+            } catch (\App\Services\Huntress\HuntressWriteScopeException $e) {
+                $this->assertStringContainsString('rule id must be a positive integer', $e->getMessage());
+            }
+        }
+        $this->assertCount(0, $this->writes);
+    }
+
+    public function test_a_429_is_tried_at_most_three_times_then_reported_as_a_refusal(): void
+    {
+        $fx = $this->fixture();
+        foreach ([1, 2, 3] as $_) {
+            $this->writeQueue->append(new Response(429, ['Retry-After' => '0'], '{}'));
+        }
+        $this->queueWrite(201, ['unwanted_access_rule' => $this->rule(501)]);
+        $result = $this->executeDirect(self::CREATE, ['country_code' => 'US', 'type' => 'expected', 'reason' => 'r'], $fx['client']);
+        $this->assertStringStartsWith('Huntress refused the request (HTTP 429)', (string) ($result['error'] ?? ''), json_encode($result));
+        $this->assertCount(3, $this->writes);
+    }
+
+    public function test_the_audit_summary_is_redacted(): void
+    {
+        $fx = $this->fixture();
+        $this->queueWrite(201, ['unwanted_access_rule' => $this->rule(501)]);
+        $this->queueRead($this->rule(501));
+        $result = $this->executeDirect(self::CREATE, ['country_code' => 'US', 'type' => 'expected', 'reason' => 'travel; password: SyntheticSecret123'], $fx['client']);
+        $this->assertTrue($result['success'] ?? false, json_encode($result));
+        $summary = (string) TechnicianActionLog::where('action_type', self::CREATE)->where('result_status', 'executed')->value('summary');
+        $this->assertStringContainsString('travel', $summary);
+        $this->assertStringNotContainsString('SyntheticSecret123', $summary);
+    }
+
+    public function test_an_identical_proposal_is_refused_after_twenty_closed_runs(): void
+    {
+        $fx = $this->fixture();
+        $tool = $this->stagedName(self::CREATE);
+        $args = ['country_code' => 'US', 'type' => 'expected', 'reason' => 'r', 'ticket_id' => $fx['ticket']->id];
+        for ($i = 0; $i < 20; $i++) {
+            $result = $this->executeDirect($tool, $args, $fx['client']);
+            $this->assertTrue($result['success'] ?? false, "proposal {$i}: ".json_encode($result));
+            DB::table('technician_runs')->where('id', $result['run_id'])->update(['state' => TechnicianRunState::Done->value]);
+        }
+        $result = $this->executeDirect($tool, $args, $fx['client']);
+        $this->assertSame('This ticket already carries 20 identical Huntress rule proposals; nothing was staged. Raise a new ticket for a further one.', $result['error'] ?? null, json_encode($result));
+        $this->assertSame(20, TechnicianRun::count());
+        $this->assertCount(0, $this->writes);
     }
 }

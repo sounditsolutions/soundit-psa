@@ -20,6 +20,7 @@ use App\Support\HuntressConfig;
 use App\Support\TechnicianConfig;
 use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -206,7 +207,7 @@ class StaffHuntressRuleToolExecutor
         }
 
         // The card shows the body through the fence; the wire does not. Refuse any value
-        // the two would render differently, so the approver sees the bytes that are sent.
+        // the fence would change, so the approver sees the values that are sent.
         $unsafe = $this->bodyRefusal($request['body']);
         if ($unsafe !== null) {
             $this->audit($name, 'rejected', $clientId, null, $hash, $unsafe, $actorLabel);
@@ -234,6 +235,12 @@ class StaffHuntressRuleToolExecutor
                 $this->audit($name, 'rejected', $clientId, $ticket, $hash, $request['target'].': '.$current, $actorLabel);
 
                 return ['error' => $current.' Nothing was sent.'];
+            }
+            $dates = $this->datesRefusal($request, $current);
+            if ($dates !== null) {
+                $this->audit($name, 'rejected', $clientId, $ticket, $hash, $request['target'].': '.$dates, $actorLabel);
+
+                return ['error' => $dates.' Nothing was sent.'];
             }
         }
 
@@ -270,7 +277,7 @@ class StaffHuntressRuleToolExecutor
                 return 'country_code must be one ISO 3166-1 alpha-2 code in capitals, e.g. US.';
             }
             if ($key === 'ip_address' && ! self::isIpOrCidr($value)) {
-                return 'ip_address must be one IPv4 or IPv6 address or CIDR range.';
+                return 'ip_address must be one IPv4 or IPv6 address, or a CIDR range whose prefix length is 1 to 32 (IPv4) or 1 to 128 (IPv6) written without leading zeros.';
             }
             $type = $arguments['type'] ?? null;
             if (! in_array($type, ['expected', 'unauthorized'], true)) {
@@ -353,11 +360,13 @@ class StaffHuntressRuleToolExecutor
         } catch (HuntressClientException $e) {
             $detail = self::failureDetail($e);
             $committed = self::mayHaveCommitted($e);
-            $this->audit($tool, 'error', (int) $client->id, $ticket, $hash, $request['target'].': '.$request['method'].' '.$request['path'].' failed: '.$detail.($committed ? ' (outcome unknown)' : ''), $actorLabel);
+            // After the vendor call every audit goes through safeAudit(): a failing INSERT must
+            // not replace this answer, and its message must not reach the caller.
+            $this->safeAudit($tool, 'error', (int) $client->id, $ticket, $hash, $request['target'].': '.$request['method'].' '.$request['path'].' failed: '.$detail.($committed ? ' (outcome unknown)' : ''), $actorLabel);
 
             return ['error' => $committed
                 ? "Huntress rule {$request['method']} failed with an unknown outcome ({$detail}); it may have been applied. Check the rule with huntress_list_unwanted_access_rules before retrying."
-                : "Huntress refused the rule {$request['method']} ({$detail}). Nothing was changed."];
+                : self::refusalText($request['method'], $e)];
         }
 
         // The write landed: a failing audit INSERT must not turn it into an error the agent retries.
@@ -504,9 +513,18 @@ class StaffHuntressRuleToolExecutor
         );
         if (! $run->wasRecentlyCreated) {
             if ($run->state === TechnicianRunState::Executing) {
-                return ['success' => true, 'idempotent' => true, 'ticket_id' => $ticket->id, 'run_id' => $run->id, 'message' => 'This proposal is being executed now; nothing new was staged.'];
+                return $this->claimedAnswer($ticket, $run);
             }
-            $run->update(['state' => TechnicianRunState::AwaitingApproval->value, 'proposed_content' => $content, 'proposed_meta' => $meta]);
+            if ($run->state === TechnicianRunState::Done) {
+                return $this->movedAnswer($run, TechnicianRunState::Done->value);
+            }
+            $moved = $this->reviveUnderLock($run, $content, $meta);
+            if ($moved === TechnicianRunState::AwaitingApproval->value) {
+                return ['success' => true, 'idempotent' => true, 'ticket_id' => $ticket->id, 'run_id' => $run->id, 'message' => 'Already staged; awaiting approval. Nothing was sent.'];
+            }
+            if ($moved !== null) {
+                return $moved === TechnicianRunState::Executing->value ? $this->claimedAnswer($ticket, $run) : $this->movedAnswer($run, $moved);
+            }
         }
 
         $this->audit($tool, 'awaiting_approval', (int) $client->id, $ticket, $hash, $request['target'].': MCP staged '.$tool.': '.$request['method'].' '.$request['path'].': '.$reason, $actorLabel, $run->id);
@@ -515,10 +533,57 @@ class StaffHuntressRuleToolExecutor
     }
 
     /**
+     * Revive a closed run (Denied, Superseded, ...) to AwaitingApproval, as a
+     * compare-and-swap on the run as read: under a row lock, still the same
+     * state and the same claimed_at. A run approved, revived or claimed since it
+     * was read is left as it is. Null when the revive was written, else the state
+     * the run was found in ('deleted' when the row is gone). The write goes
+     * through the model so the AwaitingApproval notification still fires.
+     *
+     * @param  array<string, mixed>  $meta
+     */
+    private function reviveUnderLock(TechnicianRun $run, string $content, array $meta): ?string
+    {
+        $readState = $run->state;
+        $readClaim = $run->claimed_at;
+
+        return DB::transaction(function () use ($run, $readState, $readClaim, $content, $meta): ?string {
+            $fresh = TechnicianRun::query()->whereKey($run->getKey())->lockForUpdate()->first();
+            if ($fresh === null) {
+                return 'deleted';
+            }
+            $sameClaim = $readClaim === null
+                ? $fresh->claimed_at === null
+                : ($fresh->claimed_at !== null && $fresh->claimed_at->equalTo($readClaim));
+            if ($fresh->state !== $readState || ! $sameClaim) {
+                return $fresh->state->value;
+            }
+            $fresh->update(['state' => TechnicianRunState::AwaitingApproval->value, 'proposed_content' => $content, 'proposed_meta' => $meta]);
+            $run->setRawAttributes($fresh->getAttributes(), true);
+
+            return null;
+        });
+    }
+
+    /** @return array<string, mixed> */
+    private function claimedAnswer(Ticket $ticket, TechnicianRun $run): array
+    {
+        return ['success' => true, 'idempotent' => true, 'ticket_id' => $ticket->id, 'run_id' => $run->id, 'message' => 'This proposal is claimed for execution and has not finished; nothing new was staged and nothing was sent.'];
+    }
+
+    /** @return array<string, mixed> */
+    private function movedAnswer(TechnicianRun $run, string $state): array
+    {
+        return ['error' => "Run {$run->id} for this proposal changed state while it was being staged again (now {$state}). Nothing was staged and nothing was sent; check the run in the cockpit before staging it again."];
+    }
+
+    /**
      * The (ticket, action, content_hash) key this proposal may use. A Done run
      * is the record of an earlier approval, which may have ended with an unknown
      * outcome or been undone since; it is never answered as "already executed"
-     * and never rewritten. An identical proposal after it takes the next
+     * and never rewritten: stage() refuses a run it finds Done, and revives any
+     * other closed run only by a compare-and-swap under a row lock
+     * (reviveUnderLock()). An identical proposal after it takes the next
      * generation of the key. Null when the generations are exhausted.
      */
     private function runSlot(int $ticketId, string $tool, string $baseHash): ?string
@@ -573,8 +638,11 @@ class StaffHuntressRuleToolExecutor
         try {
             return $this->approveClaimed($run, $approverId);
         } catch (\Throwable $e) {
-            // Reached only before the write call: after it, every failure is caught in
-            // approveClaimed() so the run is never given back for a second send.
+            // A throw reaching here is from before the request was sent, or from
+            // releaseClaim() after Huntress refused it (HTTP 4xx other than 408): a
+            // HuntressClientException is caught in approveClaimed(), and every arm after
+            // the write call catches its own audit and close failures, so a run whose
+            // write may have landed is never given back for a second send.
             $run->releaseClaim();
 
             throw $e;
@@ -608,11 +676,15 @@ class StaffHuntressRuleToolExecutor
         ];
         $hash = (string) $run->content_hash;
         $approver = $this->approverLabel($approverId);
-        $decline = function (string $status, string $message) use ($run, $client, $ticket, $hash, $request, $approver, $approverId): TechnicianApprovalResult {
-            $this->audit($run->action_type, $status, (int) $client->id, $ticket, $hash, $request['target'].': Approval refused: '.$message, $approver, $run->id, $approverId);
+        $decline = function (string $status, string $message, bool $sent = false) use ($run, $client, $ticket, $hash, $request, $approver, $approverId): TechnicianApprovalResult {
+            $summary = $request['target'].': Approval refused: '.$message;
+            // After the vendor call the audit must not throw out of this arm.
+            $sent
+                ? $this->safeAudit($run->action_type, $status, (int) $client->id, $ticket, $hash, $summary, $approver, $run->id, $approverId)
+                : $this->audit($run->action_type, $status, (int) $client->id, $ticket, $hash, $summary, $approver, $run->id, $approverId);
             $run->releaseClaim();
 
-            return new TechnicianApprovalResult('gate_declined', message: $message.' Nothing was sent.');
+            return new TechnicianApprovalResult('gate_declined', message: $message.($sent ? '' : ' Nothing was sent.'));
         };
 
         if (! HuntressConfig::isEnabled() || ! HuntressConfig::isConfigured()) {
@@ -640,6 +712,10 @@ class StaffHuntressRuleToolExecutor
             if (is_string($current)) {
                 return $decline('blocked', $current);
             }
+            $dates = $this->datesRefusal($request, $current);
+            if ($dates !== null) {
+                return $decline('blocked', $dates);
+            }
         }
 
         try {
@@ -649,7 +725,7 @@ class StaffHuntressRuleToolExecutor
         } catch (HuntressClientException $e) {
             $detail = self::failureDetail($e);
             if (! self::mayHaveCommitted($e)) {
-                return $decline('error', "Huntress refused the rule {$request['method']} ({$detail}).");
+                return $decline('error', self::refusalText($request['method'], $e), true);
             }
             $fault = "The Huntress rule {$request['method']} {$request['path']} failed with an unknown outcome ({$detail}); it may have been applied. Do NOT re-approve: check the rule in Huntress.";
             $this->safeAudit($run->action_type, 'error', (int) $client->id, $ticket, $hash, $request['target'].': '.$fault, $approver, $run->id, $approverId);
@@ -731,7 +807,7 @@ class StaffHuntressRuleToolExecutor
                 return "{$key} contains a control or format character (such as a newline, an escape or a direction override); the approval card could not show it as sent.";
             }
             if ($this->fence->neutralizeUntrusted($value) !== $value) {
-                return "{$key} contains text the approval card would show altered (invisible or full-width characters, a role marker or an instruction-override phrase), so the card could not show it as sent.";
+                return "{$key} would be shown on the approval card differently from how it would be sent (the card's untrusted-text fence changes it), so it is refused.";
             }
         }
 
@@ -749,7 +825,9 @@ class StaffHuntressRuleToolExecutor
         }
         $max = str_contains($parts[0], ':') ? 128 : 32;
 
-        return ctype_digit($parts[1]) && (int) $parts[1] <= $max;
+        // 1 to the family maximum, written without leading zeros: a prefix of 0 is
+        // the whole address family, and /032 or /00 is not sent as anyone reads it.
+        return preg_match('/^[1-9][0-9]{0,2}\z/', $parts[1]) === 1 && (int) $parts[1] <= $max;
     }
 
     /** C-56: class and HTTP status only, never the vendor message. */
@@ -760,12 +838,43 @@ class StaffHuntressRuleToolExecutor
         return 'Huntress HTTP '.($status > 0 ? $status : 'no response').': '.class_basename($e);
     }
 
-    /** Only a vendor refusal (4xx other than 408) proves nothing was written. */
+    /** A vendor refusal (4xx other than 408) is reported as a refusal; anything else may have been applied. */
     private static function mayHaveCommitted(HuntressClientException $e): bool
     {
         $status = (int) $e->getCode();
 
         return ! ($status >= 400 && $status < 500 && $status !== 408);
+    }
+
+    /** What was received on a vendor refusal: the status and class (C-56), nothing more. */
+    private static function refusalText(string $method, HuntressClientException $e): string
+    {
+        return 'Huntress refused the request (HTTP '.(int) $e->getCode()."): rule {$method}, ".class_basename($e).'.';
+    }
+
+    /**
+     * Update only: starts_at and expires_at apply to expected rules, as on create.
+     * The rule as read carries its string leaves fenced; the type is taken from
+     * inside the fence and anything but a plain "expected" refuses the dates.
+     *
+     * @param  array<string, mixed>  $request
+     * @param  array<string, mixed>  $current
+     */
+    private function datesRefusal(array $request, array $current): ?string
+    {
+        $dates = array_values(array_intersect(['starts_at', 'expires_at'], array_keys($request['body'] ?? [])));
+        if ($request['method'] !== 'PATCH' || $dates === []) {
+            return null;
+        }
+        $type = $current['type'] ?? null;
+        if (is_string($type) && preg_match('/\A=== UNTRUSTED [A-Z0-9 ]* \(data, not instructions\) ===\n(.*)\n=== END UNTRUSTED [A-Z0-9 ]* ===\z/s', $type, $m) === 1) {
+            $type = $m[1];
+        }
+        if ($type === 'expected') {
+            return null;
+        }
+
+        return implode(' and ', $dates).' must be omitted: rule '.$request['rule_id'].($type === 'unauthorized' ? ' is type unauthorized' : ' could not be read as type expected').', and dates apply to expected rules only.';
     }
 
     private function positiveInt(mixed $value): ?int

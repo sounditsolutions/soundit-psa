@@ -275,8 +275,8 @@ class HuntressWriteClient
     }
 
     /**
-     * One rule request with the same bounded 429 retry as the resolve. A 429 is
-     * a refusal, so the retry cannot double a write. Any other failure throws
+     * One rule request with the same bounded 429 retry as the resolve: at most
+     * three attempts, and only a 429 is retried. Any other failure throws
      * HuntressClientException carrying the HTTP status as its code (0 when
      * there was no response).
      *
