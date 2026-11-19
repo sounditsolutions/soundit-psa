@@ -112,7 +112,7 @@
                 </div>
                 @if($contract->is_portal_purchasable && $contract->portalPrepaySku)
                     <div class="form-text mt-2">
-                        {{ $contract->portalPrepaySku->name }} — ${{ number_format($contract->portalPrepaySku->unit_price, 2) }} / {{ number_format($contract->portalPrepaySku->prepaid_time_minutes / 60, 1) }}h per unit
+                        {{ $contract->portalPrepaySku->name }} — ${{ number_format($contract->portalPrepaySku->portalPrepayUnitPrice(), 2) }} / {{ number_format($contract->portalPrepaySku->prepaid_time_minutes / 60, 1) }}h per unit
                     </div>
                 @endif
             </form>

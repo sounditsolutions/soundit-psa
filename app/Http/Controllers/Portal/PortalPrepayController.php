@@ -63,10 +63,13 @@ class PortalPrepayController extends Controller
 
         $contract->load('portalPrepaySku');
         $sku = $contract->portalPrepaySku;
+        $now = now();
 
         return view('portal.prepaid.form', [
             'contract' => $contract,
             'sku' => $sku,
+            'unitPrice' => $sku->portalPrepayUnitPrice($now),
+            'promoInForce' => $sku->portalPromoInForce($now),
             'hoursPerUnit' => round($sku->prepaid_time_minutes / 60, 1),
         ]);
     }
@@ -92,8 +95,13 @@ class PortalPrepayController extends Controller
         $contract->load('portalPrepaySku');
         $sku = $contract->portalPrepaySku;
 
-        // TOCTOU price guard
-        if ((float) $validated['expected_unit_price'] !== (float) $sku->unit_price) {
+        // The server decides the price, from the clock, once: the guard and the
+        // charge use the same reading. The form's figure is only compared.
+        $unitPrice = $sku->portalPrepayUnitPrice(now());
+
+        // TOCTOU price guard: a form opened before a promo starts or ends is
+        // refused, never charged the other price.
+        if (round((float) $validated['expected_unit_price'], 2) !== round($unitPrice, 2)) {
             return redirect()->route('portal.prepaid.form', $contract)
                 ->with('error', 'The price has changed — please review the updated price and try again.');
         }
@@ -117,7 +125,7 @@ class PortalPrepayController extends Controller
         }
 
         $invoice = $this->orderService->createPrepayInvoice(
-            $contract, $sku, (int) $validated['quantity'], $person,
+            $contract, $sku, (int) $validated['quantity'], $person, $unitPrice,
         );
 
         // Push to billing backend after response completes

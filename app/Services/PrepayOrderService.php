@@ -21,11 +21,18 @@ class PrepayOrderService
         private readonly BillingService $billingService,
     ) {}
 
-    public function createPrepayInvoice(Contract $contract, Sku $sku, int $quantity, Person $person): Invoice
+    /**
+     * $unitPrice is the price the caller decided is in force for this purchase
+     * (the portal passes Sku::portalPrepayUnitPrice() read at the moment of
+     * purchase); the line, the invoice totals and the contract activity all
+     * record it. Null means the SKU's unit_price.
+     */
+    public function createPrepayInvoice(Contract $contract, Sku $sku, int $quantity, Person $person, ?float $unitPrice = null): Invoice
     {
         $client = $contract->client;
+        $unitPrice ??= (float) $sku->unit_price;
 
-        return DB::transaction(function () use ($contract, $client, $sku, $quantity, $person) {
+        return DB::transaction(function () use ($contract, $client, $sku, $quantity, $person, $unitPrice) {
             $invoiceNumber = $this->billingService->nextInvoiceNumber();
 
             // Retry once on duplicate invoice number (race condition)
@@ -52,7 +59,6 @@ class PrepayOrderService
                 }
             }
 
-            $unitPrice = (float) $sku->unit_price;
             $unitCost = (float) ($sku->unit_cost ?? 0);
             $amount = round($quantity * $unitPrice, 2);
             $costAmount = round($quantity * $unitCost, 2);
@@ -90,6 +96,7 @@ class PrepayOrderService
                     'person' => $person->full_name,
                     'sku' => $sku->name,
                     'quantity' => $quantity,
+                    'unit_price' => $unitPrice,
                     'hours' => $hours,
                     'amount' => $amount,
                     'invoice_number' => $invoice->invoice_number,

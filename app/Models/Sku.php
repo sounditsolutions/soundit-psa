@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\QuantityType;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -37,7 +38,16 @@ class Sku extends Model
         'stripe_product_id',
         'stripe_price_id',
         'stripe_synced_at',
+        'portal_promo_price',
+        'portal_promo_starts_at',
+        'portal_promo_ends_at',
     ];
+
+    /**
+     * The portal promo window is entered and shown in this zone, whatever the
+     * display-timezone setting, and stored in UTC.
+     */
+    public const PROMO_TIMEZONE = 'America/Los_Angeles';
 
     protected function casts(): array
     {
@@ -52,6 +62,9 @@ class Sku extends Model
             'portal_orderable' => 'boolean',
             'qbo_synced_at' => 'datetime',
             'stripe_synced_at' => 'datetime',
+            'portal_promo_price' => 'decimal:2',
+            'portal_promo_starts_at' => 'datetime',
+            'portal_promo_ends_at' => 'datetime',
         ];
     }
 
@@ -120,6 +133,63 @@ class Sku extends Model
         }
 
         return round(((float) $this->unit_price - (float) $this->unit_cost) / (float) $this->unit_price * 100, 1);
+    }
+
+    // ── Portal promo price ──
+
+    /**
+     * Whether the stored promo is one the portal may charge: all three fields
+     * set, the end after the start, and the price above zero and below
+     * unit_price. Anything else is ignored, whatever reached the table.
+     */
+    public function hasValidPortalPromo(): bool
+    {
+        if ($this->portal_promo_price === null
+            || $this->portal_promo_starts_at === null
+            || $this->portal_promo_ends_at === null) {
+            return false;
+        }
+
+        if ($this->portal_promo_ends_at->getTimestamp() <= $this->portal_promo_starts_at->getTimestamp()) {
+            return false;
+        }
+
+        $promoCents = (int) round((float) $this->portal_promo_price * 100);
+        $unitCents = (int) round((float) $this->unit_price * 100);
+
+        if ($promoCents <= 0) {
+            return false;
+        }
+
+        return $promoCents < $unitCents;
+    }
+
+    /**
+     * Whether the promo is in force at $at (default: now). Both ends of the
+     * window are inclusive, to the second, compared as instants (UTC).
+     */
+    public function portalPromoInForce(?CarbonInterface $at = null): bool
+    {
+        if (! $this->hasValidPortalPromo()) {
+            return false;
+        }
+
+        $t = ($at ?? now())->getTimestamp();
+
+        return $t >= $this->portal_promo_starts_at->getTimestamp()
+            && $t <= $this->portal_promo_ends_at->getTimestamp();
+    }
+
+    /**
+     * The unit price a portal prepaid-time purchase is charged at $at. This is
+     * the ONLY reader of the promo: staff invoices, auto top-up, recurring
+     * billing and the accounting sync all read unit_price directly.
+     */
+    public function portalPrepayUnitPrice(?CarbonInterface $at = null): float
+    {
+        return $this->portalPromoInForce($at)
+            ? (float) $this->portal_promo_price
+            : (float) $this->unit_price;
     }
 
     /**

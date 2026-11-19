@@ -36,7 +36,7 @@
                             @if($contract->portalPrepaySku)
                                 <div class="text-muted small">
                                     {{ $contract->portalPrepaySku->name }}
-                                    &mdash; ${{ number_format($contract->portalPrepaySku->unit_price, 2) }}
+                                    &mdash; ${{ number_format($contract->portalPrepaySku->portalPrepayUnitPrice(), 2) }}
                                     / {{ number_format($contract->portalPrepaySku->prepaid_time_minutes / 60, 1) }}h
                                 </div>
                             @endif
