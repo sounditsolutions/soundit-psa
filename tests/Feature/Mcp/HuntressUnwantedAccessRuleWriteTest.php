@@ -1152,4 +1152,19 @@ class HuntressUnwantedAccessRuleWriteTest extends TestCase
         $this->assertSame(20, TechnicianRun::count());
         $this->assertCount(0, $this->writes);
     }
+
+    public function test_a_denied_run_claimed_and_denied_again_since_the_re_stage_read_it_is_left_as_it_is(): void
+    {
+        [$run, $again] = $this->reStageWith(2, fn (TechnicianRun $run) => $this->assertTrue($run->deny()), function (TechnicianRun $run): void {
+            // Same state as read, a different claim: revived, claimed, released and denied in between.
+            DB::table('technician_runs')->where('id', $run->id)->update(['state' => TechnicianRunState::AwaitingApproval->value]);
+            $other = TechnicianRun::findOrFail($run->id);
+            $this->assertTrue($other->claimForExecution());
+            $this->assertTrue($other->releaseClaim());
+            $this->assertTrue($other->deny());
+        });
+
+        $this->assertStringContainsString('changed state while it was being staged again (now denied)', (string) ($again['error'] ?? ''), json_encode($again));
+        $this->assertSame(TechnicianRunState::Denied, $run->fresh()->state);
+    }
 }
