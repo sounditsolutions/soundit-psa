@@ -71,6 +71,7 @@ class PhoneCall extends Model
             'person_confirmed' => 'boolean',
             'summary_is_public' => 'boolean',
             'is_billable' => 'boolean',
+            'is_billable_explicit' => 'boolean',
             'billable_minutes' => 'integer',
             'sentiment_score' => 'integer',
             'caller_identity_confidence' => 'float',

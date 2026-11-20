@@ -2057,7 +2057,7 @@ class McpToolRegistry
     {
         return [
             'name' => 'link_call_to_ticket',
-            'description' => 'Link an unresolved phone call to an existing ticket immediately, reusing the native call-linking path (drops an internal note). Audited by ids and reason only — the call transcript is never logged. Requires an explicit token grant. billable (required) is your billing decision for this call. It sets is_billable through the same path as set_call_billable, which re-evaluates this call\'s prepay debit when the stored value changes. With billable=false the link takes no prepay debit for this call. A later triage classification of the ticket (automatic on a new ticket when auto-triage is on, or a staff re-run) can still change is_billable and this call\'s prepay debit (not for a Voicemail call), as it can after set_call_billable.',
+            'description' => 'Link an unresolved phone call to an existing ticket immediately, reusing the native call-linking path (drops an internal note). Audited by ids and reason only — the call transcript is never logged. Requires an explicit token grant. billable (required) is your billing decision for this call. It sets is_billable through the same path as set_call_billable, which re-evaluates this call\'s prepay debit when the stored value changes. With billable=false the link takes no prepay debit for this call. The billable value you set here is an explicit decision. Automatic or re-run triage of the ticket does not change it.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
@@ -2076,7 +2076,7 @@ class McpToolRegistry
     {
         return [
             'name' => 'create_ticket_from_call',
-            'description' => 'Create a new ticket from an unresolved phone call immediately, reusing the native call-to-ticket creation path. The call must already be resolved to a client. Audited by ids and reason only — the call transcript is never logged. Requires an explicit token grant. billable (required) is your billing decision for this call. It sets is_billable through the same path as set_call_billable, which re-evaluates this call\'s prepay debit when the stored value changes. With billable=false the link takes no prepay debit for this call. A later triage classification of the ticket (automatic on a new ticket when auto-triage is on, or a staff re-run) can still change is_billable and this call\'s prepay debit (not for a Voicemail call), as it can after set_call_billable.',
+            'description' => 'Create a new ticket from an unresolved phone call immediately, reusing the native call-to-ticket creation path. The call must already be resolved to a client. Audited by ids and reason only — the call transcript is never logged. Requires an explicit token grant. billable (required) is your billing decision for this call. It sets is_billable through the same path as set_call_billable, which re-evaluates this call\'s prepay debit when the stored value changes. With billable=false the link takes no prepay debit for this call. The billable value you set here is an explicit decision. Automatic or re-run triage of the ticket does not change it.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [

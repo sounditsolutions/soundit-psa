@@ -289,18 +289,22 @@ class CallLinkBillableRequiredTest extends TestCase
     }
 
     #[DataProvider('verbs')]
-    public function test_the_description_says_triage_can_still_change_is_billable(string $verb): void
+    public function test_the_description_says_triage_does_not_change_the_explicit_decision(string $verb): void
     {
-        // Ruled wording (#8453): pinned verbatim, on the registry entry and on tools/list.
-        $clause = 'A later triage classification of the ticket (automatic on a new ticket when auto-triage is on, '
-            .'or a staff re-run) can still change is_billable and this call\'s prepay debit (not for a Voicemail call), as it can after set_call_billable.';
+        // #8459 (b): the #8453 clause saying triage can still change is_billable is false and
+        // gone; the replacement sentence (proposed by Jeeves, his to rule) is pinned verbatim,
+        // on the registry entry and on tools/list.
+        $old = 'can still change is_billable';
+        $clause = 'The billable value you set here is an explicit decision. Automatic or re-run triage of the ticket does not change it.';
         $tool = $verb === 'link_call_to_ticket' ? McpToolRegistry::linkCallToTicketTool() : McpToolRegistry::createTicketFromCallTool();
+        $this->assertStringNotContainsString($old, $tool['description']);
         $this->assertStringEndsWith(' '.$clause, $tool['description']);
 
         $listed = collect($this->withHeaders(['Authorization' => 'Bearer '.$this->token([$verb])])
             ->postJson('/api/mcp/staff', ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/list', 'params' => []])
             ->assertOk()->json('result.tools'))->keyBy('name');
         $this->assertSame($tool['description'], $listed[$verb]['description']);
+        $this->assertStringNotContainsString($old, $listed[$verb]['description']);
     }
 
     #[DataProvider('verbs')]

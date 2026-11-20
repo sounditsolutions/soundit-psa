@@ -1240,8 +1240,10 @@ class PhoneCallService
      *    Voicemail, and takes the default when a webhook records it Completed with a
      *    positive stored duration and no recording stored before that webhook, on the terms
      *    in applyDefaultBillabilityOnceCompleted().
-     * Triage, if it later classifies the ticket, can still flip the default either way for
-     * any call but Voicemail (TriagePipeline::reconcileBillabilityAfterClassification).
+     * A default set here is not an explicit decision and leaves is_billable_explicit false, so
+     * triage, if it later classifies the ticket, can still flip the default either way for
+     * any call but Voicemail (TriagePipeline::reconcileBillabilityAfterClassification). A call
+     * marked is_billable_explicit by setBillable() keeps its value and is skipped there (#8459).
      *
      * Only billable calls with a truthy stored duration reach the debit service here.
      * A null stored duration is not debited at link, even with a recording. The service
@@ -1493,7 +1495,8 @@ class PhoneCallService
     }
 
     /**
-     * Unlink a call from its ticket, reversing any prepay debit.
+     * Unlink a call from its ticket, reversing any prepay debit. Billability is cleared, and
+     * with it the explicit-decision mark (#8459).
      */
     public function unlinkCallFromTicket(PhoneCall $call): PhoneCall
     {
@@ -1503,21 +1506,40 @@ class PhoneCallService
         $call->contract_id = null;
         $call->contract_held_at = null;
         $call->is_billable = null;
+        $call->is_billable_explicit = false;
         $call->save();
 
         return $call;
     }
 
     /**
-     * Toggle billability on a phone call and update prepay accordingly.
+     * Set billability on a phone call as an explicit decision by a person or agent and update
+     * prepay accordingly. The call is marked is_billable_explicit, so triage reconciliation
+     * leaves it alone (#8459, option (b)).
      */
     public function setBillable(PhoneCall $call, bool $billable): PhoneCall
     {
         $call->is_billable = $billable;
+        $call->is_billable_explicit = true;
         $call->save();
 
         // Re-evaluate prepay: debitFromPhoneCall handles both create and reverse
         app(PrepayService::class)->debitFromPhoneCall($call);
+
+        return $call;
+    }
+
+    /**
+     * Mark the call's current is_billable as an explicit decision without changing it or
+     * prepay: a set_call_billable whose value is already stored is still a decision, and
+     * triage reconciliation leaves the call alone after it (#8459).
+     */
+    public function markBillableExplicit(PhoneCall $call): PhoneCall
+    {
+        if (! $call->is_billable_explicit) {
+            $call->is_billable_explicit = true;
+            $call->save();
+        }
 
         return $call;
     }
