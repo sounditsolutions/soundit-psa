@@ -130,6 +130,8 @@ class McpStaffController extends Controller
     private const CIPP_EXPLICIT_GRANT_READ_TOOLS = [
         'cipp_compare_user_access',
         'cipp_list_tenant_mailbox_rules',
+        // Built dormant: published and callable only on a token that grants it by name.
+        'cipp_list_service_health_issues',
     ];
 
     /**
@@ -1581,6 +1583,8 @@ class McpStaffController extends Controller
                 $result = app(\App\Services\Mcp\StaffCarbonHardwareExecutor::class)->execute((string) $name, $arguments, (int) $clientId);
             } elseif ((string) $name === 'cipp_compare_user_access') {
                 $result = (new \App\Services\Mcp\CippCompareToolExecutor($clientId))->execute($arguments);
+            } elseif ((string) $name === 'cipp_list_service_health_issues') {
+                $result = (new \App\Services\Mcp\CippServiceHealthToolExecutor($clientId))->execute($arguments);
             } elseif ((string) $name === 'send_reply') {
                 $result = $this->sendReply($arguments, $request);
             } elseif ((string) $name === 'request_tool') {

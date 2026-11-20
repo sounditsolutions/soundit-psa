@@ -65,6 +65,10 @@ class CippMcpToolRelay
         'cipp_list_mail_quarantine' => 'ListMailQuarantine',
         'cipp_list_user_mfa_methods' => 'ListMFAUsers',
         'cipp_list_oauth_apps' => 'ListOAuthApps',
+        // Built to the direct leg's measured shape, not measured on a live relay; the
+        // relay's reply shape is read from vendor source, not measured. Only the
+        // tenant is sent (never Open or UseReportDB); see execute().
+        'cipp_list_service_health_issues' => 'ListServiceHealthIssues',
     ];
 
     private const ALLOWED_ARGUMENTS = [
@@ -78,6 +82,8 @@ class CippMcpToolRelay
         'cipp_list_mail_quarantine' => ['recipient'],
         'cipp_list_user_mfa_methods' => ['user_id'],
         'cipp_list_oauth_apps' => ['user_id'],
+        // Applied to the reply in the contract; never sent upstream.
+        'cipp_list_service_health_issues' => ['issue_id'],
     ];
 
     private readonly CippToolContract $contract;
@@ -127,6 +133,10 @@ class CippMcpToolRelay
             return $prepared;
         }
 
+        if ($toolName === CippToolContract::SERVICE_HEALTH_TOOL) {
+            return $this->executeServiceHealth($prepared, $tenantDomain, $input, $deadline);
+        }
+
         try {
             $rows = $this->client->callTool($prepared['tool'], $prepared['arguments'], $deadline);
         } catch (CippMcpAuthException $e) {
@@ -168,6 +178,43 @@ class CippMcpToolRelay
         // not of this transport, so it lives in the shared contract and the direct
         // CippClient path runs the identical code (psa-d2hj).
         return $this->contract->shape($toolName, $rows, $input, $clientId);
+    }
+
+    /**
+     * cipp_list_service_health_issues over the relay. It alone reads the reply
+     * through callToolReply(), which reports how the reply arrived, because its
+     * contract refuses anything but one text block holding a JSON list; every
+     * other tool takes callTool() exactly as before. A failure answers with status
+     * and class only, as the direct leg does.
+     *
+     * @param  array{tool: string, arguments: array<string, mixed>}  $prepared
+     * @return array<string, mixed>
+     *
+     * @throws CippMcpAuthException when the relay could not sign in (see execute())
+     */
+    private function executeServiceHealth(array $prepared, string $tenantDomain, array $input, ?float $deadline): array
+    {
+        $tenantRefusal = CippToolContract::serviceHealthTenantRefusal($tenantDomain);
+        if ($tenantRefusal !== null) {
+            return $tenantRefusal;
+        }
+
+        try {
+            $reply = $this->client->callToolReply($prepared['tool'], $prepared['arguments'], $deadline);
+        } catch (CippMcpAuthException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            Log::warning('[CippMcpToolRelay] CIPP MCP query failed', [
+                'tool' => CippToolContract::SERVICE_HEALTH_TOOL,
+                'exec_mcp_tool' => $prepared['tool'],
+                'exception' => $e::class,
+                'error' => mb_substr($e->getMessage(), 0, 500),
+            ]);
+
+            return CippToolContract::serviceHealthFailure($e);
+        }
+
+        return $this->contract->shapeServiceHealthIssues($reply['text'], $input, $reply['fault']);
     }
 
     /**

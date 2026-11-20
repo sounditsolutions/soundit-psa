@@ -27,6 +27,7 @@ class CippMcpCatalogSyncService
         'ListMailQuarantine',
         'ListMFAUsers',
         'ListOAuthApps',
+        'ListServiceHealthIssues',
     ];
 
     public function __construct(

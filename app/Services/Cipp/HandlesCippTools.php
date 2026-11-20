@@ -118,7 +118,12 @@ trait HandlesCippTools
         }
 
         if ($clientError !== null) {
-            return $this->cippFailure($toolName, $clientError);
+            $failure = $this->cippFailure($toolName, $clientError);
+
+            // cippFailure() logs the failure for every tool. The service health tool
+            // answers with class only, never the exception's text; every other tool
+            // answers as before.
+            return $toolName === CippToolContract::SERVICE_HEALTH_TOOL ? CippToolContract::serviceHealthFailure($clientError) : $failure;
         }
 
         return $direct($tenantDomain, $deadline);
@@ -127,6 +132,35 @@ trait HandlesCippTools
     private function cippCompareUserAccess(array $input): array
     {
         return $this->cippDispatch('cipp_compare_user_access', $input, fn (string $tenant, float $deadline): array => app(CippCompareUserAccess::class)->compare($tenant, $input, $this->clientId, $deadline));
+    }
+
+    /**
+     * One client's M365 service health issues. Direct leg: GET
+     * api/ListServiceHealthIssues with TenantFilter = the resolved tenant and no
+     * other parameter (never Open or UseReportDB; issue_id is applied to the reply).
+     * The reply body is judged as received, before it is decoded, by the shared
+     * contract; a failure answers with status and class only, including when the
+     * REST client cannot be built (see cippDispatch()).
+     */
+    private function cippListServiceHealthIssues(array $input): array
+    {
+        return $this->cippDispatch(CippToolContract::SERVICE_HEALTH_TOOL, $input, function (string $tenantDomain, float $deadline) use ($input): array {
+            $tenantRefusal = CippToolContract::serviceHealthTenantRefusal($tenantDomain);
+            if ($tenantRefusal !== null) {
+                return $tenantRefusal;
+            }
+
+            try {
+                $reply = app(CippClient::class)->getDecoded('api/ListServiceHealthIssues', ['TenantFilter' => $tenantDomain], $deadline);
+            } catch (\Throwable $e) {
+                // Status and class only to the caller, never the exception's text.
+                Log::warning($this->cippLogPrefix().' CIPP query failed', ['endpoint' => 'api/ListServiceHealthIssues', 'exception' => $e::class, 'error' => mb_substr($e->getMessage(), 0, 500)]);
+
+                return CippToolContract::serviceHealthFailure($e);
+            }
+
+            return app(CippToolContract::class)->shapeServiceHealthIssues($reply['body'], $input);
+        });
     }
 
     private function cippQuery(string $toolName, array $input, string $endpoint): array

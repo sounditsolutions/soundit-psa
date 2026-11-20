@@ -6,6 +6,7 @@ use App\Support\SafeUrlInspector;
 use Illuminate\Contracts\Cache\Repository as CacheInterface;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -67,13 +68,115 @@ class CippMcpClient
      */
     public function callTool(string $toolName, array $arguments = [], ?float $deadline = null): array
     {
+        $response = $this->sendToolCall($toolName, $arguments, $deadline);
+
+        if ($response->status() === 401) {
+            throw new CippMcpAuthException("CIPP MCP {$toolName} was refused: HTTP 401 ".mb_substr($response->body(), 0, 500));
+        }
+
+        if ($response->failed()) {
+            throw new CippClientException("CIPP MCP {$toolName} failed: HTTP {$response->status()} ".mb_substr($response->body(), 0, 500));
+        }
+
+        return $this->decodeJsonRpcPayload((string) $response->body());
+    }
+
+    /**
+     * callTool() for a caller that judges the reply itself: the one text content
+     * block exactly as received, not decoded, or the reason there is none. Opt-in:
+     * callTool() and every tool that uses it are unchanged.
+     *
+     * Same request and deadline. A failed request throws with its status as the
+     * exception code and no response body in the message (401 stays a
+     * CippMcpAuthException). Then, in the code's order:
+     *   - a body that starts with a byte-order mark (after the whitespace the event
+     *     readers trim) throws, before anything is counted or read: the readers
+     *     would skip its first line, and with it the first event;
+     *   - events: an event-stream body with more than one data event (other than
+     *     a [DONE] marker) is a fault, before anything is decoded: only the first
+     *     event would be read, and a later one could hold the rows;
+     *   - a reply that is not a JSON-RPC object throws;
+     *   - a reply carrying a JSON-RPC error throws;
+     *   - shape: no object result;
+     *   - error: isError is set to anything but false, whatever the body says;
+     *   - shape: no content list (a JSON array), or an empty one;
+     *   - blocks: the content is a list of more than one block (ExecMCP adds a
+     *     second block for a non-empty Metadata, its paging cursor);
+     *   - shape: the one block is not of type text with a string text.
+     * 'fault' names the first of these found. 'text' is that block's text when
+     * there is no fault, else null.
+     *
+     * @return array{text: ?string, fault: ?string}
+     */
+    public function callToolReply(string $toolName, array $arguments = [], ?float $deadline = null): array
+    {
+        $response = $this->sendToolCall($toolName, $arguments, $deadline);
+
+        if ($response->status() === 401) {
+            throw new CippMcpAuthException("CIPP MCP {$toolName} was refused: HTTP 401", 401);
+        }
+
+        if ($response->failed()) {
+            throw new CippClientException("CIPP MCP {$toolName} failed: HTTP {$response->status()}", $response->status());
+        }
+
+        // Decoded with JSON objects kept as objects, so a JSON list is told apart
+        // from an object whose keys happen to be 0, 1, ...
+        $body = (string) $response->body();
+        if (str_starts_with(trim($body), "\u{FEFF}")) {
+            throw new CippClientException('CIPP MCP response began with a byte-order mark');
+        }
+
+        if ($this->sseDataEventCount($body) > 1) {
+            return ['text' => null, 'fault' => 'events'];
+        }
+
+        $decoded = json_decode($this->firstSseDataPayload($body) ?? $body);
+
+        if (! $decoded instanceof \stdClass) {
+            throw new CippClientException('CIPP MCP response was not valid JSON-RPC');
+        }
+
+        if (property_exists($decoded, 'error')) {
+            throw new CippClientException('CIPP MCP JSON-RPC error');
+        }
+
+        $result = $decoded->result ?? null;
+        if (! $result instanceof \stdClass) {
+            return ['text' => null, 'fault' => 'shape'];
+        }
+
+        if (property_exists($result, 'isError') && $result->isError !== false) {
+            return ['text' => null, 'fault' => 'error'];
+        }
+
+        $content = $result->content ?? null;
+        if (! is_array($content) || $content === []) {
+            return ['text' => null, 'fault' => 'shape'];
+        }
+
+        if (count($content) > 1) {
+            return ['text' => null, 'fault' => 'blocks'];
+        }
+
+        $block = $content[0];
+        if (! $block instanceof \stdClass || ($block->type ?? null) !== 'text' || ! is_string($block->text ?? null)) {
+            return ['text' => null, 'fault' => 'shape'];
+        }
+
+        return ['text' => $block->text, 'fault' => null];
+    }
+
+    /** The ExecMCP tools/call request shared by callTool() and callToolReply(). */
+    private function sendToolCall(string $toolName, array $arguments, ?float $deadline): Response
+    {
         $execMcpUrl = $this->execMcpUrl();
         $safeOptions = $this->safeRequestOptions($execMcpUrl);
         $token = $this->getToken($deadline);
         $timeout = $this->requestTimeout($deadline, self::EXEC_MCP_TIMEOUT);
 
         try {
-            $response = Http::timeout($timeout)
+            return Http::timeout($timeout)
                 ->when($deadline !== null, fn ($request) => $request->connectTimeout($timeout))
                 ->accept('text/event-stream')
                 ->withOptions($safeOptions)
@@ -95,16 +198,6 @@ class CippMcpClient
 
             throw $e;
         }
-
-        if ($response->status() === 401) {
-            throw new CippMcpAuthException("CIPP MCP {$toolName} was refused: HTTP 401 ".mb_substr($response->body(), 0, 500));
-        }
-
-        if ($response->failed()) {
-            throw new CippClientException("CIPP MCP {$toolName} failed: HTTP {$response->status()} ".mb_substr($response->body(), 0, 500));
-        }
-
-        return $this->decodeJsonRpcPayload((string) $response->body());
     }
 
     /**
@@ -506,6 +599,30 @@ class CippMcpClient
         }
 
         return $this->unwrapMcpResult($result);
+    }
+
+    /**
+     * How many events in an event-stream body carry data other than a [DONE]
+     * marker, split exactly as firstSseDataPayload() splits them (0 for a body
+     * with no data line). Used by callToolReply() only.
+     */
+    private function sseDataEventCount(string $body): int
+    {
+        $count = 0;
+        foreach (preg_split("/\R\R/", trim($body)) ?: [] as $event) {
+            $data = [];
+            foreach (preg_split("/\R/", $event) ?: [] as $line) {
+                if (str_starts_with($line, 'data:')) {
+                    $data[] = ltrim(mb_substr($line, 5));
+                }
+            }
+
+            if ($data !== [] && implode("\n", $data) !== '[DONE]') {
+                $count++;
+            }
+        }
+
+        return $count;
     }
 
     private function firstSseDataPayload(string $body): ?string
