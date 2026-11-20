@@ -289,6 +289,21 @@ class CallLinkBillableRequiredTest extends TestCase
     }
 
     #[DataProvider('verbs')]
+    public function test_the_description_says_triage_can_still_change_is_billable(string $verb): void
+    {
+        // Ruled wording (#8453): pinned verbatim, on the registry entry and on tools/list.
+        $clause = 'A later triage classification of the ticket (automatic on a new ticket when auto-triage is on, '
+            .'or a staff re-run) can still change is_billable and this call\'s prepay debit, as it can after set_call_billable.';
+        $tool = $verb === 'link_call_to_ticket' ? McpToolRegistry::linkCallToTicketTool() : McpToolRegistry::createTicketFromCallTool();
+        $this->assertStringEndsWith(' '.$clause, $tool['description']);
+
+        $listed = collect($this->withHeaders(['Authorization' => 'Bearer '.$this->token([$verb])])
+            ->postJson('/api/mcp/staff', ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/list', 'params' => []])
+            ->assertOk()->json('result.tools'))->keyBy('name');
+        $this->assertSame($tool['description'], $listed[$verb]['description']);
+    }
+
+    #[DataProvider('verbs')]
     public function test_an_801_character_reason_is_refused_before_anything_is_written(string $verb): void
     {
         $call = $this->makeCall('synthetic-reason-801-'.$verb);
