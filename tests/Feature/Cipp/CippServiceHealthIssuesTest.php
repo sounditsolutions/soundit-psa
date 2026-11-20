@@ -1279,4 +1279,61 @@ class CippServiceHealthIssuesTest extends TestCase
         $this->assertSame([$expected], $logs->getArrayCopy());
         $this->assertStringNotContainsString('SYNTHETIC-VENDOR-TEXT', json_encode($logs->getArrayCopy()));
     }
+
+    // ── Round 4 ruling: the mark's refusal is constant; whitespace before the mark is looked through ──
+
+    public function test_the_byte_order_mark_refusal_is_one_fixed_sentence_and_no_body_byte_is_logged(): void
+    {
+        $this->enableRelay();
+        $marker = 'ZQX-MARK-7';
+        // The marker sits in the body's first 20 bytes and again inside the rows.
+        $body = "\u{FEFF}: {$marker}\ndata: ".json_encode($this->textReply(json_encode([$this->row(['title' => $marker])])))."\n\n";
+        $this->relayBody($body);
+
+        try {
+            app(CippMcpClient::class)->callToolReply('ListServiceHealthIssues', ['tenantFilter' => 'contoso.example']);
+            $this->fail('a body that starts with a byte-order mark was read');
+        } catch (\App\Services\Cipp\CippClientException $e) {
+            $this->assertSame('CIPP MCP response began with a byte-order mark', $e->getMessage());
+        }
+
+        $logs = new \ArrayObject;
+        Log::listen(function ($event) use ($logs): void {
+            $logs[] = ['level' => (string) $event->level, 'message' => (string) $event->message, 'context' => $event->context];
+        });
+
+        $this->assertSame(['error' => 'CIPP query failed (CippClientException).'.self::NOT_EMPTY], $this->callTool());
+        $this->assertSame([], $this->restCalls());
+
+        // The relay's own warning is the line that would carry a body byte: it must be there, with the fixed sentence.
+        $warnings = array_values(array_filter($logs->getArrayCopy(), fn (array $l): bool => $l['message'] === '[CippMcpToolRelay] CIPP MCP query failed'));
+        $this->assertCount(1, $warnings, print_r($logs->getArrayCopy(), true));
+        $this->assertSame('CIPP MCP response began with a byte-order mark', $warnings[0]['context']['error'] ?? null);
+        foreach ($logs->getArrayCopy() as $line) {
+            $this->assertStringNotContainsString($marker, $line['message'].print_r($line['context'], true));
+            $this->assertStringNotContainsString("\u{FEFF}", $line['message'].print_r($line['context'], true));
+        }
+    }
+
+    /** @return array<string, array{0: string}> one whitespace byte before the mark */
+    public static function whitespaceBeforeTheMark(): array
+    {
+        return ['space' => [' '], 'tab' => ["\t"], 'NUL' => ["\0"], 'vertical tab' => ["\x0B"]];
+    }
+
+    #[DataProvider('whitespaceBeforeTheMark')]
+    public function test_whitespace_before_the_byte_order_mark_is_refused_with_no_direct_call(string $lead): void
+    {
+        $this->enableRelay();
+        $rows = json_encode($this->textReply(json_encode([$this->row()])));
+        $empty = json_encode($this->textReply('[]'));
+
+        $this->relayBody("{$lead}\u{FEFF}data: {$rows}\n\ndata: {$empty}\n\n");
+        $result = $this->callTool();
+
+        $this->assertSame(['error' => 'CIPP query failed (CippClientException).'.self::NOT_EMPTY], $result, bin2hex($lead));
+        $this->assertNotSame('0 issues returned', $result['result'] ?? null);
+        $this->assertCount(1, $this->execMcpCalls());
+        $this->assertSame([], $this->restCalls());
+    }
 }
