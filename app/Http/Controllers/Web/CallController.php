@@ -466,7 +466,29 @@ class CallController extends Controller
                     if ($action === 'set_billable') {
                         // An unchanged value is still a decision (#8459): mark it so triage
                         // leaves it alone. Prepay is not re-run, since is_billable did not change.
-                        $this->phoneCallService->markBillableExplicit($call);
+                        // The mark is a write, so a throw is reported per call like the arm below.
+                        try {
+                            $this->phoneCallService->markBillableExplicit($call);
+                        } catch (\Throwable $e) {
+                            $status = 'reconciliation';
+                            $reason = 'The outcome could not be verified; verify this call before retrying.';
+                            try {
+                                $persisted = $call->fresh();
+                                if ($persisted?->is_billable_explicit === true) {
+                                    $status = 'skipped';
+                                    $reason = 'Already in the desired state.';
+                                } else {
+                                    $status = 'failed';
+                                    $reason = 'The decision could not be recorded; verify this call before retrying.';
+                                }
+                            } catch (\Throwable) {
+                                // The re-read failed too: the outcome is unknown.
+                            }
+                            Log::warning('[Call] Bulk action requires verification', [
+                                'call_id' => $id, 'action' => $action, 'outcome' => $status,
+                                'exception' => $e::class,
+                            ]);
+                        }
                     }
                 } else {
                     try {

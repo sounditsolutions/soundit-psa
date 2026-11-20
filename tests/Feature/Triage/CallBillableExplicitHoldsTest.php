@@ -356,6 +356,63 @@ class CallBillableExplicitHoldsTest extends TestCase
         $this->assertSame(0, PrepayTransaction::where('phone_call_id', $false->id)->count());
     }
 
+    /** Make the mark's save throw for one call; optionally make the re-read throw after it. */
+    private function failMarkFor(PhoneCall $target, bool $reReadThrows = false): void
+    {
+        $thrown = false;
+        PhoneCall::saving(function (PhoneCall $call) use ($target, &$thrown) {
+            if ($call->id === $target->id && $call->isDirty('is_billable_explicit')) {
+                $thrown = true;
+                throw new \RuntimeException('Synthetic save failure');
+            }
+        });
+        if ($reReadThrows) {
+            PhoneCall::retrieved(function (PhoneCall $call) use ($target, &$thrown) {
+                if ($thrown && $call->id === $target->id) {
+                    throw new \RuntimeException('Synthetic read failure');
+                }
+            });
+        }
+    }
+
+    public function test_a_failed_bulk_mark_is_reported_per_call_and_the_batch_still_reports_every_call(): void
+    {
+        $this->actAsStaff();
+        $unchanged = $this->linkWithDefault($this->makeCall());
+        $this->assertTrue($unchanged->is_billable);
+        $other = $this->linkWithDefault($this->makeCall());
+        $this->assertTrue($other->is_billable);
+        $this->failMarkFor($unchanged);
+
+        $this->postJson(route('calls.bulk-action'), [
+            'action' => 'set_billable', 'call_ids' => [$unchanged->id, $other->id], 'is_billable' => true,
+        ])->assertOk()
+            ->assertJsonPath('summary.failed', 1)
+            ->assertJsonPath('summary.skipped', 1)
+            ->assertJsonPath('results.0.call_id', $unchanged->id)
+            ->assertJsonPath('results.0.status', 'failed')
+            ->assertJsonPath('results.0.reason', 'The decision could not be recorded; verify this call before retrying.')
+            ->assertJsonPath('results.1.call_id', $other->id)
+            ->assertJsonPath('results.1.status', 'skipped');
+        $this->assertFalse($unchanged->fresh()->is_billable_explicit);
+        $this->assertTrue($other->fresh()->is_billable_explicit);
+    }
+
+    public function test_a_failed_bulk_mark_whose_re_read_also_fails_is_reconciliation(): void
+    {
+        $this->actAsStaff();
+        $call = $this->linkWithDefault($this->makeCall());
+        $this->assertTrue($call->is_billable);
+        $this->failMarkFor($call, reReadThrows: true);
+
+        $this->postJson(route('calls.bulk-action'), [
+            'action' => 'set_billable', 'call_ids' => [$call->id], 'is_billable' => true,
+        ])->assertOk()
+            ->assertJsonPath('summary.reconciliation', 1)
+            ->assertJsonPath('results.0.status', 'reconciliation')
+            ->assertJsonPath('results.0.reason', 'The outcome could not be verified; verify this call before retrying.');
+    }
+
     public function test_the_bulk_action_still_refuses_an_unlinked_call_before_any_mark(): void
     {
         $this->actAsStaff();
