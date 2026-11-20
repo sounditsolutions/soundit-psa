@@ -164,8 +164,8 @@ class IntakeManageToolsTest extends TestCase
             ['link_email_to_ticket', ['email_id' => $email->id, 'ticket_id' => $ticket->id, 'reason' => 'x']],
             ['create_ticket_from_email', ['email_id' => $email->id, 'reason' => 'x']],
             ['dismiss_email_item', ['email_id' => $email->id, 'reason' => 'x']],
-            ['link_call_to_ticket', ['phone_call_id' => $call->id, 'ticket_id' => $ticket->id, 'reason' => 'x']],
-            ['create_ticket_from_call', ['phone_call_id' => $call->id, 'reason' => 'x']],
+            ['link_call_to_ticket', ['phone_call_id' => $call->id, 'ticket_id' => $ticket->id, 'reason' => 'x', 'billable' => false]],
+            ['create_ticket_from_call', ['phone_call_id' => $call->id, 'reason' => 'x', 'billable' => false]],
         ];
 
         foreach ([$this->token(['create_ticket'], 'chet'), $this->legacyToken()] as $token) {
@@ -442,6 +442,7 @@ class IntakeManageToolsTest extends TestCase
             'phone_call_id' => $call->id,
             'ticket_id' => $ticket->id,
             'reason' => 'same issue',
+            'billable' => false,
         ]);
         $response->assertOk();
         $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
@@ -470,12 +471,12 @@ class IntakeManageToolsTest extends TestCase
         ]);
         $token = $this->token(['link_call_to_ticket'], 'chet');
 
-        $badCall = $this->callTool($token, 'link_call_to_ticket', ['phone_call_id' => 999999, 'ticket_id' => $ticket->id, 'reason' => 'x']);
+        $badCall = $this->callTool($token, 'link_call_to_ticket', ['phone_call_id' => 999999, 'ticket_id' => $ticket->id, 'reason' => 'x', 'billable' => false]);
         $badCall->assertOk();
         $this->assertTrue((bool) $badCall->json('result.isError'));
         $this->assertStringContainsString('not found', (string) $badCall->json('result.content.0.text'));
 
-        $badTicket = $this->callTool($token, 'link_call_to_ticket', ['phone_call_id' => $call->id, 'ticket_id' => 999999, 'reason' => 'x']);
+        $badTicket = $this->callTool($token, 'link_call_to_ticket', ['phone_call_id' => $call->id, 'ticket_id' => 999999, 'reason' => 'x', 'billable' => false]);
         $badTicket->assertOk();
         $this->assertTrue((bool) $badTicket->json('result.isError'));
         $this->assertStringContainsString('not found', (string) $badTicket->json('result.content.0.text'));
@@ -500,6 +501,7 @@ class IntakeManageToolsTest extends TestCase
         $blocked = $this->callTool($token, 'create_ticket_from_call', [
             'phone_call_id' => $orphan->id,
             'reason' => 'voicemail follow-up',
+            'billable' => false,
         ]);
         $blocked->assertOk();
         $this->assertTrue((bool) $blocked->json('result.isError'));
@@ -520,6 +522,7 @@ class IntakeManageToolsTest extends TestCase
         $ok = $this->callTool($token, 'create_ticket_from_call', [
             'phone_call_id' => $resolved->id,
             'reason' => 'voicemail follow-up',
+            'billable' => false,
         ]);
         $ok->assertOk();
         $this->assertFalse((bool) $ok->json('result.isError'), (string) $ok->json('result.content.0.text'));
@@ -564,6 +567,7 @@ class IntakeManageToolsTest extends TestCase
         $response = $this->callTool($token, 'create_ticket_from_call', [
             'phone_call_id' => $call->id,
             'reason' => 'voicemail follow-up',
+            'billable' => false,
         ]);
         $response->assertOk();
         $this->assertTrue((bool) $response->json('result.isError'), 'a followed-up call must be refused');
@@ -600,6 +604,7 @@ class IntakeManageToolsTest extends TestCase
             'phone_call_id' => $call->id,
             'ticket_id' => $ticket->id,
             'reason' => 'same issue',
+            'billable' => false,
         ]);
         $response->assertOk();
         $this->assertTrue((bool) $response->json('result.isError'), 'a followed-up call must be refused');
@@ -637,8 +642,8 @@ class IntakeManageToolsTest extends TestCase
             'link_email_to_ticket' => ['email_id' => $email->id, 'ticket_id' => $ticket->id],
             'create_ticket_from_email' => ['email_id' => $email->id],
             'dismiss_email_item' => ['email_id' => $email->id],
-            'link_call_to_ticket' => ['phone_call_id' => $call->id, 'ticket_id' => $ticket->id],
-            'create_ticket_from_call' => ['phone_call_id' => $call->id],
+            'link_call_to_ticket' => ['phone_call_id' => $call->id, 'ticket_id' => $ticket->id, 'billable' => false],
+            'create_ticket_from_call' => ['phone_call_id' => $call->id, 'billable' => false],
         ];
 
         foreach ($argumentsByTool as $tool => $arguments) {
@@ -681,8 +686,8 @@ class IntakeManageToolsTest extends TestCase
             'link_email_to_ticket' => ['email_id' => $email->id, 'ticket_id' => $ticket->id, 'reason' => 'x'],
             'create_ticket_from_email' => ['email_id' => $email->id, 'reason' => 'x'],
             'dismiss_email_item' => ['email_id' => $email->id, 'reason' => 'x'],
-            'link_call_to_ticket' => ['phone_call_id' => $call->id, 'ticket_id' => $ticket->id, 'reason' => 'x'],
-            'create_ticket_from_call' => ['phone_call_id' => $call->id, 'reason' => 'x'],
+            'link_call_to_ticket' => ['phone_call_id' => $call->id, 'ticket_id' => $ticket->id, 'reason' => 'x', 'billable' => false],
+            'create_ticket_from_call' => ['phone_call_id' => $call->id, 'reason' => 'x', 'billable' => false],
         ];
 
         foreach ($argumentsByTool as $tool => $arguments) {

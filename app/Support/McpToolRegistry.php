@@ -2057,15 +2057,16 @@ class McpToolRegistry
     {
         return [
             'name' => 'link_call_to_ticket',
-            'description' => 'Link an unresolved phone call to an existing ticket immediately, reusing the native call-linking path (sets billability when already known and drops an internal note). Audited by ids and reason only — the call transcript is never logged. Requires an explicit token grant.',
+            'description' => 'Link an unresolved phone call to an existing ticket immediately, reusing the native call-linking path (drops an internal note). Audited by ids and reason only — the call transcript is never logged. Requires an explicit token grant. billable (required) is your billing decision for this call. It sets is_billable through the same path as set_call_billable, which re-evaluates this call\'s prepay debit when the stored value changes. With billable=false the link takes no prepay debit for this call.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
                     'phone_call_id' => ['type' => 'integer', 'description' => 'The phone call ID to link.'],
                     'ticket_id' => ['type' => 'integer', 'description' => 'The ticket ID to link the call to.'],
-                    'reason' => ['type' => 'string', 'description' => 'Specific reason this call belongs on this ticket.'],
+                    'reason' => ['type' => 'string', 'maxLength' => 800, 'description' => 'Specific reason this call belongs on this ticket.'],
+                    'billable' => ['type' => 'boolean', 'description' => 'Required. Your billing decision for this call (true or false). It sets is_billable through the set_call_billable path. With false, the link takes no prepay debit.'],
                 ],
-                'required' => ['phone_call_id', 'ticket_id', 'reason'],
+                'required' => ['phone_call_id', 'ticket_id', 'reason', 'billable'],
             ],
         ];
     }
@@ -2075,15 +2076,16 @@ class McpToolRegistry
     {
         return [
             'name' => 'create_ticket_from_call',
-            'description' => 'Create a new ticket from an unresolved phone call immediately, reusing the native call-to-ticket creation path. The call must already be resolved to a client. Audited by ids and reason only — the call transcript is never logged. Requires an explicit token grant.',
+            'description' => 'Create a new ticket from an unresolved phone call immediately, reusing the native call-to-ticket creation path. The call must already be resolved to a client. Audited by ids and reason only — the call transcript is never logged. Requires an explicit token grant. billable (required) is your billing decision for this call. It sets is_billable through the same path as set_call_billable, which re-evaluates this call\'s prepay debit when the stored value changes. With billable=false the link takes no prepay debit for this call.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
                     'phone_call_id' => ['type' => 'integer', 'description' => 'The phone call ID to create a ticket from. Must already have a resolved client_id.'],
                     'contract_id' => self::createContractIdProperty(),
-                    'reason' => ['type' => 'string', 'description' => 'Specific reason a new ticket (rather than linking to an existing one) is the right action for this call.'],
+                    'reason' => ['type' => 'string', 'maxLength' => 800, 'description' => 'Specific reason a new ticket (rather than linking to an existing one) is the right action for this call.'],
+                    'billable' => ['type' => 'boolean', 'description' => 'Required. Your billing decision for this call (true or false). It sets is_billable through the set_call_billable path. With false, the link takes no prepay debit.'],
                 ],
-                'required' => ['phone_call_id', 'reason'],
+                'required' => ['phone_call_id', 'reason', 'billable'],
             ],
         ];
     }

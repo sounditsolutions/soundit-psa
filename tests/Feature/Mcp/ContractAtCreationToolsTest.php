@@ -169,7 +169,7 @@ class ContractAtCreationToolsTest extends TestCase
     {
         $call = $this->phoneCall();
         $r = $this->callTool(['create_ticket_from_call'], 'create_ticket_from_call', [
-            'phone_call_id' => $call->id, 'reason' => 'Synthetic', 'contract_id' => $this->foreign->id,
+            'phone_call_id' => $call->id, 'reason' => 'Synthetic', 'billable' => false, 'contract_id' => $this->foreign->id,
         ]);
         $this->assertTrue($r['isError']);
         $this->assertRefused($r, $this->foreign);
@@ -213,7 +213,7 @@ class ContractAtCreationToolsTest extends TestCase
         $this->expireBeforeCreate($contract);
 
         $r = $this->callTool(['create_ticket_from_call'], 'create_ticket_from_call', [
-            'phone_call_id' => $call->id, 'reason' => 'Synthetic', 'contract_id' => $contract->id,
+            'phone_call_id' => $call->id, 'reason' => 'Synthetic', 'billable' => false, 'contract_id' => $contract->id,
         ]);
 
         $this->assertRefused($r, $contract);
@@ -307,7 +307,7 @@ class ContractAtCreationToolsTest extends TestCase
             'email_id' => $this->email()->id, 'reason' => 'Synthetic', 'contract_id' => $expired->id,
         ]), $expired);
         $this->assertRefused($this->callTool(['create_ticket_from_call'], 'create_ticket_from_call', [
-            'phone_call_id' => $this->phoneCall()->id, 'reason' => 'Synthetic', 'contract_id' => $expired->id,
+            'phone_call_id' => $this->phoneCall()->id, 'reason' => 'Synthetic', 'billable' => false, 'contract_id' => $expired->id,
         ]), $expired);
         $this->assertNothingWritten();
     }
@@ -534,7 +534,7 @@ class ContractAtCreationToolsTest extends TestCase
         $call = $this->phoneCall();
 
         $r = $this->callTool(['create_ticket_from_call'], 'create_ticket_from_call', [
-            'phone_call_id' => $call->id, 'reason' => 'Synthetic', 'contract_id' => $b->id,
+            'phone_call_id' => $call->id, 'reason' => 'Synthetic', 'billable' => false, 'contract_id' => $b->id,
         ]);
 
         $this->assertSame(['id' => $b->id, 'name' => 'Synthetic B', 'rule' => 'picked'], $r['contract']);
