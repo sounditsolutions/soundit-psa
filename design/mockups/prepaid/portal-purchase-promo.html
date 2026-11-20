@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Client portal: Purchase Prepaid Time with a promo price in force</title>
+<link rel="stylesheet" href="../_tokens.css"><link rel="stylesheet" href="_prepaid.css">
+<style>
+.was { color: var(--psa-colors-muted-ink); text-decoration: line-through; margin-left: var(--psa-spacing-xs); }
+.until { display: block; font-size: 12px; color: var(--psa-colors-muted-ink); }
+</style></head>
+<body>
+<nav class="topnav"><b>Example MSP Portal</b><a href="#">Dashboard</a><a href="#">Tickets</a><a href="#">Invoices</a><a href="#">Contracts</a></nav>
+<main>
+<p class="caption">Portal &gt; Purchase Prepaid Time, with a promo price in force. Sample data only: unit price $100.00, promo price $80.00, promo ends Nov 30, 2026 11:59:59 PM PST.</p>
+<a class="back" href="#">&larr; Back to Dashboard</a>
+<h4>Purchase Prepaid Time</h4>
+<div class="row2">
+  <div class="card">
+    <div class="card-header">Example Managed Services</div>
+    <div class="card-body">
+      <table class="kv">
+        <tr><td class="k">Product</td><td>Example Prepaid Hour Block</td></tr>
+        <tr><td class="k">Price per unit</td><td><strong>$80.00</strong><span class="was">$100.00</span><span class="until">$80.00 until Nov 30, 2026 11:59:59 PM PST, then $100.00</span></td></tr>
+        <tr><td class="k">Hours per unit</td><td>1.0h</td></tr>
+        <tr><td class="k">Current balance</td><td><strong>3.5h</strong></td></tr>
+      </table>
+      <div style="margin-top:var(--psa-spacing-md);max-width:120px">
+        <label for="q">Quantity</label><input id="q" type="number" value="2">
+      </div>
+      <div style="margin-top:var(--psa-spacing-md)"><button class="btn btn-accent" type="button">Purchase Prepaid Time</button></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">Order Summary</div>
+    <div class="card-body">
+      <table class="kv">
+        <tr><td class="k">Quantity</td><td class="num">2</td></tr>
+        <tr><td class="k">Price per unit</td><td class="num">$80.00</td></tr>
+        <tr class="total"><td>Total</td><td class="num">$160.00</td></tr>
+        <tr><td class="k">Hours added</td><td class="num">2.0h</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+</main></body></html>

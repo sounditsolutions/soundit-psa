@@ -16,9 +16,11 @@ use App\Support\PricingModelOverride;
 use App\Support\StripeConfig;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rules\Enum;
+use Illuminate\Validation\ValidationException;
 
 class SkuController extends Controller
 {
@@ -156,8 +158,9 @@ class SkuController extends Controller
             'tiers.*.up_to_gb' => ['nullable', 'integer', 'min:1'],
             'tiers.*.unit_price' => ['nullable', 'numeric', 'min:0'],
             'portal_orderable' => ['boolean'],
-        ]);
+        ] + self::PROMO_RULES);
 
+        $validated = $this->resolvePortalPromo($validated);
         $validated['is_taxable'] = $request->boolean('is_taxable');
         $validated['is_active'] = $request->boolean('is_active', true);
         unset($validated['tiers']);
@@ -238,8 +241,9 @@ class SkuController extends Controller
             'tiers' => ['nullable', 'array'],
             'tiers.*.up_to_gb' => ['nullable', 'integer', 'min:1'],
             'tiers.*.unit_price' => ['nullable', 'numeric', 'min:0'],
-        ]);
+        ] + self::PROMO_RULES);
 
+        $validated = $this->resolvePortalPromo($validated);
         $validated['is_taxable'] = $request->boolean('is_taxable');
         $validated['is_active'] = $request->boolean('is_active');
         $validated['portal_orderable'] = $request->boolean('portal_orderable');
@@ -254,6 +258,68 @@ class SkuController extends Controller
 
         return redirect()->route('skus.edit', $sku)
             ->with('success', 'SKU updated.');
+    }
+
+    /** Shape rules for the portal promo fields; consistency is resolvePortalPromo(). */
+    private const PROMO_RULES = [
+        'portal_promo_price' => ['nullable', 'numeric'],
+        'portal_promo_starts_at' => ['nullable', 'date_format:Y-m-d\\TH:i:s,Y-m-d\\TH:i'],
+        'portal_promo_ends_at' => ['nullable', 'date_format:Y-m-d\\TH:i:s,Y-m-d\\TH:i'],
+    ];
+
+    /**
+     * Validate the portal promo as a whole and convert its window from
+     * Pacific (Sku::PROMO_TIMEZONE) to UTC. Refuses exactly what
+     * Sku::hasValidPortalPromo() would ignore: a partial promo, an end not
+     * after the start, or a price not above zero and below unit_price. All
+     * three blank clears the promo.
+     *
+     * @param  array<string, mixed>  $validated
+     * @return array<string, mixed>
+     */
+    private function resolvePortalPromo(array $validated): array
+    {
+        $price = $validated['portal_promo_price'] ?? null;
+        $start = $validated['portal_promo_starts_at'] ?? null;
+        $end = $validated['portal_promo_ends_at'] ?? null;
+        $set = array_filter([$price, $start, $end], fn ($v) => $v !== null && $v !== '');
+
+        if ($set === []) {
+            return array_merge($validated, [
+                'portal_promo_price' => null,
+                'portal_promo_starts_at' => null,
+                'portal_promo_ends_at' => null,
+            ]);
+        }
+
+        if (count($set) !== 3) {
+            throw ValidationException::withMessages([
+                'portal_promo_price' => 'Set all three promo fields, or leave all three blank.',
+            ]);
+        }
+
+        $errors = [];
+        $priceCents = (int) round((float) $price * 100);
+        $unitCents = (int) round((float) $validated['unit_price'] * 100);
+        if ($priceCents <= 0 || $priceCents >= $unitCents) {
+            $errors['portal_promo_price'] = 'The promo price must be above zero and below the unit price.';
+        }
+
+        $startUtc = Carbon::parse($start, Sku::PROMO_TIMEZONE)->utc();
+        $endUtc = Carbon::parse($end, Sku::PROMO_TIMEZONE)->utc();
+        if ($endUtc->lessThanOrEqualTo($startUtc)) {
+            $errors['portal_promo_ends_at'] = 'The promo end must be after the start.';
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
+
+        return array_merge($validated, [
+            'portal_promo_price' => round((float) $price, 2),
+            'portal_promo_starts_at' => $startUtc,
+            'portal_promo_ends_at' => $endUtc,
+        ]);
     }
 
     /**

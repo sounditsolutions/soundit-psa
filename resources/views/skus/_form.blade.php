@@ -94,6 +94,73 @@
     </div>
 </div>
 
+@php
+    $promoTz = \App\Models\Sku::PROMO_TIMEZONE;
+    $promoFmt = fn ($at) => $at?->copy()->setTimezone($promoTz)->format('Y-m-d\TH:i:s');
+    $promoShow = fn ($at) => $at->copy()->setTimezone($promoTz)->format('M j, Y g:i:s A T');
+    $promoState = $sku?->portalPromoState();
+@endphp
+<div class="card bg-light border-0 mb-3">
+    <div class="card-body py-3">
+        <label class="form-label mb-0"><strong>Portal promo price</strong></label>
+        <div class="form-text mt-0 mb-2">
+            Applies only when a client buys this SKU as prepaid time in the portal, between the start and end below.
+            Staff invoices, recurring billing and auto top-up keep the unit price, and the SKU's unit price in accounting does not change.
+            Times are Pacific (America/Los_Angeles). Leave all three blank for no promo.
+        </div>
+        <div class="row g-3">
+            <div class="col-md-4">
+                <label for="portal_promo_price" class="form-label">Promo price ($)</label>
+                <input type="number" class="form-control @error('portal_promo_price') is-invalid @enderror"
+                       id="portal_promo_price" name="portal_promo_price" step="0.01" min="0"
+                       value="{{ old('portal_promo_price', $sku?->portal_promo_price) }}">
+                @error('portal_promo_price')
+                    <div class="invalid-feedback">{{ $message }}</div>
+                @enderror
+            </div>
+            <div class="col-md-4">
+                <label for="portal_promo_starts_at" class="form-label">Starts (Pacific)</label>
+                <input type="datetime-local" step="1" class="form-control @error('portal_promo_starts_at') is-invalid @enderror"
+                       id="portal_promo_starts_at" name="portal_promo_starts_at"
+                       value="{{ old('portal_promo_starts_at', $promoFmt($sku?->portal_promo_starts_at)) }}">
+                @error('portal_promo_starts_at')
+                    <div class="invalid-feedback">{{ $message }}</div>
+                @enderror
+            </div>
+            <div class="col-md-4">
+                <label for="portal_promo_ends_at" class="form-label">Ends (Pacific, inclusive)</label>
+                <input type="datetime-local" step="1" class="form-control @error('portal_promo_ends_at') is-invalid @enderror"
+                       id="portal_promo_ends_at" name="portal_promo_ends_at"
+                       value="{{ old('portal_promo_ends_at', $promoFmt($sku?->portal_promo_ends_at)) }}">
+                @error('portal_promo_ends_at')
+                    <div class="invalid-feedback">{{ $message }}</div>
+                @enderror
+            </div>
+        </div>
+        @if($promoState === 'in_force')
+            <div class="small mt-2">
+                <span class="badge bg-success">In force</span>
+                Portal price ${{ number_format($sku->portal_promo_price, 2) }} until {{ $promoShow($sku->portal_promo_ends_at) }}, then ${{ number_format($sku->unit_price, 2) }}.
+            </div>
+        @elseif($promoState === 'not_started')
+            <div class="small mt-2">
+                <span class="badge bg-secondary">Not started</span>
+                Portal price is ${{ number_format($sku->unit_price, 2) }} now. ${{ number_format($sku->portal_promo_price, 2) }} from {{ $promoShow($sku->portal_promo_starts_at) }} to {{ $promoShow($sku->portal_promo_ends_at) }}.
+            </div>
+        @elseif($promoState === 'ended')
+            <div class="small mt-2">
+                <span class="badge bg-secondary">Ended</span>
+                Portal price is ${{ number_format($sku->unit_price, 2) }}. The promo price ended {{ $promoShow($sku->portal_promo_ends_at) }}.
+            </div>
+        @elseif($sku && ($sku->portal_promo_price !== null || $sku->portal_promo_starts_at !== null || $sku->portal_promo_ends_at !== null))
+            <div class="small mt-2">
+                <span class="badge bg-warning text-dark">Not applied</span>
+                The saved promo is ignored: it needs all three fields, an end after the start, and a promo price above zero and below the unit price. The portal charges ${{ number_format($sku->unit_price, 2) }}.
+            </div>
+        @endif
+    </div>
+</div>
+
 <div class="row g-3 mb-3">
     <div class="col-md-3">
         <label for="prepaid_time_minutes" class="form-label">

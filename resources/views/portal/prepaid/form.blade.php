@@ -29,7 +29,15 @@
                     </tr>
                     <tr>
                         <td class="text-muted">Price per unit</td>
-                        <td>${{ number_format($sku->unit_price, 2) }}</td>
+                        @if($promoInForce)
+                            <td>
+                                <strong>${{ number_format($unitPrice, 2) }}</strong>
+                                <s class="text-muted ms-1">${{ number_format($sku->unit_price, 2) }}</s>
+                                <div class="small text-muted">{{ $promoNote }}</div>
+                            </td>
+                        @else
+                            <td>${{ number_format($unitPrice, 2) }}</td>
+                        @endif
                     </tr>
                     <tr>
                         <td class="text-muted">Hours per unit</td>
@@ -45,7 +53,7 @@
 
                 <form method="POST" action="{{ route('portal.prepaid.store', $contract) }}" id="purchaseForm">
                     @csrf
-                    <input type="hidden" name="expected_unit_price" value="{{ $sku->unit_price }}">
+                    <input type="hidden" name="expected_unit_price" value="{{ number_format($unitPrice, 2, '.', '') }}">
 
                     <div class="mb-3">
                         <label for="quantity" class="form-label">Quantity</label>
@@ -78,11 +86,11 @@
                     </tr>
                     <tr>
                         <td class="text-muted">Price per unit</td>
-                        <td class="text-end">${{ number_format($sku->unit_price, 2) }}</td>
+                        <td class="text-end">${{ number_format($unitPrice, 2) }}</td>
                     </tr>
                     <tr class="border-top">
                         <td><strong>Total</strong></td>
-                        <td class="text-end"><strong id="summaryTotal">${{ number_format($sku->unit_price, 2) }}</strong></td>
+                        <td class="text-end"><strong id="summaryTotal">${{ number_format($unitPrice, 2) }}</strong></td>
                     </tr>
                     <tr>
                         <td class="text-muted">Hours added</td>
@@ -100,7 +108,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const summaryQty = document.getElementById('summaryQty');
     const summaryTotal = document.getElementById('summaryTotal');
     const summaryHours = document.getElementById('summaryHours');
-    const unitPrice = {{ (float) $sku->unit_price }};
+    const unitPrice = {{ (float) $unitPrice }};
     const hoursPerUnit = {{ $hoursPerUnit }};
 
     function updateSummary() {
