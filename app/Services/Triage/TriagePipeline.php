@@ -468,9 +468,11 @@ class TriagePipeline
 
         // Update phone calls with unset or mismatched billability. A Voicemail call is not
         // selected (card 6ad7c912); Voicemail is excluded at link and in the debit gate. A Missed
-        // call is reconciled as at base, so triage can still flip a Missed call's default.
+        // call is reconciled as at base, so triage can still flip a Missed call's default. A call
+        // whose billability a person or agent decided (is_billable_explicit) is not selected (#8459).
         $calls = PhoneCall::where('ticket_id', $ticket->id)
             ->whereNotIn('status', [\App\Enums\CallStatus::Voicemail->value])
+            ->where('is_billable_explicit', false)
             ->where(fn ($q) => $q->whereNull('is_billable')->orWhere('is_billable', '!=', $shouldBeBillable))
             ->get();
 

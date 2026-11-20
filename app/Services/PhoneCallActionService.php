@@ -388,6 +388,10 @@ class PhoneCallActionService
             // The money move: setBillable re-runs PrepayService::debitFromPhoneCall,
             // which creates, adjusts or reverses the prepay debit for this call.
             app(PhoneCallService::class)->setBillable($call, $desired);
+        } else {
+            // An unchanged value is still a decision (#8459): mark it so triage leaves it
+            // alone. Prepay is not re-run, since is_billable did not change.
+            app(PhoneCallService::class)->markBillableExplicit($call);
         }
 
         $this->audit(self::ACTION_BILLABLE, $call, $payload, $actor, $unchanged ? 'no_op' : 'executed', $approver);
