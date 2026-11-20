@@ -292,7 +292,7 @@ class CallLinkBillableRequiredTest extends TestCase
     public function test_the_description_says_triage_does_not_change_the_explicit_decision(string $verb): void
     {
         // #8459 (b): the #8453 clause saying triage can still change is_billable is false and
-        // gone; the replacement sentence (proposed by Jeeves, his to rule) is pinned verbatim,
+        // gone; the replacement sentence (proposed in review, pinned once ruled) is pinned verbatim,
         // on the registry entry and on tools/list.
         $old = 'can still change is_billable';
         $clause = 'The billable value you set here is an explicit decision. Automatic or re-run triage of the ticket does not change it.';

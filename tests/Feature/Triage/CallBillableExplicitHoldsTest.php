@@ -278,6 +278,96 @@ class CallBillableExplicitHoldsTest extends TestCase
         $this->assertNetDebit($call, 0.0);
     }
 
+    /** A second ticket on the same client and contract. */
+    private function otherTicket(): Ticket
+    {
+        return Ticket::factory()->create([
+            'client_id' => $this->client->id, 'contract_id' => $this->contract->id,
+            'subject' => 'Synthetic explicit ticket '.uniqid(), 'status' => 'new',
+        ]);
+    }
+
+    public function test_a_notes_only_edit_on_an_undecided_call_writes_nothing_and_triage_still_sets_it(): void
+    {
+        // A recorded call on an unclassified ticket stays unset at link. The modal posts the
+        // hidden 0 with its box unticked: that is no decision (#8459 r2, option A).
+        $this->actAsStaff();
+        foreach ([false => true, true => false] as $managedCovered => $expected) {
+            $ticket = $this->otherTicket();
+            $call = $this->linkWithDefault($this->makeCall(['recording_url' => 'https://example.com/synthetic.mp3']), $ticket);
+            $this->assertNull($call->is_billable);
+
+            $this->patch(route('calls.update-notes', $call), ['notes' => 'Synthetic note', 'is_billable' => '0'])->assertRedirect();
+
+            $this->assertNull($call->fresh()->is_billable, 'an unticked box on an unset call writes nothing');
+            $this->assertFalse($call->fresh()->is_billable_explicit, 'an unticked box on an unset call marks nothing');
+            $this->assertSame(0, PrepayTransaction::where('phone_call_id', $call->id)->count());
+
+            $this->reconcile((bool) $managedCovered, $ticket);
+
+            $this->assertSame($expected, $call->fresh()->is_billable);
+            $this->assertEquals($expected ? -0.5 : 0.0, (float) PrepayTransaction::where('phone_call_id', $call->id)->sum('hours'));
+        }
+    }
+
+    public function test_the_edit_form_ticked_on_an_undecided_call_still_sets_true_and_marks(): void
+    {
+        $this->actAsStaff();
+        $call = $this->linkWithDefault($this->makeCall(['recording_url' => 'https://example.com/synthetic.mp3']));
+        $this->assertNull($call->is_billable);
+
+        $this->patch(route('calls.update-notes', $call), ['notes' => 'Synthetic note', 'is_billable' => '1'])->assertRedirect();
+        $this->assertTrue($call->fresh()->is_billable);
+        $this->assertTrue($call->fresh()->is_billable_explicit);
+
+        $this->reconcile(true);
+
+        $this->assertTrue($call->fresh()->is_billable);
+        $this->assertNetDebit($call, 0.5);
+    }
+
+    public function test_the_bulk_action_on_an_unchanged_value_marks_the_decision_and_triage_leaves_it(): void
+    {
+        $this->actAsStaff();
+        // Link default true on an unclassified ticket; staff confirm billable; triage says covered.
+        $true = $this->linkWithDefault($this->makeCall());
+        $this->assertTrue($true->is_billable);
+        $this->assertFalse($true->is_billable_explicit);
+        // Link default false on a ticket classified covered; staff confirm non-billable; triage says not covered.
+        $ticket = $this->otherTicket();
+        $this->classify(true, $ticket);
+        $false = $this->linkWithDefault($this->makeCall(), $ticket);
+        $this->assertFalse($false->is_billable);
+
+        foreach ([[$true, true], [$false, false]] as [$call, $desired]) {
+            $this->postJson(route('calls.bulk-action'), [
+                'action' => 'set_billable', 'call_ids' => [$call->id], 'is_billable' => $desired,
+            ])->assertOk()->assertJsonPath('summary.skipped', 1)
+                ->assertJsonPath('results.0.reason', 'Already in the desired state.');
+            $this->assertTrue($call->fresh()->is_billable_explicit);
+        }
+
+        $this->reconcile(true);
+        $this->reconcile(false, $ticket);
+
+        $this->assertTrue($true->fresh()->is_billable);
+        $this->assertEquals(-0.5, (float) PrepayTransaction::where('phone_call_id', $true->id)->sum('hours'));
+        $this->assertFalse($false->fresh()->is_billable);
+        $this->assertSame(0, PrepayTransaction::where('phone_call_id', $false->id)->count());
+    }
+
+    public function test_the_bulk_action_still_refuses_an_unlinked_call_before_any_mark(): void
+    {
+        $this->actAsStaff();
+        $call = $this->makeCall(['is_billable' => false]);
+
+        $this->postJson(route('calls.bulk-action'), [
+            'action' => 'set_billable', 'call_ids' => [$call->id], 'is_billable' => false,
+        ])->assertOk()->assertJsonPath('summary.skipped', 1)
+            ->assertJsonPath('results.0.reason', 'Call must be linked to a ticket to change billability.');
+        $this->assertFalse($call->fresh()->is_billable_explicit);
+    }
+
     public function test_an_unmarked_link_default_is_still_flipped_by_triage_with_its_debit(): void
     {
         // Default billable on an unclassified ticket, then classified managed-covered.

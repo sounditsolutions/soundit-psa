@@ -369,6 +369,11 @@ class CallController extends Controller
         // ticking debits after it, so the call is never debited at a time this edit replaces.
         $newBillable = $request->has('is_billable') && $call->ticket_id && $call->is_billable !== $request->boolean('is_billable')
             ? $request->boolean('is_billable') : null;
+        // #8459: the modal always posts is_billable, and its box is unticked when nothing is
+        // set. Stored null with the box unticked is no decision: write nothing, mark nothing.
+        if ($newBillable === false && $call->is_billable === null) {
+            $newBillable = null;
+        }
         if ($newBillable === false) {
             $this->phoneCallService->setBillable($call, false);
         }
@@ -458,6 +463,11 @@ class CallController extends Controller
                 } elseif (($action === 'set_billable' && $call->is_billable === $desired)
                     || ($action === 'mark_followed_up' && $call->followed_up_at !== null)) {
                     $reason = 'Already in the desired state.';
+                    if ($action === 'set_billable') {
+                        // An unchanged value is still a decision (#8459): mark it so triage
+                        // leaves it alone. Prepay is not re-run, since is_billable did not change.
+                        $this->phoneCallService->markBillableExplicit($call);
+                    }
                 } else {
                     try {
                         if ($action === 'set_billable') {

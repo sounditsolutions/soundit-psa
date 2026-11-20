@@ -1243,7 +1243,8 @@ class PhoneCallService
      * A default set here is not an explicit decision and leaves is_billable_explicit false, so
      * triage, if it later classifies the ticket, can still flip the default either way for
      * any call but Voicemail (TriagePipeline::reconcileBillabilityAfterClassification). A call
-     * marked is_billable_explicit by setBillable() keeps its value and is skipped there (#8459).
+     * marked is_billable_explicit keeps its value and is skipped there (#8459). The mark is set
+     * by setBillable() and by markBillableExplicit() (an unchanged value that is a decision).
      *
      * Only billable calls with a truthy stored duration reach the debit service here.
      * A null stored duration is not debited at link, even with a recording. The service
