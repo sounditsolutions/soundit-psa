@@ -324,6 +324,17 @@ class PortalPromoPriceTest extends TestCase
         $this->assertOrderSummary($this->purchaseFormAt('2026-12-01 08:00:00'), '100.00', '80.00', '100');
     }
 
+    public function test_the_purchase_form_top_price_has_no_strike_or_note_a_second_outside_the_window(): void
+    {
+        foreach (['2026-11-27 07:59:59', '2026-12-01 08:00:00'] as $utc) {
+            $html = $this->purchaseFormAt($utc);
+
+            $this->assertStringNotContainsString('<s class="text-muted', $html, "no strike-through at {$utc}");
+            $this->assertStringNotContainsString('then $100.00', $html, "no promo note at {$utc}");
+            $this->assertMatchesRegularExpression('/Price per unit<\/td>\s*<td>\$100\.00<\/td>/', $html, "plain top price at {$utc}");
+        }
+    }
+
     public function test_a_posted_price_under_a_cent_off_is_charged_the_servers_price(): void
     {
         $contract = $this->contract($this->sku());
