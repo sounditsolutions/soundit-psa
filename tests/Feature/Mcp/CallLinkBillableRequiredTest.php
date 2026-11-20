@@ -366,6 +366,7 @@ class CallLinkBillableRequiredTest extends TestCase
             }
             if ($log->action_type === $verb) {
                 $seen['linked'] = PhoneCall::whereKey($call->id)->value('ticket_id') !== null;
+                $seen['apply_status'] = TechnicianActionLog::where('action_type', 'set_call_billable')->value('result_status');
                 throw new \LogicException('synthetic failure after the apply');
             }
         });
@@ -373,9 +374,75 @@ class CallLinkBillableRequiredTest extends TestCase
         $response = $this->callTool($this->token([$verb]), $verb, $this->arguments($verb, $call) + ['billable' => true]);
 
         $this->assertStringContainsString('synthetic failure after the apply', $this->refusal($response));
-        $this->assertSame(['apply_debits' => 1, 'linked' => true], $seen, 'the service had linked the call and debited it before the failure');
+        // "executed": the apply ran setBillable itself (the link left the call unset),
+        // so the debit counted at its audit row is the apply's, not the native link's.
+        $this->assertSame(['apply_debits' => 1, 'linked' => true, 'apply_status' => 'executed'], $seen, 'the service had linked the call and the apply had debited it before the failure');
         $this->assertNothingWritten($call, $ticketsBefore);
         $this->assertSame($notesBefore, \App\Models\TicketNote::query()->count());
+    }
+
+    #[DataProvider('verbs')]
+    public function test_a_runtime_exception_after_the_link_that_is_not_a_refusal_surfaces_as_an_error_and_rolls_back(string $verb): void
+    {
+        // A RuntimeException (the class the verb's catch handles) that is not a mapped
+        // refusal, thrown after the call is linked and debited: it must reach the caller
+        // as an error, never as a result without one.
+        $call = $this->makeCall('synthetic-runtime-failure-'.$verb);
+        $ticketsBefore = Ticket::query()->count();
+        $notesBefore = \App\Models\TicketNote::query()->count();
+
+        $seen = [];
+        TechnicianActionLog::creating(function (TechnicianActionLog $log) use ($verb, $call, &$seen): void {
+            if ($log->action_type === $verb) {
+                $seen['linked'] = PhoneCall::whereKey($call->id)->value('ticket_id') !== null;
+                $seen['debits'] = PrepayTransaction::where('phone_call_id', $call->id)->count();
+                throw new \RuntimeException('synthetic runtime failure after the link');
+            }
+        });
+
+        $response = $this->callTool($this->token([$verb]), $verb, $this->arguments($verb, $call) + ['billable' => true]);
+
+        $this->assertSame('Tool execution failed: synthetic runtime failure after the link', $this->refusal($response));
+        $this->assertSame(['linked' => true, 'debits' => 1], $seen, 'the call was linked and debited before the failure');
+        $this->assertNothingWritten($call, $ticketsBefore);
+        $this->assertSame($notesBefore, \App\Models\TicketNote::query()->count());
+    }
+
+    #[DataProvider('verbs')]
+    public function test_a_billable_false_failure_on_a_debited_billable_call_leaves_its_stored_value_and_ledger_as_before(string $verb): void
+    {
+        // A call already linked elsewhere, stored is_billable=true with its debit. With
+        // billable=false the verb clears is_billable to null and the apply reverses the
+        // debit; a failure after both must leave the call and the ledger untouched.
+        $call = $this->callInState('synthetic-false-rollback-'.$verb, 'linked', true);
+        $earlierTicketId = (int) $call->ticket_id;
+        $ledgerBefore = $this->ledgerOf($call);
+        $this->assertSame([[$this->contract->id, -0.5]], $ledgerBefore);
+        $balanceBefore = (float) $this->contract->fresh()->prepay_balance;
+        $ticketsBefore = Ticket::query()->count();
+        $notesBefore = \App\Models\TicketNote::query()->count();
+
+        $seen = [];
+        TechnicianActionLog::creating(function (TechnicianActionLog $log) use ($verb, $call, &$seen): void {
+            if ($log->action_type === $verb) {
+                $seen['stored'] = PhoneCall::whereKey($call->id)->value('is_billable');
+                $seen['debits'] = PrepayTransaction::where('phone_call_id', $call->id)->count();
+                throw new \LogicException('synthetic failure after the billable=false apply');
+            }
+        });
+
+        $response = $this->callTool($this->token([$verb]), $verb, $this->arguments($verb, $call) + ['billable' => false]);
+
+        $this->assertStringContainsString('synthetic failure after the billable=false apply', $this->refusal($response));
+        $this->assertEquals(['stored' => false, 'debits' => 0], $seen, 'the apply had set false and reversed the debit before the failure');
+        $after = $call->fresh();
+        $this->assertTrue($after->is_billable, 'the stored is_billable=true is kept: neither the null clear nor the false is committed');
+        $this->assertSame($earlierTicketId, (int) $after->ticket_id);
+        $this->assertSame($ledgerBefore, $this->ledgerOf($call));
+        $this->assertEquals($balanceBefore, (float) $this->contract->fresh()->prepay_balance);
+        $this->assertSame($ticketsBefore, Ticket::query()->count());
+        $this->assertSame($notesBefore, \App\Models\TicketNote::query()->count());
+        $this->assertSame(0, TechnicianActionLog::query()->count());
     }
 
     #[DataProvider('verbs')]
@@ -456,8 +523,14 @@ class CallLinkBillableRequiredTest extends TestCase
         // which stamps the alert and raises an auto top-up invoice.
         $sku = Sku::create(['name' => 'Synthetic prepaid hour', 'sku_code' => 'SYN-'.$tag, 'unit_price' => 100, 'prepaid_time_minutes' => 60]);
         $this->contract->refresh();
+        // A call that already carries its debit is the exception: a re-run of that debit
+        // adjusts the existing row (no new row, no balance change) and then checks the
+        // threshold on the current balance. With billable=false the threshold sits 0.25 h
+        // above the balance there, so a threshold check made before the reversal would
+        // stamp the alert and raise the invoice; after the reversal the balance is above it.
+        $thresholdOffset = $debitBefore > 0 && ! $billable ? 0.25 : -0.25;
         $this->contract->update([
-            'prepay_alert_threshold' => (float) $this->contract->prepay_balance - 0.25,
+            'prepay_alert_threshold' => (float) $this->contract->prepay_balance + $thresholdOffset,
             'prepay_alert_notified_at' => null,
             'prepay_auto_topup_enabled' => true,
             'prepay_auto_topup_qty' => 1,
@@ -496,6 +569,13 @@ class CallLinkBillableRequiredTest extends TestCase
             $this->assertSame(1, $debitsCreated);
             $this->assertTrue($stamped);
             $this->assertSame(1, $newInvoices);
+        } else {
+            // billable=true on a call that already carries its debit: the native link
+            // re-runs that debit as an adjustment of the existing row (same hours, no
+            // new row), the balance stays above the threshold, and the apply is a no_op.
+            $this->assertSame(0, $debitsCreated, 'an existing debit is adjusted, never re-created');
+            $this->assertFalse($stamped, 'the balance did not move, so the alert is not stamped');
+            $this->assertSame(0, $newInvoices, 'the balance did not move, so no auto top-up invoice is raised');
         }
 
         // The set_call_billable apply ran. With billable=false it always re-runs

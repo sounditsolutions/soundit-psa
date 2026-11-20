@@ -3426,7 +3426,9 @@ class StaffPsaActionToolExecutor
     /**
      * Both audit rows written inside the link transaction (the set_call_billable
      * apply's and the verb's own) need the AI actor user. Checked before the link,
-     * so a missing actor cannot fail the transaction after prepay has moved.
+     * so an actor missing at the start is refused before anything is written; an
+     * actor removed while the request runs can still fail the transaction after
+     * prepay has moved, and the transaction then rolls back.
      *
      * @return array{error: string}|null
      */
@@ -3468,8 +3470,6 @@ class StaffPsaActionToolExecutor
         }
 
         PhoneCall::whereKey($call->id)->update(['is_billable' => null]);
-        $call->is_billable = null;
-        $call->syncOriginalAttribute('is_billable');
     }
 
     /**
