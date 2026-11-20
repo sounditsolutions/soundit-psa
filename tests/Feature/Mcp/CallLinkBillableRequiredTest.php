@@ -293,7 +293,7 @@ class CallLinkBillableRequiredTest extends TestCase
     {
         // Ruled wording (#8453): pinned verbatim, on the registry entry and on tools/list.
         $clause = 'A later triage classification of the ticket (automatic on a new ticket when auto-triage is on, '
-            .'or a staff re-run) can still change is_billable and this call\'s prepay debit, as it can after set_call_billable.';
+            .'or a staff re-run) can still change is_billable and this call\'s prepay debit (not for a Voicemail call), as it can after set_call_billable.';
         $tool = $verb === 'link_call_to_ticket' ? McpToolRegistry::linkCallToTicketTool() : McpToolRegistry::createTicketFromCallTool();
         $this->assertStringEndsWith(' '.$clause, $tool['description']);
 
