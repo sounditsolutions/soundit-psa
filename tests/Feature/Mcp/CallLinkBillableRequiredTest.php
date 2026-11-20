@@ -6,9 +6,11 @@ use App\Enums\CallDirection;
 use App\Enums\CallStatus;
 use App\Models\Client;
 use App\Models\Contract;
+use App\Models\Invoice;
 use App\Models\PhoneCall;
 use App\Models\PrepayTransaction;
 use App\Models\Setting;
+use App\Models\Sku;
 use App\Models\TechnicianActionLog;
 use App\Models\Ticket;
 use App\Models\User;
@@ -24,10 +26,13 @@ use Tests\TestCase;
 /**
  * link_call_to_ticket and create_ticket_from_call take a REQUIRED explicit
  * boolean `billable`: the caller's billing decision for the call. It is checked
- * before anything is read or written, applied through the same
- * PhoneCallActionService path set_call_billable uses (so prepay is
- * re-evaluated), echoed as is_billable, and folded into the audit hash. The
- * link, the billing apply and the audit row commit together or not at all.
+ * right after the kill-switch guard and before the reason, the call or the
+ * ticket is looked at; then the reason is capped at the set_call_billable limit
+ * (800 characters). The decision is applied through the same
+ * PhoneCallActionService path set_call_billable uses, echoed as is_billable
+ * (read back from the database), and folded into the audit hash. With
+ * billable=false the link itself takes no prepay debit. The link, the billing
+ * apply and the audit row commit together or not at all.
  */
 class CallLinkBillableRequiredTest extends TestCase
 {
@@ -174,9 +179,9 @@ class CallLinkBillableRequiredTest extends TestCase
     }
 
     #[DataProvider('verbs')]
-    public function test_billable_is_checked_before_every_other_argument(string $verb): void
+    public function test_billable_is_checked_before_the_reason_and_the_call_lookup(string $verb): void
     {
-        // No reason, no call id: the billable refusal still comes first.
+        // No reason, an unknown call id: the billable refusal still comes first.
         $text = $this->refusal($this->callTool($this->token([$verb]), $verb, ['phone_call_id' => 999999]));
 
         $this->assertStringStartsWith('billable is required', $text);
@@ -271,5 +276,265 @@ class CallLinkBillableRequiredTest extends TestCase
             ->assertOk()->json('result.tools'))->keyBy('name');
         $this->assertContains('billable', $listed[$verb]['inputSchema']['required']);
         $this->assertSame('boolean', $listed[$verb]['inputSchema']['properties']['billable']['type']);
+        $this->assertSame(800, $tool['input_schema']['properties']['reason']['maxLength']);
+        $this->assertSame(800, $listed[$verb]['inputSchema']['properties']['reason']['maxLength']);
+
+        // billable always overrides the native default, and with billable=false the
+        // link takes no debit, so the text must not promise either older behaviour.
+        foreach ([$tool['description'], $tool['input_schema']['properties']['billable']['description']] as $text) {
+            $this->assertStringNotContainsString('sets billability when already known', $text);
+            $this->assertStringNotContainsString('exactly as set_call_billable', $text);
+        }
+        $this->assertStringContainsString('With billable=false the link takes no prepay debit', $tool['description']);
+    }
+
+    #[DataProvider('verbs')]
+    public function test_an_801_character_reason_is_refused_before_anything_is_written(string $verb): void
+    {
+        $call = $this->makeCall('synthetic-reason-801-'.$verb);
+        $ticketsBefore = Ticket::query()->count();
+        $notesBefore = \App\Models\TicketNote::query()->count();
+
+        $text = $this->refusal($this->callTool($this->token([$verb]), $verb, $this->arguments($verb, $call, str_repeat('r', 801)) + ['billable' => true]));
+
+        $this->assertSame('reason must be at most 800 characters (the set_call_billable reason limit). Nothing was linked.', $text);
+        $this->assertNothingWritten($call, $ticketsBefore);
+        $this->assertSame($notesBefore, \App\Models\TicketNote::query()->count());
+    }
+
+    #[DataProvider('verbs')]
+    public function test_an_800_character_reason_is_accepted(string $verb): void
+    {
+        $call = $this->makeCall('synthetic-reason-800-'.$verb);
+        // 800 characters, 1600 bytes: the limit is counted in characters.
+        $reason = str_repeat('é', 800);
+
+        $result = $this->ok($this->callTool($this->token([$verb]), $verb, $this->arguments($verb, $call, $reason) + ['billable' => true]));
+
+        $this->assertTrue($result['is_billable']);
+        $this->assertNotNull($call->fresh()->ticket_id);
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'set_call_billable')->count());
+    }
+
+    #[DataProvider('verbs')]
+    public function test_the_kill_switch_refusal_comes_before_the_billable_refusal(string $verb): void
+    {
+        $call = $this->makeCall('synthetic-order-'.$verb);
+        $ticketsBefore = Ticket::query()->count();
+        Setting::setValue('technician_kill_switch', '1');
+
+        // billable is missing: the kill-switch refusal still wins.
+        $text = $this->refusal($this->callTool($this->token([$verb]), $verb, $this->arguments($verb, $call)));
+
+        $this->assertStringStartsWith('Technician kill-switch engaged', $text);
+        $this->assertStringNotContainsString('billable', $text);
+        $this->assertNothingWritten($call, $ticketsBefore);
+    }
+
+    #[DataProvider('verbs')]
+    public function test_the_result_reports_the_stored_is_billable_not_the_argument(string $verb): void
+    {
+        $call = $this->makeCall('synthetic-readback-'.$verb);
+
+        // Another write lands after the apply and before the verb reads the call
+        // back: the result must report what is stored, not echo the argument.
+        TechnicianActionLog::created(function (TechnicianActionLog $log) use ($verb, $call): void {
+            if ($log->action_type === $verb) {
+                PhoneCall::whereKey($call->id)->update(['is_billable' => true]);
+            }
+        });
+
+        $result = $this->ok($this->callTool($this->token([$verb]), $verb, $this->arguments($verb, $call) + ['billable' => false]));
+
+        $this->assertTrue($result['is_billable']);
+    }
+
+    #[DataProvider('verbs')]
+    public function test_a_failure_after_the_billability_apply_moved_prepay_rolls_everything_back(string $verb): void
+    {
+        // A stored recording keeps the native link from defaulting billability, so
+        // the link takes no debit and the set_call_billable apply makes it.
+        $call = $this->makeCall('synthetic-late-failure-'.$verb);
+        $call->forceFill(['recording_url' => 'https://example.test/recording.mp3'])->save();
+        $ticketsBefore = Ticket::query()->count();
+        $notesBefore = \App\Models\TicketNote::query()->count();
+
+        $seen = [];
+        TechnicianActionLog::creating(function (TechnicianActionLog $log) use ($verb, $call, &$seen): void {
+            if ($log->action_type === 'set_call_billable') {
+                $seen['apply_debits'] = PrepayTransaction::where('phone_call_id', $call->id)->count();
+            }
+            if ($log->action_type === $verb) {
+                $seen['linked'] = PhoneCall::whereKey($call->id)->value('ticket_id') !== null;
+                throw new \LogicException('synthetic failure after the apply');
+            }
+        });
+
+        $response = $this->callTool($this->token([$verb]), $verb, $this->arguments($verb, $call) + ['billable' => true]);
+
+        $this->assertStringContainsString('synthetic failure after the apply', $this->refusal($response));
+        $this->assertSame(['apply_debits' => 1, 'linked' => true], $seen, 'the service had linked the call and debited it before the failure');
+        $this->assertNothingWritten($call, $ticketsBefore);
+        $this->assertSame($notesBefore, \App\Models\TicketNote::query()->count());
+    }
+
+    #[DataProvider('verbs')]
+    public function test_a_missing_ai_actor_is_refused_before_the_link_takes_a_debit(string $verb): void
+    {
+        $call = $this->makeCall('synthetic-no-actor-'.$verb);
+        $ticketsBefore = Ticket::query()->count();
+        Setting::setValue('triage_system_user_id', '');
+        $debitsCreated = 0;
+        PrepayTransaction::created(function () use (&$debitsCreated): void {
+            $debitsCreated++;
+        });
+
+        $text = $this->refusal($this->callTool($this->token([$verb]), $verb, $this->arguments($verb, $call) + ['billable' => true]));
+
+        $this->assertSame('AI actor user is not configured for MCP AI-authored writes. Nothing was linked.', $text);
+        $this->assertSame(0, $debitsCreated, 'no debit may be taken before the refusal');
+        $this->assertNothingWritten($call, $ticketsBefore);
+    }
+
+    /**
+     * A call in a given stored state. 'linked' calls already sit on another ticket
+     * of the same client and contract (a re-link); a stored billable linked call
+     * carries its prepay debit, as a set_call_billable or native link leaves it.
+     */
+    private function callInState(string $uuid, string $prior, ?bool $stored): PhoneCall
+    {
+        $call = $this->makeCall($uuid);
+        $attributes = ['is_billable' => $stored];
+        if ($prior === 'linked') {
+            $other = Ticket::factory()->create([
+                'client_id' => $this->client->id, 'contract_id' => $this->contract->id,
+                'subject' => 'Synthetic earlier ticket', 'status' => 'new',
+            ]);
+            $attributes['ticket_id'] = $other->id;
+        }
+        $call->forceFill($attributes)->save();
+        if ($prior === 'linked' && $stored === true) {
+            app(\App\Services\PrepayService::class)->debitFromPhoneCall($call->fresh());
+            $this->assertSame(1, PrepayTransaction::where('phone_call_id', $call->id)->count());
+        }
+
+        return $call->fresh();
+    }
+
+    /** @return list<array{0: int, 1: float}> */
+    private function ledgerOf(PhoneCall $call): array
+    {
+        return PrepayTransaction::where('phone_call_id', $call->id)->get(['contract_id', 'hours'])
+            ->map(fn ($row) => [(int) $row->contract_id, (float) $row->hours])->all();
+    }
+
+    /** @return array<string, array{0: string, 1: string, 2: ?bool, 3: bool}> */
+    public static function storedStates(): array
+    {
+        $cases = [];
+        foreach (['link_call_to_ticket', 'create_ticket_from_call'] as $verb) {
+            foreach (['unlinked', 'linked'] as $prior) {
+                foreach (['null' => null, 'true' => true, 'false' => false] as $label => $stored) {
+                    foreach ([true, false] as $billable) {
+                        $cases["{$verb} {$prior} stored {$label} billable ".($billable ? 'true' : 'false')] = [$verb, $prior, $stored, $billable];
+                    }
+                }
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('storedStates')]
+    public function test_every_stored_state_ends_on_the_set_call_billable_ledger_and_false_never_debits(string $verb, string $prior, ?bool $stored, bool $billable): void
+    {
+        $tag = md5($verb.$prior.var_export($stored, true).var_export($billable, true));
+        $call = $this->callInState('synthetic-state-'.$tag, $prior, $stored);
+        $debitBefore = PrepayTransaction::where('phone_call_id', $call->id)->count();
+
+        // From here one more 0.5 h debit takes the balance under the alert threshold,
+        // which stamps the alert and raises an auto top-up invoice.
+        $sku = Sku::create(['name' => 'Synthetic prepaid hour', 'sku_code' => 'SYN-'.$tag, 'unit_price' => 100, 'prepaid_time_minutes' => 60]);
+        $this->contract->refresh();
+        $this->contract->update([
+            'prepay_alert_threshold' => (float) $this->contract->prepay_balance - 0.25,
+            'prepay_alert_notified_at' => null,
+            'prepay_auto_topup_enabled' => true,
+            'prepay_auto_topup_qty' => 1,
+            'portal_prepay_sku_id' => $sku->id,
+        ]);
+        $invoicesBefore = Invoice::withTrashed()->count();
+        $debitsCreated = 0;
+        $stamped = false;
+        PrepayTransaction::created(function (PrepayTransaction $row) use ($call, &$debitsCreated): void {
+            if ((int) $row->phone_call_id === (int) $call->id) {
+                $debitsCreated++;
+            }
+        });
+        \App\Models\Contract::updated(function (\App\Models\Contract $contract) use (&$stamped): void {
+            if ($contract->wasChanged('prepay_alert_notified_at') && $contract->prepay_alert_notified_at !== null) {
+                $stamped = true;
+            }
+        });
+
+        $result = $this->ok($this->callTool($this->token([$verb]), $verb, $this->arguments($verb, $call) + ['billable' => $billable]));
+
+        $this->assertSame($billable, $result['is_billable']);
+        $this->assertSame($billable, (bool) $call->fresh()->is_billable);
+        $this->assertNotNull($call->fresh()->is_billable);
+        $linkedTicketId = (int) $result['ticket_id'];
+        $verbLedger = $this->ledgerOf($call);
+        $newInvoices = Invoice::withTrashed()->count() - $invoicesBefore;
+
+        if (! $billable) {
+            $this->assertSame(0, $debitsCreated, 'billable=false must not create a debit at any point');
+            $this->assertFalse($stamped, 'billable=false must not stamp the low-balance alert');
+            $this->assertSame(0, $newInvoices, 'billable=false must not raise an auto top-up invoice');
+            $this->assertSame([], $verbLedger, 'a debit already on the ledger is reversed');
+        } elseif ($debitBefore === 0) {
+            // Positive control: the fixture does fire when a debit is really taken.
+            $this->assertSame(1, $debitsCreated);
+            $this->assertTrue($stamped);
+            $this->assertSame(1, $newInvoices);
+        }
+
+        // The set_call_billable apply ran. With billable=false it always re-runs
+        // prepay (setBillable), whatever was stored; with billable=true it does so
+        // when the link left the call non-billable (stored false), which is the
+        // case where the apply itself takes the debit.
+        $applied = TechnicianActionLog::where('action_type', 'set_call_billable')->sole();
+        $applyMoved = ! $billable || $stored === false;
+        $this->assertSame($applyMoved ? 'executed' : 'no_op', $applied->result_status);
+
+        // Reference: an identical call linked natively to the same ticket, then
+        // set_call_billable through MCP.
+        $reference = $this->callInState('synthetic-state-ref-'.$tag, $prior, $stored);
+        app(PhoneCallService::class)->linkCallToTicket($reference, $linkedTicketId);
+        $this->ok($this->callTool($this->token(['set_call_billable:immediate']), 'set_call_billable', [
+            'phone_call_id' => $reference->id, 'billable' => $billable, 'reason' => 'Synthetic reason',
+        ]));
+
+        $this->assertSame($this->ledgerOf($reference), $verbLedger);
+        $this->assertSame($billable ? [[$this->contract->id, -0.5]] : [], $verbLedger);
+        $this->assertEqualsWithDelta(10.0 + (float) PrepayTransaction::sum('hours'), (float) $this->contract->fresh()->prepay_balance, 0.0001);
+    }
+
+    #[DataProvider('verbs')]
+    public function test_billable_false_reverses_a_debit_left_on_a_call_stored_non_billable(string $verb): void
+    {
+        // A linked call stored non-billable that still carries a debit (written
+        // around PhoneCallService, for example by hand). billable=false must
+        // still leave no debit for it.
+        $call = $this->callInState('synthetic-stale-debit-'.$verb, 'linked', true);
+        PhoneCall::whereKey($call->id)->update(['is_billable' => false]);
+        $this->assertSame(1, PrepayTransaction::where('phone_call_id', $call->id)->count());
+
+        $result = $this->ok($this->callTool($this->token([$verb]), $verb, $this->arguments($verb, $call->fresh()) + ['billable' => false]));
+
+        $this->assertFalse($result['is_billable']);
+        $this->assertFalse((bool) $call->fresh()->is_billable);
+        $this->assertNotNull($call->fresh()->is_billable);
+        $this->assertSame([], $this->ledgerOf($call));
+        $this->assertEquals(10.0, (float) $this->contract->fresh()->prepay_balance);
     }
 }
