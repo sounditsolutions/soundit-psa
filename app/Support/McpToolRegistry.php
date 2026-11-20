@@ -2057,15 +2057,16 @@ class McpToolRegistry
     {
         return [
             'name' => 'link_call_to_ticket',
-            'description' => 'Link an unresolved phone call to an existing ticket immediately, reusing the native call-linking path (sets billability when already known and drops an internal note). Audited by ids and reason only — the call transcript is never logged. Requires an explicit token grant.',
+            'description' => 'Link an unresolved phone call to an existing ticket immediately, reusing the native call-linking path (sets billability when already known and drops an internal note). Audited by ids and reason only — the call transcript is never logged. Requires an explicit token grant. billable (required) is your billing decision for this call: it sets is_billable and re-evaluates prepay exactly as set_call_billable does.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
                     'phone_call_id' => ['type' => 'integer', 'description' => 'The phone call ID to link.'],
                     'ticket_id' => ['type' => 'integer', 'description' => 'The ticket ID to link the call to.'],
                     'reason' => ['type' => 'string', 'description' => 'Specific reason this call belongs on this ticket.'],
+                    'billable' => ['type' => 'boolean', 'description' => 'billable (required) is your billing decision for this call: it sets is_billable and re-evaluates prepay exactly as set_call_billable does.'],
                 ],
-                'required' => ['phone_call_id', 'ticket_id', 'reason'],
+                'required' => ['phone_call_id', 'ticket_id', 'reason', 'billable'],
             ],
         ];
     }
@@ -2075,15 +2076,16 @@ class McpToolRegistry
     {
         return [
             'name' => 'create_ticket_from_call',
-            'description' => 'Create a new ticket from an unresolved phone call immediately, reusing the native call-to-ticket creation path. The call must already be resolved to a client. Audited by ids and reason only — the call transcript is never logged. Requires an explicit token grant.',
+            'description' => 'Create a new ticket from an unresolved phone call immediately, reusing the native call-to-ticket creation path. The call must already be resolved to a client. Audited by ids and reason only — the call transcript is never logged. Requires an explicit token grant. billable (required) is your billing decision for this call: it sets is_billable and re-evaluates prepay exactly as set_call_billable does.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
                     'phone_call_id' => ['type' => 'integer', 'description' => 'The phone call ID to create a ticket from. Must already have a resolved client_id.'],
                     'contract_id' => self::createContractIdProperty(),
                     'reason' => ['type' => 'string', 'description' => 'Specific reason a new ticket (rather than linking to an existing one) is the right action for this call.'],
+                    'billable' => ['type' => 'boolean', 'description' => 'billable (required) is your billing decision for this call: it sets is_billable and re-evaluates prepay exactly as set_call_billable does.'],
                 ],
-                'required' => ['phone_call_id', 'reason'],
+                'required' => ['phone_call_id', 'reason', 'billable'],
             ],
         ];
     }

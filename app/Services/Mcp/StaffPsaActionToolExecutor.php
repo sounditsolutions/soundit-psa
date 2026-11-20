@@ -2405,6 +2405,11 @@ class StaffPsaActionToolExecutor
             return $error;
         }
 
+        if ($error = $this->refuseMissingCallBillable($arguments)) {
+            return $error;
+        }
+        $billable = (bool) $arguments['billable'];
+
         $reason = $this->requiredString($arguments, 'reason');
         if ($reason === null) {
             return ['error' => 'reason is required'];
@@ -2427,24 +2432,40 @@ class StaffPsaActionToolExecutor
             return ['error' => 'Phone call was already followed up on by a technician (followed_up_at is set) — it may have been dismissed as spam. Refusing to link it to a ticket; clear the follow-up state first if this is a genuine request.'];
         }
 
-        DB::transaction(function () use ($call, $ticket, $actorLabel, $reason): void {
-            $this->phoneCallService->linkCallToTicketWithNote($call, $ticket->id, "Linked via MCP: {$reason}");
-            $this->auditEntityExecution(
-                'link_call_to_ticket',
-                'phone_call',
-                (int) $call->id,
-                $ticket->client_id,
-                $actorLabel,
-                $this->mutationContentHash('link_call_to_ticket', (int) $call->id, ['ticket_id' => $ticket->id], $reason),
-                'Phone call #'.$call->id.' linked to ticket #'.$ticket->id.': '.$reason,
-                TechnicianConfig::requiredAiActorUserId(),
-            );
-        });
+        // The link, the billing decision and the audit row commit together or not
+        // at all: a refused billability apply rolls the link back.
+        $refusal = null;
+        try {
+            DB::transaction(function () use ($call, $ticket, $actorLabel, $reason, $billable, &$refusal): void {
+                $this->phoneCallService->linkCallToTicketWithNote($call, $ticket->id, "Linked via MCP: {$reason}");
+                $refusal = $this->applyLinkedCallBillable($call, $billable, $reason, $actorLabel);
+                if ($refusal !== null) {
+                    throw new \RuntimeException($refusal);
+                }
+                $this->auditEntityExecution(
+                    'link_call_to_ticket',
+                    'phone_call',
+                    (int) $call->id,
+                    $ticket->client_id,
+                    $actorLabel,
+                    $this->mutationContentHash('link_call_to_ticket', (int) $call->id, ['ticket_id' => $ticket->id, 'billable' => $billable], $reason),
+                    'Phone call #'.$call->id.' linked to ticket #'.$ticket->id.': '.$reason,
+                    TechnicianConfig::requiredAiActorUserId(),
+                );
+            });
+        } catch (\RuntimeException $e) {
+            if ($refusal === null) {
+                throw $e;
+            }
+
+            return ['error' => $refusal];
+        }
 
         return [
             'success' => true,
             'phone_call_id' => $call->id,
             'ticket_id' => $ticket->id,
+            'is_billable' => (bool) PhoneCall::whereKey($call->id)->value('is_billable'),
             'message' => 'Phone call linked to ticket.',
         ];
     }
@@ -2465,6 +2486,11 @@ class StaffPsaActionToolExecutor
         if ($error = $this->guardDirectAction()) {
             return $error;
         }
+
+        if ($error = $this->refuseMissingCallBillable($arguments)) {
+            return $error;
+        }
+        $billable = (bool) $arguments['billable'];
 
         $reason = $this->requiredString($arguments, 'reason');
         if ($reason === null) {
@@ -2497,16 +2523,21 @@ class StaffPsaActionToolExecutor
             return $e->toolRefusal();
         }
 
+        $refusal = null;
         try {
-            $ticket = DB::transaction(function () use ($call, $actorLabel, $reason, $contractId): Ticket {
+            $ticket = DB::transaction(function () use ($call, $actorLabel, $reason, $contractId, $billable, &$refusal): Ticket {
                 $ticket = $this->phoneCallService->createTicketFromCall($call, $contractId);
+                $refusal = $this->applyLinkedCallBillable($call, $billable, $reason, $actorLabel);
+                if ($refusal !== null) {
+                    throw new \RuntimeException($refusal);
+                }
                 $this->auditEntityExecution(
                     'create_ticket_from_call',
                     'phone_call',
                     (int) $call->id,
                     $ticket->client_id,
                     $actorLabel,
-                    $this->mutationContentHash('create_ticket_from_call', (int) $call->id, ['ticket_id' => $ticket->id], $reason),
+                    $this->mutationContentHash('create_ticket_from_call', (int) $call->id, ['ticket_id' => $ticket->id, 'billable' => $billable], $reason),
                     'Phone call #'.$call->id.' created ticket #'.$ticket->id.': '.$reason,
                     TechnicianConfig::requiredAiActorUserId(),
                 );
@@ -2515,6 +2546,12 @@ class StaffPsaActionToolExecutor
             });
         } catch (\App\Services\ContractNotAllowedException $e) {
             return $e->toolRefusal();
+        } catch (\RuntimeException $e) {
+            if ($refusal === null) {
+                throw $e;
+            }
+
+            return ['error' => $refusal];
         }
 
         return [
@@ -2522,6 +2559,7 @@ class StaffPsaActionToolExecutor
             'phone_call_id' => $call->id,
             'ticket_id' => $ticket->id,
             'ticket_display_id' => $ticket->display_id,
+            'is_billable' => (bool) PhoneCall::whereKey($call->id)->value('is_billable'),
             'call_contract_id' => PhoneCall::whereKey($call->id)->value('contract_id'),
             'message' => 'Ticket created from phone call.',
         ] + $this->createdContractBlock($ticket);
@@ -3324,6 +3362,45 @@ class StaffPsaActionToolExecutor
     {
         if (TechnicianConfig::killSwitchEngaged()) {
             return ['error' => 'Technician kill-switch engaged; direct client-facing action refused'];
+        }
+
+        return null;
+    }
+
+    /**
+     * link_call_to_ticket / create_ticket_from_call: billable is the caller's
+     * explicit billing decision for the call. Checked before any row is read; a
+     * string "true", an integer 1 or null is not a decision.
+     *
+     * @param  array<array-key, mixed>  $arguments
+     * @return array{error: string}|null
+     */
+    private function refuseMissingCallBillable(array $arguments): ?array
+    {
+        if (! array_key_exists('billable', $arguments) || ! is_bool($arguments['billable'])) {
+            return ['error' => 'billable is required: an explicit boolean (true or false), the billing decision for this call. Nothing was linked.'];
+        }
+
+        return null;
+    }
+
+    /**
+     * Apply the billing decision to a call that was just linked, through the same
+     * PhoneCallActionService path set_call_billable uses, so prepay is
+     * re-evaluated. Runs inside the caller's transaction; returns the refusal
+     * text (the caller throws to roll the link back) or null on success.
+     */
+    private function applyLinkedCallBillable(PhoneCall $call, bool $billable, string $reason, string $actorLabel): ?string
+    {
+        $result = app(PhoneCallActionService::class)->execute(
+            PhoneCallActionService::ACTION_BILLABLE,
+            ['phone_call_id' => (int) $call->id, 'billable' => $billable, 'reason' => $reason],
+            $actorLabel,
+            false,
+        );
+
+        if (isset($result['error'])) {
+            return rtrim((string) $result['error']).' Nothing was linked.';
         }
 
         return null;
