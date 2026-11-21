@@ -170,6 +170,36 @@ class SkuReadToolTest extends TestCase
         }
     }
 
+    /**
+     * A non-integer number must be refused, never truncated to a real id: a float,
+     * a decimal string and an exponent string each name a SKU that exists once
+     * cast, so a looser check would read the wrong row.
+     */
+    public function test_a_non_integer_number_is_refused_and_never_truncated_to_a_real_id(): void
+    {
+        $sku = $this->sku();
+        $token = $this->token(['get_sku']);
+        $id = $sku->id;
+
+        foreach ([$id + 0.5, $id.'.5', $id.'e0'] as $value) {
+            $text = $this->refusal($this->callTool($token, 'get_sku', ['sku_id' => $value]));
+            $this->assertStringContainsString('sku_id is required', $text, var_export($value, true));
+            $this->assertStringNotContainsString('Example Prepaid Hour Block', $text);
+        }
+    }
+
+    public function test_a_digit_string_sku_id_reads_the_same_row_as_the_integer(): void
+    {
+        $sku = $this->sku();
+        $token = $this->token(['get_sku']);
+
+        $fromString = $this->ok($this->callTool($token, 'get_sku', ['sku_id' => (string) $sku->id]));
+        $fromInt = $this->ok($this->callTool($token, 'get_sku', ['sku_id' => $sku->id]));
+
+        $this->assertSame($sku->id, $fromString['id']);
+        $this->assertSame($fromInt, $fromString);
+    }
+
     public function test_ungranted_and_legacy_tokens_cannot_call_get_sku(): void
     {
         $sku = $this->sku();
