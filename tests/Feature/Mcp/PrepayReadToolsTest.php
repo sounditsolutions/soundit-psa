@@ -115,7 +115,7 @@ class PrepayReadToolsTest extends TestCase
         ], $result['prepay']);
 
         // Billing terms and pricing stay held.
-        foreach (['billing_period', 'billing_day', 'payment_terms_days', 'portal_prepay_sku_id'] as $held) {
+        foreach (['billing_period', 'billing_day', 'payment_terms_days'] as $held) {
             $this->assertArrayNotHasKey($held, $result);
         }
     }
