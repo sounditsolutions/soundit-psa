@@ -1014,7 +1014,7 @@ class TacticalClient
      * {{client.<Name>}} placeholder in an arg with the value of the client
      * custom field named <Name> (an arg is passed on unaltered when that
      * resolves to nothing). Inferred from Tactical's source (scripts/models.py
-     * parse_script_args); verified at the #8466 production done-check.
+     * parse_script_args); to be verified at the #8466 production done-check.
      */
     public function runScriptAsync(string $agentId, int $scriptId, ?array $args = null, int $timeout = 120): void
     {

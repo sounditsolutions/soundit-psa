@@ -39,7 +39,7 @@ use Illuminate\Support\Facades\Log;
  *     arguments there are and that the placeholder is among them, never a value.
  *
  * THE PLACEHOLDER (inferred from Tactical's source, scripts/models.py parse_script_args and
- * tacticalrmm/utils.py get_db_value; verified at the production done-check). The PSA sends
+ * tacticalrmm/utils.py get_db_value; to be verified at the production done-check). The PSA sends
  * the argument list with the literal self::CODE_PLACEHOLDER in it. Before Tactical hands the
  * arguments to the agent it replaces that placeholder with the value of the CLIENT custom
  * field NAMED ControlDOrgCode for the agent's client. Tactical looks the field up by that
@@ -58,9 +58,14 @@ use Illuminate\Support\Facades\Log;
  * field write. It goes nowhere but the field write and those comparisons: never into script
  * arguments, results, audit text or logs. The arguments the PSA sends carry the placeholder,
  * not the code. A script argument that contains the bound code, or that still carries a
- * code-shaped run (ControlDClient::carriesCodeRun(), 32 or more letters and digits) once every
- * placeholder is taken out of it, refuses at staging, at approval and in execute() before any
- * Tactical request. The refusal names the argument's position, never its value.
+ * code-shaped run once every placeholder is taken out of it, refuses at staging, at approval
+ * and in execute() before any Tactical request. ControlDClient::carriesCodeRun() decides
+ * "code-shaped": 32 or more letters and digits in one run (invisible format and control
+ * characters ignored), or pieces separated only by whitespace, each holding a digit or 16 or
+ * more characters long, that together make 32 or more. The refusal names the argument's
+ * position, never its value. The screen is per argument and joins pieces only across
+ * whitespace, so a code split across two arguments, or split by punctuation inside one
+ * argument, is not caught (a stated limit, Jeeves r2 split-code ruling A).
  * No setting or id is hard-coded: an unset field id or script id refuses (fail closed).
  */
 class ControlDTacticalDeploy
@@ -92,6 +97,13 @@ class ControlDTacticalDeploy
 
     /** #8466: the Tactical client-field placeholder the deploy script's own arguments must carry. */
     public const CODE_PLACEHOLDER = '{{client.ControlDOrgCode}}';
+
+    /**
+     * #8466 r3: what ControlDClient::carriesCodeRun() flags, in the words every refusal uses. True
+     * of every argument it can be printed for: the run is either contiguous (once invisible
+     * characters are dropped) or rejoined from pieces separated only by whitespace.
+     */
+    public const CODE_SHAPE_WORDS = '(32 or more letters and digits, in one run once invisible characters are dropped, or in pieces separated only by whitespace)';
 
     public function __construct(private readonly TacticalClient $tactical) {}
 
@@ -137,7 +149,7 @@ class ControlDTacticalDeploy
         }
         $run = self::codeShapedArgument($args);
         if ($run !== null) {
-            return ['reason' => "pinned script argument {$run} carries a code-shaped run (32 or more letters and digits) besides the placeholder; no script was run"] + $result;
+            return ['reason' => 'pinned script argument '.$run.' carries a code-shaped run '.self::CODE_SHAPE_WORDS.' besides the placeholder; no script was run'] + $result;
         }
 
         // 1. The Tactical client: exactly one row with the pinned name (exact case).
@@ -280,9 +292,10 @@ class ControlDTacticalDeploy
      * #8466: the deploy script's own argument list as Tactical stores it (GET scripts/{id}/,
      * the `args` field), or ['error' => text]. Read at staging and again at approval; the
      * caller pins it and compares it. Only `args` is taken from the response: the script body
-     * and every other field are never returned, stored, audited or logged. A failed read, or an
-     * answer that is not this script's record carrying an `args` key, is a read failure
-     * (scriptReadFailure(): status, class, one warning line). Otherwise refuses unless the
+     * and every other field are never returned, stored, audited or logged. A failed request, an
+     * answer that is not this script's record, or the script's record without an `args` key
+     * refuses through scriptReadFailure() (status, class, one warning line; each with its own
+     * words), never as a problem with the args. Otherwise refuses unless the
      * list is non-empty, holds only strings, and one of them contains self::CODE_PLACEHOLDER.
      * There is no fallback for an empty list. The caller screens the list for the code and for
      * code-shaped runs (codeShapedArgument()).
@@ -292,14 +305,16 @@ class ControlDTacticalDeploy
     public function scriptArgs(int $scriptId): array
     {
         try {
+            // Typed array: a 200 whose JSON is not an object throws a TypeError here, caught below.
             $detail = $this->tactical->getScriptDetail($scriptId);
         } catch (\Throwable $e) {
             return self::scriptReadFailure($scriptId, $e);
         }
-        // C-56: an answer that is not this script's record (another id, no `args` key, not an
-        // object) is a degraded read, reported as a read failure, never as a problem with the args.
-        if (! is_array($detail) || ($detail['id'] ?? null) !== $scriptId || ! array_key_exists('args', $detail)) {
-            return self::scriptReadFailure($scriptId, null);
+        // C-56: an answer that is not this script's record, or the record without an `args` key, is a
+        // degraded read, reported as such, never as a problem with the args.
+        // (r3: the old `! is_array($detail)` arm is gone; getScriptDetail() is typed array, so it could not fire.)
+        if (($detail['id'] ?? null) !== $scriptId || ! array_key_exists('args', $detail)) {
+            return self::scriptReadFailure($scriptId, null, ($detail['id'] ?? null) === $scriptId ? self::READ_NO_ARGS_FIELD : self::READ_OTHER_RECORD);
         }
         $args = $detail['args'];
         $problem = self::argsProblem($args);
@@ -310,31 +325,69 @@ class ControlDTacticalDeploy
         return ['args' => $args];
     }
 
+    /** scriptReadFailure() $answer: Tactical answered with a record that is not the script's. */
+    public const READ_OTHER_RECORD = 'other_record';
+
+    /** scriptReadFailure() $answer: Tactical answered with the script's record, which has no `args` field. */
+    public const READ_NO_ARGS_FIELD = 'no_args_field';
+
     /**
-     * C-56 (#8466): the refusal for a failed or degraded read of the deploy script, with the
-     * HTTP status (when there is one) and the exception class, and one warning log line that
-     * carries the script id, the status and the class only: never the args or a response body.
-     * $e is null for a degraded answer (one that is not the script's record).
+     * C-56 (#8466): the refusal when the deploy script's arguments could not be taken from
+     * Tactical, with the HTTP status (when there is one) and the exception class, and one
+     * warning log line that carries the script id, the status and the class only: never the args
+     * or a response body. Each case has its own words (r3: every sentence true of its case):
+     *  - a TacticalClientException with a status: Tactical answered with that HTTP status;
+     *  - a TacticalClientException without one: the read got no answer (transport, or refused
+     *    before sending);
+     *  - any other Throwable from the read (a 2xx whose JSON is not an object ends as a TypeError
+     *    in the array-typed read): the read ended in that error;
+     *  - $e null: Tactical answered, with another record (self::READ_OTHER_RECORD) or with the
+     *    script's record lacking an `args` field (self::READ_NO_ARGS_FIELD).
      *
      * @return array{error: string, read_failed: true}
      */
-    public static function scriptReadFailure(int $scriptId, ?\Throwable $e): array
+    public static function scriptReadFailure(int $scriptId, ?\Throwable $e, string $answer = self::READ_OTHER_RECORD): array
     {
         $status = $e instanceof TacticalClientException ? $e->statusCode() : null;
         $class = $e === null ? null : $e::class;
-        Log::warning('[ControlDTacticalDeploy] The deploy script could not be read for its arguments', ['script_id' => $scriptId, 'status' => $status, 'exception' => $class]);
-        $detail = $e === null
-            ? 'Tactical answered, but not with the script\'s record'
-            : 'Tactical could not be read for them ('.($status !== null ? "HTTP {$status}, " : '').class_basename($class).')';
+        Log::warning('[ControlDTacticalDeploy] The deploy script\'s arguments could not be taken from Tactical', ['script_id' => $scriptId, 'status' => $status, 'exception' => $class]);
+        if ($e === null) {
+            $detail = $answer === self::READ_NO_ARGS_FIELD
+                ? 'Tactical answered with the script\'s record, but the record has no args field'
+                : 'Tactical answered, but not with the script\'s record';
 
-        return ['error' => "The deploy step needs the deploy script's own arguments, and {$detail}. This is a failed read, not a problem with the script's arguments.", 'read_failed' => true];
+            return ['error' => "The deploy step needs the deploy script's own arguments, and {$detail}. The answer could not be used; this is not a problem with the script's arguments.", 'read_failed' => true];
+        }
+        $detail = match (true) {
+            $status !== null => "Tactical answered the read with HTTP {$status} (".class_basename($class).'). This is a failed read',
+            $e instanceof TacticalClientException => 'the read got no answer from Tactical ('.class_basename($class).'). This is a failed read',
+            default => 'the read ended in an error in the PSA ('.class_basename($class).'; an answer that is not a JSON object ends this way)',
+        };
+
+        return ['error' => "The deploy step needs the deploy script's own arguments, and {$detail}; this is not a problem with the script's arguments.", 'read_failed' => true];
+    }
+
+    /**
+     * #8466 r3 (contract:5, diff:7): the refusal when the deploy step faulted in the PSA before it
+     * had the script's arguments (resolving or constructing the Tactical client, for example). No
+     * read result is claimed: Tactical may not have been contacted. One warning line with the
+     * script id and the exception class only.
+     *
+     * @return array{error: string}
+     */
+    public static function scriptArgsFault(int $scriptId, \Throwable $e): array
+    {
+        Log::warning('[ControlDTacticalDeploy] The deploy step faulted before it had the script\'s arguments', ['script_id' => $scriptId, 'exception' => $e::class]);
+
+        return ['error' => "The deploy step needs the deploy script's own arguments, and it faulted in the PSA before it had them (".class_basename($e::class)."). This is not a problem with the script's arguments."];
     }
 
     /**
      * #8466 (Jeeves, diff:1 A): the 1-based position of the first argument that, once every
      * occurrence of the exact self::CODE_PLACEHOLDER is taken out of it, still carries a
-     * code-shaped run (ControlDClient::carriesCodeRun()); null when none does. Fails closed: a
-     * legitimate literal of 32 or more letters and digits refuses too.
+     * code-shaped run (ControlDClient::carriesCodeRun(); the class docblock says exactly what that
+     * flags); null when none does. Fails closed: a legitimate literal of that shape refuses too.
+     * Per argument only, so a code split across two arguments is not caught (stated limit).
      *
      * @param  list<string>  $args
      */
