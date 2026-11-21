@@ -1217,7 +1217,7 @@ class ControlDOnboardPlanTest extends TestCase
         foreach ($cases as [$args, $position]) {
             $this->tac = [];
             $out = (new \App\Services\ControlD\ControlDTacticalDeploy(app(TacticalClient::class)))->execute($f['client'], $pins + ['script_args' => $args]);
-            $this->assertSame(['refused', "pinned script argument {$position} carries a code-shaped run (32 or more letters and digits, in one run once invisible characters are dropped, or in pieces separated only by whitespace) besides the placeholder; no script was run"], [$out['outcome'], $out['reason']], json_encode($args));
+            $this->assertSame(['refused', "pinned script argument {$position} carries a code-shaped run (32 or more letters and digits, in one run once invisible characters are dropped, or in pieces separated only by whitespace, each holding a digit or 16 or more characters long) besides the placeholder; no script was run"], [$out['outcome'], $out['reason']], json_encode($args));
             $this->assertSame([], $this->tacticalRequests(), 'refused before any Tactical request');
             $this->assertStringNotContainsString(self::RUN, json_encode($out));
             $this->assertStringNotContainsString(self::OTHER, json_encode($out));
@@ -1247,7 +1247,7 @@ class ControlDOnboardPlanTest extends TestCase
         $approval = $this->approve($staged['run_id']);
         $this->assertSame('gate_declined', $approval->status, (string) $approval->message);
         $why = "The client's stored provisioning code cannot be decrypted, so the deploy script's arguments cannot be checked against it. Fix or clear the stored code first.";
-        $this->assertSame("The deploy step could not be re-checked at approval ({$why}). Deny this proposal. Nothing was created and nothing was changed at Control D or in Tactical.", $approval->message);
+        $this->assertSame("The deploy step could not be re-checked at approval ({$why}). Nothing was created and nothing was changed at Control D or in Tactical. Approving again helps only once the stored code can be read; otherwise deny this proposal, fix the cause named above, and stage again.", $approval->message);
         $this->assertSame([self::SCRIPT_READ], $this->tacticalRequests());
         $this->assertSame(1, TechnicianActionLog::where('run_id', $staged['run_id'])->where('result_status', 'blocked')->where('summary', 'like', '%approval refused — '.$why.'%')->count());
 
@@ -1321,7 +1321,7 @@ class ControlDOnboardPlanTest extends TestCase
         foreach ([
             "that Tactical fills the placeholder from the client custom field named ControlDOrgCode is inferred from Tactical's source and to be verified at the production done-check",
             'it works only when the configured client custom field id is that field, which nothing checks',
-            'still carries 32 or more letters and digits in one run (invisible characters dropped) or in pieces separated only by whitespace refuses',
+            'still carries 32 or more letters and digits in one run (invisible characters dropped) or in pieces separated only by whitespace, each holding a digit or 16 or more characters long, refuses',
             'the screen is per argument, so a code split across arguments or by punctuation is not caught',
         ] as $says) {
             $this->assertStringContainsString($says, $description);

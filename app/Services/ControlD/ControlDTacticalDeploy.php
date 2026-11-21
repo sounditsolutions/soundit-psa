@@ -40,10 +40,11 @@ use Illuminate\Support\Facades\Log;
  *
  * THE PLACEHOLDER (inferred from Tactical's source, scripts/models.py parse_script_args and
  * tacticalrmm/utils.py get_db_value; to be verified at the production done-check). The PSA sends
- * the argument list with the literal self::CODE_PLACEHOLDER in it. Before Tactical hands the
- * arguments to the agent it replaces that placeholder with the value of the CLIENT custom
- * field NAMED ControlDOrgCode for the agent's client. Tactical looks the field up by that
- * name; the field step 3 writes is chosen by the configured field id. So the deploy works
+ * the argument list with the literal self::CODE_PLACEHOLDER in it. Inferred, not observed: before
+ * Tactical hands the arguments to the agent it substitutes the {{…}} span of an argument with
+ * the value of the CLIENT custom field NAMED ControlDOrgCode for the agent's client, so an
+ * argument with a second {{…}} token is not filled as described. Tactical looks the field up by
+ * that name; the field step 3 writes is chosen by the configured field id. So the deploy works
  * only when the configured field id is the client field named ControlDOrgCode. Nothing here
  * checks that. When the named field resolves to nothing, Tactical passes the argument on
  * unaltered. Tactical does not fall back to a script's stored arguments when the request
@@ -53,13 +54,14 @@ use Illuminate\Support\Facades\Log;
  * WHERE THE CODE IS READ. The decrypted code is read from the client record (a) at staging
  * and again at approval, by StaffControlDOnboardingToolExecutor::derivePlan(), only to check
  * that no argument of the script contains it (an undecryptable stored code refuses there,
- * audited, with no exception text); (b) in execute() before step 1, to refuse a pinned
- * argument that contains it; and (c) at steps 2–3, for the comparison with the field and the
- * field write. It goes nowhere but the field write and those comparisons: never into script
- * arguments, results, audit text or logs. The arguments the PSA sends carry the placeholder,
- * not the code. A script argument that contains the bound code, or that still carries a
- * code-shaped run once every placeholder is taken out of it, refuses at staging, at approval
- * and in execute() before any Tactical request. ControlDClient::carriesCodeRun() decides
+ * audited, with no exception text); (b) once in execute(), before step 1, to refuse a pinned
+ * argument that contains it; and (c) execute() reuses that one read at steps 2 and 3, for the
+ * comparison with the field and the field write. It goes nowhere but the field write and
+ * those comparisons: never into script arguments, results, audit text or logs. The arguments
+ * the PSA sends carry the placeholder, not the code. A script argument that contains the
+ * bound code, or that still carries a code-shaped run once every placeholder is taken out of
+ * it, refuses at staging, at approval and in execute() before any Tactical request.
+ * ControlDClient::carriesCodeRun() decides
  * "code-shaped": 32 or more letters and digits in one run (invisible format and control
  * characters ignored), or pieces separated only by whitespace, each holding a digit or 16 or
  * more characters long, that together make 32 or more. The refusal names the argument's
@@ -101,9 +103,10 @@ class ControlDTacticalDeploy
     /**
      * #8466 r3: what ControlDClient::carriesCodeRun() flags, in the words every refusal uses. True
      * of every argument it can be printed for: the run is either contiguous (once invisible
-     * characters are dropped) or rejoined from pieces separated only by whitespace.
+     * characters are dropped) or rejoined from pieces separated only by whitespace, and pieces
+     * are joined only when each holds a digit or is 16 or more characters long.
      */
-    public const CODE_SHAPE_WORDS = '(32 or more letters and digits, in one run once invisible characters are dropped, or in pieces separated only by whitespace)';
+    public const CODE_SHAPE_WORDS = '(32 or more letters and digits, in one run once invisible characters are dropped, or in pieces separated only by whitespace, each holding a digit or 16 or more characters long)';
 
     public function __construct(private readonly TacticalClient $tactical) {}
 
@@ -238,7 +241,7 @@ class ControlDTacticalDeploy
                 continue;
             }
             try {
-                // #8466: exactly the pinned list; Tactical fills the placeholder from the client field named ControlDOrgCode (see the class docblock).
+                // #8466: exactly the pinned list; Tactical fills the placeholder from the client field named ControlDOrgCode (inferred; see the class docblock).
                 $this->tactical->runScriptAsync($agentId, $scriptId, $args);
                 $result['agents'][$agentId] = self::AGENT_STARTED;
             } catch (\Throwable) {
@@ -319,7 +322,7 @@ class ControlDTacticalDeploy
         $args = $detail['args'];
         $problem = self::argsProblem($args);
         if ($problem !== null) {
-            return ['error' => "The deploy script's arguments in Tactical {$problem}. The deploy step runs the script with its own arguments, and they must include ".self::CODE_PLACEHOLDER.', which Tactical fills from the client custom field named ControlDOrgCode (inferred from Tactical\'s source).'];
+            return ['error' => "The deploy script's arguments in Tactical {$problem}. The deploy step runs the script with its own arguments, and they must include ".self::CODE_PLACEHOLDER.', which Tactical fills from the client custom field named ControlDOrgCode (inferred from Tactical\'s source and to be verified at the production done-check; it works only when the configured client custom field id is that field).'];
         }
 
         return ['args' => $args];

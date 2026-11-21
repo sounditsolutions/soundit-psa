@@ -2721,8 +2721,10 @@
                                 @endif
                                 <div class="form-text">
                                     The Tactical RMM script the onboarding plan's deploy step runs on each
-                                    agent it deploys to. It is run with no arguments from the PSA, so the
-                                    script must read the client custom field above itself. Leave blank and
+                                    agent it deploys to. The PSA sends the script's own stored argument list,
+                                    which must contain <code>@{{client.ControlDOrgCode}}</code>; Tactical fills that
+                                    placeholder from the client custom field named ControlDOrgCode (inferred from
+                                    Tactical's source), so the deploy works only when the field above is that field. Leave blank and
                                     the deploy step is refused (no Tactical write, no script run).
                                 </div>
                             </div>
