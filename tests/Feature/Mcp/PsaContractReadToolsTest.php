@@ -227,10 +227,24 @@ class PsaContractReadToolsTest extends TestCase
         $this->assertFalse((bool) $set->json('result.isError'), (string) $set->json('result.content.0.text'));
         $withId = $this->decodedResult($set);
         $this->assertSame($sku->id, $withId['portal_prepay_sku_id']);
+        // The exact key list, top level and prepay block: any key added to
+        // get_contract, whatever its name or encoding, turns this red.
+        $this->assertSame([
+            'id', 'client_id', 'name', 'type', 'type_label', 'status', 'status_label',
+            'start_date', 'end_date', 'term_length_months', 'auto_renew', 'is_expired',
+            'cancelled_at', 'cancellation_reason', 'has_sla', 'sla_terms', 'notes',
+            'assets_count', 'people_count', 'licenses_count', 'profiles_count',
+            'documents_count', 'prepay', 'portal_prepay_sku_id',
+        ], array_keys($withId));
+        $this->assertSame([
+            'unit', 'as_amount', 'total', 'used', 'expired', 'balance', 'expiry_months',
+            'halo_prepay_synced_at', 'alert_threshold', 'alert_notified_at',
+            'auto_topup_enabled', 'auto_topup_qty',
+        ], array_keys($withId['prepay']));
         // The id carries no price itself. At every depth, no key matches
-        // price/promo/cost/margin/rate or names the SKU object; no scalar
-        // value equals the SKU's unit_price (137.45, as a number or numeric
-        // string); and the text "137.45" and the SKU name are absent from
+        // price/promo/cost/margin/rate or is exactly 'sku' or
+        // 'portal_prepay_sku'; no scalar value equals the SKU's unit_price
+        // (137.45, as a number or numeric string); and the text "137.45" and the SKU name are absent from
         // the response text.
         $walk = function (array $node) use (&$walk): void {
             foreach ($node as $key => $value) {

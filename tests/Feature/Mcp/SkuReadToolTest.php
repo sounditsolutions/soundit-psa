@@ -199,6 +199,37 @@ class SkuReadToolTest extends TestCase
         $this->assertSame($fromInt, $fromString);
     }
 
+    public function test_a_soft_deleted_sku_is_refused_as_not_found(): void
+    {
+        $sku = $this->sku();
+        $sku->delete();
+        $this->assertSoftDeleted('skus', ['id' => $sku->id]);
+
+        $text = $this->refusal($this->callTool($this->token(['get_sku']), 'get_sku', ['sku_id' => $sku->id]));
+        $this->assertStringContainsString('SKU not found', $text);
+        $this->assertStringNotContainsString('Example Prepaid Hour Block', $text);
+    }
+
+    public function test_get_sku_is_listed_only_for_a_token_granted_it(): void
+    {
+        $listed = function (string $token): array {
+            $response = $this->withHeaders(['Authorization' => 'Bearer '.$token])
+                ->postJson('/api/mcp/staff', ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/list', 'params' => []]);
+            $response->assertOk();
+
+            return collect($response->json('result.tools') ?? [])->pluck('name')->all();
+        };
+
+        // Positive control: the same listing does show get_sku to a granted token.
+        $this->assertContains('get_sku', $listed($this->token(['get_sku'])));
+
+        $contractOnly = $listed($this->token(['get_contract']));
+        $this->assertContains('get_contract', $contractOnly);
+        $this->assertNotContains('get_sku', $contractOnly);
+
+        $this->assertNotContains('get_sku', $listed(McpConfig::rotateStaffToken()));
+    }
+
     public function test_ungranted_and_legacy_tokens_cannot_call_get_sku(): void
     {
         $sku = $this->sku();
