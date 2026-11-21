@@ -63,6 +63,10 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('delete_client', $names('psa_records'));
         $this->assertContains('list_client_contracts', $names('psa_read'));
         $this->assertContains('get_contract', $names('psa_read'));
+        // #8526: the SKU pricing read is a grant-gated psa_read, never general/client.
+        $this->assertContains('get_sku', $names('psa_read'));
+        $this->assertNotContains('get_sku', $names('general'));
+        $this->assertNotContains('get_sku', $names('client'));
         // Explicit-grant-only at the gate, so never a plain client-scoped read here (psa-688).
         $this->assertNotContains('get_ticket_attachment', $names('client'));
         $this->assertContains('get_ticket_attachment', $names('psa_raw_file'));

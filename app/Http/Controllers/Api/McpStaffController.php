@@ -292,6 +292,10 @@ class McpStaffController extends Controller
         // invoice reads: client_id is an optional fence that must own the contract.
         // Explicit-grant only like every entry in this list.
         'list_prepay_transactions',
+        // #8526: one SKU's selling price, prepaid minutes and portal promo fields.
+        // SKUs are global, so staff-class like the invoice reads, with no client
+        // fence. No cost or vendor fields. Explicit-grant only like every entry here.
+        'get_sku',
         'list_email_items',
         'get_email_item',
         'list_phone_calls',

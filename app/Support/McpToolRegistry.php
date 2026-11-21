@@ -1417,6 +1417,7 @@ class McpToolRegistry
             self::listClientContractsTool(),
             self::getContractTool(),
             self::listPrepayTransactionsTool(),
+            self::getSkuTool(),
             self::listEmailItemsTool(),
             self::getEmailItemTool(),
             self::listPhoneCallsTool(),
@@ -1525,7 +1526,7 @@ class McpToolRegistry
     {
         return [
             'name' => 'get_contract',
-            'description' => 'Get one contract\'s coverage detail (type, status, dates, term, auto-renew, SLA terms, notes, and linked asset/person/license/profile/document counts), scoped to the client. Also returns a prepay block with the contract\'s stored prepay figures: unit (hours or dollars), total, used, expired, balance, expiry_months, halo_prepay_synced_at, and the low-balance alert and auto top-up settings. prepay is null when the contract has no prepay. Pricing and billing terms are not exposed. Read-only. Requires an explicit token grant.',
+            'description' => 'Get one contract\'s coverage detail (type, status, dates, term, auto-renew, SLA terms, notes, and linked asset/person/license/profile/document counts), scoped to the client. Also returns a prepay block with the contract\'s stored prepay figures: unit (hours or dollars), total, used, expired, balance, expiry_months, halo_prepay_synced_at, and the low-balance alert and auto top-up settings. prepay is null when the contract has no prepay. Also returns portal_prepay_sku_id: the id of the SKU the client portal sells this contract\'s prepaid time as, or null when none is set (read it with get_sku). Pricing and billing terms are not exposed; that SKU id is the one exception, and it carries no price itself. Read-only. Requires an explicit token grant.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
@@ -1556,6 +1557,29 @@ class McpToolRegistry
                     'limit' => ['type' => 'integer', 'description' => 'Max rows (default 25, cap 100). total and has_more report the full ledger size.'],
                 ],
                 'required' => ['contract_id'],
+            ],
+        ];
+    }
+
+    /**
+     * get_sku — one SKU's selling price, prepaid minutes and portal promo fields
+     * (#8526). SKUs are global, so this is a staff-class read with no client fence,
+     * like the invoice reads. Deliberately narrow: no cost, vendor, accounting or
+     * sync fields. Explicit-grant only like every psa_read tool.
+     *
+     * @return array<string, mixed>
+     */
+    public static function getSkuTool(): array
+    {
+        return [
+            'name' => 'get_sku',
+            'description' => 'Get one SKU\'s pricing fields: id, name, unit_price, prepaid_time_minutes (null when the SKU carries no prepaid time), and the portal promo fields portal_promo_price, portal_promo_starts_at and portal_promo_ends_at (each null when unset). Promo times are UTC ISO-8601. The stored promo is returned as stored, whether or not it is in force. No cost, vendor or other fields are returned. SKUs are global, so no client_id is needed. Read-only. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'sku_id' => ['type' => 'integer', 'description' => 'The SKU ID to read.'],
+                ],
+                'required' => ['sku_id'],
             ],
         ];
     }

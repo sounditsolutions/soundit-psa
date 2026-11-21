@@ -21,6 +21,7 @@ use App\Models\PhoneCall;
 use App\Models\PrepayTransaction;
 use App\Models\RecurringInvoiceProfile;
 use App\Models\RecurringInvoiceProfileLine;
+use App\Models\Sku;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketCategory;
@@ -186,6 +187,7 @@ class AssistantToolExecutor
             'list_client_contracts' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listClientContracts($in)],
             'get_contract' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getContract($in)],
             'list_prepay_transactions' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listPrepayTransactions($in)],
+            'get_sku' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getSku($in)],
 
             // Cross-client staff-class reads (client_id optional filter, never required)
             'list_email_items' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listEmailItems($in)],
@@ -2116,6 +2118,43 @@ class AssistantToolExecutor
             'profiles_count' => $contract->profiles_count,
             'documents_count' => $contract->documents_count,
             'prepay' => $this->contractPrepayBlock($contract),
+            // #8526: the one pricing-adjacent exception — the SKU id only, no price.
+            'portal_prepay_sku_id' => $contract->portal_prepay_sku_id !== null ? (int) $contract->portal_prepay_sku_id : null,
+        ];
+    }
+
+    /**
+     * get_sku — one SKU's selling price, prepaid minutes and portal promo fields
+     * (#8526). SKUs are global: no client context is needed or applied. The
+     * returned keys are a closed list; cost, vendor, accounting and sync columns
+     * are never read out. Promo times are the stored UTC instants, as stored.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function getSku(array $input): array
+    {
+        $raw = $input['sku_id'] ?? null;
+        $skuId = is_int($raw) || (is_string($raw) && ctype_digit($raw)) ? (int) $raw : 0;
+        if ($skuId <= 0) {
+            return ['error' => 'sku_id is required and must be a positive integer'];
+        }
+
+        $sku = Sku::find($skuId);
+        if (! $sku) {
+            return ['error' => 'SKU not found'];
+        }
+
+        $utc = static fn ($at): ?string => $at === null ? null : $at->copy()->utc()->toIso8601ZuluString();
+
+        return [
+            'id' => $sku->id,
+            'name' => $sku->name,
+            'unit_price' => (float) $sku->unit_price,
+            'prepaid_time_minutes' => $sku->prepaid_time_minutes,
+            'portal_promo_price' => $sku->portal_promo_price === null ? null : (float) $sku->portal_promo_price,
+            'portal_promo_starts_at' => $utc($sku->portal_promo_starts_at),
+            'portal_promo_ends_at' => $utc($sku->portal_promo_ends_at),
         ];
     }
 
