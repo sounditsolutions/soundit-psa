@@ -1740,10 +1740,14 @@ name of its Tactical mapping (exactly one exact-case match). Then:
 3. List the Tactical client's agents. `all` targets every agent Tactical lists under that
    client at approval; a selected list targets only its pinned agents, each refused unless
    Tactical lists it under that client and its asset link still matches the pin.
-4. Request the deploy script on each target with **no arguments from the PSA**: the script
-   reads the client custom field itself. Per agent the result is `started` (Tactical accepted
+4. Request the deploy script on each target with **the script's own stored argument list**,
+   read from Tactical at staging and pinned with the plan (a list changed by approval is drift
+   and refuses). That list must contain `{{client.ControlDOrgCode}}`; Tactical fills that
+   placeholder from the client custom field named ControlDOrgCode (inferred from Tactical's
+   source), so the field set above must be that field. Per agent the result is `started` (Tactical accepted
    the request; it does NOT mean Control D was installed), `refused` or `failed`.
-The code never appears in script arguments, the proposal, the audit, logs or the result.
+The code never appears in the arguments the PSA sends (they carry the placeholder), the
+proposal, the audit, logs or the result.
 
 **Undo.** From the PSA only the provisioning code can be undone (Invalidate code, above); devices
 already enrolled are not removed, and the organization, its global profile and the Tactical

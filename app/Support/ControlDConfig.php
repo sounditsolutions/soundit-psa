@@ -7,8 +7,9 @@ use App\Models\Setting;
 class ControlDConfig
 {
     /**
-     * Setting holding the Tactical RMM CLIENT-scoped custom field id that carries a
-     * client's Control D organisation id.
+     * Setting holding the Tactical RMM CLIENT-scoped custom field id that the deploy step
+     * writes the client's Control D provisioning code into. For the deploy script to receive
+     * it, this must be the field named ControlDOrgCode (see TACTICAL_DEPLOY_SCRIPT_SETTING).
      *
      * Deliberately a setting rather than a compile-time constant like
      * CometConfig::TACTICAL_TOKEN_FIELD_ID / ServosityConfig::TACTICAL_SERVOSITY_*.
