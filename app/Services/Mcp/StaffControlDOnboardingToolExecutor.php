@@ -328,8 +328,9 @@ class StaffControlDOnboardingToolExecutor
      * ('all' or a list of PSA asset ids). An onboarded client gets a deploy-only plan. Pins: the
      * organization step's inputs (name, contact email, analytics region, global profile), the
      * global-profile step's org and profile PKs, the code step's derived values (item E) and the
-     * deploy scope with the Tactical field and script ids and each selected asset's Tactical agent id. Called at staging and again at
-     * approval, which refuses unless the two are identical. Read-only (one Control D GET at most).
+     * deploy scope with the Tactical field and script ids, each selected asset's Tactical agent id and (#8466) the deploy
+     * script's own argument list read from Tactical. Called at staging and again at approval, which refuses unless the two
+     * are identical. Read-only (one Control D GET at most; with a deploy step, one Tactical GET of the script).
      *
      * @return array<string, mixed>
      */
@@ -368,6 +369,26 @@ class StaffControlDOnboardingToolExecutor
             if (isset($deploy['error'])) {
                 return ['error' => $deploy['error'].' Nothing was staged.', 'reason' => $deploy['error'], 'deploy_unavailable' => true];
             }
+            // #8466: the deploy script's own argument list, pinned with the other deploy pins, so
+            // approval (which derives this again) sees a changed list as drift on 'deploy'.
+            try {
+                $args = (new ControlDTacticalDeploy(app(TacticalClient::class)))->scriptArgs($deploy['script_id']);
+            } catch (\Throwable) {
+                $args = ['error' => 'The deploy step needs the deploy script\'s own arguments, and Tactical could not be read for them.'];
+            }
+            if (isset($args['error'])) {
+                return ['error' => $args['error'].' Nothing was staged.', 'reason' => $args['error'], 'deploy_unavailable' => true, 'script_args_unavailable' => true];
+            }
+            // The code itself in the script's arguments would be shown on the card and sent: refuse (only a bound code can be checked here; execute() checks again).
+            $bound = Client::find($client->id)?->controld_provisioning_code;
+            foreach (is_string($bound) && $bound !== '' ? $args['args'] : [] as $arg) {
+                if (str_contains($arg, $bound)) {
+                    $why = 'The deploy script\'s arguments in Tactical contain this client\'s provisioning code itself; they must carry only the '.ControlDTacticalDeploy::CODE_PLACEHOLDER.' placeholder.';
+
+                    return ['error' => $why.' Nothing was staged.', 'reason' => $why, 'deploy_unavailable' => true, 'script_args_unavailable' => true];
+                }
+            }
+            $deploy['script_args'] = $args['args'];
             $plan['plan'][] = self::STEP_DEPLOY;
             $plan['deploy'] = $deploy;
             $plan['deploy_request'] = $deployRequest === ControlDTacticalDeploy::SCOPE_ALL ? ControlDTacticalDeploy::SCOPE_ALL : array_column($deploy['assets'], 0);
@@ -698,7 +719,9 @@ class StaffControlDOnboardingToolExecutor
                 self::STEP_CODE => $n.'Provisioning code (writes at Control D): cuts one provisioning code under the client\'s organization with these pinned values: enforced profile '.($pins['code_pins']['profile_id'] ?? '').', the shared baseline profile (controld_code_profile_id); the global profile '.ControlDConfig::defaultProfileId().' is inherited'
                     .', expiry '.($pins['code_pins']['expiry_days'] ?? '').' days, device limit '.($pins['code_pins']['max'] ?? '').' (asset count '.$client->assets()->count().' + headroom '.ControlDConfig::codeDeviceLimitHeadroom().'), analytics level '.($pins['code_pins']['stats'] ?? '').', intercept mode '.($pins['code_pins']['intercept_mode'] ?? '').', icon '.self::CODE_ICON
                     .'. Before writing, the step reads Control D and accepts the enforced profile only when it is listed exactly once among the organization\'s own profiles; or, when it is not listed there, it is the organization\'s global profile; or, only when neither holds, it is the shared baseline profile and the main organization lists it exactly once with sharing on (the main organization\'s profile list is read only for this last check). Otherwise it refuses and writes nothing. No deactivation PIN and no hostname prefix. The code is stored encrypted on the client record and is never shown here, in the audit log or in the result.',
-                self::STEP_DEPLOY => $n.'Deploy (writes in Tactical RMM): runs only if the provisioning code is bound (by this plan, or before it). Reads custom field #'.($pins['deploy']['field_id'] ?? '').' of Tactical client "'.$this->fence->neutralizeUntrusted((string) ($pins['deploy']['tactical_client'] ?? '')).'". If the field is empty, writes the client\'s provisioning code into it and reads it back; if it already holds that same code, it is left as it is; if it holds a different value, the deploy step refuses and writes nothing. Then it asks Tactical to run the configured deploy script (#'.($pins['deploy']['script_id'] ?? '').'), with no arguments from the PSA, on '
+                self::STEP_DEPLOY => $n.'Deploy (writes in Tactical RMM): runs only if the provisioning code is bound (by this plan, or before it). Reads custom field #'.($pins['deploy']['field_id'] ?? '').' of Tactical client "'.$this->fence->neutralizeUntrusted((string) ($pins['deploy']['tactical_client'] ?? '')).'". If the field is empty, writes the client\'s provisioning code into it and reads it back; if it already holds that same code, it is left as it is; if it holds a different value, the deploy step refuses and writes nothing. Then it asks Tactical to run the configured deploy script (#'.($pins['deploy']['script_id'] ?? '').') with the script\'s own arguments, as Tactical listed them when this was staged: '
+                    .$this->fence->neutralizeUntrusted(json_encode($pins['deploy']['script_args'] ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE) ?: '[]')
+                    .'. Tactical replaces '.ControlDTacticalDeploy::CODE_PLACEHOLDER.' with the custom field when it runs the script; the PSA sends the placeholder, never the code. It runs on '
                     .$this->fence->neutralizeUntrusted(ControlDTacticalDeploy::describe($pins['deploy'] ?? [])).'. A device is refused if Tactical does not list it under that client or its link to the PSA asset has changed. '.self::DEPLOY_STARTED_MEANS,
                 default => $n.$step,
             };
@@ -1038,7 +1061,7 @@ class StaffControlDOnboardingToolExecutor
         'org_inputs' => "the client's name or contact email, or the configured analytics region or global profile, differs from the values on this card",
         'code_pk' => 'the stored code record differs from the one on this card',
         'code_pins' => 'the derived code values (device limit, expiry, analytics level, intercept mode or enforced profile) differ from the ones pinned on this card',
-        'deploy' => "the deploy scope, the Tactical client, a device's Tactical agent link, or the configured Tactical client custom field ID or deploy script ID differs from the one on this card",
+        'deploy' => "the deploy scope, the Tactical client, a device's Tactical agent link, or the configured Tactical client custom field ID or deploy script ID differs from the one on this card, or the deploy script's own arguments in Tactical differ from the ones pinned on it",
         'deploy_request' => 'the deploy scope differs from the one on this card',
     ];
 
@@ -1080,6 +1103,7 @@ class StaffControlDOnboardingToolExecutor
                 (bool) ($derived['unreadable'] ?? false) => "Control D onboarding approval could not re-check the client's current step ({$why}). Nothing was created. Approving again helps only if the cause was temporary; otherwise fix it or deny this proposal.",
                 (bool) ($derived['different'] ?? false) => "This organization's global profile does not match the configured profile ({$why}). This proposal cannot be approved, and staging again is refused the same way, while this organization enforces a global profile other than the configured one. Nothing was created.",
                 (bool) ($derived['underivable'] ?? false) => self::CODE_PINS_UNDERIVABLE,
+                (bool) ($derived['script_args_unavailable'] ?? false) => "The deploy script's arguments could not be confirmed at approval ({$why}). Deny this proposal and stage again once the script in Tactical is fixed or readable. Nothing was created and nothing was changed at Control D or in Tactical.",
                 $drift === 'code_pins' => 'The code values pinned on this card (device limit, expiry, analytics level, intercept mode or enforced profile) no longer match the current Control D settings or the client\'s asset count. Deny this proposal and stage again so the current values are shown and approved on a new card. Nothing was created and nothing was changed at Control D.',
                 in_array($drift, ['org_pk', 'profile_pk', 'org_inputs', 'deploy', 'deploy_request'], true) => "The values pinned on this card are out of date ({$why}). Deny this proposal and stage again so the current values are read and approved on a new card. Nothing was created.",
                 default => "The client's Control D state changed since this was staged ({$why}). Deny this proposal and stage again so the current plan is read and approved on its own card. Nothing was created.",
@@ -1567,7 +1591,7 @@ class StaffControlDOnboardingToolExecutor
     {
         return [
             'name' => self::TOOL,
-            'description' => 'Onboard ONE PSA client to Control D as ONE plan with ONE approval. The plan is the not-yet-done subset of these steps, run in order: (1) create the client\'s Control D sub-organization (name and contact email from the client record, two-factor required, the panel\'s analytics region, the configured global profile) and bind the returned organization id to the client; or, for a mapped sub-organization with no global profile set, set the configured global profile on it (refused if a different one is already set when staged, when approved, or at the read just before the update; this code sends an unconditional update, so one set after that last read is not detected and the update may replace it); (2) cut one provisioning code under that organization enforcing the shared baseline profile (the controld_code_profile_id setting, which is not a field on the Settings > Integrations > Control D panel), with the panel\'s expiry, device limit = asset count + headroom, analytics level and intercept mode, all pinned on the card; (3) optional, only when deploy is given: in Tactical RMM, write the bound code into the configured client custom field if it is empty (a different non-empty value refuses), then request the configured deploy script on all of the client\'s Tactical agents or on the given PSA assets\' linked agents, with no script arguments. The plan stops at the first step that is rejected or uncertain; deploy runs only when the code is bound. An onboarded client may stage a deploy-only plan. HELD-ONLY: never executes immediately, whatever mode was granted — every call needs staged=true and a ticket_id and is approved in the cockpit by an active Admin. Only an MCP token marked ai_actor may stage it (the agent stages, one human approves); a person onboards from the Control D card on the client page, where a second Admin must approve. No PIN, hostname prefix, icon, profile, limit or vendor PK is accepted from the caller; secrets are stored encrypted on the client record and never returned. Inert unless the Control D onboarding switch is on and all six defaults are configured. Requires an explicit token grant, reason, kill-switch, and TechnicianActionLog audit.',
+            'description' => 'Onboard ONE PSA client to Control D as ONE plan with ONE approval. The plan is the not-yet-done subset of these steps, run in order: (1) create the client\'s Control D sub-organization (name and contact email from the client record, two-factor required, the panel\'s analytics region, the configured global profile) and bind the returned organization id to the client; or, for a mapped sub-organization with no global profile set, set the configured global profile on it (refused if a different one is already set when staged, when approved, or at the read just before the update; this code sends an unconditional update, so one set after that last read is not detected and the update may replace it); (2) cut one provisioning code under that organization enforcing the shared baseline profile (the controld_code_profile_id setting, which is not a field on the Settings > Integrations > Control D panel), with the panel\'s expiry, device limit = asset count + headroom, analytics level and intercept mode, all pinned on the card; (3) optional, only when deploy is given: in Tactical RMM, write the bound code into the configured client custom field if it is empty (a different non-empty value refuses), then request the configured deploy script on all of the client\'s Tactical agents or on the given PSA assets\' linked agents, with the script\'s own argument list as Tactical stores it (read at staging, pinned on the card and compared at approval; it must contain the {{client.ControlDOrgCode}} placeholder, which Tactical fills from the custom field, so the code is never sent as an argument). The plan stops at the first step that is rejected or uncertain; deploy runs only when the code is bound. An onboarded client may stage a deploy-only plan. HELD-ONLY: never executes immediately, whatever mode was granted — every call needs staged=true and a ticket_id and is approved in the cockpit by an active Admin. Only an MCP token marked ai_actor may stage it (the agent stages, one human approves); a person onboards from the Control D card on the client page, where a second Admin must approve. No PIN, hostname prefix, icon, profile, limit or vendor PK is accepted from the caller; secrets are stored encrypted on the client record and never returned. Inert unless the Control D onboarding switch is on and all six defaults are configured. Requires an explicit token grant, reason, kill-switch, and TechnicianActionLog audit.',
             'input_schema' => ['type' => 'object', 'properties' => self::properties(), 'required' => ['reason']],
         ];
     }
@@ -1577,7 +1601,7 @@ class StaffControlDOnboardingToolExecutor
     {
         return [
             'name' => self::STAGED_TOOL,
-            'description' => 'Stage the Control D onboarding plan for one client (the not-yet-done steps of: organization create or global profile, provisioning code, and an optional Tactical deploy) for ONE cockpit approval by an active Admin. Staging requires an ai_actor token (a person uses the client-page button, which needs a second Admin). The MCP call makes no Control D or Tactical write; the held proposal stores ids, the steps and their pinned values (organization and profile PKs, the code values, the deploy scope and each selected asset\'s Tactical agent), and approval derives the plan again and refuses unless it is identical. Held-only — there is no immediate execution path.',
+            'description' => 'Stage the Control D onboarding plan for one client (the not-yet-done steps of: organization create or global profile, provisioning code, and an optional Tactical deploy) for ONE cockpit approval by an active Admin. Staging requires an ai_actor token (a person uses the client-page button, which needs a second Admin). The MCP call makes no Control D or Tactical write; the held proposal stores ids, the steps and their pinned values (organization and profile PKs, the code values, the deploy scope and each selected asset\'s Tactical agent), and approval derives the plan again and refuses unless it is identical. With a deploy step, the pinned values also include the deploy script\'s own argument list, read from Tactical. Held-only — there is no immediate execution path.',
             'input_schema' => ['type' => 'object', 'properties' => self::properties(true), 'required' => ['ticket_id', 'reason']],
         ];
     }

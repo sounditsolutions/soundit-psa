@@ -1005,10 +1005,16 @@ class TacticalClient
 
     /**
      * Fire-and-forget script execution. Doesn't wait for output.
+     *
+     * #8466: POST, like runScript(). Tactical's agents/{id}/runscript/ view
+     * (agents/views.py run_script) accepts POST only, so the PUT this sent
+     * before was answered 405 and no script ever started. Tactical sends the
+     * args it receives as they are: an empty list is not replaced by the
+     * script's stored default arguments.
      */
     public function runScriptAsync(string $agentId, int $scriptId, ?array $args = null, int $timeout = 120): void
     {
-        $this->put("agents/{$agentId}/runscript/", [
+        $this->post("agents/{$agentId}/runscript/", [
             'output' => 'forget',
             'script' => $scriptId,
             'timeout' => $timeout,

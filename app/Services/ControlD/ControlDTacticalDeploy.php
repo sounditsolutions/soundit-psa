@@ -29,12 +29,19 @@ use App\Support\TacticalConfig;
  *     list runs only on its pinned agents, each refused unless it is under the client and
  *     its local agent→asset link still names the PSA asset pinned at staging.
  *  5. The deploy script (setting ControlDConfig::TACTICAL_DEPLOY_SCRIPT_SETTING) is started on
- *     each agent with runScriptAsync() and NO argument override (args null, sent as []), so
- *     the script's own client-field substitution supplies the value. "started" means Tactical
+ *     each agent with runScriptAsync() (POST agents/{id}/runscript/) and EXACTLY the argument
+ *     list pinned on the card (#8466). That list is the script's own `args` as Tactical stored
+ *     them, read at staging by scriptArgs() and again at approval, where a changed list is
+ *     drift. It must contain the literal placeholder self::CODE_PLACEHOLDER; Tactical, not the
+ *     PSA, replaces it with the client custom field written at step 3 when it runs the script.
+ *     Tactical does not fall back to a script's stored arguments when the request sends none,
+ *     so an empty list would start the script without the code. "started" means Tactical
  *     accepted the run request; it does not mean the agent installed anything.
  *
  * The code is read from the client record only at steps 2–3 and goes nowhere but the field
- * write and the two comparisons: never into script arguments, results, audit text or logs.
+ * write and the comparisons: never into script arguments, results, audit text or logs. The
+ * arguments the PSA sends carry the placeholder, not the code, and a pinned list in which any
+ * argument contains the code itself refuses the step before any Tactical request.
  * No setting or id is hard-coded: an unset field id or script id refuses (fail closed).
  */
 class ControlDTacticalDeploy
@@ -64,6 +71,9 @@ class ControlDTacticalDeploy
 
     public const FAILED = 'failed';
 
+    /** #8466: the Tactical client-field placeholder the deploy script's own arguments must carry. */
+    public const CODE_PLACEHOLDER = '{{client.ControlDOrgCode}}';
+
     public function __construct(private readonly TacticalClient $tactical) {}
 
     /**
@@ -90,11 +100,17 @@ class ControlDTacticalDeploy
         $name = (string) ($pins['tactical_client'] ?? '');
         $scope = $pins['scope'] ?? null;
         $code = Client::find($client->id)?->controld_provisioning_code;
-        if ($name === '' || ! in_array($scope, [self::SCOPE_ALL, self::SCOPE_SELECTED], true)) {
+        $args = $pins['script_args'] ?? null;
+        if ($name === '' || ! in_array($scope, [self::SCOPE_ALL, self::SCOPE_SELECTED], true) || self::argsProblem($args) !== null) {
             return ['reason' => 'the deploy pins are malformed'] + $result;
         }
         if (! is_string($code) || $code === '') {
             return ['reason' => 'the client has no bound provisioning code'] + $result;
+        }
+        foreach ($args as $arg) {
+            if (str_contains($arg, $code)) {
+                return ['reason' => 'a pinned script argument contains the provisioning code itself; the PSA sends only the placeholder, so no script was run'] + $result;
+            }
         }
 
         // 1. The Tactical client: exactly one row with the pinned name (exact case).
@@ -139,14 +155,16 @@ class ControlDTacticalDeploy
             $result['field'] = 'equal';
         }
 
-        return $this->runOnAgents($client, $pins, $tacticalId, $name, $scriptId, $result);
+        return $this->runOnAgents($client, $pins, $tacticalId, $name, $scriptId, $args, $result);
     }
 
     /**
      * 4–5. Resolve the agents under the Tactical client and start the script on each target
-     * with no argument override.
+     * with exactly the pinned argument list.
+     *
+     * @param  list<string>  $args
      */
-    private function runOnAgents(Client $client, array $pins, int $tacticalId, string $name, int $scriptId, array $result): array
+    private function runOnAgents(Client $client, array $pins, int $tacticalId, string $name, int $scriptId, array $args, array $result): array
     {
         try {
             $rows = $this->tactical->get('agents/?client='.$tacticalId);
@@ -181,8 +199,8 @@ class ControlDTacticalDeploy
                 continue;
             }
             try {
-                // No argument override: args null (sent as []), so the script substitutes the field itself.
-                $this->tactical->runScriptAsync($agentId, $scriptId, null);
+                // #8466: exactly the pinned list; Tactical replaces the placeholder from the field.
+                $this->tactical->runScriptAsync($agentId, $scriptId, $args);
                 $result['agents'][$agentId] = self::AGENT_STARTED;
             } catch (\Throwable) {
                 $result['agents'][$agentId] = self::AGENT_FAILED;
@@ -229,6 +247,49 @@ class ControlDTacticalDeploy
         }
 
         return is_string($value) ? $value : false;
+    }
+
+    /**
+     * #8466: the deploy script's own argument list as Tactical stores it (GET scripts/{id}/,
+     * the `args` field), or ['error' => text]. Read at staging and again at approval; the
+     * caller pins it and compares it. Only `args` is taken from the response: the script body
+     * and every other field are never returned, stored, audited or logged. Refuses unless the
+     * list is non-empty, holds only strings, and one of them contains self::CODE_PLACEHOLDER.
+     * There is no fallback for an empty list.
+     *
+     * @return array{args?: list<string>, error?: string}
+     */
+    public function scriptArgs(int $scriptId): array
+    {
+        try {
+            $detail = $this->tactical->getScriptDetail($scriptId);
+        } catch (\Throwable) {
+            return ['error' => 'The deploy step needs the deploy script\'s own arguments, and Tactical could not be read for them.'];
+        }
+        $args = $detail['args'] ?? null;
+        $problem = self::argsProblem($args);
+        if ($problem !== null) {
+            return ['error' => "The deploy script's arguments in Tactical {$problem}. The deploy step runs the script with its own arguments, and they must include ".self::CODE_PLACEHOLDER.' so that Tactical supplies the provisioning code from the client custom field.'];
+        }
+
+        return ['args' => $args];
+    }
+
+    /** Why $args cannot be the deploy script's argument list, or null when it can. */
+    private static function argsProblem(mixed $args): ?string
+    {
+        if (! is_array($args) || $args === [] || ! array_is_list($args)) {
+            return 'are empty or not a list';
+        }
+        $found = false;
+        foreach ($args as $arg) {
+            if (! is_string($arg)) {
+                return 'are not all text';
+            }
+            $found = $found || str_contains($arg, self::CODE_PLACEHOLDER);
+        }
+
+        return $found ? null : 'do not include '.self::CODE_PLACEHOLDER;
     }
 
     /**
