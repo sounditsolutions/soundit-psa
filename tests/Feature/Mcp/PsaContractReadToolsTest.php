@@ -193,7 +193,7 @@ class PsaContractReadToolsTest extends TestCase
         $this->assertSame('A Managed', $result['name']);
         $this->assertArrayHasKey('status', $result);
         $this->assertArrayHasKey('assets_count', $result);
-        foreach (['prepay_balance', 'prepay_total', 'billing_period', 'billing_day', 'payment_terms_days', 'portal_prepay_sku_id'] as $money) {
+        foreach (['prepay_balance', 'prepay_total', 'billing_period', 'billing_day', 'payment_terms_days'] as $money) {
             $this->assertArrayNotHasKey($money, $result);
         }
         $this->assertStringNotContainsString('prepay_balance', (string) $response->json('result.content.0.text'));
@@ -203,5 +203,76 @@ class PsaContractReadToolsTest extends TestCase
         $cross->assertOk();
         $this->assertTrue((bool) $cross->json('result.isError'));
         $this->assertStringContainsString('not found', (string) $cross->json('result.content.0.text'));
+    }
+
+    /**
+     * #8526: get_contract names the contract's portal prepay SKU by id (the one
+     * pricing-adjacent exception, an id with no price), and null when unset.
+     */
+    public function test_get_contract_returns_portal_prepay_sku_id_when_set_and_null_when_not(): void
+    {
+        $client = Client::factory()->create();
+        $sku = \App\Models\Sku::create([
+            'name' => 'Example Prepaid Hour Block',
+            'sku_code' => 'EX-HOUR-BLOCK',
+            'unit_price' => 137.45,
+            'prepaid_time_minutes' => 60,
+            'is_active' => true,
+        ]);
+        $withSku = $this->contract($client, ['name' => 'With SKU', 'portal_prepay_sku_id' => $sku->id]);
+        $withoutSku = $this->contract($client, ['name' => 'Without SKU']);
+        $token = $this->token(['get_contract'], 'chet');
+
+        $set = $this->callTool($token, 'get_contract', ['client_id' => $client->id, 'contract_id' => $withSku->id]);
+        $this->assertFalse((bool) $set->json('result.isError'), (string) $set->json('result.content.0.text'));
+        $withId = $this->decodedResult($set);
+        $this->assertSame($sku->id, $withId['portal_prepay_sku_id']);
+        // The exact key list, top level and prepay block, of this one response:
+        // any key present in this response and not listed here turns this red.
+        // A key emitted only under a condition this fixture does not meet is
+        // not caught.
+        $this->assertSame([
+            'id', 'client_id', 'name', 'type', 'type_label', 'status', 'status_label',
+            'start_date', 'end_date', 'term_length_months', 'auto_renew', 'is_expired',
+            'cancelled_at', 'cancellation_reason', 'has_sla', 'sla_terms', 'notes',
+            'assets_count', 'people_count', 'licenses_count', 'profiles_count',
+            'documents_count', 'prepay', 'portal_prepay_sku_id',
+        ], array_keys($withId));
+        $this->assertSame([
+            'unit', 'as_amount', 'total', 'used', 'expired', 'balance', 'expiry_months',
+            'halo_prepay_synced_at', 'alert_threshold', 'alert_notified_at',
+            'auto_topup_enabled', 'auto_topup_qty',
+        ], array_keys($withId['prepay']));
+        // The id carries no price itself. At every depth, no key matches
+        // price/promo/cost/margin/rate or is exactly 'sku' or
+        // 'portal_prepay_sku'; no scalar value equals the SKU's unit_price
+        // (137.45, as a number or numeric string); and the text "137.45" and the SKU name are absent from
+        // the response text.
+        $walk = function (array $node) use (&$walk): void {
+            foreach ($node as $key => $value) {
+                $this->assertDoesNotMatchRegularExpression('/pric|promo|cost|margin|rate|^(portal_prepay_)?sku$/i', (string) $key);
+                if (is_array($value)) {
+                    $walk($value);
+                } elseif (is_int($value) || is_float($value) || is_string($value)) {
+                    $this->assertFalse(
+                        is_numeric($value) && abs((float) $value - 137.45) < 0.001,
+                        "get_contract carries the SKU price under '{$key}'"
+                    );
+                }
+            }
+        };
+        $walk($withId);
+        $this->assertStringNotContainsString('137.45', (string) $set->json('result.content.0.text'));
+        $this->assertStringNotContainsString('Example Prepaid Hour Block', (string) $set->json('result.content.0.text'));
+
+        $unset = $this->callTool($token, 'get_contract', ['client_id' => $client->id, 'contract_id' => $withoutSku->id]);
+        $this->assertFalse((bool) $unset->json('result.isError'), (string) $unset->json('result.content.0.text'));
+        $result = $this->decodedResult($unset);
+        $this->assertArrayHasKey('portal_prepay_sku_id', $result);
+        $this->assertNull($result['portal_prepay_sku_id']);
+
+        $description = McpToolRegistry::getContractTool()['description'];
+        $this->assertStringContainsString('portal_prepay_sku_id', $description);
+        $this->assertStringContainsString('that SKU id is the one exception', $description);
     }
 }
