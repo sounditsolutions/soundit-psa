@@ -23,10 +23,12 @@ class ControlDConfig
 
     /**
      * P7A74iGD (b): the Tactical RMM script id the onboarding plan's deploy step runs on each
-     * agent (with no argument override, so the script's own client-field substitution supplies
-     * the value). Instance state like the field id above: unset or not a positive integer is
-     * null, and the deploy step then refuses (fails closed). Not one of the six onboarding
-     * defaults: the Control D steps run without it; only a plan with a deploy step needs it.
+     * agent, with the script's own stored argument list, which must contain
+     * {{client.ControlDOrgCode}}; Tactical fills that placeholder from the client custom field
+     * named ControlDOrgCode (inferred from Tactical's source). Instance state like the field id
+     * above: unset or not a positive integer is null, and the deploy step then refuses (fails
+     * closed). Not one of the six onboarding defaults: the Control D steps run without it; only
+     * a plan with a deploy step needs it.
      */
     public const TACTICAL_DEPLOY_SCRIPT_SETTING = 'controld_tactical_deploy_script_id';
 
