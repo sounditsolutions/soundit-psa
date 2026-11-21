@@ -215,7 +215,7 @@ class PsaContractReadToolsTest extends TestCase
         $sku = \App\Models\Sku::create([
             'name' => 'Example Prepaid Hour Block',
             'sku_code' => 'EX-HOUR-BLOCK',
-            'unit_price' => 100.00,
+            'unit_price' => 137.45,
             'prepaid_time_minutes' => 60,
             'is_active' => true,
         ]);
@@ -227,14 +227,26 @@ class PsaContractReadToolsTest extends TestCase
         $this->assertFalse((bool) $set->json('result.isError'), (string) $set->json('result.content.0.text'));
         $withId = $this->decodedResult($set);
         $this->assertSame($sku->id, $withId['portal_prepay_sku_id']);
-        // The id carries no price itself: no key anywhere in the result names a
-        // price, promo, cost or the SKU object, and the SKU's price never appears.
-        array_walk_recursive($withId, function ($value, $key) {
-            $this->assertDoesNotMatchRegularExpression('/price|promo|cost|margin|^portal_prepay_sku$/i', (string) $key);
-        });
-        foreach (array_keys($withId) as $key) {
-            $this->assertDoesNotMatchRegularExpression('/price|promo|cost|margin|^portal_prepay_sku$/i', (string) $key);
-        }
+        // The id carries no price itself. At every depth, no key matches
+        // price/promo/cost/margin/rate or names the SKU object; no scalar
+        // value equals the SKU's unit_price (137.45, as a number or numeric
+        // string); and the text "137.45" and the SKU name are absent from
+        // the response text.
+        $walk = function (array $node) use (&$walk): void {
+            foreach ($node as $key => $value) {
+                $this->assertDoesNotMatchRegularExpression('/pric|promo|cost|margin|rate|^(portal_prepay_)?sku$/i', (string) $key);
+                if (is_array($value)) {
+                    $walk($value);
+                } elseif (is_int($value) || is_float($value) || is_string($value)) {
+                    $this->assertFalse(
+                        is_numeric($value) && abs((float) $value - 137.45) < 0.001,
+                        "get_contract carries the SKU price under '{$key}'"
+                    );
+                }
+            }
+        };
+        $walk($withId);
+        $this->assertStringNotContainsString('137.45', (string) $set->json('result.content.0.text'));
         $this->assertStringNotContainsString('Example Prepaid Hour Block', (string) $set->json('result.content.0.text'));
 
         $unset = $this->callTool($token, 'get_contract', ['client_id' => $client->id, 'contract_id' => $withoutSku->id]);
