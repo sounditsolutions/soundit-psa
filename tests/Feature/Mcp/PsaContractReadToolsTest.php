@@ -227,8 +227,10 @@ class PsaContractReadToolsTest extends TestCase
         $this->assertFalse((bool) $set->json('result.isError'), (string) $set->json('result.content.0.text'));
         $withId = $this->decodedResult($set);
         $this->assertSame($sku->id, $withId['portal_prepay_sku_id']);
-        // The exact key list, top level and prepay block: any key added to
-        // get_contract, whatever its name or encoding, turns this red.
+        // The exact key list, top level and prepay block, of this one response:
+        // any key present in this response and not listed here turns this red.
+        // A key emitted only under a condition this fixture does not meet is
+        // not caught.
         $this->assertSame([
             'id', 'client_id', 'name', 'type', 'type_label', 'status', 'status_label',
             'start_date', 'end_date', 'term_length_months', 'auto_renew', 'is_expired',
