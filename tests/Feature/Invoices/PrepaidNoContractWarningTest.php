@@ -29,9 +29,9 @@ class PrepaidNoContractWarningTest extends TestCase
 {
     use RefreshDatabase;
 
-    private const UNPAID = 'No contract is linked, so this prepaid time will not be credited when the invoice is paid. Link a contract first.';
+    private const UNPAID = 'No contract is linked, so this prepaid time will not be credited when the invoice is paid. A contract can only be chosen when an invoice is created. After payment, add the credit on the contract: Prepay Balance, Adjust.';
 
-    private const PAID = 'No contract was linked when this invoice was paid, so this prepaid time was not credited.';
+    private const PAID = 'No contract was linked when this invoice was paid, so this prepaid time was not credited. Add the credit on the contract: Prepay Balance, Adjust.';
 
     private const LOG_MESSAGE = '[Prepay] Paid invoice carries prepaid minutes but has no contract; no deposit posted';
 

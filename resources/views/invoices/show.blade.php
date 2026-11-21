@@ -360,9 +360,9 @@
                         <div class="alert alert-warning py-2 mt-2 mb-0" role="alert" data-prepaid-no-contract>
                             <i class="bi bi-exclamation-triangle-fill me-1" aria-hidden="true"></i>
                             @if($invoice->status === \App\Enums\InvoiceStatus::Paid)
-                                No contract was linked when this invoice was paid, so this prepaid time was not credited.
+                                No contract was linked when this invoice was paid, so this prepaid time was not credited. Add the credit on the contract: Prepay Balance, Adjust.
                             @else
-                                No contract is linked, so this prepaid time will not be credited when the invoice is paid. Link a contract first.
+                                No contract is linked, so this prepaid time will not be credited when the invoice is paid. A contract can only be chosen when an invoice is created. After payment, add the credit on the contract: Prepay Balance, Adjust.
                             @endif
                         </div>
                     @endif
