@@ -1744,7 +1744,7 @@ name of its Tactical mapping (exactly one exact-case match). Then:
    read from Tactical at staging and pinned with the plan (a list changed by approval is drift
    and refuses). That list must contain `{{client.ControlDOrgCode}}`; Tactical fills that
    placeholder from the client custom field named ControlDOrgCode (inferred from Tactical's
-   source), so the field set above must be that field. Per agent the result is `started` (Tactical accepted
+   source), so the **Tactical client custom field ID** setting must hold that field's ID. Per agent the result is `started` (Tactical accepted
    the request; it does NOT mean Control D was installed), `refused` or `failed`.
 The code never appears in the arguments the PSA sends (they carry the placeholder), the
 proposal, the audit, logs or the result.
@@ -1920,8 +1920,8 @@ automatic beyond what its single approval runs, and nothing is retried on its ow
    **Reconcile** above). An `uncertain` invalidate intent or a `posted` intent cannot be
    reconciled: it is held for a by-hand ruling, and there is no in-app way out for it yet. A
    refused reconcile also goes to a by-hand ruling, never to a re-stage. A deploy step that ends
-   `uncertain` holds no lock and needs no reconcile: check the devices and the client's
-   `controld_org_id` custom field in Tactical.
+   `uncertain` holds no lock and needs no reconcile: check the devices and
+   the client custom field named ControlDOrgCode (the tool's `controld_org_id` key) in Tactical.
 5. **The Tactical deploy (owner-approved, never automatic).** Writing the code into the
    Tactical client custom field is the deploy trigger for every agent under that client. The
    runbook writes it only through the plan's `deploy` step (chosen at staging, run by the same
@@ -1931,8 +1931,8 @@ automatic beyond what its single approval runs, and nothing is retried on its ow
    an explicit `:immediate` grant lane that writes the field unstaged (`staged=false`), with a
    caller-supplied value and no refusal when the field already holds a different value. This
    runbook never uses that lane. Granting it is the owner's call; audit any such grant as a
-   fleet-wide deploy trigger. A deploy writes no intent row, so read it back in Tactical: the
-   client's `controld_org_id` custom field and the deploy script run on the client's agents.
+   fleet-wide deploy trigger. A deploy writes no intent row, so read it back in Tactical:
+   the client custom field named ControlDOrgCode (the tool's `controld_org_id` key) and the deploy script run on the client's agents.
 6. **Undo (the owner's call).** Only the provisioning code can be undone from the PSA:
    **Stage invalidating this code for approval** on the client page, then a second Admin
    approves (see **Invalidate code** above). Devices already enrolled stay enrolled, and the
