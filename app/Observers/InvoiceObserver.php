@@ -69,6 +69,22 @@ class InvoiceObserver
         }
 
         if (! $invoice->contract_id) {
+            // #8527: a deposit needs a contract to land on, so the skip stays.
+            // It must not be silent: a paid invoice carrying prepaid minutes
+            // and no contract posts nothing. This branch runs only on a status
+            // change (guard above), so the line fires once, on the move to Paid.
+            if ($invoice->status === InvoiceStatus::Paid) {
+                $invoice->loadMissing('lines');
+                $minutes = (int) $invoice->lines->sum('prepaid_time_minutes');
+
+                if ($minutes > 0) {
+                    Log::warning('[Prepay] Paid invoice carries prepaid minutes but has no contract; no deposit posted', [
+                        'invoice_id' => $invoice->id,
+                        'minutes' => $minutes,
+                    ]);
+                }
+            }
+
             return;
         }
 

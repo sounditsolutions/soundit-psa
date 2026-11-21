@@ -355,6 +355,17 @@
                         <i class="bi bi-clock-fill me-1"></i>
                         This invoice includes <strong>{{ round($totalPrepaidMinutes / 60, 2) }} hours</strong> of prepaid time
                     </div>
+                    {{-- #8527: prepay is credited only to a contract; staff page only. --}}
+                    @if(! $invoice->contract_id && $invoice->status !== \App\Enums\InvoiceStatus::Void)
+                        <div class="alert alert-warning py-2 mt-2 mb-0" role="alert" data-prepaid-no-contract>
+                            <i class="bi bi-exclamation-triangle-fill me-1" aria-hidden="true"></i>
+                            @if($invoice->status === \App\Enums\InvoiceStatus::Paid)
+                                No contract was linked when this invoice was paid, so this prepaid time was not credited.
+                            @else
+                                No contract is linked, so this prepaid time will not be credited when the invoice is paid. Link a contract first.
+                            @endif
+                        </div>
+                    @endif
                 @endif
             </div>
         </div>

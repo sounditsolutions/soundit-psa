@@ -1,0 +1,75 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Invoice detail: prepaid time with no contract (staff)</title><link rel="stylesheet" href="../_tokens.css">
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--psa-colors-canvas); color: var(--psa-colors-ink); font-family: var(--psa-typography-body-font-family); font-size: 14px; line-height: var(--psa-typography-body-line-height); }
+main { padding: var(--psa-spacing-md) var(--psa-spacing-lg); max-width: 1280px; }
+.caption { font-family: var(--psa-typography-title-font-family); color: var(--psa-colors-muted-ink); margin: 0 0 var(--psa-spacing-sm); font-size: 13px; }
+.topnav { background: var(--psa-colors-navy); color: var(--psa-colors-surface); display: flex; gap: var(--psa-spacing-lg); align-items: center; padding: var(--psa-spacing-sm) var(--psa-spacing-lg); font-family: var(--psa-typography-title-font-family); }
+.topnav b { margin-right: var(--psa-spacing-lg); }
+.topnav a { color: var(--psa-colors-surface); text-decoration: none; opacity: .85; padding-bottom: 2px; }
+.topnav a.on { color: var(--psa-colors-signal-gold); opacity: 1; border-bottom: 3px solid var(--psa-colors-signal-gold); }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--psa-spacing-lg); }
+h4 { font-family: var(--psa-typography-title-font-family); color: var(--psa-colors-navy); margin: var(--psa-spacing-sm) 0; display: flex; align-items: center; gap: var(--psa-spacing-sm); }
+.badge { display: inline-block; border-radius: var(--psa-rounded-pill); padding: 2px 10px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+.b-posted { background: var(--psa-colors-info); color: var(--psa-colors-surface); }
+.b-paid { background: var(--psa-colors-success); color: var(--psa-colors-surface); }
+.card { background: var(--psa-colors-surface); border: 1px solid var(--psa-colors-border); border-radius: var(--psa-rounded-md); overflow: hidden; margin-bottom: var(--psa-spacing-md); }
+.card-header { background: var(--psa-colors-navy); color: var(--psa-colors-surface); font-family: var(--psa-typography-title-font-family); font-weight: 600; padding: var(--psa-spacing-sm) var(--psa-spacing-md); text-transform: uppercase; font-size: 13px; letter-spacing: .04em; }
+.card-header i { color: var(--psa-colors-signal-gold); font-style: normal; margin-right: 6px; }
+.card-body { padding: var(--psa-spacing-md); }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; color: var(--psa-colors-muted-ink); font-weight: 600; padding: 4px 0; }
+td { text-align: right; padding: 4px 0; font-variant-numeric: tabular-nums; }
+tr.total th, tr.total td { color: var(--psa-colors-ink); font-weight: 700; }
+.alert { border-radius: var(--psa-rounded-sm); padding: var(--psa-spacing-sm) var(--psa-spacing-md); margin-top: var(--psa-spacing-sm); display: flex; gap: var(--psa-spacing-sm); align-items: flex-start; }
+.alert-info { background: color-mix(in srgb, var(--psa-colors-info) 14%, var(--psa-colors-surface)); border: 1px solid color-mix(in srgb, var(--psa-colors-info) 40%, var(--psa-colors-surface)); color: var(--psa-colors-ink); }
+.alert-warning { background: color-mix(in srgb, var(--psa-colors-warning) 18%, var(--psa-colors-surface)); border: 1px solid color-mix(in srgb, var(--psa-colors-warning) 55%, var(--psa-colors-surface)); color: var(--psa-colors-ink); }
+.ico { flex: none; width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+.ico-info { background: var(--psa-colors-info); color: var(--psa-colors-surface); }
+.ico-warn { background: var(--psa-colors-warning); color: var(--psa-colors-navy-deep); border-radius: 2px; }
+.note { color: var(--psa-colors-muted-ink); font-size: 12px; margin: var(--psa-spacing-sm) 0 0; }
+.legend { margin-top: var(--psa-spacing-lg); font-size: 13px; color: var(--psa-colors-muted-ink); }
+.legend b { color: var(--psa-colors-ink); }
+</style></head>
+<body>
+<nav class="topnav"><b>SoundPSA</b><a>Tickets</a><a>Clients</a><a class="on">Invoices</a><a>Contracts</a></nav>
+<main>
+<p class="caption">Invoice detail, Totals card (staff page only). Fake data. Left: not yet paid. Right: Paid.</p>
+<div class="cols">
+  <section>
+    <h4>INV-EXAMPLE-0101 <span class="badge b-posted">Posted</span></h4>
+    <div class="card">
+      <div class="card-header"><i>$</i>Totals</div>
+      <div class="card-body">
+        <table>
+          <tr><th>Subtotal</th><td>$500.00</td></tr>
+          <tr><th>Tax</th><td>$0.00</td></tr>
+          <tr class="total"><th>Total</th><td>$500.00</td></tr>
+        </table>
+        <div class="alert alert-info"><span class="ico ico-info">i</span><span>This invoice includes <strong>5 hours</strong> of prepaid time</span></div>
+        <div class="alert alert-warning" role="alert"><span class="ico ico-warn">!</span><span>No contract is linked, so this prepaid time will not be credited when the invoice is paid. Link a contract first.</span></div>
+      </div>
+    </div>
+  </section>
+  <section>
+    <h4>INV-EXAMPLE-0102 <span class="badge b-paid">Paid</span></h4>
+    <div class="card">
+      <div class="card-header"><i>$</i>Totals</div>
+      <div class="card-body">
+        <table>
+          <tr><th>Subtotal</th><td>$500.00</td></tr>
+          <tr><th>Tax</th><td>$0.00</td></tr>
+          <tr class="total"><th>Total</th><td>$500.00</td></tr>
+        </table>
+        <div class="alert alert-info"><span class="ico ico-info">i</span><span>This invoice includes <strong>5 hours</strong> of prepaid time</span></div>
+        <div class="alert alert-warning" role="alert"><span class="ico ico-warn">!</span><span>No contract was linked when this invoice was paid, so this prepaid time was not credited.</span></div>
+      </div>
+    </div>
+  </section>
+</div>
+<div class="legend">
+  <p><b>Shown when</b> the invoice carries prepaid minutes and has no contract. <b>Not shown</b> on a Void invoice, on an invoice with a contract, or with no prepaid minutes.</p>
+  <p>Status stays colour plus text (the badge). The warning sits under the existing prepaid note in the Totals card. Not shown in the client portal, in any PDF or in any mail.</p>
+</div>
+</main>
+</body></html>
