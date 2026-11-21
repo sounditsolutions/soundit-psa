@@ -17,8 +17,10 @@ use App\Services\ControlD\ControlDOnboardingStaged;
 use App\Services\ControlD\ControlDProvisioning;
 use App\Services\Mcp\StaffControlDOnboardingToolExecutor;
 use App\Services\Tactical\TacticalClient;
+use App\Services\Tactical\TacticalClientException;
 use App\Support\ControlDConfig;
 use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
@@ -71,6 +73,27 @@ class ControlDOnboardPlanTest extends TestCase
 
     /** @var array<int, array<string, mixed>> agent rows for GET agents/?client= */
     private array $agents = [];
+
+    /** #8466: the deploy script's own `args` served by GET scripts/{SCRIPT}/ (synthetic). */
+    private mixed $scriptArgs = ['-OrgCode', '{{client.ControlDOrgCode}}', '-Quiet'];
+
+    /** #8466 C-56: when set, answers GET scripts/{id}/ instead of the script record (a failed or degraded read). */
+    private ?\Closure $scriptAnswer = null;
+
+    /** The deploy script's stored argument list, as the run body must carry it. */
+    private const ARGS = ['-OrgCode', '{{client.ControlDOrgCode}}', '-Quiet'];
+
+    /** #8466 diff:1: a synthetic 32-character run of letters and digits that is not the bound code. */
+    private const RUN = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6';
+
+    /** #8466: the one Tactical read staging (and approval) makes for a plan with a deploy step. */
+    private const SCRIPT_READ = 'GET scripts/'.self::SCRIPT.'/';
+
+    /** #8466 r3: a unique synthetic marker put into one script argument; it may reach only the sealed payload and a runscript body. */
+    private const MARK = 'SYNTH-ARG-MARKER-q7z';
+
+    /** #8466 r3: when set, the Tactical request "METHOD path" equal to it answers 500 (a failed read). */
+    private ?string $failRequest = null;
 
     public function beginDatabaseTransaction(): void
     {
@@ -182,6 +205,9 @@ class ControlDOnboardPlanTest extends TestCase
             $path = ltrim($request->getUri()->getPath(), '/');
             $query = $request->getUri()->getQuery();
             $json = static fn ($body, int $status = 200) => Create::promiseFor(new Response($status, [], json_encode($body)));
+            if ($this->failRequest === "{$method} {$path}") {
+                return $json(['detail' => 'synthetic failure'], 500);
+            }
             if ($method === 'GET' && $path === 'clients/') {
                 return $json([['id' => self::TC, 'name' => self::TC_NAME], ['id' => self::TC + 1, 'name' => 'Another Synthetic Client']]);
             }
@@ -205,7 +231,17 @@ class ControlDOnboardPlanTest extends TestCase
             if ($method === 'GET' && $path === 'agents/' && $query === 'client='.self::TC) {
                 return $json($this->agents);
             }
-            if ($method === 'PUT' && preg_match('#^agents/[^/]+/runscript/$#', $path)) {
+            if ($method === 'GET' && preg_match('#^scripts/(\d+)/$#', $path, $m)) {
+                if ($this->scriptAnswer !== null) {
+                    return ($this->scriptAnswer)($request, (int) $m[1]);
+                }
+
+                // The real detail carries the script body too; the deploy must take only `args`.
+                return $json(['id' => (int) $m[1], 'name' => 'Synthetic Control D deploy', 'shell' => 'powershell',
+                    'script_body' => 'Write-Host synthetic-script-body', 'args' => $this->scriptArgs, 'env_vars' => []]);
+            }
+            // #8466: Tactical's runscript view is POST-only; anything else falls through to the 599 below.
+            if ($method === 'POST' && preg_match('#^agents/[^/]+/runscript/$#', $path)) {
                 return $json('ok');
             }
 
@@ -225,6 +261,15 @@ class ControlDOnboardPlanTest extends TestCase
 
             return $t['request']->getMethod().' '.ltrim($uri->getPath(), '/').($uri->getQuery() !== '' ? '?'.$uri->getQuery() : '');
         }, $this->tac);
+    }
+
+    /** The JSON body of the one client custom field write (PUT clients/{TC}/). */
+    private function fieldWriteBody(): string
+    {
+        $writes = array_values(array_filter($this->tac, static fn (array $t): bool => $t['request']->getMethod() === 'PUT' && str_starts_with(ltrim($t['request']->getUri()->getPath(), '/'), 'clients/')));
+        $this->assertCount(1, $writes);
+
+        return (string) $writes[0]['request']->getBody();
     }
 
     /** @return list<array<string, mixed>> the JSON bodies of every runscript request */
@@ -286,7 +331,8 @@ class ControlDOnboardPlanTest extends TestCase
         $f = $this->fixture();
         $staged = $this->stage($f['client'], $f['ticket'], 'all');
         $this->assertSame(['organization', 'code', 'deploy'], $staged['steps'] ?? null, json_encode($staged));
-        $this->assertSame([], $this->tacticalRequests(), 'staging makes no Tactical request');
+        $this->assertSame([self::SCRIPT_READ], $this->tacticalRequests(), "staging makes one Tactical request: the read of the deploy script's own arguments");
+        $this->assertSame(self::ARGS, $this->payload($staged['run_id'])['deploy']['script_args'], 'the script\'s own args are pinned');
         $this->assertSame(0, ControlDOnboardingIntent::count());
 
         $this->controlD($this->orgAndCodeResponses());
@@ -300,14 +346,16 @@ class ControlDOnboardPlanTest extends TestCase
         $intents = ControlDOnboardingIntent::pluck('state', 'operation')->all();
         ksort($intents);
         $this->assertSame(['code' => 'bound', 'organization' => 'bound'], $intents);
-        // Tactical: resolve, read field, write once, read back, list agents, one script run per agent.
-        $this->assertSame(['GET clients/', 'GET clients/'.self::TC.'/', 'PUT clients/'.self::TC.'/', 'GET clients/'.self::TC.'/', 'GET agents/?client='.self::TC,
-            'PUT agents/agent-a/runscript/', 'PUT agents/agent-b/runscript/'], $this->tacticalRequests());
-        $put = json_decode((string) $this->tac[2]['request']->getBody(), true);
+        // Tactical: script args (staging, approval), resolve, read field, write once, read back, list agents, one POST script run per agent.
+        $this->assertSame([self::SCRIPT_READ, self::SCRIPT_READ, 'GET clients/', 'GET clients/'.self::TC.'/', 'PUT clients/'.self::TC.'/', 'GET clients/'.self::TC.'/', 'GET agents/?client='.self::TC,
+            'POST agents/agent-a/runscript/', 'POST agents/agent-b/runscript/'], $this->tacticalRequests());
+        $put = json_decode($this->fieldWriteBody(), true);
         $this->assertSame([['field' => self::FIELD, 'string_value' => self::CODE]], $put['custom_fields']);
+        $this->assertCount(2, $this->scriptRuns());
         foreach ($this->scriptRuns() as $run) {
             $this->assertSame(self::SCRIPT, $run['script']);
-            $this->assertSame([], $run['args'], 'no argument override');
+            $this->assertSame(self::ARGS, $run['args'], "#8466: exactly the script's own args pinned at staging");
+            $this->assertContains('{{client.ControlDOrgCode}}', $run['args'], 'the placeholder Tactical fills from the field');
             $this->assertSame([], $run['env_vars']);
         }
         $this->assertStringContainsString('Deploy: started', (string) $result->message);
@@ -381,7 +429,7 @@ class ControlDOnboardPlanTest extends TestCase
         $this->tac = [];
         $result = $this->approve($staged['run_id']);
 
-        $this->assertSame([], $this->tacticalRequests(), 'THE DEPLOY GATE: no Tactical request of any kind when the code is not bound');
+        $this->assertSame([self::SCRIPT_READ], $this->tacticalRequests(), "THE DEPLOY GATE: no Tactical write and no script run when the code is not bound; only approval's read of the script's arguments");
         $this->assertSame('executed_with_fault', $result->status);
         // Jeeves 10:51Z: no new run state; the run closes Done and every surface says it did not complete.
         $this->assertSame(TechnicianRunState::Done, TechnicianRun::find($staged['run_id'])->state);
@@ -425,47 +473,49 @@ class ControlDOnboardPlanTest extends TestCase
         return [
             'a changed setting (headroom)' => [function (array $f): void {
                 Setting::setValue('controld_code_device_limit_headroom', '3');
-            }, 'The code values pinned on this card'],
+            }, 'The code values pinned on this card', [self::SCRIPT_READ]],
             'a changed pin (expiry)' => [function (array $f): void {
                 Setting::setValue('controld_code_expiry_days', '30');
-            }, 'The code values pinned on this card'],
+            }, 'The code values pinned on this card', [self::SCRIPT_READ]],
             'a step already bound by someone else' => [function (array $f): void {
                 $f['client']->forceFill(['controld_org_id' => 'racedOrg01'])->save();
-            }, "the client now needs the steps 'code, deploy', not 'organization, code, deploy'"],
+            }, "the client now needs the steps 'code, deploy', not 'organization, code, deploy'", [self::SCRIPT_READ]],
             'a changed asset to agent pin' => [function (array $f): void {
                 TacticalAsset::where('asset_id', $f['asset']->id)->update(['agent_id' => 'agent-moved']);
-            }, "a device's Tactical agent link"],
+            }, "a device's Tactical agent link", [self::SCRIPT_READ]],
             'the asset unlinked' => [function (array $f): void {
                 TacticalAsset::where('asset_id', $f['asset']->id)->delete();
-            }, 'is not a current asset of this client linked to exactly one Tactical agent'],
+            }, 'is not a current asset of this client linked to exactly one Tactical agent', []],
             'the deploy script setting cleared' => [function (array $f): void {
                 Setting::setValue(ControlDConfig::TACTICAL_DEPLOY_SCRIPT_SETTING, '');
-            }, 'Tactical deploy script ID'],
+            }, 'Tactical deploy script ID', []],
             'the deploy script setting changed' => [function (array $f): void {
                 Setting::setValue(ControlDConfig::TACTICAL_DEPLOY_SCRIPT_SETTING, (string) (self::SCRIPT + 1));
-            }, 'Tactical client custom field ID or deploy script ID differs'],
+            }, 'Tactical client custom field ID or deploy script ID differs', ['GET scripts/'.(self::SCRIPT + 1).'/']],
             'the client custom field setting changed' => [function (array $f): void {
                 Setting::setValue('controld_tactical_client_field_id', (string) (self::FIELD + 1));
-            }, 'Tactical client custom field ID or deploy script ID differs'],
+            }, 'Tactical client custom field ID or deploy script ID differs', [self::SCRIPT_READ]],
             'the client contact email changed' => [function (array $f): void {
                 $f['client']->forceFill(['email' => 'changed@example.invalid'])->save();
-            }, "the client's name or contact email, or the configured analytics region or global profile, differs"],
+            }, "the client's name or contact email, or the configured analytics region or global profile, differs", [self::SCRIPT_READ]],
             'the analytics region changed' => [function (array $f): void {
                 Setting::setValue('controld_stats_endpoint', 'other-region');
-            }, "the client's name or contact email, or the configured analytics region or global profile, differs"],
+            }, "the client's name or contact email, or the configured analytics region or global profile, differs", [self::SCRIPT_READ]],
             'the configured global profile changed' => [function (array $f): void {
                 Setting::setValue('controld_default_profile_id', 'testprofile02');
-            }, "the client's name or contact email, or the configured analytics region or global profile, differs"],
+            }, "the client's name or contact email, or the configured analytics region or global profile, differs", [self::SCRIPT_READ]],
         ];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('drifts')]
-    public function test_approval_drift_refuses_with_nothing_written(\Closure $drift, string $why): void
+    public function test_approval_drift_refuses_with_nothing_written(\Closure $drift, string $why, array $reads): void
     {
         $f = $this->fixture();
         $f['asset'] = $this->linkedAsset($f['client'], 'agent-a', 'WS-A');
         $staged = $this->stage($f['client'], $f['ticket'], [$f['asset']->id]);
         $this->assertSame(['organization', 'code', 'deploy'], $staged['steps'], json_encode($staged));
+        $this->assertSame([self::SCRIPT_READ], $this->tacticalRequests(), 'staging read the pinned script once');
+        $this->tac = [];
         $this->assertSame([[$f['asset']->id, 'agent-a']], $this->payload($staged['run_id'])['deploy']['assets']);
         $drift($f);
         $this->controlD([$this->ok(['sub_organizations' => [$this->listed('racedOrg01')]])]);
@@ -478,7 +528,7 @@ class ControlDOnboardPlanTest extends TestCase
         $this->assertSame(TechnicianRunState::AwaitingApproval, TechnicianRun::find($staged['run_id'])->state);
         $this->assertSame(0, ControlDOnboardingIntent::count());
         $this->assertSame([], array_values(array_filter($this->cd, fn ($h) => $h['request']->getMethod() !== 'GET')), 'no Control D write');
-        $this->assertSame([], $this->tacticalRequests(), 'no Tactical request');
+        $this->assertSame($reads, $this->tacticalRequests(), "#8466 diff:7: approval's Tactical requests are exactly these reads; no write, no script run");
         $this->assertSame(1, TechnicianActionLog::where('run_id', $staged['run_id'])->where('result_status', 'blocked')->where('summary', 'like', '%approval refused%nothing was changed at Control D or in Tactical.')->count());
     }
 
@@ -541,7 +591,7 @@ class ControlDOnboardPlanTest extends TestCase
         $staged = $this->deployOnly($f, [$asset->id]);
         $this->assertSame('executed', $staged['result']->status, (string) $staged['result']->message);
         $this->assertSame(['agent-b'], array_column($this->scriptRuns(), 'agent'));
-        $this->assertSame([], $this->scriptRuns()[0]['args']);
+        $this->assertSame(self::ARGS, $this->scriptRuns()[0]['args']);
         $this->assertSame(TechnicianRunState::Done, TechnicianRun::find($staged['run_id'])->state);
         $this->assertStringContainsString('1 named device: WS-B (asset #'.$asset->id.', agent agent-b)', TechnicianRun::find($staged['run_id'])->proposed_content);
     }
@@ -551,7 +601,7 @@ class ControlDOnboardPlanTest extends TestCase
     {
         $this->fieldValue = self::OTHER;
         $staged = $this->deployOnly($this->onboarded(), 'all');
-        $this->assertSame(['GET clients/', 'GET clients/'.self::TC.'/'], $this->tacticalRequests());
+        $this->assertSame([self::SCRIPT_READ, 'GET clients/', 'GET clients/'.self::TC.'/'], $this->tacticalRequests());
         $this->assertSame(self::OTHER, $this->fieldValue, 'the field is left as it is');
         // Nothing was written anywhere, so the run is not closed: it waits for the approver to deny it.
         $this->assertSame('gate_declined', $staged['result']->status);
@@ -565,8 +615,8 @@ class ControlDOnboardPlanTest extends TestCase
     {
         $this->fieldValue = '';
         $staged = $this->deployOnly($this->onboarded(), 'all');
-        $this->assertSame(['GET clients/', 'GET clients/'.self::TC.'/', 'PUT clients/'.self::TC.'/', 'GET clients/'.self::TC.'/', 'GET agents/?client='.self::TC,
-            'PUT agents/agent-a/runscript/', 'PUT agents/agent-b/runscript/'], $this->tacticalRequests());
+        $this->assertSame([self::SCRIPT_READ, 'GET clients/', 'GET clients/'.self::TC.'/', 'PUT clients/'.self::TC.'/', 'GET clients/'.self::TC.'/', 'GET agents/?client='.self::TC,
+            'POST agents/agent-a/runscript/', 'POST agents/agent-b/runscript/'], $this->tacticalRequests());
         $this->assertSame('executed', $staged['result']->status, (string) $staged['result']->message);
         $this->assertSame(self::CODE, $this->fieldValue);
     }
@@ -576,7 +626,7 @@ class ControlDOnboardPlanTest extends TestCase
     {
         $this->fieldValue = self::CODE;
         $staged = $this->deployOnly($this->onboarded(), 'all');
-        $this->assertSame(['GET clients/', 'GET clients/'.self::TC.'/', 'GET agents/?client='.self::TC, 'PUT agents/agent-a/runscript/', 'PUT agents/agent-b/runscript/'], $this->tacticalRequests());
+        $this->assertSame([self::SCRIPT_READ, 'GET clients/', 'GET clients/'.self::TC.'/', 'GET agents/?client='.self::TC, 'POST agents/agent-a/runscript/', 'POST agents/agent-b/runscript/'], $this->tacticalRequests());
         $this->assertSame('executed', $staged['result']->status);
         $this->assertSame(1, TechnicianActionLog::where('run_id', $staged['run_id'])->where('summary', 'like', '%:deploy: started; Tactical client #'.self::TC.', field equal;%')->count());
     }
@@ -597,7 +647,7 @@ class ControlDOnboardPlanTest extends TestCase
     {
         $this->readBackOverride = $readBack;
         $staged = $this->deployOnly($this->onboarded(), 'all');
-        $this->assertSame(['GET clients/', 'GET clients/'.self::TC.'/', 'PUT clients/'.self::TC.'/', 'GET clients/'.self::TC.'/'], $this->tacticalRequests());
+        $this->assertSame([self::SCRIPT_READ, 'GET clients/', 'GET clients/'.self::TC.'/', 'PUT clients/'.self::TC.'/', 'GET clients/'.self::TC.'/'], $this->tacticalRequests());
         $this->assertSame([], $this->scriptRuns());
         $this->assertSame(TechnicianRunState::Done, TechnicianRun::find($staged['run_id'])->state);
         $this->assertStringContainsString('Deploy: uncertain: the read-back did not show the bound code in the custom field; no script was run.', (string) $staged['result']->message);
@@ -608,7 +658,7 @@ class ControlDOnboardPlanTest extends TestCase
     {
         $this->putFails = true;
         $staged = $this->deployOnly($this->onboarded(), 'all');
-        $this->assertSame(['GET clients/', 'GET clients/'.self::TC.'/', 'PUT clients/'.self::TC.'/'], $this->tacticalRequests());
+        $this->assertSame([self::SCRIPT_READ, 'GET clients/', 'GET clients/'.self::TC.'/', 'PUT clients/'.self::TC.'/'], $this->tacticalRequests());
         $this->assertStringContainsString('Deploy: uncertain: the custom field write or its read-back failed', (string) $staged['result']->message);
         $this->assertSame(TechnicianRunState::Done, TechnicianRun::find($staged['run_id'])->state);
     }
@@ -665,7 +715,12 @@ class ControlDOnboardPlanTest extends TestCase
         $f = $this->onboarded();
         $this->controlD([]);
         $staged = $this->stage($f['client'], $f['ticket'], 'all');
-        $this->app->bind(TacticalClient::class, static fn () => throw new \RuntimeException('synthetic fault'));
+        // The first resolution is approval's re-read of the script's arguments; the deploy's own resolution then faults.
+        $real = app(TacticalClient::class);
+        $calls = 0;
+        $this->app->bind(TacticalClient::class, static function () use ($real, &$calls) {
+            return ++$calls === 1 ? $real : throw new \RuntimeException('synthetic fault');
+        });
         $result = $this->approve($staged['run_id']);
         $message = (string) $result->message;
         $this->assertSame('executed_with_fault', $result->status);
@@ -721,10 +776,12 @@ class ControlDOnboardPlanTest extends TestCase
         $f = $this->onboarded();
         $this->controlD([]);
         $staged = $this->stage($f['client'], $f['ticket'], 'all');
+        $this->assertSame([self::SCRIPT_READ], $this->tacticalRequests(), 'staging read the pinned script once');
+        $this->tac = [];
         Setting::setValue(ControlDConfig::TACTICAL_DEPLOY_SCRIPT_SETTING, '0');
         $result = $this->approve($staged['run_id']);
         $this->assertSame('gate_declined', $result->status);
-        $this->assertSame([], $this->tacticalRequests());
+        $this->assertSame([], $this->tacticalRequests(), '#8466 diff:7: no Tactical request at all, and no GET scripts/0/');
     }
 
     /** The code never appears in script arguments, audit rows, logs, the proposal, the result or the run. */
@@ -743,7 +800,8 @@ class ControlDOnboardPlanTest extends TestCase
         $result = $this->approve($staged['run_id']);
         $this->assertSame('executed', $result->status, (string) $result->message);
         // Positive controls: the code IS what was written to the field, and the logger is captured.
-        $this->assertStringContainsString(self::CODE, (string) $this->tac[2]['request']->getBody());
+        $this->assertStringContainsString(self::CODE, $this->fieldWriteBody());
+        $this->assertCount(2, $this->scriptRuns(), 'positive control: the script runs were sent');
         $this->assertContains(json_encode(['info', 'capture-sentinel', []]), $logs->getArrayCopy());
         foreach ($this->scriptRuns() as $run) {
             $this->assertStringNotContainsString(self::CODE, json_encode($run));
@@ -783,7 +841,11 @@ class ControlDOnboardPlanTest extends TestCase
         $this->assertStringContainsString('2. Provisioning code (writes at Control D): cuts one provisioning code', $c);
         $this->assertStringContainsString('3. Deploy (writes in Tactical RMM): runs only if the provisioning code is bound', $c);
         $this->assertStringContainsString('if it holds a different value, the deploy step refuses and writes nothing', $c);
-        $this->assertStringContainsString('with no arguments from the PSA, on 1 named device: WS-A (asset #'.$asset->id.', agent agent-a)', $c);
+        // #8466 contract:1 A: the count and the placeholder's presence, never a value; diff:3: the one true mechanism, labelled inferred.
+        $this->assertStringContainsString("with the script's own arguments as Tactical listed them when this was staged: 3 arguments; the Control D org-code placeholder is among them. Their values are kept only in this plan's sealed payload and are not shown here; approval refuses if they change. Tactical fills {{client.ControlDOrgCode}} from the client custom field named ControlDOrgCode when it runs the script (inferred from Tactical's source; to be verified at the production done-check), so this works only when the configured field #".self::FIELD.' is that field. The PSA sends the placeholder, never the code. It runs on 1 named device: WS-A (asset #'.$asset->id.', agent agent-a)', $c);
+        foreach (['-OrgCode', '-Quiet', '["'] as $value) {
+            $this->assertStringNotContainsString($value, $c, 'no argument value is shown on the card');
+        }
         $this->assertStringContainsString('Undo: '.StaffControlDOnboardingToolExecutor::PLAN_UNDO, $c);
         $this->assertStringContainsString('Devices already enrolled are not removed', StaffControlDOnboardingToolExecutor::PLAN_UNDO);
         $this->assertStringContainsString('only the provisioning code can be undone', StaffControlDOnboardingToolExecutor::PLAN_UNDO);
@@ -814,7 +876,7 @@ class ControlDOnboardPlanTest extends TestCase
         $error = (string) session('error');
         $this->assertStringStartsWith("The onboarding run did not complete: the 'code' step ended uncertain.", $error);
         $this->assertNull(session('success'), 'never on the success channel');
-        $this->assertSame([], $this->tacticalRequests());
+        $this->assertSame([self::SCRIPT_READ], $this->tacticalRequests(), '#8466 diff:7: one read of the pinned script and nothing else');
 
         // Positive control: a completed deploy-only plan is on the success channel and says it completed.
         $g = $this->onboarded();
@@ -875,11 +937,11 @@ class ControlDOnboardPlanTest extends TestCase
         $c = TechnicianRun::findOrFail($staged['run_id'])->proposed_content;
         $this->assertStringContainsString('analytics region synthetic-region, with the configured global profile testprofile01, and binds', $c);
         $this->assertStringContainsString('Reads custom field #'.self::FIELD.' of Tactical client', $c);
-        $this->assertStringContainsString('run the configured deploy script (#'.self::SCRIPT.'), with no arguments from the PSA', $c);
+        $this->assertStringContainsString('run the configured deploy script (#'.self::SCRIPT.") with the script's own arguments", $c);
 
         // The deploy service runs only the pinned ids: a setting that differs from its pin refuses before any Tactical request.
         $g = $this->onboarded();
-        $pins = ['scope' => 'all', 'tactical_client' => self::TC_NAME, 'assets' => [], 'field_id' => self::FIELD, 'script_id' => self::SCRIPT];
+        $pins = ['scope' => 'all', 'tactical_client' => self::TC_NAME, 'assets' => [], 'field_id' => self::FIELD, 'script_id' => self::SCRIPT, 'script_args' => self::ARGS];
         foreach ([['script_id' => self::SCRIPT + 1], ['field_id' => self::FIELD + 1], ['field_id' => null]] as $other) {
             $this->tac = [];
             $out = (new \App\Services\ControlD\ControlDTacticalDeploy(app(TacticalClient::class)))->execute($g['client'], array_merge($pins, $other));
@@ -889,6 +951,552 @@ class ControlDOnboardPlanTest extends TestCase
         $this->tac = [];
         $out = (new \App\Services\ControlD\ControlDTacticalDeploy(app(TacticalClient::class)))->execute($g['client'], $pins);
         $this->assertSame(\App\Services\ControlD\ControlDTacticalDeploy::STARTED, $out['outcome'], 'positive control: the pinned ids run');
+    }
+
+    // ── #8466: the deploy script's own arguments ─────────────────────────────────────────
+
+    /**
+     * Staging refuses (no run, no Tactical write) unless the script's own args are a non-empty
+     * list of strings carrying the placeholder, and never with the code itself in them.
+     *
+     * @return array<string, array{mixed, string}>
+     */
+    public static function badScriptArgs(): array
+    {
+        return [
+            'empty' => [[], 'are empty or not a list'],
+            'absent' => [null, 'are empty or not a list'],
+            'not a list' => [['org' => '{{client.ControlDOrgCode}}'], 'are empty or not a list'],
+            'a non-string' => [['{{client.ControlDOrgCode}}', 7], 'are not all text'],
+            'no placeholder' => [['-OrgCode', '{{client.SomethingElse}}'], 'do not include {{client.ControlDOrgCode}}'],
+            'the code itself' => [['-OrgCode', self::CODE], 'do not include {{client.ControlDOrgCode}}'],
+            'the code beside the placeholder' => [['{{client.ControlDOrgCode}}', '-Fallback='.self::CODE], "Argument 2 of the deploy script in Tactical contains this client's provisioning code itself"],
+            // Jeeves diff:1 A: another code-shaped run refuses too, by position, never by value.
+            'another code-shaped run in a flag' => [['{{client.ControlDOrgCode}}', '-Fallback='.self::RUN], 'Argument 2 of the deploy script in Tactical carries a code-shaped run'],
+            'a run joined to the placeholder' => [['-Quiet', '{{client.ControlDOrgCode}}'.self::RUN], 'Argument 2 of the deploy script in Tactical carries a code-shaped run'],
+            'a run split by the placeholder' => [['-Quiet', '-Quiet', substr(self::RUN, 0, 16).'{{client.ControlDOrgCode}}'.substr(self::RUN, 16)], 'Argument 3 of the deploy script in Tactical carries a code-shaped run'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('badScriptArgs')]
+    public function test_staging_refuses_when_the_script_args_are_empty_or_lack_the_placeholder(mixed $args, string $why): void
+    {
+        $logs = $this->captureLogs();
+        $this->scriptArgs = $args;
+        $f = $this->onboarded();
+        $this->controlD([]);
+        $result = $this->stage($f['client'], $f['ticket'], 'all');
+        $this->assertStringContainsString($why, (string) ($result['error'] ?? ''), json_encode($result));
+        $this->assertStringContainsString('Nothing was staged.', (string) $result['error']);
+        $this->assertSame(0, TechnicianRun::count(), 'no plan');
+        $this->assertSame([self::SCRIPT_READ], $this->tacticalRequests(), 'one read of the script, nothing else');
+        $this->assertStringNotContainsString(self::CODE, json_encode($result));
+        $this->assertStringNotContainsString(self::CODE, json_encode(TechnicianActionLog::all()->toArray()));
+        $this->assertStringNotContainsString(self::CODE, implode("\n", $logs->getArrayCopy()));
+        $this->assertStringNotContainsString('synthetic-script-body', json_encode([$result, TechnicianActionLog::all()->toArray(), $logs->getArrayCopy()]), 'the script body is never returned or audited');
+        // Positive control: the same client stages once the script carries the placeholder.
+        $this->scriptArgs = self::ARGS;
+        $ok = $this->stage($f['client'], $f['ticket'], 'all');
+        $this->assertSame(['deploy'], $ok['steps'] ?? null, json_encode($ok));
+    }
+
+    /**
+     * #8466 diff:4 + context:3 (C-56): a failed or degraded read of the deploy script refuses staging
+     * as a READ failure, with the HTTP status (when there is one) and the exception class, and writes
+     * one warning line carrying the script id, the status and the class only (never a body or args).
+     *
+     * @return array<string, array{\Closure, string, ?int, ?string}>
+     */
+    public static function failedScriptReads(): array
+    {
+        $json = static fn ($body, int $status = 200) => Create::promiseFor(new Response($status, [], json_encode($body)));
+
+        return [
+            'a 404' => [fn () => $json(['detail' => 'SYNTH-BODY-MARKER'], 404), 'and Tactical answered the read with HTTP 404 (TacticalClientException). This is a failed read;', 404, TacticalClientException::class],
+            'a 401' => [fn () => $json(['detail' => 'SYNTH-BODY-MARKER'], 401), 'and Tactical answered the read with HTTP 401 (TacticalClientException). This is a failed read;', 401, TacticalClientException::class],
+            'a connection failure' => [fn (RequestInterface $r) => Create::rejectionFor(new ConnectException('SYNTH-BODY-MARKER', $r)), 'and the read got no answer from Tactical (TacticalClientException). This is a failed read;', null, TacticalClientException::class],
+            // #8466 r3 diff:6: the script's own record without `args` is told so, not "not the script's record".
+            'a 200 with no args key' => [fn ($r, int $id) => $json(['id' => $id, 'name' => 'SYNTH-BODY-MARKER']), "and Tactical answered with the script's record, but the record has no args field. The answer could not be used;", null, null],
+            'a 200 for another script' => [fn ($r, int $id) => $json(['id' => $id + 1, 'args' => ['SYNTH-BODY-MARKER', '{{client.ControlDOrgCode}}']]), "and Tactical answered, but not with the script's record. The answer could not be used;", null, null],
+            // TacticalClient::get() is typed array, so a JSON string body throws a TypeError inside the read (r3 contract:5: Tactical answered, so no "could not be read").
+            'a 200 that is not an object' => [fn () => $json('SYNTH-BODY-MARKER'), 'and the read ended in an error in the PSA (TypeError; an answer that is not a JSON object ends this way);', null, \TypeError::class],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('failedScriptReads')]
+    public function test_a_failed_or_degraded_script_read_refuses_as_a_read_failure_with_status_and_class(\Closure $answer, string $detail, ?int $status, ?string $class): void
+    {
+        $logs = $this->captureLogs();
+        $f = $this->onboarded();
+        $this->controlD([]);
+        $this->scriptAnswer = $answer;
+        $result = $this->stage($f['client'], $f['ticket'], 'all');
+        $error = (string) ($result['error'] ?? '');
+        $this->assertStringContainsString("The deploy step needs the deploy script's own arguments, and ", $error, json_encode($result));
+        $this->assertStringContainsString($detail, $error);
+        $this->assertStringContainsString("this is not a problem with the script's arguments. Nothing was staged.", $error);
+        $this->assertStringNotContainsString('are empty or not a list', $error, 'a degraded read is not reported as an args problem');
+        if ($status === null) {
+            $this->assertStringNotContainsString('HTTP', $error, 'no status is claimed when there was none');
+        }
+        $this->assertStringNotContainsString('could not be read', $error, '#8466 r3: no arm claims Tactical could not be read');
+        $this->assertSame(0, TechnicianRun::count());
+        $this->assertSame([self::SCRIPT_READ], $this->tacticalRequests(), 'one read; no fallback');
+        $warning = json_encode(['warning', "[ControlDTacticalDeploy] The deploy script's arguments could not be taken from Tactical", ['script_id' => self::SCRIPT, 'status' => $status, 'exception' => $class]]);
+        $this->assertSame(1, count(array_keys($logs->getArrayCopy(), $warning, true)), 'exactly one warning line with the script id, status and class only: '.implode("\n", $logs->getArrayCopy()));
+        $this->assertStringNotContainsString('SYNTH-BODY-MARKER', implode("\n", $logs->getArrayCopy()), 'no response body in any log line');
+        $this->assertStringNotContainsString('SYNTH-BODY-MARKER', json_encode([$result, TechnicianActionLog::all()->toArray()]));
+        $this->assertSame(1, TechnicianActionLog::where('result_status', 'rejected')->where('summary', 'like', '%'.$detail.'%')->count(), 'the refusal is audited with the same detail');
+
+        // The same at approval: a card staged on a good read is refused when the re-read fails.
+        $this->scriptAnswer = null;
+        $staged = $this->stage($f['client'], $f['ticket'], 'all');
+        $this->scriptAnswer = $answer;
+        $this->tac = [];
+        $approval = $this->approve($staged['run_id']);
+        $this->assertSame('gate_declined', $approval->status);
+        $this->assertStringContainsString("The deploy script's arguments could not be confirmed at approval", (string) $approval->message);
+        $this->assertStringContainsString($detail, (string) $approval->message);
+        // #8466 r3 context:4: a temporary read failure passes on a later approval, so the message must not say only "deny".
+        $this->assertStringContainsString('Approving again helps only if the cause was temporary, such as a failed read; otherwise deny this proposal, fix the cause named above, and stage again.', (string) $approval->message);
+        $this->assertSame([self::SCRIPT_READ], $this->tacticalRequests());
+    }
+
+    /**
+     * Approval re-reads the script's args: a changed list is drift (deny and re-stage), with no
+     * Tactical write and no script run; an emptied list or a lost placeholder refuses the same way.
+     *
+     * @return array<string, array{mixed, string}>
+     */
+    public static function changedScriptArgs(): array
+    {
+        return [
+            'an argument added' => [[...self::ARGS, '-Verbose'], "the deploy script's own arguments in Tactical differ from the ones pinned on it"],
+            'reordered' => [array_reverse(self::ARGS), "the deploy script's own arguments in Tactical differ from the ones pinned on it"],
+            'emptied' => [[], "The deploy script's arguments could not be confirmed at approval"],
+            'placeholder removed' => [['-OrgCode', 'literal', '-Quiet'], "The deploy script's arguments could not be confirmed at approval"],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('changedScriptArgs')]
+    public function test_approval_denies_when_the_script_args_changed_after_staging(mixed $changed, string $why): void
+    {
+        $f = $this->onboarded();
+        $this->controlD([]);
+        $staged = $this->stage($f['client'], $f['ticket'], 'all');
+        $this->assertSame(self::ARGS, $this->payload($staged['run_id'])['deploy']['script_args']);
+        $this->scriptArgs = $changed;
+        $this->tac = [];
+        $result = $this->approve($staged['run_id']);
+        $this->assertSame('gate_declined', $result->status, (string) $result->message);
+        $this->assertStringContainsString($why, (string) $result->message);
+        $this->assertStringContainsString('stage again', (string) $result->message);
+        $this->assertSame([self::SCRIPT_READ], $this->tacticalRequests(), 'no field write and no script run');
+        $this->assertSame(TechnicianRunState::AwaitingApproval, TechnicianRun::find($staged['run_id'])->state);
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $staged['run_id'])->where('result_status', 'blocked')->where('summary', 'like', '%approval refused%')->count());
+        // Positive control: restored, the same card approves and sends the pinned list.
+        $this->scriptArgs = self::ARGS;
+        $this->assertSame('executed', $this->approve($staged['run_id'])->status);
+        $this->assertSame([self::ARGS, self::ARGS], array_column($this->scriptRuns(), 'args'));
+    }
+
+    /**
+     * Every outbound runscript body carries the pinned placeholder and never the provisioning
+     * code; a pin that holds the code refuses before any Tactical request.
+     */
+    public function test_no_provisioning_code_value_appears_in_any_outbound_runscript_body(): void
+    {
+        $f = $this->onboarded();
+        $asset = $this->linkedAsset($f['client'], 'agent-a', 'WS-A');
+        $staged = $this->deployOnly($f, [$asset->id]);
+        $this->assertSame('executed', $staged['result']->status, (string) $staged['result']->message);
+        $runs = array_values(array_filter($this->tac, static fn (array $t): bool => str_ends_with($t['request']->getUri()->getPath(), '/runscript/')));
+        $this->assertCount(1, $runs, 'positive control: a run body was sent');
+        foreach ($runs as $t) {
+            $this->assertSame('POST', $t['request']->getMethod());
+            $body = (string) $t['request']->getBody();
+            $this->assertStringContainsString('{{client.ControlDOrgCode}}', json_decode($body, true)['args'][1]);
+            $this->assertStringNotContainsString(self::CODE, $body);
+        }
+        $this->assertStringContainsString(self::CODE, $this->fieldWriteBody(), 'positive control: the code went to the field write');
+
+        // A pinned list that holds the code itself (a tampered card) is refused before any Tactical request.
+        $pins = ['scope' => 'all', 'tactical_client' => self::TC_NAME, 'assets' => [], 'field_id' => self::FIELD, 'script_id' => self::SCRIPT];
+        foreach ([['{{client.ControlDOrgCode}}', self::CODE], ['{{client.ControlDOrgCode}}', 'x'.self::CODE.'y']] as $tampered) {
+            $this->tac = [];
+            $out = (new \App\Services\ControlD\ControlDTacticalDeploy(app(TacticalClient::class)))->execute($f['client'], $pins + ['script_args' => $tampered]);
+            $this->assertSame('refused', $out['outcome'], json_encode($out));
+            $this->assertStringNotContainsString(self::CODE, json_encode($out));
+            $this->assertSame([], $this->tacticalRequests());
+        }
+        // A pin without a usable list (absent, empty, no placeholder) is malformed: refused before any Tactical request.
+        foreach ([[], ['script_args' => []], ['script_args' => ['-OrgCode', 'x']]] as $bad) {
+            $this->tac = [];
+            $out = (new \App\Services\ControlD\ControlDTacticalDeploy(app(TacticalClient::class)))->execute($f['client'], $pins + $bad);
+            $this->assertSame(['refused', 'the deploy pins are malformed'], [$out['outcome'], $out['reason']]);
+            $this->assertSame([], $this->tacticalRequests());
+        }
+    }
+
+    /**
+     * #8466 Jeeves contract:1 A: a unique marker in one stored argument is found in none of the plaintext
+     * places (the card, the run's other meta, audit rows, approval and drift messages, the MCP tool
+     * result, log lines, the session), through staging over MCP, a drift refusal at approval, and an
+     * approval that executes. It appears only in the encrypted payload and the outbound runscript bodies.
+     */
+    public function test_an_argument_value_reaches_only_the_sealed_payload_and_the_runscript_body(): void
+    {
+        $marker = 'SYNTH-ARG-MARKER-q7z';
+        $args = ['-OrgCode', '{{client.ControlDOrgCode}}', '-Tag='.$marker];
+        $this->scriptArgs = $args;
+        $logs = $this->captureLogs();
+        $f = $this->onboarded();
+        $this->controlD([]);
+        $token = \App\Support\McpConfig::rotateStaffToken(allowedTools: ['controld_onboard_client:staged'], label: 'opsbot', aiActor: true);
+        $response = $this->withHeaders(['Authorization' => 'Bearer '.$token])->postJson('/api/mcp/staff', [
+            'jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/call',
+            'params' => ['name' => 'controld_onboard_client', 'arguments' => ['client_id' => $f['client']->id, 'ticket_id' => $f['ticket']->id, 'reason' => 'onboard', 'staged' => true, 'deploy' => 'all']],
+        ]);
+        $mcp = (string) $response->getContent();
+        $staged = json_decode((string) $response->json('result.content.0.text'), true) ?? [];
+        $this->assertSame(['deploy'], $staged['steps'] ?? null, $mcp);
+        $this->assertSame($args, $this->payload($staged['run_id'])['deploy']['script_args'], 'positive control: the sealed payload carries the marker');
+
+        // Drift: the stored list changes (the marker stays in it); approval refuses.
+        $this->scriptArgs = [...$args, '-Verbose'];
+        $drift = $this->approve($staged['run_id']);
+        $this->assertSame('gate_declined', $drift->status);
+        $this->assertStringContainsString("the deploy script's own arguments in Tactical differ from the ones pinned on it", (string) $drift->message);
+
+        // Restored: approval executes and sends the pinned list.
+        $this->scriptArgs = $args;
+        $this->tac = [];
+        $done = $this->approve($staged['run_id']);
+        $this->assertSame('executed', $done->status, (string) $done->message);
+        $this->assertCount(2, $this->scriptRuns());
+        foreach ($this->scriptRuns() as $run) {
+            $this->assertSame($args, $run['args'], 'positive control: the runscript body carries the marker');
+        }
+
+        $run = TechnicianRun::findOrFail($staged['run_id']);
+        $meta = $run->proposed_meta;
+        unset($meta['encrypted_payload']);
+        $this->assertStringContainsString('3 arguments; the Control D org-code placeholder is among them.', (string) $run->proposed_content);
+        $this->assertContains(json_encode(['info', 'capture-sentinel', []]), $logs->getArrayCopy(), 'positive control: the logger is captured');
+        $places = [
+            'the card' => (string) $run->proposed_content,
+            'the run meta' => json_encode($meta),
+            'the run row' => json_encode(collect($run->getAttributes())->except('proposed_meta')->all()),
+            'the audit rows' => json_encode(TechnicianActionLog::all()->toArray()),
+            'the drift message' => (string) $drift->message,
+            'the result message' => (string) $done->message,
+            'the MCP tool result' => $mcp,
+            'the log lines' => implode("\n", $logs->getArrayCopy()),
+            'the session' => json_encode(session()->all()),
+        ];
+        foreach ($places as $where => $text) {
+            $this->assertStringNotContainsString($marker, $text, "the argument value reached {$where}");
+        }
+    }
+
+    /**
+     * #8466 Jeeves diff:1 A: execute() refuses a pinned argument that, with every placeholder taken out,
+     * still carries a code-shaped run; the reason names the position only. Positive control: the
+     * placeholder alone, a placeholder next to ordinary flags, and a 31-character run all run.
+     */
+    public function test_execute_refuses_a_code_shaped_run_in_a_pinned_argument_by_position_only(): void
+    {
+        $f = $this->onboarded();
+        $pins = ['scope' => 'all', 'tactical_client' => self::TC_NAME, 'assets' => [], 'field_id' => self::FIELD, 'script_id' => self::SCRIPT];
+        $cases = [
+            [['{{client.ControlDOrgCode}}', '-Fallback='.self::RUN], 2],
+            [['-Quiet', '{{client.ControlDOrgCode}}'.self::RUN], 2],
+            [['-Quiet', '-Quiet', substr(self::RUN, 0, 16).'{{client.ControlDOrgCode}}'.substr(self::RUN, 16)], 3],
+            [['{{client.ControlDOrgCode}}{{client.ControlDOrgCode}}', self::OTHER], 2],
+        ];
+        foreach ($cases as [$args, $position]) {
+            $this->tac = [];
+            $out = (new \App\Services\ControlD\ControlDTacticalDeploy(app(TacticalClient::class)))->execute($f['client'], $pins + ['script_args' => $args]);
+            $this->assertSame(['refused', "pinned script argument {$position} carries a code-shaped run (32 or more letters and digits, in one run once invisible characters are dropped, or in pieces separated only by whitespace) besides the placeholder; no script was run"], [$out['outcome'], $out['reason']], json_encode($args));
+            $this->assertSame([], $this->tacticalRequests(), 'refused before any Tactical request');
+            $this->assertStringNotContainsString(self::RUN, json_encode($out));
+            $this->assertStringNotContainsString(self::OTHER, json_encode($out));
+        }
+        foreach ([['{{client.ControlDOrgCode}}'], ['-OrgCode', '{{client.ControlDOrgCode}}', '-Quiet'], ['{{client.ControlDOrgCode}}', substr(self::RUN, 0, 31)]] as $fine) {
+            $this->tac = [];
+            $out = (new \App\Services\ControlD\ControlDTacticalDeploy(app(TacticalClient::class)))->execute($f['client'], $pins + ['script_args' => $fine]);
+            $this->assertSame(\App\Services\ControlD\ControlDTacticalDeploy::STARTED, $out['outcome'], 'positive control: '.json_encode([$fine, $out]));
+        }
+    }
+
+    /**
+     * #8466 context:4: an undecryptable stored code refuses at staging and at approval with an audited
+     * message; neither the message, the audit rows nor any log line carry exception text or a value.
+     * execute() refuses the same way before any Tactical request.
+     */
+    public function test_an_undecryptable_stored_code_refuses_with_an_audited_message(): void
+    {
+        $logs = $this->captureLogs();
+        $f = $this->onboarded();
+        $this->controlD([]);
+        $staged = $this->stage($f['client'], $f['ticket'], 'all');
+        $this->assertSame(['deploy'], $staged['steps'] ?? null, json_encode($staged));
+        // The stored ciphertext no longer decrypts (a rotated key or a legacy row).
+        DB::table('clients')->where('id', $f['client']->id)->update(['controld_provisioning_code' => 'not-a-ciphertext']);
+        $this->tac = [];
+        $approval = $this->approve($staged['run_id']);
+        $this->assertSame('gate_declined', $approval->status, (string) $approval->message);
+        $why = "The client's stored provisioning code cannot be decrypted, so the deploy script's arguments cannot be checked against it. Fix or clear the stored code first.";
+        $this->assertSame("The deploy step could not be re-checked at approval ({$why}). Deny this proposal. Nothing was created and nothing was changed at Control D or in Tactical.", $approval->message);
+        $this->assertSame([self::SCRIPT_READ], $this->tacticalRequests());
+        $this->assertSame(1, TechnicianActionLog::where('run_id', $staged['run_id'])->where('result_status', 'blocked')->where('summary', 'like', '%approval refused — '.$why.'%')->count());
+
+        $ticket = Ticket::factory()->for($f['client'])->create(['subject' => 'again', 'status' => \App\Enums\TicketStatus::New->value]);
+        $result = $this->stage($f['client'], $ticket, 'all');
+        $this->assertSame($why.' Nothing was staged.', $result['error'] ?? null, json_encode($result));
+        $this->assertSame(1, TechnicianActionLog::where('ticket_id', $ticket->id)->where('result_status', 'rejected')->where('summary', $why.' Nothing was staged.')->count(), 'the staging refusal is audited');
+
+        $pins = ['scope' => 'all', 'tactical_client' => self::TC_NAME, 'assets' => [], 'field_id' => self::FIELD, 'script_id' => self::SCRIPT, 'script_args' => self::ARGS];
+        $this->tac = [];
+        $out = (new \App\Services\ControlD\ControlDTacticalDeploy(app(TacticalClient::class)))->execute($f['client'], $pins);
+        $this->assertSame(['refused', "the client's stored provisioning code cannot be decrypted; no script was run"], [$out['outcome'], $out['reason']]);
+        $this->assertSame([], $this->tacticalRequests());
+
+        $all = implode("\n", $logs->getArrayCopy()).json_encode([$approval->message, $result, $out, TechnicianActionLog::all()->toArray()]);
+        $this->assertStringContainsString('The stored provisioning code could not be decrypted at plan derivation', $all, 'positive control: the refusal was logged');
+        foreach (['not-a-ciphertext', 'The payload is invalid', 'DecryptException', 'Exception'] as $leak) {
+            $this->assertStringNotContainsString($leak, $all, "no exception text or value: {$leak}");
+        }
+    }
+
+    // ── #8466 r3 ───────────────────────────────────────────────────────────────
+
+    /** #8466 r3: a synthetic bound code that is short and not code-shaped, so only the bound-code check can see it. */
+    private const SHORT = 'Syn7short9Q';
+
+    /**
+     * #8466 r3 item 1 (contract:1): with a short bound code that carriesCodeRun() does not flag,
+     * execute() still refuses a pinned argument that contains it, by its own reason and by
+     * position, before any Tactical request; staging refuses the same argument the same way.
+     * This is the only test that reaches the bound-code arm of execute() alone.
+     */
+    public function test_execute_refuses_a_pinned_argument_that_contains_a_short_bound_code(): void
+    {
+        $f = $this->onboarded();
+        $f['client']->forceFill(['controld_provisioning_code' => self::SHORT])->save();
+        $args = ['{{client.ControlDOrgCode}}', '-Fallback='.self::SHORT];
+        // Control: the code-shape screen does not see this argument, so it cannot stand in for the bound-code check.
+        $this->assertNull(\App\Services\ControlD\ControlDTacticalDeploy::codeShapedArgument($args));
+        $this->assertFalse(ControlDClient::carriesCodeRun(self::SHORT));
+
+        $pins = ['scope' => 'all', 'tactical_client' => self::TC_NAME, 'assets' => [], 'field_id' => self::FIELD, 'script_id' => self::SCRIPT];
+        $this->tac = [];
+        $out = (new \App\Services\ControlD\ControlDTacticalDeploy(app(TacticalClient::class)))->execute($f['client'], $pins + ['script_args' => $args]);
+        $this->assertSame(['refused', 'pinned script argument 2 contains the provisioning code itself; the PSA sends only the placeholder, so no script was run'], [$out['outcome'], $out['reason']]);
+        $this->assertSame([], $this->tacticalRequests(), 'refused before any Tactical request');
+        $this->assertStringNotContainsString(self::SHORT, json_encode($out));
+
+        // Staging: the same list refuses by position, with no value.
+        $this->scriptArgs = $args;
+        $this->controlD([]);
+        $result = $this->stage($f['client'], $f['ticket'], 'all');
+        $this->assertSame("Argument 2 of the deploy script in Tactical contains this client's provisioning code itself; the arguments must carry only the {{client.ControlDOrgCode}} placeholder. Nothing was staged.", $result['error'] ?? null, json_encode($result));
+        $this->assertStringNotContainsString(self::SHORT, json_encode([$result, TechnicianActionLog::all()->toArray()]));
+
+        // Positive control: without the code in it, the same short-code client runs.
+        $this->tac = [];
+        $out = (new \App\Services\ControlD\ControlDTacticalDeploy(app(TacticalClient::class)))->execute($f['client'], $pins + ['script_args' => ['{{client.ControlDOrgCode}}', '-Fallback=none']]);
+        $this->assertSame(\App\Services\ControlD\ControlDTacticalDeploy::STARTED, $out['outcome'], json_encode($out));
+    }
+
+    /**
+     * #8466 r3 items 3 and 5 (diff:4, contract:3, diff:5): the onboard tool description gives the one
+     * mechanism the card and docblocks give: the placeholder fill is inferred and to be verified, it
+     * works only when the configured field id is the field named ControlDOrgCode, and the screen
+     * joins pieces across whitespace, per argument.
+     */
+    public function test_the_tool_description_labels_the_placeholder_fill_inferred_with_its_field_condition(): void
+    {
+        $description = StaffControlDOnboardingToolExecutor::definitions()[0]['description'];
+        foreach ([
+            "that Tactical fills the placeholder from the client custom field named ControlDOrgCode is inferred from Tactical's source and to be verified at the production done-check",
+            'it works only when the configured client custom field id is that field, which nothing checks',
+            'still carries 32 or more letters and digits in one run (invisible characters dropped) or in pieces separated only by whitespace refuses',
+            'the screen is per argument, so a code split across arguments or by punctuation is not caught',
+        ] as $says) {
+            $this->assertStringContainsString($says, $description);
+        }
+        $this->assertStringNotContainsString('which Tactical fills from the client custom field named ControlDOrgCode, so', $description, 'no unlabelled statement of the fill');
+    }
+
+    /**
+     * #8466 r3 item 2 (diff:3): every staging (and approval) refusal arm, reached with a unique
+     * marker in a script argument or in Tactical's answer.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function markedStagingRefusals(): array
+    {
+        return [
+            'not a list' => ['not_list', 'are empty or not a list'],
+            'not all text' => ['not_text', 'are not all text'],
+            'no placeholder' => ['no_placeholder', 'do not include {{client.ControlDOrgCode}}'],
+            'the bound code in an argument' => ['code', "Argument 2 of the deploy script in Tactical contains this client's provisioning code itself"],
+            'a code-shaped run' => ['shaped', 'Argument 2 of the deploy script in Tactical carries a code-shaped run'],
+            'another script record' => ['other_record', "Tactical answered, but not with the script's record"],
+            'the record without args' => ['no_args_field', "Tactical answered with the script's record, but the record has no args field"],
+            'an HTTP error' => ['http_error', 'Tactical answered the read with HTTP 500'],
+            'no answer' => ['no_answer', 'the read got no answer from Tactical (TacticalClientException)'],
+            'an answer that is not an object' => ['not_object', 'the read ended in an error in the PSA (TypeError'],
+            'an undecryptable code' => ['undecryptable', "The client's stored provisioning code cannot be decrypted"],
+            'a fault before the read' => ['fault', 'it faulted in the PSA before it had them (RuntimeException)'],
+        ];
+    }
+
+    /** Put the deploy step into the refusal arm $arm, with self::MARK in what Tactical serves. */
+    private function enterStagingArm(string $arm, array $f): void
+    {
+        $mark = '-Tag='.self::MARK;
+        $json = static fn ($body, int $status = 200) => Create::promiseFor(new Response($status, [], json_encode($body)));
+        match ($arm) {
+            'not_list' => $this->scriptArgs = ['org' => '{{client.ControlDOrgCode}}', 'tag' => $mark],
+            'not_text' => $this->scriptArgs = ['{{client.ControlDOrgCode}}', $mark, 7],
+            'no_placeholder' => $this->scriptArgs = [$mark, '{{client.SomethingElse}}'],
+            'code' => $this->scriptArgs = ['{{client.ControlDOrgCode}}', $mark.'='.self::CODE],
+            'shaped' => $this->scriptArgs = ['{{client.ControlDOrgCode}}', $mark.' '.self::RUN],
+            'other_record' => $this->scriptAnswer = fn ($r, int $id) => $json(['id' => $id + 1, 'args' => ['{{client.ControlDOrgCode}}', $mark]]),
+            'no_args_field' => $this->scriptAnswer = fn ($r, int $id) => $json(['id' => $id, 'name' => $mark, 'default_args' => [$mark]]),
+            'http_error' => $this->scriptAnswer = fn () => $json(['detail' => $mark, 'args' => [$mark]], 500),
+            'no_answer' => $this->scriptAnswer = fn (RequestInterface $r) => Create::rejectionFor(new ConnectException($mark, $r)),
+            'not_object' => $this->scriptAnswer = fn () => $json($mark),
+            'undecryptable' => DB::table('clients')->where('id', $f['client']->id)->update(['controld_provisioning_code' => 'not-a-ciphertext']),
+            'fault' => $this->app->bind(TacticalClient::class, static fn () => throw new \RuntimeException('synthetic fault')),
+        };
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('markedStagingRefusals')]
+    public function test_no_staging_or_approval_refusal_carries_an_argument_value(string $arm, string $reason): void
+    {
+        $logs = $this->captureLogs();
+        $marked = ['-OrgCode', '{{client.ControlDOrgCode}}', '-Tag='.self::MARK];
+
+        // Staging refuses in the arm (the arms that do not set their own list keep the marked one).
+        $this->scriptArgs = $marked;
+        $f = $this->onboarded();
+        $this->controlD([]);
+        $this->enterStagingArm($arm, $f);
+        $result = $this->stage($f['client'], $f['ticket'], 'all');
+        $this->assertStringContainsString($reason, (string) ($result['error'] ?? ''), json_encode($result));
+        $this->assertSame(0, TechnicianRun::count(), 'no plan');
+
+        // Approval refuses in the same arm: a card staged on a good, marked list.
+        $this->bindTactical();
+        $this->scriptAnswer = null;
+        $this->scriptArgs = $marked;
+        $g = $this->onboarded();
+        $this->controlD([]);
+        $staged = $this->stage($g['client'], $g['ticket'], 'all');
+        $this->assertSame(['deploy'], $staged['steps'] ?? null, json_encode($staged));
+        $this->assertSame($marked, $this->payload($staged['run_id'])['deploy']['script_args'], 'positive control: the marker is in the sealed payload');
+        $this->enterStagingArm($arm, $g);
+        $approval = $this->approve($staged['run_id']);
+        $this->assertSame('gate_declined', $approval->status, (string) $approval->message);
+        $this->assertStringContainsString($reason, (string) $approval->message);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, TechnicianRun::find($staged['run_id'])->state);
+
+        $this->assertContains(json_encode(['info', 'capture-sentinel', []]), $logs->getArrayCopy(), 'positive control: the logger is captured');
+        $run = TechnicianRun::findOrFail($staged['run_id']);
+        $meta = $run->proposed_meta;
+        unset($meta['encrypted_payload']);
+        $places = [
+            'the staging result' => json_encode($result),
+            'the approval message' => (string) $approval->message,
+            'the audit rows' => json_encode(TechnicianActionLog::all()->toArray()),
+            'the log lines' => implode("\n", $logs->getArrayCopy()),
+            'the card' => (string) $run->proposed_content,
+            'the run meta' => json_encode($meta),
+        ];
+        foreach ($places as $where => $text) {
+            $this->assertStringNotContainsString(self::MARK, $text, "the argument value reached {$where}");
+        }
+    }
+
+    /**
+     * #8466 r3 item 2 (diff:3): every execute() refusal arm, and every Tactical-side arm the deploy
+     * step can end in, reached with self::MARK in a pinned argument. No reason, result message,
+     * audit row or log line carries it; only the runscript bodies may.
+     */
+    public function test_no_execute_refusal_carries_an_argument_value(): void
+    {
+        $logs = $this->captureLogs();
+        $marked = ['-OrgCode', '{{client.ControlDOrgCode}}', '-Tag='.self::MARK];
+        $deploy = fn () => new \App\Services\ControlD\ControlDTacticalDeploy(app(TacticalClient::class));
+        $f = $this->onboarded();
+        $pins = ['scope' => 'all', 'tactical_client' => self::TC_NAME, 'assets' => [], 'field_id' => self::FIELD, 'script_id' => self::SCRIPT, 'script_args' => $marked];
+        $texts = [];
+
+        // Arms decided before any Tactical request (or on the client list): execute() directly.
+        $undecryptable = $this->onboarded();
+        DB::table('clients')->where('id', $undecryptable['client']->id)->update(['controld_provisioning_code' => 'not-a-ciphertext']);
+        $unbound = $this->fixture();
+        $direct = [
+            'a pinned id that differs' => [$f['client'], ['script_id' => self::SCRIPT + 1] + $pins, 'differs from the one pinned on the card'],
+            'malformed pins' => [$f['client'], ['script_args' => ['-Tag='.self::MARK]] + $pins, 'the deploy pins are malformed'],
+            'an undecryptable code' => [$undecryptable['client'], $pins, 'cannot be decrypted'],
+            'no bound code' => [$unbound['client'], $pins, 'the client has no bound provisioning code'],
+            'the code in an argument' => [$f['client'], ['script_args' => ['{{client.ControlDOrgCode}}', '-Tag='.self::MARK.'='.self::CODE]] + $pins, 'contains the provisioning code itself'],
+            'a code-shaped run' => [$f['client'], ['script_args' => ['{{client.ControlDOrgCode}}', '-Tag='.self::MARK.' '.self::RUN]] + $pins, 'carries a code-shaped run'],
+            'no single Tactical client' => [$f['client'], ['tactical_client' => 'Missing Synthetic Client'] + $pins, 'does not list exactly one client'],
+        ];
+        foreach ($direct as $case => [$client, $p, $reason]) {
+            $this->tac = [];
+            $out = $deploy()->execute($client, $p);
+            $this->assertStringContainsString($reason, $out['reason'], $case.': '.json_encode($out));
+            $this->assertSame([], $this->scriptRuns(), $case);
+            $texts[$case] = json_encode($out);
+        }
+        Setting::setValue(ControlDConfig::TACTICAL_DEPLOY_SCRIPT_SETTING, '');
+        $out = $deploy()->execute($f['client'], $pins);
+        $this->assertStringContainsString('is not set', $out['reason']);
+        $texts['an unset setting'] = json_encode($out);
+        Setting::setValue(ControlDConfig::TACTICAL_DEPLOY_SCRIPT_SETTING, (string) self::SCRIPT);
+
+        // Arms Tactical decides: through a staged, approved card carrying the marked list.
+        $this->scriptArgs = $marked;
+        $tactical = [
+            'the client list read fails' => [fn () => $this->failRequest = 'GET clients/', 'the Tactical client or its custom field could not be read'],
+            'the field is in an unknown shape' => [fn () => $this->fieldValue = ['not', 'a', 'string'], 'could not be read in a known shape'],
+            'the field holds another value' => [fn () => $this->fieldValue = self::OTHER, 'already holds a different value'],
+            'the field write fails' => [fn () => $this->putFails = true, 'the custom field write or its read-back failed'],
+            'the read-back differs' => [fn () => $this->readBackOverride = 'synthetic-other', 'the read-back did not show the bound code'],
+            'the agent list read fails' => [fn () => $this->failRequest = 'GET agents/', "the client's agents could not be read"],
+            'no agents' => [fn () => $this->agents = [], 'Tactical lists no agents under the client'],
+            'one run fails' => [fn () => $this->failRequest = 'POST agents/agent-a/runscript/', 'script run requested on 1 of 2 agents (refused 0, failed 1)'],
+        ];
+        foreach ($tactical as $case => [$arrange, $reason]) {
+            [$this->failRequest, $this->fieldValue, $this->putFails, $this->readBackOverride] = [null, null, false, null];
+            $this->agents = [
+                ['agent_id' => 'agent-a', 'hostname' => 'WS-A', 'client_name' => self::TC_NAME, 'site_name' => 'Main'],
+                ['agent_id' => 'agent-b', 'hostname' => 'WS-B', 'client_name' => self::TC_NAME, 'site_name' => 'Main'],
+            ];
+            $arrange();
+            $staged = $this->deployOnly($this->onboarded(), 'all');
+            $message = (string) $staged['result']->message;
+            $this->assertStringContainsString($reason, $message, $case);
+            $this->assertSame($marked, $this->payload($staged['run_id'])['deploy']['script_args'], 'positive control: the marker is in the sealed payload');
+            $texts[$case] = $message;
+        }
+        $this->assertNotSame([], $this->scriptRuns(), 'positive control: the last case sent runscript bodies');
+        foreach ($this->scriptRuns() as $run) {
+            $this->assertSame($marked, $run['args'], 'positive control: the runscript body carries the marker');
+        }
+
+        $this->assertContains(json_encode(['info', 'capture-sentinel', []]), $logs->getArrayCopy(), 'positive control: the logger is captured');
+        $texts['the audit rows'] = json_encode(TechnicianActionLog::all()->toArray());
+        $texts['the log lines'] = implode("\n", $logs->getArrayCopy());
+        foreach ($texts as $where => $text) {
+            $this->assertStringNotContainsString(self::MARK, $text, "the argument value reached {$where}");
+        }
     }
 
     /**
