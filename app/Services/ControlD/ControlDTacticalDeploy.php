@@ -6,8 +6,11 @@ use App\Models\Asset;
 use App\Models\Client;
 use App\Models\TacticalAsset;
 use App\Services\Tactical\TacticalClient;
+use App\Services\Tactical\TacticalClientException;
 use App\Support\ControlDConfig;
 use App\Support\TacticalConfig;
+use Illuminate\Contracts\Encryption\DecryptException;
+use Illuminate\Support\Facades\Log;
 
 /**
  * P7A74iGD (b): the deploy step of the one-approval Control D onboarding plan. It runs only
@@ -30,18 +33,34 @@ use App\Support\TacticalConfig;
  *     its local agent→asset link still names the PSA asset pinned at staging.
  *  5. The deploy script (setting ControlDConfig::TACTICAL_DEPLOY_SCRIPT_SETTING) is started on
  *     each agent with runScriptAsync() (POST agents/{id}/runscript/) and EXACTLY the argument
- *     list pinned on the card (#8466). That list is the script's own `args` as Tactical stored
+ *     list pinned with the plan (#8466). That list is the script's own `args` as Tactical stored
  *     them, read at staging by scriptArgs() and again at approval, where a changed list is
- *     drift. It must contain the literal placeholder self::CODE_PLACEHOLDER; Tactical, not the
- *     PSA, replaces it with the client custom field written at step 3 when it runs the script.
- *     Tactical does not fall back to a script's stored arguments when the request sends none,
- *     so an empty list would start the script without the code. "started" means Tactical
- *     accepted the run request; it does not mean the agent installed anything.
+ *     drift. It is kept only in the plan's encrypted payload: the card shows how many
+ *     arguments there are and that the placeholder is among them, never a value.
  *
- * The code is read from the client record only at steps 2–3 and goes nowhere but the field
- * write and the comparisons: never into script arguments, results, audit text or logs. The
- * arguments the PSA sends carry the placeholder, not the code, and a pinned list in which any
- * argument contains the code itself refuses the step before any Tactical request.
+ * THE PLACEHOLDER (inferred from Tactical's source, scripts/models.py parse_script_args and
+ * tacticalrmm/utils.py get_db_value; verified at the production done-check). The PSA sends
+ * the argument list with the literal self::CODE_PLACEHOLDER in it. Before Tactical hands the
+ * arguments to the agent it replaces that placeholder with the value of the CLIENT custom
+ * field NAMED ControlDOrgCode for the agent's client. Tactical looks the field up by that
+ * name; the field step 3 writes is chosen by the configured field id. So the deploy works
+ * only when the configured field id is the client field named ControlDOrgCode. Nothing here
+ * checks that. When the named field resolves to nothing, Tactical passes the argument on
+ * unaltered. Tactical does not fall back to a script's stored arguments when the request
+ * sends none, so an empty list would start the script without the code. "started" means
+ * Tactical accepted the run request; it does not mean the agent installed anything.
+ *
+ * WHERE THE CODE IS READ. The decrypted code is read from the client record (a) at staging
+ * and again at approval, by StaffControlDOnboardingToolExecutor::derivePlan(), only to check
+ * that no argument of the script contains it (an undecryptable stored code refuses there,
+ * audited, with no exception text); (b) in execute() before step 1, to refuse a pinned
+ * argument that contains it; and (c) at steps 2–3, for the comparison with the field and the
+ * field write. It goes nowhere but the field write and those comparisons: never into script
+ * arguments, results, audit text or logs. The arguments the PSA sends carry the placeholder,
+ * not the code. A script argument that contains the bound code, or that still carries a
+ * code-shaped run (ControlDClient::carriesCodeRun(), 32 or more letters and digits) once every
+ * placeholder is taken out of it, refuses at staging, at approval and in execute() before any
+ * Tactical request. The refusal names the argument's position, never its value.
  * No setting or id is hard-coded: an unset field id or script id refuses (fail closed).
  */
 class ControlDTacticalDeploy
@@ -99,18 +118,26 @@ class ControlDTacticalDeploy
         }
         $name = (string) ($pins['tactical_client'] ?? '');
         $scope = $pins['scope'] ?? null;
-        $code = Client::find($client->id)?->controld_provisioning_code;
         $args = $pins['script_args'] ?? null;
         if ($name === '' || ! in_array($scope, [self::SCOPE_ALL, self::SCOPE_SELECTED], true) || self::argsProblem($args) !== null) {
             return ['reason' => 'the deploy pins are malformed'] + $result;
         }
+        try {
+            $code = Client::find($client->id)?->controld_provisioning_code;
+        } catch (DecryptException) {
+            return ['reason' => 'the client\'s stored provisioning code cannot be decrypted; no script was run'] + $result;
+        }
         if (! is_string($code) || $code === '') {
             return ['reason' => 'the client has no bound provisioning code'] + $result;
         }
-        foreach ($args as $arg) {
+        foreach ($args as $i => $arg) {
             if (str_contains($arg, $code)) {
-                return ['reason' => 'a pinned script argument contains the provisioning code itself; the PSA sends only the placeholder, so no script was run'] + $result;
+                return ['reason' => 'pinned script argument '.($i + 1).' contains the provisioning code itself; the PSA sends only the placeholder, so no script was run'] + $result;
             }
+        }
+        $run = self::codeShapedArgument($args);
+        if ($run !== null) {
+            return ['reason' => "pinned script argument {$run} carries a code-shaped run (32 or more letters and digits) besides the placeholder; no script was run"] + $result;
         }
 
         // 1. The Tactical client: exactly one row with the pinned name (exact case).
@@ -199,7 +226,7 @@ class ControlDTacticalDeploy
                 continue;
             }
             try {
-                // #8466: exactly the pinned list; Tactical replaces the placeholder from the field.
+                // #8466: exactly the pinned list; Tactical fills the placeholder from the client field named ControlDOrgCode (see the class docblock).
                 $this->tactical->runScriptAsync($agentId, $scriptId, $args);
                 $result['agents'][$agentId] = self::AGENT_STARTED;
             } catch (\Throwable) {
@@ -253,26 +280,73 @@ class ControlDTacticalDeploy
      * #8466: the deploy script's own argument list as Tactical stores it (GET scripts/{id}/,
      * the `args` field), or ['error' => text]. Read at staging and again at approval; the
      * caller pins it and compares it. Only `args` is taken from the response: the script body
-     * and every other field are never returned, stored, audited or logged. Refuses unless the
+     * and every other field are never returned, stored, audited or logged. A failed read, or an
+     * answer that is not this script's record carrying an `args` key, is a read failure
+     * (scriptReadFailure(): status, class, one warning line). Otherwise refuses unless the
      * list is non-empty, holds only strings, and one of them contains self::CODE_PLACEHOLDER.
-     * There is no fallback for an empty list.
+     * There is no fallback for an empty list. The caller screens the list for the code and for
+     * code-shaped runs (codeShapedArgument()).
      *
-     * @return array{args?: list<string>, error?: string}
+     * @return array{args?: list<string>, error?: string, read_failed?: true}
      */
     public function scriptArgs(int $scriptId): array
     {
         try {
             $detail = $this->tactical->getScriptDetail($scriptId);
-        } catch (\Throwable) {
-            return ['error' => 'The deploy step needs the deploy script\'s own arguments, and Tactical could not be read for them.'];
+        } catch (\Throwable $e) {
+            return self::scriptReadFailure($scriptId, $e);
         }
-        $args = $detail['args'] ?? null;
+        // C-56: an answer that is not this script's record (another id, no `args` key, not an
+        // object) is a degraded read, reported as a read failure, never as a problem with the args.
+        if (! is_array($detail) || ($detail['id'] ?? null) !== $scriptId || ! array_key_exists('args', $detail)) {
+            return self::scriptReadFailure($scriptId, null);
+        }
+        $args = $detail['args'];
         $problem = self::argsProblem($args);
         if ($problem !== null) {
-            return ['error' => "The deploy script's arguments in Tactical {$problem}. The deploy step runs the script with its own arguments, and they must include ".self::CODE_PLACEHOLDER.' so that Tactical supplies the provisioning code from the client custom field.'];
+            return ['error' => "The deploy script's arguments in Tactical {$problem}. The deploy step runs the script with its own arguments, and they must include ".self::CODE_PLACEHOLDER.', which Tactical fills from the client custom field named ControlDOrgCode (inferred from Tactical\'s source).'];
         }
 
         return ['args' => $args];
+    }
+
+    /**
+     * C-56 (#8466): the refusal for a failed or degraded read of the deploy script, with the
+     * HTTP status (when there is one) and the exception class, and one warning log line that
+     * carries the script id, the status and the class only: never the args or a response body.
+     * $e is null for a degraded answer (one that is not the script's record).
+     *
+     * @return array{error: string, read_failed: true}
+     */
+    public static function scriptReadFailure(int $scriptId, ?\Throwable $e): array
+    {
+        $status = $e instanceof TacticalClientException ? $e->statusCode() : null;
+        $class = $e === null ? null : $e::class;
+        Log::warning('[ControlDTacticalDeploy] The deploy script could not be read for its arguments', ['script_id' => $scriptId, 'status' => $status, 'exception' => $class]);
+        $detail = $e === null
+            ? 'Tactical answered, but not with the script\'s record'
+            : 'Tactical could not be read for them ('.($status !== null ? "HTTP {$status}, " : '').class_basename($class).')';
+
+        return ['error' => "The deploy step needs the deploy script's own arguments, and {$detail}. This is a failed read, not a problem with the script's arguments.", 'read_failed' => true];
+    }
+
+    /**
+     * #8466 (Jeeves, diff:1 A): the 1-based position of the first argument that, once every
+     * occurrence of the exact self::CODE_PLACEHOLDER is taken out of it, still carries a
+     * code-shaped run (ControlDClient::carriesCodeRun()); null when none does. Fails closed: a
+     * legitimate literal of 32 or more letters and digits refuses too.
+     *
+     * @param  list<string>  $args
+     */
+    public static function codeShapedArgument(array $args): ?int
+    {
+        foreach (array_values($args) as $i => $arg) {
+            if (ControlDClient::carriesCodeRun(str_replace(self::CODE_PLACEHOLDER, '', $arg))) {
+                return $i + 1;
+            }
+        }
+
+        return null;
     }
 
     /** Why $args cannot be the deploy script's argument list, or null when it can. */

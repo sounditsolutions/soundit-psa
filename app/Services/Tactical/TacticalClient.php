@@ -1008,9 +1008,13 @@ class TacticalClient
      *
      * #8466: POST, like runScript(). Tactical's agents/{id}/runscript/ view
      * (agents/views.py run_script) accepts POST only, so the PUT this sent
-     * before was answered 405 and no script ever started. Tactical sends the
-     * args it receives as they are: an empty list is not replaced by the
-     * script's stored default arguments.
+     * before was answered 405 and no script ever started. Tactical uses the
+     * args it receives, not the script's stored default arguments, so an empty
+     * list stays empty. Before it hands them to the agent it replaces a
+     * {{client.<Name>}} placeholder in an arg with the value of the client
+     * custom field named <Name> (an arg is passed on unaltered when that
+     * resolves to nothing). Inferred from Tactical's source (scripts/models.py
+     * parse_script_args); verified at the #8466 production done-check.
      */
     public function runScriptAsync(string $agentId, int $scriptId, ?array $args = null, int $timeout = 120): void
     {

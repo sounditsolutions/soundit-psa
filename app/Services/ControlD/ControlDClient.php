@@ -272,7 +272,7 @@ class ControlDClient
      * long (a split code). Ordinary words (letters only, under 16) are never joined, so prose
      * is kept.
      */
-    private static function carriesCodeRun(#[\SensitiveParameter] string $text): bool
+    public static function carriesCodeRun(#[\SensitiveParameter] string $text): bool
     {
         $joined = (string) preg_replace('/(?:(?!\s)\p{Cc}|\p{Cf})+/u', '', $text);
         if (preg_match('/[A-Za-z0-9]{32,}/', $joined)) {
