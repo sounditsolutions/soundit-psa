@@ -27,7 +27,6 @@ class SkuReadToolTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Http::fake();
         Http::preventStrayRequests();
     }
 
@@ -164,7 +163,7 @@ class SkuReadToolTest extends TestCase
         $this->sku();
         $token = $this->token(['get_sku']);
 
-        foreach ([[], ['sku_id' => 0], ['sku_id' => -3], ['sku_id' => 'abc'], ['sku_id' => '1; drop']] as $arguments) {
+        foreach ([[], ['sku_id' => 0], ['sku_id' => -3], ['sku_id' => 'abc'], ['sku_id' => '1; drop'], ['sku_id' => true], ['sku_id' => false]] as $arguments) {
             $text = $this->refusal($this->callTool($token, 'get_sku', $arguments));
             $this->assertStringContainsString('sku_id is required', $text, json_encode($arguments));
         }

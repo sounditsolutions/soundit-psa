@@ -225,7 +225,17 @@ class PsaContractReadToolsTest extends TestCase
 
         $set = $this->callTool($token, 'get_contract', ['client_id' => $client->id, 'contract_id' => $withSku->id]);
         $this->assertFalse((bool) $set->json('result.isError'), (string) $set->json('result.content.0.text'));
-        $this->assertSame($sku->id, $this->decodedResult($set)['portal_prepay_sku_id']);
+        $withId = $this->decodedResult($set);
+        $this->assertSame($sku->id, $withId['portal_prepay_sku_id']);
+        // The id carries no price itself: no key anywhere in the result names a
+        // price, promo, cost or the SKU object, and the SKU's price never appears.
+        array_walk_recursive($withId, function ($value, $key) {
+            $this->assertDoesNotMatchRegularExpression('/price|promo|cost|margin|^portal_prepay_sku$/i', (string) $key);
+        });
+        foreach (array_keys($withId) as $key) {
+            $this->assertDoesNotMatchRegularExpression('/price|promo|cost|margin|^portal_prepay_sku$/i', (string) $key);
+        }
+        $this->assertStringNotContainsString('Example Prepaid Hour Block', (string) $set->json('result.content.0.text'));
 
         $unset = $this->callTool($token, 'get_contract', ['client_id' => $client->id, 'contract_id' => $withoutSku->id]);
         $this->assertFalse((bool) $unset->json('result.isError'), (string) $unset->json('result.content.0.text'));
