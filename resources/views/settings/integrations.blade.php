@@ -2693,9 +2693,9 @@
                                     </div>
                                 @endif
                                 <div class="form-text">
-                                    The CLIENT-model custom field in your Tactical RMM that holds the
-                                    client's Control D organization ID — the field named
-                                    <code>controld_org_id</code>, not the provisioning code. You create
+                                    The CLIENT-model custom field in your Tactical RMM that the deploy step
+                                    writes the client's Control D provisioning code into. For the deploy
+                                    script to receive it, this must be the field named ControlDOrgCode. You create
                                     this field yourself, so its ID is whatever your instance assigned —
                                     find it in Tactical under Settings &rarr; Global Settings &rarr;
                                     Custom Fields. Leave blank and the write is refused rather than
