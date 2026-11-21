@@ -1418,6 +1418,7 @@ class McpToolRegistry
             self::getContractTool(),
             self::listPrepayTransactionsTool(),
             self::getSkuTool(),
+            self::listClientLicensesTool(),
             self::listEmailItemsTool(),
             self::getEmailItemTool(),
             self::listPhoneCallsTool(),
@@ -1580,6 +1581,28 @@ class McpToolRegistry
                     'sku_id' => ['type' => 'integer', 'description' => 'The SKU ID to read.'],
                 ],
                 'required' => ['sku_id'],
+            ],
+        ];
+    }
+
+    /**
+     * list_client_licenses — a client's licences as the PSA records them (#8544).
+     * Client-scoped like list_client_contracts. Deliberately narrow: no cost,
+     * minimum or free-text note fields. Explicit-grant only like every psa_read tool.
+     *
+     * @return array<string, mixed>
+     */
+    public static function listClientLicensesTool(): array
+    {
+        return [
+            'name' => 'list_client_licenses',
+            'description' => 'List the licences the PSA records for one client: the rows the AppRiver licence sync writes, plus manually entered rows. This is what says whether a subscription is billed through us; cipp_list_licenses shows only what is in the tenant. Each row: id, quantity, assigned_quantity, scheduled_quantity, status, vendor_status, the licence type (license_type_id, license_type_name, vendor, vendor_sku_id, sku_id), synced_at (UTC ISO-8601; null on a manual row), is_manual, sync_stale, and contracts (each with id, name and assignment_source). sync_stale is true when an active AppRiver row of an active client has not been re-synced for more than 48 hours, so its counts may be out of date; manual rows are never stale. No cost, price or note fields are returned. Read-only. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'client_id' => ['type' => 'integer', 'description' => 'The client whose licences to list.'],
+                ],
+                'required' => ['client_id'],
             ],
         ];
     }
