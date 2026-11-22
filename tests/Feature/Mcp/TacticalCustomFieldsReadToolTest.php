@@ -32,7 +32,9 @@ use Tests\TestCase;
  *
  * The fake row is the producer's serializer fields (tacticalrmm core/models.py
  * CustomField, fields="__all__") plus an extra `value` key the producer does
- * not send, kept as a sentinel; every value in it is synthetic.
+ * not send, kept as a sentinel. Every value in it is synthetic except the
+ * name ControlDOrgCode, which is the field name the Control D deploy code
+ * already documents (ControlDTacticalDeploy); the ids are not real records.
  */
 class TacticalCustomFieldsReadToolTest extends TestCase
 {
@@ -142,8 +144,8 @@ class TacticalCustomFieldsReadToolTest extends TestCase
     {
         $this->bindTactical([
             new Response(200, [], json_encode([
-                $this->row(18, 'ControlDOrgCode', 'client', 'text'),
-                $this->row(19, 'Example Agent Field', 'agent', 'multiple'),
+                $this->row(9001, 'ControlDOrgCode', 'client', 'text'),
+                $this->row(9002, 'Example Agent Field', 'agent', 'multiple'),
             ])),
             new Response(200, [], json_encode([])),
         ]);
@@ -157,8 +159,8 @@ class TacticalCustomFieldsReadToolTest extends TestCase
         $this->assertSame(['count', 'custom_fields'], array_keys($result));
         $this->assertSame(2, $result['count']);
         $this->assertSame([
-            ['id' => 18, 'name' => 'ControlDOrgCode', 'model' => 'client', 'type' => 'text'],
-            ['id' => 19, 'name' => 'Example Agent Field', 'model' => 'agent', 'type' => 'multiple'],
+            ['id' => 9001, 'name' => 'ControlDOrgCode', 'model' => 'client', 'type' => 'text'],
+            ['id' => 9002, 'name' => 'Example Agent Field', 'model' => 'agent', 'type' => 'multiple'],
         ], $result['custom_fields']);
         foreach ($result['custom_fields'] as $field) {
             $this->assertSame(['id', 'model', 'name', 'type'], collect($field)->keys()->sort()->values()->all());
@@ -232,6 +234,51 @@ class TacticalCustomFieldsReadToolTest extends TestCase
         $this->assertSame(['error' => 'Tactical custom fields response was not a list of objects'], $result);
         $this->assertSame(['GET https://tactical.invalid/core/customfields/'], $this->requests());
         $this->assertNotAListWarningLoggedOnce();
+    }
+
+    /** @return array<string, array{0: string}> */
+    public static function listsHoldingANonObjectRow(): array
+    {
+        return [
+            'empty array row' => ['[[]]'],
+            'integer row' => ['[1]'],
+            'string row' => ['["x"]'],
+            'null row' => ['[null]'],
+            'object row then integer row' => ['[{"id":1,"name":"a","model":"client","type":"text"}, 5]'],
+            'list row' => ['[["a","b"]]'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('listsHoldingANonObjectRow')]
+    public function test_a_json_array_holding_a_row_that_is_not_a_json_object_is_an_error_and_is_logged(string $body): void
+    {
+        Log::spy();
+        $this->bindTactical([
+            new Response(200, [], $body),
+            new Response(200, [], json_encode([])),
+        ]);
+
+        $result = $this->decoded($this->callTool($this->token([self::TOOL])));
+
+        $this->assertSame(['error' => 'Tactical custom fields response was not a list of objects'], $result);
+        $this->assertSame(['GET https://tactical.invalid/core/customfields/'], $this->requests());
+        $this->assertNotAListWarningLoggedOnce();
+    }
+
+    public function test_an_object_row_whose_keys_look_numeric_is_still_a_field(): void
+    {
+        Log::spy();
+        $this->bindTactical([
+            new Response(200, [], '[{"0":"x","id":9003,"name":"n","model":"agent","type":"text"}]'),
+            new Response(200, [], json_encode([])),
+        ]);
+
+        $result = $this->decoded($this->callTool($this->token([self::TOOL])));
+
+        $this->assertSame(1, $result['count'] ?? null);
+        $this->assertSame(['id' => 9003, 'name' => 'n', 'model' => 'agent', 'type' => 'text'], $result['custom_fields'][0] ?? null);
+        $this->assertSame(['GET https://tactical.invalid/core/customfields/'], $this->requests());
+        Log::shouldNotHaveReceived('warning');
     }
 
     public function test_a_200_empty_json_array_is_an_empty_list_not_an_error(): void

@@ -1354,19 +1354,28 @@ class TacticalClient
      *
      * Unlike get(), the body is not coerced: get() turns an empty body, `null`,
      * `{}` or a non-JSON page into [] and a JSON scalar into a TypeError. Here
-     * the top-level JSON type is decided without assoc decoding (where `{}`
-     * would also become []), and only a top-level JSON array is returned. The
-     * transport and the non-2xx throw are get()'s, through getRawBody().
+     * the shape is decided on the non-assoc decode, where a JSON object stays an
+     * object (an assoc decode would turn `{}` into [], the same as a JSON `[]`).
+     * Only a top-level JSON array whose every element is a JSON object is
+     * returned, assoc-decoded once that shape is established. The transport
+     * and the non-2xx throw are get()'s, through getRawBody().
      *
-     * @return array<mixed>|null The decoded list, or null when the body's
-     *                           top-level JSON value is not an array.
+     * @return list<array<array-key, mixed>>|null The rows, or null when the
+     *                                            body's top-level JSON value is
+     *                                            not an array of JSON objects.
      */
     public function getCustomFields(): ?array
     {
         $body = $this->getRawBody('core/customfields/');
+        $decoded = json_decode($body);
 
-        if (! is_array(json_decode($body))) {
+        if (! is_array($decoded)) {
             return null;
+        }
+        foreach ($decoded as $row) {
+            if (! is_object($row)) {
+                return null;
+            }
         }
 
         return json_decode($body, true);

@@ -965,14 +965,15 @@ class TacticalReadOnlyToolset
      * Custom field DEFINITIONS only. Each row is projected to CUSTOM_FIELD_KEYS;
      * defaults, options and every other key are dropped. A 200 body whose
      * top-level JSON value is not a list of objects (getCustomFields() returns
-     * null for anything but a JSON array) is an error, never an empty list
-     * (C-56); a genuine [] is an empty list. A failure
-     * reports the HTTP status and exception class only, never vendor text.
+     * null for anything but a JSON array whose every element is a JSON object)
+     * is an error, never an empty list (C-56); a genuine [] is an empty list.
+     * A failure reports the HTTP status and exception class only, never vendor
+     * text.
      */
     private function listCustomFields(): array
     {
         try {
-            $payload = app(TacticalClient::class)->getCustomFields();
+            $rows = app(TacticalClient::class)->getCustomFields();
         } catch (\Throwable $e) {
             $status = $e instanceof TacticalClientException ? $e->statusCode() : null;
             Log::warning('[ChetDataSurface] Tactical custom fields query failed', [
@@ -987,7 +988,6 @@ class TacticalReadOnlyToolset
             ];
         }
 
-        $rows = $payload === null ? null : $this->strictList($payload);
         if ($rows === null) {
             Log::warning('[ChetDataSurface] Tactical custom fields response was not a list of objects');
 
