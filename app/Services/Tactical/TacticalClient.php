@@ -1352,11 +1352,45 @@ class TacticalClient
      * options, default values and audit columns. Callers project what they need.
      * Read permission is can_view_customfields (core/permissions.py CustomFieldPerms).
      *
-     * @return array<mixed> Decoded response.
+     * Unlike get(), the body is not coerced: get() turns an empty body, `null`,
+     * `{}` or a non-JSON page into [] and a JSON scalar into a TypeError. Here
+     * the top-level JSON type is decided without assoc decoding (where `{}`
+     * would also become []), and only a top-level JSON array is returned. The
+     * transport and the non-2xx throw are get()'s, through getRawBody().
+     *
+     * @return array<mixed>|null The decoded list, or null when the body's
+     *                           top-level JSON value is not an array.
      */
-    public function getCustomFields(): array
+    public function getCustomFields(): ?array
     {
-        return $this->get('core/customfields/');
+        $body = $this->getRawBody('core/customfields/');
+
+        if (! is_array(json_decode($body))) {
+            return null;
+        }
+
+        return json_decode($body, true);
+    }
+
+    /**
+     * get()'s transport (same client, so the same auth, timeout and SSRF pin;
+     * same log line and TacticalClientException on a non-2xx or transport
+     * failure), returning the raw body undecoded. Used only by getCustomFields().
+     */
+    private function getRawBody(string $endpoint): string
+    {
+        try {
+            $response = $this->http->request('GET', $endpoint, []);
+        } catch (GuzzleException $e) {
+            Log::error("[TacticalClient] GET {$endpoint} failed", [
+                'status' => ($e instanceof \GuzzleHttp\Exception\RequestException && $e->hasResponse())
+                    ? $e->getResponse()->getStatusCode()
+                    : null,
+            ]);
+            throw TacticalClientException::fromGuzzle("Tactical API error (HTTP GET {$endpoint})", $e);
+        }
+
+        return (string) $response->getBody();
     }
 
     public function isHealthy(): bool

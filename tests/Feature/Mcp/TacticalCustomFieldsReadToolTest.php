@@ -23,13 +23,16 @@ use Tests\TestCase;
  * (GET core/customfields/), projected to id, name, model and type.
  *
  * TacticalClient builds its own Guzzle client, so Http::fake() cannot see its
- * traffic. Http::fake() + preventStrayRequests() still fence every Laravel
- * HTTP call, and the Tactical traffic is recorded with Guzzle's history
- * middleware on an injected client whose mock queue always holds a spare
- * response, so a second request would be recorded rather than refused.
+ * traffic. The bare Http::fake() answers and records every Laravel HTTP call,
+ * so preventStrayRequests() never fires here; the success test instead
+ * asserts Http::assertNothingSent(). The Tactical traffic is recorded with
+ * Guzzle's history middleware on an injected client whose mock queue always
+ * holds a spare response, so a second request would be recorded rather than
+ * refused.
  *
- * The fake row mirrors the producer's serializer (tacticalrmm core/models.py
- * CustomField, fields="__all__"); every value in it is synthetic.
+ * The fake row is the producer's serializer fields (tacticalrmm core/models.py
+ * CustomField, fields="__all__") plus an extra `value` key the producer does
+ * not send, kept as a sentinel; every value in it is synthetic.
  */
 class TacticalCustomFieldsReadToolTest extends TestCase
 {
@@ -196,8 +199,59 @@ class TacticalCustomFieldsReadToolTest extends TestCase
             ->once();
     }
 
+    private function assertNotAListWarningLoggedOnce(): void
+    {
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $message, array $context = []): bool => $message === '[ChetDataSurface] Tactical custom fields response was not a list of objects')
+            ->once();
+    }
+
+    /** @return array<string, array{0: string}> */
+    public static function nonListBodies(): array
+    {
+        return [
+            'empty object' => ['{}'],
+            'empty body' => [''],
+            'html page' => ['<html><body>Sign in</body></html>'],
+            'json null' => ['null'],
+            'json scalar' => ['"ok"'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('nonListBodies')]
+    public function test_a_200_body_that_is_not_a_json_array_is_an_error_and_is_logged(string $body): void
+    {
+        Log::spy();
+        $this->bindTactical([
+            new Response(200, [], $body),
+            new Response(200, [], json_encode([])),
+        ]);
+
+        $result = $this->decoded($this->callTool($this->token([self::TOOL])));
+
+        $this->assertSame(['error' => 'Tactical custom fields response was not a list of objects'], $result);
+        $this->assertSame(['GET https://tactical.invalid/core/customfields/'], $this->requests());
+        $this->assertNotAListWarningLoggedOnce();
+    }
+
+    public function test_a_200_empty_json_array_is_an_empty_list_not_an_error(): void
+    {
+        Log::spy();
+        $this->bindTactical([
+            new Response(200, [], '[]'),
+            new Response(200, [], json_encode([])),
+        ]);
+
+        $result = $this->decoded($this->callTool($this->token([self::TOOL])));
+
+        $this->assertSame(['count' => 0, 'custom_fields' => []], $result);
+        $this->assertSame(['GET https://tactical.invalid/core/customfields/'], $this->requests());
+        Log::shouldNotHaveReceived('warning');
+    }
+
     public function test_a_payload_that_is_not_a_list_is_an_error_not_an_empty_result(): void
     {
+        Log::spy();
         $this->bindTactical([
             new Response(200, [], json_encode(['results' => [], 'detail' => 'not a list'])),
             new Response(200, [], json_encode([])),
@@ -207,6 +261,7 @@ class TacticalCustomFieldsReadToolTest extends TestCase
 
         $this->assertSame(['error' => 'Tactical custom fields response was not a list of objects'], $result);
         $this->assertSame(['GET https://tactical.invalid/core/customfields/'], $this->requests());
+        $this->assertNotAListWarningLoggedOnce();
     }
 
     public function test_it_is_listed_for_a_token_holding_it_and_refused_for_one_that_does_not(): void

@@ -339,7 +339,7 @@ class TacticalReadOnlyToolset
             ],
             [
                 'name' => 'tactical_list_custom_fields',
-                'description' => 'Read Tactical custom field definitions (id, name, model, type). No field values are read and nothing is changed.',
+                'description' => 'Read Tactical custom field definitions (id, name, model, type). No field values are returned and nothing is changed.',
                 'input_schema' => ['type' => 'object', 'properties' => (object) [], 'required' => []],
             ],
             [
@@ -963,8 +963,10 @@ class TacticalReadOnlyToolset
 
     /**
      * Custom field DEFINITIONS only. Each row is projected to CUSTOM_FIELD_KEYS;
-     * defaults, options and every other key are dropped. A payload that is not
-     * a list of objects is an error, never an empty list (C-56). A failure
+     * defaults, options and every other key are dropped. A 200 body whose
+     * top-level JSON value is not a list of objects (getCustomFields() returns
+     * null for anything but a JSON array) is an error, never an empty list
+     * (C-56); a genuine [] is an empty list. A failure
      * reports the HTTP status and exception class only, never vendor text.
      */
     private function listCustomFields(): array
@@ -985,7 +987,7 @@ class TacticalReadOnlyToolset
             ];
         }
 
-        $rows = $this->strictList($payload);
+        $rows = $payload === null ? null : $this->strictList($payload);
         if ($rows === null) {
             Log::warning('[ChetDataSurface] Tactical custom fields response was not a list of objects');
 
