@@ -30,8 +30,8 @@ use Tests\TestCase;
  * holds a spare response, so a second request would be recorded rather than
  * refused.
  *
- * The fake row is the producer's serializer fields (tacticalrmm core/models.py
- * CustomField, fields="__all__") plus an extra `value` key the producer does
+ * The fake row is the producer's serializer fields (tacticalrmm core/serializers.py
+ * CustomFieldSerializer, fields="__all__") plus an extra `value` key the producer does
  * not send, kept as a sentinel. Every value in it is synthetic except the
  * name ControlDOrgCode, which is the field name the Control D deploy code
  * already documents (ControlDTacticalDeploy); the ids are not real records.
