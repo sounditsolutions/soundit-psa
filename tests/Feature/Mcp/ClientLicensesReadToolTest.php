@@ -8,6 +8,8 @@ use App\Models\Client;
 use App\Models\Contract;
 use App\Models\License;
 use App\Models\LicenseType;
+use App\Models\Setting;
+use App\Services\AppRiver\AppRiverLicenseSyncService;
 use App\Support\McpConfig;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -123,6 +125,10 @@ class ClientLicensesReadToolTest extends TestCase
         $this->assertStringContainsString('48 hours', $definition['description']);
         $this->assertStringContainsString('every vendor licence sync', $definition['description']);
         $this->assertStringContainsString('false for every other vendor and for manual rows', $definition['description']);
+        $this->assertStringContainsString('whose vendor_status is not Suspended or Pending', $definition['description']);
+        $this->assertStringContainsString('did not skip as referred', $definition['description']);
+        $this->assertStringContainsString('stage Active and is_active', $definition['description']);
+        $this->assertStringContainsString('a manually entered row can sit on any vendor', $definition['description']);
 
         // An undeclared argument is refused, not ignored.
         $client = Client::factory()->create();
@@ -202,6 +208,9 @@ class ClientLicensesReadToolTest extends TestCase
         $tenant = $this->license($client, $this->type('cipp_m365', 'Example Tenant Plan'), ['synced_at' => now()->subHours(100)]);
         // A vendor-held AppRiver row is not stale however old its sync.
         $held = $this->license($client, $appriver, ['synced_at' => now()->subHours(100), 'vendor_status' => 'Suspended']);
+        $pending = $this->license($client, $appriver, ['synced_at' => now()->subHours(100), 'vendor_status' => 'Pending']);
+        // A manual row on an AppRiver type reports the type's vendor and is_manual true.
+        $handEntered = $this->license($client, $appriver, ['synced_at' => null, 'vendor_ref' => null]);
 
         $result = $this->ok($this->callTool($this->token(['list_client_licenses']), 'list_client_licenses', ['client_id' => $client->id]));
         $rows = collect($result['licenses'])->keyBy('id');
@@ -213,9 +222,32 @@ class ClientLicensesReadToolTest extends TestCase
         $this->assertSame('cipp_m365', $rows[$tenant->id]['vendor']);
         $this->assertFalse($rows[$tenant->id]['is_manual']);
         $this->assertFalse($rows[$held->id]['sync_stale']);
+        $this->assertFalse($rows[$pending->id]['sync_stale']);
+        $this->assertSame('appriver', $rows[$handEntered->id]['vendor']);
+        $this->assertTrue($rows[$handEntered->id]['is_manual']);
+        $this->assertFalse($rows[$handEntered->id]['sync_stale']);
         $this->assertTrue($rows[$manual->id]['is_manual']);
         $this->assertNull($rows[$manual->id]['synced_at']);
         $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/', $rows[$stale->id]['synced_at']);
+    }
+
+    public function test_a_row_of_a_client_the_last_sync_skipped_as_referred_is_not_stale(): void
+    {
+        $referred = Client::factory()->create(['stage' => 'active', 'is_active' => true]);
+        $other = Client::factory()->create(['stage' => 'active', 'is_active' => true]);
+        Setting::setValue(AppRiverLicenseSyncService::REFERRED_CLIENTS_SETTING, json_encode([$referred->id]));
+        $type = $this->type();
+        $skipped = $this->license($referred, $type, ['synced_at' => now()->subHours(100)]);
+        $control = $this->license($other, $type, ['synced_at' => now()->subHours(100)]);
+        $token = $this->token(['list_client_licenses']);
+
+        $skippedRows = $this->ok($this->callTool($token, 'list_client_licenses', ['client_id' => $referred->id]))['licenses'];
+        $controlRows = $this->ok($this->callTool($token, 'list_client_licenses', ['client_id' => $other->id]))['licenses'];
+
+        $this->assertSame($skipped->id, $skippedRows[0]['id']);
+        $this->assertFalse($skippedRows[0]['sync_stale']);
+        $this->assertSame($control->id, $controlRows[0]['id']);
+        $this->assertTrue($controlRows[0]['sync_stale']);
     }
 
     public function test_contracts_each_licence_is_on_are_listed(): void
