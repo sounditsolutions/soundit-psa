@@ -129,6 +129,12 @@ class ClientLicensesReadToolTest extends TestCase
         $this->assertStringContainsString('did not skip as referred', $definition['description']);
         $this->assertStringContainsString('stage Active and is_active', $definition['description']);
         $this->assertStringContainsString('a manually entered row can sit on any vendor', $definition['description']);
+        $this->assertStringContainsString('is_manual is true while no sync has stamped the row (synced_at null).', $definition['description']);
+        $this->assertStringContainsString("A vendor sync's cleanup that zeroes and suspends a hand-entered row on that vendor's licence types stamps synced_at, so that row then reads is_manual false.", $definition['description']);
+        $this->assertStringContainsString('synced_at (UTC ISO-8601; null until a sync stamps the row)', $definition['description']);
+        $this->assertStringContainsString('No returned field says outright whether we bill the row; a row whose vendor_status is Suspended or Pending is held out of billed licence counts.', $definition['description']);
+        $this->assertStringNotContainsString('is_manual is what marks it', $definition['description']);
+        $this->assertStringNotContainsString('null on a manual row', $definition['description']);
 
         // An undeclared argument is refused, not ignored.
         $client = Client::factory()->create();
