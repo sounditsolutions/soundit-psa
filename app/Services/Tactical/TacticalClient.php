@@ -1343,6 +1343,22 @@ class TacticalClient
         return $this->get('core/settings/');
     }
 
+    /**
+     * List custom field definitions. GET core/customfields/
+     *
+     * Producer (tacticalrmm, api/tacticalrmm/core/views.py GetAddCustomFields.get):
+     * CustomFieldSerializer(fields, many=True).data, a bare list of rows built with
+     * fields="__all__" over core/models.py CustomField, so each row also carries
+     * options, default values and audit columns. Callers project what they need.
+     * Read permission is can_view_customfields (core/permissions.py CustomFieldPerms).
+     *
+     * @return array<mixed> Decoded response.
+     */
+    public function getCustomFields(): array
+    {
+        return $this->get('core/customfields/');
+    }
+
     public function isHealthy(): bool
     {
         try {

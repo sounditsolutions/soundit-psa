@@ -34,6 +34,7 @@ class TacticalReadToolsPhase1Test extends TestCase
         'tactical_list_policies',
         'tactical_list_url_actions',
         'tactical_list_alert_templates',
+        'tactical_list_custom_fields',
         'tactical_get_core_settings',
         'tactical_health_check',
         'tactical_diagnose_device',
