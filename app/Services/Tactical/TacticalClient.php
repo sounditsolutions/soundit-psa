@@ -1343,6 +1343,65 @@ class TacticalClient
         return $this->get('core/settings/');
     }
 
+    /**
+     * List custom field definitions. GET core/customfields/
+     *
+     * Producer (tacticalrmm, api/tacticalrmm/core/views.py GetAddCustomFields.get):
+     * CustomFieldSerializer(fields, many=True).data, a bare list of rows built with
+     * fields="__all__" over core/models.py CustomField, so each row also carries
+     * options, default values and audit columns. Callers project what they need.
+     * Read permission is can_view_customfields (core/permissions.py CustomFieldPerms).
+     *
+     * Unlike get(), the body is not coerced: get() turns an empty body, `null`,
+     * `{}` or a non-JSON page into [] and a JSON scalar into a TypeError. Here
+     * the shape is decided on the non-assoc decode, where a JSON object stays an
+     * object (an assoc decode would turn `{}` into [], the same as a JSON `[]`).
+     * Only a top-level JSON array whose every element is a JSON object is
+     * returned, assoc-decoded once that shape is established. The transport
+     * and the non-2xx throw are get()'s, through getRawBody().
+     *
+     * @return list<array<array-key, mixed>>|null The rows, or null when the
+     *                                            body's top-level JSON value is
+     *                                            not an array of JSON objects.
+     */
+    public function getCustomFields(): ?array
+    {
+        $body = $this->getRawBody('core/customfields/');
+        $decoded = json_decode($body);
+
+        if (! is_array($decoded)) {
+            return null;
+        }
+        foreach ($decoded as $row) {
+            if (! is_object($row)) {
+                return null;
+            }
+        }
+
+        return json_decode($body, true);
+    }
+
+    /**
+     * get()'s transport (same client, so the same auth, timeout and SSRF pin;
+     * same log line and TacticalClientException on a non-2xx or transport
+     * failure), returning the raw body undecoded. Used only by getCustomFields().
+     */
+    private function getRawBody(string $endpoint): string
+    {
+        try {
+            $response = $this->http->request('GET', $endpoint, []);
+        } catch (GuzzleException $e) {
+            Log::error("[TacticalClient] GET {$endpoint} failed", [
+                'status' => ($e instanceof \GuzzleHttp\Exception\RequestException && $e->hasResponse())
+                    ? $e->getResponse()->getStatusCode()
+                    : null,
+            ]);
+            throw TacticalClientException::fromGuzzle("Tactical API error (HTTP GET {$endpoint})", $e);
+        }
+
+        return (string) $response->getBody();
+    }
+
     public function isHealthy(): bool
     {
         try {

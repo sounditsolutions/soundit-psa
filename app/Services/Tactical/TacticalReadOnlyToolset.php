@@ -53,9 +53,18 @@ class TacticalReadOnlyToolset
         'tactical_list_policies',
         'tactical_list_url_actions',
         'tactical_list_alert_templates',
+        'tactical_list_custom_fields',
         'tactical_get_core_settings',
         'tactical_health_check',
     ];
+
+    /**
+     * The only keys tactical_list_custom_fields returns. The producer row
+     * (tacticalrmm core/serializers.py CustomFieldSerializer, fields="__all__")
+     * also carries options, default_value_string, default_value_bool,
+     * default_values_multiple and audit columns; none of them leave this class.
+     */
+    private const CUSTOM_FIELD_KEYS = ['id', 'name', 'model', 'type'];
 
     /**
      * Checks-coverage semantics (psa-0pb9m), the sibling of the psa-47vxh
@@ -144,6 +153,7 @@ class TacticalReadOnlyToolset
             'tactical_list_policies' => $this->listPolicies($input),
             'tactical_list_url_actions' => $this->listUrlActions($input),
             'tactical_list_alert_templates' => $this->listAlertTemplates($input),
+            'tactical_list_custom_fields' => $this->listCustomFields(),
             'tactical_get_core_settings' => $this->getCoreSettings(),
             'tactical_health_check' => $this->healthCheck(),
             'tactical_diagnose_device' => $this->diagnoseDevice($input, (int) $clientId),
@@ -326,6 +336,11 @@ class TacticalReadOnlyToolset
                     ],
                     'required' => [],
                 ],
+            ],
+            [
+                'name' => 'tactical_list_custom_fields',
+                'description' => 'Read Tactical custom field definitions (id, name, model, type). No field values are returned and nothing is changed.',
+                'input_schema' => ['type' => 'object', 'properties' => (object) [], 'required' => []],
             ],
             [
                 'name' => 'tactical_get_core_settings',
@@ -943,6 +958,53 @@ class TacticalReadOnlyToolset
         return [
             'count' => count($mapped),
             'alert_templates' => $mapped,
+        ];
+    }
+
+    /**
+     * Custom field DEFINITIONS only. Each row is projected to CUSTOM_FIELD_KEYS;
+     * defaults, options and every other key are dropped. A 200 body whose
+     * top-level JSON value is not a list of objects (getCustomFields() returns
+     * null for anything but a JSON array whose every element is a JSON object)
+     * is an error, never an empty list (C-56); a genuine [] is an empty list.
+     * A failure reports the HTTP status and exception class only, never vendor
+     * text.
+     */
+    private function listCustomFields(): array
+    {
+        try {
+            $rows = app(TacticalClient::class)->getCustomFields();
+        } catch (\Throwable $e) {
+            $status = $e instanceof TacticalClientException ? $e->statusCode() : null;
+            Log::warning('[ChetDataSurface] Tactical custom fields query failed', [
+                'status' => $status,
+                'class' => $e::class,
+            ]);
+
+            return [
+                'error' => 'Tactical custom fields query failed',
+                'status' => $status,
+                'class' => class_basename($e),
+            ];
+        }
+
+        if ($rows === null) {
+            Log::warning('[ChetDataSurface] Tactical custom fields response was not a list of objects');
+
+            return ['error' => 'Tactical custom fields response was not a list of objects'];
+        }
+
+        $fields = array_map(
+            fn (array $row): array => array_combine(
+                self::CUSTOM_FIELD_KEYS,
+                array_map(fn (string $key): mixed => $row[$key] ?? null, self::CUSTOM_FIELD_KEYS),
+            ),
+            $rows,
+        );
+
+        return [
+            'count' => count($fields),
+            'custom_fields' => $fields,
         ];
     }
 
