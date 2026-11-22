@@ -296,8 +296,8 @@ class McpStaffController extends Controller
         // SKUs are global, so staff-class like the invoice reads, with no client
         // fence. No cost or vendor fields. Explicit-grant only like every entry here.
         'get_sku',
-        // #8544: a client's licences as the PSA records them (AppRiver sync rows and
-        // manual rows), with the AppRiver staleness flag. Client-scoped like
+        // #8544: a client's licences as the PSA records them (every vendor sync's rows
+        // and manual rows), with the AppRiver staleness flag. Client-scoped like
         // list_client_contracts. No cost fields. Explicit-grant only like every entry here.
         'list_client_licenses',
         'list_email_items',

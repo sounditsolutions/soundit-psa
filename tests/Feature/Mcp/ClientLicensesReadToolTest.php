@@ -121,6 +121,8 @@ class ClientLicensesReadToolTest extends TestCase
         $this->assertSame(['client_id'], $definition['input_schema']['required']);
         $this->assertStringContainsString('Read-only. Requires an explicit token grant.', $definition['description']);
         $this->assertStringContainsString('48 hours', $definition['description']);
+        $this->assertStringContainsString('every vendor licence sync', $definition['description']);
+        $this->assertStringContainsString('false for every other vendor and for manual rows', $definition['description']);
 
         // An undeclared argument is refused, not ignored.
         $client = Client::factory()->create();
@@ -196,6 +198,10 @@ class ClientLicensesReadToolTest extends TestCase
         $stale = $this->license($client, $appriver, ['synced_at' => now()->subHours(49)]);
         $fresh = $this->license($client, $appriver, ['synced_at' => now()->subHours(47)]);
         $manual = $this->license($client, $manualType, ['synced_at' => null, 'vendor_ref' => null]);
+        // Other vendors' synced rows are listed too, and the AppRiver rule never marks them.
+        $tenant = $this->license($client, $this->type('cipp_m365', 'Example Tenant Plan'), ['synced_at' => now()->subHours(100)]);
+        // A vendor-held AppRiver row is not stale however old its sync.
+        $held = $this->license($client, $appriver, ['synced_at' => now()->subHours(100), 'vendor_status' => 'Suspended']);
 
         $result = $this->ok($this->callTool($this->token(['list_client_licenses']), 'list_client_licenses', ['client_id' => $client->id]));
         $rows = collect($result['licenses'])->keyBy('id');
@@ -203,6 +209,10 @@ class ClientLicensesReadToolTest extends TestCase
         $this->assertTrue($rows[$stale->id]['sync_stale']);
         $this->assertFalse($rows[$fresh->id]['sync_stale']);
         $this->assertFalse($rows[$manual->id]['sync_stale']);
+        $this->assertFalse($rows[$tenant->id]['sync_stale']);
+        $this->assertSame('cipp_m365', $rows[$tenant->id]['vendor']);
+        $this->assertFalse($rows[$tenant->id]['is_manual']);
+        $this->assertFalse($rows[$held->id]['sync_stale']);
         $this->assertTrue($rows[$manual->id]['is_manual']);
         $this->assertNull($rows[$manual->id]['synced_at']);
         $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/', $rows[$stale->id]['synced_at']);
