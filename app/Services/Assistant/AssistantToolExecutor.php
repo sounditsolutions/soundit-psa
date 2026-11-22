@@ -16,6 +16,7 @@ use App\Models\Contract;
 use App\Models\Email;
 use App\Models\Invoice;
 use App\Models\InvoiceLine;
+use App\Models\License;
 use App\Models\Person;
 use App\Models\PhoneCall;
 use App\Models\PrepayTransaction;
@@ -188,6 +189,7 @@ class AssistantToolExecutor
             'get_contract' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getContract($in)],
             'list_prepay_transactions' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listPrepayTransactions($in)],
             'get_sku' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getSku($in)],
+            'list_client_licenses' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listClientLicenses($in)],
 
             // Cross-client staff-class reads (client_id optional filter, never required)
             'list_email_items' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listEmailItems($in)],
@@ -2120,6 +2122,53 @@ class AssistantToolExecutor
             'prepay' => $this->contractPrepayBlock($contract),
             // #8526: the one pricing-adjacent exception — the SKU id only, no price.
             'portal_prepay_sku_id' => $contract->portal_prepay_sku_id !== null ? (int) $contract->portal_prepay_sku_id : null,
+        ];
+    }
+
+    /**
+     * list_client_licenses — hard client-scoped read (mirrors list_client_contracts),
+     * #8544. A closed list of keys per row: cost, minimum, vendor_ref and notes
+     * columns are never read out. sync_stale is License::getSyncStaleAttribute(),
+     * the same rule the licence view shows.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function listClientLicenses(array $input): array
+    {
+        if (! $this->clientId) {
+            return ['error' => 'No client context — cannot list licenses'];
+        }
+
+        $licenses = License::where('client_id', $this->clientId)
+            ->with(['licenseType', 'client', 'contracts'])
+            ->orderBy('id')
+            ->get();
+
+        return [
+            'count' => $licenses->count(),
+            'client_id' => $this->clientId,
+            'licenses' => $licenses->map(fn (License $l) => [
+                'id' => $l->id,
+                'quantity' => $l->quantity,
+                'assigned_quantity' => $l->assigned_quantity,
+                'scheduled_quantity' => $l->scheduled_quantity,
+                'status' => $l->status,
+                'vendor_status' => $l->vendor_status,
+                'license_type_id' => $l->license_type_id,
+                'license_type_name' => $l->licenseType?->name,
+                'vendor' => $l->licenseType?->vendor,
+                'vendor_sku_id' => $l->licenseType?->vendor_sku_id,
+                'sku_id' => $l->licenseType?->sku_id !== null ? (int) $l->licenseType->sku_id : null,
+                'synced_at' => $l->synced_at?->copy()->utc()->toIso8601ZuluString(),
+                'is_manual' => $l->is_manual,
+                'sync_stale' => $l->sync_stale,
+                'contracts' => $l->contracts->map(fn (Contract $c) => [
+                    'id' => $c->id,
+                    'name' => $c->name,
+                    'assignment_source' => $c->pivot?->assignment_source,
+                ])->values()->toArray(),
+            ])->toArray(),
         ];
     }
 

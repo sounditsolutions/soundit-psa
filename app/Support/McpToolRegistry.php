@@ -1418,6 +1418,7 @@ class McpToolRegistry
             self::getContractTool(),
             self::listPrepayTransactionsTool(),
             self::getSkuTool(),
+            self::listClientLicensesTool(),
             self::listEmailItemsTool(),
             self::getEmailItemTool(),
             self::listPhoneCallsTool(),
@@ -1580,6 +1581,28 @@ class McpToolRegistry
                     'sku_id' => ['type' => 'integer', 'description' => 'The SKU ID to read.'],
                 ],
                 'required' => ['sku_id'],
+            ],
+        ];
+    }
+
+    /**
+     * list_client_licenses — a client's licences as the PSA records them (#8544).
+     * Client-scoped like list_client_contracts. Deliberately narrow: no cost,
+     * minimum or free-text note fields. Explicit-grant only like every psa_read tool.
+     *
+     * @return array<string, mixed>
+     */
+    public static function listClientLicensesTool(): array
+    {
+        return [
+            'name' => 'list_client_licenses',
+            'description' => 'List the licences the PSA records for one client: the rows every vendor licence sync writes (AppRiver, CIPP for Microsoft 365, Huntress and others), plus manually entered rows. vendor is the vendor of the licence type (appriver for AppRiver reseller types, cipp_m365 for Microsoft 365 tenant types); a manually entered row can sit on any vendor licence type. is_manual is true exactly while synced_at is null, so false does not prove a row was never entered by hand. A vendor sync or count that writes the same row, a vendor sync\'s cleanup, or removing that vendor\'s mapping from the client can stamp synced_at on a hand-entered row of that vendor\'s licence types (the cleanup and the mapping removal also zero and suspend it), and that row then reads is_manual false. No returned field says outright whether we bill the row; a row whose vendor_status is Suspended or Pending is held out of billed licence counts. Each row: id, quantity, assigned_quantity, scheduled_quantity, status, vendor_status, the licence type (license_type_id, license_type_name, vendor, vendor_sku_id, sku_id), synced_at (UTC ISO-8601; null while nothing has stamped the row), is_manual, sync_stale, and contracts (each with id, name and assignment_source). sync_stale is the AppRiver staleness rule the licence view shows: true only for an active appriver row whose vendor_status is not Suspended or Pending, of an operational client (stage Active and is_active) the last AppRiver sync did not skip as referred, last synced more than 48 hours ago, so its counts may be out of date. It is false for every other vendor and for rows with synced_at null. No cost, price or note fields are returned. Read-only. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'client_id' => ['type' => 'integer', 'description' => 'The client whose licences to list.'],
+                ],
+                'required' => ['client_id'],
             ],
         ];
     }
