@@ -1092,7 +1092,12 @@ class StaffHuntressRequestToolExecutor
                 // anything was sent, so the run is given back. It is audited first
                 // (ruling item 7); a failing audit does not replace this throw.
                 $this->safeApprovalAudit($run, $approverId, 'error', 'Approval failed before anything was sent ('.class_basename($e).'); the run was given back. Nothing was sent.');
-                $run->releaseClaim();
+                // A failing release must not replace the original throw.
+                try {
+                    $run->releaseClaim();
+                } catch (\Throwable $release) {
+                    self::quietLog('giving the run back failed after an approval threw before the send', ['run_id' => $run->id, 'exception' => $release::class]);
+                }
 
                 throw $e;
             }
@@ -1107,14 +1112,45 @@ class StaffHuntressRequestToolExecutor
                 ? 'Huntress refused the request (HTTP '.$refused.'), so it was not applied, and handling that refusal failed ('.class_basename($e).'). The run is closed: stage a new proposal if the change is still wanted.'
                 : 'The Huntress request was sent, and handling its outcome failed ('.class_basename($e).'); whether Huntress applied it is not known here. Do NOT re-approve: check it in Huntress.';
             $this->safeApprovalAudit($run, $approverId, 'error', $message);
-            try {
-                $closed = $run->advanceTo(TechnicianRunState::Done);
-            } catch (\Throwable) {
-                $closed = false;
-            }
+            $closed = self::closeRun($run, 'closing the run failed after a sent Huntress request threw');
 
-            return new TechnicianApprovalResult('executed_with_fault', message: $message.($closed ? '' : ' The run was not closed because this request no longer holds it; check the run.'));
+            return new TechnicianApprovalResult('executed_with_fault', message: $message.self::notClosed($closed));
         }
+    }
+
+    /**
+     * advanceTo(Done) after Huntress answered, telling apart the two ways it can fail:
+     * 'lost' when the claim fence lost (advanceTo returned false: this request no longer
+     * holds the run) and 'threw' when the UPDATE itself failed (this request still holds
+     * the run, which stays Executing). 'closed' otherwise. Nothing here may throw.
+     */
+    private static function closeRun(TechnicianRun $run, string $logMessage): string
+    {
+        try {
+            return $run->advanceTo(TechnicianRunState::Done) ? 'closed' : 'lost';
+        } catch (\Throwable $e) {
+            self::quietLog($logMessage, ['run_id' => $run->id, 'exception' => $e::class]);
+
+            return 'threw';
+        }
+    }
+
+    /** The sentence appended to an outcome when closeRun() did not close the run. */
+    private static function notClosed(string $closed): string
+    {
+        return match ($closed) {
+            'closed' => '',
+            'lost' => ' The run was not closed because this request no longer holds it; check the run.',
+            default => ' Closing the run failed, so the run is still Executing; check the run.',
+        };
+    }
+
+    /** The result for a 2xx whose run was not closed: a lost claim keeps executedNotClosed; a failed close says so. */
+    private static function executedButNotClosed(string $closed, string $method): TechnicianApprovalResult
+    {
+        return $closed === 'lost'
+            ? TechnicianApprovalResult::executedNotClosed('The Huntress request '.$method, 'the result in Huntress')
+            : new TechnicianApprovalResult('executed_with_fault', message: 'The Huntress request '.$method.' executed, but closing the run failed, so the run is still Executing. Do NOT re-approve it; check the result in Huntress and the run.');
     }
 
     /**
@@ -1148,7 +1184,13 @@ class StaffHuntressRequestToolExecutor
         if ($payload === null) {
             $message = 'The held payload could not be read; deny this proposal and stage it again.';
             $this->audit(self::STAGED, 'blocked', $run->client_id !== null ? (int) $run->client_id : null, Ticket::find((int) $run->ticket_id), (string) $run->content_hash, 'huntress-request: Approval refused: '.$message, $this->approverLabel($approverId), $run->id, $approverId);
-            $run->releaseClaim();
+            // The row above records this outcome: a failing release must not reach the
+            // outer catch, which would write a second row.
+            try {
+                $run->releaseClaim();
+            } catch (\Throwable $e) {
+                self::quietLog('giving the run back failed after an unreadable held payload', ['run_id' => $run->id, 'exception' => $e::class]);
+            }
 
             return new TechnicianApprovalResult('gate_declined', message: $message.' Nothing was sent.');
         }
@@ -1171,12 +1213,26 @@ class StaffHuntressRequestToolExecutor
             // The row above records this outcome: a failing release must not reach the
             // outer catch, which would write a second row and change the outcome.
             try {
-                $run->releaseClaim();
+                $notGivenBack = $run->releaseClaim() ? null : 'The run was not given back because this request no longer holds it; check the run.';
             } catch (\Throwable $e) {
                 self::quietLog('giving the run back failed after an approval was refused', ['run_id' => $run->id, 'exception' => $e::class]);
+                $notGivenBack = 'The run was not given back, so it is still Executing; check the run.';
+            }
+            if (! $sent) {
+                return new TechnicianApprovalResult('gate_declined', message: $message.' Nothing was sent.');
+            }
+            if ($notGivenBack !== null) {
+                // A received refusal ends with APPROVE_AGAIN after ' ' or "\n" (withReason(..., true)).
+                // The run was not given back, so approving again sends nothing: that sentence is
+                // replaced in place, keeping its separator, so after a vendor reason block the new
+                // sentence starts on its own line, not on the fence's END line.
+                $again = StaffHuntressRuleToolExecutor::APPROVE_AGAIN;
+                $message = str_ends_with($message, ' '.$again) || str_ends_with($message, "\n".$again)
+                    ? substr($message, 0, -strlen($again)).$notGivenBack
+                    : $message.' '.$notGivenBack;
             }
 
-            return new TechnicianApprovalResult('gate_declined', message: $message.($sent ? '' : ' Nothing was sent.'));
+            return new TechnicianApprovalResult('gate_declined', message: $message);
         };
 
         if (! $client || (int) $client->id !== (int) $run->client_id || ! $ticket || (int) $ticket->client_id !== (int) $client->id) {
@@ -1225,24 +1281,15 @@ class StaffHuntressRequestToolExecutor
             }
             $fault = 'The Huntress request '.$wire['method'].' '.$wire['path'].' failed with an unknown outcome ('.self::failureDetail($e).'); it may have been applied. Do NOT re-approve: check it in Huntress.';
             $this->safeAudit('error', $clientId, $ticket, $hash, self::requestLine($wire).': '.$fault, $approver, $run->id, $approverId);
-            try {
-                $closed = $run->advanceTo(TechnicianRunState::Done);
-            } catch (\Throwable) {
-                $closed = false;
-            }
+            $closed = self::closeRun($run, 'closing the run failed after a Huntress request with an unknown outcome');
 
-            return new TechnicianApprovalResult('executed_with_fault', message: $fault.($closed ? '' : ' The run was not closed because this request no longer holds it; check the run.'));
+            return new TechnicianApprovalResult('executed_with_fault', message: $fault.self::notClosed($closed));
         }
 
-        try {
-            $closed = $run->advanceTo(TechnicianRunState::Done);
-        } catch (\Throwable $e) {
-            self::quietLog('closing the run failed after a Huntress request', ['run_id' => $run->id, 'exception' => $e::class]);
-            $closed = false;
-        }
+        $closed = self::closeRun($run, 'closing the run failed after a Huntress request');
         $this->safeAudit('executed', $clientId, $ticket, $hash, self::requestLine($wire).': Operator-approved huntress_request executed', $approver, $run->id, $approverId);
-        if (! $closed) {
-            return TechnicianApprovalResult::executedNotClosed('The Huntress request '.$wire['method'], 'the result in Huntress');
+        if ($closed !== 'closed') {
+            return self::executedButNotClosed($closed, $wire['method']);
         }
 
         return new TechnicianApprovalResult('executed', message: 'Huntress request '.$wire['method'].' '.$wire['path'].' sent.');
@@ -1259,15 +1306,7 @@ class StaffHuntressRequestToolExecutor
     private function approveResolution(TechnicianRun $run, array $request, array $wire, ?int $clientId, ?Ticket $ticket, string $hash, string $approver, int $approverId, \Closure $decline, bool &$sent, ?int &$refused): TechnicianApprovalResult
     {
         $line = self::requestLine($wire);
-        $close = function () use ($run): bool {
-            try {
-                return $run->advanceTo(TechnicianRunState::Done);
-            } catch (\Throwable $e) {
-                self::quietLog('closing the run failed after an escalation resolution', ['run_id' => $run->id, 'exception' => $e::class]);
-
-                return false;
-            }
-        };
+        $close = fn (): string => self::closeRun($run, 'closing the run failed after an escalation resolution');
         try {
             $resolution = $this->writeClient->resolveEscalation((int) $request['escalation_id']);
         } catch (HuntressWriteScopeException) {
@@ -1278,7 +1317,7 @@ class StaffHuntressRequestToolExecutor
             $this->safeAudit('executed', $clientId, $ticket, $hash, $line.': Huntress answered 409 already resolved; nothing changed.', $approver, $run->id, $approverId);
             $closed = $close();
 
-            return new TechnicianApprovalResult('executed', message: 'Escalation '.$request['escalation_id'].' was already resolved in Huntress; nothing changed.'.($closed ? '' : ' The run was not closed because this request no longer holds it; check the run.'));
+            return new TechnicianApprovalResult('executed', message: 'Escalation '.$request['escalation_id'].' was already resolved in Huntress; nothing changed.'.self::notClosed($closed));
         } catch (\Throwable $e) {
             if ($e instanceof HuntressClientException && ! self::mayHaveCommitted($e)) {
                 $refused = (int) $e->getCode();
@@ -1290,7 +1329,7 @@ class StaffHuntressRequestToolExecutor
             $this->safeAudit('error', $clientId, $ticket, $hash, $line.': '.$fault, $approver, $run->id, $approverId);
             $closed = $close();
 
-            return new TechnicianApprovalResult('executed_with_fault', message: $fault.($closed ? '' : ' The run was not closed because this request no longer holds it; check the run.'));
+            return new TechnicianApprovalResult('executed_with_fault', message: $fault.self::notClosed($closed));
         }
 
         $closed = $close();
@@ -1300,11 +1339,11 @@ class StaffHuntressRequestToolExecutor
             $this->safeAudit('error', $clientId, $ticket, $hash, $line.': '.$fault, $approver, $run->id, $approverId);
             self::quietLog($fault, ['run_id' => $run->id]);
 
-            return new TechnicianApprovalResult('executed_with_fault', message: $fault.($closed ? '' : ' The run was not closed because this request no longer holds it; check the run.'));
+            return new TechnicianApprovalResult('executed_with_fault', message: $fault.self::notClosed($closed));
         }
         $this->safeAudit('executed', $clientId, $ticket, $hash, $line.': Operator-approved huntress_request executed (resolution_method '.$method.')', $approver, $run->id, $approverId);
-        if (! $closed) {
-            return TechnicianApprovalResult::executedNotClosed('The Huntress request '.$wire['method'], 'the result in Huntress');
+        if ($closed !== 'closed') {
+            return self::executedButNotClosed($closed, $wire['method']);
         }
 
         return new TechnicianApprovalResult('executed', message: 'Huntress request '.$wire['method'].' '.$wire['path'].' sent; escalation resolved (resolution_method '.$method.').');
@@ -1459,7 +1498,7 @@ class StaffHuntressRequestToolExecutor
         try {
             $this->audit(self::STAGED, $status, $clientId, $ticket, $hash, $summary, $actor, $runId, $approverId);
         } catch (\Throwable $e) {
-            Log::error('[StaffHuntressRequestToolExecutor] audit row failed after a Huntress request', ['run_id' => $runId, 'result_status' => $status, 'exception' => $e::class]);
+            self::quietLog('audit row failed after a Huntress request', ['run_id' => $runId, 'result_status' => $status, 'exception' => $e::class]);
         }
     }
 
