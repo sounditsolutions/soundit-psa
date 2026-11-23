@@ -1089,9 +1089,10 @@ class StaffHuntressRequestToolExecutor
         } catch (\Throwable $e) {
             if (! $sent) {
                 // $sent is set just before the vendor call: this throw is from before
-                // anything was sent, so the run is given back. It is audited first
-                // (ruling item 7); a failing audit does not replace this throw.
-                $this->safeApprovalAudit($run, $approverId, 'error', 'Approval failed before anything was sent ('.class_basename($e).'); the run was given back. Nothing was sent.');
+                // anything was sent, so the run is released below. It is audited first
+                // (ruling item 7), and the row says only what happened, since the release
+                // after it may fail; a failing audit does not replace this throw.
+                $this->safeApprovalAudit($run, $approverId, 'error', 'Approval failed before anything was sent ('.class_basename($e).'). Nothing was sent.');
                 // A failing release must not replace the original throw.
                 try {
                     $run->releaseClaim();
@@ -1206,7 +1207,13 @@ class StaffHuntressRequestToolExecutor
         $ticket = Ticket::automationVisible()->find((int) ($payload['ticket_id'] ?? 0));
         $clientId = $client ? (int) $client->id : null;
         $decline = function (string $status, string $message, bool $sent = false) use ($run, $clientId, $ticket, $hash, $wire, $approver, $approverId): TechnicianApprovalResult {
-            $summary = self::requestLine($wire).': Approval refused: '.$message;
+            // The row records the outcome only: the advice to approve again depends on the
+            // release below, so it is left out of the row (with its separator).
+            $advice = StaffHuntressRuleToolExecutor::APPROVE_AGAIN;
+            $outcome = str_ends_with($message, ' '.$advice) || str_ends_with($message, "\n".$advice)
+                ? substr($message, 0, -strlen($advice) - 1)
+                : $message;
+            $summary = self::requestLine($wire).': Approval refused: '.$outcome;
             $sent
                 ? $this->safeAudit($status, $clientId, $ticket, $hash, $summary, $approver, $run->id, $approverId)
                 : $this->audit(self::STAGED, $status, $clientId, $ticket, $hash, $summary, $approver, $run->id, $approverId);

@@ -773,7 +773,7 @@ class StaffHuntressRuleToolExecutor
             // vendor 4xx (other than 408) is a refusal and gives the run back.
             $detail = self::failureDetail($e);
             if ($e instanceof HuntressClientException && ! self::mayHaveCommitted($e)) {
-                return $decline('error', $this->refusalText($request['method'], $e, true), true);
+                return $decline('error', $this->refusalText($request['method'], $e, false), true);
             }
             $fault = "The Huntress rule {$request['method']} {$request['path']} failed with an unknown outcome ({$detail}); it may have been applied. Do NOT re-approve: check the rule in Huntress.";
             $this->safeAudit($run->action_type, 'error', (int) $client->id, $ticket, $hash, $request['target'].': '.$fault, $approver, $run->id, $approverId);
