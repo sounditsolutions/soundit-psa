@@ -855,6 +855,8 @@ class HuntressRequestToolTest extends TestCase
         $this->assertStringContainsString('Other ids are NOT read or checked', $description);
         $this->assertStringContainsString('account_id in the body, must be the API key\'s own account', $description);
         $this->assertStringNotContainsString('or other object named by id is read first', $description);
+        $this->assertSame(1, preg_match('/Read first,.*?A failed read is a refusal\./', $description, $m));
+        $this->assertSame('Read first, and refused unless it belongs to the mapped organization or to none (then the approval says account-wide, unless the request also names the mapped organization, or another object read first that belongs to it): an unwanted access rule, agent, incident report, identity, membership, escalation, signal, report, external port, platform action or SIEM log source named by id in the path, and identity_id, agent_id or escalation_id in the query or body. A failed read is a refusal.', $m[0]);
     }
 
     // ── round 2: must-fix 3, escalation resolution on the terms of huntress_resolve_escalation ──
@@ -1188,6 +1190,8 @@ class HuntressRequestToolTest extends TestCase
         $this->assertStringNotContainsString('not known', (string) $result->message, 'the refusal was received: the outcome is known');
         $this->assertCount(1, $this->writes);
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state, 'never given back for a second send');
+        $row = TechnicianActionLog::where('action_type', 'huntress_stage_request')->where('result_status', 'error')->sole();
+        $this->assertSame('huntress-request:POST /v1/agents/9501/isolation: Huntress refused the request (HTTP 422), so it was not applied, and handling that refusal failed (RuntimeException).', $row->summary, 'the row is written before the close, so it does not say the run is closed');
     }
 
     /** @return array<int, string> The proposed_content of each mockup card, built by the tool for synthetic data. */
@@ -1243,9 +1247,12 @@ class HuntressRequestToolTest extends TestCase
     }
 
     /**
-     * Round 5: no genuine route into the outer catch's "not known" arm remains after the send
-     * (every step after Huntress answers is caught where it runs), so the round 4 route through
-     * safeAudit's throwing log is gone. A genuinely unknown outcome (a 500) is reported by the
+     * Round 5: after the send, every step that can throw is caught where it runs except the
+     * refusal text of a received 4xx (withReason, then the sanitizer), which reaches the outer
+     * catch (test_a_throw_after_the_request_was_sent_does_not_give_the_run_back). That step runs
+     * after $refused is set, so the outer catch reports a known refusal, never "not known": no
+     * genuine route into its "not known" arm remains, and the round 4 route through safeAudit's
+     * throwing log is gone. A genuinely unknown outcome (a 500) is reported by the
      * unknown-outcome arm itself, with one row and the run closed.
      */
     public function test_a_send_with_an_unknown_outcome_writes_one_row_says_it_may_have_been_applied_and_closes_the_run(): void
@@ -1911,6 +1918,8 @@ class HuntressRequestToolTest extends TestCase
         $this->assertSame('Huntress refused the request (HTTP 422), so it was not applied, and handling that refusal failed (RuntimeException). The run is closed: stage a new proposal if the change is still wanted. Closing the run failed, so the run is still Executing; check the run.', $result->message);
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state);
         $this->assertSame($before + 1, $this->auditCount(), 'exactly one row for the approval');
+        $row = TechnicianActionLog::where('action_type', 'huntress_stage_request')->where('result_status', 'error')->sole();
+        $this->assertSame('huntress-request:POST /v1/agents/9501/isolation: Huntress refused the request (HTTP 422), so it was not applied, and handling that refusal failed (RuntimeException).', $row->summary, 'the row is written before the close, so it does not say the run is closed');
     }
 
     public function test_a_claim_lost_in_the_outer_catch_keeps_the_no_longer_holds_it_words(): void
@@ -1926,6 +1935,8 @@ class HuntressRequestToolTest extends TestCase
         $this->assertSame('executed_with_fault', $result->status);
         $this->assertSame('Huntress refused the request (HTTP 422), so it was not applied, and handling that refusal failed (RuntimeException). The run is closed: stage a new proposal if the change is still wanted. The run was not closed because this request no longer holds it; check the run.', $result->message);
         $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state, 'the other claim is still in place');
+        $row = TechnicianActionLog::where('action_type', 'huntress_stage_request')->where('result_status', 'error')->sole();
+        $this->assertSame('huntress-request:POST /v1/agents/9501/isolation: Huntress refused the request (HTTP 422), so it was not applied, and handling that refusal failed (RuntimeException).', $row->summary, 'the row is written before the close, so it does not say the run is closed');
     }
 
     public function test_a_release_lost_after_a_received_refusal_says_the_run_was_not_given_back(): void

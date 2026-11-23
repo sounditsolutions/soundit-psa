@@ -292,10 +292,11 @@ class HuntressWriteClient
     /**
      * #8430: the vendor's reason for a refusal, from the RESPONSE BODY of a 4xx
      * other than 408, or null (5xx, 408, no response, empty body). Never the
-     * exception message, which can carry the URL. A JSON object's `error`, if
-     * it is a string, else its `message`, if that is a string, is taken; any
-     * other non-empty JSON is shown as compact JSON; a body that is not JSON is
-     * shown as text. Compatibility forms are folded (NFKC), control characters
+     * exception message, which can carry the URL. A JSON string is shown as its
+     * decoded text. A JSON object or array is shown as its `error`, if that is a
+     * string, else its `message`, if that is a string, else as compact JSON. A
+     * JSON number, boolean or null, and a body that is not JSON, are shown as
+     * the raw body text. Compatibility forms are folded (NFKC), control characters
      * and line or paragraph separators become one space per run, and the result
      * is capped at REFUSAL_REASON_MAX characters. Null also for an empty JSON
      * object or array, text that is not valid UTF-8, or text that is empty

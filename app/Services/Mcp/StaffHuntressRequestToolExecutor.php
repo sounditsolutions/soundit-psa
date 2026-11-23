@@ -310,7 +310,7 @@ class StaffHuntressRequestToolExecutor
         ];
         $description = 'One request to any Huntress API endpoint in the vendor spec, for one PSA client (client_id). GET runs at once. POST, PATCH and DELETE are ALWAYS held for cockpit approval whatever this token\'s grant says; the approval shows the method, path, query and body exactly as they will be sent. '
             .'An organization id in the path, query or body must be this client\'s mapped Huntress organization; an account id in the path, or account_id in the body, must be the API key\'s own account. '
-            .'Read first, and refused unless it belongs to the mapped organization or to none (then the approval says account-wide): an unwanted access rule, agent, incident report, identity, membership, escalation, signal, report, external port, platform action or SIEM log source named by id in the path, and identity_id, agent_id or escalation_id in the query or body. A failed read is a refusal. '
+            .'Read first, and refused unless it belongs to the mapped organization or to none (then the approval says account-wide, unless the request also names the mapped organization, or another object read first that belongs to it): an unwanted access rule, agent, incident report, identity, membership, escalation, signal, report, external port, platform action or SIEM log source named by id in the path, and identity_id, agent_id or escalation_id in the query or body. A failed read is a refusal. '
             .'Other ids are NOT read or checked: remediation ids (the incident report in the path is read), invoice, trial and reseller subscription ids, user_id, entity_id and manual_completion_remediation_ids. '
             .'Reseller writes are billing changes and are held the same way. POST /v1/escalations/{id}/resolution takes no body: like huntress_resolve_escalation it accepts only an escalation whose organization set is exactly this client\'s mapped organization (account-level and multi-organization escalations are refused), sends the empty object {} and checks the resolution_method Huntress reports. POST /v1/siem/query is refused: use huntress_siem_query. '
             .'Lists whose rows name an organization (organization usage line items included) drop rows of organizations not mapped to a PSA client, rows whose organization cannot be read, and rows that name no organization (account level; account-level escalations alone are kept), and count them in dropped_unmapped; lists whose rows carry no organization (accounts, invoices, subscriptions, trials, comments, remediations, known VPNs, remote access connections, account usage line items) are not filtered. '
@@ -1106,13 +1106,15 @@ class StaffHuntressRequestToolExecutor
             // back for a second send. When Huntress's refusal (a 4xx other than 408)
             // had already been received, the request was not applied and the text says
             // so; otherwise what Huntress did is not known here. The run is closed as the
-            // unknown-outcome arm closes it, and one audit row records it. Nothing on
-            // this arm may throw out of it, the log line included.
+            // unknown-outcome arm closes it, and one audit row records it. The row does not
+            // say the run is closed, since the close after it may fail. Nothing on this
+            // arm may throw out of it, the log line included.
             self::quietLog('handling the outcome of a sent Huntress request failed', ['run_id' => $run->id, 'exception' => $e::class]);
-            $message = $refused !== null
-                ? 'Huntress refused the request (HTTP '.$refused.'), so it was not applied, and handling that refusal failed ('.class_basename($e).'). The run is closed: stage a new proposal if the change is still wanted.'
+            $row = $refused !== null
+                ? 'Huntress refused the request (HTTP '.$refused.'), so it was not applied, and handling that refusal failed ('.class_basename($e).').'
                 : 'The Huntress request was sent, and handling its outcome failed ('.class_basename($e).'); whether Huntress applied it is not known here. Do NOT re-approve: check it in Huntress.';
-            $this->safeApprovalAudit($run, $approverId, 'error', $message);
+            $message = $row.($refused !== null ? ' The run is closed: stage a new proposal if the change is still wanted.' : '');
+            $this->safeApprovalAudit($run, $approverId, 'error', $row);
             $closed = self::closeRun($run, 'closing the run failed after a sent Huntress request threw');
 
             return new TechnicianApprovalResult('executed_with_fault', message: $message.self::notClosed($closed));

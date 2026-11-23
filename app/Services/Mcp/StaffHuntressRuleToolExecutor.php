@@ -90,7 +90,12 @@ class StaffHuntressRuleToolExecutor
     /** #8431, update only: on an update, leaving starts_at out keeps the current start. */
     public const STARTS_AT_UPDATE = 'On an update, leaving starts_at out keeps the rule\'s current start; give a later date to move it.';
 
-    /** #8430: the last sentence of a vendor refusal shown to the approver. */
+    /**
+     * #8430: the advice withReason() appends when $atApproval is true. Only the generic
+     * huntress_request tool's received-refusal decline passes true; that decline leaves it
+     * out of the audit row and replaces it when the release fails or is lost. The rule
+     * tools pass false and never add it.
+     */
     public const APPROVE_AGAIN = 'Approving again sends the same request.';
 
     /** @var array<string, array<int, string>> Argument keys each tool accepts; everything else is refused. */
@@ -899,15 +904,15 @@ class StaffHuntressRuleToolExecutor
 
     /**
      * A vendor refusal: the fixed status-and-class sentence (C-56), then (#8430) the
-     * reason from the response body, fenced, when there is one. At approval the text
-     * ends with APPROVE_AGAIN, because the run is given back.
+     * reason from the response body, fenced, when there is one. The rule tools pass
+     * $atApproval false on both lanes, so their refusal text carries no approve-again advice.
      */
     private function refusalText(string $method, HuntressClientException $e, bool $atApproval): string
     {
         return self::withReason('Huntress refused the request (HTTP '.(int) $e->getCode()."): rule {$method}, ".class_basename($e).'.', $e, $atApproval);
     }
 
-    /** The fixed sentence, then the fenced vendor reason when there is one, then (at approval) APPROVE_AGAIN. */
+    /** The fixed sentence, then the fenced vendor reason when there is one, then APPROVE_AGAIN when $atApproval is true. */
     public static function withReason(string $sentence, \Throwable $e, bool $atApproval): string
     {
         $block = self::vendorReasonBlock($e);

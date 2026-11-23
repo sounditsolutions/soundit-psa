@@ -766,7 +766,8 @@ class HuntressUnwantedAccessRuleWriteTest extends TestCase
         $result = $this->approveDirect($run);
         $this->assertSame('gate_declined', $result->status);
         // The whole message: a request was sent, so it must not end in "Nothing was sent."
-        // The body is '{}' (no reason), so only the fixed sentence; no advice to approve again.
+        // The body is '{}' (no reason), so no fenced reason follows the fixed sentence. The rule
+        // tools never add the advice to approve again, whatever the body.
         $this->assertSame('Huntress refused the request (HTTP 422): rule POST, HuntressClientException.', $result->message);
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state, 'a refusal gives the run back');
         $this->assertCount(1, $this->writes);
