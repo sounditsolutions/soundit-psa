@@ -85,8 +85,9 @@ use Illuminate\Support\Str;
  * and counted (dropped_unmapped), as the reads do; only account-level
  * escalations are kept. Lists whose rows carry no organization (accounts,
  * invoices, subscriptions, trials, comments, remediations, known VPNs, remote
- * access connections and account usage line items) are not filtered, and the
- * answer's note says so.
+ * access connections and account usage line items) are not filtered by
+ * organization, and the answer's note says so. In every list, a row that is not
+ * an object is dropped and counted in dropped_unmapped.
  *
  * ERRORS. Status and exception class only (C-56); a vendor 4xx other than 408
  * adds the reason from the response body, fenced (#8430). Vendor strings in
@@ -317,7 +318,7 @@ class StaffHuntressRequestToolExecutor
             .'Read first, and refused unless it belongs to the mapped organization or to none (then the approval says account-wide, unless the request also names the mapped organization, or another object read first that belongs to it): an unwanted access rule, agent, incident report, identity, membership, escalation, signal, report, external port, platform action or SIEM log source named by id in the path, and identity_id, agent_id or escalation_id in the query or body. A failed read is a refusal. '
             .'Other ids are NOT read or checked: remediation ids (the incident report in the path is read), invoice, trial and reseller subscription ids, user_id, entity_id and manual_completion_remediation_ids. '
             .'Reseller writes are billing changes and are held the same way. POST /v1/escalations/{id}/resolution takes no body: like huntress_resolve_escalation it accepts only an escalation whose organization set is exactly this client\'s mapped organization (account-level and multi-organization escalations are refused), sends the empty object {} and checks the resolution_method Huntress reports. POST /v1/siem/query is refused: use huntress_siem_query. '
-            .'Lists whose rows name an organization (organization usage line items included) drop rows of organizations not mapped to a PSA client, rows whose organization cannot be read, and rows that name no organization (account level; account-level escalations alone are kept), and count them in dropped_unmapped; lists whose rows carry no organization (accounts, invoices, subscriptions, trials, comments, remediations, known VPNs, remote access connections, account usage line items) are not filtered. '
+            .'Lists whose rows name an organization (organization usage line items included) drop rows of organizations not mapped to a PSA client, rows whose organization cannot be read, and rows that name no organization (account level; account-level escalations alone are kept), and count them in dropped_unmapped; lists whose rows carry no organization (accounts, invoices, subscriptions, trials, comments, remediations, known VPNs, remote access connections, account usage line items) are not filtered by organization. In every list, a row that is not a JSON object is dropped and counted in dropped_unmapped. '
             .'For /v1/unwanted_access_rules, '.lcfirst(StaffHuntressRuleToolExecutor::STARTS_AT_RULE).' On POST, '.lcfirst(StaffHuntressRuleToolExecutor::STARTS_AT_CREATE).' '.StaffHuntressRuleToolExecutor::STARTS_AT_UPDATE.' Vendor text comes back inside UNTRUSTED fences.';
 
         return [
@@ -342,7 +343,7 @@ class StaffHuntressRequestToolExecutor
                 $this->audit(self::STAGED, $status, $clientId, $ticket, $hash, self::requestLine($arguments).': '.$message, $actorLabel);
             }
 
-            return ['error' => $message.' Nothing was sent.'];
+            return ['error' => $message.' The requested call was not sent.'];
         };
 
         if (! HuntressConfig::isEnabled() || ! HuntressConfig::isConfigured()) {
@@ -405,8 +406,10 @@ class StaffHuntressRequestToolExecutor
      * The exact request, after every check that can run before staging, or the
      * refusal text. Reads (GET /v1/account, each object the path names by id, and
      * each ID_FIELDS id in the query or body) go through the read client; a failed
-     * read refuses. $atApproval: true for the re-check when a staged request is
-     * approved. It changes only the starts_at refusal text
+     * read refuses. A GET of the object itself (e.g. GET /v1/agents/{id}) does not
+     * read that object first: its organization is checked on the response, in
+     * get(), before anything is returned. $atApproval: true for the re-check when
+     * a staged request is approved. It changes only the starts_at refusal text
      * (StaffHuntressRuleToolExecutor::startsAtRefusal()); every other refusal
      * reads the same at the call and at approval.
      *
@@ -689,9 +692,10 @@ class StaffHuntressRequestToolExecutor
      * GET at once through the read client. Lists whose rows name an organization
      * (ROW_ORG) drop and count rows whose organization is not mapped to a PSA
      * client, cannot be read, or is absent (account level; account-level
-     * escalations alone are kept); other lists are not filtered and the note
-     * says so. A single object of a ROW_ORG family must belong to this client's
-     * organization or to none.
+     * escalations alone are kept); other lists are not filtered by organization
+     * and the note says so. In every list, a row that is not an object is dropped
+     * and counted in dropped_unmapped. A single object of a ROW_ORG family must
+     * belong to this client's organization or to none.
      *
      * @param  array<string, mixed>  $request
      * @return array<string, mixed>
@@ -1113,7 +1117,9 @@ class StaffHuntressRequestToolExecutor
             // had already been received, the request was not applied and the text says
             // so; otherwise what Huntress did is not known here. This catch tries to close
             // the run as the unknown-outcome arm does; that close may itself fail ('lost' or
-            // 'threw', see closeRun()), and one audit row records the outcome either way.
+            // 'threw', see closeRun()), and one audit row records the outcome either way,
+            // unless that row's INSERT fails: safeApprovalAudit() logs and swallows the
+            // failure, and then there is no row.
             // The row does not say the run is closed, since the close after it may fail.
             // Nothing on this arm may throw out of it, the log line included.
             self::quietLog('handling the outcome of a sent Huntress request failed', ['run_id' => $run->id, 'exception' => $e::class]);
