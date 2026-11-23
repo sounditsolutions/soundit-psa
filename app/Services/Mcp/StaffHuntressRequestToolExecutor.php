@@ -50,12 +50,16 @@ use Illuminate\Support\Str;
  * ORG FENCE (client_id is required). An organization id in the path, the query
  * or the body must be the client's mapped Huntress organization. An account id
  * in the path, or account_id in the body, must be the account the API key
- * belongs to (read with GET /v1/account). READ FIRST: exactly these are read
- * before anything is staged or returned, and each must belong to the mapped
- * organization or to none: an unwanted access rule, agent, incident report,
- * identity, membership, escalation, signal, report, external port, platform
- * action or SIEM log source named by id in the path (SUBJECTS), and
- * identity_id, agent_id or escalation_id in the query or the body (ID_FIELDS).
+ * belongs to (read with GET /v1/account). READ FIRST: these objects are read
+ * with a GET before a write is staged, and before a GET's own request is sent,
+ * and each must belong to the mapped organization or to none: an unwanted
+ * access rule, agent, incident report, identity, membership, escalation,
+ * signal, report, external port, platform action or SIEM log source named by
+ * id in the path (SUBJECTS), and the identity, agent or escalation that
+ * identity_id, agent_id or escalation_id names in the query or the body
+ * (ID_FIELDS). A GET of the object itself (e.g. GET /v1/agents/{id}) does not
+ * read that object first: the org check runs on the response, in get(), before
+ * anything is returned.
  * A read that fails, or an object whose organization cannot be classified, is a
  * refusal. Other ids are NOT read: remediation ids (the incident report in the
  * path is read), invoice, trial and reseller subscription ids, user_id,
@@ -401,8 +405,10 @@ class StaffHuntressRequestToolExecutor
      * The exact request, after every check that can run before staging, or the
      * refusal text. Reads (GET /v1/account, each object the path names by id, and
      * each ID_FIELDS id in the query or body) go through the read client; a failed
-     * read refuses. $atApproval: this is the re-check when a staged request is
-     * approved, so refusal texts say so.
+     * read refuses. $atApproval: true for the re-check when a staged request is
+     * approved. It changes only the starts_at refusal text
+     * (StaffHuntressRuleToolExecutor::startsAtRefusal()); every other refusal
+     * reads the same at the call and at approval.
      *
      * @return array<string, mixed>|string
      */
@@ -1105,10 +1111,11 @@ class StaffHuntressRequestToolExecutor
             // The request was sent and handling its outcome threw: do not give the run
             // back for a second send. When Huntress's refusal (a 4xx other than 408)
             // had already been received, the request was not applied and the text says
-            // so; otherwise what Huntress did is not known here. The run is closed as the
-            // unknown-outcome arm closes it, and one audit row records it. The row does not
-            // say the run is closed, since the close after it may fail. Nothing on this
-            // arm may throw out of it, the log line included.
+            // so; otherwise what Huntress did is not known here. This catch tries to close
+            // the run as the unknown-outcome arm does; that close may itself fail ('lost' or
+            // 'threw', see closeRun()), and one audit row records the outcome either way.
+            // The row does not say the run is closed, since the close after it may fail.
+            // Nothing on this arm may throw out of it, the log line included.
             self::quietLog('handling the outcome of a sent Huntress request failed', ['run_id' => $run->id, 'exception' => $e::class]);
             $row = $refused !== null
                 ? 'Huntress refused the request (HTTP '.$refused.'), so it was not applied, and handling that refusal failed ('.class_basename($e).').'

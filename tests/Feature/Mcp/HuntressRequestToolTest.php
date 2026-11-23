@@ -2065,4 +2065,242 @@ class HuntressRequestToolTest extends TestCase
         $this->assertSame(1, $this->auditCount('blocked'));
         $this->assertCount(0, $this->writes);
     }
+
+    // ── close2: guard sweep, one test per loosening mutant that survived at 9018b1db ──
+
+    public function test_a_get_of_another_orgs_incident_report_comments_reads_the_incident_first_and_returns_no_rows(): void
+    {
+        $fx = $this->fixture();
+        $this->leftoversAllowed = true;
+        $this->queueRead(['incident_report' => ['id' => 9601, 'organization_id' => self::OTHER_ORG]]);
+        $this->queueRead(['comments' => [['id' => 1, 'body' => 'Synthetic other-org comment']], 'pagination' => []]);
+
+        $result = $this->tool(['client_id' => $fx['client']->id, 'method' => 'GET', 'path' => '/v1/incident_reports/9601/comments']);
+
+        $this->assertSame(['error' => 'The incident report 9601 belongs to Huntress organization '.self::OTHER_ORG.', not the one mapped to this client. Nothing was sent.'], $result, json_encode($result));
+        $this->assertArrayNotHasKey('comments', $result, '0 rows returned');
+        $this->assertCount(1, $this->reads, 'only the incident report is read');
+        $this->assertSame('/v1/incident_reports/9601', $this->reads[0]['request']->getUri()->getPath());
+    }
+
+    public function test_a_list_drops_and_counts_a_row_whose_organization_list_holds_a_non_integer(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead(['external_ports' => [
+            ['id' => 9201, 'organization_ids' => [self::ORG]],
+            ['id' => 9206, 'organization_ids' => [self::ORG, 'x']],
+            ['id' => 9207, 'organization_ids' => [['id' => self::ORG], ['id' => null]]],
+        ], 'pagination' => []]);
+        $result = $this->tool(['client_id' => $fx['client']->id, 'method' => 'GET', 'path' => '/v1/external_ports']);
+        $this->assertSame([9201], array_column($result['external_ports'] ?? [], 'id'), json_encode($result));
+        $this->assertSame(1, $result['count']);
+        $this->assertSame(2, $result['dropped_unmapped']);
+    }
+
+    public function test_a_write_naming_only_an_account_level_object_in_the_path_says_account_wide(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead(['unwanted_access_rule' => ['id' => 9402, 'applied_to' => ['type' => 'Account', 'id' => self::ACCOUNT]]]);
+
+        $result = $this->tool($this->writeArgs($fx, ['method' => 'DELETE', 'path' => '/v1/unwanted_access_rules/9402']));
+
+        $this->assertTrue($result['account_wide'] ?? false, json_encode($result));
+        $this->assertStringStartsWith("ACCOUNT-WIDE: this request names no Huntress organization, so it acts on the whole Huntress account, not only on Example Dental Co.\n", TechnicianRun::findOrFail($result['run_id'])->proposed_content);
+        $this->assertCount(1, $this->reads);
+        $this->assertCount(0, $this->writes);
+    }
+
+    public function test_a_write_naming_only_an_account_level_object_by_an_id_field_says_account_wide(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead(['identity' => ['id' => 9805, 'organization' => null]]);
+
+        $result = $this->tool($this->writeArgs($fx, ['method' => 'POST', 'path' => '/v1/unwanted_access_rules', 'body' => ['identity_id' => 9805, 'country_code' => 'JP', 'type' => 'unauthorized']]));
+
+        $this->assertTrue($result['account_wide'] ?? false, json_encode($result));
+        $this->assertStringStartsWith("ACCOUNT-WIDE: this request names no Huntress organization, so it acts on the whole Huntress account, not only on Example Dental Co.\n", TechnicianRun::findOrFail($result['run_id'])->proposed_content);
+        $this->assertSame('/v1/identities/9805', $this->reads[0]['request']->getUri()->getPath());
+        $this->assertCount(0, $this->writes);
+    }
+
+    public function test_a_body_that_is_not_a_json_object_is_refused_with_its_own_text(): void
+    {
+        $fx = $this->fixture();
+        $this->trap();
+        foreach ([['synthetic'], 'synthetic'] as $body) {
+            $result = $this->tool($this->writeArgs($fx, ['method' => 'PATCH', 'path' => '/v1/agents/9501', 'body' => $body]));
+            $this->assertSame(['error' => 'body must be a JSON object. Nothing was sent.'], $result, json_encode($body));
+        }
+        $this->assertCount(0, $this->reads);
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_an_account_in_the_path_is_refused_when_the_keys_account_cannot_be_read(): void
+    {
+        $fx = $this->fixture();
+        $this->readQueue->append(new Response(500, [], '{}'));
+        $failed = $this->tool($this->writeArgs($fx, ['method' => 'DELETE', 'path' => '/v1/accounts/'.self::ACCOUNT]));
+        $this->assertSame(['error' => 'The Huntress account could not be read to check the account id (Huntress HTTP 500: HuntressClientException), so the request is refused. Nothing was sent.'], $failed, json_encode($failed));
+
+        $this->queueRead(['account' => []]);
+        $noId = $this->tool($this->writeArgs($fx, ['method' => 'DELETE', 'path' => '/v1/accounts/'.self::ACCOUNT]));
+        $this->assertSame(['error' => 'The Huntress account read did not carry an account id, so the account id could not be checked and the request is refused. Nothing was sent.'], $noId, json_encode($noId));
+
+        $this->assertSame(0, TechnicianRun::count());
+        $this->assertCount(0, $this->writes);
+    }
+
+    public function test_a_get_of_an_organization_whose_id_is_not_an_integer_is_not_shown(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead(['organization' => ['id' => (string) self::ORG, 'name' => 'Example Org']]);
+        $result = $this->tool(['client_id' => $fx['client']->id, 'method' => 'GET', 'path' => '/v1/organizations/'.self::ORG]);
+        $this->assertSame(['error' => 'The organization read belongs to another Huntress organization or its organization could not be read, so it is not shown.'], $result, json_encode($result));
+    }
+
+    public function test_an_organization_id_that_is_not_an_integer_is_unclassifiable_not_account_level(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead(['agent' => $this->agent(9501, null)]);
+        $this->readQueue->append($this->vendorJson(200, ['agent' => ['id' => 9501, 'organization_id' => (string) self::OTHER_ORG]]));
+        $this->queueRead(['agent' => ['id' => 9502, 'organization_id' => (string) self::ORG]]);
+        $control = $this->tool(['client_id' => $fx['client']->id, 'method' => 'GET', 'path' => '/v1/agents/9501']);
+        $this->assertSame(9501, $control['agent']['id'] ?? null, 'positive control: a null organization_id is account level and shown');
+
+        $get = $this->tool(['client_id' => $fx['client']->id, 'method' => 'GET', 'path' => '/v1/agents/9501']);
+        $this->assertSame(['error' => 'The agent read belongs to another Huntress organization or its organization could not be read, so it is not shown.'], $get, json_encode($get));
+
+        $write = $this->tool($this->writeArgs($fx, ['method' => 'DELETE', 'path' => '/v1/agents/9502']));
+        $this->assertSame(['error' => 'The agent 9502 names no organization this tool can classify (or several), so the request is refused. Nothing was sent.'], $write, json_encode($write));
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_an_organization_object_whose_id_is_not_an_integer_is_unclassifiable_not_account_level(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead(['identity' => ['id' => 9801, 'organization' => ['id' => (string) self::OTHER_ORG], 'email' => 'someone@example.test']]);
+        $this->queueRead(['identity' => ['id' => 9806, 'organization' => 'synthetic', 'email' => 'someone@example.test']]);
+        foreach (['/v1/identities/9801', '/v1/identities/9806'] as $path) {
+            $result = $this->tool(['client_id' => $fx['client']->id, 'method' => 'GET', 'path' => $path]);
+            $this->assertSame(['error' => 'The identity read belongs to another Huntress organization or its organization could not be read, so it is not shown.'], $result, $path);
+        }
+        $this->assertCount(2, $this->reads);
+    }
+
+    public function test_a_row_of_a_list_that_is_not_an_object_is_dropped_and_counted_even_where_rows_carry_no_organization(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead(['invoices' => [['id' => 9601, 'status' => 'paid'], 'synthetic', 7], 'pagination' => []]);
+        $result = $this->tool(['client_id' => $fx['client']->id, 'method' => 'GET', 'path' => '/v1/invoices']);
+        $this->assertSame([9601], array_column($result['invoices'] ?? [], 'id'), json_encode($result));
+        $this->assertSame(1, $result['count']);
+        $this->assertSame(2, $result['dropped_unmapped']);
+    }
+
+    public function test_a_single_object_answered_as_a_list_is_an_unrecognized_shape(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead(['agent' => [9501, self::ORG]]);
+        $result = $this->tool(['client_id' => $fx['client']->id, 'method' => 'GET', 'path' => '/v1/agents/9501']);
+        $this->assertSame(['error' => 'Huntress returned an unrecognized shape for /v1/agents/9501 (no agent object). This is not an empty answer.'], $result, json_encode($result));
+    }
+
+    public function test_a_list_answered_as_an_object_is_an_unrecognized_shape(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead(['agents' => ['first' => $this->agent(9501)], 'pagination' => []]);
+        $result = $this->tool(['client_id' => $fx['client']->id, 'method' => 'GET', 'path' => '/v1/agents']);
+        $this->assertSame(['error' => 'Huntress returned an unrecognized shape for /v1/agents (no agents list). This is not an empty answer.'], $result, json_encode($result));
+    }
+
+    public function test_an_object_read_first_as_a_list_is_an_unrecognized_shape(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead(['agent' => [9501, self::ORG]]);
+        $result = $this->tool($this->writeArgs($fx, ['method' => 'DELETE', 'path' => '/v1/agents/9501']));
+        $this->assertSame(['error' => 'The agent 9501 was read in an unrecognized shape, so its organization could not be checked and the request is refused. Nothing was sent.'], $result, json_encode($result));
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_an_escalation_read_first_as_a_list_is_an_unrecognized_shape(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead(['escalation' => [9301, self::ORG]]);
+        $result = $this->tool($this->writeArgs($fx, ['method' => 'POST', 'path' => '/v1/escalations/9301/resolution']));
+        $this->assertSame(['error' => 'The escalation 9301 was read in an unrecognized shape, so its organization could not be checked and the request is refused. Nothing was sent.'], $result, json_encode($result));
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_a_resolution_refuses_before_any_read_when_the_client_mapping_cannot_be_read_again(): void
+    {
+        $fx = $this->fixture();
+        $this->leftoversAllowed = true;
+        $this->queueRead($this->escalation());
+        $retrievals = 0;
+        Client::retrieved(function (Client $model) use ($fx, &$retrievals): void {
+            // The second read of this client is readResolutionEscalation()'s own: it finds no mapping.
+            if ($model->id === $fx['client']->id && ++$retrievals === 2) {
+                $model->huntress_organization_id = null;
+            }
+        });
+
+        $result = app(\App\Services\Mcp\StaffHuntressRequestToolExecutor::class)->execute(self::TOOL, ['method' => 'POST', 'path' => '/v1/escalations/9301/resolution', 'ticket_id' => $fx['ticket']->id, 'reason' => 'r'], $fx['client']->id, 'mcp-staff:opsbot');
+
+        $this->assertSame(['error' => 'The client or its Huntress organization mapping could not be read, so the escalation resolution is refused. Nothing was sent.'], $result, json_encode($result));
+        $this->assertCount(0, $this->reads, 'refused before the escalation is read');
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_approval_refuses_when_the_client_mapping_was_removed(): void
+    {
+        $fx = $this->fixture();
+        $run = $this->stageIsolation($fx);
+        $fx['client']->update(['huntress_organization_id' => null]);
+        $this->trap();
+
+        $result = $this->approve($run);
+
+        $this->assertSame('gate_declined', $result->status, (string) $result->message);
+        $this->assertSame("Client {$fx['client']->id} is no longer mapped to the Huntress organization this proposal was staged for. Nothing was sent.", $result->message);
+        $this->assertCount(1, $this->reads, 'only the staging read');
+        $this->assertCount(0, $this->writes);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+    }
+
+    public function test_a_held_resolution_whose_body_no_longer_reads_back_as_staged_is_refused_at_approval(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead($this->escalation());
+        $run = TechnicianRun::findOrFail($this->tool($this->writeArgs($fx, ['method' => 'POST', 'path' => '/v1/escalations/9301/resolution']))['run_id']);
+        $this->editPayload($run, fn (array $p): array => ['body' => null] + $p);
+        $this->leftoversAllowed = true;
+        $this->queueRead($this->escalation());
+        $this->queueWrite(['escalation_resolution' => ['resolution_method' => 'direct']], 201);
+
+        $result = $this->approve($run);
+
+        $this->assertSame('gate_declined', $result->status, (string) $result->message);
+        $this->assertSame('The held request no longer reads back as staged. Nothing was sent.', $result->message);
+        $this->assertCount(0, $this->writes);
+    }
+
+    public function test_an_empty_path_query_list_or_non_scalar_query_value_is_refused_with_its_own_text(): void
+    {
+        $fx = $this->fixture();
+        $this->trap();
+        $cases = [
+            [['path' => ''], 'path is required, e.g. /v1/agents/9001. Nothing was sent.'],
+            [['path' => '/v1/agents', 'query' => ['synthetic']], 'query must be an object of parameter names to values. Nothing was sent.'],
+            [['path' => '/v1/agents', 'query' => ['limit' => [10]]], 'Query parameter limit must be a string, an integer or a boolean. Nothing was sent.'],
+            [['path' => '/v1/agents', 'query' => ['limit' => 1.5]], 'Query parameter limit must be a string, an integer or a boolean. Nothing was sent.'],
+        ];
+        foreach ($cases as [$args, $expected]) {
+            $result = $this->tool(['client_id' => $fx['client']->id, 'method' => 'GET'] + $args);
+            $this->assertSame(['error' => $expected], $result, json_encode($args));
+        }
+        // The MCP request turns an empty string into null, so the empty string itself is given to the executor.
+        $empty = app(\App\Services\Mcp\StaffHuntressRequestToolExecutor::class)->execute(self::TOOL, ['method' => 'GET', 'path' => ''], $fx['client']->id, 'mcp-staff:opsbot');
+        $this->assertSame(['error' => 'path is required, e.g. /v1/agents/9001. Nothing was sent.'], $empty);
+        $this->assertCount(0, $this->reads);
+    }
 }
