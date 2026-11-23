@@ -292,11 +292,14 @@ class HuntressWriteClient
     /**
      * #8430: the vendor's reason for a refusal, from the RESPONSE BODY of a 4xx
      * other than 408, or null (5xx, 408, no response, empty body). Never the
-     * exception message, which can carry the URL. A JSON object's string
-     * `error` or `message` is taken; any other non-empty JSON is shown as
-     * compact JSON; a body that is not JSON is shown as text. Compatibility
-     * forms are folded, control and line-break runs become one space, and the
-     * result is capped at REFUSAL_REASON_MAX characters. The caller fences it.
+     * exception message, which can carry the URL. A JSON object's `error`, if
+     * it is a string, else its `message`, if that is a string, is taken; any
+     * other non-empty JSON is shown as compact JSON; a body that is not JSON is
+     * shown as text. Compatibility forms are folded (NFKC), control characters
+     * and line or paragraph separators become one space per run, and the result
+     * is capped at REFUSAL_REASON_MAX characters. Null also for an empty JSON
+     * object or array, text that is not valid UTF-8, or text that is empty
+     * after that. The caller fences it.
      */
     public static function refusalReason(\Throwable $e): ?string
     {
@@ -318,7 +321,8 @@ class HuntressWriteClient
             if ($decoded === []) {
                 return null;
             }
-            $named = $decoded['error'] ?? $decoded['message'] ?? null;
+            // The first of `error` and `message` that is a string; a non-string `error` does not hide a string `message`.
+            $named = is_string($decoded['error'] ?? null) ? $decoded['error'] : ($decoded['message'] ?? null);
             $text = is_string($named) ? $named : (string) json_encode($decoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         }
         if (! mb_check_encoding($text, 'UTF-8')) {
@@ -368,7 +372,8 @@ class HuntressWriteClient
     }
 
     /**
-     * One rule request with the same bounded 429 retry as the resolve: at most
+     * One write request (the rule verbs and the generic request()) with the same
+     * bounded 429 retry as the resolve: at most
      * three attempts, and only a 429 is retried. Any other failure throws
      * HuntressClientException carrying the HTTP status as its code (0 when
      * there was no response).

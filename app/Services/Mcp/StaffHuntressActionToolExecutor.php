@@ -189,16 +189,18 @@ class StaffHuntressActionToolExecutor
     /** @return array<string, mixed> */
     public function execute(string $name, array $arguments, int $clientId, string $actorLabel, ?string $tokenLabel = null): array
     {
+        // huntress_request makes the same configuration check itself, so a write it refuses
+        // there still writes its audit row (one row for every write, sent or refused).
+        if (StaffHuntressRequestToolExecutor::handles($name)) {
+            return app(StaffHuntressRequestToolExecutor::class)->execute($name, $arguments, $clientId, $actorLabel, $tokenLabel);
+        }
+
         if (! HuntressConfig::isEnabled() || ! HuntressConfig::isConfigured()) {
             return ['error' => 'Huntress is not configured'];
         }
 
         if (StaffHuntressRuleToolExecutor::handles($name)) {
             return app(StaffHuntressRuleToolExecutor::class)->execute($name, $arguments, $clientId, $actorLabel, $tokenLabel);
-        }
-
-        if (StaffHuntressRequestToolExecutor::handles($name)) {
-            return app(StaffHuntressRequestToolExecutor::class)->execute($name, $arguments, $clientId, $actorLabel, $tokenLabel);
         }
 
         if (isset(self::STAGED_TO_DIRECT[$name])) {
@@ -837,10 +839,11 @@ class StaffHuntressActionToolExecutor
      * tenant it covers. Multi-organization escalations and account-level ones
      * (no organization association) are both refused in v1 — no single PSA
      * client owns them, so there is no cockpit lane to hold them against.
+     * Public so huntress_request's escalation-resolution path applies this same check.
      *
      * @param  array<string, mixed>  $escalation
      */
-    private function escalationScopeError(array $escalation, Client $client, int $escalationId): ?string
+    public function escalationScopeError(array $escalation, Client $client, int $escalationId): ?string
     {
         $mappedOrgId = $this->positiveInt($client->huntress_organization_id);
         if ($mappedOrgId === null) {

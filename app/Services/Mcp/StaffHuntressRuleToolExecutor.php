@@ -81,7 +81,7 @@ class StaffHuntressRuleToolExecutor
 
     private const VALUE_MAX = 100;
 
-    /** #8431: the tool descriptions say this, and startsAtRefusal() enforces it before staging. */
+    /** #8431: the tool descriptions say this; startsAtRefusal() enforces it before staging or sending, and again at approval. */
     public const STARTS_AT_RULE = 'A starts_at on or before today\'s UTC date is refused before anything is staged or sent (Huntress refuses a start of today).';
 
     /** #8431, create only: what leaving starts_at out does on a new rule. */
@@ -742,6 +742,12 @@ class StaffHuntressRuleToolExecutor
         if ($direct === self::CREATE && ($request['body']['organization_id'] ?? null) !== $orgId) {
             return $decline('blocked', 'The held body does not name the mapped organization.');
         }
+        // #8431 again at approval: a start that was later than today when staged may not be now.
+        $startsAt = $request['body']['starts_at'] ?? null;
+        if ($direct !== self::DELETE && $startsAt !== null && $startsAt !== ''
+            && ($past = self::startsAtRefusal($startsAt, $direct === self::UPDATE, true)) !== null) {
+            return $decline('blocked', $past);
+        }
 
         $current = null;
         if ($direct !== self::CREATE) {
@@ -936,7 +942,8 @@ class StaffHuntressRuleToolExecutor
      * too. Never stripped silently. $update: the request changes an existing rule, so
      * leaving starts_at out keeps its current start (no "start now" advice).
      * $atApproval: the check ran again when a staged request was approved, so the
-     * text says it was refused at approval, not before staging.
+     * text says it was refused at approval. Otherwise it says it was refused before
+     * anything was staged or sent, which is true on the staged and immediate lanes.
      */
     public static function startsAtRefusal(mixed $value, bool $update = false, bool $atApproval = false): ?string
     {
@@ -952,7 +959,7 @@ class StaffHuntressRuleToolExecutor
             return $text.'it was refused at approval. Deny this proposal and stage a new one with a later starts_at.';
         }
 
-        return $text.'it was refused before staging. '.($update ? self::STARTS_AT_UPDATE : self::STARTS_AT_CREATE.' Otherwise give a later date.');
+        return $text.'it was refused before anything was staged or sent. '.($update ? self::STARTS_AT_UPDATE : self::STARTS_AT_CREATE.' Otherwise give a later date.');
     }
 
     /**

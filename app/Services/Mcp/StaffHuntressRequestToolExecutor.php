@@ -65,24 +65,31 @@ use Illuminate\Support\Str;
  * names the subscription.
  *
  * ESCALATION RESOLUTION. POST /v1/escalations/{id}/resolution goes through the
- * same contract as huntress_resolve_escalation: any non-empty body is refused,
- * approval sends the literal {} through HuntressWriteClient::resolveEscalation()
- * (request() refuses that path), and the server-reported resolution_method must
- * be one of StaffHuntressActionToolExecutor::SAFE_RESOLUTION_METHODS, else the
- * approval reports a hard fault.
+ * same contract as huntress_resolve_escalation: the escalation's organization
+ * set must be exactly the client's mapped organization, checked by that tool's
+ * own StaffHuntressActionToolExecutor::escalationScopeError() at the call and
+ * again at approval (account-level, multi-organization and unreadable sets are
+ * refused); any non-empty body is refused; approval sends the literal {}
+ * through HuntressWriteClient::resolveEscalation() (request() refuses that
+ * path); and the server-reported resolution_method must be one of
+ * StaffHuntressActionToolExecutor::SAFE_RESOLUTION_METHODS, else the approval
+ * reports a hard fault.
  *
- * GET LISTS. Where the rows name an organization (ROW_ORG), rows whose
- * organization is not mapped to a PSA client, or cannot be read, are dropped
- * and counted (dropped_unmapped), as the reads do; account-level escalations
- * are kept. Lists whose rows carry no organization (accounts, invoices,
- * subscriptions, trials, comments, remediations, known VPNs, remote access
- * connections and usage line items) are not filtered, and the answer's note
- * says so.
+ * GET LISTS. Where the rows name an organization (ROW_ORG, which includes
+ * organization usage line items), rows whose organization is not mapped to a
+ * PSA client, cannot be read, or is absent (account-level rows) are dropped
+ * and counted (dropped_unmapped), as the reads do; only account-level
+ * escalations are kept. Lists whose rows carry no organization (accounts,
+ * invoices, subscriptions, trials, comments, remediations, known VPNs, remote
+ * access connections and account usage line items) are not filtered, and the
+ * answer's note says so.
  *
  * ERRORS. Status and exception class only (C-56); a vendor 4xx other than 408
  * adds the reason from the response body, fenced (#8430). Vendor strings in
  * answers are sanitised and UNTRUSTED-fenced as the reads do. Every write,
- * staged, sent or refused, writes one TechnicianActionLog row.
+ * staged, sent or refused, writes one TechnicianActionLog row, including a
+ * write refused because Huntress is not configured and an approval that throws
+ * before or after the send.
  */
 class StaffHuntressRequestToolExecutor
 {
@@ -305,9 +312,9 @@ class StaffHuntressRequestToolExecutor
             .'An organization id in the path, query or body must be this client\'s mapped Huntress organization; an account id in the path, or account_id in the body, must be the API key\'s own account. '
             .'Read first, and refused unless it belongs to the mapped organization or to none (then the approval says account-wide): an unwanted access rule, agent, incident report, identity, membership, escalation, signal, report, external port, platform action or SIEM log source named by id in the path, and identity_id, agent_id or escalation_id in the query or body. A failed read is a refusal. '
             .'Other ids are NOT read or checked: remediation ids (the incident report in the path is read), invoice, trial and reseller subscription ids, user_id, entity_id and manual_completion_remediation_ids. '
-            .'Reseller writes are billing changes and are held the same way. POST /v1/escalations/{id}/resolution takes no body: like huntress_resolve_escalation it sends the empty object {} and checks the resolution_method Huntress reports. POST /v1/siem/query is refused: use huntress_siem_query. '
-            .'Lists whose rows name an organization drop rows of organizations not mapped to a PSA client, or whose organization cannot be read, and count them in dropped_unmapped; lists whose rows carry no organization (accounts, invoices, subscriptions, trials, comments, remediations, known VPNs, remote access connections, usage line items) are not filtered. '
-            .'For /v1/unwanted_access_rules, '.StaffHuntressRuleToolExecutor::STARTS_AT_RULE.' On POST, '.lcfirst(StaffHuntressRuleToolExecutor::STARTS_AT_CREATE).' '.StaffHuntressRuleToolExecutor::STARTS_AT_UPDATE.' Vendor text comes back inside UNTRUSTED fences.';
+            .'Reseller writes are billing changes and are held the same way. POST /v1/escalations/{id}/resolution takes no body: like huntress_resolve_escalation it accepts only an escalation whose organization set is exactly this client\'s mapped organization (account-level and multi-organization escalations are refused), sends the empty object {} and checks the resolution_method Huntress reports. POST /v1/siem/query is refused: use huntress_siem_query. '
+            .'Lists whose rows name an organization (organization usage line items included) drop rows of organizations not mapped to a PSA client, rows whose organization cannot be read, and rows that name no organization (account level; account-level escalations alone are kept), and count them in dropped_unmapped; lists whose rows carry no organization (accounts, invoices, subscriptions, trials, comments, remediations, known VPNs, remote access connections, account usage line items) are not filtered. '
+            .'For /v1/unwanted_access_rules, '.lcfirst(StaffHuntressRuleToolExecutor::STARTS_AT_RULE).' On POST, '.lcfirst(StaffHuntressRuleToolExecutor::STARTS_AT_CREATE).' '.StaffHuntressRuleToolExecutor::STARTS_AT_UPDATE.' Vendor text comes back inside UNTRUSTED fences.';
 
         return [
             ['name' => self::TOOL, 'description' => $description,
@@ -333,6 +340,15 @@ class StaffHuntressRequestToolExecutor
 
             return ['error' => $message.' Nothing was sent.'];
         };
+
+        if (! HuntressConfig::isEnabled() || ! HuntressConfig::isConfigured()) {
+            // Ruling item 7: a write refused here is audited like any other refusal.
+            if ($write) {
+                $this->audit(self::STAGED, 'blocked', $clientId, null, $hash, self::requestLine($arguments).': Huntress is not configured', $actorLabel);
+            }
+
+            return ['error' => 'Huntress is not configured'];
+        }
 
         $unknown = array_values(array_diff(array_map('strval', array_keys($arguments)), self::ALLOWED_ARGUMENT_KEYS));
         if ($unknown !== []) {
@@ -495,11 +511,13 @@ class StaffHuntressRequestToolExecutor
             if ($method === 'GET' && $last && $param['collection_is_last']) {
                 continue;
             }
-            $read = $this->readSubject($subject, $param['value'], $orgId);
+            $read = $template === self::RESOLUTION
+                ? $this->readResolutionEscalation($param['value'], $clientId)
+                : $this->readSubject($subject, $param['value'], $orgId);
             if (is_string($read)) {
                 return $read;
             }
-            $subjects[] = ['label' => $subject[2], 'id' => $param['value'], 'org' => $read['org'], 'row' => $read['row']];
+            $subjects[] = ['label' => $subject[2], 'id' => $param['value'], 'org' => $read['org'], 'row' => $read['row'], 'where' => 'path'];
             $scoped = $scoped || $read['org'] !== null;
         }
 
@@ -518,7 +536,7 @@ class StaffHuntressRequestToolExecutor
                 if (is_string($read)) {
                     return $read;
                 }
-                $subjects[] = ['label' => $subject[2], 'id' => $id, 'org' => $read['org'], 'row' => $read['row']];
+                $subjects[] = ['label' => $subject[2], 'id' => $id, 'org' => $read['org'], 'row' => $read['row'], 'where' => $where];
                 $scoped = $scoped || $read['org'] !== null;
             }
         }
@@ -533,6 +551,7 @@ class StaffHuntressRequestToolExecutor
             'query' => $query,
             'body' => $body,
             'subjects' => $subjects,
+            'account_checked' => $account !== null,
             'account_wide' => ! $scoped,
             'reseller' => $reseller,
             'resolution' => $template === self::RESOLUTION,
@@ -663,8 +682,9 @@ class StaffHuntressRequestToolExecutor
     /**
      * GET at once through the read client. Lists whose rows name an organization
      * (ROW_ORG) drop and count rows whose organization is not mapped to a PSA
-     * client or cannot be read; other lists are not filtered and the note says
-     * so. A single object of a ROW_ORG family must belong to this client's
+     * client, cannot be read, or is absent (account level; account-level
+     * escalations alone are kept); other lists are not filtered and the note
+     * says so. A single object of a ROW_ORG family must belong to this client's
      * organization or to none.
      *
      * @param  array<string, mixed>  $request
@@ -689,7 +709,7 @@ class StaffHuntressRequestToolExecutor
                 return ['error' => "Huntress returned an unrecognized shape for {$request['path']} (no {$key} object). This is not an empty answer."];
             }
             if ($family !== null) {
-                $org = self::rowOrg($payload, $family, $key);
+                $org = self::rowOrg($payload, $family);
                 if ($org === false || ($org !== null && $org !== $orgId)) {
                     return ['error' => "The {$key} read belongs to another Huntress organization or its organization could not be read, so it is not shown."];
                 }
@@ -723,9 +743,11 @@ class StaffHuntressRequestToolExecutor
             $key => $rows,
             'dropped_unmapped' => $dropped,
             'next_page_token' => is_string($token) && $token !== '' ? $token : null,
-            'note' => $family !== null
-                ? 'Rows whose organization is not mapped to a PSA client, or whose organization cannot be read, are dropped and counted in dropped_unmapped. This list may be incomplete.'
-                : 'These rows carry no organization, so none were checked against the client mapping; only rows that are not objects are dropped and counted in dropped_unmapped.',
+            'note' => match (true) {
+                $family === null => 'These rows carry no organization, so none were checked against the client mapping; only rows that are not objects are dropped and counted in dropped_unmapped.',
+                $key === 'escalations' => 'Rows whose organization is not mapped to a PSA client, or whose organization cannot be read, are dropped and counted in dropped_unmapped; account-level escalations (no organization) are kept. This list may be incomplete.',
+                default => 'Rows whose organization is not mapped to a PSA client, whose organization cannot be read, or that name no organization (account level) are dropped and counted in dropped_unmapped. This list may be incomplete.',
+            },
         ];
     }
 
@@ -735,7 +757,7 @@ class StaffHuntressRequestToolExecutor
      *
      * @param  array<string, mixed>  $row
      */
-    private static function rowOrg(array $row, string $family, string $key): int|false|null
+    private static function rowOrg(array $row, string $family): int|false|null
     {
         switch ($family) {
             case 'self':
@@ -815,7 +837,7 @@ class StaffHuntressRequestToolExecutor
 
             return true;
         }
-        $org = self::rowOrg($row, $family, $key);
+        $org = self::rowOrg($row, $family);
 
         return is_int($org) && isset($mapped[$org]);
     }
@@ -839,7 +861,7 @@ class StaffHuntressRequestToolExecutor
         if (! is_array($row) || (array_is_list($row) && $row !== [])) {
             return "The {$label} {$id} was read in an unrecognized shape, so its organization could not be checked and the request is refused.";
         }
-        $org = self::rowOrg($row, self::ROW_ORG[$key], $key);
+        $org = self::rowOrg($row, self::ROW_ORG[$key]);
         if ($org === false) {
             return "The {$label} {$id} names no organization this tool can classify (or several), so the request is refused.";
         }
@@ -848,6 +870,36 @@ class StaffHuntressRequestToolExecutor
         }
 
         return ['org' => $org, 'row' => $row];
+    }
+
+    /**
+     * The escalation a resolution names, read first and checked with
+     * huntress_resolve_escalation's own scope rule
+     * (StaffHuntressActionToolExecutor::escalationScopeError()): its organization
+     * set must be exactly this client's mapped organization. Account-level,
+     * multi-organization and unreadable sets are refused. Any failure refuses.
+     *
+     * @return array{org: int, row: array<string, mixed>}|string
+     */
+    private function readResolutionEscalation(int $id, int $clientId): array|string
+    {
+        $client = Client::find($clientId);
+        $orgId = $client ? $this->positiveInt($client->huntress_organization_id) : null;
+        if ($client === null || $orgId === null) {
+            return 'The client or its Huntress organization mapping could not be read, so the escalation resolution is refused.';
+        }
+        try {
+            $response = $this->reader()->get('escalations/'.$id, []);
+        } catch (\Throwable $e) {
+            return "The escalation {$id} could not be read first to check its organization (".self::failureDetail($e).'), so the request is refused.';
+        }
+        $row = $response['escalation'] ?? null;
+        if (! is_array($row) || (array_is_list($row) && $row !== [])) {
+            return "The escalation {$id} was read in an unrecognized shape, so its organization could not be checked and the request is refused.";
+        }
+        $error = app(StaffHuntressActionToolExecutor::class)->escalationScopeError($row, $client, $id);
+
+        return $error ?? ['org' => $orgId, 'row' => $row];
     }
 
     /** The account the API key belongs to (GET /v1/account), or the refusal. */
@@ -970,7 +1022,9 @@ class StaffHuntressRequestToolExecutor
 
     /**
      * The approver's card: what kind of change, then the request exactly as it
-     * will be sent. The body, the objects read first and the agent's reason are
+     * will be sent, then what approval re-checks: the mapping, and each read
+     * assess() makes again (the key's account, and each object read first,
+     * named with where its id came from: path, query or body). The body, the objects read first and the agent's reason are
      * inside UNTRUSTED fences. The method, the path (ids are digits) and the
      * query string are printed unfenced on the "Request as it will be sent"
      * line, so agent-chosen query values appear there, percent-encoded; they
@@ -1003,7 +1057,17 @@ class StaffHuntressRequestToolExecutor
         foreach ($request['subjects'] as $subject) {
             $lines[] = $this->fence->fence('HUNTRESS '.strtoupper($subject['label']).' AS READ', json_encode($this->clean($subject['row']), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
         }
-        $lines[] = 'Approval re-checks the client mapping'.($request['subjects'] !== [] ? ' and re-reads what the path names' : '').' before sending.';
+        $reads = [];
+        if ($request['account_checked']) {
+            $reads[] = 'the Huntress account this API key belongs to';
+        }
+        foreach ($request['subjects'] as $subject) {
+            $reads[] = "the {$subject['label']} {$subject['id']} named in the {$subject['where']}";
+        }
+        $last = array_pop($reads);
+        $lines[] = 'Approval re-checks the client mapping'
+            .($last === null ? '' : ' and re-reads '.($reads === [] ? $last : implode(', ', $reads).' and '.$last))
+            .' before sending.';
 
         return implode("\n", $lines);
     }
@@ -1019,31 +1083,66 @@ class StaffHuntressRequestToolExecutor
         }
 
         $sent = false;
+        $refused = null;
         try {
-            return $this->approveClaimed($run, $approverId, $sent);
+            return $this->approveClaimed($run, $approverId, $sent, $refused);
         } catch (\Throwable $e) {
             if (! $sent) {
                 // $sent is set just before the vendor call: this throw is from before
-                // anything was sent, so the run is given back.
+                // anything was sent, so the run is given back. It is audited first
+                // (ruling item 7); a failing audit does not replace this throw.
+                $this->safeApprovalAudit($run, $approverId, 'error', 'Approval failed before anything was sent ('.class_basename($e).'); the run was given back. Nothing was sent.');
                 $run->releaseClaim();
 
                 throw $e;
             }
             // The request was sent and handling its outcome threw: do not give the run
-            // back for a second send, and do not guess what Huntress did. The run is
-            // closed as the unknown-outcome arm closes it.
-            Log::error('[StaffHuntressRequestToolExecutor] handling the outcome of a sent Huntress request failed', ['run_id' => $run->id, 'exception' => $e::class]);
+            // back for a second send. When Huntress's refusal (a 4xx other than 408)
+            // had already been received, the request was not applied and the text says
+            // so; otherwise what Huntress did is not known here. The run is closed as the
+            // unknown-outcome arm closes it, and one audit row records it. Nothing on
+            // this arm may throw out of it, the log line included.
+            self::quietLog('handling the outcome of a sent Huntress request failed', ['run_id' => $run->id, 'exception' => $e::class]);
+            $message = $refused !== null
+                ? 'Huntress refused the request (HTTP '.$refused.'), so it was not applied, and handling that refusal failed ('.class_basename($e).'). The run is closed: stage a new proposal if the change is still wanted.'
+                : 'The Huntress request was sent, and handling its outcome failed ('.class_basename($e).'); whether Huntress applied it is not known here. Do NOT re-approve: check it in Huntress.';
+            $this->safeApprovalAudit($run, $approverId, 'error', $message);
             try {
                 $closed = $run->advanceTo(TechnicianRunState::Done);
             } catch (\Throwable) {
                 $closed = false;
             }
 
-            return new TechnicianApprovalResult('executed_with_fault', message: 'The Huntress request was sent, and handling its outcome failed ('.class_basename($e).'); whether Huntress applied it is not known here. Do NOT re-approve: check it in Huntress.'.($closed ? '' : ' The run was not closed because this request no longer holds it; check the run.'));
+            return new TechnicianApprovalResult('executed_with_fault', message: $message.($closed ? '' : ' The run was not closed because this request no longer holds it; check the run.'));
         }
     }
 
-    private function approveClaimed(TechnicianRun $run, int $approverId, bool &$sent): TechnicianApprovalResult
+    /**
+     * The audit row for an approval that threw, built only from the run (its
+     * unencrypted method and path, client, ticket and hash). Nothing here may
+     * throw: a failing lookup or INSERT is logged and the outcome stands.
+     */
+    private function safeApprovalAudit(TechnicianRun $run, int $approverId, string $status, string $message): void
+    {
+        try {
+            $params = is_array($run->proposed_meta['redacted_params'] ?? null) ? $run->proposed_meta['redacted_params'] : [];
+            $this->audit(self::STAGED, $status, $run->client_id !== null ? (int) $run->client_id : null, Ticket::find((int) $run->ticket_id),
+                (string) $run->content_hash, self::requestLine($params).': '.$message, $this->approverLabel($approverId), $run->id, $approverId);
+        } catch (\Throwable $e) {
+            self::quietLog('audit row failed for an approval that threw', ['run_id' => $run->id, 'result_status' => $status, 'exception' => $e::class]);
+        }
+    }
+
+    /** A log line that cannot throw: used on the arms whose outcome must stand. */
+    private static function quietLog(string $message, array $context): void
+    {
+        try {
+            Log::error('[StaffHuntressRequestToolExecutor] '.$message, $context);
+        } catch (\Throwable) {
+        }
+    }
+
+    private function approveClaimed(TechnicianRun $run, int $approverId, bool &$sent, ?int &$refused): TechnicianApprovalResult
     {
         $payload = $this->decryptPayload($run);
         if ($payload === null) {
@@ -1101,7 +1200,7 @@ class StaffHuntressRequestToolExecutor
         if ($request['resolution']) {
             $sent = true;
 
-            return $this->approveResolution($run, $request, $wire, $clientId, $ticket, $hash, $approver, $approverId, $decline, $sent);
+            return $this->approveResolution($run, $request, $wire, $clientId, $ticket, $hash, $approver, $approverId, $decline, $sent, $refused);
         }
 
         try {
@@ -1113,6 +1212,8 @@ class StaffHuntressRequestToolExecutor
             return $decline('error', 'The Huntress request was refused before it was sent.');
         } catch (\Throwable $e) {
             if ($e instanceof HuntressClientException && ! self::mayHaveCommitted($e)) {
+                $refused = (int) $e->getCode();
+
                 return $decline('error', StaffHuntressRuleToolExecutor::withReason(
                     'Huntress refused the request (HTTP '.(int) $e->getCode().'): '.$wire['method'].' '.$wire['path'].', '.class_basename($e).'.', $e, true), true);
             }
@@ -1149,7 +1250,7 @@ class StaffHuntressRequestToolExecutor
      * @param  array<string, mixed>  $request
      * @param  array<string, mixed>  $wire
      */
-    private function approveResolution(TechnicianRun $run, array $request, array $wire, ?int $clientId, ?Ticket $ticket, string $hash, string $approver, int $approverId, \Closure $decline, bool &$sent): TechnicianApprovalResult
+    private function approveResolution(TechnicianRun $run, array $request, array $wire, ?int $clientId, ?Ticket $ticket, string $hash, string $approver, int $approverId, \Closure $decline, bool &$sent, ?int &$refused): TechnicianApprovalResult
     {
         $line = self::requestLine($wire);
         $close = function () use ($run): bool {
@@ -1174,6 +1275,8 @@ class StaffHuntressRequestToolExecutor
             return new TechnicianApprovalResult('executed', message: 'Escalation '.$request['escalation_id'].' was already resolved in Huntress; nothing changed.'.($closed ? '' : ' The run was not closed because this request no longer holds it; check the run.'));
         } catch (\Throwable $e) {
             if ($e instanceof HuntressClientException && ! self::mayHaveCommitted($e)) {
+                $refused = (int) $e->getCode();
+
                 return $decline('error', StaffHuntressRuleToolExecutor::withReason(
                     'Huntress refused the request (HTTP '.(int) $e->getCode().'): '.$wire['method'].' '.$wire['path'].', '.class_basename($e).'.', $e, true), true);
             }

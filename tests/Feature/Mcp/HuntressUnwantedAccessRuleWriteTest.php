@@ -1369,11 +1369,12 @@ class HuntressUnwantedAccessRuleWriteTest extends TestCase
         $fx = $this->fixture();
         $this->trapBoth();
         $update = $this->decoded($this->callTool($this->token([self::UPDATE.':immediate']), self::UPDATE, ['client_id' => $fx['client']->id, 'rule_id' => 501, 'starts_at' => '2026-11-19', 'reason' => 'r']));
-        $this->assertStringContainsString("it was refused before staging. On an update, leaving starts_at out keeps the rule's current start; give a later date to move it.", (string) ($update['error'] ?? ''), json_encode($update));
+        $this->assertStringContainsString("it was refused before anything was staged or sent. On an update, leaving starts_at out keeps the rule's current start; give a later date to move it.", (string) ($update['error'] ?? ''), json_encode($update));
         $this->assertStringNotContainsString('leave starts_at out', $update['error']);
 
         $create = $this->decoded($this->callTool($this->token([self::CREATE.':immediate']), self::CREATE, $this->createArgs($fx, ['starts_at' => '2026-11-19'])));
-        $this->assertStringContainsString('it was refused before staging. To start a new rule now, leave starts_at out. Otherwise give a later date.', (string) ($create['error'] ?? ''), json_encode($create));
+        $this->assertStringContainsString('it was refused before anything was staged or sent. To start a new rule now, leave starts_at out. Otherwise give a later date.', (string) ($create['error'] ?? ''), json_encode($create));
+        $this->assertStringNotContainsString('before staging', $create['error'], 'the immediate lane stages nothing');
 
         $definitions = array_column(\App\Services\Mcp\StaffHuntressRuleToolExecutor::definitions(), null, 'name');
         $updateText = $definitions[self::UPDATE]['input_schema']['properties']['starts_at']['description'];
@@ -1381,5 +1382,59 @@ class HuntressUnwantedAccessRuleWriteTest extends TestCase
         $this->assertStringNotContainsString('leave starts_at out', $updateText);
         $this->assertStringContainsString('To start a new rule now, leave starts_at out.', $definitions[self::CREATE]['input_schema']['properties']['starts_at']['description']);
         $this->assertCount(0, $this->writes);
+    }
+    // ── round 3: must-fix 2, #8431 again at approval ──
+
+    public function test_a_create_whose_starts_at_has_become_past_by_approval_is_refused_at_approval(): void
+    {
+        $fx = $this->fixture();
+        $run = TechnicianRun::findOrFail($this->decoded($this->callTool($this->token([self::CREATE.':staged']), self::CREATE, $this->createArgs($fx, ['starts_at' => '2026-11-20', 'ticket_id' => $fx['ticket']->id])))['run_id']);
+        \Carbon\Carbon::setTestNow('2026-11-20 12:00:00');
+        $this->trapBoth();
+
+        $result = $this->approveDirect($run);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame("starts_at 2026-11-20 is on or before today's UTC date (2026-11-20), and Huntress refuses a start of today; it was refused at approval. Deny this proposal and stage a new one with a later starts_at. Nothing was sent.", $result->message);
+        $this->assertCount(0, $this->writes);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $row = TechnicianActionLog::where('action_type', 'huntress_stage_create_unwanted_access_rule')->where('result_status', 'blocked')->sole();
+        $this->assertStringContainsString('it was refused at approval', $row->summary);
+        $this->assertStringNotContainsString('before anything was staged', $row->summary);
+        $this->readQueue->reset();
+        $this->writeQueue->reset();
+    }
+
+    public function test_an_update_whose_starts_at_has_become_past_by_approval_is_refused_at_approval(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead($this->rule(501));
+        $run = TechnicianRun::findOrFail($this->decoded($this->callTool($this->token([self::UPDATE.':staged']), self::UPDATE, ['client_id' => $fx['client']->id, 'rule_id' => 501, 'starts_at' => '2026-11-20', 'ticket_id' => $fx['ticket']->id, 'reason' => 'r']))['run_id']);
+        \Carbon\Carbon::setTestNow('2026-11-20 12:00:00');
+        $this->queueRead($this->rule(501));
+        $this->queueWrite(200, ['unwanted_access_rule' => $this->rule(501)]);
+
+        $result = $this->approveDirect($run);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame("starts_at 2026-11-20 is on or before today's UTC date (2026-11-20), and Huntress refuses a start of today; it was refused at approval. Deny this proposal and stage a new one with a later starts_at. Nothing was sent.", $result->message);
+        $this->assertCount(0, $this->writes);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'huntress_stage_update_unwanted_access_rule')->where('result_status', 'blocked')->count());
+        $this->writeQueue->reset();
+    }
+
+    public function test_an_update_staged_without_starts_at_is_not_refused_at_approval_on_dates(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead($this->rule(501));
+        $run = TechnicianRun::findOrFail($this->decoded($this->callTool($this->token([self::UPDATE.':staged']), self::UPDATE, ['client_id' => $fx['client']->id, 'rule_id' => 501, 'notes' => 'Extended', 'ticket_id' => $fx['ticket']->id, 'reason' => 'r']))['run_id']);
+        \Carbon\Carbon::setTestNow('2026-11-25 12:00:00');
+        $this->queueRead($this->rule(501));
+        $this->queueWrite(200, ['unwanted_access_rule' => $this->rule(501)]);
+        $this->queueRead($this->rule(501));
+
+        $this->assertSame('executed', $this->approveDirect($run)->status);
+        $this->assertCount(1, $this->writes);
     }
 }
