@@ -160,7 +160,7 @@ class McpToolRegistry
                 'carbon_write' => ['label' => 'Carbon Connect writes and drafts (sensitive)', 'sensitive' => true, 'tools' => $carbonWrites],
                 'tactical_action' => ['label' => 'Tactical endpoint actions (sensitive)', 'sensitive' => true, 'tools' => $tacticalActions],
                 'tactical_admin' => ['label' => 'Tactical admin/provisioning (sensitive)', 'sensitive' => true, 'tools' => $tacticalAdmin],
-                'huntress_action' => ['label' => 'Huntress SOC actions: escalation resolve, unwanted access rules (sensitive)', 'sensitive' => true, 'tools' => $huntressActions],
+                'huntress_action' => ['label' => 'Huntress SOC actions: escalation resolve, unwanted access rules, any-endpoint request (sensitive)', 'sensitive' => true, 'tools' => $huntressActions],
                 'mesh_read' => ['label' => 'Mesh Email Security allow-list reads (sensitive)', 'sensitive' => true, 'tools' => $meshRead],
                 'mesh_admin' => ['label' => 'Mesh Email Security writes (sensitive)', 'sensitive' => true, 'tools' => $meshAdmin],
                 'controld_onboarding' => ['label' => 'Control D client onboarding (sensitive)', 'sensitive' => true, 'tools' => $controldOnboarding],
@@ -523,7 +523,7 @@ class McpToolRegistry
     /** @return array<int, array<string, mixed>> */
     public static function huntressActionTools(): array
     {
-        return [...StaffHuntressActionToolExecutor::definitions(), ...\App\Services\Mcp\StaffHuntressRuleToolExecutor::definitions()];
+        return [...StaffHuntressActionToolExecutor::definitions(), ...\App\Services\Mcp\StaffHuntressRuleToolExecutor::definitions(), ...\App\Services\Mcp\StaffHuntressRequestToolExecutor::definitions()];
     }
 
     /** @return array<int, array<string, mixed>> */

@@ -20,6 +20,13 @@ use Illuminate\Support\Facades\Log;
  * outside the list refuses before any HTTP. The org fence lives in
  * StaffHuntressRuleToolExecutor.
  *
+ * Generic requests (huntress_request): request() sends one POST, PATCH or
+ * DELETE to a relative path under /v1/, with an optional query and JSON body.
+ * The method+path allow-list and the org fence live in
+ * StaffHuntressRequestToolExecutor; this client refuses any other method, a
+ * path that is not plain lowercase segments, and siem/query (that POST is a
+ * read and has its own tool), before any HTTP.
+ *
  * Escalations: POST /v1/escalations/{id}/resolution with the LITERAL empty JSON
  * object `{}`. The parameterised body (`determination`, `scope`,
  * `revoke_and_disable_identities` — boolean default TRUE, `expiration_date`)
@@ -54,6 +61,9 @@ class HuntressWriteClient
      * on, whichever position in the body reported it.
      */
     private const SAFE_RESOLUTION_METHODS = ['direct', 'dismiss'];
+
+    /** #8430: at most this many characters of a vendor refusal reason are shown. */
+    public const REFUSAL_REASON_MAX = 300;
 
     private Client $http;
 
@@ -240,6 +250,83 @@ class HuntressWriteClient
         return $this->send('DELETE', 'unwanted_access_rules/'.$this->ruleIdOrFail($ruleId), null);
     }
 
+    /**
+     * One generic write: POST, PATCH or DELETE to $endpoint (relative to /v1/,
+     * e.g. "agents/9001/isolation"), with the query and body exactly as given.
+     * A null body sends no body; an empty array sends the literal `{}`.
+     * Refuses before any HTTP: another method, a path that is not plain
+     * lowercase segments (no scheme, host, dot, percent sign or empty
+     * segment), and siem/query.
+     *
+     * @param  array<string, string|int>  $query
+     * @param  array<string, mixed>|null  $body
+     * @return array<string, mixed>
+     */
+    public function request(string $method, string $endpoint, array $query, ?array $body): array
+    {
+        $this->assertConfigured();
+        if (! in_array($method, ['POST', 'PATCH', 'DELETE'], true)) {
+            throw new HuntressWriteScopeException('Only POST, PATCH and DELETE go through the write lane; nothing was sent.');
+        }
+        if (preg_match('#\A[a-z_]+(/[a-z0-9_]+)*\z#', $endpoint) !== 1) {
+            throw new HuntressWriteScopeException('The path must be plain lowercase segments under /v1/; nothing was sent.');
+        }
+        if ($endpoint === 'siem/query') {
+            throw new HuntressWriteScopeException('siem/query is a read with its own tool; nothing was sent.');
+        }
+        foreach ($query as $key => $value) {
+            if (! is_string($key) || (! is_string($value) && ! is_int($value))) {
+                throw new HuntressWriteScopeException('Query values must be strings or integers; nothing was sent.');
+            }
+        }
+
+        return $this->send($method, $endpoint, $body, $query);
+    }
+
+    /**
+     * #8430: the vendor's reason for a refusal, from the RESPONSE BODY of a 4xx
+     * other than 408, or null (5xx, 408, no response, empty body). Never the
+     * exception message, which can carry the URL. A JSON object's string
+     * `error` or `message` is taken; any other non-empty JSON is shown as
+     * compact JSON; a body that is not JSON is shown as text. Compatibility
+     * forms are folded, control and line-break runs become one space, and the
+     * result is capped at REFUSAL_REASON_MAX characters. The caller fences it.
+     */
+    public static function refusalReason(\Throwable $e): ?string
+    {
+        $previous = $e instanceof HuntressClientException ? $e->getPrevious() : null;
+        $response = $previous instanceof RequestException ? $previous->getResponse() : null;
+        if ($response === null) {
+            return null;
+        }
+        $status = $response->getStatusCode();
+        if ($status < 400 || $status >= 500 || $status === 408) {
+            return null;
+        }
+        $raw = (string) $response->getBody();
+        $decoded = json_decode($raw, true);
+        $text = $raw;
+        if (is_string($decoded)) {
+            $text = $decoded;
+        } elseif (is_array($decoded)) {
+            if ($decoded === []) {
+                return null;
+            }
+            $named = $decoded['error'] ?? $decoded['message'] ?? null;
+            $text = is_string($named) ? $named : (string) json_encode($decoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        }
+        if (! mb_check_encoding($text, 'UTF-8')) {
+            return null;
+        }
+        if (class_exists(\Normalizer::class)) {
+            $folded = \Normalizer::normalize($text, \Normalizer::FORM_KC);
+            $text = is_string($folded) ? $folded : $text;
+        }
+        $text = trim((string) preg_replace('/[\p{Cc}\p{Zl}\p{Zp}]+/u', ' ', $text));
+
+        return $text === '' ? null : mb_substr($text, 0, self::REFUSAL_REASON_MAX);
+    }
+
     private function assertConfigured(): void
     {
         if (! $this->isConfigured()) {
@@ -281,14 +368,19 @@ class HuntressWriteClient
      * there was no response).
      *
      * @param  array<string, mixed>|null  $body
+     * @param  array<string, string|int>  $query
      * @return array<string, mixed>
      */
-    private function send(string $method, string $endpoint, ?array $body): array
+    private function send(string $method, string $endpoint, ?array $body, array $query = []): array
     {
         $options = ['headers' => ['Accept' => 'application/json']];
+        if ($query !== []) {
+            $options['query'] = $query;
+        }
         if ($body !== null) {
             $options['headers']['Content-Type'] = 'application/json';
-            $options['body'] = json_encode($body, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            // json_encode([]) is `[]`: an empty body is the empty object.
+            $options['body'] = $body === [] ? '{}' : json_encode($body, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         }
 
         $attempt = 0;

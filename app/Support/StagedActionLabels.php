@@ -111,6 +111,7 @@ class StagedActionLabels
         'huntress_stage_create_unwanted_access_rule' => 'Huntress access rule create',
         'huntress_stage_update_unwanted_access_rule' => 'Huntress access rule update',
         'huntress_stage_delete_unwanted_access_rule' => 'Huntress access rule delete',
+        'huntress_stage_request' => 'Huntress API request',
 
         // Mesh Email Security
         'mesh_stage_add_allow_rule' => 'Mesh allow rule',

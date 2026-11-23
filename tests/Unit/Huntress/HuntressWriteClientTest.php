@@ -281,4 +281,43 @@ class HuntressWriteClientTest extends TestCase
         $this->assertSame(2, HuntressWriteClient::retryDelaySeconds('-5', 1), 'negative header → exponential default');
         $this->assertSame(4, HuntressWriteClient::retryDelaySeconds('soon', 2), 'non-numeric header → exponential default');
     }
+
+    public function test_request_sends_the_method_path_query_and_body_exactly(): void
+    {
+        $client = $this->clientReturning([new Response(201, [], '{"agent":{"id":9501}}'), new Response(202, [], '{}'), new Response(201, [], '{}')]);
+
+        $this->assertSame(['agent' => ['id' => 9501]], $client->request('POST', 'agents/9501/isolation', [], ['reason' => 'Synthetic']));
+        $this->assertSame('POST', $this->lastRequest()->getMethod());
+        $this->assertSame('/v1/agents/9501/isolation', $this->lastRequest()->getUri()->getPath());
+        $this->assertSame('{"reason":"Synthetic"}', (string) $this->lastRequest()->getBody());
+
+        $client->request('DELETE', 'organizations/9001', ['revoke_key' => 'true'], null);
+        $this->assertSame('revoke_key=true', $this->lastRequest()->getUri()->getQuery());
+        $this->assertSame('', (string) $this->lastRequest()->getBody());
+
+        $client->request('POST', 'incident_reports/9601/remediations/bulk_approval', [], []);
+        $this->assertSame('{}', (string) $this->lastRequest()->getBody(), 'an empty body is the empty object, not []');
+    }
+
+    public function test_refusal_reason_comes_from_the_body_of_a_4xx_never_the_exception_message(): void
+    {
+        $client = $this->clientReturning([new Response(422, [], json_encode(['error' => 'Synthetic reason']))]);
+        try {
+            $client->request('POST', 'agents/9501/isolation', [], []);
+            $this->fail('no throw');
+        } catch (HuntressClientException $e) {
+            $this->assertSame('Synthetic reason', HuntressWriteClient::refusalReason($e));
+            $this->assertStringNotContainsString('Synthetic reason', $e->getMessage());
+        }
+        foreach ([500, 408] as $status) {
+            $client = $this->clientReturning([new Response($status, [], json_encode(['error' => 'Synthetic reason']))]);
+            try {
+                $client->request('POST', 'agents/9501/isolation', [], []);
+                $this->fail('no throw');
+            } catch (HuntressClientException $e) {
+                $this->assertNull(HuntressWriteClient::refusalReason($e), (string) $status);
+            }
+        }
+        $this->assertNull(HuntressWriteClient::refusalReason(new \RuntimeException('Synthetic')));
+    }
 }

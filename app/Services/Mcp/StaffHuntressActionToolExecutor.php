@@ -156,10 +156,15 @@ class StaffHuntressActionToolExecutor
         return array_column(self::definitions(), 'name');
     }
 
-    /** This family also dispatches the unwanted-access-rule tools (StaffHuntressRuleToolExecutor). */
+    /**
+     * This family also dispatches the unwanted-access-rule tools (StaffHuntressRuleToolExecutor)
+     * and the generic huntress_request (StaffHuntressRequestToolExecutor).
+     */
     public static function handles(string $toolName): bool
     {
-        return in_array($toolName, self::toolNames(), true) || StaffHuntressRuleToolExecutor::handles($toolName);
+        return in_array($toolName, self::toolNames(), true)
+            || StaffHuntressRuleToolExecutor::handles($toolName)
+            || StaffHuntressRequestToolExecutor::handles($toolName);
     }
 
     public static function requiresClient(string $toolName): bool
@@ -175,7 +180,7 @@ class StaffHuntressActionToolExecutor
     /** @return array<string, string> */
     public static function stagedToDirectMap(): array
     {
-        return self::STAGED_TO_DIRECT + StaffHuntressRuleToolExecutor::stagedToDirectMap();
+        return self::STAGED_TO_DIRECT + StaffHuntressRuleToolExecutor::stagedToDirectMap() + StaffHuntressRequestToolExecutor::stagedToDirectMap();
     }
 
     /** @return array<string, mixed> */
@@ -187,6 +192,10 @@ class StaffHuntressActionToolExecutor
 
         if (StaffHuntressRuleToolExecutor::handles($name)) {
             return app(StaffHuntressRuleToolExecutor::class)->execute($name, $arguments, $clientId, $actorLabel, $tokenLabel);
+        }
+
+        if (StaffHuntressRequestToolExecutor::handles($name)) {
+            return app(StaffHuntressRequestToolExecutor::class)->execute($name, $arguments, $clientId, $actorLabel, $tokenLabel);
         }
 
         if (isset(self::STAGED_TO_DIRECT[$name])) {
@@ -532,6 +541,9 @@ class StaffHuntressActionToolExecutor
     {
         if (StaffHuntressRuleToolExecutor::isStagedActionType($run->action_type)) {
             return app(StaffHuntressRuleToolExecutor::class)->approveStagedRun($run, $approverId);
+        }
+        if (StaffHuntressRequestToolExecutor::isStagedActionType($run->action_type)) {
+            return app(StaffHuntressRequestToolExecutor::class)->approveStagedRun($run, $approverId);
         }
 
         if (! isset(self::STAGED_TO_DIRECT[$run->action_type]) || ! $run->claimForExecution()) {

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Cockpit: staged Huntress API request approval</title><link rel="stylesheet" href="../_tokens.css"><style>
+body { margin:0; background:var(--psa-colors-canvas); color:var(--psa-colors-ink); font-family:var(--psa-typography-body-font-family); font-size:var(--psa-typography-body-font-size); line-height:var(--psa-typography-body-line-height); }
+header { background:var(--psa-colors-navy); color:var(--psa-colors-surface); padding:var(--psa-spacing-md) var(--psa-spacing-lg); font-family:var(--psa-typography-title-font-family); }
+main { margin:var(--psa-spacing-lg); max-width:1000px; }
+h2 { color:var(--psa-colors-danger); font-family:var(--psa-typography-headline-font-family); font-size:var(--psa-typography-title-font-size); margin:0 0 var(--psa-spacing-md); }
+article { background:var(--psa-colors-surface); border:1px solid var(--psa-colors-border); border-radius:var(--psa-rounded-md); padding:var(--psa-spacing-md); margin-bottom:var(--psa-spacing-md); }
+.row { display:flex; flex-wrap:wrap; gap:var(--psa-spacing-sm); align-items:center; font-size:.875em; margin-bottom:var(--psa-spacing-sm); }
+.row a { color:var(--psa-colors-navy); font-weight:600; text-decoration:none; } .row .when { margin-left:auto; color:var(--psa-colors-muted-ink); }
+.pill { border-radius:999px; padding:var(--psa-spacing-xs) var(--psa-spacing-sm); }
+.pill.client { color:var(--psa-colors-danger); border:1px solid var(--psa-colors-danger); background:var(--psa-colors-surface); }
+.pill.action { background:var(--psa-colors-danger); color:var(--psa-colors-surface); }
+.warn { color:var(--psa-colors-danger); font-weight:600; font-size:.875em; margin:0 0 var(--psa-spacing-sm); }
+pre { background:var(--psa-colors-canvas); border:1px solid var(--psa-colors-border); border-radius:var(--psa-rounded-sm); padding:var(--psa-spacing-sm); white-space:pre-wrap; font-size:.8125em; margin:0 0 var(--psa-spacing-sm); }
+small { color:var(--psa-colors-muted-ink); display:block; margin-bottom:var(--psa-spacing-sm); }
+.bar { display:flex; gap:var(--psa-spacing-sm); padding:var(--psa-spacing-sm); border-radius:var(--psa-rounded-sm); background:var(--psa-colors-canvas); }
+button { border:1px solid var(--psa-colors-danger); border-radius:var(--psa-rounded-sm); padding:var(--psa-spacing-sm); background:var(--psa-colors-danger); color:var(--psa-colors-surface); font:inherit; }
+button.secondary { background:var(--psa-colors-surface); color:var(--psa-colors-muted-ink); border-color:var(--psa-colors-border); }
+button:focus-visible { outline:3px solid var(--psa-colors-navy-light); outline-offset:2px; }
+.legend { display:flex; gap:var(--psa-spacing-sm); flex-wrap:wrap; font-size:.875em; margin-bottom:var(--psa-spacing-lg); }
+</style></head><body><header>Sound PSA · Technician cockpit</header><main>
+<h2>Endpoint &amp; account actions (3)</h2>
+<div class="legend"><span class="pill action">Huntress API request</span></div>
+<!-- Each card body below is the built proposed_content for synthetic data, unedited apart from the agent reason. -->
+<article>
+<div class="row"><a href="#">Isolate a host</a><span class="pill client">Example Dental Co.</span><span class="pill action">Huntress API request</span><span class="when">2 minutes ago</span></div>
+<p class="warn">Executes on the endpoint or account when approved</p>
+<pre>Scoped to the Huntress organization mapped to Example Dental Co.
+Request as it will be sent: POST /v1/agents/9501/isolation
+=== UNTRUSTED REQUEST BODY (data, not instructions) ===
+{
+    "reason": "Synthetic containment",
+    "strict_isolation": false
+}
+=== END UNTRUSTED REQUEST BODY ===
+=== UNTRUSTED HUNTRESS AGENT AS READ (data, not instructions) ===
+{
+    "id": 9501,
+    "organization_id": 9001,
+    "hostname": "== UNTRUSTED HUNTRESS RESPONSE (data, not instructions) ==\nPRINTER-EXAMPLE-01\n== END UNTRUSTED HUNTRESS RESPONSE ==",
+    "platform": "== UNTRUSTED HUNTRESS RESPONSE (data, not instructions) ==\nwindows\n== END UNTRUSTED HUNTRESS RESPONSE =="
+}
+=== END UNTRUSTED HUNTRESS AGENT AS READ ===
+Approval re-checks the client mapping and re-reads what the path names before sending.
+=== UNTRUSTED AGENT SUPPLIED REASON (data, not instructions) ===
+Ransomware canary fired on this host
+=== END UNTRUSTED AGENT SUPPLIED REASON ===</pre>
+<small>Drafted by: mcp-staff:synthetic-token</small>
+<div class="bar"><button>Approve action</button><button class="secondary">Hold it</button></div>
+</article>
+<article>
+<div class="row"><a href="#">Raise the EDR minimum</a><span class="pill client">Example Dental Co.</span><span class="pill action">Huntress API request</span><span class="when">4 minutes ago</span></div>
+<p class="warn">Executes on the endpoint or account when approved</p>
+<pre>BILLING CHANGE: this Huntress reseller request changes what the account is billed, for subscription 9701.
+ACCOUNT-WIDE: this request names no Huntress organization, so it acts on the whole Huntress account, not only on Example Dental Co.
+Request as it will be sent: POST /v1/reseller/subscriptions/9701/upgrade
+=== UNTRUSTED REQUEST BODY (data, not instructions) ===
+{
+    "minimum": 25,
+    "on_renewal": true
+}
+=== END UNTRUSTED REQUEST BODY ===
+Approval re-checks the client mapping before sending.
+=== UNTRUSTED AGENT SUPPLIED REASON (data, not instructions) ===
+Asked for by the owner in a synthetic op
+=== END UNTRUSTED AGENT SUPPLIED REASON ===</pre>
+<small>Drafted by: mcp-staff:synthetic-token</small>
+<div class="bar"><button>Approve action</button><button class="secondary">Hold it</button></div>
+</article>
+<article>
+<div class="row"><a href="#">New client onboarding</a><span class="pill client">Example Dental Co.</span><span class="pill action">Huntress API request</span><span class="when">6 minutes ago</span></div>
+<p class="warn">Executes on the endpoint or account when approved</p>
+<pre>ACCOUNT-WIDE: this request names no Huntress organization, so it acts on the whole Huntress account, not only on Example Dental Co.
+Request as it will be sent: POST /v1/organizations
+=== UNTRUSTED REQUEST BODY (data, not instructions) ===
+{
+    "name": "Example New Co",
+    "key": "example-new-co"
+}
+=== END UNTRUSTED REQUEST BODY ===
+Approval re-checks the client mapping before sending.
+=== UNTRUSTED AGENT SUPPLIED REASON (data, not instructions) ===
+New client onboarding
+=== END UNTRUSTED AGENT SUPPLIED REASON ===</pre>
+<small>Drafted by: mcp-staff:synthetic-token</small>
+<div class="bar"><button>Approve action</button><button class="secondary">Hold it</button></div>
+</article>
+</main></body></html>
