@@ -82,7 +82,13 @@ class StaffHuntressRuleToolExecutor
     private const VALUE_MAX = 100;
 
     /** #8431: the tool descriptions say this, and startsAtRefusal() enforces it before staging. */
-    public const STARTS_AT_RULE = 'A starts_at on or before today\'s UTC date is refused before anything is staged or sent (Huntress refuses a start of today); to start the rule now, leave starts_at out.';
+    public const STARTS_AT_RULE = 'A starts_at on or before today\'s UTC date is refused before anything is staged or sent (Huntress refuses a start of today).';
+
+    /** #8431, create only: what leaving starts_at out does on a new rule. */
+    public const STARTS_AT_CREATE = 'To start a new rule now, leave starts_at out.';
+
+    /** #8431, update only: on an update, leaving starts_at out keeps the current start. */
+    public const STARTS_AT_UPDATE = 'On an update, leaving starts_at out keeps the rule\'s current start; give a later date to move it.';
 
     /** #8430: the last sentence of a vendor refusal shown to the approver. */
     public const APPROVE_AGAIN = 'Approving again sends the same request.';
@@ -121,7 +127,7 @@ class StaffHuntressRuleToolExecutor
     {
         $value = fn (string $what): array => ['type' => 'string', 'description' => "One {$what}. Exactly one of country_code, vpn or ip_address. A comma is refused: make one call per value."];
         $date = fn (string $what): array => ['type' => 'string', 'description' => "UTC date YYYY-MM-DD when the rule {$what}."];
-        $starts = ['type' => 'string', 'description' => 'UTC date YYYY-MM-DD when the rule becomes active; expected rules only. '.self::STARTS_AT_RULE];
+        $starts = ['type' => 'string', 'description' => 'UTC date YYYY-MM-DD when the rule becomes active; expected rules only. '.self::STARTS_AT_RULE.' '.self::STARTS_AT_CREATE];
         $create = [
             'country_code' => $value('ISO 3166-1 alpha-2 country code in capitals, e.g. US'),
             'vpn' => $value('VPN tunnel operator name as Huntress names it (see huntress_list_known_vpns)'),
@@ -134,7 +140,7 @@ class StaffHuntressRuleToolExecutor
         ];
         $rule = ['rule_id' => ['type' => 'integer', 'description' => 'Huntress unwanted access rule id (from huntress_list_unwanted_access_rules). The rule is read first and must apply to this client\'s mapped Huntress organization.']];
         $update = $rule + [
-            'starts_at' => ['type' => 'string', 'description' => 'UTC date YYYY-MM-DD when the rule becomes active; an empty string clears it. '.self::STARTS_AT_RULE],
+            'starts_at' => ['type' => 'string', 'description' => 'UTC date YYYY-MM-DD when the rule becomes active; an empty string clears it. '.self::STARTS_AT_RULE.' '.self::STARTS_AT_UPDATE],
             'expires_at' => ['type' => 'string', 'description' => 'UTC date YYYY-MM-DD when the rule expires; an empty string clears it.'],
             'notes' => ['type' => 'string', 'description' => 'Note on the rule; an empty string clears it.'],
             'reason' => $create['reason'],
@@ -337,7 +343,7 @@ class StaffHuntressRuleToolExecutor
                 if ($value !== null && $value !== '' && ! self::isDate($value)) {
                     return "{$date} must be a UTC date YYYY-MM-DD, or null or an empty string to clear it.";
                 }
-                if ($date === 'starts_at' && $value !== null && $value !== '' && ($past = self::startsAtRefusal($value)) !== null) {
+                if ($date === 'starts_at' && $value !== null && $value !== '' && ($past = self::startsAtRefusal($value, true)) !== null) {
                     return $past;
                 }
                 $body[$date] = $value;
@@ -925,21 +931,28 @@ class StaffHuntressRuleToolExecutor
     }
 
     /**
-     * #8431: a starts_at on or before today's UTC date, refused before staging with
-     * this sentence; null for a later date. A value that is not a date starting
-     * YYYY-MM-DD is refused too. Never stripped silently.
+     * #8431: a starts_at on or before today's UTC date is refused with this sentence;
+     * null for a later date. A value that is not a date starting YYYY-MM-DD is refused
+     * too. Never stripped silently. $update: the request changes an existing rule, so
+     * leaving starts_at out keeps its current start (no "start now" advice).
+     * $atApproval: the check ran again when a staged request was approved, so the
+     * text says it was refused at approval, not before staging.
      */
-    public static function startsAtRefusal(mixed $value): ?string
+    public static function startsAtRefusal(mixed $value, bool $update = false, bool $atApproval = false): ?string
     {
         $today = CarbonImmutable::now('UTC')->toDateString();
         if (! is_string($value) || preg_match('/\A(\d{4}-\d{2}-\d{2})/', $value, $m) !== 1) {
             return 'starts_at must be a UTC date YYYY-MM-DD after today ('.$today.').';
         }
-        if ($m[1] <= $today) {
-            return "starts_at {$m[1]} is on or before today's UTC date ({$today}), and Huntress refuses a start of today; it was refused before staging. To start the rule now, leave starts_at out; otherwise give a later date.";
+        if ($m[1] > $today) {
+            return null;
+        }
+        $text = "starts_at {$m[1]} is on or before today's UTC date ({$today}), and Huntress refuses a start of today; ";
+        if ($atApproval) {
+            return $text.'it was refused at approval. Deny this proposal and stage a new one with a later starts_at.';
         }
 
-        return null;
+        return $text.'it was refused before staging. '.($update ? self::STARTS_AT_UPDATE : self::STARTS_AT_CREATE.' Otherwise give a later date.');
     }
 
     /**

@@ -132,8 +132,11 @@ class StaffHuntressActionToolExecutor
      */
     public const RESOLVE_FORBIDDEN_MESSAGE = 'Huntress refused the resolve (HTTP 403): the Huntress user whose API key the PSA uses for resolve may not be allowed to resolve escalations. Check that user\'s role in Huntress. Nothing was changed.';
 
-    /** The 201 resolution_method values an id-only `{}` call may legitimately produce. */
-    private const SAFE_RESOLUTION_METHODS = ['direct', 'dismiss'];
+    /**
+     * The 201 resolution_method values an id-only `{}` call may legitimately produce.
+     * Public so huntress_request's escalation-resolution path applies the same post-condition.
+     */
+    public const SAFE_RESOLUTION_METHODS = ['direct', 'dismiss'];
 
     public function __construct(
         private readonly HuntressWriteClient $writeClient,

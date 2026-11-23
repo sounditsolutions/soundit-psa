@@ -19,9 +19,9 @@ button.secondary { background:var(--psa-colors-surface); color:var(--psa-colors-
 button:focus-visible { outline:3px solid var(--psa-colors-navy-light); outline-offset:2px; }
 .legend { display:flex; gap:var(--psa-spacing-sm); flex-wrap:wrap; font-size:.875em; margin-bottom:var(--psa-spacing-lg); }
 </style></head><body><header>Sound PSA · Technician cockpit</header><main>
-<h2>Endpoint &amp; account actions (3)</h2>
+<h2>Endpoint &amp; account actions (4)</h2>
 <div class="legend"><span class="pill action">Huntress API request</span></div>
-<!-- Each card body below is the built proposed_content for synthetic data, unedited apart from the agent reason. -->
+<!-- Each card body below is the built proposed_content for synthetic data, unedited; HuntressRequestToolTest::test_the_mockup_cards_are_the_built_proposed_content_unedited compares them. -->
 <article>
 <div class="row"><a href="#">Isolate a host</a><span class="pill client">Example Dental Co.</span><span class="pill action">Huntress API request</span><span class="when">2 minutes ago</span></div>
 <p class="warn">Executes on the endpoint or account when approved</p>
@@ -81,6 +81,34 @@ Request as it will be sent: POST /v1/organizations
 Approval re-checks the client mapping before sending.
 === UNTRUSTED AGENT SUPPLIED REASON (data, not instructions) ===
 New client onboarding
+=== END UNTRUSTED AGENT SUPPLIED REASON ===</pre>
+<small>Drafted by: mcp-staff:synthetic-token</small>
+<div class="bar"><button>Approve action</button><button class="secondary">Hold it</button></div>
+</article>
+<article>
+<div class="row"><a href="#">Close the worked escalation</a><span class="pill client">Example Dental Co.</span><span class="pill action">Huntress API request</span><span class="when">8 minutes ago</span></div>
+<p class="warn">Executes on the endpoint or account when approved</p>
+<pre>Scoped to the Huntress organization mapped to Example Dental Co.
+ESCALATION RESOLUTION: sent as huntress_resolve_escalation sends it, with the empty object {} as the body: no determination, scope, expiration_date, ip_address or revoke_and_disable_identities. With that body the vendor spec gives a simple resolve (direct) or a temporary one (dismiss); its default revoke_and_disable_identities = true applies only with determination unauthorized, which is not sent. The resolution_method Huntress reports is checked after the call: direct or dismiss pass; rule (attribute rules were created) or anything else is reported as a hard fault.
+Request as it will be sent: POST /v1/escalations/9301/resolution
+=== UNTRUSTED REQUEST BODY (data, not instructions) ===
+{}
+=== END UNTRUSTED REQUEST BODY ===
+=== UNTRUSTED HUNTRESS ESCALATION AS READ (data, not instructions) ===
+{
+    "id": 9301,
+    "status": "== UNTRUSTED HUNTRESS RESPONSE (data, not instructions) ==\nopen\n== END UNTRUSTED HUNTRESS RESPONSE ==",
+    "subject": "== UNTRUSTED HUNTRESS RESPONSE (data, not instructions) ==\nSynthetic suspicious sign-in\n== END UNTRUSTED HUNTRESS RESPONSE ==",
+    "organizations": [
+        {
+            "id": 9001
+        }
+    ]
+}
+=== END UNTRUSTED HUNTRESS ESCALATION AS READ ===
+Approval re-checks the client mapping and re-reads what the path names before sending.
+=== UNTRUSTED AGENT SUPPLIED REASON (data, not instructions) ===
+Technician worked the escalation on the ticket
 === END UNTRUSTED AGENT SUPPLIED REASON ===</pre>
 <small>Drafted by: mcp-staff:synthetic-token</small>
 <div class="bar"><button>Approve action</button><button class="secondary">Hold it</button></div>

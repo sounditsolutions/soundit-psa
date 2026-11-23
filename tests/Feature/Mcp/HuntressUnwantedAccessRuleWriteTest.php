@@ -1363,4 +1363,23 @@ class HuntressUnwantedAccessRuleWriteTest extends TestCase
             .'Approving again sends the same request.', $result->message);
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
     }
+
+    public function test_a_past_starts_at_on_update_says_omitting_it_keeps_the_current_start_and_create_says_leave_it_out(): void
+    {
+        $fx = $this->fixture();
+        $this->trapBoth();
+        $update = $this->decoded($this->callTool($this->token([self::UPDATE.':immediate']), self::UPDATE, ['client_id' => $fx['client']->id, 'rule_id' => 501, 'starts_at' => '2026-11-19', 'reason' => 'r']));
+        $this->assertStringContainsString("it was refused before staging. On an update, leaving starts_at out keeps the rule's current start; give a later date to move it.", (string) ($update['error'] ?? ''), json_encode($update));
+        $this->assertStringNotContainsString('leave starts_at out', $update['error']);
+
+        $create = $this->decoded($this->callTool($this->token([self::CREATE.':immediate']), self::CREATE, $this->createArgs($fx, ['starts_at' => '2026-11-19'])));
+        $this->assertStringContainsString('it was refused before staging. To start a new rule now, leave starts_at out. Otherwise give a later date.', (string) ($create['error'] ?? ''), json_encode($create));
+
+        $definitions = array_column(\App\Services\Mcp\StaffHuntressRuleToolExecutor::definitions(), null, 'name');
+        $updateText = $definitions[self::UPDATE]['input_schema']['properties']['starts_at']['description'];
+        $this->assertStringContainsString("On an update, leaving starts_at out keeps the rule's current start", $updateText);
+        $this->assertStringNotContainsString('leave starts_at out', $updateText);
+        $this->assertStringContainsString('To start a new rule now, leave starts_at out.', $definitions[self::CREATE]['input_schema']['properties']['starts_at']['description']);
+        $this->assertCount(0, $this->writes);
+    }
 }

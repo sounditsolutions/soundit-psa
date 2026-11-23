@@ -24,8 +24,10 @@ use Illuminate\Support\Facades\Log;
  * DELETE to a relative path under /v1/, with an optional query and JSON body.
  * The method+path allow-list and the org fence live in
  * StaffHuntressRequestToolExecutor; this client refuses any other method, a
- * path that is not plain lowercase segments, and siem/query (that POST is a
- * read and has its own tool), before any HTTP.
+ * path that is not plain lowercase segments, siem/query (that POST is a read
+ * and has its own tool) and escalations/{id}/resolution (sent only by
+ * resolveEscalation() below), before any HTTP. huntress_request's escalation
+ * resolution goes through resolveEscalation(), so the {} invariant below holds.
  *
  * Escalations: POST /v1/escalations/{id}/resolution with the LITERAL empty JSON
  * object `{}`. The parameterised body (`determination`, `scope`,
@@ -54,8 +56,8 @@ class HuntressWriteClient
     public const RETRY_AFTER_CEILING_SECONDS = 10;
 
     /**
-     * MIRROR of StaffHuntressActionToolExecutor::SAFE_RESOLUTION_METHODS (which
-     * is private to the executor): the resolution methods the executor's
+     * MIRROR of StaffHuntressActionToolExecutor::SAFE_RESOLUTION_METHODS (kept
+     * here so this client does not depend on the executor): the resolution methods the executor's
      * post-condition can clear. Anything outside this set — `rule` above all —
      * means server-side state WAS created and must reach the executor to fault
      * on, whichever position in the body reported it.
@@ -256,7 +258,8 @@ class HuntressWriteClient
      * A null body sends no body; an empty array sends the literal `{}`.
      * Refuses before any HTTP: another method, a path that is not plain
      * lowercase segments (no scheme, host, dot, percent sign or empty
-     * segment), and siem/query.
+     * segment), siem/query, and escalations/{id}/resolution (only
+     * resolveEscalation() sends that, with the literal `{}`).
      *
      * @param  array<string, string|int>  $query
      * @param  array<string, mixed>|null  $body
@@ -273,6 +276,9 @@ class HuntressWriteClient
         }
         if ($endpoint === 'siem/query') {
             throw new HuntressWriteScopeException('siem/query is a read with its own tool; nothing was sent.');
+        }
+        if (preg_match('#\Aescalations/[^/]+/resolution\z#', $endpoint) === 1) {
+            throw new HuntressWriteScopeException('An escalation resolution is sent only by resolveEscalation(), with the empty object {}; nothing was sent.');
         }
         foreach ($query as $key => $value) {
             if (! is_string($key) || (! is_string($value) && ! is_int($value))) {
