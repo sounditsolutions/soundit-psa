@@ -978,7 +978,7 @@ class StaffHuntressRequestToolExecutor
         if ($slot === null) {
             $this->audit(self::STAGED, 'rejected', (int) $client->id, $ticket, $hash, self::requestLine($wire).': too many identical proposals', $actorLabel);
 
-            return ['error' => 'This ticket already carries '.self::MAX_RUN_GENERATIONS.' identical Huntress request proposals; nothing was staged or sent. Raise a new ticket for a further one.'];
+            return ['error' => 'This ticket already carries '.self::MAX_RUN_GENERATIONS.' identical Huntress request proposals; nothing was staged and the requested call was not sent. Raise a new ticket for a further one.'];
         }
         $live = TechnicianRun::query()->where('ticket_id', $ticket->id)->where('action_type', self::STAGED)
             ->where('content_hash', $slot)->where('state', TechnicianRunState::AwaitingApproval->value)->first();
@@ -1004,7 +1004,7 @@ class StaffHuntressRequestToolExecutor
         );
         if (! $run->wasRecentlyCreated) {
             if (in_array($run->state, [TechnicianRunState::AwaitingApproval, TechnicianRunState::Executing, TechnicianRunState::Done], true)) {
-                return ['success' => true, 'idempotent' => true, 'ticket_id' => $ticket->id, 'run_id' => $run->id, 'message' => 'This proposal is already staged or being handled; nothing new was staged and nothing was sent.'];
+                return ['success' => true, 'idempotent' => true, 'ticket_id' => $ticket->id, 'run_id' => $run->id, 'message' => 'This proposal is already staged or being handled; nothing new was staged and the requested call was not sent.'];
             }
             $moved = DB::transaction(function () use ($run, $content, $meta): bool {
                 $fresh = TechnicianRun::query()->whereKey($run->getKey())->lockForUpdate()->first();
