@@ -1132,6 +1132,68 @@ class HuntressRequestToolTest extends TestCase
         $this->assertSame(0, TechnicianRun::count());
     }
 
+    // ── close: scope guards on organization lists and the approval remap ──
+
+    public function test_a_single_object_whose_organization_list_is_missing_or_not_a_list_is_not_shown(): void
+    {
+        $fx = $this->fixture();
+        $refused = 'The external_port read belongs to another Huntress organization or its organization could not be read, so it is not shown.';
+
+        $this->queueRead(['external_port' => ['id' => 9201, 'port' => 3389]]);
+        $missing = $this->tool(['client_id' => $fx['client']->id, 'method' => 'GET', 'path' => '/v1/external_ports/9201']);
+        $this->assertSame(['error' => $refused], $missing, json_encode($missing));
+
+        $this->queueRead(['external_port' => ['id' => 9202, 'organization_ids' => ['first' => self::ORG]]]);
+        $keyed = $this->tool(['client_id' => $fx['client']->id, 'method' => 'GET', 'path' => '/v1/external_ports/9202']);
+        $this->assertSame(['error' => $refused], $keyed, json_encode($keyed));
+
+        $this->assertCount(2, $this->reads);
+    }
+
+    public function test_a_single_object_whose_organization_list_holds_a_non_integer_is_not_shown(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead(['external_port' => ['id' => 9201, 'organization_ids' => [self::ORG, 'x']]]);
+        $result = $this->tool(['client_id' => $fx['client']->id, 'method' => 'GET', 'path' => '/v1/external_ports/9201']);
+        $this->assertSame(['error' => 'The external_port read belongs to another Huntress organization or its organization could not be read, so it is not shown.'], $result, json_encode($result));
+        $this->assertCount(1, $this->reads);
+    }
+
+    public function test_a_list_drops_and_counts_a_row_whose_organization_list_is_missing_or_not_a_list(): void
+    {
+        $fx = $this->fixture();
+        $this->queueRead(['external_ports' => [
+            ['id' => 9201, 'organization_ids' => [self::ORG]],
+            ['id' => 9204, 'port' => 3389],
+            ['id' => 9205, 'organization_ids' => ['first' => self::ORG]],
+        ], 'pagination' => []]);
+        $result = $this->tool(['client_id' => $fx['client']->id, 'method' => 'GET', 'path' => '/v1/external_ports']);
+        $this->assertSame([9201], array_column($result['external_ports'] ?? [], 'id'), json_encode($result));
+        $this->assertSame(1, $result['count']);
+        $this->assertSame(2, $result['dropped_unmapped']);
+    }
+
+    public function test_approval_refuses_a_remap_even_when_the_object_reads_as_the_new_organization(): void
+    {
+        $fx = $this->fixture();
+        $run = $this->stageIsolation($fx);
+        $fx['client']->update(['huntress_organization_id' => self::UNMAPPED_ORG]);
+        $this->reads = [];
+        // Only the staged org_id check can refuse: the object reads as the new organization.
+        $this->leftoversAllowed = true;
+        $this->queueRead(['agent' => $this->agent(9501, self::UNMAPPED_ORG)]);
+        $this->queueWrite(['agent' => $this->agent(9501, self::UNMAPPED_ORG)], 201);
+
+        $result = $this->approve($run);
+
+        $this->assertSame('gate_declined', $result->status, (string) $result->message);
+        $this->assertSame("Client {$fx['client']->id} is no longer mapped to the Huntress organization this proposal was staged for. Nothing was sent.", $result->message);
+        $this->assertCount(0, $this->reads, 'the remap check refuses before the object is read');
+        $this->assertCount(0, $this->writes);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertSame(1, $this->auditCount('blocked'));
+    }
+
     public function test_a_write_needs_a_ticket_of_this_client(): void
     {
         $fx = $this->fixture();
