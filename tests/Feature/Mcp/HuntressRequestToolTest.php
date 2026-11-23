@@ -976,7 +976,7 @@ class HuntressRequestToolTest extends TestCase
         $result = $this->approve($run);
 
         $this->assertSame('gate_declined', $result->status);
-        $this->assertSame("starts_at 2026-11-20 is on or before today's UTC date (2026-11-20), and Huntress refuses a start of today; it was refused at approval. Deny this proposal and stage a new one with a later starts_at. Nothing was sent.", $result->message);
+        $this->assertSame("starts_at 2026-11-20 is on or before today's UTC date (2026-11-20), and Huntress refuses a start of today; it was refused at approval. Deny this proposal and stage a new one with a later starts_at. The requested call was not sent.", $result->message);
         $this->assertCount(0, $this->writes);
         $row = TechnicianActionLog::where('action_type', 'huntress_stage_request')->where('result_status', 'blocked')->firstOrFail();
         $this->assertStringContainsString('it was refused at approval', $row->summary);
@@ -1187,8 +1187,28 @@ class HuntressRequestToolTest extends TestCase
         $result = $this->approve($run);
 
         $this->assertSame('gate_declined', $result->status, (string) $result->message);
-        $this->assertSame("Client {$fx['client']->id} is no longer mapped to the Huntress organization this proposal was staged for. Nothing was sent.", $result->message);
+        $this->assertSame("Client {$fx['client']->id} is no longer mapped to the Huntress organization this proposal was staged for. The requested call was not sent.", $result->message);
         $this->assertCount(0, $this->reads, 'the remap check refuses before the object is read');
+        $this->assertCount(0, $this->writes);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertSame(1, $this->auditCount('blocked'));
+    }
+
+    public function test_an_approval_whose_re_check_read_the_object_and_refused_says_the_requested_call_was_not_sent(): void
+    {
+        $fx = $this->fixture();
+        $run = $this->stageIsolation($fx);
+        $this->reads = [];
+        // The re-check reads the agent by id (a GET did go out), and it now reads as another organization.
+        $this->queueRead(['agent' => $this->agent(9501, self::OTHER_ORG)]);
+
+        $result = $this->approve($run);
+
+        $this->assertSame('gate_declined', $result->status, (string) $result->message);
+        $this->assertSame('The agent 9501 belongs to Huntress organization '.self::OTHER_ORG.', not the one mapped to this client. The requested call was not sent.', $result->message);
+        $this->assertCount(1, $this->reads, 'the re-check read the object first');
+        $this->assertSame('GET', $this->reads[0]['request']->getMethod());
+        $this->assertSame('/v1/agents/9501', $this->reads[0]['request']->getUri()->getPath());
         $this->assertCount(0, $this->writes);
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
         $this->assertSame(1, $this->auditCount('blocked'));
@@ -1379,7 +1399,7 @@ class HuntressRequestToolTest extends TestCase
         $this->assertSame($before + 1, $this->auditCount());
         $row = TechnicianActionLog::where('action_type', 'huntress_stage_request')->where('result_status', 'error')->sole();
         $this->assertSame($run->id, $row->run_id);
-        $this->assertStringContainsString('POST /v1/agents/9501/isolation: Approval failed before anything was sent (RuntimeException)', $row->summary);
+        $this->assertStringContainsString('POST /v1/agents/9501/isolation: Approval failed before the requested call was sent (RuntimeException). The requested call was not sent.', $row->summary);
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
         $this->assertCount(0, $this->writes);
     }
@@ -1541,7 +1561,7 @@ class HuntressRequestToolTest extends TestCase
         $result = $this->approve($run);
 
         $this->assertSame('gate_declined', $result->status);
-        $this->assertSame('The held request no longer reads back as staged. Nothing was sent.', $result->message);
+        $this->assertSame('The held request no longer reads back as staged. The requested call was not sent.', $result->message);
         $this->assertCount(0, $this->writes);
         $this->assertSame(1, $this->auditCount('blocked'));
     }
@@ -1567,11 +1587,11 @@ class HuntressRequestToolTest extends TestCase
         $other = Client::where('huntress_organization_id', self::OTHER_ORG)->firstOrFail();
         $otherTicket = Ticket::factory()->for($other)->create();
         $this->editPayload($run, fn (array $p): array => ['client_id' => $other->id, 'ticket_id' => $otherTicket->id] + $p);
-        $this->assertSame('The client or ticket no longer matches this proposal. Nothing was sent.', $this->approve($run)->message, 'payload client is not the run client');
+        $this->assertSame('The client or ticket no longer matches this proposal. The requested call was not sent.', $this->approve($run)->message, 'payload client is not the run client');
 
         $this->editPayload($run, fn (array $p): array => ['client_id' => $fx['client']->id, 'ticket_id' => $fx['ticket']->id] + $p);
         $fx['ticket']->delete();
-        $this->assertSame('The client or ticket no longer matches this proposal. Nothing was sent.', $this->approve($run)->message, 'ticket gone');
+        $this->assertSame('The client or ticket no longer matches this proposal. The requested call was not sent.', $this->approve($run)->message, 'ticket gone');
 
         $this->assertCount(0, $this->writes);
         $this->assertSame(2, $this->auditCount('blocked'));
@@ -1733,7 +1753,7 @@ class HuntressRequestToolTest extends TestCase
         $result = $this->approve($run);
 
         $this->assertSame('gate_declined', $result->status);
-        $this->assertSame('Technician kill-switch engaged. Nothing was sent.', $result->message);
+        $this->assertSame('Technician kill-switch engaged. The requested call was not sent.', $result->message);
         $this->assertCount(0, $this->writes);
         $this->assertSame($before + 1, $this->auditCount(), 'exactly one row for the approval');
         $row = TechnicianActionLog::where('action_type', 'huntress_stage_request')->where('result_status', 'blocked')->sole();
@@ -2045,7 +2065,7 @@ class HuntressRequestToolTest extends TestCase
 
         $this->assertSame($before + 1, $this->auditCount(), 'exactly one row for the approval');
         $row = TechnicianActionLog::where('action_type', 'huntress_stage_request')->where('result_status', 'error')->sole();
-        $this->assertSame('huntress-request:POST /v1/agents/9501/isolation: Approval failed before anything was sent (DomainException). Nothing was sent.', $row->summary, 'the release after the row failed: the row must not say the run was given back');
+        $this->assertSame('huntress-request:POST /v1/agents/9501/isolation: Approval failed before the requested call was sent (DomainException). The requested call was not sent.', $row->summary, 'the release after the row failed: the row must not say the run was given back');
         $this->assertCount(0, $this->writes);
     }
 
@@ -2261,7 +2281,7 @@ class HuntressRequestToolTest extends TestCase
         $result = $this->approve($run);
 
         $this->assertSame('gate_declined', $result->status, (string) $result->message);
-        $this->assertSame("Client {$fx['client']->id} is no longer mapped to the Huntress organization this proposal was staged for. Nothing was sent.", $result->message);
+        $this->assertSame("Client {$fx['client']->id} is no longer mapped to the Huntress organization this proposal was staged for. The requested call was not sent.", $result->message);
         $this->assertCount(1, $this->reads, 'only the staging read');
         $this->assertCount(0, $this->writes);
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
@@ -2280,7 +2300,7 @@ class HuntressRequestToolTest extends TestCase
         $result = $this->approve($run);
 
         $this->assertSame('gate_declined', $result->status, (string) $result->message);
-        $this->assertSame('The held request no longer reads back as staged. Nothing was sent.', $result->message);
+        $this->assertSame('The held request no longer reads back as staged. The requested call was not sent.', $result->message);
         $this->assertCount(0, $this->writes);
     }
 
@@ -2455,7 +2475,7 @@ class HuntressRequestToolTest extends TestCase
         $result = $this->approve($run);
 
         $this->assertSame('gate_declined', $result->status, (string) $result->message);
-        $this->assertSame("Client {$fx['client']->id} is no longer mapped to the Huntress organization this proposal was staged for. Nothing was sent.", $result->message);
+        $this->assertSame("Client {$fx['client']->id} is no longer mapped to the Huntress organization this proposal was staged for. The requested call was not sent.", $result->message);
         $this->assertCount(1, $this->reads, 'only the staging read');
         $this->assertCount(0, $this->writes);
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
@@ -2471,7 +2491,7 @@ class HuntressRequestToolTest extends TestCase
         $result = $this->approve($run);
 
         $this->assertSame('gate_declined', $result->status, (string) $result->message);
-        $this->assertSame('The client or ticket no longer matches this proposal. Nothing was sent.', $result->message);
+        $this->assertSame('The client or ticket no longer matches this proposal. The requested call was not sent.', $result->message);
         $this->assertCount(1, $this->reads, 'only the staging read');
         $this->assertCount(0, $this->writes);
         $this->assertSame(1, $this->auditCount('blocked'));

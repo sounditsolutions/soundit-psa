@@ -983,7 +983,7 @@ class StaffHuntressRequestToolExecutor
         $live = TechnicianRun::query()->where('ticket_id', $ticket->id)->where('action_type', self::STAGED)
             ->where('content_hash', $slot)->where('state', TechnicianRunState::AwaitingApproval->value)->first();
         if ($live !== null) {
-            return ['success' => true, 'idempotent' => true, 'ticket_id' => $ticket->id, 'run_id' => $live->id, 'message' => 'Already staged; awaiting approval. Nothing was sent.'];
+            return ['success' => true, 'idempotent' => true, 'ticket_id' => $ticket->id, 'run_id' => $live->id, 'message' => 'Already staged; awaiting approval. The requested call was not sent.'];
         }
 
         $meta = [
@@ -1018,7 +1018,7 @@ class StaffHuntressRequestToolExecutor
             if (! $moved) {
                 $this->audit(self::STAGED, 'rejected', (int) $client->id, $ticket, $hash, self::requestLine($wire).': run '.$run->id.' changed state while it was being staged again', $actorLabel, $run->id);
 
-                return ['error' => "Run {$run->id} for this proposal changed state while it was being staged again. Nothing was staged and nothing was sent."];
+                return ['error' => "Run {$run->id} for this proposal changed state while it was being staged again. Nothing was staged and the requested call was not sent."];
             }
         }
 
@@ -1027,7 +1027,7 @@ class StaffHuntressRequestToolExecutor
         return ['success' => true, 'ticket_id' => $ticket->id, 'ticket_display_id' => $ticket->display_id, 'run_id' => $run->id,
             'method' => $request['method'], 'path' => $request['path'], 'query' => $request['query'], 'body' => $request['body'],
             'account_wide' => $request['account_wide'], 'billing_change' => $request['reseller'],
-            'message' => 'Held for cockpit approval: every Huntress POST, PATCH and DELETE is approved by a person first. Nothing was sent.'];
+            'message' => 'Held for cockpit approval: every Huntress POST, PATCH and DELETE is approved by a person first. The requested call was not sent.'];
     }
 
     /**
@@ -1102,7 +1102,7 @@ class StaffHuntressRequestToolExecutor
                 // anything was sent, so the run is released below. It is audited first
                 // (ruling item 7), and the row says only what happened, since the release
                 // after it may fail; a failing audit does not replace this throw.
-                $this->safeApprovalAudit($run, $approverId, 'error', 'Approval failed before anything was sent ('.class_basename($e).'). Nothing was sent.');
+                $this->safeApprovalAudit($run, $approverId, 'error', 'Approval failed before the requested call was sent ('.class_basename($e).'). The requested call was not sent.');
                 // A failing release must not replace the original throw.
                 try {
                     $run->releaseClaim();
@@ -1241,7 +1241,7 @@ class StaffHuntressRequestToolExecutor
                 $notGivenBack = 'The run was not given back, so it is still Executing; check the run.';
             }
             if (! $sent) {
-                return new TechnicianApprovalResult('gate_declined', message: $message.' Nothing was sent.');
+                return new TechnicianApprovalResult('gate_declined', message: $message.' The requested call was not sent.');
             }
             if ($notGivenBack !== null) {
                 // A received refusal ends with APPROVE_AGAIN after ' ' or "\n" (withReason(..., true)).
