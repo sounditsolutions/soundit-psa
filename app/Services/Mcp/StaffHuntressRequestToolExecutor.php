@@ -1168,7 +1168,13 @@ class StaffHuntressRequestToolExecutor
             $sent
                 ? $this->safeAudit($status, $clientId, $ticket, $hash, $summary, $approver, $run->id, $approverId)
                 : $this->audit(self::STAGED, $status, $clientId, $ticket, $hash, $summary, $approver, $run->id, $approverId);
-            $run->releaseClaim();
+            // The row above records this outcome: a failing release must not reach the
+            // outer catch, which would write a second row and change the outcome.
+            try {
+                $run->releaseClaim();
+            } catch (\Throwable $e) {
+                self::quietLog('giving the run back failed after an approval was refused', ['run_id' => $run->id, 'exception' => $e::class]);
+            }
 
             return new TechnicianApprovalResult('gate_declined', message: $message.($sent ? '' : ' Nothing was sent.'));
         };
@@ -1231,7 +1237,7 @@ class StaffHuntressRequestToolExecutor
         try {
             $closed = $run->advanceTo(TechnicianRunState::Done);
         } catch (\Throwable $e) {
-            Log::error('[StaffHuntressRequestToolExecutor] closing the run failed after a Huntress request', ['run_id' => $run->id, 'exception' => $e::class]);
+            self::quietLog('closing the run failed after a Huntress request', ['run_id' => $run->id, 'exception' => $e::class]);
             $closed = false;
         }
         $this->safeAudit('executed', $clientId, $ticket, $hash, self::requestLine($wire).': Operator-approved huntress_request executed', $approver, $run->id, $approverId);
@@ -1257,7 +1263,7 @@ class StaffHuntressRequestToolExecutor
             try {
                 return $run->advanceTo(TechnicianRunState::Done);
             } catch (\Throwable $e) {
-                Log::error('[StaffHuntressRequestToolExecutor] closing the run failed after an escalation resolution', ['run_id' => $run->id, 'exception' => $e::class]);
+                self::quietLog('closing the run failed after an escalation resolution', ['run_id' => $run->id, 'exception' => $e::class]);
 
                 return false;
             }
@@ -1291,8 +1297,8 @@ class StaffHuntressRequestToolExecutor
         $method = is_scalar($resolution['resolution_method'] ?? null) ? (string) $resolution['resolution_method'] : '(missing)';
         if (! in_array($method, StaffHuntressActionToolExecutor::SAFE_RESOLUTION_METHODS, true)) {
             $fault = 'HARD FAULT: Huntress reported resolution_method \''.mb_substr($method, 0, 40).'\' for escalation '.$request['escalation_id'].'; a resolve with the empty object must report direct or dismiss. rule means Huntress CREATED attribute rules. The escalation IS resolved: check the created rules in Huntress and escalate to a person.';
-            Log::error('[StaffHuntressRequestToolExecutor] '.$fault, ['run_id' => $run->id]);
             $this->safeAudit('error', $clientId, $ticket, $hash, $line.': '.$fault, $approver, $run->id, $approverId);
+            self::quietLog($fault, ['run_id' => $run->id]);
 
             return new TechnicianApprovalResult('executed_with_fault', message: $fault.($closed ? '' : ' The run was not closed because this request no longer holds it; check the run.'));
         }
