@@ -71,6 +71,7 @@
             'huntress_stage_create_unwanted_access_rule' => ['bg-danger text-white', 'Huntress access rule create', 'bi-shield-plus'],
             'huntress_stage_update_unwanted_access_rule' => ['bg-danger text-white', 'Huntress access rule update', 'bi-shield-exclamation'],
             'huntress_stage_delete_unwanted_access_rule' => ['bg-danger text-white', 'Huntress access rule delete', 'bi-shield-x'],
+            'huntress_stage_request' => ['bg-danger text-white', 'Huntress API request', 'bi-braces'],
             'mesh_stage_add_allow_rule' => ['bg-danger text-white', 'Mesh allow rule', 'bi-envelope-exclamation'],
             'mesh_stage_remove_allow_rule' => ['bg-danger text-white', 'Mesh allow rule removal', 'bi-envelope-slash'],
             'mesh_stage_edit_allow_rule' => ['bg-danger text-white', 'Mesh allow rule expiry edit', 'bi-envelope-paper'],

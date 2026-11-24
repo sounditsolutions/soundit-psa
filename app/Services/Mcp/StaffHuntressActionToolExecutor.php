@@ -132,8 +132,11 @@ class StaffHuntressActionToolExecutor
      */
     public const RESOLVE_FORBIDDEN_MESSAGE = 'Huntress refused the resolve (HTTP 403): the Huntress user whose API key the PSA uses for resolve may not be allowed to resolve escalations. Check that user\'s role in Huntress. Nothing was changed.';
 
-    /** The 201 resolution_method values an id-only `{}` call may legitimately produce. */
-    private const SAFE_RESOLUTION_METHODS = ['direct', 'dismiss'];
+    /**
+     * The 201 resolution_method values an id-only `{}` call may legitimately produce.
+     * Public so huntress_request's escalation-resolution path applies the same post-condition.
+     */
+    public const SAFE_RESOLUTION_METHODS = ['direct', 'dismiss'];
 
     public function __construct(
         private readonly HuntressWriteClient $writeClient,
@@ -156,10 +159,15 @@ class StaffHuntressActionToolExecutor
         return array_column(self::definitions(), 'name');
     }
 
-    /** This family also dispatches the unwanted-access-rule tools (StaffHuntressRuleToolExecutor). */
+    /**
+     * This family also dispatches the unwanted-access-rule tools (StaffHuntressRuleToolExecutor)
+     * and the generic huntress_request (StaffHuntressRequestToolExecutor).
+     */
     public static function handles(string $toolName): bool
     {
-        return in_array($toolName, self::toolNames(), true) || StaffHuntressRuleToolExecutor::handles($toolName);
+        return in_array($toolName, self::toolNames(), true)
+            || StaffHuntressRuleToolExecutor::handles($toolName)
+            || StaffHuntressRequestToolExecutor::handles($toolName);
     }
 
     public static function requiresClient(string $toolName): bool
@@ -175,12 +183,18 @@ class StaffHuntressActionToolExecutor
     /** @return array<string, string> */
     public static function stagedToDirectMap(): array
     {
-        return self::STAGED_TO_DIRECT + StaffHuntressRuleToolExecutor::stagedToDirectMap();
+        return self::STAGED_TO_DIRECT + StaffHuntressRuleToolExecutor::stagedToDirectMap() + StaffHuntressRequestToolExecutor::stagedToDirectMap();
     }
 
     /** @return array<string, mixed> */
     public function execute(string $name, array $arguments, int $clientId, string $actorLabel, ?string $tokenLabel = null): array
     {
+        // huntress_request makes the same configuration check itself, so a write it refuses
+        // there still writes its audit row (one row for every write, sent or refused).
+        if (StaffHuntressRequestToolExecutor::handles($name)) {
+            return app(StaffHuntressRequestToolExecutor::class)->execute($name, $arguments, $clientId, $actorLabel, $tokenLabel);
+        }
+
         if (! HuntressConfig::isEnabled() || ! HuntressConfig::isConfigured()) {
             return ['error' => 'Huntress is not configured'];
         }
@@ -533,6 +547,9 @@ class StaffHuntressActionToolExecutor
         if (StaffHuntressRuleToolExecutor::isStagedActionType($run->action_type)) {
             return app(StaffHuntressRuleToolExecutor::class)->approveStagedRun($run, $approverId);
         }
+        if (StaffHuntressRequestToolExecutor::isStagedActionType($run->action_type)) {
+            return app(StaffHuntressRequestToolExecutor::class)->approveStagedRun($run, $approverId);
+        }
 
         if (! isset(self::STAGED_TO_DIRECT[$run->action_type]) || ! $run->claimForExecution()) {
             return new TechnicianApprovalResult('already_handled');
@@ -822,10 +839,11 @@ class StaffHuntressActionToolExecutor
      * tenant it covers. Multi-organization escalations and account-level ones
      * (no organization association) are both refused in v1 — no single PSA
      * client owns them, so there is no cockpit lane to hold them against.
+     * Public so huntress_request's escalation-resolution path applies this same check.
      *
      * @param  array<string, mixed>  $escalation
      */
-    private function escalationScopeError(array $escalation, Client $client, int $escalationId): ?string
+    public function escalationScopeError(array $escalation, Client $client, int $escalationId): ?string
     {
         $mappedOrgId = $this->positiveInt($client->huntress_organization_id);
         if ($mappedOrgId === null) {
