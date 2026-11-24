@@ -411,7 +411,7 @@ class ContractDocumentReadToolTest extends TestCase
         }
     }
 
-    public function test_a_read_past_the_cap_leaves_the_stored_row_unchanged(): void
+    public function test_a_read_past_the_cap_leaves_every_stored_column_unchanged(): void
     {
         $cap = AssistantToolExecutor::CONTRACT_DOCUMENT_TEXT_CAP;
         $long = str_repeat('t', $cap + 40);
@@ -421,7 +421,8 @@ class ContractDocumentReadToolTest extends TestCase
         $before = $document->fresh();
         $updatedAtBefore = $before->getRawOriginal('updated_at');
         $this->assertSame($long, $before->extracted_text);
-        // Move the clock so any write would move updated_at.
+        // Move the clock, so a write that stamps timestamps would also change updated_at.
+        // The whole-row comparison below catches a write to any column either way.
         $this->travel(5)->minutes();
 
         $result = $this->ok($this->callTool($this->token(), 'get_contract_document', ['client_id' => $client->id, 'document_id' => $document->id]));
@@ -432,6 +433,62 @@ class ContractDocumentReadToolTest extends TestCase
         $this->assertSame($long, $after->extracted_text);
         $this->assertSame($longSummary, $after->ai_summary);
         $this->assertSame($updatedAtBefore, $after->getRawOriginal('updated_at'));
+        // Every stored column, read fresh from the database, is the same after the read.
+        $this->assertSame($before->getAttributes(), $after->getAttributes());
+    }
+
+    public function test_a_nul_and_vertical_tab_only_ai_summary_is_returned_as_null_with_a_note(): void
+    {
+        $stored = "\0\x0B\0\x0B";
+        $client = Client::factory()->create();
+        $document = $this->document($this->contract($client), ['ai_summary' => $stored]);
+        // The stored row really holds NUL and vertical tab, nothing else.
+        $this->assertSame($stored, $document->fresh()->ai_summary);
+
+        $result = $this->ok($this->callTool($this->token(), 'get_contract_document', ['client_id' => $client->id, 'document_id' => $document->id]));
+
+        $this->assertNull($result['ai_summary']);
+        $this->assertFalse($result['ai_summary_truncated']);
+        $this->assertSame(['This document has no AI summary: the stored field is missing or blank.'], $result['notes']);
+        $this->assertSame('SYNTHETIC-TEXT-MARKER clause one.', $result['extracted_text']);
+        $this->assertSame($stored, $document->fresh()->ai_summary);
+    }
+
+    public function test_a_form_feed_only_or_nbsp_only_ai_summary_is_returned_as_text(): void
+    {
+        $client = Client::factory()->create();
+        $contract = $this->contract($client);
+        $token = $this->token();
+
+        foreach (["\f", "\f\f", "\u{00A0}", "\u{00A0}\u{00A0}"] as $stored) {
+            $document = $this->document($contract, ['ai_summary' => $stored]);
+            $this->assertSame($stored, $document->fresh()->ai_summary);
+
+            $result = $this->ok($this->callTool($token, 'get_contract_document', ['client_id' => $client->id, 'document_id' => $document->id]));
+
+            $this->assertSame($stored, $result['ai_summary'], bin2hex($stored));
+            $this->assertFalse($result['ai_summary_truncated']);
+            $this->assertSame([], $result['notes'], bin2hex($stored));
+        }
+    }
+
+    public function test_blank_non_null_fields_return_the_null_branch_closed_key_set(): void
+    {
+        $client = Client::factory()->create();
+        $blank = $this->document($this->contract($client), ['extracted_text' => '   ', 'ai_summary' => '   ']);
+        $this->assertSame('   ', $blank->fresh()->extracted_text);
+        $this->assertSame('   ', $blank->fresh()->ai_summary);
+
+        $response = $this->callTool($this->token(), 'get_contract_document', ['client_id' => $client->id, 'document_id' => $blank->id]);
+        $result = $this->ok($response);
+
+        $this->assertSame([
+            'id', 'contract_id', 'filename', 'mime', 'summary_status', 'text_cap_chars',
+            'extracted_text', 'extracted_text_truncated', 'ai_summary', 'ai_summary_truncated', 'notes',
+        ], array_keys($result));
+        $this->assertNull($result['extracted_text']);
+        $this->assertNull($result['ai_summary']);
+        $this->assertNoStorageLeak($response);
     }
 
     public function test_the_cut_and_null_branches_return_the_closed_key_set(): void
@@ -469,6 +526,16 @@ class ContractDocumentReadToolTest extends TestCase
         $this->assertStringContainsString('No client context', $this->refusal($this->callTool($token, 'get_contract_document', ['document_id' => 1])));
         $this->assertStringContainsString('contract_id is required', $this->refusal($this->callTool($token, 'list_contract_documents', ['client_id' => $client->id, 'contract_id' => 0])));
         $this->assertStringContainsString('document_id is required', $this->refusal($this->callTool($token, 'get_contract_document', ['client_id' => $client->id, 'document_id' => -3])));
+    }
+
+    public function test_document_id_zero_is_refused_as_required(): void
+    {
+        $client = Client::factory()->create();
+
+        $this->assertSame(
+            ['error' => 'document_id is required'],
+            json_decode($this->refusal($this->callTool($this->token(), 'get_contract_document', ['client_id' => $client->id, 'document_id' => 0])), true),
+        );
     }
 
     public function test_a_missing_summary_is_reported_never_generated(): void
@@ -613,14 +680,32 @@ class ContractDocumentReadToolTest extends TestCase
 
     public function test_reads_write_nothing(): void
     {
+        $cap = AssistantToolExecutor::CONTRACT_DOCUMENT_TEXT_CAP;
         $client = Client::factory()->create();
         $contract = $this->contract($client);
+        // One document per get arm: null, plain, blank and cut.
         $document = $this->document($contract, ['ai_summary' => null, 'summary_status' => DocumentSummaryStatus::Pending]);
+        $plain = $this->document($contract, ['original_filename' => 'synthetic-plain.pdf']);
+        $blank = $this->document($contract, ['original_filename' => 'synthetic-blank.pdf', 'extracted_text' => '   ', 'ai_summary' => '   ']);
+        $cut = $this->document($contract, ['original_filename' => 'synthetic-cut.pdf', 'extracted_text' => str_repeat('c', $cap + 1), 'ai_summary' => str_repeat('d', $cap + 1)]);
+        $gets = [$document, $plain, $blank, $cut];
         $before = [$contract->fresh()->toArray(), ContractDocument::withTrashed()->orderBy('id')->get()->toArray()];
+        $rawUpdatedAt = fn (): array => [
+            $contract->fresh()->getRawOriginal('updated_at'),
+            ...array_map(fn (ContractDocument $d) => $d->fresh()->getRawOriginal('updated_at'), $gets),
+        ];
+        $updatedAtBefore = $rawUpdatedAt();
         $token = $this->token();
+        // Move the clock before the reads, so a write that stamps timestamps would change updated_at.
+        $this->travel(5)->minutes();
 
         $this->ok($this->callTool($token, 'list_contract_documents', ['client_id' => $client->id, 'contract_id' => $contract->id]));
-        $this->ok($this->callTool($token, 'get_contract_document', ['client_id' => $client->id, 'document_id' => $document->id]));
+        $this->assertSame($updatedAtBefore, $rawUpdatedAt(), 'list');
+
+        foreach ($gets as $get) {
+            $this->ok($this->callTool($token, 'get_contract_document', ['client_id' => $client->id, 'document_id' => $get->id]));
+            $this->assertSame($updatedAtBefore, $rawUpdatedAt(), $get->original_filename);
+        }
 
         $this->assertSame($before, [$contract->fresh()->toArray(), ContractDocument::withTrashed()->orderBy('id')->get()->toArray()]);
     }
