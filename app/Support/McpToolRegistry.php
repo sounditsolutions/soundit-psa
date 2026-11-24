@@ -1416,6 +1416,8 @@ class McpToolRegistry
             \App\Services\Mcp\TicketTimelineTool::definition(),
             self::listClientContractsTool(),
             self::getContractTool(),
+            self::listContractDocumentsTool(),
+            self::getContractDocumentTool(),
             self::listPrepayTransactionsTool(),
             self::getSkuTool(),
             self::listClientLicensesTool(),
@@ -1535,6 +1537,42 @@ class McpToolRegistry
                     'contract_id' => ['type' => 'integer', 'description' => 'The contract ID to read.'],
                 ],
                 'required' => ['client_id', 'contract_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function listContractDocumentsTool(): array
+    {
+        return [
+            'name' => 'list_contract_documents',
+            'description' => 'List the documents stored on one contract: id, filename, mime, size (bytes) and summary_status. Client-scoped like get_contract: a contract that is not this client\'s gets the same refusal as get_contract, with no count or filenames. Metadata only; no file bytes, storage path or download URL are returned. Read the stored text of one document with get_contract_document. Read-only. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'client_id' => ['type' => 'integer', 'description' => 'The client that owns the contract.'],
+                    'contract_id' => ['type' => 'integer', 'description' => 'The contract whose documents to list.'],
+                ],
+                'required' => ['client_id', 'contract_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function getContractDocumentTool(): array
+    {
+        $cap = \App\Services\Assistant\AssistantToolExecutor::CONTRACT_DOCUMENT_TEXT_CAP;
+
+        return [
+            'name' => 'get_contract_document',
+            'description' => 'Get one contract document\'s stored extracted_text and ai_summary, as stored. Client-scoped: the document\'s contract must belong to the client, and a document that does not exist or belongs to another client gets the same refusal. No file bytes, storage path or download URL are returned. Nothing is summarised on read: when no AI summary is stored, ai_summary is null and a note says so. Each text is capped at '.$cap.' characters; a longer text is cut, its _truncated flag is true, _total_chars and _returned_chars give the lengths, and a note says the text is not the whole document. Read-only. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'client_id' => ['type' => 'integer', 'description' => 'The client that owns the document\'s contract.'],
+                    'document_id' => ['type' => 'integer', 'description' => 'The document ID to read (from list_contract_documents).'],
+                ],
+                'required' => ['client_id', 'document_id'],
             ],
         ];
     }
