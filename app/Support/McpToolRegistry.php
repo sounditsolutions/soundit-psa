@@ -1565,7 +1565,7 @@ class McpToolRegistry
 
         return [
             'name' => 'get_contract_document',
-            'description' => 'Get one contract document\'s stored extracted_text and ai_summary, as stored. Client-scoped: the document\'s contract must belong to the client, and a document that does not exist or belongs to another client gets the same refusal. No file bytes, storage path or download URL are returned. Nothing is summarised on read: when no AI summary is stored, ai_summary is null and a note says so. Each text is capped at '.$cap.' characters; a longer text is cut, its _truncated flag is true, _total_chars and _returned_chars give the lengths, and a note says the text is not the whole document. Read-only. Requires an explicit token grant.',
+            'description' => 'Get one contract document\'s stored extracted_text and ai_summary, as stored (a missing or blank field reads as null with a note). Client-scoped: the document\'s contract must belong to the client, and a document that does not exist or belongs to another client gets the same refusal. No file bytes, storage path or download URL are returned. Nothing is summarised on read: when the stored extracted_text or ai_summary is missing or blank, that field is null and a note says so. Each text is capped at '.$cap.' characters; a longer text is cut, its _truncated flag is true, _total_chars and _returned_chars give the lengths, and a note says the cut text is not the whole document (for ai_summary, not the whole summary). Read-only. Requires an explicit token grant.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [

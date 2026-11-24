@@ -2181,7 +2181,8 @@ class AssistantToolExecutor
 
     /**
      * get_contract_document: one document's stored extracted_text and
-     * ai_summary, read as stored. The document's contract must belong to this
+     * ai_summary, read as stored, except that a missing or blank (whitespace
+     * only) field is returned as null with a note. The document's contract must belong to this
      * client; a missing document and another client's document get the same
      * refusal, so existence never leaks. No file bytes, no disk_path, no URL,
      * and no summarising: a missing summary is reported, never generated.
@@ -2226,8 +2227,8 @@ class AssistantToolExecutor
                 $result[$field] = null;
                 $result[$field.'_truncated'] = false;
                 $notes[] = $field === 'ai_summary'
-                    ? 'No AI summary is stored for this document.'
-                    : 'No extracted text is stored for this document.';
+                    ? 'This document has no AI summary: the stored field is missing or blank.'
+                    : 'This document has no extracted text: the stored field is missing or blank.';
 
                 continue;
             }

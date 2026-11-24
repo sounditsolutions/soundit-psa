@@ -217,6 +217,81 @@ class ContractDocumentReadToolTest extends TestCase
         $this->assertSame($document->id, $this->ok($this->callTool($token, 'get_contract_document', ['client_id' => $owner->id, 'document_id' => $document->id]))['id']);
     }
 
+    public function test_list_shows_only_the_named_contracts_documents_and_get_reports_each_documents_own_contract(): void
+    {
+        $client = Client::factory()->create();
+        $first = $this->contract($client, 'Synthetic First');
+        $second = $this->contract($client, 'Synthetic Second');
+        $mine = $this->document($first);
+        $sibling = $this->document($second, ['original_filename' => 'synthetic-sibling.pdf']);
+        $foreign = $this->document($this->contract(Client::factory()->create(), 'Synthetic Foreign'), ['original_filename' => 'synthetic-foreign.pdf']);
+        $token = $this->token();
+
+        $response = $this->callTool($token, 'list_contract_documents', ['client_id' => $client->id, 'contract_id' => $first->id]);
+        $list = $this->ok($response);
+        $this->assertSame(1, $list['count']);
+        $this->assertSame([$mine->id], array_column($list['documents'], 'id'));
+        $raw = (string) $response->getContent();
+        $this->assertStringNotContainsString('synthetic-sibling', $raw);
+        $this->assertStringNotContainsString('synthetic-foreign', $raw);
+
+        // get takes no contract_id: its fence is the client. A sibling contract's
+        // document is this client's and reads, carrying its own contract_id.
+        $this->assertSame($second->id, $this->ok($this->callTool($token, 'get_contract_document', ['client_id' => $client->id, 'document_id' => $sibling->id]))['contract_id']);
+        $this->assertSame(
+            ['error' => 'Document not found at this client'],
+            json_decode($this->refusal($this->callTool($token, 'get_contract_document', ['client_id' => $client->id, 'document_id' => $foreign->id])), true),
+        );
+    }
+
+    public function test_a_soft_deleted_contract_is_refused_by_both_calls(): void
+    {
+        $client = Client::factory()->create();
+        $contract = $this->contract($client);
+        $document = $this->document($contract);
+        $token = $this->token();
+
+        // Readable before the delete: the refusal below is the soft-delete scope.
+        $this->assertSame(1, $this->ok($this->callTool($token, 'list_contract_documents', ['client_id' => $client->id, 'contract_id' => $contract->id]))['count']);
+        $this->assertSame($document->id, $this->ok($this->callTool($token, 'get_contract_document', ['client_id' => $client->id, 'document_id' => $document->id]))['id']);
+
+        $contract->delete();
+        $this->assertNotNull(Contract::withTrashed()->find($contract->id)?->deleted_at);
+        $this->assertNull($document->fresh()->deleted_at);
+
+        $this->assertSame(
+            ['error' => 'Contract not found at this client'],
+            json_decode($this->refusal($this->callTool($token, 'list_contract_documents', ['client_id' => $client->id, 'contract_id' => $contract->id])), true),
+        );
+        $this->assertSame(
+            ['error' => 'Document not found at this client'],
+            json_decode($this->refusal($this->callTool($token, 'get_contract_document', ['client_id' => $client->id, 'document_id' => $document->id])), true),
+        );
+    }
+
+    public function test_a_lower_id_client_is_refused_by_both_calls(): void
+    {
+        // Created first, so the caller's client has the LOWER id than the owner.
+        $lower = Client::factory()->create();
+        $owner = Client::factory()->create();
+        $this->assertLessThan($owner->id, $lower->id);
+        $contract = $this->contract($owner);
+        $document = $this->document($contract);
+        $token = $this->token();
+
+        $this->assertSame(
+            ['error' => 'Contract not found at this client'],
+            json_decode($this->refusal($this->callTool($token, 'list_contract_documents', ['client_id' => $lower->id, 'contract_id' => $contract->id])), true),
+        );
+        $this->assertSame(
+            ['error' => 'Document not found at this client'],
+            json_decode($this->refusal($this->callTool($token, 'get_contract_document', ['client_id' => $lower->id, 'document_id' => $document->id])), true),
+        );
+
+        $this->assertSame(1, $this->ok($this->callTool($token, 'list_contract_documents', ['client_id' => $owner->id, 'contract_id' => $contract->id]))['count']);
+        $this->assertSame($document->id, $this->ok($this->callTool($token, 'get_contract_document', ['client_id' => $owner->id, 'document_id' => $document->id]))['id']);
+    }
+
     public function test_no_client_context_and_missing_ids_are_refused(): void
     {
         $client = Client::factory()->create();
@@ -241,7 +316,7 @@ class ContractDocumentReadToolTest extends TestCase
             $this->assertNull($result['ai_summary']);
             $this->assertFalse($result['ai_summary_truncated']);
             $this->assertSame($status, $result['summary_status']);
-            $this->assertContains('No AI summary is stored for this document.', $result['notes']);
+            $this->assertContains('This document has no AI summary: the stored field is missing or blank.', $result['notes']);
             $this->assertSame('SYNTHETIC-TEXT-MARKER clause one.', $result['extracted_text']);
         }
 
@@ -260,7 +335,7 @@ class ContractDocumentReadToolTest extends TestCase
 
         $this->assertNull($result['extracted_text']);
         $this->assertFalse($result['extracted_text_truncated']);
-        $this->assertSame(['No extracted text is stored for this document.'], $result['notes']);
+        $this->assertSame(['This document has no extracted text: the stored field is missing or blank.'], $result['notes']);
     }
 
     public function test_text_over_the_cap_is_cut_and_labelled_with_both_lengths(): void
