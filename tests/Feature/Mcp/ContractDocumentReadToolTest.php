@@ -20,8 +20,9 @@ use Tests\TestCase;
 /**
  * list_contract_documents / get_contract_document: grant-gated, client-scoped,
  * read-only psa_read tools. Metadata, then one document's stored text, capped.
- * Never file bytes, disk_path or a URL. Synthetic data only; no HTTP is
- * involved, so any stray request fails.
+ * Never file bytes, disk_path or a URL. Synthetic data only. No HTTP is
+ * faked: Http::preventStrayRequests() makes any outbound request through the
+ * Http client throw.
  */
 class ContractDocumentReadToolTest extends TestCase
 {
@@ -36,12 +37,6 @@ class ContractDocumentReadToolTest extends TestCase
         parent::setUp();
         Http::preventStrayRequests();
         Storage::fake('local');
-    }
-
-    protected function tearDown(): void
-    {
-        Http::assertNothingSent();
-        parent::tearDown();
     }
 
     private function token(array $tools = self::TOOLS, string $label = 'chet'): string
@@ -290,6 +285,95 @@ class ContractDocumentReadToolTest extends TestCase
 
         $this->assertSame(1, $this->ok($this->callTool($token, 'list_contract_documents', ['client_id' => $owner->id, 'contract_id' => $contract->id]))['count']);
         $this->assertSame($document->id, $this->ok($this->callTool($token, 'get_contract_document', ['client_id' => $owner->id, 'document_id' => $document->id]))['id']);
+    }
+
+    public function test_list_never_shows_a_lower_id_contracts_documents_from_this_or_another_client(): void
+    {
+        // Lower ids first: another client's contract and a sibling contract here, both with documents.
+        $foreignContract = $this->contract(Client::factory()->create(), 'Synthetic Foreign');
+        $foreign = $this->document($foreignContract, ['original_filename' => 'synthetic-foreign-lower.pdf']);
+        $client = Client::factory()->create();
+        $lowerContract = $this->contract($client, 'Synthetic Lower');
+        $lower = $this->document($lowerContract, ['original_filename' => 'synthetic-sibling-lower.pdf']);
+        $contract = $this->contract($client, 'Synthetic Named');
+        $mine = $this->document($contract);
+        $this->assertLessThan($contract->id, $foreignContract->id);
+        $this->assertLessThan($contract->id, $lowerContract->id);
+        $this->assertLessThan($mine->id, $foreign->id);
+        $this->assertLessThan($mine->id, $lower->id);
+
+        $response = $this->callTool($this->token(), 'list_contract_documents', ['client_id' => $client->id, 'contract_id' => $contract->id]);
+        $list = $this->ok($response);
+
+        $this->assertSame($contract->id, $list['contract_id']);
+        $this->assertSame(1, $list['count']);
+        $this->assertSame([$mine->id], array_column($list['documents'], 'id'));
+        $raw = (string) $response->getContent();
+        $this->assertStringNotContainsString('synthetic-foreign-lower', $raw);
+        $this->assertStringNotContainsString('synthetic-sibling-lower', $raw);
+    }
+
+    public function test_list_reads_the_named_contract_and_refuses_an_unknown_id_at_a_client_with_contracts(): void
+    {
+        $client = Client::factory()->create();
+        // An id that existed and is gone, below the client's live contracts.
+        $vanished = $this->contract($client, 'Synthetic Vanished');
+        $unknownId = $vanished->id;
+        $vanished->forceDelete();
+        $first = $this->contract($client, 'Synthetic First');
+        $second = $this->contract($client, 'Synthetic Second');
+        $this->document($first, ['original_filename' => 'synthetic-first.pdf']);
+        $secondDoc = $this->document($second, ['original_filename' => 'synthetic-second.pdf']);
+        $this->assertLessThan($first->id, $unknownId);
+        $this->assertLessThan($second->id, $first->id);
+        $this->assertNull(Contract::withTrashed()->find($unknownId));
+        $token = $this->token();
+
+        $response = $this->callTool($token, 'list_contract_documents', ['client_id' => $client->id, 'contract_id' => $second->id]);
+        $list = $this->ok($response);
+        $this->assertSame($second->id, $list['contract_id']);
+        $this->assertSame([$secondDoc->id], array_column($list['documents'], 'id'));
+        $this->assertStringNotContainsString('synthetic-first', (string) $response->getContent());
+
+        $refused = $this->callTool($token, 'list_contract_documents', ['client_id' => $client->id, 'contract_id' => $unknownId]);
+        $this->assertSame(['error' => 'Contract not found at this client'], json_decode($this->refusal($refused), true));
+        $this->assertStringNotContainsString('synthetic-', (string) $refused->getContent());
+    }
+
+    public function test_get_reads_the_named_document_and_refuses_a_deleted_id_between_two_documents(): void
+    {
+        $client = Client::factory()->create();
+        $contract = $this->contract($client);
+        $low = $this->document($contract, ['original_filename' => 'synthetic-low.pdf', 'extracted_text' => 'SYNTHETIC-LOW-TEXT']);
+        $middle = $this->document($contract, ['original_filename' => 'synthetic-middle.pdf']);
+        $high = $this->document($contract, ['original_filename' => 'synthetic-high.pdf', 'extracted_text' => 'SYNTHETIC-HIGH-TEXT']);
+        $middle->delete();
+        $this->assertLessThan($middle->id, $low->id);
+        $this->assertLessThan($high->id, $middle->id);
+        $token = $this->token();
+
+        $result = $this->ok($this->callTool($token, 'get_contract_document', ['client_id' => $client->id, 'document_id' => $low->id]));
+        $this->assertSame($low->id, $result['id']);
+        $this->assertSame('SYNTHETIC-LOW-TEXT', $result['extracted_text']);
+
+        $refused = $this->callTool($token, 'get_contract_document', ['client_id' => $client->id, 'document_id' => $middle->id]);
+        $this->assertSame(['error' => 'Document not found at this client'], json_decode($this->refusal($refused), true));
+        $this->assertStringNotContainsString('SYNTHETIC-HIGH-TEXT', (string) $refused->getContent());
+        $this->assertStringNotContainsString('synthetic-high', (string) $refused->getContent());
+    }
+
+    public function test_a_whitespace_only_extracted_text_is_returned_as_null_with_a_note(): void
+    {
+        $client = Client::factory()->create();
+        $document = $this->document($this->contract($client), ['extracted_text' => " \t\n\r \n"]);
+
+        $result = $this->ok($this->callTool($this->token(), 'get_contract_document', ['client_id' => $client->id, 'document_id' => $document->id]));
+
+        $this->assertNull($result['extracted_text']);
+        $this->assertFalse($result['extracted_text_truncated']);
+        $this->assertSame(['This document has no extracted text: the stored field is missing or blank.'], $result['notes']);
+        $this->assertSame('SYNTHETIC-SUMMARY-MARKER.', $result['ai_summary']);
+        $this->assertSame(" \t\n\r \n", $document->fresh()->extracted_text);
     }
 
     public function test_no_client_context_and_missing_ids_are_refused(): void

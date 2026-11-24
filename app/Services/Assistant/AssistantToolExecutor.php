@@ -2181,8 +2181,11 @@ class AssistantToolExecutor
 
     /**
      * get_contract_document: one document's stored extracted_text and
-     * ai_summary, read as stored, except that a missing or blank (whitespace
-     * only) field is returned as null with a note. The document's contract must belong to this
+     * ai_summary, read as stored, except that a field that is missing, or holds
+     * only the characters PHP's trim() strips (space, tab, newline, carriage
+     * return, NUL, vertical tab), is returned as null with a note. A field
+     * holding other whitespace, such as a form feed or a Unicode space, is
+     * returned as text. The document's contract must belong to this
      * client; a missing document and another client's document get the same
      * refusal, so existence never leaks. No file bytes, no disk_path, no URL,
      * and no summarising: a missing summary is reported, never generated.
