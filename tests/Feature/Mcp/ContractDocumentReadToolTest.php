@@ -376,6 +376,90 @@ class ContractDocumentReadToolTest extends TestCase
         $this->assertSame(" \t\n\r \n", $document->fresh()->extracted_text);
     }
 
+    public function test_a_nul_and_vertical_tab_only_extracted_text_is_returned_as_null_with_a_note(): void
+    {
+        $stored = "\0\x0B\0\x0B";
+        $client = Client::factory()->create();
+        $document = $this->document($this->contract($client), ['extracted_text' => $stored]);
+        // The stored row really holds NUL and vertical tab, nothing else.
+        $this->assertSame($stored, $document->fresh()->extracted_text);
+
+        $result = $this->ok($this->callTool($this->token(), 'get_contract_document', ['client_id' => $client->id, 'document_id' => $document->id]));
+
+        $this->assertNull($result['extracted_text']);
+        $this->assertFalse($result['extracted_text_truncated']);
+        $this->assertSame(['This document has no extracted text: the stored field is missing or blank.'], $result['notes']);
+        $this->assertSame('SYNTHETIC-SUMMARY-MARKER.', $result['ai_summary']);
+        $this->assertSame($stored, $document->fresh()->extracted_text);
+    }
+
+    public function test_a_form_feed_only_or_nbsp_only_text_is_returned_as_text(): void
+    {
+        $client = Client::factory()->create();
+        $contract = $this->contract($client);
+        $token = $this->token();
+
+        foreach (["\f", "\f\f", "\u{00A0}", "\u{00A0}\u{00A0}"] as $stored) {
+            $document = $this->document($contract, ['extracted_text' => $stored]);
+            $this->assertSame($stored, $document->fresh()->extracted_text);
+
+            $result = $this->ok($this->callTool($token, 'get_contract_document', ['client_id' => $client->id, 'document_id' => $document->id]));
+
+            $this->assertSame($stored, $result['extracted_text'], bin2hex($stored));
+            $this->assertFalse($result['extracted_text_truncated']);
+            $this->assertSame([], $result['notes'], bin2hex($stored));
+        }
+    }
+
+    public function test_a_read_past_the_cap_leaves_the_stored_row_unchanged(): void
+    {
+        $cap = AssistantToolExecutor::CONTRACT_DOCUMENT_TEXT_CAP;
+        $long = str_repeat('t', $cap + 40);
+        $longSummary = str_repeat('u', $cap + 9);
+        $client = Client::factory()->create();
+        $document = $this->document($this->contract($client), ['extracted_text' => $long, 'ai_summary' => $longSummary]);
+        $before = $document->fresh();
+        $updatedAtBefore = $before->getRawOriginal('updated_at');
+        $this->assertSame($long, $before->extracted_text);
+        // Move the clock so any write would move updated_at.
+        $this->travel(5)->minutes();
+
+        $result = $this->ok($this->callTool($this->token(), 'get_contract_document', ['client_id' => $client->id, 'document_id' => $document->id]));
+        $this->assertTrue($result['extracted_text_truncated']);
+        $this->assertTrue($result['ai_summary_truncated']);
+
+        $after = $document->fresh();
+        $this->assertSame($long, $after->extracted_text);
+        $this->assertSame($longSummary, $after->ai_summary);
+        $this->assertSame($updatedAtBefore, $after->getRawOriginal('updated_at'));
+    }
+
+    public function test_the_cut_and_null_branches_return_the_closed_key_set(): void
+    {
+        $cap = AssistantToolExecutor::CONTRACT_DOCUMENT_TEXT_CAP;
+        $client = Client::factory()->create();
+        $contract = $this->contract($client);
+        $cut = $this->document($contract, ['extracted_text' => str_repeat('c', $cap + 1), 'ai_summary' => str_repeat('d', $cap + 1)]);
+        $empty = $this->document($contract, ['extracted_text' => null, 'ai_summary' => null]);
+        $token = $this->token();
+
+        $cutResponse = $this->callTool($token, 'get_contract_document', ['client_id' => $client->id, 'document_id' => $cut->id]);
+        $this->assertSame([
+            'id', 'contract_id', 'filename', 'mime', 'summary_status', 'text_cap_chars',
+            'extracted_text', 'extracted_text_truncated', 'extracted_text_total_chars', 'extracted_text_returned_chars',
+            'ai_summary', 'ai_summary_truncated', 'ai_summary_total_chars', 'ai_summary_returned_chars',
+            'notes',
+        ], array_keys($this->ok($cutResponse)));
+        $this->assertNoStorageLeak($cutResponse);
+
+        $nullResponse = $this->callTool($token, 'get_contract_document', ['client_id' => $client->id, 'document_id' => $empty->id]);
+        $this->assertSame([
+            'id', 'contract_id', 'filename', 'mime', 'summary_status', 'text_cap_chars',
+            'extracted_text', 'extracted_text_truncated', 'ai_summary', 'ai_summary_truncated', 'notes',
+        ], array_keys($this->ok($nullResponse)));
+        $this->assertNoStorageLeak($nullResponse);
+    }
+
     public function test_no_client_context_and_missing_ids_are_refused(): void
     {
         $client = Client::factory()->create();
