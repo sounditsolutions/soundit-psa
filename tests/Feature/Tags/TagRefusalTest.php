@@ -17,10 +17,11 @@ use RuntimeException;
 use Tests\TestCase;
 
 /**
- * Each refusal in Tag and TagService, and the transaction around attach, pinned by
- * a test that fails when that refusal or the transaction is removed. Every refusal
- * is checked by its exact message, so a later, accidental failure (a NOT NULL
- * column, a second check) cannot stand in for it.
+ * Each refusal in Tag and TagService, and the transactions around attach, detach,
+ * sync and moveAll, pinned by a test that fails when that refusal or transaction is
+ * removed. Every refusal is checked by its exact message (here or in
+ * TagServiceTest), so a later, accidental failure (a NOT NULL column, a second
+ * check) cannot stand in for it.
  */
 class TagRefusalTest extends TestCase
 {
@@ -194,5 +195,71 @@ class TagRefusalTest extends TestCase
 
         $this->assertSame(0, DB::table('person_tag')->count(), 'The link survived a failed log write.');
         $this->assertSame(0, TagAssignmentLog::count());
+    }
+
+    /** Make every later log write whose action is $action throw. */
+    private function failLogWrites(string $action): void
+    {
+        TagAssignmentLog::creating(function (TagAssignmentLog $log) use ($action): void {
+            if ($log->action === $action) {
+                throw new RuntimeException('Synthetic log failure');
+            }
+        });
+    }
+
+    private function assertSyntheticLogFailure(string $verb, Closure $call): void
+    {
+        try {
+            $call();
+            $this->fail("{$verb} returned although the log write failed.");
+        } catch (RuntimeException $e) {
+            $this->assertSame('Synthetic log failure', $e->getMessage());
+        }
+    }
+
+    public function test_detach_keeps_the_link_when_the_log_write_fails(): void
+    {
+        $person = $this->person($this->client());
+        $tag = Tag::create(['name' => 'Alpha']);
+        $this->service()->attach($person, $tag, null, 'web');
+        $this->failLogWrites('detached');
+
+        $this->assertSyntheticLogFailure('detach', fn () => $this->service()->detach($person, $tag, null, 'web'));
+
+        $this->assertSame([$tag->id], $person->tags()->pluck('tags.id')->all(), 'The link was removed although its log write failed.');
+        $this->assertSame(['attached'], TagAssignmentLog::orderBy('id')->pluck('action')->all());
+    }
+
+    public function test_sync_rolls_back_its_earlier_changes_when_a_later_log_write_fails(): void
+    {
+        $person = $this->person($this->client());
+        $a = Tag::create(['name' => 'Alpha']);
+        $b = Tag::create(['name' => 'Bravo']);
+        $this->service()->attach($person, $a, null, 'web');
+        // sync detaches A first (logged), then attaches B, whose log write fails.
+        $this->failLogWrites('attached');
+
+        $this->assertSyntheticLogFailure('sync', fn () => $this->service()->sync($person, [$b->id], null, 'web'));
+
+        $this->assertSame([$a->id], $person->tags()->pluck('tags.id')->all(), 'sync left a partial change behind.');
+        $this->assertSame(['attached'], TagAssignmentLog::orderBy('id')->pluck('action')->all());
+    }
+
+    public function test_move_all_rolls_back_the_survivor_side_when_a_later_log_write_fails(): void
+    {
+        $client = $this->client();
+        $from = $this->person($client);
+        $to = $this->person($client);
+        $tag = Tag::create(['name' => 'Alpha']);
+        $this->service()->attach($from, $tag, null, 'web');
+        // moveAll links and logs the tag on $to first, then detaches it from $from,
+        // whose log write fails.
+        $this->failLogWrites('detached');
+
+        $this->assertSyntheticLogFailure('moveAll', fn () => $this->service()->moveAll($from, $to, null, 'system'));
+
+        $this->assertSame([], $to->tags()->pluck('tags.id')->all(), 'moveAll left the survivor-side link behind.');
+        $this->assertSame([$tag->id], $from->tags()->pluck('tags.id')->all());
+        $this->assertSame(1, TagAssignmentLog::count());
     }
 }

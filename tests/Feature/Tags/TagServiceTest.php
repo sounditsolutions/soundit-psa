@@ -162,7 +162,8 @@ class TagServiceTest extends TestCase
         try {
             $this->service()->sync($person, [999999], null, 'web');
             $this->fail('sync accepted an unknown tag id.');
-        } catch (InvalidArgumentException) {
+        } catch (InvalidArgumentException $e) {
+            $this->assertSame('Unknown tag id(s): 999999.', $e->getMessage());
         }
 
         $this->assertSame([$a->id], $person->tags()->pluck('tags.id')->all());
@@ -184,7 +185,8 @@ class TagServiceTest extends TestCase
         try {
             $this->service()->sync($person, [$retired->id], null, 'web');
             $this->fail('sync attached an inactive tag.');
-        } catch (InvalidArgumentException) {
+        } catch (InvalidArgumentException $e) {
+            $this->assertSame('A retired tag cannot be assigned.', $e->getMessage());
         }
 
         $this->assertSame(0, DB::table('person_tag')->count());
@@ -226,7 +228,8 @@ class TagServiceTest extends TestCase
         try {
             $this->service()->sync($ticket, [$tag->id], null, 'web');
             $this->fail('sync accepted a Ticket.');
-        } catch (InvalidArgumentException) {
+        } catch (InvalidArgumentException $e) {
+            $this->assertSame('Tags apply only to people, clients and assets.', $e->getMessage());
         }
 
         $this->assertSame(0, TagAssignmentLog::count());
@@ -266,8 +269,13 @@ class TagServiceTest extends TestCase
         $this->assertNotContains('signal-gold', Tag::COLORS);
         $this->assertSame('neutral', $this->tag('Default colour')->color);
 
-        $this->expectException(InvalidArgumentException::class);
-        $this->tag('Gold tag', ['color' => 'signal-gold']);
+        try {
+            $this->tag('Gold tag', ['color' => 'signal-gold']);
+            $this->fail('A gold tag colour was accepted.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertSame('Unknown tag colour.', $e->getMessage());
+        }
+        $this->assertSame(0, Tag::where('name', 'Gold tag')->count());
     }
 
     public function test_force_deleting_a_person_removes_its_pivot_rows_and_soft_delete_keeps_them(): void

@@ -7,10 +7,11 @@ use RecursiveIteratorIterator;
 use Tests\TestCase;
 
 /**
- * TagService is the only writer of the tag pivots, because it is the only place
- * that writes tag_assignment_logs. A belongsToMany attach/detach/sync fires no
- * model event, so an observer cannot catch a writer that goes around it; this
- * source scan does instead.
+ * TagService is the only sanctioned writer of the tag pivots, because it is the
+ * only place that writes tag_assignment_logs: a pivot write anywhere else would
+ * change a link without a log row. Nothing stops another file from writing a
+ * pivot, and a belongsToMany attach/detach/sync fires no model event, so an
+ * observer cannot catch such a writer; this source scan looks for one instead.
  *
  * It fails when a PHP file in app/ or routes/, other than app/Services/TagService.php,
  * contains one of these shapes:

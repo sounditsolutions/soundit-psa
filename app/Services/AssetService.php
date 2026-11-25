@@ -298,7 +298,9 @@ class AssetService
      * so clearing the ids alone would leave the tombstone newly eligible for the
      * serial leg), then tombstones the duplicate: merged_into_asset_id set,
      * inactive, soft-deleted. Mirrors PersonService::mergePeople: query-builder repoints
-     * (no model events), pessimistic locking, one transaction.
+     * (no model events), pessimistic locking, one transaction. The tag carry-over is
+     * the exception: TagService::moveAll writes TagAssignmentLog through the model, so
+     * its model events fire.
      *
      * A retired (soft-deleted) duplicate is accepted — retire is exactly the
      * wrong tool this replaces, so the common repair case is a duplicate

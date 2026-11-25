@@ -9,10 +9,12 @@ use LogicException;
  * Append-only row recording one tag link change, written only by
  * App\Services\TagService.
  *
- * The model hooks below refuse update and delete through the model. They do not
- * see query-builder writes (TagAssignmentLog::query()->update()/delete(),
- * DB::table()) or TRUNCATE: on sqlite nothing blocks those, and on MariaDB/MySQL
- * the migration's triggers block UPDATE and DELETE statements but not TRUNCATE.
+ * The model hooks below refuse update() and delete() through the model. They do
+ * not see the model APIs that skip events (updateQuietly(), saveQuietly(),
+ * deleteQuietly(), or any write inside Model::withoutEvents()), query-builder
+ * writes (TagAssignmentLog::query()->update()/delete(), DB::table()) or TRUNCATE.
+ * On sqlite nothing blocks those; on MariaDB/MySQL the migration's triggers block
+ * the UPDATE and DELETE statements they issue, but not TRUNCATE.
  */
 class TagAssignmentLog extends Model
 {

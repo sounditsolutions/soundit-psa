@@ -136,7 +136,9 @@ class PersonService
      * and device assignments, additional email addresses, tags) onto the survivor,
      * consolidates portal access and identity fields, then soft-deletes the
      * duplicate. Mirrors TicketService::mergeTickets(): query-builder repoints
-     * (no model events), pessimistic locking, all inside one transaction.
+     * (no model events), pessimistic locking, all inside one transaction. The tag
+     * carry-over is the exception: TagService::moveAll writes TagAssignmentLog
+     * through the model, so its model events fire.
      *
      * Moved assignments are stored as `manual` so the post-merge rule
      * reconciliation (PersonObserver::deleted) never strips the consolidated
