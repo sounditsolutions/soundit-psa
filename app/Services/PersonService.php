@@ -133,10 +133,13 @@ class PersonService
      * Merge a duplicate contact into a surviving contact within the same client.
      *
      * Repoints every reference to the duplicate (tickets, calls, emails, contract
-     * and device assignments, additional email addresses) onto the survivor,
+     * and device assignments, additional email addresses, tags) onto the survivor,
      * consolidates portal access and identity fields, then soft-deletes the
      * duplicate. Mirrors TicketService::mergeTickets(): query-builder repoints
-     * (no model events), pessimistic locking, all inside one transaction.
+     * (no model events), pessimistic locking, all inside one transaction. Not
+     * every write here is a query-builder repoint: the tag carry-over, for one,
+     * goes through TagService::moveAll, which writes TagAssignmentLog through the
+     * model, so its model events fire.
      *
      * Moved assignments are stored as `manual` so the post-merge rule
      * reconciliation (PersonObserver::deleted) never strips the consolidated
@@ -202,6 +205,10 @@ class PersonService
                 }
             }
             $duplicate->assets()->detach();
+
+            // Tags — move the ones the survivor lacks, then detach all from the
+            // duplicate, through TagService so each change is logged (source 'merge').
+            app(TagService::class)->moveAll($duplicate, $survivor, User::find($mergedByUserId), 'merge');
 
             // Additional email addresses — carry the duplicate's emails (its primary +
             // any extras) onto the survivor as non-primary, deduped against what the

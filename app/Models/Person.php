@@ -131,6 +131,12 @@ class Person extends Authenticatable
             ->withTimestamps();
     }
 
+    /** Global tags on this record; written only through App\Services\TagService. */
+    public function tags(): BelongsToMany
+    {
+        return $this->belongsToMany(Tag::class, 'person_tag')->withTimestamps();
+    }
+
     public function emailAddresses(): HasMany
     {
         return $this->hasMany(PersonEmail::class);

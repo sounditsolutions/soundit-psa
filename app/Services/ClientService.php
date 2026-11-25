@@ -125,13 +125,18 @@ class ClientService
      * Merge a duplicate client into a surviving client.
      *
      * Repoints every client-owned domain record — tickets, assets, people,
-     * phone calls, emails, contracts, invoices, licenses — onto the survivor,
+     * phone calls, emails, contracts, invoices, licenses, tags — onto the survivor,
      * re-parents the duplicate's reseller children, fills only the survivor's
      * BLANK profile fields from the duplicate, writes an audit note on both,
      * then soft-deletes the duplicate. Mirrors PersonService::mergePeople():
      * query-builder repoints (no model events), pessimistic locking, all inside
-     * one transaction. Raw `DB::table` updates deliberately move soft-deleted
-     * rows too, so nothing is left pointing at the tombstoned client.
+     * one transaction. Not every write here is a query-builder repoint: the tag
+     * carry-over, for one, goes through TagService::moveAll, which writes
+     * TagAssignmentLog through the model, so its model events fire. Raw
+     * `DB::table` updates deliberately move soft-deleted rows too, so nothing is
+     * left pointing at the tombstoned client. The merge also registers the
+     * after-commit held-debit release: a DB::afterCommit callback that calls
+     * PrepayService::releaseHeldDebits for the survivor.
      *
      * Scope boundary: auxiliary tables that merely reference a client — alerts,
      * ninja_alerts, the wiki knowledge base, and the technician/tooling-gap
@@ -207,6 +212,10 @@ class ClientService
             if ((int) $survivor->reseller_id === $duplicate->id) {
                 $survivor->reseller_id = null; // a client cannot be its own reseller
             }
+
+            // Tags — move the ones the survivor lacks, then detach all from the
+            // duplicate, through TagService so each change is logged (source 'merge').
+            app(TagService::class)->moveAll($duplicate, $survivor, User::find($mergedByUserId), 'merge');
 
             // Fill only BLANK profile fields on the survivor — never overwrite.
             // None of these columns are unique, so copying can't collide.

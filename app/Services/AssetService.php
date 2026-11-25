@@ -281,7 +281,7 @@ class AssetService
      * Merge a duplicate asset into a surviving asset within the same client (#584).
      *
      * Repoints every reference to the duplicate (ticket links, alerts, user and
-     * contract assignments, Tactical detail row and action logs, ScreenConnect
+     * contract assignments, tags, Tactical detail row and action logs, ScreenConnect
      * events), carries blank-only descriptive fields and any external vendor
      * identity the survivor lacks (LITSRMM aside: a survivor the sync retired
      * takes a linked duplicate's link and sync stamp in place of its own unless
@@ -298,7 +298,10 @@ class AssetService
      * so clearing the ids alone would leave the tombstone newly eligible for the
      * serial leg), then tombstones the duplicate: merged_into_asset_id set,
      * inactive, soft-deleted. Mirrors PersonService::mergePeople: query-builder repoints
-     * (no model events), pessimistic locking, one transaction.
+     * (no model events), pessimistic locking, one transaction. Not every write
+     * here is a query-builder repoint: the tag carry-over, for one, goes through
+     * TagService::moveAll, which writes TagAssignmentLog through the model, so
+     * its model events fire.
      *
      * A retired (soft-deleted) duplicate is accepted — retire is exactly the
      * wrong tool this replaces, so the common repair case is a duplicate
@@ -457,6 +460,10 @@ class AssetService
                 }
             }
             $duplicate->contracts()->detach();
+
+            // Tags — move the ones the survivor lacks, then detach all from the
+            // duplicate, through TagService so each change is logged (source 'merge').
+            app(TagService::class)->moveAll($duplicate, $survivor, User::find($mergedByUserId), 'merge');
 
             // Tactical detail row — repoint to the survivor (the both-sides case
             // was refused above).
