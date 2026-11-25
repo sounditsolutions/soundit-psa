@@ -298,12 +298,10 @@ class AssetService
      * so clearing the ids alone would leave the tombstone newly eligible for the
      * serial leg), then tombstones the duplicate: merged_into_asset_id set,
      * inactive, soft-deleted. Mirrors PersonService::mergePeople: query-builder repoints
-     * (no model events), pessimistic locking, one transaction. Model events still
-     * fire for the rest: contracts() goes through the ContractAsset pivot model, so
-     * its attach and detach fire that model's events; TagService::moveAll writes
-     * TagAssignmentLog through the model; and the merge ends with save() on both
-     * assets and, unless the duplicate was already soft-deleted, delete() on it,
-     * which fire the Asset events.
+     * (no model events), pessimistic locking, one transaction. Not every write
+     * here is a query-builder repoint: the tag carry-over, for one, goes through
+     * TagService::moveAll, which writes TagAssignmentLog through the model, so
+     * its model events fire.
      *
      * A retired (soft-deleted) duplicate is accepted — retire is exactly the
      * wrong tool this replaces, so the common repair case is a duplicate

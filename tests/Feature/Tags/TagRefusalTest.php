@@ -22,11 +22,6 @@ use Tests\TestCase;
  * that refusal or transaction is removed. Every refusal is checked by its exact
  * message, so a later, accidental failure (a NOT NULL column, a second check)
  * cannot stand in for it.
- *
- * One check is not covered: sync's own assertActive loop before it writes. attach
- * repeats that check inside the same transaction, so removing the loop changes no
- * outcome and no test can fail on it. The message it would throw is pinned through
- * attach.
  */
 class TagRefusalTest extends TestCase
 {
@@ -178,6 +173,30 @@ class TagRefusalTest extends TestCase
 
         $this->assertSame([$tag->id], $person->tags()->pluck('tags.id')->all());
         $this->assertSame(1, TagAssignmentLog::count());
+    }
+
+    public function test_sync_refuses_a_retired_tag_before_it_detaches_anything(): void
+    {
+        $person = $this->person($this->client());
+        $active = Tag::create(['name' => 'Alpha']);
+        $retired = Tag::create(['name' => 'Bravo']);
+        $this->service()->attach($person, $active, null, 'web');
+        $retired->update(['is_active' => false]);
+        // sync to [retired] would detach the active tag, then attach the retired one.
+        // A detach log write now fails, so only a refusal raised before the detach
+        // can surface as the retired-tag message.
+        $this->failLogWrites('detached');
+
+        try {
+            $this->service()->sync($person, [$retired->id], null, 'web');
+            $this->fail('sync accepted a retired tag.');
+        } catch (\Throwable $e) {
+            $this->assertSame('A retired tag cannot be assigned.', $e->getMessage());
+            $this->assertInstanceOf(InvalidArgumentException::class, $e);
+        }
+
+        $this->assertSame([$active->id], $person->tags()->pluck('tags.id')->all());
+        $this->assertSame(['attached'], TagAssignmentLog::orderBy('id')->pluck('action')->all());
     }
 
     public function test_move_all_refuses_an_unknown_source_even_when_there_is_nothing_to_move(): void

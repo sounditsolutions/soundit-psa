@@ -163,8 +163,7 @@ class TagMergeCarryTest extends TestCase
 
     /**
      * A refused merge leaves every tag where it was and logs nothing. Each test
-     * below is refused inside the merge transaction, after its row locks, so a
-     * tag carry-over moved ahead of that transaction would already have run.
+     * below is refused inside the merge transaction, before the tag carry-over.
      */
     private function assertTagsUntouched(string $pivot, string $fk, Model $loser, Model $survivor, int $logRows): void
     {
