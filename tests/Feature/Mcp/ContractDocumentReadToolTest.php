@@ -685,12 +685,13 @@ class ContractDocumentReadToolTest extends TestCase
         $cap = AssistantToolExecutor::CONTRACT_DOCUMENT_TEXT_CAP;
         $client = Client::factory()->create();
         $contract = $this->contract($client);
-        // One document per get arm, for both extracted_text and ai_summary: null, plain, blank and cut.
+        // Five documents. The first four cover the get arms for extracted_text and ai_summary: null, plain, blank and cut.
+        // The fifth, synthetic-pending.pdf, is Pending with text past the summariser's minimum and no summary: the state a summarise-on-read would act on.
         $document = $this->document($contract, ['extracted_text' => null, 'ai_summary' => null, 'summary_status' => DocumentSummaryStatus::Pending]);
         $plain = $this->document($contract, ['original_filename' => 'synthetic-plain.pdf']);
         $blank = $this->document($contract, ['original_filename' => 'synthetic-blank.pdf', 'extracted_text' => '   ', 'ai_summary' => '   ']);
         $cut = $this->document($contract, ['original_filename' => 'synthetic-cut.pdf', 'extracted_text' => str_repeat('c', $cap + 1), 'ai_summary' => str_repeat('d', $cap + 1)]);
-        $pending = $this->document($contract, ['original_filename' => 'synthetic-pending.pdf', 'ai_summary' => null, 'summary_status' => DocumentSummaryStatus::Pending]);
+        $pending = $this->document($contract, ['original_filename' => 'synthetic-pending.pdf', 'extracted_text' => str_repeat('SYNTHETIC-PENDING-TEXT ', 4), 'ai_summary' => null, 'summary_status' => DocumentSummaryStatus::Pending]);
         $gets = [$document, $plain, $blank, $cut, $pending];
         $before = [$contract->fresh()->toArray(), ContractDocument::withTrashed()->orderBy('id')->get()->toArray()];
         $rawUpdatedAt = fn (): array => [
