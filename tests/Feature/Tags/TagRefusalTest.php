@@ -17,11 +17,16 @@ use RuntimeException;
 use Tests\TestCase;
 
 /**
- * Each refusal in Tag and TagService, and the transactions around attach, detach,
- * sync and moveAll, pinned by a test that fails when that refusal or transaction is
- * removed. Every refusal is checked by its exact message (here or in
- * TagServiceTest), so a later, accidental failure (a NOT NULL column, a second
- * check) cannot stand in for it.
+ * The refusals in Tag and TagService, and the transactions around attach, detach,
+ * sync and moveAll, each pinned by a test here or in TagServiceTest that fails when
+ * that refusal or transaction is removed. Every refusal is checked by its exact
+ * message, so a later, accidental failure (a NOT NULL column, a second check)
+ * cannot stand in for it.
+ *
+ * One check is not covered: sync's own assertActive loop before it writes. attach
+ * repeats that check inside the same transaction, so removing the loop changes no
+ * outcome and no test can fail on it. The message it would throw is pinned through
+ * attach.
  */
 class TagRefusalTest extends TestCase
 {
@@ -156,6 +161,33 @@ class TagRefusalTest extends TestCase
         $this->assertRefused('Cannot tag an unsaved record.', fn () => $this->service()->detach($unsaved, $tag, null, 'web'));
         $this->assertRefused('Cannot tag an unsaved record.', fn () => $this->service()->sync($unsaved, [$tag->id], null, 'web'));
         $this->assertRefused('Cannot tag an unsaved record.', fn () => $this->service()->moveAll($saved, $unsaved, null));
+
+        $this->assertSame(0, DB::table('person_tag')->count());
+        $this->assertSame(0, TagAssignmentLog::count());
+    }
+
+    public function test_sync_refuses_an_unknown_source_even_when_there_is_nothing_to_change(): void
+    {
+        $person = $this->person($this->client());
+        $tag = Tag::create(['name' => 'Alpha']);
+        $this->service()->attach($person, $tag, null, 'web');
+
+        // Nothing to attach or detach, so only sync's own source check can refuse.
+        $this->assertRefused('Unknown tag change source.', fn () => $this->service()->sync($person, [$tag->id], null, 'portal'));
+        $this->assertRefused('Unknown tag change source.', fn () => $this->service()->sync($this->person($this->client()), [], null, 'portal'));
+
+        $this->assertSame([$tag->id], $person->tags()->pluck('tags.id')->all());
+        $this->assertSame(1, TagAssignmentLog::count());
+    }
+
+    public function test_move_all_refuses_an_unknown_source_even_when_there_is_nothing_to_move(): void
+    {
+        $client = $this->client();
+        $from = $this->person($client);
+        $to = $this->person($client);
+
+        // $from has no tags, so only moveAll's own source check can refuse.
+        $this->assertRefused('Unknown tag change source.', fn () => $this->service()->moveAll($from, $to, null, 'portal'));
 
         $this->assertSame(0, DB::table('person_tag')->count());
         $this->assertSame(0, TagAssignmentLog::count());

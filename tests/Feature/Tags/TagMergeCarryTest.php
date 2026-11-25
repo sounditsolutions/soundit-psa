@@ -14,6 +14,7 @@ use App\Services\ClientService;
 use App\Services\PersonService;
 use App\Services\TagService;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
@@ -22,7 +23,8 @@ use Tests\TestCase;
 
 /**
  * Each merge service carries the duplicate's tags to the survivor, deduplicated,
- * through TagService, and leaves the duplicate with none. Setup follows
+ * through TagService, and leaves the duplicate with none. A merge refused inside
+ * its transaction moves and logs no tag. Setup follows
  * PersonMergeServiceTest, AssetMergeServiceTest and ClientMergeServiceTest.
  */
 class TagMergeCarryTest extends TestCase
@@ -157,6 +159,98 @@ class TagMergeCarryTest extends TestCase
         $this->assertSame([$this->a->id], $person->fresh()->tags()->pluck('tags.id')->all());
         $this->assertSame([$this->b->id], $asset->fresh()->tags()->pluck('tags.id')->all());
         $this->assertSame($survivor->id, $person->fresh()->client_id);
+    }
+
+    /**
+     * A refused merge leaves every tag where it was and logs nothing. Each test
+     * below is refused inside the merge transaction, after its row locks, so a
+     * tag carry-over moved ahead of that transaction would already have run.
+     */
+    private function assertTagsUntouched(string $pivot, string $fk, Model $loser, Model $survivor, int $logRows): void
+    {
+        $this->assertEqualsCanonicalizing(
+            [$this->a->id, $this->b->id],
+            DB::table($pivot)->where($fk, $loser->id)->pluck('tag_id')->all(),
+            'a refused merge must leave the duplicate its tags'
+        );
+        $this->assertSame(
+            [$this->c->id],
+            DB::table($pivot)->where($fk, $survivor->id)->pluck('tag_id')->all(),
+            'a refused merge must give the survivor no tags'
+        );
+        $this->assertSame($logRows, TagAssignmentLog::count(), 'a refused merge must write no tag log row');
+    }
+
+    /** Loser {A,B}, survivor {C}, written through the service (source 'web'). */
+    private function seedForRefusal(Model $loser, Model $survivor): void
+    {
+        $tags = app(TagService::class);
+        $tags->attach($loser, $this->a, null, 'web');
+        $tags->attach($loser, $this->b, null, 'web');
+        $tags->attach($survivor, $this->c, null, 'web');
+    }
+
+    public function test_a_refused_asset_merge_moves_no_tags_and_logs_nothing(): void
+    {
+        $client = Client::factory()->create();
+        $survivor = Asset::factory()->for($client)->create(['ninja_id' => 'synthetic-ninja-1']);
+        $dup = Asset::factory()->for($client)->create(['ninja_id' => 'synthetic-ninja-2']);
+        $this->seedForRefusal($dup, $survivor);
+        $logRows = TagAssignmentLog::count();
+
+        // Refused by the live-identity guard, which reads the locked rows.
+        try {
+            app(AssetService::class)->mergeAssets($survivor, $dup, User::factory()->create()->id);
+            $this->fail('mergeAssets accepted two assets with differing live identities.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(
+                'Refusing to merge: both assets carry a live external identity that differs — two live agents is two devices, not a duplicate. Conflicting: ninja_id (survivor: synthetic-ninja-1, duplicate: synthetic-ninja-2).',
+                $e->getMessage()
+            );
+        }
+
+        $this->assertTagsUntouched('asset_tag', 'asset_id', $dup, $survivor, $logRows);
+    }
+
+    public function test_a_refused_person_merge_moves_no_tags_and_logs_nothing(): void
+    {
+        $client = Client::create(['name' => 'Synthetic Client']);
+        $survivor = $this->person($client);
+        $dup = $this->person($client);
+        $this->seedForRefusal($dup, $survivor);
+        // Soft-deleted after tagging (a soft delete keeps the links): the merge's
+        // lockForUpdate()->findOrFail() does not see it and refuses.
+        $dup->delete();
+        $logRows = TagAssignmentLog::count();
+
+        try {
+            app(PersonService::class)->mergePeople($survivor, $dup, User::factory()->create()->id);
+            $this->fail('mergePeople accepted a soft-deleted duplicate.');
+        } catch (ModelNotFoundException $e) {
+            $this->assertSame('No query results for model [App\\Models\\Person] '.$dup->id, $e->getMessage());
+        }
+
+        $this->assertTagsUntouched('person_tag', 'person_id', $dup, $survivor, $logRows);
+    }
+
+    public function test_a_refused_client_merge_moves_no_tags_and_logs_nothing(): void
+    {
+        $survivor = Client::create(['name' => 'Synthetic Survivor']);
+        $dup = Client::create(['name' => 'Synthetic Duplicate']);
+        $this->seedForRefusal($dup, $survivor);
+        // Soft-deleted after tagging (a soft delete keeps the links): the merge's
+        // lockForUpdate()->findOrFail() does not see it and refuses.
+        $dup->delete();
+        $logRows = TagAssignmentLog::count();
+
+        try {
+            app(ClientService::class)->mergeClients($survivor, $dup, User::factory()->create()->id);
+            $this->fail('mergeClients accepted a soft-deleted duplicate.');
+        } catch (ModelNotFoundException $e) {
+            $this->assertSame('No query results for model [App\\Models\\Client] '.$dup->id, $e->getMessage());
+        }
+
+        $this->assertTagsUntouched('client_tag', 'client_id', $dup, $survivor, $logRows);
     }
 
     public function test_an_inactive_tag_on_the_duplicate_still_carries(): void

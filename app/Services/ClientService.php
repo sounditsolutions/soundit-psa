@@ -130,8 +130,9 @@ class ClientService
      * BLANK profile fields from the duplicate, writes an audit note on both,
      * then soft-deletes the duplicate. Mirrors PersonService::mergePeople():
      * query-builder repoints (no model events), pessimistic locking, all inside
-     * one transaction. The tag carry-over is the exception: TagService::moveAll
-     * writes TagAssignmentLog through the model, so its model events fire. Raw
+     * one transaction. Model events still fire for the rest: TagService::moveAll
+     * writes TagAssignmentLog through the model, and the merge ends with save() on
+     * both clients and delete() on the duplicate, which fire the Client events. Raw
      * `DB::table` updates deliberately move soft-deleted rows too, so nothing is
      * left pointing at the tombstoned client.
      *

@@ -136,9 +136,12 @@ class PersonService
      * and device assignments, additional email addresses, tags) onto the survivor,
      * consolidates portal access and identity fields, then soft-deletes the
      * duplicate. Mirrors TicketService::mergeTickets(): query-builder repoints
-     * (no model events), pessimistic locking, all inside one transaction. The tag
-     * carry-over is the exception: TagService::moveAll writes TagAssignmentLog
-     * through the model, so its model events fire.
+     * (no model events), pessimistic locking, all inside one transaction. Model
+     * events still fire for the rest: contracts() goes through the ContractPerson
+     * pivot model, so its attach and detach fire that model's events;
+     * PersonEmail::updateOrCreate() and TagService::moveAll (which writes
+     * TagAssignmentLog) write through models; and the merge ends with save() on
+     * both people and delete() on the duplicate, which fire the Person events.
      *
      * Moved assignments are stored as `manual` so the post-merge rule
      * reconciliation (PersonObserver::deleted) never strips the consolidated
