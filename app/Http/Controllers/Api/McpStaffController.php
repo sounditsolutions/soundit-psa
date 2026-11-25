@@ -288,6 +288,11 @@ class McpStaffController extends Controller
         'get_ticket_timeline',
         'list_client_contracts',
         'get_contract',
+        // A contract's stored documents: metadata, then one document's stored
+        // extracted_text/ai_summary (capped). Client-scoped like get_contract;
+        // never file bytes, disk_path or a URL. Explicit-grant only.
+        'list_contract_documents',
+        'get_contract_document',
         // Card 3vhEBCDG: one contract's prepay ledger, read-only. Staff-class like the
         // invoice reads: client_id is an optional fence that must own the contract.
         // Explicit-grant only like every entry in this list.

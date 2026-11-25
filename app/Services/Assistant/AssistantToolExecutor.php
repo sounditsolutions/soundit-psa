@@ -13,6 +13,7 @@ use App\Models\Asset;
 use App\Models\Attachment;
 use App\Models\Client;
 use App\Models\Contract;
+use App\Models\ContractDocument;
 use App\Models\Email;
 use App\Models\Invoice;
 use App\Models\InvoiceLine;
@@ -187,6 +188,8 @@ class AssistantToolExecutor
             'verify_device_absent' => [ToolEffect::Read, static fn (self $x, array $in) => $x->verifyDeviceAbsent($in)],
             'list_client_contracts' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listClientContracts($in)],
             'get_contract' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getContract($in)],
+            'list_contract_documents' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listContractDocuments($in)],
+            'get_contract_document' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getContractDocument($in)],
             'list_prepay_transactions' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listPrepayTransactions($in)],
             'get_sku' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getSku($in)],
             'list_client_licenses' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listClientLicenses($in)],
@@ -1282,6 +1285,13 @@ class AssistantToolExecutor
     /** list_prepay_transactions: rows per call (default 25). */
     private const PREPAY_LEDGER_LIMIT_MAX = 100;
 
+    /**
+     * get_contract_document: the most characters of extracted_text (and of
+     * ai_summary) returned in one read. Longer text is cut here and labelled as
+     * truncated with its total length, so a cut copy never reads as the whole.
+     */
+    public const CONTRACT_DOCUMENT_TEXT_CAP = 60000;
+
     private function getClient(): array
     {
         if (! $this->client) {
@@ -2123,6 +2133,128 @@ class AssistantToolExecutor
             // #8526: the one pricing-adjacent exception — the SKU id only, no price.
             'portal_prepay_sku_id' => $contract->portal_prepay_sku_id !== null ? (int) $contract->portal_prepay_sku_id : null,
         ];
+    }
+
+    /**
+     * list_contract_documents: the documents stored on one contract, scoped to
+     * the client the same way get_contract is. A contract another client owns
+     * gets get_contract's own refusal, so no count or filename leaks. Metadata
+     * only: never disk_path, a URL or the file. Soft-deleted rows stay out
+     * (the model's default scope).
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function listContractDocuments(array $input): array
+    {
+        if (! $this->clientId) {
+            return ['error' => 'No client context — cannot look up contract'];
+        }
+
+        $contractId = (int) ($input['contract_id'] ?? 0);
+        if ($contractId <= 0) {
+            return ['error' => 'contract_id is required'];
+        }
+
+        $contract = Contract::where('client_id', $this->clientId)->find($contractId);
+
+        if (! $contract) {
+            return ['error' => 'Contract not found at this client'];
+        }
+
+        $documents = ContractDocument::where('contract_id', $contract->id)
+            ->orderBy('id')
+            ->get(['id', 'original_filename', 'mime_type', 'file_size', 'summary_status']);
+
+        return [
+            'contract_id' => $contract->id,
+            'count' => $documents->count(),
+            'documents' => $documents->map(fn (ContractDocument $d) => [
+                'id' => $d->id,
+                'filename' => $d->original_filename,
+                'mime' => $d->mime_type,
+                'size' => $d->file_size,
+                'summary_status' => $d->summary_status?->value,
+            ])->values()->toArray(),
+        ];
+    }
+
+    /**
+     * get_contract_document: one document's stored extracted_text and
+     * ai_summary, read as stored, except that a field that is missing, or holds
+     * only the characters PHP's trim() strips (space, tab, newline, carriage
+     * return, NUL, vertical tab), is returned as null with a note. A field
+     * holding other whitespace, such as a form feed or a Unicode space, is
+     * returned as text. The document's contract must belong to this
+     * client; a missing document and another client's document get the same
+     * refusal, so existence never leaks. No file bytes, no disk_path, no URL,
+     * and no summarising: a missing summary is reported, never generated.
+     * Both texts are capped at CONTRACT_DOCUMENT_TEXT_CAP characters and a cut
+     * is labelled with the totals.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function getContractDocument(array $input): array
+    {
+        if (! $this->clientId) {
+            return ['error' => 'No client context — cannot look up contract document'];
+        }
+
+        $documentId = (int) ($input['document_id'] ?? 0);
+        if ($documentId <= 0) {
+            return ['error' => 'document_id is required'];
+        }
+
+        $clientId = $this->clientId;
+        $document = ContractDocument::whereHas('contract', fn ($q) => $q->where('client_id', $clientId))
+            ->find($documentId);
+
+        if (! $document) {
+            return ['error' => 'Document not found at this client'];
+        }
+
+        $result = [
+            'id' => $document->id,
+            'contract_id' => $document->contract_id,
+            'filename' => $document->original_filename,
+            'mime' => $document->mime_type,
+            'summary_status' => $document->summary_status?->value,
+            'text_cap_chars' => self::CONTRACT_DOCUMENT_TEXT_CAP,
+        ];
+
+        $notes = [];
+        foreach (['extracted_text' => 'document', 'ai_summary' => 'summary'] as $field => $whole) {
+            $value = $document->{$field};
+            if ($value === null || trim((string) $value) === '') {
+                $result[$field] = null;
+                $result[$field.'_truncated'] = false;
+                $notes[] = $field === 'ai_summary'
+                    ? 'This document has no AI summary: the stored field is missing or blank.'
+                    : 'This document has no extracted text: the stored field is missing or blank.';
+
+                continue;
+            }
+
+            $value = (string) $value;
+            $total = mb_strlen($value);
+            if ($total > self::CONTRACT_DOCUMENT_TEXT_CAP) {
+                $cut = mb_substr($value, 0, self::CONTRACT_DOCUMENT_TEXT_CAP);
+                $returned = mb_strlen($cut);
+                $result[$field] = $cut;
+                $result[$field.'_truncated'] = true;
+                $result[$field.'_total_chars'] = $total;
+                $result[$field.'_returned_chars'] = $returned;
+                $notes[] = "{$field} is cut at {$returned} of {$total} characters; this is not the whole {$whole}.";
+            } else {
+                $result[$field] = $value;
+                $result[$field.'_truncated'] = false;
+            }
+        }
+
+        $result['notes'] = $notes;
+
+        return $result;
     }
 
     /**
