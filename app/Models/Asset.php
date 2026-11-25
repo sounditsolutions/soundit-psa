@@ -182,6 +182,12 @@ class Asset extends Model
             ->withPivot('assigned_at', 'assignment_source');
     }
 
+    /** Global tags on this record; written only through App\Services\TagService. */
+    public function tags(): BelongsToMany
+    {
+        return $this->belongsToMany(Tag::class, 'asset_tag')->withTimestamps();
+    }
+
     public function users(): BelongsToMany
     {
         return $this->belongsToMany(Person::class, 'asset_person')

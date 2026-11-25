@@ -208,6 +208,10 @@ class ClientService
                 $survivor->reseller_id = null; // a client cannot be its own reseller
             }
 
+            // Tags — move the ones the survivor lacks, then detach all from the
+            // duplicate, through TagService so each change is logged (source 'merge').
+            app(TagService::class)->moveAll($duplicate, $survivor, User::find($mergedByUserId), 'merge');
+
             // Fill only BLANK profile fields on the survivor — never overwrite.
             // None of these columns are unique, so copying can't collide.
             // Integration mapping IDs (stripe/qbo/ninja/…) are intentionally NOT

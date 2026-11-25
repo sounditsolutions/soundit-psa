@@ -458,6 +458,10 @@ class AssetService
             }
             $duplicate->contracts()->detach();
 
+            // Tags — move the ones the survivor lacks, then detach all from the
+            // duplicate, through TagService so each change is logged (source 'merge').
+            app(TagService::class)->moveAll($duplicate, $survivor, User::find($mergedByUserId), 'merge');
+
             // Tactical detail row — repoint to the survivor (the both-sides case
             // was refused above).
             if ($duplicateHasTactical) {

@@ -203,6 +203,10 @@ class PersonService
             }
             $duplicate->assets()->detach();
 
+            // Tags — move the ones the survivor lacks, then detach all from the
+            // duplicate, through TagService so each change is logged (source 'merge').
+            app(TagService::class)->moveAll($duplicate, $survivor, User::find($mergedByUserId), 'merge');
+
             // Additional email addresses — carry the duplicate's emails (its primary +
             // any extras) onto the survivor as non-primary, deduped against what the
             // survivor already has, so future email matching still resolves the survivor.
