@@ -281,7 +281,7 @@ class AssetService
      * Merge a duplicate asset into a surviving asset within the same client (#584).
      *
      * Repoints every reference to the duplicate (ticket links, alerts, user and
-     * contract assignments, Tactical detail row and action logs, ScreenConnect
+     * contract assignments, tags, Tactical detail row and action logs, ScreenConnect
      * events), carries blank-only descriptive fields and any external vendor
      * identity the survivor lacks (LITSRMM aside: a survivor the sync retired
      * takes a linked duplicate's link and sync stamp in place of its own unless

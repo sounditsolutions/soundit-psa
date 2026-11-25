@@ -125,7 +125,7 @@ class ClientService
      * Merge a duplicate client into a surviving client.
      *
      * Repoints every client-owned domain record — tickets, assets, people,
-     * phone calls, emails, contracts, invoices, licenses — onto the survivor,
+     * phone calls, emails, contracts, invoices, licenses, tags — onto the survivor,
      * re-parents the duplicate's reseller children, fills only the survivor's
      * BLANK profile fields from the duplicate, writes an audit note on both,
      * then soft-deletes the duplicate. Mirrors PersonService::mergePeople():

@@ -9,8 +9,12 @@ use Illuminate\Support\Facades\Schema;
  * (person_tag, client_tag, asset_tag) with real foreign keys on both sides.
  *
  * Case-insensitive uniqueness is held by `name_key` (the trimmed, space-collapsed,
- * lower-cased name, set by App\Models\Tag) under a plain unique index, so it holds
- * the same way on sqlite and on MariaDB whatever the column collation is.
+ * lower-cased name, set by App\Models\Tag) under a plain unique index. On sqlite
+ * that index compares bytes. On MariaDB it compares under the column collation
+ * (utf8mb4_unicode_ci by default), so there it is also accent-insensitive:
+ * "café" and "cafe" collide on MariaDB but not on sqlite.
+ *
+ * name_key is 64 characters; App\Models\Tag refuses a name whose key is longer.
  *
  * Purely additive: no existing table is altered and no row is written.
  */

@@ -24,6 +24,12 @@ class Tag extends Model
 
     public const NAME_MAX = 64;
 
+    /**
+     * The length of tags.name_key. Lower-casing can lengthen a name ("İ" becomes
+     * "i" plus a combining dot), so the key is checked on its own, not only the name.
+     */
+    public const NAME_KEY_MAX = 64;
+
     protected $fillable = [
         'name',
         'color',
@@ -53,12 +59,16 @@ class Tag extends Model
             if (mb_strlen($name) > self::NAME_MAX) {
                 throw new InvalidArgumentException('A tag name can be at most '.self::NAME_MAX.' characters.');
             }
+            $key = self::nameKey($name);
+            if (mb_strlen($key) > self::NAME_KEY_MAX) {
+                throw new InvalidArgumentException('This tag name is longer than '.self::NAME_KEY_MAX.' characters once lower-cased.');
+            }
             if (! in_array($tag->color, self::COLORS, true)) {
                 throw new InvalidArgumentException('Unknown tag colour.');
             }
 
             $tag->name = $name;
-            $tag->name_key = self::nameKey($name);
+            $tag->name_key = $key;
         });
     }
 

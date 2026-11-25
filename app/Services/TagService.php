@@ -14,10 +14,14 @@ use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
 /**
- * The only writer of the tag pivots (person_tag, client_tag, asset_tag).
+ * The only application writer of the tag pivots (person_tag, client_tag, asset_tag).
  *
- * Every link that changes writes exactly one tag_assignment_logs row in the same
- * transaction as the pivot write. A call that changes nothing writes nothing.
+ * Every link this service changes writes exactly one tag_assignment_logs row in the
+ * same transaction as the pivot write. A call that changes nothing writes nothing.
+ *
+ * One exception is the database itself: the pivots' foreign keys cascade, so
+ * deleting a tag, or force-deleting a person, client or asset, removes its links
+ * and writes no log row. A soft delete keeps the links.
  * Role checks belong to the callers; this service enforces only the data rules.
  */
 class TagService
@@ -36,6 +40,7 @@ class TagService
     {
         $type = $this->entityType($entity);
         $this->assertSource($source);
+        $this->assertSavedTag($tag);
         $this->assertActive($tag);
 
         return DB::transaction(function () use ($entity, $tag, $actor, $source, $type) {
@@ -55,6 +60,7 @@ class TagService
     {
         $type = $this->entityType($entity);
         $this->assertSource($source);
+        $this->assertSavedTag($tag);
 
         return DB::transaction(function () use ($entity, $tag, $actor, $source, $type) {
             if ($this->relation($entity)->detach($tag->getKey()) === 0) {
@@ -162,6 +168,14 @@ class TagService
     {
         if (! in_array($source, self::SOURCES, true)) {
             throw new InvalidArgumentException('Unknown tag change source.');
+        }
+    }
+
+    /** An unsaved Tag has no key, and detach(null) would remove every link. */
+    private function assertSavedTag(Tag $tag): void
+    {
+        if (! $tag->exists || $tag->getKey() === null) {
+            throw new InvalidArgumentException('Cannot use an unsaved tag.');
         }
     }
 

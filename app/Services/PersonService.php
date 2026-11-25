@@ -133,7 +133,7 @@ class PersonService
      * Merge a duplicate contact into a surviving contact within the same client.
      *
      * Repoints every reference to the duplicate (tickets, calls, emails, contract
-     * and device assignments, additional email addresses) onto the survivor,
+     * and device assignments, additional email addresses, tags) onto the survivor,
      * consolidates portal access and identity fields, then soft-deletes the
      * duplicate. Mirrors TicketService::mergeTickets(): query-builder repoints
      * (no model events), pessimistic locking, all inside one transaction.

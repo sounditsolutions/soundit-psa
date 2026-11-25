@@ -12,10 +12,24 @@ use Tests\TestCase;
  * model event, so an observer cannot catch a writer that goes around it; this
  * source scan does instead.
  *
- * It fails when app/ or routes/ outside app/Services/TagService.php calls a pivot
- * writer on a tags relation, or names one of the three pivot tables in a query
- * builder or raw SQL. The matcher is proven to fire on planted text first, so a
- * clean scan is not a matcher that cannot match.
+ * It fails when a PHP file in app/ or routes/, other than app/Services/TagService.php,
+ * contains one of these shapes:
+ *  - tags()->attach/detach/sync/syncWithoutDetaching/toggle/updateExistingPivot(;
+ *  - ->tags->(one of the same verbs)(;
+ *  - table('person_tag'), table('client_tag') or table('asset_tag'), quoted with ' or ";
+ *  - raw SQL with INTO, UPDATE or FROM followed by one of the three pivot names,
+ *    bare or in backticks.
+ *
+ * It does NOT see: a table name held in a variable or built by concatenation;
+ * from('person_tag') or any builder entry other than table(); a double-quoted SQL
+ * identifier ("person_tag"); TRUNCATE or DELETE without FROM; the save, saveMany,
+ * create, createMany and syncWithPivotValues writers; a relation reached under
+ * another name, through an alias or a helper (TagService's own relation()), or held
+ * in a variable; and pivot models. A clean scan means none of the shapes above
+ * appears, not that no other writer exists.
+ *
+ * The matcher is proven to fire on planted text first, so a clean scan is not a
+ * matcher that cannot match.
  */
 class TagWriterGuardTest extends TestCase
 {
@@ -99,12 +113,16 @@ class TagWriterGuardTest extends TestCase
         $this->assertSame([], $offenders, 'Tag links must be written only through App\Services\TagService, which logs each change.');
     }
 
-    public function test_tag_service_itself_is_seen_by_the_matcher(): void
+    public function test_tag_service_writes_through_a_helper_the_matcher_cannot_see(): void
     {
-        // The allowed file really writes the pivots, so excluding it is a choice,
-        // not a blind spot: its writer goes through relation(), which reaches tags().
+        // The allowed file really writes the pivots, but through relation(), a helper
+        // that returns $entity->tags(). That is a blind spot of this scan: the matcher
+        // finds nothing in TagService, and would find nothing in any other file that
+        // wrote through such a helper. The exclusion of TagService is a choice; this
+        // test pins that the scan alone could not have caught it.
         $source = file_get_contents(base_path(self::ALLOWED));
         $this->assertStringContainsString('return $entity->tags();', $source);
-        $this->assertStringContainsString('->attach(', $source);
+        $this->assertStringContainsString('$this->relation($entity)->attach(', $source);
+        $this->assertSame([], $this->writerHits($source), 'The matcher now sees TagService; update this comment and the docblock.');
     }
 }

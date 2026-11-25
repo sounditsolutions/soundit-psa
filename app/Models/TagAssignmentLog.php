@@ -6,8 +6,13 @@ use Illuminate\Database\Eloquent\Model;
 use LogicException;
 
 /**
- * Append-only row recording one tag link change. Written only by
- * App\Services\TagService; there is no update or delete path.
+ * Append-only row recording one tag link change, written only by
+ * App\Services\TagService.
+ *
+ * The model hooks below refuse update and delete through the model. They do not
+ * see query-builder writes (TagAssignmentLog::query()->update()/delete(),
+ * DB::table()) or TRUNCATE: on sqlite nothing blocks those, and on MariaDB/MySQL
+ * the migration's triggers block UPDATE and DELETE statements but not TRUNCATE.
  */
 class TagAssignmentLog extends Model
 {
